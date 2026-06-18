@@ -25,8 +25,8 @@ COPY backend/ ./
 # Copy built frontend into backend/public so Express can serve it
 COPY --from=frontend-builder /build/frontend/dist ./public
 
-# Create uploads directory
-RUN mkdir -p uploads
+# Create persistent data directories (Railway volumes mount here)
+RUN mkdir -p /app/data uploads
 
 # Expose port (Railway injects $PORT automatically)
 EXPOSE 3001
