@@ -16,12 +16,25 @@ const parseRow = (row) => {
   return d;
 };
 
+// Returns true only if v is a primitive safe to use as a SQL parameter
+const isPrimitive = (v) => v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+
 const matchesFilter = (data, filter) => {
   if (!filter) return true;
   return Object.entries(filter).every(([k, v]) => {
     if (v === undefined || v === null) return true;
-    if (k === 'id') return data.id === v;
-    const fv = data[k];
+    const fv = k === 'id' ? data.id : data[k];
+    // MongoDB-style operators used by the frontend
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      if ('$in'  in v) return Array.isArray(v.$in) && v.$in.includes(fv);
+      if ('$nin' in v) return Array.isArray(v.$nin) && !v.$nin.includes(fv);
+      if ('$ne'  in v) return fv !== v.$ne;
+      if ('$gt'  in v) return fv >  v.$gt;
+      if ('$gte' in v) return fv >= v.$gte;
+      if ('$lt'  in v) return fv <  v.$lt;
+      if ('$lte' in v) return fv <= v.$lte;
+      return true; // unknown operator — don't filter out
+    }
     if (Array.isArray(v)) return v.includes(fv);
     return fv === v;
   });
@@ -55,17 +68,22 @@ router.post('/:type/filter', (req, res) => {
   const { type } = req.params;
   const { query = {}, sort, limit } = req.body;
 
+  // Only use SQL-level filtering for simple primitive values.
+  // Object values (e.g. { $in: [...] }) are handled in-memory by matchesFilter.
+  const simpleUserId = isPrimitive(query.user_id) ? query.user_id : undefined;
+  const simpleStatus = isPrimitive(query.status)  ? query.status  : undefined;
+
   let rows;
-  if (query.user_id && query.status) {
+  if (simpleUserId && simpleStatus) {
     rows = db.prepare('SELECT * FROM entities WHERE type=? AND user_id=? AND status=?')
-              .all(type, query.user_id, query.status);
-  } else if (query.user_id) {
+              .all(type, simpleUserId, simpleStatus);
+  } else if (simpleUserId) {
     rows = db.prepare('SELECT * FROM entities WHERE type=? AND user_id=?')
-              .all(type, query.user_id);
-  } else if (query.status) {
+              .all(type, simpleUserId);
+  } else if (simpleStatus) {
     rows = db.prepare('SELECT * FROM entities WHERE type=? AND status=?')
-              .all(type, query.status);
-  } else if (query.is_active !== undefined) {
+              .all(type, simpleStatus);
+  } else if (query.is_active !== undefined && isPrimitive(query.is_active)) {
     rows = db.prepare('SELECT * FROM entities WHERE type=? AND is_active=?')
               .all(type, query.is_active ? 1 : 0);
   } else {
