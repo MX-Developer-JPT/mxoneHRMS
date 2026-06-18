@@ -23,6 +23,9 @@ function makeTransporter() {
     secure: SMTP_SECURE === 'true',
     auth: { user: SMTP_USER, pass: SMTP_PASS },
     tls: { rejectUnauthorized: false },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
   });
 }
 
@@ -30,11 +33,15 @@ export async function verifyEmail() {
   if (!isConfigured()) {
     return {
       ok: false,
-      error: `SMTP not configured. Add your App Password to backend/.env (SMTP_PASS).`,
+      error: `SMTP not configured. Add SMTP_PASS to backend/.env (use a Gmail App Password, not your normal password).`,
     };
   }
   try {
-    await makeTransporter().verify();
+    const transporter = makeTransporter();
+    await Promise.race([
+      transporter.verify(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timed out after 10s. Check your internet or SMTP settings.')), 10000)),
+    ]);
     return { ok: true, user: SMTP_USER };
   } catch (err) {
     // Give actionable hints for common Gmail errors
