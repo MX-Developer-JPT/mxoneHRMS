@@ -423,108 +423,147 @@ function EntitiesTab({ typeCounts }) {
 
 // ── Email settings tab ─────────────────────────────────────
 function EmailTab() {
-  const [status, setStatus]         = useState(null);   // null = not checked
-  const [checking, setChecking]     = useState(false);
-  const [sending, setSending]       = useState(false);
-  const [testTo, setTestTo]         = useState('');
+  const PASS_MASK = '••••••••••••••••';
+  const [cfg, setCfg]           = useState({ host: 'smtp.gmail.com', port: 587, secure: false, user: '', pass: '', from: '' });
+  const [passEditing, setPassEditing] = useState(false);
+  const [status, setStatus]     = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [saving, setSaving]     = useState(false);
+  const [sending, setSending]   = useState(false);
+  const [testTo, setTestTo]     = useState('');
+
+  useEffect(() => {
+    adminFetch('/smtp-settings').then(r => {
+      setCfg(c => ({ ...c, host: r.host, port: r.port, secure: r.secure, user: r.user, from: r.from, pass: r.hasPass ? PASS_MASK : '' }));
+    }).catch(() => {});
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await adminFetch('/smtp-settings', { method: 'POST', body: JSON.stringify(cfg) });
+      toast.success('Email settings saved');
+      if (passEditing) setPassEditing(false);
+    } catch (e) {
+      toast.error('Save failed: ' + e.message);
+    } finally { setSaving(false); }
+  };
 
   const checkStatus = async () => {
-    setChecking(true);
-    setStatus(null);
-    try {
-      const r = await adminFetch('/email-status');
-      setStatus(r);
-    } catch (e) {
-      setStatus({ ok: false, error: e.message });
-    } finally {
-      setChecking(false);
-    }
+    setChecking(true); setStatus(null);
+    try { setStatus(await adminFetch('/email-status')); }
+    catch (e) { setStatus({ ok: false, error: e.message }); }
+    finally { setChecking(false); }
   };
 
   const sendTest = async () => {
     if (!testTo) return toast.error('Enter a recipient email address');
     setSending(true);
     try {
-      const r = await adminFetch('/test-email', {
-        method: 'POST',
-        body: JSON.stringify({ to: testTo }),
-      });
+      const r = await adminFetch('/test-email', { method: 'POST', body: JSON.stringify({ to: testTo }) });
       toast.success(`Test email sent to ${r.sentTo}`);
-    } catch (e) {
-      toast.error('Send failed: ' + e.message);
-    } finally {
-      setSending(false);
-    }
+    } catch (e) { toast.error('Send failed: ' + e.message); }
+    finally { setSending(false); }
   };
 
   return (
     <div className="max-w-2xl space-y-6">
-      {/* SMTP status card */}
-      <div className="border rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-4">
+
+      {/* ── Credentials form ── */}
+      <div className="border rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2 mb-1">
           <Mail className="w-5 h-5 text-primary" />
-          <h3 className="font-semibold">SMTP Connection</h3>
+          <h3 className="font-semibold">SMTP Credentials</h3>
+        </div>
+        <p className="text-xs text-muted-foreground -mt-2">
+          Changes take effect immediately — no server restart needed.
+        </p>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <Label className="text-xs">SMTP Host</Label>
+            <Input value={cfg.host} onChange={e => setCfg(c => ({ ...c, host: e.target.value }))} placeholder="smtp.gmail.com" className="h-9 text-sm" />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Port</Label>
+            <Input type="number" value={cfg.port} onChange={e => setCfg(c => ({ ...c, port: parseInt(e.target.value) || 587 }))} placeholder="587" className="h-9 text-sm" />
+          </div>
         </div>
 
-        {status === null && (
-          <p className="text-sm text-muted-foreground">
-            Click <strong>Check Connection</strong> to verify your Gmail SMTP settings.
+        <div className="space-y-1">
+          <Label className="text-xs">Gmail / SMTP Email Address</Label>
+          <Input type="email" value={cfg.user} onChange={e => setCfg(c => ({ ...c, user: e.target.value }))} placeholder="you@gmail.com" className="h-9 text-sm" />
+        </div>
+
+        <div className="space-y-1">
+          <Label className="text-xs">App Password</Label>
+          <div className="flex gap-2">
+            <Input
+              type={passEditing ? 'text' : 'password'}
+              value={cfg.pass}
+              onFocus={() => { if (cfg.pass === PASS_MASK) { setCfg(c => ({ ...c, pass: '' })); setPassEditing(true); } }}
+              onChange={e => { setCfg(c => ({ ...c, pass: e.target.value })); setPassEditing(true); }}
+              placeholder="16-character App Password"
+              className="h-9 text-sm flex-1"
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Generate at <strong>myaccount.google.com/security</strong> → App Passwords (requires 2FA enabled)
           </p>
-        )}
+        </div>
+
+        <div className="space-y-1">
+          <Label className="text-xs">From Name (optional)</Label>
+          <Input value={cfg.from} onChange={e => setCfg(c => ({ ...c, from: e.target.value }))} placeholder={`Maxvolt HR <${cfg.user || 'you@gmail.com'}>`} className="h-9 text-sm" />
+        </div>
+
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={cfg.secure} onChange={e => setCfg(c => ({ ...c, secure: e.target.checked, port: e.target.checked ? 465 : 587 }))} className="rounded" />
+            Use SSL (port 465)
+          </label>
+        </div>
+
+        <Button size="sm" onClick={save} disabled={saving}>
+          {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
+          Save Settings
+        </Button>
+      </div>
+
+      {/* ── Connection test ── */}
+      <div className="border rounded-xl p-5 space-y-3">
+        <div className="flex items-center gap-2 mb-1">
+          <RefreshCw className="w-5 h-5 text-primary" />
+          <h3 className="font-semibold">Test Connection</h3>
+        </div>
+
         {status?.ok && (
-          <div className="flex items-center gap-2 text-green-600 mb-2">
+          <div className="flex items-center gap-2 text-green-600">
             <CheckCircle2 className="w-5 h-5" />
             <span className="text-sm font-medium">Connected — {status.user}</span>
           </div>
         )}
         {status && !status.ok && (
-          <div className="flex items-start gap-2 text-destructive mb-2">
+          <div className="flex items-start gap-2 text-destructive">
             <XCircle className="w-5 h-5 mt-0.5 shrink-0" />
             <p className="text-sm">{status.error}</p>
           </div>
         )}
 
-        <Button size="sm" variant="outline" onClick={checkStatus} disabled={checking} className="mt-3">
-          {checking ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-          Check Connection
-        </Button>
-      </div>
-
-      {/* Test email card */}
-      <div className="border rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Send className="w-5 h-5 text-primary" />
-          <h3 className="font-semibold">Send Test Email</h3>
-        </div>
-        <p className="text-sm text-muted-foreground mb-4">
-          Sends a test email to verify the full delivery pipeline.
-        </p>
-        <div className="flex gap-2">
-          <Input
-            placeholder="recipient@example.com"
-            value={testTo}
-            onChange={e => setTestTo(e.target.value)}
-            className="h-9 max-w-xs"
-          />
-          <Button size="sm" onClick={sendTest} disabled={sending}>
-            {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-            Send
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={checkStatus} disabled={checking}>
+            {checking ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+            Check Connection
           </Button>
-        </div>
-      </div>
 
-      {/* Setup instructions */}
-      <div className="border rounded-xl p-5 bg-amber-50/50 border-amber-200">
-        <h3 className="font-semibold text-amber-800 mb-3">Gmail App Password Setup</h3>
-        <ol className="text-sm text-amber-700 space-y-2 list-decimal list-inside">
-          <li>Go to <strong>myaccount.google.com/security</strong></li>
-          <li>Enable <strong>2-Step Verification</strong> (required)</li>
-          <li>Search for <strong>"App Passwords"</strong> and create one</li>
-          <li>Copy the 16-character password (spaces don't matter)</li>
-          <li>Open <code className="bg-amber-100 px-1 rounded text-xs font-mono">backend/.env</code> and paste it as <code className="bg-amber-100 px-1 rounded text-xs font-mono">SMTP_PASS=</code></li>
-          <li>Restart the backend server</li>
-          <li>Click <strong>Check Connection</strong> above to confirm</li>
-        </ol>
+          <div className="flex gap-2">
+            <Input placeholder="Send test to: email@example.com" value={testTo} onChange={e => setTestTo(e.target.value)} className="h-9 text-sm w-56" />
+            <Button size="sm" onClick={sendTest} disabled={sending}>
+              {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+              Send Test
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );

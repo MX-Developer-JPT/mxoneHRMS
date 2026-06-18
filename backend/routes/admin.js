@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import db from '../db.js';
 import { JWT_SECRET } from './auth.js';
-import { sendEmail, verifyEmail, emailTemplates } from '../utils/email.js';
+import { sendEmail, verifyEmail, emailTemplates, getSmtpPublicConfig } from '../utils/email.js';
 
 const router = Router();
 
@@ -179,6 +179,29 @@ router.delete('/users/:id', (req, res) => {
     return res.status(400).json({ error: 'Cannot delete your own account' });
   const r = db.prepare('DELETE FROM users WHERE id=?').run(req.params.id);
   if (r.changes === 0) return res.status(404).json({ error: 'Not found' });
+  res.json({ success: true });
+});
+
+// ── SMTP settings: get (password masked) ──────────────────
+router.get('/smtp-settings', (_req, res) => {
+  res.json(getSmtpPublicConfig());
+});
+
+// ── SMTP settings: save to DB ──────────────────────────────
+router.post('/smtp-settings', (req, res) => {
+  const { host, port, secure, user, pass, from } = req.body;
+  const set = (key, val) => {
+    if (val === undefined || val === null) return;
+    db.prepare(`INSERT INTO settings(key,value,updated_at) VALUES(?,?,datetime('now'))
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`)
+      .run(key, String(val));
+  };
+  if (host  !== undefined) set('SMTP_HOST',   host);
+  if (port  !== undefined) set('SMTP_PORT',   String(port));
+  if (secure !== undefined) set('SMTP_SECURE', secure ? 'true' : 'false');
+  if (user  !== undefined) set('SMTP_USER',   user);
+  if (pass  && pass !== '••••••••••••••••') set('SMTP_PASS', pass);
+  if (from  !== undefined) set('SMTP_FROM',   from);
   res.json({ success: true });
 });
 

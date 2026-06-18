@@ -1,27 +1,38 @@
 import nodemailer from 'nodemailer';
+import db from '../db.js';
 
-const {
-  SMTP_HOST   = 'smtp.gmail.com',
-  SMTP_PORT   = '587',
-  SMTP_SECURE = 'false',
-  SMTP_USER   = '',
-  SMTP_PASS   = '',
-  SMTP_FROM   = '',
-} = process.env;
-
-const FROM = SMTP_FROM || `Maxvolt HR <${SMTP_USER}>`;
 const PLACEHOLDER = 'your_16_char_app_password_here';
 
-function isConfigured() {
-  return SMTP_USER && SMTP_PASS && SMTP_PASS !== PLACEHOLDER;
+// Read a setting: DB value takes priority over .env
+function getSetting(key, fallback = '') {
+  try {
+    const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+    if (row?.value) return row.value;
+  } catch {}
+  return process.env[key] || fallback;
 }
 
-function makeTransporter() {
+function getSmtpConfig() {
+  return {
+    host:   getSetting('SMTP_HOST',   'smtp.gmail.com'),
+    port:   parseInt(getSetting('SMTP_PORT', '587'), 10),
+    secure: getSetting('SMTP_SECURE', 'false') === 'true',
+    user:   getSetting('SMTP_USER',   ''),
+    pass:   getSetting('SMTP_PASS',   ''),
+    from:   getSetting('SMTP_FROM',   ''),
+  };
+}
+
+function isConfigured(cfg) {
+  return !!(cfg.user && cfg.pass && cfg.pass !== PLACEHOLDER);
+}
+
+function makeTransporter(cfg) {
   return nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: parseInt(SMTP_PORT, 10),
-    secure: SMTP_SECURE === 'true',
-    auth: { user: SMTP_USER, pass: SMTP_PASS },
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: { user: cfg.user, pass: cfg.pass },
     tls: { rejectUnauthorized: false },
     connectionTimeout: 10000,
     greetingTimeout: 10000,
@@ -30,40 +41,51 @@ function makeTransporter() {
 }
 
 export async function verifyEmail() {
-  if (!isConfigured()) {
-    return {
-      ok: false,
-      error: `SMTP not configured. Add SMTP_PASS to backend/.env (use a Gmail App Password, not your normal password).`,
-    };
+  const cfg = getSmtpConfig();
+  if (!isConfigured(cfg)) {
+    return { ok: false, error: 'SMTP not configured. Enter your credentials in Admin Panel → Email Settings.' };
   }
   try {
-    const transporter = makeTransporter();
+    const transporter = makeTransporter(cfg);
     await Promise.race([
       transporter.verify(),
       new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timed out after 10s. Check your internet or SMTP settings.')), 10000)),
     ]);
-    return { ok: true, user: SMTP_USER };
+    return { ok: true, user: cfg.user };
   } catch (err) {
-    // Give actionable hints for common Gmail errors
     let hint = err.message;
     if (err.message.includes('535') || err.message.includes('Username and Password not accepted')) {
-      hint = 'Invalid App Password. Make sure you are using the 16-character App Password (not your normal Google password). Generate one at myaccount.google.com/security → App Passwords.';
+      hint = 'Invalid App Password. Use the 16-character App Password from myaccount.google.com/security → App Passwords (not your regular Google password).';
     } else if (err.message.includes('534') || err.message.includes('less secure')) {
       hint = 'Google rejected the login. Enable 2-Step Verification first, then create an App Password.';
     } else if (err.message.includes('ECONNREFUSED') || err.message.includes('ENOTFOUND')) {
-      hint = `Cannot reach ${SMTP_HOST}:${SMTP_PORT}. Check your internet connection.`;
+      hint = `Cannot reach ${cfg.host}:${cfg.port}. Check your internet connection.`;
     }
     return { ok: false, error: hint };
   }
 }
 
 export async function sendEmail({ to, subject, html, text }) {
-  if (!isConfigured()) {
+  const cfg = getSmtpConfig();
+  if (!isConfigured(cfg)) {
     console.warn('[email] SMTP not configured — skipped:', subject);
-    return { skipped: true, reason: 'SMTP_PASS not set in backend/.env' };
+    return { skipped: true, reason: 'SMTP not configured in Admin Panel → Email Settings' };
   }
-  const info = await makeTransporter().sendMail({ from: FROM, to, subject, html, text });
+  const from = cfg.from || `Maxvolt HR <${cfg.user}>`;
+  const info = await makeTransporter(cfg).sendMail({ from, to, subject, html, text });
   return { success: true, messageId: info.messageId };
+}
+
+export function getSmtpPublicConfig() {
+  const cfg = getSmtpConfig();
+  return {
+    host:     cfg.host,
+    port:     cfg.port,
+    secure:   cfg.secure,
+    user:     cfg.user,
+    from:     cfg.from,
+    hasPass:  isConfigured(cfg),
+  };
 }
 
 export const emailTemplates = {
