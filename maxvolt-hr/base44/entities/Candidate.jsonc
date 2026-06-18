@@ -1,0 +1,103 @@
+{
+  "name": "Candidate",
+  "type": "object",
+  "properties": {
+    "full_name": {
+      "type": "string"
+    },
+    "email": {
+      "type": "string"
+    },
+    "phone": {
+      "type": "string"
+    },
+    "position_applied": {
+      "type": "string"
+    },
+    "department": {
+      "type": "string"
+    },
+    "experience_years": {
+      "type": "number"
+    },
+    "current_company": {
+      "type": "string"
+    },
+    "current_ctc": {
+      "type": "number"
+    },
+    "expected_ctc": {
+      "type": "number"
+    },
+    "notice_period": {
+      "type": "number",
+      "description": "In days"
+    },
+    "resume_url": {
+      "type": "string"
+    },
+    "cover_letter": {
+      "type": "string",
+      "description": "Candidate's cover letter or message"
+    },
+    "job_requisition_id": {
+      "type": "string",
+      "description": "Reference to JobRequisition"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "applied",
+        "screening",
+        "interview_scheduled",
+        "interviewed",
+        "selected",
+        "rejected",
+        "offered",
+        "joined"
+      ],
+      "default": "applied"
+    },
+    "interview_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "interview_feedback": {
+      "type": "string"
+    },
+    "interviewer_id": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "job_portal",
+        "referral",
+        "company_website",
+        "linkedin",
+        "walk_in",
+        "other"
+      ]
+    },
+    "parsed_resume_id": {
+      "type": "string",
+      "description": "Reference to ParsedResume entity"
+    },
+    "resume_parsed": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether resume has been parsed by AI"
+    },
+    "parse_triggered_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When resume parsing was triggered"
+    }
+  },
+  "required": [
+    "full_name",
+    "email",
+    "phone",
+    "position_applied"
+  ]
+}

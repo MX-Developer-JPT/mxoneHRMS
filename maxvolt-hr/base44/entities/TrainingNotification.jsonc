@@ -1,0 +1,44 @@
+{
+  "name": "TrainingNotification",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "training_program_id": {
+      "type": "string",
+      "description": "Reference to TrainingProgram"
+    },
+    "training_session_id": {
+      "type": "string",
+      "description": "Reference to TrainingSession"
+    },
+    "title": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "program_published",
+        "session_scheduled",
+        "enrollment_approved",
+        "enrollment_rejected",
+        "reminder"
+      ],
+      "default": "session_scheduled"
+    },
+    "is_read": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "user_id",
+    "title",
+    "message"
+  ]
+}

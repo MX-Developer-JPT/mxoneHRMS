@@ -1,0 +1,74 @@
+{
+  "name": "EmployeeTraining",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string"
+    },
+    "training_session_id": {
+      "type": "string"
+    },
+    "training_program_id": {
+      "type": "string"
+    },
+    "enrollment_type": {
+      "type": "string",
+      "enum": [
+        "self",
+        "nominated",
+        "assigned"
+      ],
+      "default": "assigned"
+    },
+    "nominated_by": {
+      "type": "string",
+      "description": "User ID of nominator"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected",
+        "attended",
+        "completed",
+        "not_attended"
+      ],
+      "default": "pending"
+    },
+    "attendance_marked": {
+      "type": "boolean",
+      "default": false
+    },
+    "pre_assessment_score": {
+      "type": "number"
+    },
+    "post_assessment_score": {
+      "type": "number"
+    },
+    "feedback_rating": {
+      "type": "number"
+    },
+    "feedback_comments": {
+      "type": "string"
+    },
+    "trainer_feedback": {
+      "type": "string"
+    },
+    "certificate_url": {
+      "type": "string"
+    },
+    "completion_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "rejection_reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_id",
+    "training_session_id",
+    "training_program_id"
+  ]
+}

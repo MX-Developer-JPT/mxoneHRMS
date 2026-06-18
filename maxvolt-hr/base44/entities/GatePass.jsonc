@@ -1,0 +1,94 @@
+{
+  "name": "GatePass",
+  "type": "object",
+  "properties": {
+    "employee_user_id": {
+      "type": "string",
+      "description": "User ID of the employee requesting the gate pass"
+    },
+    "outing_type": {
+      "type": "string",
+      "enum": [
+        "official_outing",
+        "unofficial_outing",
+        "half_day",
+        "short_break",
+        "early_leave"
+      ],
+      "default": "unofficial_outing",
+      "description": "Type of outing \u2014 determines LOP rules"
+    },
+    "reason": {
+      "type": "string",
+      "description": "Reason for leaving the office"
+    },
+    "expected_return_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Expected time of return"
+    },
+    "request_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Date of the gate pass request"
+    },
+    "manager_user_id": {
+      "type": "string",
+      "description": "User ID of the approving manager"
+    },
+    "manager_approval_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected"
+      ],
+      "default": "pending"
+    },
+    "manager_approval_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "manager_comment": {
+      "type": "string"
+    },
+    "departure_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Actual time employee left the office (recorded by gate admin)"
+    },
+    "return_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Actual time employee returned (recorded by gate admin)"
+    },
+    "gate_admin_notes": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending_approval",
+        "approved",
+        "rejected",
+        "departed",
+        "returned",
+        "cancelled"
+      ],
+      "default": "pending_approval"
+    },
+    "hr_notes": {
+      "type": "string"
+    },
+    "lop_deduction_days": {
+      "type": "number",
+      "default": 0,
+      "description": "LOP deduction from gate pass: 0 = none, 0.5 = half day"
+    }
+  },
+  "required": [
+    "employee_user_id",
+    "outing_type",
+    "request_date"
+  ]
+}

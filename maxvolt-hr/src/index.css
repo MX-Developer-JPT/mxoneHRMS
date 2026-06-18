@@ -1,0 +1,212 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* ── Light Mode ── */
+    --background:             215 28% 97%;
+    --foreground:             222 47% 10%;
+    --card:                   0 0% 100%;
+    --card-foreground:        222 47% 10%;
+    --popover:                0 0% 100%;
+    --popover-foreground:     222 47% 10%;
+    --primary:                245 83% 57%;
+    --primary-foreground:     0 0% 100%;
+    --secondary:              245 50% 94%;
+    --secondary-foreground:   245 60% 30%;
+    --muted:                  215 25% 94%;
+    --muted-foreground:       215 18% 48%;
+    --accent:                 262 83% 57%;
+    --accent-foreground:      0 0% 100%;
+    --destructive:            0 84% 56%;
+    --destructive-foreground: 0 0% 100%;
+    --border:                 215 24% 88%;
+    --input:                  215 24% 88%;
+    --ring:                   245 83% 57%;
+    --chart-1:  245 83% 57%;
+    --chart-2:  160 65% 42%;
+    --chart-3:  262 83% 57%;
+    --chart-4:   43 80% 54%;
+    --chart-5:   12 76% 58%;
+    --radius:                 0.75rem;
+    --sidebar-background:     0 0% 100%;
+    --sidebar-foreground:     222 47% 10%;
+    --sidebar-primary:        245 83% 57%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent:         215 25% 94%;
+    --sidebar-accent-foreground: 222 47% 10%;
+    --sidebar-border:         215 24% 90%;
+    --sidebar-ring:           245 83% 57%;
+  }
+
+  .dark {
+    /* ── Dark Mode — Deep Navy ── */
+    --background:             232 45% 5%;
+    --foreground:             215 35% 92%;
+    --card:                   232 40% 8%;
+    --card-foreground:        215 35% 92%;
+    --popover:                232 40% 9%;
+    --popover-foreground:     215 35% 92%;
+    --primary:                245 85% 65%;
+    --primary-foreground:     232 45% 5%;
+    --secondary:              232 35% 14%;
+    --secondary-foreground:   215 35% 85%;
+    --muted:                  232 35% 13%;
+    --muted-foreground:       215 20% 55%;
+    --accent:                 262 80% 68%;
+    --accent-foreground:      0 0% 100%;
+    --destructive:            0 70% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border:                 232 30% 16%;
+    --input:                  232 35% 13%;
+    --ring:                   245 85% 65%;
+    --chart-1:  245 85% 65%;
+    --chart-2:  160 65% 52%;
+    --chart-3:  262 80% 68%;
+    --chart-4:   43 80% 62%;
+    --chart-5:   12 76% 65%;
+    --sidebar-background:     232 42% 6%;
+    --sidebar-foreground:     215 30% 88%;
+    --sidebar-primary:        245 85% 65%;
+    --sidebar-primary-foreground: 232 45% 5%;
+    --sidebar-accent:         232 35% 12%;
+    --sidebar-accent-foreground: 215 30% 88%;
+    --sidebar-border:         232 30% 14%;
+    --sidebar-ring:           245 85% 65%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    -webkit-tap-highlight-color: transparent;
+    box-sizing: border-box;
+  }
+
+  html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: touch;
+    min-height: 100dvh;
+  }
+
+  /* Smooth scrolling in scroll containers */
+  .overflow-auto, .overflow-y-auto, .overflow-x-auto {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Hide scrollbar on mobile */
+  @media (max-width: 1023px) {
+    ::-webkit-scrollbar { display: none; }
+    * { scrollbar-width: none; }
+  }
+
+  /* Thin scrollbar on desktop */
+  @media (min-width: 1024px) {
+    ::-webkit-scrollbar        { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track  { background: transparent; }
+    ::-webkit-scrollbar-thumb  { background: hsl(var(--border)); border-radius: 99px; }
+  }
+
+  button, a[href], [role="button"] {
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+}
+
+/* ── Dark mode color overrides for non-semantic classes ── */
+@layer base {
+  /* Badge / pill backgrounds */
+  .dark .bg-green-50   { background-color: hsl(142 38% 10%) !important; }
+  .dark .bg-red-50     { background-color: hsl(0 38% 11%)   !important; }
+  .dark .bg-yellow-50  { background-color: hsl(45 38% 10%)  !important; }
+  .dark .bg-blue-50    { background-color: hsl(217 40% 12%) !important; }
+  .dark .bg-indigo-50  { background-color: hsl(245 40% 12%) !important; }
+  .dark .bg-purple-50  { background-color: hsl(262 38% 13%) !important; }
+  .dark .bg-orange-50  { background-color: hsl(25 38% 11%)  !important; }
+  .dark .bg-teal-50    { background-color: hsl(175 38% 10%) !important; }
+  .dark .bg-gray-50    { background-color: hsl(232 30% 9%)  !important; }
+  .dark .bg-white      { background-color: hsl(232 40% 8%)  !important; }
+
+  .dark .bg-green-100  { background-color: hsl(142 38% 13%) !important; }
+  .dark .bg-blue-100   { background-color: hsl(217 40% 16%) !important; }
+  .dark .bg-red-100    { background-color: hsl(0 38% 14%)   !important; }
+  .dark .bg-yellow-100 { background-color: hsl(45 38% 13%)  !important; }
+  .dark .bg-purple-100 { background-color: hsl(262 38% 15%) !important; }
+  .dark .bg-orange-100 { background-color: hsl(25 38% 13%)  !important; }
+  .dark .bg-indigo-100 { background-color: hsl(245 40% 15%) !important; }
+  .dark .bg-gray-100   { background-color: hsl(232 35% 10%) !important; }
+
+  /* Text */
+  .dark .text-gray-900 { color: hsl(215 35% 95%) !important; }
+  .dark .text-gray-800 { color: hsl(215 30% 88%) !important; }
+  .dark .text-gray-700 { color: hsl(215 25% 78%) !important; }
+  .dark .text-gray-600 { color: hsl(215 20% 62%) !important; }
+  .dark .text-gray-500 { color: hsl(215 18% 52%) !important; }
+  .dark .text-gray-400 { color: hsl(215 15% 45%) !important; }
+  .dark .text-black    { color: hsl(215 35% 95%) !important; }
+
+  /* Borders */
+  .dark .border-gray-200 { border-color: hsl(232 30% 15%) !important; }
+  .dark .border-gray-100 { border-color: hsl(232 30% 12%) !important; }
+  .dark .divide-gray-100 { border-color: hsl(232 30% 12%) !important; }
+  .dark .divide-gray-200 { border-color: hsl(232 30% 15%) !important; }
+
+  /* Hover backgrounds */
+  .dark .hover\:bg-gray-50:hover  { background-color: hsl(232 35% 11%) !important; }
+  .dark .hover\:bg-gray-100:hover { background-color: hsl(232 35% 13%) !important; }
+
+  /* Status text — stay vibrant */
+  .dark .text-green-600  { color: hsl(142 60% 52%) !important; }
+  .dark .text-green-700  { color: hsl(142 55% 48%) !important; }
+  .dark .text-red-600    { color: hsl(0 72% 62%)   !important; }
+  .dark .text-red-700    { color: hsl(0 68% 58%)   !important; }
+  .dark .text-yellow-600 { color: hsl(45 80% 58%)  !important; }
+  .dark .text-orange-600 { color: hsl(25 80% 62%)  !important; }
+  .dark .text-blue-600   { color: hsl(217 85% 70%) !important; }
+  .dark .text-indigo-600 { color: hsl(245 85% 72%) !important; }
+  .dark .text-purple-600 { color: hsl(262 78% 72%) !important; }
+}
+
+/* ── Keyframes ── */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes scalePop {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+.animate-fade-in-up { animation: fadeInUp 250ms cubic-bezier(0.16,1,0.3,1) both; }
+.animate-scale-pop  { animation: scalePop 200ms cubic-bezier(0.16,1,0.3,1) both; }
+.skeleton {
+  background: linear-gradient(90deg, hsl(var(--muted)) 25%, hsl(var(--muted-foreground)/0.1) 50%, hsl(var(--muted)) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

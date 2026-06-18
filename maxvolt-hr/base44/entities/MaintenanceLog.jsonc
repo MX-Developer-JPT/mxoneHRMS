@@ -1,0 +1,68 @@
+{
+  "name": "MaintenanceLog",
+  "type": "object",
+  "properties": {
+    "asset_id": {
+      "type": "string",
+      "description": "Reference to Asset entity"
+    },
+    "maintenance_type": {
+      "type": "string",
+      "enum": [
+        "repair",
+        "service",
+        "upgrade",
+        "inspection",
+        "replacement",
+        "other"
+      ],
+      "default": "repair"
+    },
+    "service_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "completion_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "cost": {
+      "type": "number",
+      "description": "Repair/service cost in INR"
+    },
+    "vendor_name": {
+      "type": "string",
+      "description": "Service provider / repair vendor"
+    },
+    "description": {
+      "type": "string",
+      "description": "Description of the maintenance activity"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed",
+        "cancelled"
+      ],
+      "default": "pending"
+    },
+    "technician_notes": {
+      "type": "string"
+    },
+    "parts_replaced": {
+      "type": "string",
+      "description": "List of parts replaced during service"
+    },
+    "warranty_covered": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "asset_id",
+    "maintenance_type",
+    "service_date"
+  ]
+}

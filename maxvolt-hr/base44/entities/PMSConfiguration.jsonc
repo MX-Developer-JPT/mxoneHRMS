@@ -1,0 +1,90 @@
+{
+  "name": "PMSConfiguration",
+  "type": "object",
+  "properties": {
+    "cycle_name": {
+      "type": "string"
+    },
+    "cycle_type": {
+      "type": "string",
+      "enum": [
+        "monthly",
+        "quarterly",
+        "annually"
+      ],
+      "default": "annually"
+    },
+    "review_period_start": {
+      "type": "string",
+      "format": "date"
+    },
+    "review_period_end": {
+      "type": "string",
+      "format": "date"
+    },
+    "self_assessment_deadline": {
+      "type": "string",
+      "format": "date"
+    },
+    "manager_review_deadline": {
+      "type": "string",
+      "format": "date"
+    },
+    "feedback_360_deadline": {
+      "type": "string",
+      "format": "date"
+    },
+    "enable_360_feedback": {
+      "type": "boolean",
+      "default": true
+    },
+    "enable_self_assessment": {
+      "type": "boolean",
+      "default": true
+    },
+    "rating_scale_min": {
+      "type": "number",
+      "default": 1
+    },
+    "rating_scale_max": {
+      "type": "number",
+      "default": 5
+    },
+    "rating_labels": {
+      "type": "object",
+      "description": "Map of score to label e.g. {1: 'Unsatisfactory', 5: 'Outstanding'}"
+    },
+    "self_assessment_weightage": {
+      "type": "number",
+      "default": 30
+    },
+    "manager_assessment_weightage": {
+      "type": "number",
+      "default": 50
+    },
+    "feedback_360_weightage": {
+      "type": "number",
+      "default": 20
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": false
+    },
+    "departments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Applicable departments (empty = all)"
+    },
+    "created_by": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "cycle_name",
+    "cycle_type",
+    "review_period_start",
+    "review_period_end"
+  ]
+}

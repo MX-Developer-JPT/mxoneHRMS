@@ -1,0 +1,59 @@
+{
+  "name": "AttendanceLog",
+  "type": "object",
+  "properties": {
+    "EmployeeCode": {
+      "type": "string",
+      "description": "Employee code from biometric device"
+    },
+    "DownloadDate": {
+      "type": "string",
+      "description": "Date when log was downloaded from device"
+    },
+    "LogDate": {
+      "type": "string",
+      "description": "Actual punch date and time"
+    },
+    "DeviceName": {
+      "type": "string",
+      "description": "Name of the biometric device"
+    },
+    "SerialNumber": {
+      "type": "string",
+      "description": "Device serial number"
+    },
+    "Direction": {
+      "type": "string",
+      "enum": [
+        "IN",
+        "OUT"
+      ],
+      "description": "Punch direction: IN or OUT"
+    },
+    "DeviceDirection": {
+      "type": "string",
+      "description": "Direction as reported by device"
+    },
+    "WorkCode": {
+      "type": "string",
+      "description": "Work code from device"
+    },
+    "VerificationType": {
+      "type": "string",
+      "description": "How identity was verified (e.g. Finger, Card, Face)"
+    },
+    "GPS": {
+      "type": "string",
+      "description": "GPS coordinates if available"
+    },
+    "ProcessedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when this record was processed by the webhook"
+    }
+  },
+  "required": [
+    "EmployeeCode",
+    "LogDate"
+  ]
+}

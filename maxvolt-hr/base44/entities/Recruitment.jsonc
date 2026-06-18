@@ -1,0 +1,81 @@
+{
+  "name": "Recruitment",
+  "type": "object",
+  "properties": {
+    "job_title": {
+      "type": "string"
+    },
+    "department_id": {
+      "type": "string"
+    },
+    "job_description": {
+      "type": "string"
+    },
+    "required_skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "experience_required": {
+      "type": "string",
+      "description": "e.g., 2-5 years"
+    },
+    "positions": {
+      "type": "number",
+      "description": "Number of openings"
+    },
+    "employment_type": {
+      "type": "string",
+      "enum": [
+        "full_time",
+        "part_time",
+        "contract",
+        "internship"
+      ],
+      "default": "full_time"
+    },
+    "location": {
+      "type": "string"
+    },
+    "salary_range": {
+      "type": "string"
+    },
+    "posted_by": {
+      "type": "string",
+      "description": "User ID"
+    },
+    "posted_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "closing_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "open",
+        "closed",
+        "on_hold"
+      ],
+      "default": "draft"
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "default": "medium"
+    }
+  },
+  "required": [
+    "job_title",
+    "job_description",
+    "positions"
+  ]
+}

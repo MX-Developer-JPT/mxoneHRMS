@@ -1,0 +1,64 @@
+{
+  "name": "TrainingNeed",
+  "type": "object",
+  "properties": {
+    "requested_by": {
+      "type": "string",
+      "description": "User ID"
+    },
+    "employee_id": {
+      "type": "string",
+      "description": "User ID of employee needing training"
+    },
+    "department": {
+      "type": "string"
+    },
+    "skill_gap": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "default": "medium"
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "performance_review",
+        "skill_gap",
+        "department_need",
+        "self_request",
+        "other"
+      ],
+      "default": "other"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "in_review",
+        "addressed",
+        "closed"
+      ],
+      "default": "open"
+    },
+    "addressed_by_program_id": {
+      "type": "string",
+      "description": "Reference to TrainingProgram if addressed"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "requested_by",
+    "description"
+  ]
+}

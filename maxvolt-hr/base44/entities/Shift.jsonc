@@ -1,0 +1,43 @@
+{
+  "name": "Shift",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Shift name (e.g., Morning, Evening, Night)"
+    },
+    "start_time": {
+      "type": "string",
+      "description": "Shift start time (HH:MM format)"
+    },
+    "end_time": {
+      "type": "string",
+      "description": "Shift end time (HH:MM format)"
+    },
+    "grace_period_minutes": {
+      "type": "number",
+      "default": 15
+    },
+    "working_hours": {
+      "type": "number",
+      "description": "Expected working hours"
+    },
+    "days": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Working days (Monday, Tuesday, etc.)"
+    },
+    "is_default": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "name",
+    "start_time",
+    "end_time",
+    "working_hours"
+  ]
+}

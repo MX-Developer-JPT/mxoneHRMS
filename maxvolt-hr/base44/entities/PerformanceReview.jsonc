@@ -1,0 +1,108 @@
+{
+  "name": "PerformanceReview",
+  "type": "object",
+  "properties": {
+    "employee_user_id": {
+      "type": "string"
+    },
+    "manager_user_id": {
+      "type": "string"
+    },
+    "review_cycle_id": {
+      "type": "string"
+    },
+    "review_period_start": {
+      "type": "string",
+      "format": "date"
+    },
+    "review_period_end": {
+      "type": "string",
+      "format": "date"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending_self",
+        "pending_manager",
+        "pending_360",
+        "pending_hr",
+        "completed",
+        "cancelled"
+      ],
+      "default": "pending_self"
+    },
+    "self_assessment_score": {
+      "type": "number"
+    },
+    "self_assessment_comment": {
+      "type": "string"
+    },
+    "self_submitted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "manager_assessment_score": {
+      "type": "number"
+    },
+    "manager_assessment_comment": {
+      "type": "string"
+    },
+    "manager_submitted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "feedback_360_score": {
+      "type": "number"
+    },
+    "final_score": {
+      "type": "number"
+    },
+    "overall_rating": {
+      "type": "string",
+      "enum": [
+        "Outstanding",
+        "Exceeds Expectations",
+        "Meets Expectations",
+        "Below Expectations",
+        "Unsatisfactory"
+      ]
+    },
+    "hr_comment": {
+      "type": "string"
+    },
+    "approved_by": {
+      "type": "string"
+    },
+    "approved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "performance_incentive": {
+      "type": "number",
+      "default": 0
+    },
+    "salary_revision_percentage": {
+      "type": "number",
+      "default": 0
+    },
+    "promotion_recommended": {
+      "type": "boolean",
+      "default": false
+    },
+    "pip_recommended": {
+      "type": "boolean",
+      "default": false
+    },
+    "training_recommendations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "employee_user_id",
+    "manager_user_id",
+    "review_cycle_id"
+  ]
+}

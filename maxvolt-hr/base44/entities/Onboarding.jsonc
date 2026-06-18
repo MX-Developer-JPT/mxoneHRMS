@@ -1,0 +1,82 @@
+{
+  "name": "Onboarding",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "New hire User ID"
+    },
+    "joining_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "buddy_user_id": {
+      "type": "string",
+      "description": "Assigned buddy/mentor"
+    },
+    "checklist": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "completed_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "responsible_person": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Onboarding checklist items"
+    },
+    "documents_submitted": {
+      "type": "boolean",
+      "default": false
+    },
+    "bank_details_submitted": {
+      "type": "boolean",
+      "default": false
+    },
+    "it_assets_issued": {
+      "type": "boolean",
+      "default": false
+    },
+    "induction_completed": {
+      "type": "boolean",
+      "default": false
+    },
+    "training_assigned": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed"
+      ],
+      "default": "pending"
+    },
+    "completion_percentage": {
+      "type": "number",
+      "default": 0
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_id",
+    "joining_date"
+  ]
+}

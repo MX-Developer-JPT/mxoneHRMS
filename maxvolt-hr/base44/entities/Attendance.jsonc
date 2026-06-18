@@ -1,0 +1,216 @@
+{
+  "name": "Attendance",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "date": {
+      "type": "string",
+      "format": "date"
+    },
+    "check_in_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "First punch-in of the day"
+    },
+    "check_out_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last punch-out of the day"
+    },
+    "check_in_location": {
+      "type": "object",
+      "properties": {
+        "latitude": {
+          "type": "number"
+        },
+        "longitude": {
+          "type": "number"
+        },
+        "address": {
+          "type": "string"
+        },
+        "accuracy": {
+          "type": "number"
+        }
+      }
+    },
+    "check_out_location": {
+      "type": "object",
+      "properties": {
+        "latitude": {
+          "type": "number"
+        },
+        "longitude": {
+          "type": "number"
+        },
+        "address": {
+          "type": "string"
+        },
+        "accuracy": {
+          "type": "number"
+        }
+      }
+    },
+    "check_in_selfie_url": {
+      "type": "string",
+      "description": "Selfie taken at check-in"
+    },
+    "check_out_selfie_url": {
+      "type": "string",
+      "description": "Selfie taken at check-out"
+    },
+    "check_in_device_info": {
+      "type": "object",
+      "description": "Device info at check-in"
+    },
+    "check_out_device_info": {
+      "type": "object",
+      "description": "Device info at check-out"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "present",
+        "absent",
+        "half_day",
+        "leave",
+        "holiday",
+        "week_off",
+        "on_duty"
+      ],
+      "default": "present"
+    },
+    "working_hours": {
+      "type": "number",
+      "description": "Total net working hours (sum of all sessions)"
+    },
+    "break_hours": {
+      "type": "number",
+      "description": "Total break hours between sessions"
+    },
+    "overtime_hours": {
+      "type": "number",
+      "description": "Overtime hours beyond shift"
+    },
+    "productive_hours": {
+      "type": "number",
+      "description": "Productive working hours"
+    },
+    "punch_sessions": {
+      "type": "array",
+      "description": "Sequential punch-in/punch-out sessions derived from biometric logs",
+      "items": {
+        "type": "object",
+        "properties": {
+          "session_number": {
+            "type": "number"
+          },
+          "punch_in": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "punch_out": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_hours": {
+            "type": "number"
+          },
+          "break_before_hours": {
+            "type": "number",
+            "description": "Break duration before this session"
+          }
+        }
+      }
+    },
+    "total_punches": {
+      "type": "number",
+      "description": "Total number of punches recorded for the day"
+    },
+    "biometric_synced": {
+      "type": "boolean",
+      "default": false
+    },
+    "shift_id": {
+      "type": "string",
+      "description": "Reference to Shift"
+    },
+    "late_arrival": {
+      "type": "boolean",
+      "default": false
+    },
+    "late_arrival_minutes": {
+      "type": "number",
+      "description": "Minutes late beyond grace period"
+    },
+    "early_departure": {
+      "type": "boolean",
+      "default": false
+    },
+    "early_departure_minutes": {
+      "type": "number",
+      "description": "Minutes early before shift end"
+    },
+    "lop_applicable": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether Loss of Pay deduction applies for this day"
+    },
+    "lop_deduction_days": {
+      "type": "number",
+      "default": 0,
+      "description": "LOP deduction in days: 0 = none, 0.5 = half day, 1 = full day absent"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "regularization_requested": {
+      "type": "boolean",
+      "default": false
+    },
+    "regularization_reason": {
+      "type": "string"
+    },
+    "regularization_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected"
+      ],
+      "default": "pending"
+    },
+    "regularization_approved_by": {
+      "type": "string"
+    },
+    "work_from_home": {
+      "type": "boolean",
+      "default": false
+    },
+    "on_duty": {
+      "type": "boolean",
+      "default": false,
+      "description": "On official duty outside office"
+    },
+    "on_duty_location": {
+      "type": "string",
+      "description": "Location for on-duty"
+    },
+    "auto_marked": {
+      "type": "boolean",
+      "default": false,
+      "description": "Auto-marked by system"
+    }
+  },
+  "required": [
+    "user_id",
+    "date"
+  ],
+  "rls": {
+    "create": {},
+    "update": {}
+  }
+}

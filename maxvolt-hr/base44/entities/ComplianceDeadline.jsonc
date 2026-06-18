@@ -1,0 +1,60 @@
+{
+  "name": "ComplianceDeadline",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "compliance_type": {
+      "type": "string",
+      "enum": [
+        "PF",
+        "ESI",
+        "TDS",
+        "PT",
+        "LWF",
+        "Gratuity",
+        "Bonus",
+        "Other"
+      ]
+    },
+    "due_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "period_month": {
+      "type": "number"
+    },
+    "period_year": {
+      "type": "number"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "upcoming",
+        "due_soon",
+        "overdue",
+        "completed"
+      ],
+      "default": "upcoming"
+    },
+    "description": {
+      "type": "string"
+    },
+    "completed_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "completed_by": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "compliance_type",
+    "due_date"
+  ]
+}

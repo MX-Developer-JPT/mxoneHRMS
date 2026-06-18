@@ -1,0 +1,79 @@
+{
+  "name": "SalaryTemplate",
+  "type": "object",
+  "properties": {
+    "template_name": {
+      "type": "string",
+      "description": "Template name (e.g., Junior Engineer, Senior Manager)"
+    },
+    "department": {
+      "type": "string",
+      "enum": [
+        "engineering",
+        "hr",
+        "finance",
+        "sales",
+        "marketing",
+        "operations",
+        "admin"
+      ]
+    },
+    "designation_level": {
+      "type": "string",
+      "enum": [
+        "entry",
+        "junior",
+        "mid",
+        "senior",
+        "lead",
+        "manager",
+        "director"
+      ]
+    },
+    "ctc": {
+      "type": "number",
+      "description": "Cost to Company (Annual)"
+    },
+    "basic_salary": {
+      "type": "number",
+      "description": "Monthly basic salary"
+    },
+    "hra": {
+      "type": "number",
+      "description": "House Rent Allowance (monthly)"
+    },
+    "conveyance": {
+      "type": "number",
+      "description": "Conveyance allowance (monthly)"
+    },
+    "medical": {
+      "type": "number",
+      "description": "Medical allowance (monthly)"
+    },
+    "special_allowance": {
+      "type": "number",
+      "description": "Special allowance (monthly)"
+    },
+    "pf_contribution": {
+      "type": "number",
+      "description": "Provident Fund (monthly)"
+    },
+    "esi_contribution": {
+      "type": "number",
+      "description": "Employee State Insurance (monthly)"
+    },
+    "professional_tax": {
+      "type": "number",
+      "description": "Professional Tax (monthly)"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "required": [
+    "template_name",
+    "ctc",
+    "basic_salary"
+  ]
+}

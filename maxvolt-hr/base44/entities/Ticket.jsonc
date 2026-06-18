@@ -1,0 +1,89 @@
+{
+  "name": "Ticket",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID who raised ticket"
+    },
+    "category": {
+      "type": "string",
+      "description": "Category code from HelpdeskCategory"
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "urgent"
+      ],
+      "default": "medium"
+    },
+    "subject": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "in_progress",
+        "resolved",
+        "closed"
+      ],
+      "default": "open"
+    },
+    "assigned_to": {
+      "type": "string",
+      "description": "User ID of assigned person"
+    },
+    "assigned_department": {
+      "type": "string",
+      "description": "Department ticket is routed to"
+    },
+    "resolution": {
+      "type": "string"
+    },
+    "attachment_url": {
+      "type": "string"
+    },
+    "resolved_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "comments": {
+      "type": "array",
+      "description": "Thread of comments on the ticket",
+      "items": {
+        "type": "object",
+        "properties": {
+          "author_id": {
+            "type": "string"
+          },
+          "author_name": {
+            "type": "string"
+          },
+          "author_role": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "user_id",
+    "category",
+    "subject",
+    "description"
+  ]
+}

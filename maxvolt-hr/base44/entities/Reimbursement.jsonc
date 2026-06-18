@@ -1,0 +1,84 @@
+{
+  "name": "Reimbursement",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "manager_id": {
+      "type": "string",
+      "description": "Reporting manager user ID at time of submission"
+    },
+    "expense_type": {
+      "type": "string",
+      "enum": [
+        "travel",
+        "food",
+        "accommodation",
+        "medical",
+        "office_supplies",
+        "other"
+      ]
+    },
+    "amount": {
+      "type": "number"
+    },
+    "expense_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "description": {
+      "type": "string"
+    },
+    "receipt_url": {
+      "type": "string",
+      "description": "Receipt/bill image"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "manager_approved",
+        "approved",
+        "rejected",
+        "paid"
+      ],
+      "default": "pending"
+    },
+    "manager_approved_by": {
+      "type": "string",
+      "description": "Manager who approved first"
+    },
+    "manager_approved_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "hr_approved_by": {
+      "type": "string",
+      "description": "HR user who gave final approval"
+    },
+    "approved_by": {
+      "type": "string",
+      "description": "Final approver user ID"
+    },
+    "approved_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "rejection_reason": {
+      "type": "string"
+    },
+    "payment_date": {
+      "type": "string",
+      "format": "date"
+    }
+  },
+  "required": [
+    "user_id",
+    "expense_type",
+    "amount",
+    "expense_date",
+    "description"
+  ]
+}

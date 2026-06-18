@@ -1,0 +1,59 @@
+{
+  "name": "TrainingSession",
+  "type": "object",
+  "properties": {
+    "training_program_id": {
+      "type": "string",
+      "description": "Reference to TrainingProgram"
+    },
+    "batch_name": {
+      "type": "string",
+      "description": "e.g. Batch 1, Batch 2"
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_hours": {
+      "type": "number"
+    },
+    "location": {
+      "type": "string"
+    },
+    "meeting_link": {
+      "type": "string"
+    },
+    "capacity": {
+      "type": "number",
+      "default": 20
+    },
+    "enrolled_count": {
+      "type": "number",
+      "default": 0
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "scheduled",
+        "ongoing",
+        "completed",
+        "cancelled"
+      ],
+      "default": "scheduled"
+    },
+    "trainer_name": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "training_program_id",
+    "start_date"
+  ]
+}

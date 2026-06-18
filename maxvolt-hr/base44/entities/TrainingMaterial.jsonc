@@ -1,0 +1,43 @@
+{
+  "name": "TrainingMaterial",
+  "type": "object",
+  "properties": {
+    "training_program_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "document",
+        "video",
+        "link",
+        "presentation"
+      ],
+      "default": "document"
+    },
+    "file_url": {
+      "type": "string"
+    },
+    "link_url": {
+      "type": "string"
+    },
+    "uploaded_by": {
+      "type": "string"
+    },
+    "is_visible_before_session": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "required": [
+    "training_program_id",
+    "title",
+    "type"
+  ]
+}

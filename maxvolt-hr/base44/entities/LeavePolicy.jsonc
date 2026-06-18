@@ -1,0 +1,178 @@
+{
+  "name": "LeavePolicy",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Leave type name (e.g., Casual Leave, Sick Leave)"
+    },
+    "code": {
+      "type": "string",
+      "description": "Short code (CL, SL, PL, etc.)"
+    },
+    "total_days": {
+      "type": "number",
+      "description": "Total leave days per year"
+    },
+    "total_leave_per_month": {
+      "type": "number",
+      "description": "Total leave days that can be taken in a single month"
+    },
+    "max_leave_per_month": {
+      "type": "number",
+      "description": "Maximum leave days allowed per month (cap for a given month)"
+    },
+    "renews_in_days": {
+      "type": "number",
+      "description": "Number of days after which this leave type renews (e.g., 30 for monthly)"
+    },
+    "renewed_leave_balance": {
+      "type": "number",
+      "description": "Number of days added to balance on each renewal cycle"
+    },
+    "accrual_type": {
+      "type": "string",
+      "enum": [
+        "monthly",
+        "quarterly",
+        "yearly",
+        "joining_date"
+      ],
+      "default": "yearly",
+      "description": "How leave accrues"
+    },
+    "accrual_rate": {
+      "type": "number",
+      "description": "Accrual rate per period (e.g., 1.5 days per month)"
+    },
+    "probation_period_applicable": {
+      "type": "boolean",
+      "default": false,
+      "description": "Can be taken during probation"
+    },
+    "min_service_days": {
+      "type": "number",
+      "default": 0,
+      "description": "Minimum service days before leave can be taken"
+    },
+    "carry_forward": {
+      "type": "boolean",
+      "default": false
+    },
+    "carry_forward_limit": {
+      "type": "number"
+    },
+    "carry_forward_expiry_months": {
+      "type": "number",
+      "description": "Months until carried forward leave expires"
+    },
+    "encashable": {
+      "type": "boolean",
+      "default": false
+    },
+    "max_encashment_days": {
+      "type": "number",
+      "description": "Maximum days that can be encashed"
+    },
+    "requires_approval": {
+      "type": "boolean",
+      "default": true
+    },
+    "approval_levels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "number"
+          },
+          "approver_role": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Multi-level approval workflow"
+    },
+    "min_notice_days": {
+      "type": "number",
+      "default": 0
+    },
+    "max_consecutive_days": {
+      "type": "number",
+      "description": "Maximum consecutive days allowed"
+    },
+    "min_leave_duration": {
+      "type": "number",
+      "default": 0.5,
+      "description": "Minimum leave duration (0.5 for half day)"
+    },
+    "weekend_counted": {
+      "type": "boolean",
+      "default": false,
+      "description": "Count weekends in leave duration"
+    },
+    "holiday_counted": {
+      "type": "boolean",
+      "default": false,
+      "description": "Count holidays in leave duration"
+    },
+    "clubbing_restricted": {
+      "type": "boolean",
+      "default": false,
+      "description": "Restrict clubbing with other leave types"
+    },
+    "requires_document": {
+      "type": "boolean",
+      "default": false,
+      "description": "Requires supporting documents"
+    },
+    "document_required_after_days": {
+      "type": "number",
+      "description": "Days after which document is mandatory"
+    },
+    "negative_balance_allowed": {
+      "type": "boolean",
+      "default": false,
+      "description": "Allow negative leave balance"
+    },
+    "max_negative_balance": {
+      "type": "number",
+      "description": "Maximum negative balance allowed"
+    },
+    "gender_specific": {
+      "type": "string",
+      "enum": [
+        "all",
+        "male",
+        "female"
+      ],
+      "default": "all"
+    },
+    "applicable_to_roles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Roles this policy applies to"
+    },
+    "applicable_to_departments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Departments this policy applies to"
+    },
+    "description": {
+      "type": "string"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "required": [
+    "name",
+    "code",
+    "total_days"
+  ]
+}

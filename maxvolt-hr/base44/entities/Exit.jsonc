@@ -1,0 +1,334 @@
+{
+  "name": "Exit",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee exiting"
+    },
+    "exit_type": {
+      "type": "string",
+      "enum": [
+        "resignation",
+        "termination",
+        "retirement",
+        "end_of_contract"
+      ],
+      "default": "resignation"
+    },
+    "resignation_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Date resignation was submitted"
+    },
+    "last_working_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "notice_period_days": {
+      "type": "number",
+      "default": 30
+    },
+    "notice_served_days": {
+      "type": "number",
+      "default": 0
+    },
+    "notice_buyout": {
+      "type": "boolean",
+      "default": false
+    },
+    "notice_buyout_amount": {
+      "type": "number",
+      "default": 0
+    },
+    "reason_for_leaving": {
+      "type": "string"
+    },
+    "reason_category": {
+      "type": "string",
+      "enum": [
+        "better_opportunity",
+        "personal_reasons",
+        "higher_education",
+        "relocation",
+        "health",
+        "work_environment",
+        "compensation",
+        "career_growth",
+        "other"
+      ],
+      "default": "other"
+    },
+    "resignation_letter_url": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "submitted",
+        "manager_approved",
+        "manager_rejected",
+        "hr_approved",
+        "hr_rejected",
+        "in_notice",
+        "clearance_pending",
+        "clearance_done",
+        "fnf_pending",
+        "completed",
+        "cancelled"
+      ],
+      "default": "submitted"
+    },
+    "manager_id": {
+      "type": "string"
+    },
+    "manager_action": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected",
+        "pending"
+      ],
+      "default": "pending"
+    },
+    "manager_comment": {
+      "type": "string"
+    },
+    "manager_actioned_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "hr_action": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected",
+        "pending"
+      ],
+      "default": "pending"
+    },
+    "hr_comment": {
+      "type": "string"
+    },
+    "hr_actioned_by": {
+      "type": "string"
+    },
+    "hr_actioned_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "clearance_checklist": {
+      "type": "object",
+      "description": "Department-wise clearance status",
+      "properties": {
+        "hr": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string"
+            },
+            "cleared_by": {
+              "type": "string"
+            },
+            "cleared_at": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "it": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string"
+            },
+            "cleared_by": {
+              "type": "string"
+            },
+            "cleared_at": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "admin": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string"
+            },
+            "cleared_by": {
+              "type": "string"
+            },
+            "cleared_at": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "finance": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string"
+            },
+            "cleared_by": {
+              "type": "string"
+            },
+            "cleared_at": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "reporting_manager": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string"
+            },
+            "cleared_by": {
+              "type": "string"
+            },
+            "cleared_at": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "exit_interview_completed": {
+      "type": "boolean",
+      "default": false
+    },
+    "exit_interview": {
+      "type": "object",
+      "description": "Structured exit interview responses",
+      "properties": {
+        "primary_reason": {
+          "type": "string"
+        },
+        "secondary_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "work_experience_rating": {
+          "type": "number"
+        },
+        "management_rating": {
+          "type": "number"
+        },
+        "culture_rating": {
+          "type": "number"
+        },
+        "compensation_rating": {
+          "type": "number"
+        },
+        "work_life_balance_rating": {
+          "type": "number"
+        },
+        "things_liked": {
+          "type": "string"
+        },
+        "things_disliked": {
+          "type": "string"
+        },
+        "suggestions": {
+          "type": "string"
+        },
+        "would_recommend_company": {
+          "type": "boolean"
+        },
+        "would_rejoin": {
+          "type": "boolean"
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "fnf_calculated": {
+      "type": "boolean",
+      "default": false
+    },
+    "fnf_breakdown": {
+      "type": "object"
+    },
+    "final_settlement_amount": {
+      "type": "number"
+    },
+    "settlement_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "full_and_final_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed"
+      ],
+      "default": "pending"
+    },
+    "access_deactivated": {
+      "type": "boolean",
+      "default": false
+    },
+    "relieving_letter_generated": {
+      "type": "boolean",
+      "default": false
+    },
+    "experience_letter_generated": {
+      "type": "boolean",
+      "default": false
+    },
+    "eligible_for_rehire": {
+      "type": "boolean",
+      "default": true
+    },
+    "audit_log": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "actor_id": {
+            "type": "string"
+          },
+          "actor_name": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "user_id",
+    "resignation_date",
+    "last_working_date",
+    "reason_for_leaving"
+  ]
+}

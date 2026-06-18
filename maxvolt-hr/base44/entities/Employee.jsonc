@@ -1,0 +1,317 @@
+{
+  "name": "Employee",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Reference to User entity"
+    },
+    "display_name": {
+      "type": "string",
+      "description": "Full name of employee captured from Excel import or manual entry"
+    },
+    "employee_code": {
+      "type": "string"
+    },
+    "biometric_id": {
+      "type": "string",
+      "description": "Enroll number / ID used on the biometric device (eBioServer). If blank, employee_code is used for matching."
+    },
+    "department": {
+      "type": "string"
+    },
+    "designation": {
+      "type": "string"
+    },
+    "designation_tier": {
+      "type": "string",
+      "enum": [
+        "executive",
+        "senior_executive",
+        "territory_manager",
+        "manager",
+        "general_manager",
+        "director"
+      ]
+    },
+    "employee_status": {
+      "type": "string",
+      "enum": [
+        "probation",
+        "confirmation",
+        "trainee"
+      ],
+      "default": "probation",
+      "description": "Employee confirmation status"
+    },
+    "date_of_joining": {
+      "type": "string",
+      "format": "date"
+    },
+    "employee_confirmation_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "work_location": {
+      "type": "string"
+    },
+    "shift_id": {
+      "type": "string"
+    },
+    "date_of_birth": {
+      "type": "string",
+      "format": "date"
+    },
+    "gender": {
+      "type": "string",
+      "enum": [
+        "male",
+        "female",
+        "other"
+      ]
+    },
+    "father_spouse_name": {
+      "type": "string"
+    },
+    "phone": {
+      "type": "string"
+    },
+    "personal_email": {
+      "type": "string",
+      "description": "Personal email address"
+    },
+    "blood_group": {
+      "type": "string",
+      "enum": [
+        "A+",
+        "A-",
+        "B+",
+        "B-",
+        "AB+",
+        "AB-",
+        "O+",
+        "O-"
+      ],
+      "description": "Blood group of employee"
+    },
+    "is_esi_applicable": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether employee falls under ESI category"
+    },
+    "esi_number": {
+      "type": "string",
+      "description": "ESI (Employee State Insurance) number"
+    },
+    "health_report_url": {
+      "type": "string",
+      "description": "Uploaded health report document URL"
+    },
+    "nominee_pan_url": {
+      "type": "string",
+      "description": "Uploaded PF/Insurance nominee PAN card URL"
+    },
+    "nominee_aadhar_url": {
+      "type": "string",
+      "description": "Uploaded PF/Insurance nominee Aadhaar card URL"
+    },
+    "address": {
+      "type": "string"
+    },
+    "emergency_contact": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "relationship": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        },
+        "address": {
+          "type": "string"
+        }
+      }
+    },
+    "bank_account": {
+      "type": "object",
+      "properties": {
+        "account_number": {
+          "type": "string"
+        },
+        "ifsc_code": {
+          "type": "string"
+        },
+        "bank_name": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        }
+      }
+    },
+    "pan_number": {
+      "type": "string"
+    },
+    "aadhar_number": {
+      "type": "string"
+    },
+    "uan_number": {
+      "type": "string",
+      "description": "Universal Account Number for PF"
+    },
+    "pf_account_number": {
+      "type": "string",
+      "description": "Provident Fund Account Number"
+    },
+    "pf_nominee": {
+      "type": "object",
+      "description": "PF account nominee details",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "relationship": {
+          "type": "string"
+        },
+        "date_of_birth": {
+          "type": "string",
+          "format": "date"
+        },
+        "share_percentage": {
+          "type": "number"
+        }
+      }
+    },
+    "insurance_policies": {
+      "type": "array",
+      "description": "List of employee insurance policies",
+      "items": {
+        "type": "object",
+        "properties": {
+          "insurance_type": {
+            "type": "string"
+          },
+          "insurer_name": {
+            "type": "string"
+          },
+          "policy_number": {
+            "type": "string"
+          },
+          "sum_insured": {
+            "type": "number"
+          },
+          "validity_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "card_url": {
+            "type": "string"
+          },
+          "nominee_name": {
+            "type": "string"
+          },
+          "nominee_relationship": {
+            "type": "string"
+          },
+          "nominee_date_of_birth": {
+            "type": "string",
+            "format": "date"
+          }
+        }
+      }
+    },
+    "insurance": {
+      "type": "object",
+      "description": "Legacy single insurance field",
+      "properties": {
+        "has_insurance": {
+          "type": "boolean"
+        },
+        "insurance_type": {
+          "type": "string"
+        },
+        "insurer_name": {
+          "type": "string"
+        },
+        "policy_number": {
+          "type": "string"
+        },
+        "sum_insured": {
+          "type": "number"
+        },
+        "validity_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "card_url": {
+          "type": "string"
+        },
+        "nominee_name": {
+          "type": "string"
+        },
+        "nominee_relationship": {
+          "type": "string"
+        },
+        "nominee_date_of_birth": {
+          "type": "string",
+          "format": "date"
+        }
+      }
+    },
+    "reporting_manager_id": {
+      "type": "string"
+    },
+    "employment_type": {
+      "type": "string",
+      "enum": [
+        "full_time",
+        "part_time",
+        "contract",
+        "intern"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "on_leave",
+        "resigned",
+        "terminated"
+      ],
+      "default": "active"
+    },
+    "exit_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "onboarding_submitted": {
+      "type": "boolean",
+      "default": false
+    },
+    "onboarding_rejection_reason": {
+      "type": "string"
+    },
+    "is_attendance_exempt": {
+      "type": "boolean",
+      "default": false
+    },
+    "profile_picture_url": {
+      "type": "string",
+      "description": "URL to the employee's profile picture"
+    },
+    "_import_role": {
+      "type": "string",
+      "description": "Temporary field: role assigned during bulk import (e.g. employee, management, hr)"
+    }
+  },
+  "required": [
+    "user_id",
+    "employee_code",
+    "department",
+    "designation",
+    "date_of_joining"
+  ]
+}

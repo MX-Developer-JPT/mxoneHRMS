@@ -1,0 +1,92 @@
+{
+  "name": "CandidateScore",
+  "type": "object",
+  "properties": {
+    "candidate_id": {
+      "type": "string",
+      "description": "Reference to Candidate"
+    },
+    "job_requisition_id": {
+      "type": "string",
+      "description": "Reference to JobRequisition"
+    },
+    "overall_score": {
+      "type": "number",
+      "description": "Weighted overall match score 0-100"
+    },
+    "skills_score": {
+      "type": "number",
+      "description": "Skills match score 0-100"
+    },
+    "experience_score": {
+      "type": "number",
+      "description": "Experience fit score 0-100"
+    },
+    "salary_score": {
+      "type": "number",
+      "description": "Salary fit score 0-100"
+    },
+    "notice_score": {
+      "type": "number",
+      "description": "Notice period fit score 0-100"
+    },
+    "education_score": {
+      "type": "number",
+      "description": "Education fit score 0-100"
+    },
+    "matched_skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Skills from JD that candidate has"
+    },
+    "missing_skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Required skills the candidate lacks"
+    },
+    "bonus_skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Extra relevant skills beyond JD requirements"
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": [
+        "Strongly Recommend",
+        "Recommend",
+        "Maybe",
+        "Not Recommended"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "description": "AI-generated match summary"
+    },
+    "strengths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scored_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "job_requisition_id"
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "name": "AssetType",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Asset type name (e.g., Laptop, Mouse, SIM)"
+    },
+    "code": {
+      "type": "string",
+      "description": "Short code for asset ID generation (e.g., LAP, MOU, SIM)"
+    },
+    "description": {
+      "type": "string"
+    },
+    "icon": {
+      "type": "string",
+      "enum": [
+        "laptop",
+        "monitor",
+        "smartphone",
+        "keyboard",
+        "mouse",
+        "headphones",
+        "printer",
+        "sim",
+        "router",
+        "hard_drive",
+        "usb",
+        "cable",
+        "desktop",
+        "tablet",
+        "chair",
+        "desk",
+        "other"
+      ],
+      "default": "other"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "required": [
+    "name",
+    "code"
+  ]
+}

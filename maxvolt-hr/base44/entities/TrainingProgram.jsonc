@@ -1,0 +1,72 @@
+{
+  "name": "TrainingProgram",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "trainer_name": {
+      "type": "string"
+    },
+    "trainer_type": {
+      "type": "string",
+      "enum": [
+        "internal",
+        "external"
+      ],
+      "default": "internal"
+    },
+    "trainer_contact": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "online",
+        "offline",
+        "hybrid"
+      ],
+      "default": "offline"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "technical",
+        "soft_skills",
+        "compliance",
+        "leadership",
+        "safety",
+        "other"
+      ],
+      "default": "other"
+    },
+    "department": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "published",
+        "archived"
+      ],
+      "default": "draft"
+    },
+    "created_by": {
+      "type": "string"
+    },
+    "thumbnail_url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "objective"
+  ]
+}

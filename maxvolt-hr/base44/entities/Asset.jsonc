@@ -1,0 +1,106 @@
+{
+  "name": "Asset",
+  "type": "object",
+  "properties": {
+    "asset_name": {
+      "type": "string",
+      "description": "Asset name/model (e.g., Dell Latitude 5540)"
+    },
+    "asset_type_id": {
+      "type": "string",
+      "description": "Reference to AssetType"
+    },
+    "asset_type_name": {
+      "type": "string",
+      "description": "Denormalized type name for display"
+    },
+    "asset_id": {
+      "type": "string",
+      "description": "Auto-generated unique asset identifier (e.g., LAP-001)"
+    },
+    "serial_number": {
+      "type": "string"
+    },
+    "model_number": {
+      "type": "string",
+      "description": "Manufacturer model number"
+    },
+    "assigned_to_user_id": {
+      "type": "string",
+      "description": "Current user holding the asset, or '__common__' for shared assets"
+    },
+    "assignment_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "return_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "condition": {
+      "type": "string",
+      "enum": [
+        "new",
+        "good",
+        "fair",
+        "poor",
+        "damaged"
+      ],
+      "default": "good"
+    },
+    "purchase_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "purchase_cost": {
+      "type": "number"
+    },
+    "warranty_expiry": {
+      "type": "string",
+      "format": "date"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "available",
+        "assigned",
+        "unassigned",
+        "under_repair",
+        "discarded"
+      ],
+      "default": "available"
+    },
+    "is_temporary": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether this is a temporary replacement asset"
+    },
+    "temporary_reason": {
+      "type": "string",
+      "description": "Reason for temporary assignment (e.g., 'Original device under repair')"
+    },
+    "returned_condition": {
+      "type": "string",
+      "enum": [
+        "new",
+        "good",
+        "fair",
+        "poor",
+        "damaged"
+      ],
+      "description": "Condition of asset when returned"
+    },
+    "returned_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Actual date the asset was returned"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "asset_name",
+    "asset_type_id"
+  ]
+}

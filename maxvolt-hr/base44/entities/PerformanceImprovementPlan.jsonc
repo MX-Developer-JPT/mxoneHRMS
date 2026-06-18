@@ -1,0 +1,116 @@
+{
+  "name": "PerformanceImprovementPlan",
+  "type": "object",
+  "properties": {
+    "employee_user_id": {
+      "type": "string"
+    },
+    "manager_user_id": {
+      "type": "string"
+    },
+    "review_id": {
+      "type": "string",
+      "description": "Linked performance review"
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "reason": {
+      "type": "string",
+      "description": "Reason for PIP initiation"
+    },
+    "pip_goals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "goal_description": {
+            "type": "string"
+          },
+          "target_outcome": {
+            "type": "string"
+          },
+          "timeline": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "in_progress",
+              "achieved",
+              "not_achieved"
+            ],
+            "default": "pending"
+          },
+          "progress_update": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "review_checkpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "review_date": {
+            "type": "string"
+          },
+          "reviewed_by": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "satisfactory",
+              "unsatisfactory",
+              "pending"
+            ],
+            "default": "pending"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "completed",
+        "extended",
+        "failed",
+        "cancelled"
+      ],
+      "default": "active"
+    },
+    "employee_acknowledgement": {
+      "type": "boolean",
+      "default": false
+    },
+    "acknowledged_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "manager_notes": {
+      "type": "string"
+    },
+    "hr_notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "employee_user_id",
+    "manager_user_id",
+    "start_date",
+    "end_date",
+    "reason"
+  ]
+}

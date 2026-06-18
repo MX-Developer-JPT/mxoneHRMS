@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables — never commit these
+.env
+**/.env
+.env.local
+.env.production
+
+# Database — persisted by Railway volume, not git
+backend/hrms.db
+backend/hrms.db-wal
+backend/hrms.db-shm
+
+# Uploads — stored on Railway volume
+backend/uploads/
+
+# Build output
+maxvolt-hr/dist/
+
+# Local Claude session data
+.claude/
+
+# Old / unrelated project folders
+hrms/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
+
+# Generated helper scripts
+generate-icons.js

@@ -1,0 +1,193 @@
+{
+  "name": "Payroll",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "month": {
+      "type": "number",
+      "description": "Month (1-12)"
+    },
+    "year": {
+      "type": "number"
+    },
+    "salary_structure_id": {
+      "type": "string",
+      "description": "Reference to SalaryStructure"
+    },
+    "working_days": {
+      "type": "number"
+    },
+    "present_days": {
+      "type": "number"
+    },
+    "leave_days": {
+      "type": "number"
+    },
+    "paid_leave_days": {
+      "type": "number"
+    },
+    "loss_of_pay_days": {
+      "type": "number",
+      "default": 0
+    },
+    "loss_of_pay_amount": {
+      "type": "number",
+      "default": 0,
+      "description": "Total LOP monetary deduction"
+    },
+    "lop_deduction_breakdown": {
+      "type": "object",
+      "description": "Component-wise LOP deduction breakdown (e.g., {basic: 1000, hra: 500})"
+    },
+    "lop_overridden": {
+      "type": "boolean",
+      "default": false,
+      "description": "True if HR manually overrode LOP"
+    },
+    "lop_override_reason": {
+      "type": "string",
+      "description": "Reason for manual LOP override"
+    },
+    "lop_overridden_by": {
+      "type": "string",
+      "description": "User ID of HR/Admin who overrode LOP"
+    },
+    "lop_override_audit": {
+      "type": "array",
+      "description": "Audit trail of all LOP overrides",
+      "items": {
+        "type": "object",
+        "properties": {
+          "overridden_by": {
+            "type": "string"
+          },
+          "original_days": {
+            "type": "number"
+          },
+          "new_days": {
+            "type": "number"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "weekend_days": {
+      "type": "number"
+    },
+    "holiday_days": {
+      "type": "number"
+    },
+    "overtime_hours": {
+      "type": "number"
+    },
+    "overtime_amount": {
+      "type": "number"
+    },
+    "basic_salary": {
+      "type": "number"
+    },
+    "hra": {
+      "type": "number"
+    },
+    "allowances": {
+      "type": "object",
+      "description": "All allowances breakdown"
+    },
+    "gross_salary": {
+      "type": "number"
+    },
+    "deductions": {
+      "type": "object",
+      "description": "All deductions breakdown (PF, ESI, TDS, etc.)"
+    },
+    "reimbursements": {
+      "type": "number"
+    },
+    "bonuses": {
+      "type": "number"
+    },
+    "arrears": {
+      "type": "number"
+    },
+    "advance_deduction": {
+      "type": "number"
+    },
+    "loan_emi_deduction": {
+      "type": "number"
+    },
+    "other_deductions": {
+      "type": "number"
+    },
+    "net_salary": {
+      "type": "number"
+    },
+    "employer_contributions": {
+      "type": "object"
+    },
+    "total_cost_to_company": {
+      "type": "number"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "processed",
+        "approved",
+        "paid",
+        "on_hold",
+        "cancelled"
+      ],
+      "default": "draft"
+    },
+    "payment_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "payment_method": {
+      "type": "string",
+      "enum": [
+        "bank_transfer",
+        "cheque",
+        "cash",
+        "upi"
+      ],
+      "default": "bank_transfer"
+    },
+    "payment_reference": {
+      "type": "string"
+    },
+    "payslip_url": {
+      "type": "string"
+    },
+    "processed_by": {
+      "type": "string"
+    },
+    "approved_by": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "is_full_and_final": {
+      "type": "boolean",
+      "default": false
+    },
+    "fnf_components": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "user_id",
+    "month",
+    "year"
+  ]
+}

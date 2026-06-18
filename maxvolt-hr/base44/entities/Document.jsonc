@@ -1,0 +1,58 @@
+{
+  "name": "Document",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "document_type": {
+      "type": "string",
+      "enum": [
+        "aadhar",
+        "pan",
+        "passport",
+        "driving_license",
+        "educational",
+        "experience_letter",
+        "offer_letter",
+        "contract",
+        "other"
+      ],
+      "description": "Type of document"
+    },
+    "document_name": {
+      "type": "string"
+    },
+    "document_url": {
+      "type": "string"
+    },
+    "uploaded_by": {
+      "type": "string",
+      "description": "User ID who uploaded"
+    },
+    "expiry_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending_verification",
+        "verified",
+        "rejected",
+        "expired"
+      ],
+      "default": "pending_verification"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_id",
+    "document_type",
+    "document_name",
+    "document_url"
+  ]
+}

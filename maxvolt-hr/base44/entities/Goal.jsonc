@@ -1,0 +1,84 @@
+{
+  "name": "Goal",
+  "type": "object",
+  "properties": {
+    "employee_user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "manager_user_id": {
+      "type": "string",
+      "description": "Assigning Manager User ID"
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "kra": {
+      "type": "string",
+      "description": "Key Result Area"
+    },
+    "kpi": {
+      "type": "string",
+      "description": "Key Performance Indicator"
+    },
+    "measurable_target": {
+      "type": "string"
+    },
+    "weightage": {
+      "type": "number",
+      "description": "Weight percentage (0-100)"
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "review_cycle_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending_acceptance",
+        "accepted",
+        "in_progress",
+        "completed",
+        "overdue",
+        "rejected"
+      ],
+      "default": "pending_acceptance"
+    },
+    "progress_percentage": {
+      "type": "number",
+      "default": 0
+    },
+    "actual_achievement": {
+      "type": "string"
+    },
+    "employee_comment": {
+      "type": "string"
+    },
+    "manager_comment": {
+      "type": "string"
+    },
+    "manager_rating": {
+      "type": "number",
+      "description": "Rating given by manager (1-5)"
+    },
+    "rejection_reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "employee_user_id",
+    "manager_user_id",
+    "title",
+    "weightage"
+  ]
+}

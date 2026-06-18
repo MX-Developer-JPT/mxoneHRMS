@@ -1,0 +1,130 @@
+{
+  "name": "Leave",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "leave_policy_id": {
+      "type": "string",
+      "description": "Reference to LeavePolicy"
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "total_days": {
+      "type": "number"
+    },
+    "half_day": {
+      "type": "boolean",
+      "default": false
+    },
+    "half_day_type": {
+      "type": "string",
+      "enum": [
+        "first_half",
+        "second_half"
+      ],
+      "description": "If half day, which half"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected",
+        "cancelled",
+        "withdrawn"
+      ],
+      "default": "pending"
+    },
+    "current_approval_level": {
+      "type": "number",
+      "default": 1,
+      "description": "Current level in multi-level approval"
+    },
+    "approval_history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "number"
+          },
+          "approver_id": {
+            "type": "string"
+          },
+          "approver_name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "comments": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "description": "History of all approval actions"
+    },
+    "approved_by": {
+      "type": "string",
+      "description": "User ID who approved"
+    },
+    "approved_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "rejection_reason": {
+      "type": "string"
+    },
+    "contact_during_leave": {
+      "type": "string",
+      "description": "Phone or email"
+    },
+    "attachment_url": {
+      "type": "string",
+      "description": "Supporting document if needed"
+    },
+    "emergency_leave": {
+      "type": "boolean",
+      "default": false,
+      "description": "Mark as emergency leave"
+    },
+    "applied_on": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the leave was applied"
+    },
+    "cancellation_reason": {
+      "type": "string"
+    },
+    "cancelled_by": {
+      "type": "string"
+    },
+    "cancelled_date": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "user_id",
+    "leave_policy_id",
+    "start_date",
+    "end_date",
+    "reason"
+  ]
+}

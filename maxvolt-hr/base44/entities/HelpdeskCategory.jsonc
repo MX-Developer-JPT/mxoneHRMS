@@ -1,0 +1,26 @@
+{
+  "name": "HelpdeskCategory",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Display name of the category (e.g. IT Support, Payroll Inquiry)"
+    },
+    "code": {
+      "type": "string",
+      "description": "Unique short code/key for the category (e.g. it_support)"
+    },
+    "default_department_name": {
+      "type": "string",
+      "description": "Name of the department tickets of this category are routed to by default"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "required": [
+    "name",
+    "code"
+  ]
+}

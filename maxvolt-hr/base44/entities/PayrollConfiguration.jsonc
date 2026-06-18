@@ -1,0 +1,70 @@
+{
+  "name": "PayrollConfiguration",
+  "type": "object",
+  "properties": {
+    "config_name": {
+      "type": "string",
+      "description": "Name/label for this configuration (e.g., Default LOP Policy)"
+    },
+    "lop_calculation_basis": {
+      "type": "string",
+      "enum": [
+        "calendar_days",
+        "working_days"
+      ],
+      "default": "working_days",
+      "description": "Basis for per-day salary calculation"
+    },
+    "lop_impacted_components": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Components affected by LOP: basic_salary, hra, conveyance, medical, special_allowance, lta"
+    },
+    "lop_fixed_components_only": {
+      "type": "boolean",
+      "default": true,
+      "description": "If true, only fixed components are deducted. If false, variable components too."
+    },
+    "lop_half_day_enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable half-day LOP deductions"
+    },
+    "lop_partial_day_threshold_late_marks": {
+      "type": "number",
+      "default": 3,
+      "description": "Number of late marks that equate to 0.5 LOP day"
+    },
+    "lop_partial_day_threshold_early_exit": {
+      "type": "number",
+      "default": 3,
+      "description": "Number of early exits that equate to 0.5 LOP day"
+    },
+    "lop_roles_exempt": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Roles completely exempt from LOP (e.g., director)"
+    },
+    "lop_designations_exempt": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Designations exempt from LOP"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether this config is the active one"
+    }
+  },
+  "required": [
+    "config_name",
+    "lop_calculation_basis",
+    "lop_impacted_components"
+  ]
+}

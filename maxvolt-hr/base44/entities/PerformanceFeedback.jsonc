@@ -1,0 +1,52 @@
+{
+  "name": "PerformanceFeedback",
+  "type": "object",
+  "properties": {
+    "review_id": {
+      "type": "string",
+      "description": "Reference to PerformanceReview"
+    },
+    "giver_user_id": {
+      "type": "string"
+    },
+    "receiver_user_id": {
+      "type": "string"
+    },
+    "feedback_type": {
+      "type": "string",
+      "enum": [
+        "self",
+        "manager",
+        "peer",
+        "subordinate",
+        "360"
+      ]
+    },
+    "score": {
+      "type": "number",
+      "description": "Rating score 1-5"
+    },
+    "strengths": {
+      "type": "string"
+    },
+    "areas_for_improvement": {
+      "type": "string"
+    },
+    "comment": {
+      "type": "string"
+    },
+    "related_goal_id": {
+      "type": "string"
+    },
+    "submitted_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "review_id",
+    "giver_user_id",
+    "receiver_user_id",
+    "feedback_type"
+  ]
+}

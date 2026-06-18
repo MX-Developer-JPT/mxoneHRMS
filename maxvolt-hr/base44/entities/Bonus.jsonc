@@ -1,0 +1,77 @@
+{
+  "name": "Bonus",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "bonus_type": {
+      "type": "string",
+      "enum": [
+        "performance",
+        "festival",
+        "annual",
+        "incentive",
+        "retention",
+        "joining",
+        "referral",
+        "project",
+        "arrears",
+        "other"
+      ],
+      "default": "performance"
+    },
+    "amount": {
+      "type": "number"
+    },
+    "month": {
+      "type": "number",
+      "description": "Month to be paid (1-12)"
+    },
+    "year": {
+      "type": "number"
+    },
+    "payment_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "paid",
+        "rejected"
+      ],
+      "default": "pending"
+    },
+    "approved_by": {
+      "type": "string",
+      "description": "User ID who approved"
+    },
+    "approved_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "remarks": {
+      "type": "string"
+    },
+    "included_in_payroll": {
+      "type": "boolean",
+      "default": false
+    },
+    "payroll_id": {
+      "type": "string",
+      "description": "Reference to Payroll if included"
+    }
+  },
+  "required": [
+    "user_id",
+    "bonus_type",
+    "amount"
+  ]
+}

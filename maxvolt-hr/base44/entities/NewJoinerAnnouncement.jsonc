@@ -1,0 +1,44 @@
+{
+  "name": "NewJoinerAnnouncement",
+  "type": "object",
+  "properties": {
+    "employee_id": {
+      "type": "string",
+      "description": "Reference to the new employee's ID"
+    },
+    "user_id": {
+      "type": "string",
+      "description": "User ID of the new employee"
+    },
+    "employee_full_name": {
+      "type": "string",
+      "description": "Full name of the new employee"
+    },
+    "employee_designation": {
+      "type": "string",
+      "description": "Designation of the new employee"
+    },
+    "employee_department": {
+      "type": "string",
+      "description": "Department of the new employee"
+    },
+    "date_of_joining": {
+      "type": "string",
+      "format": "date"
+    },
+    "greeting_message": {
+      "type": "string",
+      "description": "AI-generated greeting message"
+    },
+    "profile_picture_url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "employee_id",
+    "employee_full_name",
+    "employee_designation",
+    "employee_department",
+    "greeting_message"
+  ]
+}

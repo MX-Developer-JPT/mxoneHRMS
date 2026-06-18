@@ -1,0 +1,44 @@
+{
+  "name": "CompanyPolicy",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Policy title / name"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "leave",
+        "attendance",
+        "travel",
+        "payroll",
+        "conduct",
+        "safety",
+        "other"
+      ],
+      "default": "other",
+      "description": "Policy category"
+    },
+    "description": {
+      "type": "string",
+      "description": "Brief description of what this policy covers"
+    },
+    "file_url": {
+      "type": "string",
+      "description": "Uploaded policy document URL"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether this policy is active and should be used by AskMax"
+    },
+    "uploaded_by": {
+      "type": "string",
+      "description": "User ID who uploaded the policy"
+    }
+  },
+  "required": [
+    "title"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "name": "AssetActivityLog",
+  "type": "object",
+  "properties": {
+    "asset_id": {
+      "type": "string",
+      "description": "Reference to Asset entity"
+    },
+    "asset_name": {
+      "type": "string",
+      "description": "Denormalized asset name for display"
+    },
+    "asset_identifier": {
+      "type": "string",
+      "description": "Asset ID/identifier at time of change"
+    },
+    "previous_status": {
+      "type": "string",
+      "description": "Previous asset status"
+    },
+    "new_status": {
+      "type": "string",
+      "description": "New asset status"
+    },
+    "assigned_to_user_id": {
+      "type": "string",
+      "description": "Employee the asset was assigned to"
+    },
+    "assigned_to_name": {
+      "type": "string",
+      "description": "Denormalized employee name"
+    },
+    "changed_by_user_id": {
+      "type": "string",
+      "description": "Who made the change"
+    },
+    "changed_by_name": {
+      "type": "string",
+      "description": "Name of person who made the change"
+    },
+    "field_changed": {
+      "type": "string",
+      "description": "Which field changed (status, assignment, condition, return)"
+    },
+    "old_value": {
+      "type": "string"
+    },
+    "new_value": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Additional notes about the activity"
+    }
+  },
+  "required": [
+    "asset_id"
+  ]
+}

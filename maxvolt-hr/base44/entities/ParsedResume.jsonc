@@ -1,0 +1,195 @@
+{
+  "name": "ParsedResume",
+  "type": "object",
+  "properties": {
+    "candidate_id": {
+      "type": "string",
+      "description": "Reference to Candidate entity"
+    },
+    "resume_url": {
+      "type": "string",
+      "description": "The resume file URL that was parsed"
+    },
+    "parse_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "processing",
+        "completed",
+        "failed"
+      ],
+      "default": "pending"
+    },
+    "parse_error": {
+      "type": "string",
+      "description": "Error message if parsing failed"
+    },
+    "full_name": {
+      "type": "string"
+    },
+    "email": {
+      "type": "string"
+    },
+    "phone": {
+      "type": "string"
+    },
+    "current_location": {
+      "type": "string"
+    },
+    "preferred_location": {
+      "type": "string"
+    },
+    "current_designation": {
+      "type": "string"
+    },
+    "previous_designations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "total_experience_years": {
+      "type": "number"
+    },
+    "relevant_experience_years": {
+      "type": "number"
+    },
+    "current_company": {
+      "type": "string"
+    },
+    "previous_companies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "current_salary": {
+      "type": "number"
+    },
+    "expected_salary": {
+      "type": "number"
+    },
+    "notice_period_days": {
+      "type": "number"
+    },
+    "employment_type": {
+      "type": "string"
+    },
+    "primary_skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "secondary_skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tools_and_platforms": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "certifications": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "industry_keywords": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "degree": {
+      "type": "string"
+    },
+    "specialization": {
+      "type": "string"
+    },
+    "university": {
+      "type": "string"
+    },
+    "passing_year": {
+      "type": "number"
+    },
+    "gpa_percentage": {
+      "type": "string"
+    },
+    "projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "technologies": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "achievements": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "languages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "portfolio_url": {
+      "type": "string"
+    },
+    "github_url": {
+      "type": "string"
+    },
+    "linkedin_url": {
+      "type": "string"
+    },
+    "resume_headline": {
+      "type": "string"
+    },
+    "professional_summary": {
+      "type": "string"
+    },
+    "profile_completeness_score": {
+      "type": "number",
+      "description": "0-100 score of how complete the parsed profile is"
+    },
+    "ats_score": {
+      "type": "number",
+      "description": "0-100 ATS compatibility score"
+    },
+    "ats_issues": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of ATS-unfriendly issues detected"
+    },
+    "keyword_density_flag": {
+      "type": "boolean",
+      "default": false,
+      "description": "True if keyword stuffing is detected"
+    },
+    "raw_text": {
+      "type": "string",
+      "description": "Raw extracted text from resume for search indexing"
+    }
+  },
+  "required": [
+    "candidate_id"
+  ]
+}

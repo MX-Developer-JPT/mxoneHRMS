@@ -1,0 +1,57 @@
+{
+  "name": "DigitalBusinessCard",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Full name of the person"
+    },
+    "phone_number": {
+      "type": "string",
+      "description": "Phone number"
+    },
+    "email": {
+      "type": "string",
+      "description": "Email address"
+    },
+    "company": {
+      "type": "string",
+      "description": "Company name"
+    },
+    "job_title": {
+      "type": "string",
+      "description": "Job title/designation"
+    },
+    "website": {
+      "type": "string",
+      "description": "Company or personal website"
+    },
+    "address": {
+      "type": "string",
+      "description": "Physical address"
+    },
+    "unique_slug": {
+      "type": "string",
+      "description": "Unique slug for the digital business card URL"
+    },
+    "profile_picture_url": {
+      "type": "string",
+      "description": "Profile picture URL"
+    },
+    "linkedin_url": {
+      "type": "string",
+      "description": "LinkedIn profile URL"
+    },
+    "whatsapp_number": {
+      "type": "string",
+      "description": "WhatsApp number (if different from phone)"
+    }
+  },
+  "required": [
+    "name",
+    "phone_number",
+    "email",
+    "company",
+    "job_title"
+  ]
+}

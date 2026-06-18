@@ -1,0 +1,74 @@
+{
+  "name": "Loan",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "loan_type": {
+      "type": "string",
+      "enum": [
+        "personal",
+        "vehicle",
+        "home",
+        "education",
+        "emergency"
+      ],
+      "default": "personal"
+    },
+    "loan_amount": {
+      "type": "number",
+      "description": "Total loan amount"
+    },
+    "outstanding_amount": {
+      "type": "number",
+      "description": "Remaining amount to be paid"
+    },
+    "monthly_deduction": {
+      "type": "number",
+      "description": "Amount deducted per month"
+    },
+    "interest_rate": {
+      "type": "number",
+      "description": "Interest rate percentage",
+      "default": 0
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "active",
+        "completed",
+        "rejected"
+      ],
+      "default": "pending"
+    },
+    "approved_by": {
+      "type": "string",
+      "description": "User ID who approved"
+    },
+    "approved_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "remarks": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_id",
+    "loan_amount",
+    "monthly_deduction",
+    "start_date"
+  ]
+}

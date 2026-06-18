@@ -1,0 +1,157 @@
+{
+  "name": "ComplianceRecord",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "month": {
+      "type": "number",
+      "description": "Month (1-12)"
+    },
+    "year": {
+      "type": "number"
+    },
+    "pf_applicable": {
+      "type": "boolean",
+      "default": false
+    },
+    "pf_employee_contribution": {
+      "type": "number",
+      "default": 0
+    },
+    "pf_employer_contribution": {
+      "type": "number",
+      "default": 0
+    },
+    "pf_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "filed",
+        "paid",
+        "overdue"
+      ],
+      "default": "pending"
+    },
+    "esi_applicable": {
+      "type": "boolean",
+      "default": false
+    },
+    "esi_employee_contribution": {
+      "type": "number",
+      "default": 0
+    },
+    "esi_employer_contribution": {
+      "type": "number",
+      "default": 0
+    },
+    "esi_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "filed",
+        "paid",
+        "overdue"
+      ],
+      "default": "pending"
+    },
+    "tds_amount": {
+      "type": "number",
+      "default": 0
+    },
+    "tds_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "deducted",
+        "deposited",
+        "overdue"
+      ],
+      "default": "pending"
+    },
+    "pt_applicable": {
+      "type": "boolean",
+      "default": false
+    },
+    "pt_amount": {
+      "type": "number",
+      "default": 0
+    },
+    "pt_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "deducted",
+        "deposited",
+        "overdue"
+      ],
+      "default": "pending"
+    },
+    "lwf_applicable": {
+      "type": "boolean",
+      "default": false
+    },
+    "lwf_employee_contribution": {
+      "type": "number",
+      "default": 0
+    },
+    "lwf_employer_contribution": {
+      "type": "number",
+      "default": 0
+    },
+    "lwf_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "filed",
+        "paid",
+        "overdue"
+      ],
+      "default": "pending"
+    },
+    "gratuity_eligible": {
+      "type": "boolean",
+      "default": false
+    },
+    "gratuity_provision": {
+      "type": "number",
+      "default": 0
+    },
+    "bonus_applicable": {
+      "type": "boolean",
+      "default": false
+    },
+    "bonus_amount": {
+      "type": "number",
+      "default": 0
+    },
+    "minimum_wage_compliant": {
+      "type": "boolean",
+      "default": true
+    },
+    "gross_salary": {
+      "type": "number",
+      "default": 0
+    },
+    "net_salary": {
+      "type": "number",
+      "default": 0
+    },
+    "notes": {
+      "type": "string"
+    },
+    "calculated_by": {
+      "type": "string"
+    },
+    "filed_by": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_id",
+    "month",
+    "year"
+  ]
+}

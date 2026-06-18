@@ -1,0 +1,47 @@
+{
+  "name": "Holiday",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Holiday name"
+    },
+    "date": {
+      "type": "string",
+      "format": "date"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "public",
+        "company",
+        "optional"
+      ],
+      "default": "public",
+      "description": "Type of holiday"
+    },
+    "year": {
+      "type": "number"
+    },
+    "description": {
+      "type": "string"
+    },
+    "applicable_departments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Department codes where applicable (empty = all)"
+    },
+    "is_working_day": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether it's a working day despite being a holiday"
+    }
+  },
+  "required": [
+    "name",
+    "date",
+    "year"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "name": "LeaveBalance",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "_pending_email": {
+      "type": "string",
+      "description": "Temporary field used during bulk import to match user by email before account creation"
+    },
+    "leave_policy_id": {
+      "type": "string",
+      "description": "Reference to LeavePolicy"
+    },
+    "year": {
+      "type": "number",
+      "description": "Calendar year"
+    },
+    "total_allocated": {
+      "type": "number",
+      "default": 0
+    },
+    "accrued_this_year": {
+      "type": "number",
+      "default": 0,
+      "description": "Total accrued in current year"
+    },
+    "used": {
+      "type": "number",
+      "default": 0
+    },
+    "pending_approval": {
+      "type": "number",
+      "default": 0
+    },
+    "available": {
+      "type": "number",
+      "default": 0
+    },
+    "carried_forward": {
+      "type": "number",
+      "default": 0
+    },
+    "last_accrual_month": {
+      "type": "number",
+      "description": "Month of last accrual (1-12)"
+    },
+    "last_accrual_year": {
+      "type": "number",
+      "description": "Year of last accrual"
+    }
+  },
+  "required": [
+    "leave_policy_id",
+    "year"
+  ]
+}

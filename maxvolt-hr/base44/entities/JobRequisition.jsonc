@@ -1,0 +1,180 @@
+{
+  "name": "JobRequisition",
+  "type": "object",
+  "properties": {
+    "position_title": {
+      "type": "string",
+      "description": "Job title"
+    },
+    "department": {
+      "type": "string",
+      "description": "Department name"
+    },
+    "employment_type": {
+      "type": "string",
+      "enum": [
+        "full_time",
+        "part_time",
+        "contract",
+        "intern"
+      ],
+      "default": "full_time"
+    },
+    "number_of_positions": {
+      "type": "number",
+      "default": 1
+    },
+    "job_description": {
+      "type": "string"
+    },
+    "required_skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "experience_required": {
+      "type": "string"
+    },
+    "salary_range_min": {
+      "type": "number"
+    },
+    "salary_range_max": {
+      "type": "number"
+    },
+    "location": {
+      "type": "string"
+    },
+    "requested_by": {
+      "type": "string",
+      "description": "User ID who created the requisition"
+    },
+    "requested_by_role": {
+      "type": "string",
+      "description": "Role of the user who created (hr, management, admin)"
+    },
+    "hiring_manager_id": {
+      "type": "string",
+      "description": "Assigned hiring manager User ID"
+    },
+    "target_hire_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "urgent"
+      ],
+      "default": "medium"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "pending_manager_approval",
+        "pending_hr_approval",
+        "manager_rejected",
+        "hr_rejected",
+        "approved",
+        "published",
+        "on_hold",
+        "closed",
+        "cancelled"
+      ],
+      "default": "pending_manager_approval"
+    },
+    "manager_approval_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected"
+      ],
+      "default": "pending"
+    },
+    "manager_approved_by": {
+      "type": "string"
+    },
+    "manager_approved_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "manager_rejection_reason": {
+      "type": "string"
+    },
+    "hr_approval_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected"
+      ],
+      "default": "pending"
+    },
+    "hr_approved_by": {
+      "type": "string"
+    },
+    "hr_approved_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approved_by": {
+      "type": "string"
+    },
+    "approved_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "is_published": {
+      "type": "boolean",
+      "default": false
+    },
+    "published_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "application_deadline": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Deadline for candidates to apply"
+    },
+    "rejection_reason": {
+      "type": "string"
+    },
+    "candidates_count": {
+      "type": "number",
+      "default": 0
+    },
+    "ai_job_description": {
+      "type": "string",
+      "description": "AI-generated and HR-approved job description"
+    },
+    "jd_status": {
+      "type": "string",
+      "enum": [
+        "not_generated",
+        "draft",
+        "approved"
+      ],
+      "default": "not_generated",
+      "description": "Status of the JD: not_generated \u2192 draft (generated, editable) \u2192 approved"
+    },
+    "jd_approved_by": {
+      "type": "string",
+      "description": "User ID who approved the JD"
+    },
+    "jd_approved_date": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "position_title",
+    "department",
+    "job_description"
+  ]
+}

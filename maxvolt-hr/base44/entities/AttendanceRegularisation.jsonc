@@ -1,0 +1,145 @@
+{
+  "name": "AttendanceRegularisation",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "attendance_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Date of attendance to correct"
+    },
+    "existing_status": {
+      "type": "string",
+      "description": "Original attendance status"
+    },
+    "existing_check_in": {
+      "type": "string",
+      "description": "Original check-in time"
+    },
+    "existing_check_out": {
+      "type": "string",
+      "description": "Original check-out time"
+    },
+    "requested_check_in": {
+      "type": "string",
+      "description": "Requested corrected check-in time (HH:MM)"
+    },
+    "requested_check_out": {
+      "type": "string",
+      "description": "Requested corrected check-out time (HH:MM)"
+    },
+    "reason_category": {
+      "type": "string",
+      "enum": [
+        "missed_punch",
+        "biometric_failure",
+        "official_duty",
+        "work_from_home",
+        "emergency",
+        "other"
+      ],
+      "description": "Predefined reason category"
+    },
+    "reason": {
+      "type": "string",
+      "description": "Detailed reason (mandatory)"
+    },
+    "document_url": {
+      "type": "string",
+      "description": "Supporting document URL (optional)"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "manager_approved",
+        "hr_approved",
+        "completed",
+        "rejected",
+        "sent_back"
+      ],
+      "default": "pending"
+    },
+    "manager_id": {
+      "type": "string",
+      "description": "Reporting manager user ID"
+    },
+    "manager_action": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected",
+        "sent_back"
+      ]
+    },
+    "manager_comment": {
+      "type": "string"
+    },
+    "manager_actioned_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "hr_action": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected"
+      ]
+    },
+    "hr_comment": {
+      "type": "string"
+    },
+    "hr_actioned_by": {
+      "type": "string"
+    },
+    "hr_actioned_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "audit_log": {
+      "type": "array",
+      "description": "Full audit trail",
+      "items": {
+        "type": "object",
+        "properties": {
+          "actor_id": {
+            "type": "string"
+          },
+          "actor_name": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "before": {
+            "type": "object"
+          },
+          "after": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "attendance_updated": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether attendance was already updated"
+    }
+  },
+  "required": [
+    "user_id",
+    "attendance_date",
+    "reason_category",
+    "reason"
+  ]
+}

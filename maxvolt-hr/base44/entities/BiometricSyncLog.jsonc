@@ -1,0 +1,67 @@
+{
+  "name": "BiometricSyncLog",
+  "type": "object",
+  "properties": {
+    "last_sync_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of the last sync attempt"
+    },
+    "records_synced": {
+      "type": "number",
+      "default": 0,
+      "description": "Number of records synced in last run"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "success",
+        "failed",
+        "running"
+      ],
+      "description": "Status of the last sync"
+    },
+    "error_message": {
+      "type": "string",
+      "description": "Error details if sync failed"
+    },
+    "triggered_by": {
+      "type": "string",
+      "description": "Who triggered: 'auto' or user email"
+    }
+  },
+  "required": [],
+  "rls": {
+    "create": {},
+    "read": {
+      "user_condition": {
+        "role": {
+          "$in": [
+            "admin",
+            "hr"
+          ]
+        }
+      }
+    },
+    "update": {
+      "user_condition": {
+        "role": {
+          "$in": [
+            "admin",
+            "hr"
+          ]
+        }
+      }
+    },
+    "delete": {
+      "user_condition": {
+        "role": {
+          "$in": [
+            "admin",
+            "hr"
+          ]
+        }
+      }
+    }
+  }
+}

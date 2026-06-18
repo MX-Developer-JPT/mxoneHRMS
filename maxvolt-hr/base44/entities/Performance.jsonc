@@ -1,0 +1,75 @@
+{
+  "name": "Performance",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "review_period": {
+      "type": "string",
+      "description": "e.g., Q1 2024, H1 2024"
+    },
+    "reviewer_id": {
+      "type": "string",
+      "description": "Manager/Reviewer User ID"
+    },
+    "technical_skills": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "communication": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "teamwork": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "leadership": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "problem_solving": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "overall_rating": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "strengths": {
+      "type": "string"
+    },
+    "areas_of_improvement": {
+      "type": "string"
+    },
+    "goals_next_period": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "submitted",
+        "acknowledged"
+      ],
+      "default": "draft"
+    },
+    "review_date": {
+      "type": "string",
+      "format": "date"
+    }
+  },
+  "required": [
+    "user_id",
+    "review_period",
+    "reviewer_id"
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "name": "Interview",
+  "type": "object",
+  "properties": {
+    "candidate_id": {
+      "type": "string",
+      "description": "Reference to Candidate"
+    },
+    "job_requisition_id": {
+      "type": "string",
+      "description": "Reference to JobRequisition"
+    },
+    "round_number": {
+      "type": "number",
+      "description": "Interview round (1, 2, 3, etc.)"
+    },
+    "round_type": {
+      "type": "string",
+      "enum": [
+        "screening",
+        "technical",
+        "hr",
+        "managerial",
+        "final"
+      ],
+      "default": "screening"
+    },
+    "scheduled_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_minutes": {
+      "type": "number",
+      "default": 60
+    },
+    "interviewer_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "User IDs of interviewers"
+    },
+    "interview_mode": {
+      "type": "string",
+      "enum": [
+        "in_person",
+        "video",
+        "phone"
+      ],
+      "default": "video"
+    },
+    "meeting_link": {
+      "type": "string",
+      "description": "Video call link if applicable"
+    },
+    "location": {
+      "type": "string",
+      "description": "Location if in-person"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "scheduled",
+        "completed",
+        "cancelled",
+        "rescheduled",
+        "no_show"
+      ],
+      "default": "scheduled"
+    },
+    "feedback": {
+      "type": "object",
+      "description": "Interview feedback from interviewers"
+    },
+    "rating": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 5,
+      "description": "Overall rating"
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": [
+        "strongly_recommend",
+        "recommend",
+        "maybe",
+        "not_recommend",
+        "reject"
+      ],
+      "description": "Hiring recommendation"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "scheduled_date"
+  ]
+}

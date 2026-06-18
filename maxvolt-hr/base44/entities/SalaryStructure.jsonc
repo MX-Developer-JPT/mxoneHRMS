@@ -1,0 +1,111 @@
+{
+  "name": "SalaryStructure",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "_pending_email": {
+      "type": "string",
+      "description": "Temporary field used during bulk import to match user by email before account creation"
+    },
+    "effective_from": {
+      "type": "string",
+      "format": "date"
+    },
+    "effective_to": {
+      "type": "string",
+      "format": "date",
+      "description": "End date of this salary structure"
+    },
+    "ctc": {
+      "type": "number",
+      "description": "Cost to Company (Annual)"
+    },
+    "basic_salary": {
+      "type": "number"
+    },
+    "hra": {
+      "type": "number"
+    },
+    "conveyance": {
+      "type": "number"
+    },
+    "medical": {
+      "type": "number"
+    },
+    "special_allowance": {
+      "type": "number"
+    },
+    "lta": {
+      "type": "number",
+      "description": "Leave Travel Allowance"
+    },
+    "performance_bonus": {
+      "type": "number",
+      "description": "Variable performance bonus"
+    },
+    "other_allowances": {
+      "type": "object",
+      "description": "Custom allowances"
+    },
+    "pf_contribution": {
+      "type": "number"
+    },
+    "employer_pf_contribution": {
+      "type": "number",
+      "description": "Employer's PF contribution"
+    },
+    "esi_contribution": {
+      "type": "number",
+      "description": "ESI employee contribution"
+    },
+    "employer_esi_contribution": {
+      "type": "number",
+      "description": "Employer's ESI contribution"
+    },
+    "medical_contribution": {
+      "type": "number",
+      "description": "Employer medical contribution per month"
+    },
+    "gratuity": {
+      "type": "number",
+      "description": "Gratuity amount"
+    },
+    "gratuity_eligible": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether employee is eligible for gratuity"
+    },
+    "insurance_premium": {
+      "type": "number",
+      "description": "Company-paid insurance"
+    },
+    "deductions": {
+      "type": "object",
+      "description": "Fixed deductions"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "inactive",
+        "revision_pending"
+      ],
+      "default": "active"
+    },
+    "revision_reason": {
+      "type": "string",
+      "description": "Reason for salary revision"
+    },
+    "approved_by": {
+      "type": "string",
+      "description": "Who approved this structure"
+    }
+  },
+  "required": [
+    "effective_from",
+    "ctc"
+  ]
+}

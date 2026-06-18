@@ -1,0 +1,62 @@
+{
+  "name": "Announcement",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "general",
+        "policy",
+        "event",
+        "holiday",
+        "urgent"
+      ]
+    },
+    "published_by": {
+      "type": "string",
+      "description": "User ID who published"
+    },
+    "target_audience": {
+      "type": "string",
+      "enum": [
+        "all",
+        "specific_departments"
+      ],
+      "default": "all"
+    },
+    "target_departments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Department codes if target_audience is specific_departments"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "published",
+        "archived"
+      ],
+      "default": "draft"
+    },
+    "publish_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "attachment_url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "content",
+    "category"
+  ]
+}

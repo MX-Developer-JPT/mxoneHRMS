@@ -1,0 +1,33 @@
+{
+  "name": "Department",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Department name"
+    },
+    "code": {
+      "type": "string",
+      "description": "Department code"
+    },
+    "head_user_id": {
+      "type": "string",
+      "description": "Department head User ID"
+    },
+    "parent_department_id": {
+      "type": "string",
+      "description": "Parent department for hierarchy"
+    },
+    "description": {
+      "type": "string"
+    },
+    "ot_applicable": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether overtime (OT) is applicable for this department (Production, Service, Logistics, Store, Admin per policy)"
+    }
+  },
+  "required": [
+    "name"
+  ]
+}

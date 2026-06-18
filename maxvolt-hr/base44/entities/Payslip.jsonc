@@ -1,0 +1,88 @@
+{
+  "name": "Payslip",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Employee User ID"
+    },
+    "month": {
+      "type": "number",
+      "description": "Month (1-12)"
+    },
+    "year": {
+      "type": "number"
+    },
+    "basic_salary": {
+      "type": "number"
+    },
+    "hra": {
+      "type": "number",
+      "description": "House Rent Allowance"
+    },
+    "conveyance": {
+      "type": "number"
+    },
+    "medical": {
+      "type": "number"
+    },
+    "special_allowance": {
+      "type": "number"
+    },
+    "other_allowances": {
+      "type": "number"
+    },
+    "gross_salary": {
+      "type": "number"
+    },
+    "pf_deduction": {
+      "type": "number",
+      "description": "Provident Fund"
+    },
+    "professional_tax": {
+      "type": "number"
+    },
+    "tds": {
+      "type": "number",
+      "description": "Tax Deducted at Source"
+    },
+    "other_deductions": {
+      "type": "number"
+    },
+    "total_deductions": {
+      "type": "number"
+    },
+    "net_salary": {
+      "type": "number"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "processed",
+        "paid"
+      ],
+      "default": "draft"
+    },
+    "payment_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "payment_method": {
+      "type": "string",
+      "enum": [
+        "bank_transfer",
+        "cheque",
+        "cash"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_id",
+    "month",
+    "year"
+  ]
+}
