@@ -85,8 +85,7 @@ export default function JobRequisitions() {
       setRequisitions(allRequisitions);
       setDepartments(deptData);
       setLocations(locData);
-      const usersArray = Array.isArray(usersRes?.data) ? usersRes.data : Array.isArray(usersRes) ? usersRes : [];
-      setAllUsers(usersArray);
+      setAllUsers(usersRes?.data?.users || []);
       if (deptData.length > 0 && !formData.department) {
         setFormData(prev => ({ ...prev, department: deptData[0].name }));
       }

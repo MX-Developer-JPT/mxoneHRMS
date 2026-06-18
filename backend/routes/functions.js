@@ -30,7 +30,7 @@ router.post('/:name', async (req, res) => {
       const users = db.prepare(
         'SELECT id,email,full_name,first_name,last_name,role,custom_role,display_name FROM users'
       ).all();
-      return res.json(users);
+      return res.json({ users });
     }
 
     case 'initNewUser': {
@@ -189,13 +189,15 @@ router.post('/:name', async (req, res) => {
 
     /* ── Attendance ───────────────────────────────────── */
     case 'getAllAttendance': {
-      const { date, user_id: uid } = p;
+      const { date, user_id: uid, date_from, date_to } = p;
       let rows = uid
         ? db.prepare("SELECT data FROM entities WHERE type='Attendance' AND user_id=?").all(uid)
         : db.prepare("SELECT data FROM entities WHERE type='Attendance'").all();
-      let data = rows.map(r=>JSON.parse(r.data));
-      if (date) data = data.filter(a=>a.date===date);
-      return res.json(data);
+      let records = rows.map(r=>JSON.parse(r.data));
+      if (date) records = records.filter(a=>a.date===date);
+      if (date_from) records = records.filter(a=>a.date>=date_from);
+      if (date_to) records = records.filter(a=>a.date<=date_to);
+      return res.json({ records });
     }
 
     case 'markExemptEmployeesPresent': {
