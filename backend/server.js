@@ -45,6 +45,9 @@ const UPLOADS_DIR = process.env.NODE_ENV === 'production'
   : path.join(__dirname, 'uploads');
 app.use('/uploads', express.static(UPLOADS_DIR));
 
+// Health check — Railway uses this to verify the container is up
+app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+
 // Mock base44 public-settings so AuthContext doesn't crash on old code
 app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
   res.json({ id: _req.params.id, public_settings: { auth_required: true, google_auth_enabled: false }, app_name: 'Maxvolt HR' });
