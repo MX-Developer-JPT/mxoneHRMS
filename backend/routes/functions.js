@@ -131,20 +131,100 @@ router.post('/:name', async (req, res) => {
     case 'processAdvancedPayroll': {
       const { month, year } = p;
       const employees = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all());
+
+      // Date range for the month
+      const startDate = `${year}-${String(month).padStart(2,'0')}-01`;
+      const lastDay   = new Date(year, month, 0).getDate();
+      const endDate   = `${year}-${String(month).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+      const workingDays = 26; // Standard payroll calendar
+
       let processed = 0;
       for (const emp of employees) {
         const ex = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND user_id=?").all(emp.user_id))
           .find(r=>r.month===month && r.year===year);
         if (ex) continue;
+
+        // Salary structure
         const ss    = parseEntities(db.prepare("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=? AND status='active'").all(emp.user_id)).at(-1);
         const basic = ss?.basic_salary||0; const hra=ss?.hra||0; const conv=ss?.conveyance||0; const spec=ss?.special_allowance||0;
-        const gross = basic+hra+conv+spec; const pf=Math.round(basic*0.12); const pt=gross>20000?200:0; const net=gross-pf-pt;
+        const gross = basic+hra+conv+spec;
+
+        // Attendance-based LOP calculation
+        const attRows = db.prepare(
+          "SELECT data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date') BETWEEN ? AND ?"
+        ).all(emp.user_id, startDate, endDate);
+        const attRecords = attRows.map(r => JSON.parse(r.data));
+
+        const presentDays = attRecords.filter(a => ['present', 'late', 'on_duty', 'work_from_home'].includes(a.status)).length;
+        const halfDays    = attRecords.filter(a => a.status === 'half_day').length;
+        const lopDays     = attRecords.filter(a => ['absent', 'lop'].includes(a.status)).length
+                          + attRecords.reduce((sum, a) => sum + (a.lop_deduction_days || 0), 0);
+
+        const effectivePresentDays = presentDays + halfDays * 0.5;
+        const lopAmount = lopDays > 0 ? Math.round((gross / workingDays) * lopDays) : 0;
+        const grossAfterLop = Math.max(0, gross - lopAmount);
+
+        const pf  = Math.round(basic * 0.12);
+        const pt  = grossAfterLop > 20000 ? 200 : 0;
+        const esi = grossAfterLop <= 21000 ? Math.round(grossAfterLop * 0.0075) : 0;
+        const totalDed = pf + pt + esi + lopAmount;
+        const net = Math.max(0, gross - totalDed);
+
         const id = uuidv4();
-        const payrollData = { id, user_id:emp.user_id, month, year, basic_salary:basic, hra, conveyance:conv, special_allowance:spec, gross_salary:gross, deductions:{pf,pt}, total_deductions:pf+pt, net_salary:net, working_days:26, present_days:26, loss_of_pay_days:0, loss_of_pay_amount:0, status:'processed', processed_by:cu?.id };
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Payroll',?,'processed',?)").run(id,emp.user_id,JSON.stringify(payrollData));
+        const payrollData = {
+          id, user_id: emp.user_id, month, year,
+          basic_salary: basic, hra, conveyance: conv, special_allowance: spec,
+          gross_salary: gross,
+          deductions: { pf, pt, esi, lop: lopAmount },
+          total_deductions: totalDed, net_salary: net,
+          working_days: workingDays, present_days: Math.round(effectivePresentDays),
+          loss_of_pay_days: lopDays, loss_of_pay_amount: lopAmount,
+          status: 'processed', processed_by: cu?.id,
+          processed_at: new Date().toISOString(),
+        };
+        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Payroll',?,'processed',?)").run(id, emp.user_id, JSON.stringify(payrollData));
         processed++;
       }
       return res.json({ success:true, processed, message:`Processed payroll for ${processed} employees` });
+    }
+
+    case 'markAbsentEmployees': {
+      const { date } = p;
+      const targetDate = date || new Date().toISOString().slice(0, 10);
+
+      // Get all active employees
+      const empRows = db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all();
+      const employees = empRows.map(r => JSON.parse(r.data));
+
+      // Get employees who have an attendance record for this date
+      const attRows = db.prepare(
+        "SELECT user_id FROM entities WHERE type='Attendance' AND json_extract(data,'$.date')=?"
+      ).all(targetDate);
+      const presentUserIds = new Set(attRows.map(r => r.user_id));
+
+      // Check for approved leaves on this date
+      const leaveRows = db.prepare("SELECT data FROM entities WHERE type='Leave' AND status='approved'").all();
+      const onLeaveUserIds = new Set();
+      leaveRows.forEach(row => {
+        const leave = JSON.parse(row.data);
+        if (leave.start_date <= targetDate && leave.end_date >= targetDate) {
+          onLeaveUserIds.add(leave.user_id);
+        }
+      });
+
+      let marked = 0, skipped = 0;
+      for (const emp of employees) {
+        if (presentUserIds.has(emp.user_id)) { skipped++; continue; }
+        if (onLeaveUserIds.has(emp.user_id)) { skipped++; continue; }
+
+        const attId = uuidv4();
+        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'absent',?)").run(
+          attId, emp.user_id,
+          JSON.stringify({ id: attId, user_id: emp.user_id, date: targetDate, status: 'absent', source: 'auto_marked', created_at: new Date().toISOString() })
+        );
+        marked++;
+      }
+      return res.json({ success:true, marked, skipped, date: targetDate, message:`Marked ${marked} employees absent for ${targetDate}` });
     }
 
     case 'generatePayslip': {

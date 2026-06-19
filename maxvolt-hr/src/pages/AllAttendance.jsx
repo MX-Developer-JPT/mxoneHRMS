@@ -4,8 +4,9 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download } from 'lucide-react';
+import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX } from 'lucide-react';
 import { format } from 'date-fns';
+import { toast } from 'sonner';
 import MobileSelect from '@/components/MobileSelect';
 import AttendanceDetailsDialog from '@/components/attendance/AttendanceDetailsDialog';
 import BiometricSyncStatus from '@/components/attendance/BiometricSyncStatus';
@@ -40,6 +41,7 @@ export default function AllAttendance() {
   const [deptFilter, setDeptFilter] = useState('all');
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [collapsedDepts, setCollapsedDepts] = useState({});
+  const [markingAbsent, setMarkingAbsent] = useState(false);
 
   useEffect(() => { loadData(); }, [date]);
 
@@ -137,6 +139,23 @@ export default function AllAttendance() {
   }), [rows]);
 
   const toggleDept = (dept) => setCollapsedDepts(p => ({ ...p, [dept]: !p[dept] }));
+
+  const handleMarkAbsent = async () => {
+    if (!window.confirm(`Mark all employees without attendance records for ${date} as absent? This will skip employees on approved leave.`)) return;
+    setMarkingAbsent(true);
+    try {
+      const res = await base44.functions.invoke('markAbsentEmployees', { date });
+      if (res.data?.success) {
+        toast.success(`Marked ${res.data.marked} employee(s) absent for ${date}`);
+        loadData();
+      } else {
+        toast.error(res.data?.error || 'Failed to mark absent');
+      }
+    } catch (e) {
+      toast.error('Error: ' + e.message);
+    }
+    setMarkingAbsent(false);
+  };
 
   const exportToExcel = async () => {
     // Use the currently selected date's month/year for export
@@ -236,6 +255,9 @@ export default function AllAttendance() {
           </div>
           <div className="flex items-center gap-2">
             <BiometricSyncStatus />
+            <Button variant="outline" size="sm" onClick={handleMarkAbsent} disabled={markingAbsent} title="Mark employees without attendance as Absent">
+              <UserX className="w-4 h-4 mr-1" /> {markingAbsent ? 'Marking...' : 'Mark Absent'}
+            </Button>
             <Button variant="outline" size="sm" onClick={exportToExcel} title="Export Attendance Muster">
               <Download className="w-4 h-4 mr-1" /> Export
             </Button>
