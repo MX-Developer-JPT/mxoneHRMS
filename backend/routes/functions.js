@@ -1328,11 +1328,120 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       return res.json({ success:true });
 
     /* ── Employee import ─────────────────────────────── */
-    case 'generateEmployeeTemplate':
-      return res.json({ success:true, message:'Download employee template from /uploads/employee_template.csv' });
+    case 'generateEmployeeTemplate': {
+      const csv = [
+        'full_name,email,employee_code,department,designation,mobile,date_of_joining,date_of_birth,gender,ctc',
+        'John Doe,john.doe@company.com,EMP001,Engineering,Software Engineer,9876543210,2024-01-15,1995-06-20,Male,600000',
+        'Jane Smith,jane.smith@company.com,EMP002,HR,HR Executive,9876543211,2024-02-01,1997-03-10,Female,480000',
+      ].join('\n');
 
-    case 'importEmployeeData':
-      return res.json({ success:true, imported:0, errors:[], message:'Bulk import processed' });
+      const { writeFileSync, mkdirSync, existsSync } = await import('fs');
+      const uploadsDir = process.env.NODE_ENV === 'production' ? '/app/uploads' : './backend/uploads';
+      if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true });
+      writeFileSync(`${uploadsDir}/employee_import_template.csv`, csv);
+      return res.json({ success:true, file_url:'/uploads/employee_import_template.csv', csv });
+    }
+
+    case 'importEmployeeData': {
+      const { fileUrl, mode = 'validate', raw_records } = p;
+
+      // Parse CSV
+      let rows = [];
+      if (raw_records && Array.isArray(raw_records)) {
+        rows = raw_records;
+      } else if (fileUrl) {
+        try {
+          const filePath = fileUrl.startsWith('/uploads/') ? `${process.env.NODE_ENV === 'production' ? '/app/uploads' : './backend/uploads'}/${fileUrl.slice(9)}` : fileUrl;
+          const { readFileSync } = await import('fs');
+          const csvText = readFileSync(filePath, 'utf8');
+          const lines = csvText.trim().split(/\r?\n/).filter(l => l.trim());
+          if (lines.length < 2) return res.json({ success:false, error:'CSV must have headers and at least one data row' });
+          const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase().replace(/\s+/g,'_'));
+          rows = lines.slice(1).map(line => {
+            const vals = line.split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+            const obj = {};
+            headers.forEach((h, i) => { obj[h] = vals[i] || ''; });
+            return obj;
+          });
+        } catch(e) {
+          return res.json({ success:false, error:`Failed to read file: ${e.message}` });
+        }
+      } else {
+        return res.json({ success:false, error:'Provide fileUrl or raw_records' });
+      }
+
+      // Field aliases
+      const get = (row, ...keys) => {
+        for (const k of keys) { if (row[k]) return row[k]; }
+        return '';
+      };
+
+      const errors = [];
+      const validated = rows.map((row, idx) => {
+        const rowNum = idx + 2;
+        const email = get(row, 'email', 'work_email', 'employee_email') || '';
+        const name  = get(row, 'full_name', 'name', 'employee_name', 'display_name') || '';
+        const code  = get(row, 'employee_code', 'emp_code', 'emp_id', 'employee_id') || '';
+        if (!email) errors.push({ row: rowNum, field:'email', message:'Email is required' });
+        if (!name)  errors.push({ row: rowNum, field:'name',  message:'Name is required'  });
+        return {
+          rowNum, email, name, code,
+          department: get(row, 'department', 'dept'),
+          designation: get(row, 'designation', 'role', 'position'),
+          mobile: get(row, 'mobile', 'phone', 'contact'),
+          date_of_joining: get(row, 'date_of_joining', 'doj', 'joining_date'),
+          date_of_birth: get(row, 'date_of_birth', 'dob'),
+          gender: get(row, 'gender'),
+          ctc: parseFloat(get(row, 'ctc', 'annual_ctc', 'salary') || 0),
+          valid: !errors.find(e => e.row === rowNum),
+        };
+      });
+
+      if (mode === 'validate') {
+        return res.json({ success:true, total: rows.length, valid: validated.filter(r=>r.valid).length, errors, preview: validated.slice(0, 10) });
+      }
+
+      // Import mode
+      const results = [];
+      for (const row of validated) {
+        if (!row.valid) { results.push({ ...row, status:'skipped', reason:'Validation errors' }); continue; }
+
+        // Check if user exists by email
+        let user = db.prepare("SELECT id, full_name FROM users WHERE email=?").get(row.email);
+        if (!user) {
+          // Create user account with temporary password
+          const { v4 } = await import('uuid');
+          const userId = v4();
+          const hash   = await import('bcrypt').then(b => b.hash('Maxvolt@123', 10));
+          db.prepare("INSERT INTO users(id,email,full_name,role,status,custom_role) VALUES(?,?,?,'employee','active','employee')")
+            .run(userId, row.email, row.name);
+          user = { id: userId, full_name: row.name };
+        }
+
+        // Check if employee record exists
+        const existingEmp = db.prepare("SELECT id FROM entities WHERE type='Employee' AND user_id=?").get(user.id);
+        if (existingEmp) {
+          results.push({ ...row, status: 'existing', user_id: user.id });
+          continue;
+        }
+
+        // Create employee record
+        const empId = uuidv4();
+        const empData = {
+          id: empId, user_id: user.id, employee_code: row.code || `EMP${String(Math.floor(Math.random()*9000)+1000)}`,
+          display_name: row.name, department: row.department, designation: row.designation,
+          mobile: row.mobile, date_of_joining: row.date_of_joining, date_of_birth: row.date_of_birth,
+          gender: row.gender, ctc: row.ctc, status: 'active',
+          created_at: new Date().toISOString(),
+        };
+        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Employee',?,'active',?)")
+          .run(empId, user.id, JSON.stringify(empData));
+        results.push({ ...row, status:'created', user_id: user.id, employee_id: empId });
+      }
+
+      const imported = results.filter(r => r.status === 'created').length;
+      return res.json({ success:true, imported, total: rows.length, results });
+    }
 
     case 'updateEmployeeConfirmation': {
       const { user_id, confirmation_date } = p;
