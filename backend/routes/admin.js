@@ -187,11 +187,10 @@ router.get('/smtp-settings', (_req, res) => {
   res.json(getSmtpPublicConfig());
 });
 
-// ── SMTP / Resend settings: save to DB ────────────────────
+// ── Email settings: save to DB ────────────────────────────
 router.post('/smtp-settings', (req, res) => {
-  const { host, port, secure, user, pass, from, resend_api_key } = req.body;
+  const { resend_api_key, from } = req.body;
   const set = (key, val) => {
-    if (val === undefined || val === null) return;
     db.prepare(`INSERT INTO settings(key,value,updated_at) VALUES(?,?,datetime('now'))
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`)
       .run(key, String(val));
@@ -200,12 +199,7 @@ router.post('/smtp-settings', (req, res) => {
   if (resend_api_key !== undefined) {
     resend_api_key ? set('RESEND_API_KEY', resend_api_key) : del('RESEND_API_KEY');
   }
-  if (host   !== undefined) set('SMTP_HOST',   host);
-  if (port   !== undefined) set('SMTP_PORT',   String(port));
-  if (secure !== undefined) set('SMTP_SECURE', secure ? 'true' : 'false');
-  if (user   !== undefined) set('SMTP_USER',   user);
-  if (pass   && pass !== '••••••••••••••••') set('SMTP_PASS', pass);
-  if (from   !== undefined) set('SMTP_FROM',   from);
+  if (from !== undefined) set('SMTP_FROM', from);
   res.json({ success: true });
 });
 

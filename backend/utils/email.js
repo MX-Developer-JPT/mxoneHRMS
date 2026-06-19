@@ -1,8 +1,4 @@
-import nodemailer from 'nodemailer';
-import net from 'net';
 import db from '../db.js';
-
-const PLACEHOLDER = 'your_16_char_app_password_here';
 
 function getSetting(key, fallback = '') {
   try {
@@ -12,10 +8,13 @@ function getSetting(key, fallback = '') {
   return process.env[key] || fallback;
 }
 
-// ── Resend ─────────────────────────────────────────────────
-
 function getResendKey() {
   return getSetting('RESEND_API_KEY', '');
+}
+
+function getFromAddress() {
+  const from = getSetting('SMTP_FROM', '');
+  return from.includes('@') ? from : 'Maxvolt HR <onboarding@resend.dev>';
 }
 
 async function resendRequest(apiKey, path, body) {
@@ -29,135 +28,36 @@ async function resendRequest(apiKey, path, body) {
   return data;
 }
 
-// ── SMTP ───────────────────────────────────────────────────
-
-function getSmtpConfig() {
-  return {
-    host:   getSetting('SMTP_HOST',   'smtp.gmail.com'),
-    port:   parseInt(getSetting('SMTP_PORT', '587'), 10),
-    secure: getSetting('SMTP_SECURE', 'false') === 'true',
-    user:   getSetting('SMTP_USER',   ''),
-    pass:   getSetting('SMTP_PASS',   ''),
-    from:   getSetting('SMTP_FROM',   ''),
-  };
-}
-
-function isSmtpConfigured(cfg) {
-  return !!(cfg.user && cfg.pass && cfg.pass !== PLACEHOLDER);
-}
-
-function makeTransporter(cfg) {
-  return nodemailer.createTransport({
-    host: cfg.host,
-    port: cfg.port,
-    secure: cfg.secure,
-    auth: { user: cfg.user, pass: cfg.pass },
-    tls: { rejectUnauthorized: false },
-    connectionTimeout: 20000,
-    greetingTimeout:   20000,
-    socketTimeout:     20000,
-  });
-}
-
-async function testTcpPort(host, port, ms = 8000) {
-  return new Promise(resolve => {
-    const sock = new net.Socket();
-    let settled = false;
-    const done = r => { if (!settled) { settled = true; sock.destroy(); resolve(r); } };
-    sock.setTimeout(ms);
-    sock.connect(port, host, () => done('ok'));
-    sock.on('timeout', () => done('timeout'));
-    sock.on('error', e => done(e.code || e.message));
-  });
-}
-
-// ── Public API ─────────────────────────────────────────────
-
 export async function verifyEmail() {
-  const resendKey = getResendKey();
-
-  if (resendKey) {
-    try {
-      await resendRequest(resendKey, '/domains');
-      return { ok: true, provider: 'resend' };
-    } catch (e) {
-      return { ok: false, provider: 'resend', error: `Resend: ${e.message}` };
-    }
+  const apiKey = getResendKey();
+  if (!apiKey) {
+    return { ok: false, error: 'Resend not configured. Add your API key in Admin Panel → Email Settings.' };
   }
-
-  // Fall back to SMTP
-  const cfg = getSmtpConfig();
-  if (!isSmtpConfigured(cfg)) {
-    return { ok: false, error: 'Email not configured. Add a Resend API key or SMTP credentials in Admin Panel → Email Settings.' };
-  }
-
-  const tcp = await testTcpPort(cfg.host, cfg.port);
-  if (tcp !== 'ok') {
-    const altPort = cfg.port === 465 ? 587 : cfg.port === 587 ? 465 : 587;
-    return {
-      ok: false,
-      tcpBlocked: true,
-      host: cfg.host,
-      port: cfg.port,
-      altPort,
-      error: `Port ${cfg.port} on ${cfg.host} is blocked. Try port ${altPort}${altPort === 587 ? ' with SSL off' : ' with SSL on'}.`,
-    };
-  }
-
   try {
-    const transporter = makeTransporter(cfg);
-    await Promise.race([
-      transporter.verify(),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('SMTP handshake timed out after 20s')), 20000)),
-    ]);
-    return { ok: true, provider: 'smtp', user: cfg.user, host: cfg.host, port: cfg.port };
-  } catch (err) {
-    let hint = err.message;
-    if (hint.includes('535') || hint.includes('Username and Password not accepted'))
-      hint = 'Wrong credentials. Check your username and password/app-password.';
-    else if (hint.includes('534') || hint.includes('less secure'))
-      hint = 'Enable 2-Step Verification first, then create an App Password.';
-    else if (hint.includes('ECONNREFUSED'))
-      hint = `Connection refused on ${cfg.host}:${cfg.port}. Try a different port.`;
-    return { ok: false, provider: 'smtp', error: hint };
+    await resendRequest(apiKey, '/domains');
+    return { ok: true, provider: 'resend' };
+  } catch (e) {
+    return { ok: false, provider: 'resend', error: `Resend: ${e.message}` };
   }
 }
 
 export async function sendEmail({ to, subject, html, text }) {
-  const resendKey = getResendKey();
-
-  if (resendKey) {
-    const cfg = getSmtpConfig();
-    // Only use cfg.from if it contains a valid email address
-    const fromRaw = cfg.from || '';
-    const from = fromRaw.includes('@') ? fromRaw : 'Maxvolt HR <onboarding@resend.dev>';
-    const data = await resendRequest(resendKey, '/emails', { from, to, subject, html, text });
-    return { success: true, messageId: data.id, provider: 'resend' };
+  const apiKey = getResendKey();
+  if (!apiKey) {
+    console.warn('[email] Resend not configured — skipped:', subject);
+    return { skipped: true, reason: 'Configure Resend API key in Admin Panel → Email Settings' };
   }
-
-  // Fall back to SMTP
-  const cfg = getSmtpConfig();
-  if (!isSmtpConfigured(cfg)) {
-    console.warn('[email] not configured — skipped:', subject);
-    return { skipped: true, reason: 'Configure email in Admin Panel → Email Settings' };
-  }
-  const from = cfg.from || `Maxvolt HR <${cfg.user}>`;
-  const info = await makeTransporter(cfg).sendMail({ from, to, subject, html, text });
-  return { success: true, messageId: info.messageId, provider: 'smtp' };
+  const from = getFromAddress();
+  const data = await resendRequest(apiKey, '/emails', { from, to, subject, html, text });
+  return { success: true, messageId: data.id, provider: 'resend' };
 }
 
 export function getSmtpPublicConfig() {
-  const cfg = getSmtpConfig();
-  const resendKey = getResendKey();
+  const apiKey = getResendKey();
   return {
-    host:          cfg.host,
-    port:          cfg.port,
-    secure:        cfg.secure,
-    user:          cfg.user,
-    from:          cfg.from,
-    hasPass:       isSmtpConfigured(cfg),
-    hasResendKey:  !!resendKey,
-    activeProvider: resendKey ? 'resend' : isSmtpConfigured(cfg) ? 'smtp' : 'none',
+    from:         getSetting('SMTP_FROM', ''),
+    hasResendKey: !!apiKey,
+    activeProvider: apiKey ? 'resend' : 'none',
   };
 }
 

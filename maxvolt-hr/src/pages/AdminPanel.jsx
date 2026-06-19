@@ -423,60 +423,37 @@ function EntitiesTab({ typeCounts }) {
 
 // ── Email settings tab ─────────────────────────────────────
 function EmailTab() {
-  const PASS_MASK = '••••••••••••••••';
-  const KEY_MASK  = '••••••••••••••••••••••••••••••••';
+  const KEY_MASK = '••••••••••••••••••••••••••••••••';
 
-  const [resendKey, setResendKey]   = useState('');
+  const [resendKey, setResendKey] = useState('');
   const [keyEditing, setKeyEditing] = useState(false);
-  const [cfg, setCfg]               = useState({ host: '', port: 587, secure: false, user: '', pass: '', from: '' });
-  const [passEditing, setPassEditing] = useState(false);
-  const [activeProvider, setActiveProvider] = useState('none');
-  const [status, setStatus]   = useState(null);
+  const [from, setFrom]   = useState('');
+  const [configured, setConfigured] = useState(false);
+  const [status, setStatus]     = useState(null);
   const [checking, setChecking] = useState(false);
-  const [savingResend, setSavingResend] = useState(false);
-  const [savingSmtp, setSavingSmtp]     = useState(false);
-  const [sending, setSending] = useState(false);
-  const [testTo, setTestTo]   = useState('');
+  const [saving, setSaving]     = useState(false);
+  const [sending, setSending]   = useState(false);
+  const [testTo, setTestTo]     = useState('');
 
   useEffect(() => {
     adminFetch('/smtp-settings').then(r => {
-      setActiveProvider(r.activeProvider || 'none');
+      setConfigured(r.hasResendKey);
       setResendKey(r.hasResendKey ? KEY_MASK : '');
-      setCfg(c => ({ ...c, host: r.host, port: r.port, secure: r.secure, user: r.user, from: r.from, pass: r.hasPass ? PASS_MASK : '' }));
+      setFrom(r.from || '');
     }).catch(() => {});
   }, []);
 
-  const saveResend = async () => {
-    setSavingResend(true);
+  const save = async () => {
+    setSaving(true);
     try {
-      const payload = keyEditing ? { resend_api_key: resendKey } : {};
+      const payload = { from };
+      if (keyEditing) payload.resend_api_key = resendKey;
       await adminFetch('/smtp-settings', { method: 'POST', body: JSON.stringify(payload) });
-      toast.success('Resend API key saved');
+      toast.success('Settings saved');
       setKeyEditing(false);
-      setActiveProvider('resend');
+      setConfigured(true);
     } catch (e) { toast.error('Save failed: ' + e.message); }
-    finally { setSavingResend(false); }
-  };
-
-  const clearResend = async () => {
-    setSavingResend(true);
-    try {
-      await adminFetch('/smtp-settings', { method: 'POST', body: JSON.stringify({ resend_api_key: '' }) });
-      toast.success('Resend key removed');
-      setResendKey(''); setKeyEditing(false);
-      setActiveProvider('none');
-    } catch (e) { toast.error(e.message); }
-    finally { setSavingResend(false); }
-  };
-
-  const saveSmtp = async () => {
-    setSavingSmtp(true);
-    try {
-      await adminFetch('/smtp-settings', { method: 'POST', body: JSON.stringify(cfg) });
-      toast.success('SMTP settings saved');
-      if (passEditing) setPassEditing(false);
-    } catch (e) { toast.error('Save failed: ' + e.message); }
-    finally { setSavingSmtp(false); }
+    finally { setSaving(false); }
   };
 
   const checkStatus = async () => {
@@ -492,47 +469,39 @@ function EmailTab() {
     try {
       const r = await adminFetch('/test-email', { method: 'POST', body: JSON.stringify({ to: testTo }) });
       toast.success(`Test email sent to ${r.sentTo}`);
-      setStatus({ ok: true, provider: r.provider });
+      setStatus({ ok: true });
     } catch (e) { toast.error('Send failed: ' + e.message); }
     finally { setSending(false); }
   };
 
   return (
-    <div className="max-w-2xl space-y-5">
+    <div className="max-w-xl space-y-5">
 
-      {/* ── Active provider banner ── */}
-      {activeProvider !== 'none' && (
-        <div className="rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 px-4 py-2.5 flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-          <p className="text-sm text-emerald-800 dark:text-emerald-300">
-            Active: <strong>{activeProvider === 'resend' ? 'Resend API' : 'SMTP'}</strong>
-            {activeProvider === 'resend' && ' — emails routed via Resend'}
-          </p>
-        </div>
-      )}
-
-      {/* ── Resend API section ── */}
+      {/* ── Config card ── */}
       <div className="border rounded-xl p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Mail className="w-5 h-5 text-primary" />
-            <h3 className="font-semibold">Resend API</h3>
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-medium">Recommended — works on Railway</span>
-          </div>
+        <div className="flex items-center gap-2">
+          <Mail className="w-5 h-5 text-primary" />
+          <h3 className="font-semibold">Resend API</h3>
+          {configured && (
+            <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 font-medium flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" /> Active
+            </span>
+          )}
         </div>
 
-        <div className="rounded-lg bg-muted/40 border p-3 text-xs space-y-1.5 text-muted-foreground">
-          <p className="font-medium text-foreground">Setup (2 minutes, free):</p>
-          <ol className="list-decimal ml-4 space-y-1">
-            <li>Sign up at <strong>resend.com</strong> → go to <strong>API Keys</strong> → create a key</li>
-            <li>To send as <strong>@maxvoltenergy.com</strong>: go to <strong>Domains</strong> → add your domain → add the DNS records shown</li>
-            <li>Paste your API key below and save</li>
-          </ol>
-          <p className="text-[11px]">Free tier: 3,000 emails/month · 100/day. No credit card needed.</p>
-        </div>
+        {!configured && (
+          <div className="rounded-lg bg-muted/40 border p-3 text-xs space-y-1 text-muted-foreground">
+            <p className="font-medium text-foreground">Quick setup:</p>
+            <ol className="list-decimal ml-4 space-y-0.5">
+              <li>Go to <strong>resend.com</strong> → API Keys → Create Key</li>
+              <li>To send as <strong>@maxvoltenergy.com</strong>: Domains → Add Domain → add the DNS records</li>
+              <li>Paste key below and save</li>
+            </ol>
+          </div>
+        )}
 
         <div className="space-y-1">
-          <Label className="text-xs">Resend API Key</Label>
+          <Label className="text-xs">API Key</Label>
           <div className="flex gap-2">
             <Input
               type={keyEditing ? 'text' : 'password'}
@@ -542,105 +511,46 @@ function EmailTab() {
               onChange={e => { setResendKey(e.target.value); setKeyEditing(true); }}
               className="h-9 text-sm font-mono flex-1"
             />
-            {resendKey && resendKey !== KEY_MASK && (
-              <Button size="sm" variant="ghost" onClick={clearResend} disabled={savingResend} className="text-destructive hover:text-destructive px-2">
-                <X className="w-4 h-4" />
-              </Button>
-            )}
           </div>
         </div>
 
         <div className="space-y-1">
-          <Label className="text-xs">From Address (optional)</Label>
+          <Label className="text-xs">From Address</Label>
           <Input
-            value={cfg.from}
-            onChange={e => setCfg(c => ({ ...c, from: e.target.value }))}
+            value={from}
+            onChange={e => setFrom(e.target.value)}
             placeholder="Maxvolt HR <hr@maxvoltenergy.com>"
             className="h-9 text-sm"
           />
-          <p className="text-xs text-muted-foreground">Must include an email, e.g. <code>Maxvolt HR &lt;hr@maxvoltenergy.com&gt;</code>. Leave blank to use Resend's test address.</p>
+          <p className="text-xs text-muted-foreground">
+            Must include an email, e.g. <code>Maxvolt HR &lt;hr@maxvoltenergy.com&gt;</code>. Requires a verified domain in Resend. Leave blank to use Resend's default test sender.
+          </p>
         </div>
 
-        <Button size="sm" onClick={saveResend} disabled={savingResend || (!keyEditing && resendKey === KEY_MASK)}>
-          {savingResend ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
-          Save Resend Key
+        <Button size="sm" onClick={save} disabled={saving}>
+          {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
+          Save
         </Button>
       </div>
 
-      {/* ── SMTP section (fallback) ── */}
-      <details className="border rounded-xl group">
-        <summary className="flex items-center gap-2 p-5 cursor-pointer select-none list-none">
-          <Mail className="w-4 h-4 text-muted-foreground" />
-          <span className="text-sm font-medium">SMTP Settings</span>
-          <span className="text-xs text-muted-foreground ml-1">(fallback if no Resend key)</span>
-          <ChevronRight className="w-4 h-4 text-muted-foreground ml-auto group-open:rotate-90 transition-transform" />
-        </summary>
-        <div className="px-5 pb-5 space-y-4 border-t pt-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs">SMTP Host</Label>
-              <Input value={cfg.host} onChange={e => setCfg(c => ({ ...c, host: e.target.value }))} placeholder="mail.yourdomain.com" className="h-9 text-sm" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Port</Label>
-              <Input type="number" value={cfg.port} onChange={e => setCfg(c => ({ ...c, port: parseInt(e.target.value) || 587 }))} placeholder="587" className="h-9 text-sm" />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Username / Email</Label>
-            <Input type="email" value={cfg.user} onChange={e => setCfg(c => ({ ...c, user: e.target.value }))} placeholder="you@yourdomain.com" className="h-9 text-sm" />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Password</Label>
-            <Input
-              type={passEditing ? 'text' : 'password'}
-              value={cfg.pass}
-              onFocus={() => { if (cfg.pass === PASS_MASK) { setCfg(c => ({ ...c, pass: '' })); setPassEditing(true); } }}
-              onChange={e => { setCfg(c => ({ ...c, pass: e.target.value })); setPassEditing(true); }}
-              placeholder="Password or App Password"
-              className="h-9 text-sm"
-            />
-          </div>
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
-            <input type="checkbox" checked={cfg.secure} onChange={e => setCfg(c => ({ ...c, secure: e.target.checked, port: e.target.checked ? 465 : 587 }))} className="rounded" />
-            Use SSL (port 465)
-          </label>
-          <Button size="sm" onClick={saveSmtp} disabled={savingSmtp}>
-            {savingSmtp ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
-            Save SMTP Settings
-          </Button>
-        </div>
-      </details>
-
-      {/* ── Test ── */}
+      {/* ── Test card ── */}
       <div className="border rounded-xl p-5 space-y-3">
         <div className="flex items-center gap-2">
           <Send className="w-4 h-4 text-primary" />
           <h3 className="font-semibold">Test</h3>
         </div>
 
-        {checking && (
-          <div className="flex items-center gap-2 text-muted-foreground text-sm">
-            <Loader2 className="w-4 h-4 animate-spin" /> Checking…
-          </div>
-        )}
-
         {status?.ok && (
           <div className="rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 p-3 flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <div>
-              <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">Connected</p>
-              <p className="text-xs text-emerald-700 dark:text-emerald-400">
-                {status.provider === 'resend' ? 'Resend API key is valid' : `SMTP: ${status.user} via ${status.host}:${status.port}`}
-              </p>
-            </div>
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <p className="text-sm text-emerald-800 dark:text-emerald-300 font-medium">Resend API key is valid</p>
           </div>
         )}
 
         {status && !status.ok && (
           <div className="rounded-lg bg-destructive/5 dark:bg-destructive/10 border border-destructive/30 p-3 flex items-start gap-2">
-            <XCircle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
-            <p className="text-sm text-muted-foreground leading-relaxed">{status.error}</p>
+            <XCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+            <p className="text-sm text-muted-foreground">{status.error}</p>
           </div>
         )}
 
@@ -650,7 +560,7 @@ function EmailTab() {
             Check Connection
           </Button>
           <div className="flex gap-2">
-            <Input placeholder="Send test to: email@example.com" value={testTo} onChange={e => setTestTo(e.target.value)} className="h-9 text-sm w-60" />
+            <Input placeholder="email@example.com" value={testTo} onChange={e => setTestTo(e.target.value)} className="h-9 text-sm w-56" />
             <Button size="sm" onClick={sendTest} disabled={sending || !testTo}>
               {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
               Send Test
