@@ -55,8 +55,10 @@ export default function Login() {
       <div className="w-full max-w-sm relative z-10">
         {/* Brand header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 shadow-xl shadow-indigo-500/30 mb-5">
-            <span className="text-white font-extrabold text-2xl tracking-tight">M</span>
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#1a1f36] shadow-xl shadow-black/20 mb-5">
+            <svg viewBox="0 0 24 24" className="w-9 h-9" fill="none">
+              <polygon points="14,2 8,13 12,13 10,22 16,11 12,11 14,2" fill="#f97316"/>
+            </svg>
           </div>
           <h1 className="text-2xl font-extrabold text-foreground tracking-tight">Welcome back</h1>
           <p className="text-muted-foreground mt-1.5 text-sm font-medium">Sign in to Maxvolt HR</p>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
+import { useAuth } from '@/lib/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -25,6 +26,7 @@ const ROLE_COLORS = {
 };
 
 export default function UserRoleManagement() {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
   const [filteredUsers, setFilteredUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -124,6 +126,15 @@ export default function UserRoleManagement() {
       setSaving(false);
     }
   };
+
+  if (currentUser?.role !== 'admin') {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+        <Shield className="w-10 h-10 mb-3 opacity-40" />
+        <p>Admin role required to access User Role Management.</p>
+      </div>
+    );
+  }
 
   if (loading) {
     return (

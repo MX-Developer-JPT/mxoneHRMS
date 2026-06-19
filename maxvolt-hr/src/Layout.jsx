@@ -304,8 +304,10 @@ export default function Layout({ children, currentPageName }) {
             </button>
           )}
           <Link to="/Dashboard" className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 flex items-center justify-center shadow-sm flex-shrink-0">
-              <span className="text-white font-extrabold text-sm">M</span>
+            <div className="w-8 h-8 rounded-xl bg-[#1a1f36] flex items-center justify-center shadow-sm flex-shrink-0">
+              <svg viewBox="0 0 24 24" className="w-4.5 h-4.5" fill="none">
+                <polygon points="14,2 8,13 12,13 10,22 16,11 12,11 14,2" fill="#f97316"/>
+              </svg>
             </div>
             <span className="font-bold text-sm text-slate-800 dark:text-slate-100 tracking-tight">Maxvolt HR</span>
           </Link>
@@ -332,8 +334,10 @@ export default function Layout({ children, currentPageName }) {
       >
         {/* Desktop brand */}
         <div className="hidden lg:flex items-center gap-3 px-5 py-5 border-b border-slate-200 dark:border-white/8">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 flex items-center justify-center shadow-md flex-shrink-0">
-            <span className="text-white font-extrabold text-sm">M</span>
+          <div className="w-9 h-9 rounded-xl bg-[#1a1f36] flex items-center justify-center shadow-md flex-shrink-0">
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
+              <polygon points="14,2 8,13 12,13 10,22 16,11 12,11 14,2" fill="#f97316"/>
+            </svg>
           </div>
           <div className="min-w-0">
             <p className="font-extrabold text-sm text-slate-900 dark:text-slate-100 truncate tracking-tight">Maxvolt HR</p>

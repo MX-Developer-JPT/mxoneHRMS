@@ -44,18 +44,8 @@ export default function AllAttendance() {
   useEffect(() => { loadData(); }, [date]);
 
   useEffect(() => {
-    const unsub = base44.entities.Attendance.subscribe((event) => {
-      if (!event.data?.date) return;
-      if (toDateStr(event.data.date) !== date) return;
-      // Update the map entry directly with the full event data (includes punch_sessions)
-      setAttendanceMap(prev => {
-        const next = { ...prev };
-        if (event.type === 'delete') { delete next[event.data.user_id]; }
-        else { next[event.data.user_id] = event.data; }
-        return next;
-      });
-    });
-    return unsub;
+    const interval = setInterval(() => loadData(), 30000);
+    return () => clearInterval(interval);
   }, [date]);
 
   const loadData = async () => {

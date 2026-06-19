@@ -4,12 +4,13 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
-import authRouter      from './routes/auth.js';
-import entitiesRouter  from './routes/entities.js';
-import functionsRouter from './routes/functions.js';
-import uploadRouter    from './routes/upload.js';
-import aiRouter        from './routes/ai.js';
-import adminRouter     from './routes/admin.js';
+import authRouter           from './routes/auth.js';
+import entitiesRouter       from './routes/entities.js';
+import functionsRouter      from './routes/functions.js';
+import uploadRouter         from './routes/upload.js';
+import aiRouter             from './routes/ai.js';
+import adminRouter          from './routes/admin.js';
+import attendanceLogRouter  from './routes/attendancelog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app  = express();
@@ -53,12 +54,13 @@ app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
   res.json({ id: _req.params.id, public_settings: { auth_required: true, google_auth_enabled: false }, app_name: 'Maxvolt HR' });
 });
 
-app.use('/api/auth',      authRouter);
-app.use('/api/entities',  entitiesRouter);
-app.use('/api/functions', functionsRouter);
-app.use('/api/upload',    uploadRouter);
-app.use('/api/ai',        aiRouter);
-app.use('/api/admin',     adminRouter);
+app.use('/api/auth',            authRouter);
+app.use('/api/entities',        entitiesRouter);
+app.use('/api/functions',       functionsRouter);
+app.use('/api/upload',          uploadRouter);
+app.use('/api/ai',              aiRouter);
+app.use('/api/admin',           adminRouter);
+app.use('/api/attendance-log',  attendanceLogRouter);
 
 // ── Production: serve built React frontend ─────────────────
 if (process.env.NODE_ENV === 'production') {

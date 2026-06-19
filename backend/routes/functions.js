@@ -535,16 +535,25 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     /* ── Recruitment other ───────────────────────────── */
     case 'submitJobApplication': {
-      const { job_id, ...applicant } = p;
+      const { jobId, job_id, candidateData, jobTitle, jobDepartment } = p;
       const id = uuidv4();
-      const d  = { id, job_id, ...applicant, status:'applied', applied_date:new Date().toISOString() };
+      const d = {
+        id,
+        job_id: job_id || jobId,
+        position_applied: jobTitle,
+        department: jobDepartment,
+        ...(candidateData || {}),
+        status: 'applied',
+        applied_date: new Date().toISOString(),
+      };
       db.prepare("INSERT INTO entities(id,type,status,data) VALUES(?,'Candidate','applied',?)").run(id, JSON.stringify(d));
-      return res.json({ success:true, application_id:id });
+      return res.json({ success: true, application_id: id, candidate_id: id });
     }
 
     case 'getPublishedJob': {
-      const row = db.prepare("SELECT data FROM entities WHERE type='Recruitment' AND id=?").get(p.job_id);
-      return res.json(row ? JSON.parse(row.data) : null);
+      const jobId = p.job_id || p.jobId;
+      const row = db.prepare("SELECT data FROM entities WHERE type='Recruitment' AND id=?").get(jobId);
+      return res.json(row ? { job: JSON.parse(row.data) } : { job: null });
     }
 
     /* ── MIS & Reporting ─────────────────────────────── */
