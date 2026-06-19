@@ -63,12 +63,14 @@ export async function verifyEmail() {
   const tcp = await testTcpPort(cfg.host, cfg.port);
   if (tcp !== 'ok') {
     if (tcp === 'timeout') {
+      const altPort = cfg.port === 465 ? 587 : cfg.port === 587 ? 465 : 587;
       return {
         ok: false,
         tcpBlocked: true,
         host: cfg.host,
         port: cfg.port,
-        error: `Port ${cfg.port} on ${cfg.host} is blocked — your server cannot reach it. Gmail SMTP is commonly blocked by cloud hosting providers (Railway, AWS, etc.). Switch to Brevo free SMTP relay: Host smtp-relay.brevo.com, Port 587. Sign up free at brevo.com.`,
+        altPort,
+        error: `Port ${cfg.port} on ${cfg.host} is blocked. Try port ${altPort} instead — change the port in SMTP settings${altPort === 587 ? ' and uncheck SSL' : ' and check SSL'}, then test again.`,
       };
     }
     return {

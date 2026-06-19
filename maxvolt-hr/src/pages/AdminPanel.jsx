@@ -660,12 +660,12 @@ function EmailTab() {
                 <p className="text-xs text-muted-foreground leading-relaxed">{status.error}</p>
               </div>
             </div>
-            {status.tcpBlocked && cfg.host === 'smtp.gmail.com' && (
+            {status.tcpBlocked && status.altPort && (
               <button
-                onClick={() => applyProvider(SMTP_PROVIDERS[0])}
+                onClick={() => setCfg(c => ({ ...c, port: status.altPort, secure: status.altPort === 465 }))}
                 className="text-xs font-medium text-primary hover:underline"
               >
-                Switch to Brevo (works on Railway) →
+                Switch to port {status.altPort} {status.altPort === 587 ? '(STARTTLS, no SSL)' : '(SSL)'} →
               </button>
             )}
           </div>
