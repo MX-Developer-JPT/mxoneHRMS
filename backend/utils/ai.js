@@ -1,16 +1,28 @@
 // AI provider: Groq (free cloud) when GROQ_API_KEY is set, Ollama (local) otherwise.
 // Get a free Groq key at https://console.groq.com — no credit card needed.
+// Admin can also set GROQ_API_KEY via Admin Panel → AI Settings (stored in DB).
 
-const GROQ_API_KEY  = process.env.GROQ_API_KEY  || '';
-const GROQ_MODEL    = process.env.GROQ_MODEL    || 'llama3-8b-8192';
-const OLLAMA_URL    = process.env.OLLAMA_URL    || 'http://localhost:11434';
-const OLLAMA_MODEL  = process.env.OLLAMA_MODEL  || 'llama3.2';
+import db from '../db.js';
 
-const useGroq = () => !!GROQ_API_KEY;
+const GROQ_MODEL   = process.env.GROQ_MODEL  || 'llama3-8b-8192';
+const OLLAMA_URL   = process.env.OLLAMA_URL  || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'tinyllama';
+
+// Read key at request time so DB-saved key is picked up without restart
+function getGroqKey() {
+  if (process.env.GROQ_API_KEY) return process.env.GROQ_API_KEY;
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key='GROQ_API_KEY'").get();
+    return row?.value || '';
+  } catch { return ''; }
+}
+
+const useGroq = () => !!getGroqKey();
 
 // ── Groq ────────────────────────────────────────────────────
 
 async function callGroq(messages, { json = false } = {}) {
+  const apiKey = getGroqKey();
   const body = {
     model: GROQ_MODEL,
     messages,
@@ -25,7 +37,7 @@ async function callGroq(messages, { json = false } = {}) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30000),
@@ -105,21 +117,32 @@ export async function callAI(prompt, { system = '', json = false } = {}) {
   return callAIMessages(messages, { json });
 }
 
-export async function checkOllama() {
+export async function checkAI() {
   if (useGroq()) {
-    return { running: true, modelReady: true, provider: 'groq', model: GROQ_MODEL };
+    // Quick test call to verify the key is valid
+    try {
+      await callGroq([{ role: 'user', content: 'Reply with exactly: ok' }]);
+      return { ok: true, provider: 'groq', model: GROQ_MODEL };
+    } catch (e) {
+      return { ok: false, provider: 'groq', model: GROQ_MODEL, error: e.message };
+    }
   }
+
+  // Ollama
   try {
-    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) return { running: false, models: [], provider: 'ollama' };
+    const res  = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return { ok: false, provider: 'ollama', model: OLLAMA_MODEL, error: 'Ollama not running' };
     const data = await res.json();
     const models = (data.models || []).map(m => m.name);
     const modelReady = models.some(m => m.startsWith(OLLAMA_MODEL.split(':')[0]));
-    return { running: true, models, modelReady, model: OLLAMA_MODEL, provider: 'ollama' };
-  } catch {
-    return { running: false, models: [], modelReady: false, provider: 'ollama' };
+    if (!modelReady) return { ok: false, provider: 'ollama', model: OLLAMA_MODEL, error: `Model "${OLLAMA_MODEL}" not yet downloaded`, models };
+    return { ok: true, provider: 'ollama', model: OLLAMA_MODEL, models };
+  } catch (e) {
+    return { ok: false, provider: 'ollama', model: OLLAMA_MODEL, error: e.message };
   }
 }
 
+// legacy alias used by old code
+export async function checkOllama() { return checkAI(); }
 export const callClaude = callAI;
 export const isAiConfigured = () => true;

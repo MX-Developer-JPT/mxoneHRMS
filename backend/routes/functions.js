@@ -457,6 +457,25 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       return res.json({ success:true, answer });
     }
 
+    case 'getAIStatus': {
+      const { checkAI } = await import('../utils/ai.js');
+      const status = await checkAI();
+      return res.json(status);
+    }
+
+    case 'saveAISetting': {
+      if (!cu || cu.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+      const { groq_api_key } = p;
+      if (groq_api_key !== undefined) {
+        if (groq_api_key) {
+          db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('GROQ_API_KEY',?)").run(groq_api_key.trim());
+        } else {
+          db.prepare("DELETE FROM settings WHERE key='GROQ_API_KEY'").run();
+        }
+      }
+      return res.json({ success: true });
+    }
+
     /* ── Email ────────────────────────────────────────── */
     case 'sendInterviewEmail': {
       // Accept either direct fields or candidate_id (from InterviewManagement.jsx)

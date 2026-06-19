@@ -8,7 +8,8 @@ import { Label } from '@/components/ui/label';
 import {
   Database, Users, RefreshCw, Trash2, Edit, Plus, Search,
   ChevronLeft, ChevronRight, Eye, Key, AlertTriangle, X, Check,
-  BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2
+  BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2,
+  Bot, Sparkles, ExternalLink, Zap
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -607,6 +608,190 @@ function EmailTab() {
   );
 }
 
+// ── AI Settings Tab ────────────────────────────────────────
+const KEY_MASK_AI = '••••••••••••••••••••••••••••••';
+
+function AITab() {
+  const [groqKey, setGroqKey]       = useState('');
+  const [editing, setEditing]       = useState(false);
+  const [hasKey, setHasKey]         = useState(false);
+  const [saving, setSaving]         = useState(false);
+  const [checking, setChecking]     = useState(false);
+  const [status, setStatus]         = useState(null);
+
+  useEffect(() => {
+    // Check current AI status on mount
+    checkStatus();
+  }, []);
+
+  const checkStatus = async () => {
+    setChecking(true);
+    setStatus(null);
+    try {
+      const r = await base44.functions.invoke('getAIStatus', {});
+      setStatus(r.data || r);
+      // If Groq key is configured (env or DB), show mask
+      if (r.data?.provider === 'groq' || r?.provider === 'groq') setHasKey(true);
+    } catch (e) {
+      setStatus({ ok: false, error: e.message });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await base44.functions.invoke('saveAISetting', { groq_api_key: groqKey.trim() });
+      toast.success('Groq API key saved — AI is now active');
+      setEditing(false);
+      setHasKey(!!groqKey.trim());
+      if (groqKey.trim()) setGroqKey(KEY_MASK_AI);
+      // Re-check status after a short delay
+      setTimeout(checkStatus, 1000);
+    } catch (e) {
+      toast.error('Save failed: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    setSaving(true);
+    try {
+      await base44.functions.invoke('saveAISetting', { groq_api_key: '' });
+      toast.success('Groq API key removed — switching to Ollama');
+      setGroqKey(''); setHasKey(false); setEditing(false);
+      setTimeout(checkStatus, 1000);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="max-w-xl space-y-5">
+
+      {/* Status card */}
+      <div className="border rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Bot className="w-5 h-5 text-primary" />
+            <h3 className="font-semibold">AI Status</h3>
+          </div>
+          <Button size="sm" variant="outline" onClick={checkStatus} disabled={checking}>
+            {checking ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          </Button>
+        </div>
+
+        {status ? (
+          status.ok ? (
+            <div className="rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 p-3 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <p className="text-sm text-emerald-800 dark:text-emerald-300 font-medium">
+                AI is working · {status.provider === 'groq' ? `Groq (${status.model})` : `Ollama (${status.model})`}
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-lg bg-amber-50 dark:bg-yellow-50 border border-amber-200 p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-amber-800 dark:text-yellow-700">AI unavailable</p>
+                  <p className="text-xs text-amber-700 dark:text-yellow-600 mt-0.5">
+                    {status.error || 'Ollama model not ready'}
+                  </p>
+                </div>
+              </div>
+              {status.provider === 'ollama' && !status.ok && (
+                <p className="text-xs text-amber-700 dark:text-yellow-600 mt-2 border-t border-amber-200 pt-2">
+                  Ollama is downloading the model in background — this can take 5–15 min on first run.
+                  Add a Groq key below for instant AI.
+                </p>
+              )}
+            </div>
+          )
+        ) : checking ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="w-4 h-4 animate-spin" /> Checking AI…
+          </div>
+        ) : null}
+      </div>
+
+      {/* Groq API key */}
+      <div className="border rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Zap className="w-5 h-5 text-amber-500" />
+          <h3 className="font-semibold">Groq API Key</h3>
+          <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-medium">
+            Free · No credit card
+          </span>
+        </div>
+
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          Groq gives you a <strong>free API key</strong> with 14,400 AI requests/day — fast and reliable.
+          When set, this takes priority over Ollama.
+        </p>
+
+        <a
+          href="https://console.groq.com/keys"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary hover:underline"
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+          Get free Groq API key →
+        </a>
+
+        <div className="space-y-2">
+          <Label className="text-xs">API Key</Label>
+          <div className="flex gap-2">
+            <Input
+              type={editing ? 'text' : 'password'}
+              value={editing ? groqKey : (hasKey ? KEY_MASK_AI : groqKey)}
+              placeholder="gsk_..."
+              onFocus={() => { if (!editing) { setGroqKey(''); setEditing(true); } }}
+              onChange={e => { setGroqKey(e.target.value); setEditing(true); }}
+              className="h-9 text-sm font-mono flex-1"
+            />
+            {hasKey && !editing && (
+              <Button size="sm" variant="outline" className="text-destructive" onClick={remove} disabled={saving}>
+                Remove
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <Button size="sm" onClick={save} disabled={saving || !editing || !groqKey.trim()}>
+            {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
+            Save Key
+          </Button>
+          {editing && (
+            <Button size="sm" variant="outline" onClick={() => { setEditing(false); setGroqKey(hasKey ? KEY_MASK_AI : ''); }}>
+              Cancel
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Ollama info */}
+      <div className="border rounded-xl p-5 space-y-2">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold text-muted-foreground">Ollama (Local Fallback)</h3>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          When no Groq key is set, AskMax uses Ollama with the <code>tinyllama</code> model running on the server.
+          On first deploy it downloads ~600 MB — this can take 5–15 minutes.
+          The model is stored persistently so subsequent restarts are instant.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Main AdminPanel page ───────────────────────────────────
 export default function AdminPanel() {
   const { user } = useAuth();
@@ -635,6 +820,7 @@ export default function AdminPanel() {
     { id: 'users',    label: 'User Management',   icon: UserCog  },
     { id: 'stats',    label: 'Statistics',        icon: BarChart3 },
     { id: 'email',    label: 'Email Settings',    icon: Mail },
+    { id: 'ai',       label: 'AI Settings',       icon: Bot },
   ];
 
   return (
@@ -665,6 +851,7 @@ export default function AdminPanel() {
       {tab === 'entities' && <EntitiesTab typeCounts={typeCounts} />}
       {tab === 'users'    && <UsersTab />}
       {tab === 'email'    && <EmailTab />}
+      {tab === 'ai'       && <AITab />}
       {tab === 'stats'    && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           {typeCounts.map(({ type, count }) => (

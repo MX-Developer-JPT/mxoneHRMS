@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Send, Bot, User, Sparkles, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Send, Bot, User, Sparkles, RefreshCw, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 const SUGGESTED_QUESTIONS = [
@@ -37,12 +37,36 @@ export default function AskMax() {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [aiStatus, setAiStatus] = useState(null); // null | 'ok' | 'unavailable'
+  const [aiStatus, setAiStatus] = useState(null); // null | 'ok' | 'unavailable' | 'recovered'
   const messagesEndRef = useRef(null);
+  const pollRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Poll AI status every 30s when unavailable; clear when it recovers
+  const pollAIStatus = useCallback(async () => {
+    try {
+      const r = await base44.functions.invoke('getAIStatus', {});
+      const s = r.data || r;
+      if (s.ok) {
+        setAiStatus('recovered');
+        clearInterval(pollRef.current);
+        // Auto-clear the "recovered" banner after 5s
+        setTimeout(() => setAiStatus(prev => prev === 'recovered' ? null : prev), 5000);
+      }
+    } catch { /* ignore polling errors */ }
+  }, []);
+
+  useEffect(() => {
+    if (aiStatus === 'unavailable') {
+      pollRef.current = setInterval(pollAIStatus, 30000);
+    } else {
+      clearInterval(pollRef.current);
+    }
+    return () => clearInterval(pollRef.current);
+  }, [aiStatus, pollAIStatus]);
 
   const sendMessage = async (question) => {
     const userQuestion = question || input.trim();
@@ -95,6 +119,7 @@ export default function AskMax() {
       content: "Hi! I'm **AskMax**, your HR assistant at Maxvolt Energy. I can help you understand company policies on leave, travel, gratuity, uniform, and more. What would you like to know?"
     }]);
     setInput('');
+    clearInterval(pollRef.current);
     setAiStatus(null);
   };
 
@@ -117,12 +142,26 @@ export default function AskMax() {
         </Button>
       </div>
 
-      {/* AI unavailable banner */}
+      {/* AI status banners */}
       {aiStatus === 'unavailable' && (
-        <div className="mx-4 mt-3 px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-200 dark:bg-yellow-50 dark:border-amber-200 flex items-center gap-2.5">
-          <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
-          <p className="text-xs text-amber-700 dark:text-yellow-600">
-            AI assistant is warming up — it may take a few minutes on first use. Contact HR directly for urgent queries.
+        <div className="mx-4 mt-3 px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-200 dark:bg-yellow-50 dark:border-amber-200 flex items-start gap-2.5">
+          <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-xs font-medium text-amber-800 dark:text-yellow-700">
+              AI is warming up — checking every 30 seconds…
+            </p>
+            <p className="text-xs text-amber-700 dark:text-yellow-600 mt-0.5">
+              For instant AI, an admin can add a free <strong>Groq API key</strong> in{' '}
+              <a href="/AdminPanel" className="underline font-semibold">Admin Panel → AI Settings</a>.
+            </p>
+          </div>
+        </div>
+      )}
+      {aiStatus === 'recovered' && (
+        <div className="mx-4 mt-3 px-4 py-2.5 rounded-lg bg-emerald-50 border border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-800 flex items-center gap-2.5">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+          <p className="text-xs font-medium text-emerald-800 dark:text-emerald-300">
+            AI is now ready — you can ask questions below.
           </p>
         </div>
       )}
