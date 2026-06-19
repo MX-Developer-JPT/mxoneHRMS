@@ -16,7 +16,7 @@ FROM node:22-slim AS production
 WORKDIR /app
 
 # Install system deps + Ollama
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates zstd && \
     curl -fsSL https://ollama.ai/install.sh | sh && \
     rm -rf /var/lib/apt/lists/*
 
