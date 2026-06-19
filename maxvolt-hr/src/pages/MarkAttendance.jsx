@@ -248,6 +248,9 @@ export default function MarkAttendance() {
         status
       });
 
+      // Recompute status server-side (handles grace period, late, overtime properly)
+      base44.functions.invoke('computeAttendanceStatus', { attendance_id: todayAttendance.id }).catch(() => {});
+
       toast.success(`Checked out successfully (${workingHours.toFixed(2)} hours)`);
       setCapturedPhoto(null);
       loadData();

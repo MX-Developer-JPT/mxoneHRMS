@@ -43,42 +43,28 @@ function AiScoreSection({ candidate }) {
   const handleScore = async () => {
     setScoring(true);
     try {
-      const prompt = `You are an expert HR recruiter. Analyse this candidate's profile and provide a structured evaluation.
-
-CANDIDATE PROFILE:
-- Name: ${candidate.full_name}
-- Position Applied: ${candidate.position_applied}
-- Department: ${candidate.department || 'N/A'}
-- Experience: ${candidate.experience_years} years
-- Current Company: ${candidate.current_company || 'Not mentioned'}
-- Current CTC: ${candidate.current_ctc?.toLocaleString() || 'N/A'}
-- Expected CTC: ${candidate.expected_ctc?.toLocaleString() || 'N/A'}
-- Notice Period: ${candidate.notice_period ? candidate.notice_period + ' days' : 'N/A'}
-- Source: ${candidate.source || 'N/A'}
-- Cover Letter: ${candidate.cover_letter || 'Not provided'}
-${candidate.resume_url ? '\nA resume/CV file is attached.' : ''}
-
-Provide:
-1. A 2-3 sentence CV summary
-2. Key strengths (2-3 bullet points)
-3. Gaps or concerns (1-2 bullet points)
-4. Overall candidate score from 1-10 with justification`;
-
-      const res = await base44.integrations.Core.InvokeLLM({
-        prompt,
-        file_urls: candidate.resume_url ? [candidate.resume_url] : undefined,
-        response_json_schema: {
-          type: 'object',
-          properties: {
-            summary: { type: 'string' },
-            strengths: { type: 'array', items: { type: 'string' } },
-            gaps: { type: 'array', items: { type: 'string' } },
-            score: { type: 'number' },
-            score_justification: { type: 'string' }
-          }
-        }
+      const response = await base44.functions.invoke('scoreAndSummariseCv', {
+        candidate_id:     candidate.id,
+        position_applied: candidate.position_applied,
+        department:       candidate.department,
+        experience_years: candidate.experience_years,
+        current_company:  candidate.current_company,
+        current_ctc:      candidate.current_ctc,
+        expected_ctc:     candidate.expected_ctc,
+        notice_period:    candidate.notice_period,
       });
-      setResult(res);
+
+      if (!response.data?.success) throw new Error(response.data?.error || 'AI scoring failed');
+
+      const d = response.data.result;
+      setResult({
+        score:              Math.max(1, Math.round((d.score || 0) / 10)),
+        summary:            d.summary,
+        strengths:          d.key_strengths || [],
+        gaps:               d.areas_for_improvement || [],
+        score_justification:[d.experience_assessment, d.compensation_analysis].filter(Boolean).join(' '),
+        recommendation:     d.recommendation,
+      });
       setExpanded(true);
     } catch (err) {
       toast.error('AI scoring failed: ' + err.message);
@@ -90,9 +76,16 @@ Provide:
     <div className="mt-2">
       <div className="flex items-center gap-2 flex-wrap">
         {result && (
-          <Badge className={SCORE_COLOR(result.score)}>
-            <Star className="w-3 h-3 mr-1" /> AI Score: {result.score}/10
-          </Badge>
+          <>
+            <Badge className={SCORE_COLOR(result.score)}>
+              <Star className="w-3 h-3 mr-1" /> AI Score: {result.score}/10
+            </Badge>
+            {result.recommendation && (
+              <Badge variant="outline" className="text-xs">
+                {result.recommendation}
+              </Badge>
+            )}
+          </>
         )}
         <Button size="sm" variant="outline" onClick={handleScore} disabled={scoring} className="h-7 text-xs">
           {scoring ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Sparkles className="w-3 h-3 mr-1 text-purple-500" />}

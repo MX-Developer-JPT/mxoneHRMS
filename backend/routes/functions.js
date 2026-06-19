@@ -222,11 +222,212 @@ router.post('/:name', async (req, res) => {
     case 'receiveMxOneAttendanceSync': case 'fetchBiometricAttendance': case 'ebioWebhook':
       return res.json({ success:true, processed:0, message:'Biometric integration requires device configuration' });
 
-    case 'processRegularisation':
-      return res.json({ success:true, message:'Regularisation processed' });
+    case 'processRegularisation': {
+      const { regularisation_id, action, comment = '', role = 'manager' } = p;
+      if (!regularisation_id || !action) return res.status(400).json({ error: 'regularisation_id and action required' });
 
-    case 'calculateLOP':
-      return res.json({ success:true, lop_days:0, lop_amount:0 });
+      const row = db.prepare("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND id=?").get(regularisation_id);
+      if (!row) return res.status(404).json({ error: 'Regularisation request not found' });
+      const reg = JSON.parse(row.data);
+
+      let newStatus = reg.status;
+      const update  = { updated_at: new Date().toISOString() };
+
+      if (role === 'manager') {
+        if (action === 'approve') {
+          newStatus = 'manager_approved';
+          update.manager_approved_at = new Date().toISOString();
+          update.manager_comment = comment;
+        } else if (action === 'reject') {
+          newStatus = 'rejected';
+          update.manager_comment = comment;
+          update.rejected_at = new Date().toISOString();
+        } else if (action === 'send_back') {
+          newStatus = 'sent_back';
+          update.manager_comment = comment;
+        }
+      } else if (role === 'hr') {
+        if (action === 'approve') {
+          newStatus = 'completed';
+          update.hr_approved_at = new Date().toISOString();
+          update.hr_comment = comment;
+
+          // Update the actual Attendance record for that date
+          try {
+            const attRow = db.prepare(
+              "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date')=?"
+            ).get(reg.user_id, reg.date);
+
+            if (attRow) {
+              const att = JSON.parse(attRow.data);
+              const updAtt = {
+                ...att,
+                status: reg.requested_status || 'present',
+                regularised: true,
+                regularisation_id,
+                check_in_time:  reg.requested_check_in  || att.check_in_time,
+                check_out_time: reg.requested_check_out || att.check_out_time,
+              };
+              db.prepare("UPDATE entities SET status=?, data=? WHERE id=?")
+                .run(updAtt.status, JSON.stringify(updAtt), attRow.id);
+            } else {
+              // Create attendance record if it doesn't exist
+              const newAttId = uuidv4();
+              const newAtt = {
+                id: newAttId,
+                user_id: reg.user_id,
+                date: reg.date,
+                status: reg.requested_status || 'present',
+                regularised: true,
+                regularisation_id,
+                check_in_time:  reg.requested_check_in  || null,
+                check_out_time: reg.requested_check_out || null,
+                created_at: new Date().toISOString(),
+              };
+              db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'present',?)")
+                .run(newAttId, reg.user_id, JSON.stringify(newAtt));
+            }
+          } catch (e) { console.warn('Attendance update on regularisation approval failed:', e.message); }
+
+        } else if (action === 'reject') {
+          newStatus = 'rejected';
+          update.hr_comment = comment;
+          update.rejected_at = new Date().toISOString();
+        }
+      }
+
+      const updReg = { ...reg, ...update, status: newStatus };
+      db.prepare("UPDATE entities SET status=?, data=? WHERE id=?")
+        .run(newStatus, JSON.stringify(updReg), regularisation_id);
+
+      // In-app notification to employee
+      try {
+        const notifId = uuidv4();
+        const notifData = {
+          id: notifId, user_id: reg.user_id, type: newStatus === 'completed' ? 'success' : newStatus === 'rejected' ? 'error' : 'info',
+          title: `Regularisation ${newStatus === 'completed' ? 'Approved' : newStatus === 'rejected' ? 'Rejected' : 'Updated'}`,
+          message: `Your regularisation request for ${reg.date} has been ${newStatus.replace('_', ' ')}.${comment ? ' Comment: ' + comment : ''}`,
+          read: false, created_at: new Date().toISOString(),
+        };
+        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Notification',?,'unread',?)")
+          .run(notifId, reg.user_id, JSON.stringify(notifData));
+      } catch {}
+
+      return res.json({ success: true, status: newStatus });
+    }
+
+    case 'calculateLOP': {
+      const { employee_id, month, year } = p;
+      if (!employee_id) return res.json({ success:true, lop_days:0, lop_amount:0 });
+
+      const startDate = `${year || new Date().getFullYear()}-${String(month || new Date().getMonth()+1).padStart(2,'0')}-01`;
+      const endDate   = new Date(year || new Date().getFullYear(), month || new Date().getMonth()+1, 0).toISOString().slice(0,10);
+
+      const empRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND id=?").get(employee_id);
+      const emp    = empRow ? JSON.parse(empRow.data) : {};
+
+      const attRows = db.prepare(
+        "SELECT data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date') BETWEEN ? AND ?"
+      ).all(emp.user_id || employee_id, startDate, endDate);
+      const records = attRows.map(r => JSON.parse(r.data));
+
+      const lop_days = records.filter(r => r.status === 'absent' || r.status === 'lop').length;
+
+      // Basic CTC-based LOP calculation (per-day salary = monthly CTC / 26 working days)
+      const ctc = parseFloat(emp.ctc || emp.current_ctc || 0);
+      const daily = ctc > 0 ? ctc / 12 / 26 : 0;
+      const lop_amount = Math.round(lop_days * daily);
+
+      return res.json({ success:true, lop_days, lop_amount, total_records: records.length });
+    }
+
+    case 'computeAttendanceStatus': {
+      const { attendance_id, employee_id, date } = p;
+
+      // Get attendance record
+      let attData;
+      if (attendance_id) {
+        const row = db.prepare("SELECT data FROM entities WHERE type='Attendance' AND id=?").get(attendance_id);
+        if (!row) return res.json({ success:false, error:'Attendance record not found' });
+        attData = JSON.parse(row.data);
+      } else if (employee_id && date) {
+        const empRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND id=?").get(employee_id);
+        const emp    = empRow ? JSON.parse(empRow.data) : {};
+        const row    = db.prepare(
+          "SELECT data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date')=?"
+        ).get(emp.user_id || employee_id, date);
+        if (!row) return res.json({ success:false, error:'No attendance record for that employee/date' });
+        attData = JSON.parse(row.data);
+      } else {
+        return res.json({ success:false, error:'Provide attendance_id OR (employee_id + date)' });
+      }
+
+      // Get shift
+      const empRow   = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(attData.user_id);
+      const emp      = empRow ? JSON.parse(empRow.data) : {};
+      const shiftRow = emp.shift_id
+        ? db.prepare("SELECT data FROM entities WHERE type='Shift' AND id=?").get(emp.shift_id)
+        : db.prepare("SELECT data FROM entities WHERE type='Shift' AND json_extract(data,'$.is_default')=1").get();
+      const shift    = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
+
+      const toMins = (timeStr) => {
+        if (!timeStr) return null;
+        const [h, m] = timeStr.split(':').map(Number);
+        return h * 60 + m;
+      };
+
+      const checkInMins  = toMins(attData.check_in_time);
+      const checkOutMins = toMins(attData.check_out_time);
+      const shiftStartMins = toMins(shift.start_time);
+      const shiftEndMins   = toMins(shift.end_time);
+      const grace          = shift.grace_period_minutes || 15;
+
+      let status = 'absent', working_hours = 0, late_minutes = 0, overtime_minutes = 0;
+
+      if (checkInMins !== null) {
+        if (checkOutMins !== null && checkOutMins > checkInMins) {
+          working_hours = (checkOutMins - checkInMins) / 60;
+          const halfDay = (shift.working_hours || 9) / 2;
+          if (working_hours >= (shift.working_hours || 9) * 0.9) {
+            status = 'present';
+          } else if (working_hours >= halfDay) {
+            status = 'half_day';
+          } else {
+            status = 'short_attendance';
+          }
+        } else {
+          // Checked in but not out yet — mark as in progress
+          status = 'in_progress';
+        }
+
+        if (shiftStartMins !== null && checkInMins > shiftStartMins + grace) {
+          late_minutes = checkInMins - shiftStartMins - grace;
+          if (status === 'present') status = 'late';
+        }
+
+        if (checkOutMins !== null && shiftEndMins !== null && checkOutMins > shiftEndMins + 15) {
+          overtime_minutes = checkOutMins - shiftEndMins - 15;
+        }
+      }
+
+      const updated = {
+        ...attData,
+        status,
+        working_hours: Math.round(working_hours * 100) / 100,
+        late_minutes,
+        overtime_minutes,
+        computed_at: new Date().toISOString(),
+      };
+
+      // Persist the computed values
+      const idToUpdate = attData.id || attendance_id;
+      if (idToUpdate) {
+        db.prepare("UPDATE entities SET status=?, data=? WHERE type='Attendance' AND id=?")
+          .run(status, JSON.stringify(updated), idToUpdate);
+      }
+
+      return res.json({ success:true, status, working_hours: updated.working_hours, late_minutes, overtime_minutes, shift_name: shift.name });
+    }
 
     /* ── Performance ─────────────────────────────────── */
     case 'pmsGetDashboard': {
