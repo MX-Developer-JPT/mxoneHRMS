@@ -1,9 +1,9 @@
 import nodemailer from 'nodemailer';
+import net from 'net';
 import db from '../db.js';
 
 const PLACEHOLDER = 'your_16_char_app_password_here';
 
-// Read a setting: DB value takes priority over .env
 function getSetting(key, fallback = '') {
   try {
     const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
@@ -34,9 +34,22 @@ function makeTransporter(cfg) {
     secure: cfg.secure,
     auth: { user: cfg.user, pass: cfg.pass },
     tls: { rejectUnauthorized: false },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 10000,
+    connectionTimeout: 20000,
+    greetingTimeout:   20000,
+    socketTimeout:     20000,
+  });
+}
+
+// Test raw TCP reachability before attempting SMTP handshake
+async function testTcpPort(host, port, ms = 8000) {
+  return new Promise(resolve => {
+    const sock = new net.Socket();
+    let settled = false;
+    const done = r => { if (!settled) { settled = true; sock.destroy(); resolve(r); } };
+    sock.setTimeout(ms);
+    sock.connect(port, host, () => done('ok'));
+    sock.on('timeout', () => done('timeout'));
+    sock.on('error', e => done(e.code || e.message));
   });
 }
 
@@ -45,23 +58,45 @@ export async function verifyEmail() {
   if (!isConfigured(cfg)) {
     return { ok: false, error: 'SMTP not configured. Enter your credentials in Admin Panel → Email Settings.' };
   }
+
+  // Step 1: TCP port reachability — catches firewall/port-block issues before SMTP handshake
+  const tcp = await testTcpPort(cfg.host, cfg.port);
+  if (tcp !== 'ok') {
+    if (tcp === 'timeout') {
+      return {
+        ok: false,
+        tcpBlocked: true,
+        host: cfg.host,
+        port: cfg.port,
+        error: `Port ${cfg.port} on ${cfg.host} is blocked — your server cannot reach it. Gmail SMTP is commonly blocked by cloud hosting providers (Railway, AWS, etc.). Switch to Brevo free SMTP relay: Host smtp-relay.brevo.com, Port 587. Sign up free at brevo.com.`,
+      };
+    }
+    return {
+      ok: false,
+      host: cfg.host,
+      port: cfg.port,
+      error: `Cannot reach ${cfg.host}:${cfg.port} — ${tcp}. Check your SMTP host and port.`,
+    };
+  }
+
+  // Step 2: SMTP authentication
   try {
     const transporter = makeTransporter(cfg);
     await Promise.race([
       transporter.verify(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timed out after 10s. Check your internet or SMTP settings.')), 10000)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('SMTP handshake timed out after 20s')), 20000)),
     ]);
-    return { ok: true, user: cfg.user };
+    return { ok: true, user: cfg.user, host: cfg.host, port: cfg.port };
   } catch (err) {
     let hint = err.message;
-    if (err.message.includes('535') || err.message.includes('Username and Password not accepted')) {
-      hint = 'Invalid App Password. Use the 16-character App Password from myaccount.google.com/security → App Passwords (not your regular Google password).';
-    } else if (err.message.includes('534') || err.message.includes('less secure')) {
-      hint = 'Google rejected the login. Enable 2-Step Verification first, then create an App Password.';
-    } else if (err.message.includes('ECONNREFUSED') || err.message.includes('ENOTFOUND')) {
-      hint = `Cannot reach ${cfg.host}:${cfg.port}. Check your internet connection.`;
+    if (hint.includes('535') || hint.includes('Username and Password not accepted')) {
+      hint = 'Wrong credentials. For Gmail: use the 16-char App Password from myaccount.google.com → Security → App Passwords (not your regular password). For Brevo: use your SMTP login + SMTP key from brevo.com → SMTP & API → SMTP.';
+    } else if (hint.includes('534') || hint.includes('less secure')) {
+      hint = 'Google rejected the login. Enable 2-Step Verification first, then create an App Password at myaccount.google.com → Security → App Passwords.';
+    } else if (hint.includes('ECONNREFUSED')) {
+      hint = `Connection refused on ${cfg.host}:${cfg.port}. Try switching to port 465 with SSL enabled.`;
     }
-    return { ok: false, error: hint };
+    return { ok: false, host: cfg.host, port: cfg.port, error: hint };
   }
 }
 
@@ -79,12 +114,12 @@ export async function sendEmail({ to, subject, html, text }) {
 export function getSmtpPublicConfig() {
   const cfg = getSmtpConfig();
   return {
-    host:     cfg.host,
-    port:     cfg.port,
-    secure:   cfg.secure,
-    user:     cfg.user,
-    from:     cfg.from,
-    hasPass:  isConfigured(cfg),
+    host:    cfg.host,
+    port:    cfg.port,
+    secure:  cfg.secure,
+    user:    cfg.user,
+    from:    cfg.from,
+    hasPass: isConfigured(cfg),
   };
 }
 
