@@ -239,7 +239,32 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'generateBankTransferFile': {
-      return res.json({ success:true, file_url:null, message:'Bank transfer file ready (feature requires file export setup)' });
+      const { month, year, format = 'csv' } = p;
+      const payrolls = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND status='processed'").all())
+        .filter(r => r.month === month && r.year === year);
+      if (payrolls.length === 0) return res.json({ success:false, error:'No processed payroll records for this period' });
+
+      const lines = ['Beneficiary Name,Account Number,IFSC Code,Bank Name,Branch,Amount,Remarks'];
+      for (const pr of payrolls) {
+        const empRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(pr.user_id);
+        const emp    = empRow ? JSON.parse(empRow.data) : {};
+        const bank   = emp.bank_account_number || '';
+        const ifsc   = emp.ifsc_code || '';
+        const bankName = emp.bank_name || '';
+        const branch = emp.bank_branch || '';
+        const name   = emp.display_name || '';
+        lines.push(`"${name}","${bank}","${ifsc}","${bankName}","${branch}",${pr.net_salary},"Salary ${month}/${year}"`);
+      }
+
+      const csv = lines.join('\n');
+      const { writeFileSync, mkdirSync, existsSync } = await import('fs');
+      const { join } = await import('path');
+      const uploadsDir = process.env.NODE_ENV === 'production' ? '/app/uploads' : './backend/uploads';
+      if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true });
+      const filename = `bank_transfer_${year}_${String(month).padStart(2,'0')}.csv`;
+      writeFileSync(join(uploadsDir, filename), csv);
+
+      return res.json({ success:true, file_url:`/uploads/${filename}`, records: payrolls.length, total_amount: payrolls.reduce((s,r)=>s+(r.net_salary||0),0) });
     }
 
     case 'autoSendPayslips': {
