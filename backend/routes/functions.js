@@ -264,7 +264,63 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'processFnFSettlement': {
-      return res.json({ success:true, message:'FnF settlement computed' });
+      const { exit_id, employee_id } = p;
+      if (!exit_id && !employee_id) return res.json({ success:false, error:'exit_id or employee_id required' });
+
+      const exitRow = exit_id
+        ? db.prepare("SELECT data FROM entities WHERE type='Exit' AND id=?").get(exit_id)
+        : db.prepare("SELECT data FROM entities WHERE type='Exit' AND user_id=?").get(employee_id);
+      if (!exitRow) return res.json({ success:false, error:'Exit record not found' });
+      const exitData = JSON.parse(exitRow.data);
+
+      const empRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(exitData.user_id || employee_id);
+      const emp    = empRow ? JSON.parse(empRow.data) : {};
+
+      const ssRow = db.prepare("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=? AND status='active'").get(emp.user_id || employee_id);
+      const ss    = ssRow ? JSON.parse(ssRow.data) : {};
+
+      const gross        = (ss.basic_salary||0) + (ss.hra||0) + (ss.conveyance||0) + (ss.special_allowance||0);
+      const dailySalary  = gross > 0 ? gross / 26 : 0;
+
+      // LOP for notice period shortfall (if employee left without serving full notice)
+      const noticePeriodDays = parseInt(emp.notice_period_days) || 30;
+      const servedDays       = parseInt(exitData.notice_days_served) || noticePeriodDays;
+      const shortfallDays    = Math.max(0, noticePeriodDays - servedDays);
+      const noticePeriodDeduction = Math.round(shortfallDays * dailySalary);
+
+      // Leave encashment for pending earned leave
+      const leaveBalRows = db.prepare("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=?").all(emp.user_id || employee_id);
+      const earnedLeaveBalance = leaveBalRows.map(r => JSON.parse(r.data)).find(lb => lb.balance_type === 'earned' || lb.leave_type === 'earned_leave')?.balance || 0;
+      const leaveEncashment = Math.round(earnedLeaveBalance * dailySalary);
+
+      // Pro-rata salary for last partial month
+      const lastWorkingDate = exitData.last_working_date ? new Date(exitData.last_working_date) : new Date();
+      const daysWorkedInMonth = lastWorkingDate.getDate();
+      const proRataSalary = Math.round(daysWorkedInMonth * dailySalary);
+
+      const gratuityEligible = parseInt(emp.years_of_service || emp.tenure_years || 0) >= 5;
+      const gratuity = gratuityEligible ? Math.round((ss.basic_salary||0) * 15 / 26 * Math.min(parseInt(emp.years_of_service||0), 30)) : 0;
+
+      const totalPayable = proRataSalary + leaveEncashment + gratuity;
+      const totalDeductions = noticePeriodDeduction;
+      const netPayable = Math.max(0, totalPayable - totalDeductions);
+
+      const fnf = {
+        employee_id: emp.id, user_id: emp.user_id,
+        gross_monthly: gross, daily_rate: Math.round(dailySalary),
+        pro_rata_salary: proRataSalary, days_worked_last_month: daysWorkedInMonth,
+        leave_encashment: leaveEncashment, earned_leave_days: earnedLeaveBalance,
+        gratuity, gratuity_eligible: gratuityEligible,
+        notice_shortfall_days: shortfallDays, notice_period_deduction: noticePeriodDeduction,
+        total_payable: totalPayable, total_deductions: totalDeductions, net_payable: netPayable,
+        computed_at: new Date().toISOString(),
+      };
+
+      // Save to exit record
+      const updatedExit = { ...exitData, fnf_settlement: fnf, fnf_computed_at: new Date().toISOString() };
+      db.prepare("UPDATE entities SET data=? WHERE id=?").run(JSON.stringify(updatedExit), exitRow.id);
+
+      return res.json({ success:true, ...fnf });
     }
 
     /* ── Attendance ───────────────────────────────────── */
@@ -682,11 +738,57 @@ router.post('/:name', async (req, res) => {
       return res.json({ total_reviews:reviews.length, completed, pending, average_score:avg });
     }
 
-    case 'pmsCalculateScore':
-      return res.json({ score:75, rating:'Meets Expectations' });
+    case 'pmsCalculateScore': {
+      const { review_id } = p;
+      if (!review_id) return res.json({ score:0, rating:'Pending' });
+      const rRow = db.prepare("SELECT data FROM entities WHERE type='PerformanceReview' AND id=?").get(review_id);
+      if (!rRow) return res.json({ score:0, rating:'Not Found' });
+      const review = JSON.parse(rRow.data);
 
-    case 'pmsRecommendTraining':
-      return res.json([]);
+      // Calculate weighted score from KPIs/goals if available
+      const goals = review.goals || review.kpis || [];
+      let score = 0;
+      if (goals.length > 0) {
+        const total = goals.reduce((sum, g) => {
+          const weight  = g.weight || (100 / goals.length);
+          const achieved = Math.min(100, g.achieved_percentage || g.score || 0);
+          return sum + (achieved * weight / 100);
+        }, 0);
+        score = Math.round(total);
+      } else if (review.self_rating || review.manager_rating) {
+        // Simple average of available ratings (0-5 scale → 0-100)
+        const selfScore    = (review.self_rating    || 0) * 20;
+        const managerScore = (review.manager_rating || 0) * 20;
+        score = selfScore && managerScore ? Math.round((selfScore + managerScore) / 2) : selfScore || managerScore;
+      }
+
+      const rating = score >= 90 ? 'Outstanding' : score >= 75 ? 'Exceeds Expectations' : score >= 60 ? 'Meets Expectations' : score >= 45 ? 'Needs Improvement' : 'Below Expectations';
+
+      // Persist the score
+      const updated = { ...review, final_score: score, rating, score_computed_at: new Date().toISOString() };
+      db.prepare("UPDATE entities SET data=? WHERE id=?").run(JSON.stringify(updated), review_id);
+
+      return res.json({ score, rating });
+    }
+
+    case 'pmsRecommendTraining': {
+      const { review_id, employee_id } = p;
+      const rRow = review_id ? db.prepare("SELECT data FROM entities WHERE type='PerformanceReview' AND id=?").get(review_id) : null;
+      const review = rRow ? JSON.parse(rRow.data) : {};
+      const gap = review.rating === 'Below Expectations' || review.rating === 'Needs Improvement';
+
+      // Return appropriate training recommendations based on score gaps
+      const recommendations = [];
+      if (gap) {
+        recommendations.push({ area: 'Core Skills Development', priority: 'high', description: 'Focus on fundamentals for the current role' });
+        recommendations.push({ area: 'Communication & Collaboration', priority: 'medium', description: 'Improve team communication effectiveness' });
+      }
+      const goals = review.goals || [];
+      goals.filter(g => (g.achieved_percentage || 0) < 60).forEach(g => {
+        recommendations.push({ area: g.name || 'Performance Gap', priority: 'high', description: `Achieve at least 80% on: ${g.name}` });
+      });
+      return res.json(recommendations);
+    }
 
     /* ── Compliance ────────────────────────────────────── */
     case 'computeCompliance': case 'updateComplianceStatus':
