@@ -816,12 +816,59 @@ router.post('/:name', async (req, res) => {
     }
 
     /* ── Compliance ────────────────────────────────────── */
-    case 'computeCompliance': case 'updateComplianceStatus':
+    case 'computeCompliance': {
+      // Auto-generate compliance records based on payroll data (PF, ESI, PT)
+      const { month, year } = p;
+      const payrolls = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND json_extract(data,'$.month')=? AND json_extract(data,'$.year')=?").all(month, year));
+      const pfTotal  = payrolls.reduce((s,r)=>s+(r.pf_employee||0)+(r.pf_employer||0),0);
+      const esiTotal = payrolls.reduce((s,r)=>s+(r.esi_employee||0)+(r.esi_employer||0),0);
+      const ptTotal  = payrolls.reduce((s,r)=>s+(r.professional_tax||0),0);
+
+      const dueDate = `${year}-${String(parseInt(month)+1).padStart(2,'0')}-15`;
+      for (const { name, amount, type } of [
+        { name:`PF – ${month}/${year}`, amount:pfTotal, type:'pf' },
+        { name:`ESI – ${month}/${year}`, amount:esiTotal, type:'esi' },
+        { name:`Professional Tax – ${month}/${year}`, amount:ptTotal, type:'pt' },
+      ]) {
+        const existing = db.prepare("SELECT id FROM entities WHERE type='ComplianceRecord' AND json_extract(data,'$.compliance_type')=? AND json_extract(data,'$.month')=? AND json_extract(data,'$.year')=?").get(type, month, year);
+        if (!existing) {
+          const id = uuidv4();
+          db.prepare("INSERT INTO entities(id,type,status,data) VALUES(?,'ComplianceRecord','pending',?)").run(id, JSON.stringify({ id, compliance_type:type, name, amount, month, year, due_date:dueDate, status:'pending' }));
+        }
+      }
       return res.json({ success:true });
+    }
+
+    case 'updateComplianceStatus': {
+      const { record_id, status, paid_date, reference } = p;
+      const row = db.prepare("SELECT id,data FROM entities WHERE id=?").get(record_id);
+      if (!row) return res.json({ success:false, error:'Record not found' });
+      const updated = { ...JSON.parse(row.data), status, paid_date, reference };
+      db.prepare("UPDATE entities SET data=?,status=? WHERE id=?").run(JSON.stringify(updated), status, record_id);
+      return res.json({ success:true });
+    }
 
     case 'getComplianceSummary': {
-      const recs = parseEntities(db.prepare("SELECT data FROM entities WHERE type='ComplianceRecord'").all());
-      return res.json({ compliant:recs.filter(r=>r.status==='compliant').length, non_compliant:recs.filter(r=>r.status==='non_compliant').length, pending:recs.filter(r=>r.status==='pending').length, total:recs.length });
+      const { month, year } = p;
+      const allRecs = parseEntities(db.prepare("SELECT data FROM entities WHERE type='ComplianceRecord'").all());
+      const recs = month && year ? allRecs.filter(r => String(r.month)===String(month) && String(r.year)===String(year)) : allRecs;
+
+      const today = new Date().toISOString().slice(0,10);
+      const deadlines = recs.map(r => ({
+        ...r, daysLeft: r.due_date ? Math.ceil((new Date(r.due_date) - new Date(today)) / 86400000) : 999,
+      }));
+
+      const summary = {
+        total:       recs.length,
+        compliant:   recs.filter(r=>r.status==='compliant'||r.status==='paid').length,
+        non_compliant: recs.filter(r=>r.status==='non_compliant'||r.status==='overdue').length,
+        pending:     recs.filter(r=>r.status==='pending').length,
+        total_pf:    recs.filter(r=>r.compliance_type==='pf').reduce((s,r)=>s+(r.amount||0),0),
+        total_esi:   recs.filter(r=>r.compliance_type==='esi').reduce((s,r)=>s+(r.amount||0),0),
+        total_pt:    recs.filter(r=>r.compliance_type==='pt').reduce((s,r)=>s+(r.amount||0),0),
+      };
+
+      return res.json({ summary, deadlines, records: recs });
     }
 
     case 'getComplianceInsights':
