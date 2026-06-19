@@ -187,10 +187,9 @@ router.get('/smtp-settings', (_req, res) => {
   res.json(getSmtpPublicConfig());
 });
 
-// ── SMTP / Resend settings: save to DB ────────────────────
+// ── SMTP settings: save to DB ──────────────────────────────
 router.post('/smtp-settings', (req, res) => {
-  const { host, port, secure, user, pass, from, resend_api_key } = req.body;
-  const MASK = '••••••••••••••••';
+  const { host, port, secure, user, pass, from } = req.body;
   const set = (key, val) => {
     if (val === undefined || val === null) return;
     db.prepare(`INSERT INTO settings(key,value,updated_at) VALUES(?,?,datetime('now'))
@@ -201,9 +200,8 @@ router.post('/smtp-settings', (req, res) => {
   if (port  !== undefined) set('SMTP_PORT',   String(port));
   if (secure !== undefined) set('SMTP_SECURE', secure ? 'true' : 'false');
   if (user  !== undefined) set('SMTP_USER',   user);
-  if (pass  && pass !== MASK) set('SMTP_PASS', pass);
+  if (pass  && pass !== '••••••••••••••••') set('SMTP_PASS', pass);
   if (from  !== undefined) set('SMTP_FROM',   from);
-  if (resend_api_key && resend_api_key !== MASK) set('RESEND_API_KEY', resend_api_key);
   res.json({ success: true });
 });
 
