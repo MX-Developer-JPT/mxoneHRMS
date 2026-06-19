@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import db from '../db.js';
 
 const PLACEHOLDER = 'your_16_char_app_password_here';
+const PASS_MASK   = '••••••••••••••••';
 
 // Read a setting: DB value takes priority over .env
 function getSetting(key, fallback = '') {
@@ -11,6 +12,33 @@ function getSetting(key, fallback = '') {
   } catch {}
   return process.env[key] || fallback;
 }
+
+/* ── Resend (HTTP API — works on Railway, bypasses SMTP port blocks) ── */
+
+function getResendKey() { return getSetting('RESEND_API_KEY', ''); }
+function useResend()    { return !!getResendKey(); }
+
+async function sendViaResend({ from, to, subject, html, text }) {
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${getResendKey()}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from, to, subject, html, text }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || data.name || 'Resend API error');
+  return { success: true, messageId: data.id };
+}
+
+async function verifyResend() {
+  const res = await fetch('https://api.resend.com/api-keys', {
+    headers: { 'Authorization': `Bearer ${getResendKey()}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'Invalid Resend API key');
+  return true;
+}
+
+/* ── SMTP (fallback) ── */
 
 function getSmtpConfig() {
   return {
@@ -23,7 +51,7 @@ function getSmtpConfig() {
   };
 }
 
-function isConfigured(cfg) {
+function isSmtpConfigured(cfg) {
   return !!(cfg.user && cfg.pass && cfg.pass !== PLACEHOLDER);
 }
 
@@ -40,36 +68,54 @@ function makeTransporter(cfg) {
   });
 }
 
+/* ── Public API ── */
+
 export async function verifyEmail() {
+  // Resend takes priority if key is set
+  if (useResend()) {
+    try {
+      await verifyResend();
+      return { ok: true, provider: 'resend' };
+    } catch (err) {
+      return { ok: false, error: `Resend: ${err.message}` };
+    }
+  }
+
+  // SMTP fallback
   const cfg = getSmtpConfig();
-  if (!isConfigured(cfg)) {
-    return { ok: false, error: 'SMTP not configured. Enter your credentials in Admin Panel → Email Settings.' };
+  if (!isSmtpConfigured(cfg)) {
+    return { ok: false, error: 'Not configured. Add a Resend API key (recommended) or enter Gmail SMTP credentials above.' };
   }
   try {
     const transporter = makeTransporter(cfg);
     await Promise.race([
       transporter.verify(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timed out after 10s. Check your internet or SMTP settings.')), 10000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timed out — Railway blocks direct SMTP. Use Resend instead.')), 10000)),
     ]);
-    return { ok: true, user: cfg.user };
+    return { ok: true, user: cfg.user, provider: 'smtp' };
   } catch (err) {
     let hint = err.message;
     if (err.message.includes('535') || err.message.includes('Username and Password not accepted')) {
-      hint = 'Invalid App Password. Use the 16-character App Password from myaccount.google.com/security → App Passwords (not your regular Google password).';
+      hint = 'Invalid App Password. Use the 16-character App Password from myaccount.google.com/security → App Passwords.';
     } else if (err.message.includes('534') || err.message.includes('less secure')) {
-      hint = 'Google rejected the login. Enable 2-Step Verification first, then create an App Password.';
+      hint = 'Enable 2-Step Verification first, then create an App Password at myaccount.google.com/security.';
     } else if (err.message.includes('ECONNREFUSED') || err.message.includes('ENOTFOUND')) {
-      hint = `Cannot reach ${cfg.host}:${cfg.port}. Check your internet connection.`;
+      hint = `Cannot reach ${cfg.host}:${cfg.port}. Use Resend instead.`;
     }
     return { ok: false, error: hint };
   }
 }
 
 export async function sendEmail({ to, subject, html, text }) {
+  if (useResend()) {
+    const from = getSetting('SMTP_FROM', '') || 'Maxvolt HR <onboarding@resend.dev>';
+    return sendViaResend({ from, to, subject, html, text });
+  }
+
   const cfg = getSmtpConfig();
-  if (!isConfigured(cfg)) {
-    console.warn('[email] SMTP not configured — skipped:', subject);
-    return { skipped: true, reason: 'SMTP not configured in Admin Panel → Email Settings' };
+  if (!isSmtpConfigured(cfg)) {
+    console.warn('[email] Not configured — skipped:', subject);
+    return { skipped: true, reason: 'Configure Resend API key or SMTP in Admin Panel → Email Settings' };
   }
   const from = cfg.from || `Maxvolt HR <${cfg.user}>`;
   const info = await makeTransporter(cfg).sendMail({ from, to, subject, html, text });
@@ -77,14 +123,19 @@ export async function sendEmail({ to, subject, html, text }) {
 }
 
 export function getSmtpPublicConfig() {
-  const cfg = getSmtpConfig();
+  const cfg     = getSmtpConfig();
+  const resendKey = getResendKey();
   return {
-    host:     cfg.host,
-    port:     cfg.port,
-    secure:   cfg.secure,
-    user:     cfg.user,
-    from:     cfg.from,
-    hasPass:  isConfigured(cfg),
+    host:      cfg.host,
+    port:      cfg.port,
+    secure:    cfg.secure,
+    user:      cfg.user,
+    from:      cfg.from,
+    hasPass:   isSmtpConfigured(cfg),
+    hasResend: !!resendKey,
+    // return masked key so UI knows one exists
+    resendKey: resendKey ? PASS_MASK : '',
+    provider:  resendKey ? 'resend' : (isSmtpConfigured(cfg) ? 'smtp' : 'none'),
   };
 }
 
@@ -161,7 +212,7 @@ export const emailTemplates = {
     subject: 'Maxvolt HR — Email Test ✓',
     html: `
 <div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;text-align:center">
-  <div style="background:#2563eb;width:64px;height:64px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px">
+  <div style="background:#4f46e5;width:64px;height:64px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px">
     <span style="color:#fff;font-size:28px">✓</span>
   </div>
   <h2 style="color:#1e293b;margin:0 0 8px">Email is working!</h2>
