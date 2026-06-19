@@ -67,6 +67,7 @@ import LocationMaster from './pages/LocationMaster';
 import AssetTracking from './pages/AssetTracking';
 import MyAssets from './pages/MyAssets';
 import TeamCalendar from './pages/TeamCalendar';
+import TaxDeclaration from './pages/TaxDeclaration';
 
 
 const { Pages, Layout, mainPage } = pagesConfig;
@@ -371,6 +372,11 @@ const AuthenticatedApp = () => {
       <Route path="/TeamCalendar" element={
         <LayoutWrapper currentPageName="TeamCalendar">
           <TeamCalendar />
+        </LayoutWrapper>
+      } />
+      <Route path="/TaxDeclaration" element={
+        <LayoutWrapper currentPageName="TaxDeclaration">
+          <TaxDeclaration />
         </LayoutWrapper>
       } />
       </Route>{/* end ProtectedRoute */}

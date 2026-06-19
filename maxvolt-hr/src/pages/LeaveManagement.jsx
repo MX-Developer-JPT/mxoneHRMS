@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FileText, Check, X, Clock, Filter, Plus } from 'lucide-react';
+import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import LeavePolicyManager from '../components/leave/LeavePolicyManager';
@@ -40,6 +40,8 @@ export default function LeaveManagement() {
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState('pending');
   const [filterPolicy, setFilterPolicy] = useState('all');
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkProcessing, setBulkProcessing] = useState(false);
 
   useEffect(() => { loadData(); }, []);
 
@@ -206,6 +208,23 @@ export default function LeaveManagement() {
     }
   };
 
+  const handleBulkAction = async (action) => {
+    if (selectedIds.size === 0) return;
+    setBulkProcessing(true);
+    try {
+      const fn = action === 'approve' ? 'bulkApproveLeave' : 'bulkRejectLeave';
+      const payload = action === 'approve'
+        ? { leave_ids: [...selectedIds], approved_by: user?.id, comment: 'Bulk approved by HR' }
+        : { leave_ids: [...selectedIds], rejected_by: user?.id, reason: 'Bulk rejected by HR' };
+      const res = await base44.functions.invoke(fn, payload);
+      const r = res.data;
+      toast.success(`${action === 'approve' ? 'Approved' : 'Rejected'} ${r.approved || r.rejected} leave request(s).`);
+      setSelectedIds(new Set());
+      loadData();
+    } catch (e) { toast.error('Bulk action failed: ' + e.message); }
+    setBulkProcessing(false);
+  };
+
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
 
   const filteredRequests = leaveRequests.filter(l => {
@@ -268,6 +287,20 @@ export default function LeaveManagement() {
               ))}
             </div>
 
+            {/* Bulk Actions */}
+            {isHR && selectedIds.size > 0 && (
+              <div className="flex items-center gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <span className="text-sm font-medium text-blue-800">{selectedIds.size} selected</span>
+                <Button size="sm" className="bg-green-600 hover:bg-green-700" disabled={bulkProcessing} onClick={() => handleBulkAction('approve')}>
+                  <CheckCheck className="w-4 h-4 mr-1" /> Bulk Approve
+                </Button>
+                <Button size="sm" variant="destructive" disabled={bulkProcessing} onClick={() => handleBulkAction('reject')}>
+                  <XCircle className="w-4 h-4 mr-1" /> Bulk Reject
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>Clear</Button>
+              </div>
+            )}
+
             {/* Filters */}
             <div className="flex gap-3 items-center flex-wrap">
               <Filter className="w-4 h-4 text-gray-500" />
@@ -297,14 +330,31 @@ export default function LeaveManagement() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
+                  {isHR && filteredRequests.some(l => l.status === 'pending') && (
+                    <div className="flex items-center gap-2 pb-2 border-b">
+                      <input type="checkbox" className="w-4 h-4"
+                        checked={filteredRequests.filter(l=>l.status==='pending').every(l=>selectedIds.has(l.id))}
+                        onChange={e => {
+                          const pending = filteredRequests.filter(l=>l.status==='pending').map(l=>l.id);
+                          setSelectedIds(e.target.checked ? new Set(pending) : new Set());
+                        }} />
+                      <span className="text-xs text-gray-500">Select all pending</span>
+                    </div>
+                  )}
+
                   {filteredRequests.map(leave => {
                     const emp = employees.find(e => e.user_id === leave.user_id);
                     const policy = leavePolicies.find(p => p.id === leave.leave_policy_id);
                     const canAct = canApproveLevel(leave);
 
                     return (
-                      <div key={leave.id} className={`border rounded-lg p-4 ${canAct ? 'border-blue-200 bg-blue-50/30' : ''}`}>
+                      <div key={leave.id} className={`border rounded-lg p-4 ${selectedIds.has(leave.id) ? 'border-blue-400 bg-blue-50' : canAct ? 'border-blue-200 bg-blue-50/30' : ''}`}>
                         <div className="flex flex-wrap justify-between items-start gap-4">
+                          {isHR && leave.status === 'pending' && (
+                            <input type="checkbox" className="w-4 h-4 mt-1 flex-shrink-0"
+                              checked={selectedIds.has(leave.id)}
+                              onChange={e => { const s = new Set(selectedIds); e.target.checked ? s.add(leave.id) : s.delete(leave.id); setSelectedIds(s); }} />
+                          )}
                           <div className="flex-1">
                             <div className="flex items-center gap-3 mb-2">
                               <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-semibold text-sm">

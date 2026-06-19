@@ -9,7 +9,8 @@ import {
   Database, Users, RefreshCw, Trash2, Edit, Plus, Search,
   ChevronLeft, ChevronRight, Eye, Key, AlertTriangle, X, Check,
   BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2,
-  Bot, Sparkles, ExternalLink, Zap, Fingerprint, Copy, RotateCcw, Globe, Code2
+  Bot, Sparkles, ExternalLink, Zap, Fingerprint, Copy, RotateCcw, Globe, Code2,
+  ScrollText, Clock
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -794,6 +795,77 @@ function AITab() {
   );
 }
 
+// ── Audit Log Tab ──────────────────────────────────────────
+function AuditLogTab() {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filterType, setFilterType] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await base44.functions.invoke('getAuditLog', { entity_type: filterType || undefined, limit: 200 });
+      setLogs(r?.data?.logs || []);
+    } catch { }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, [filterType]);
+
+  const CHANGE_COLORS = { create: 'bg-green-100 text-green-800', update: 'bg-blue-100 text-blue-800', delete: 'bg-red-100 text-red-800', default: 'bg-gray-100 text-gray-700' };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">System-wide audit trail of entity changes</p>
+        <div className="flex items-center gap-2">
+          <select className="border rounded-md px-3 py-1.5 text-sm bg-background" value={filterType} onChange={e => setFilterType(e.target.value)}>
+            <option value="">All Types</option>
+            {['Asset', 'Employee', 'User', 'Leave', 'Payroll', 'Compliance', 'Loan', 'Insurance'].map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <button onClick={load} className="p-1.5 rounded border hover:bg-muted"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></button>
+        </div>
+      </div>
+
+      {loading ? <div className="text-center py-10 text-muted-foreground">Loading audit logs...</div> : (
+        <div className="border rounded-xl overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-muted-foreground text-xs uppercase">
+              <tr>
+                <th className="px-4 py-3 text-left">Timestamp</th>
+                <th className="px-4 py-3 text-left">Entity Type</th>
+                <th className="px-4 py-3 text-left">Change</th>
+                <th className="px-4 py-3 text-left">Changed By</th>
+                <th className="px-4 py-3 text-left">Summary</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.length === 0 ? (
+                <tr><td colSpan={5} className="text-center py-10 text-muted-foreground">No audit logs found</td></tr>
+              ) : logs.map((log, i) => (
+                <tr key={i} className="border-t hover:bg-muted/30 transition-colors">
+                  <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                    <Clock className="w-3 h-3 inline mr-1" />
+                    {log.timestamp ? new Date(log.timestamp).toLocaleString('en-IN') : '-'}
+                  </td>
+                  <td className="px-4 py-3 font-medium">{log.entity_type || '-'}</td>
+                  <td className="px-4 py-3">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${CHANGE_COLORS[log.change_type] || CHANGE_COLORS.default}`}>
+                      {log.change_type || 'update'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{log.changed_by_name || log.changed_by || 'System'}</td>
+                  <td className="px-4 py-3 text-muted-foreground text-xs max-w-xs truncate">{log.summary || log.entity_id?.slice(0, 12) || '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── API Integration Tab ────────────────────────────────────
 function ApiIntegrationTab() {
   const [apiInfo, setApiInfo]       = useState(null);
@@ -980,6 +1052,7 @@ export default function AdminPanel() {
     { id: 'email',    label: 'Email Settings',    icon: Mail },
     { id: 'ai',       label: 'AI Settings',       icon: Bot },
     { id: 'api',      label: 'API Integration',   icon: Fingerprint },
+    { id: 'audit',    label: 'Audit Log',         icon: ScrollText },
   ];
 
   return (
@@ -1012,6 +1085,7 @@ export default function AdminPanel() {
       {tab === 'email'    && <EmailTab />}
       {tab === 'ai'       && <AITab />}
       {tab === 'api'      && <ApiIntegrationTab />}
+      {tab === 'audit'    && <AuditLogTab />}
       {tab === 'stats'    && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           {typeCounts.map(({ type, count }) => (

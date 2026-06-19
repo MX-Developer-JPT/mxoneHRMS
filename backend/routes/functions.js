@@ -1256,8 +1256,42 @@ router.post('/:name', async (req, res) => {
       return res.json({ summary, deadlines, records: recs });
     }
 
-    case 'getComplianceInsights':
-      return res.json({ insights:[], recommendations:[] });
+    case 'getComplianceInsights': {
+      const today = new Date();
+      const compRows = db.prepare("SELECT data FROM entities WHERE type='Compliance'").all();
+      const records = compRows.map(r => JSON.parse(r.data));
+      const empRows2 = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const activeEmps = empRows2.map(r => JSON.parse(r.data)).filter(e => e.employee_status === 'active' || !e.employee_status);
+
+      const insights = [], recommendations = [];
+
+      const overdue = records.filter(r => r.status !== 'paid' && r.due_date && new Date(r.due_date) < today);
+      if (overdue.length) {
+        insights.push({ type: 'error', title: `${overdue.length} overdue compliance payment(s)`, detail: overdue.map(r => `${r.compliance_type} – ₹${(r.amount||0).toLocaleString('en-IN')} (due ${r.due_date})`).join('; ') });
+        recommendations.push({ priority: 'high', action: `Process ${overdue.length} overdue payment(s) immediately to avoid statutory penalties`, types: overdue.map(r => r.compliance_type) });
+      }
+
+      const sevenDays = new Date(today.getTime() + 7*24*60*60*1000);
+      const upcoming7 = records.filter(r => r.status !== 'paid' && r.due_date && new Date(r.due_date) >= today && new Date(r.due_date) <= sevenDays);
+      if (upcoming7.length) {
+        insights.push({ type: 'warning', title: `${upcoming7.length} payment(s) due in next 7 days`, detail: upcoming7.map(r => `${r.compliance_type} – ₹${(r.amount||0).toLocaleString('en-IN')} (due ${r.due_date})`).join('; ') });
+        recommendations.push({ priority: 'high', action: `Schedule payment for ${upcoming7.map(r=>r.compliance_type).join(', ')}`, types: upcoming7.map(r => r.compliance_type) });
+      }
+
+      const noPF = activeEmps.filter(e => !e.uan_number && !e.pf_account_number);
+      if (noPF.length) {
+        insights.push({ type: 'info', title: `${noPF.length} active employee(s) missing UAN/PF account number`, detail: `Employees: ${noPF.slice(0,5).map(e=>e.display_name||e.email||e.user_id).join(', ')}${noPF.length>5?' and more':''}` });
+        recommendations.push({ priority: 'medium', action: `Register ${noPF.length} employee(s) with EPFO and update UAN numbers` });
+      }
+
+      const esiEligible = activeEmps.filter(e => Number(e.ctc||0)/12 <= 21000 && Number(e.ctc||0) > 0);
+      if (esiEligible.length) insights.push({ type: 'info', title: `${esiEligible.length} employee(s) may be ESI eligible (gross ≤ ₹21,000/month)`, detail: 'Verify ESI coverage for these employees' });
+
+      const totalLiability = records.filter(r => r.status !== 'paid').reduce((s,r) => s + Number(r.amount||0), 0);
+      if (totalLiability > 0) insights.push({ type: 'info', title: `Total pending compliance liability: ₹${totalLiability.toLocaleString('en-IN')}`, detail: `${records.filter(r=>r.status!=='paid').length} unpaid records across PF, ESI, PT` });
+
+      return res.json({ success: true, insights, recommendations, generated_at: new Date().toISOString() });
+    }
 
     /* ── AI: Recruitment ─────────────────────────────── */
     case 'parseResume': {
@@ -1922,8 +1956,29 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       return res.json({ success:true });
     }
 
-    case 'handleNewUserSignup': case 'autoCreateEmployee':
-      return res.json({ success:true });
+    case 'handleNewUserSignup': case 'autoCreateEmployee': {
+      const { user_id, email, full_name } = p;
+      if (!user_id) return res.json({ success: true });
+      const existingEmp = db.prepare("SELECT id FROM entities WHERE type='Employee' AND user_id=?").get(user_id);
+      if (!existingEmp) {
+        const empId = uuidv4();
+        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Employee',?,'pending',?)")
+          .run(empId, user_id, JSON.stringify({ id: empId, user_id, display_name: full_name, email, employee_status: 'pending_onboarding', created_at: new Date().toISOString() }));
+      }
+      try {
+        const smtpCfg = db.prepare("SELECT value FROM settings WHERE key='smtp_config'").get();
+        if (smtpCfg?.value) {
+          const smtp = JSON.parse(smtpCfg.value);
+          if (smtp.host && smtp.user) {
+            const { default: nodemailer } = await import('nodemailer');
+            const t = nodemailer.createTransporter({ host: smtp.host, port: smtp.port||587, secure: smtp.port==465, auth: { user: smtp.user, pass: smtp.pass } });
+            await t.sendMail({ from: smtp.from||smtp.user, to: email, subject: 'Welcome to MaxVolt Energy HRMS',
+              html: `<div style="font-family:Arial,sans-serif;max-width:600px"><h2 style="color:#2563eb">Welcome, ${full_name}!</h2><p>Your account has been created on the MaxVolt Energy HR Management System.</p><p>Please complete your onboarding form. Your HR team will review and activate your account.</p></div>` });
+          }
+        }
+      } catch(e) { console.error('[welcome-email]', e.message); }
+      return res.json({ success: true, message: 'Employee record initialized' });
+    }
 
     /* ── Employee import ─────────────────────────────── */
     case 'extractFileData': {
@@ -2086,11 +2141,445 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     case 'generatePrintableCards':
       return res.json({ success:true, pdf_url:null, message:'PDF generation requires additional setup' });
 
-    /* ── Training ────────────────────────────────────── */
-    case 'onAssetChanged':
-    case 'onNewEmployeeJoined':
+    /* ── Lifecycle events ────────────────────────────── */
+    case 'onNewEmployeeJoined': {
+      const { user_id: njUserId, employee_name, department: njDept, designation: njDesig } = p;
+      if (njUserId) {
+        const annId = uuidv4();
+        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Announcement',?,'active',?)").run(
+          annId, njUserId,
+          JSON.stringify({ id: annId, title: `Welcome ${employee_name || 'New Team Member'}!`, content: `Please join us in welcoming ${employee_name || 'our new colleague'} to the ${njDept||'team'} as ${njDesig||'a new team member'}. We look forward to working together!`, category: 'new_joiner', is_published: true, created_at: new Date().toISOString() })
+        );
+      }
+      return res.json({ success: true });
+    }
+
+    case 'onAssetChanged': {
+      const { asset_id: auditAssetId, changed_by: auditBy, change_type, old_data: oldD, new_data: newD } = p;
+      const auditId = uuidv4();
+      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'AuditLog',?,'active',?)").run(
+        auditId, auditBy||null,
+        JSON.stringify({ id: auditId, entity_type: 'Asset', entity_id: auditAssetId, changed_by: auditBy, change_type: change_type||'update', old_data: oldD, new_data: newD, timestamp: new Date().toISOString() })
+      );
+      return res.json({ success: true });
+    }
+
     case 'extractFavicon':
       return res.json({ success:true });
+
+    /* ── Audit Log ────────────────────────────────────── */
+    case 'getAuditLog': {
+      const { entity_type: alType, entity_id: alId, limit: alLim = 200 } = p;
+      let q = "SELECT data FROM entities WHERE type='AuditLog'";
+      const qp = [];
+      if (alType) { q += " AND json_extract(data,'$.entity_type')=?"; qp.push(alType); }
+      if (alId)   { q += " AND json_extract(data,'$.entity_id')=?";   qp.push(alId); }
+      q += " ORDER BY created_at DESC LIMIT ?"; qp.push(Number(alLim));
+      const alRows = db.prepare(q).all(...qp);
+      const alUserMap = {};
+      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { alUserMap[u.id] = u.full_name; });
+      const logs = alRows.map(r => { const d = JSON.parse(r.data); return { ...d, changed_by_name: alUserMap[d.changed_by] || d.changed_by }; });
+      return res.json({ success: true, logs, total: logs.length });
+    }
+
+    case 'addAuditLog': {
+      const { entity_type: aType, entity_id: aId, changed_by: aBy, change_type: aCt, summary: aSummary, old_data: aOld, new_data: aNew } = p;
+      const aLogId = uuidv4();
+      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'AuditLog',?,'active',?)").run(
+        aLogId, aBy||null,
+        JSON.stringify({ id: aLogId, entity_type: aType, entity_id: aId, changed_by: aBy, change_type: aCt||'update', summary: aSummary, old_data: aOld, new_data: aNew, timestamp: new Date().toISOString() })
+      );
+      return res.json({ success: true });
+    }
+
+    /* ── Upcoming Events (dashboard widget) ──────────── */
+    case 'getUpcomingEvents': {
+      const today = new Date();
+      const todayMD = `${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+      const events = [];
+
+      const ueEmpRows = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const ueUserMap = {};
+      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { ueUserMap[u.id] = u.full_name; });
+
+      for (const row of ueEmpRows) {
+        const emp = JSON.parse(row.data);
+        if (!emp.user_id) continue;
+        const name = ueUserMap[emp.user_id] || emp.display_name || emp.email || 'Unknown';
+
+        // Birthday
+        if (emp.date_of_birth) {
+          const dob = new Date(emp.date_of_birth);
+          const dobMD = `${String(dob.getMonth()+1).padStart(2,'0')}-${String(dob.getDate()).padStart(2,'0')}`;
+          const diffDays = (() => { const next = new Date(today.getFullYear(), dob.getMonth(), dob.getDate()); if (next < today) next.setFullYear(today.getFullYear()+1); return Math.ceil((next-today)/(1000*60*60*24)); })();
+          if (diffDays <= 30) events.push({ type: 'birthday', label: `${name}'s Birthday`, date: `${today.getFullYear()}-${dobMD}`, days_away: diffDays, user_id: emp.user_id, department: emp.department });
+        }
+
+        // Work anniversary
+        if (emp.date_of_joining) {
+          const doj = new Date(emp.date_of_joining);
+          const dojMD = `${String(doj.getMonth()+1).padStart(2,'0')}-${String(doj.getDate()).padStart(2,'0')}`;
+          const years = today.getFullYear() - doj.getFullYear();
+          const diffDays = (() => { const next = new Date(today.getFullYear(), doj.getMonth(), doj.getDate()); if (next < today) next.setFullYear(today.getFullYear()+1); return Math.ceil((next-today)/(1000*60*60*24)); })();
+          if (diffDays <= 30 && years > 0) events.push({ type: 'anniversary', label: `${name}'s Work Anniversary (${years} yr${years>1?'s':''})`, date: `${today.getFullYear()}-${dojMD}`, days_away: diffDays, user_id: emp.user_id, department: emp.department });
+        }
+
+        // Probation ending
+        if (emp.employee_status === 'probation') {
+          const probEnd = emp.probation_end_date ? new Date(emp.probation_end_date) : (emp.date_of_joining ? new Date(new Date(emp.date_of_joining).getTime() + 90*24*60*60*1000) : null);
+          if (probEnd) {
+            const diffDays = Math.ceil((probEnd-today)/(1000*60*60*24));
+            if (diffDays >= 0 && diffDays <= 30) events.push({ type: 'probation', label: `${name}'s Probation Ends`, date: probEnd.toISOString().slice(0,10), days_away: diffDays, user_id: emp.user_id, department: emp.department });
+            else if (diffDays < 0) events.push({ type: 'probation_overdue', label: `${name}'s Probation Overdue (${Math.abs(diffDays)} days)`, date: probEnd.toISOString().slice(0,10), days_away: diffDays, user_id: emp.user_id, department: emp.department });
+          }
+        }
+      }
+
+      // Employees returning from leave today/this week
+      const leaveReturnRows = db.prepare("SELECT data FROM entities WHERE type='Leave' AND status='approved'").all();
+      for (const row of leaveReturnRows) {
+        const lv = JSON.parse(row.data);
+        if (!lv.end_date) continue;
+        const endDate = new Date(lv.end_date);
+        const diffDays = Math.ceil((endDate-today)/(1000*60*60*24));
+        if (diffDays >= -1 && diffDays <= 3) {
+          const name = ueUserMap[lv.user_id] || 'Employee';
+          events.push({ type: 'leave_return', label: `${name} returns from leave`, date: new Date(endDate.getTime()+24*60*60*1000).toISOString().slice(0,10), days_away: diffDays+1, user_id: lv.user_id });
+        }
+      }
+
+      events.sort((a,b) => a.days_away - b.days_away);
+      return res.json({ success: true, events });
+    }
+
+    /* ── Bulk leave operations ────────────────────────── */
+    case 'bulkApproveLeave': {
+      const { leave_ids, approved_by: blApprover, comment: blComment } = p;
+      if (!Array.isArray(leave_ids) || !leave_ids.length) return res.json({ success: false, error: 'No leave IDs provided' });
+      let approved = 0, failed = 0;
+      for (const lid of leave_ids) {
+        try {
+          const row = db.prepare("SELECT id,data FROM entities WHERE type='Leave' AND id=?").get(lid);
+          if (!row) { failed++; continue; }
+          const lv = JSON.parse(row.data);
+          if (lv.status === 'approved') { approved++; continue; }
+          const upd = { ...lv, status: 'approved', approved_by: blApprover, approved_at: new Date().toISOString(), approval_note: blComment||'Bulk approved' };
+          db.prepare("UPDATE entities SET data=?,status='approved',updated_at=datetime('now') WHERE id=?").run(JSON.stringify(upd), row.id);
+          // Notify employee
+          const nid = uuidv4();
+          db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(nid, lv.user_id, 'Leave Approved', `Your leave request (${lv.start_date} – ${lv.end_date}) has been approved.`, 'leave', '/leave');
+          approved++;
+        } catch { failed++; }
+      }
+      return res.json({ success: true, approved, failed, total: leave_ids.length });
+    }
+
+    case 'bulkRejectLeave': {
+      const { leave_ids: rlIds, rejected_by: rlBy, reason: rlReason } = p;
+      if (!Array.isArray(rlIds) || !rlIds.length) return res.json({ success: false, error: 'No leave IDs provided' });
+      let rejected = 0, failed = 0;
+      for (const lid of rlIds) {
+        try {
+          const row = db.prepare("SELECT id,data FROM entities WHERE type='Leave' AND id=?").get(lid);
+          if (!row) { failed++; continue; }
+          const lv = JSON.parse(row.data);
+          if (['approved','rejected'].includes(lv.status)) { rejected++; continue; }
+          const upd = { ...lv, status: 'rejected', rejected_by: rlBy, rejected_at: new Date().toISOString(), rejection_reason: rlReason||'Bulk rejected' };
+          db.prepare("UPDATE entities SET data=?,status='rejected',updated_at=datetime('now') WHERE id=?").run(JSON.stringify(upd), row.id);
+          const nid = uuidv4();
+          db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(nid, lv.user_id, 'Leave Rejected', `Your leave request (${lv.start_date} – ${lv.end_date}) has been rejected.${rlReason?' Reason: '+rlReason:''}`, 'leave', '/leave');
+          rejected++;
+        } catch { failed++; }
+      }
+      return res.json({ success: true, rejected, failed, total: rlIds.length });
+    }
+
+    /* ── Probation Management ────────────────────────── */
+    case 'getProbationEmployees': {
+      const today2 = new Date();
+      const pbEmpRows = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const pbUserMap = {};
+      db.prepare("SELECT id,full_name,email FROM users").all().forEach(u => { pbUserMap[u.id] = u; });
+      const result = pbEmpRows.map(r => JSON.parse(r.data)).filter(e => e.employee_status === 'probation' || e.employee_status === 'active').map(e => {
+        const u = pbUserMap[e.user_id] || {};
+        const doj = e.date_of_joining ? new Date(e.date_of_joining) : null;
+        const probEnd = e.probation_end_date ? new Date(e.probation_end_date) : (doj ? new Date(doj.getTime() + 90*24*60*60*1000) : null);
+        const daysLeft = probEnd ? Math.ceil((probEnd - today2)/(1000*60*60*24)) : null;
+        return { ...e, full_name: u.full_name, email: u.email, probation_end_date: probEnd?.toISOString().slice(0,10), days_left: daysLeft, probation_flag: daysLeft !== null && daysLeft <= 30 ? (daysLeft < 0 ? 'overdue' : 'due_soon') : 'active' };
+      }).filter(e => e.employee_status === 'probation' || (e.days_left !== null && e.days_left <= 60));
+      return res.json({ success: true, employees: result });
+    }
+
+    case 'processProbationAction': {
+      const { user_id: pbUid, action: pbAction, probation_end_date: pbEnd, note: pbNote } = p;
+      const pbRow = db.prepare("SELECT id,data FROM entities WHERE type='Employee' AND user_id=?").get(pbUid);
+      if (!pbRow) return res.json({ success: false, error: 'Employee not found' });
+      const pbEmp = JSON.parse(pbRow.data);
+      const pbUpd = { ...pbEmp };
+      if (pbAction === 'confirm') { pbUpd.employee_status = 'active'; pbUpd.confirmation_date = new Date().toISOString().slice(0,10); }
+      else if (pbAction === 'extend') { pbUpd.employee_status = 'probation'; pbUpd.probation_end_date = pbEnd; pbUpd.probation_extension_note = pbNote; }
+      else if (pbAction === 'terminate') { pbUpd.employee_status = 'terminated'; pbUpd.termination_date = new Date().toISOString().slice(0,10); pbUpd.termination_reason = pbNote||'Probation not cleared'; }
+      db.prepare("UPDATE entities SET data=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(pbUpd), pbRow.id);
+      const pbMsg = { confirm: 'Congratulations! Your probation is complete and employment is confirmed.', extend: `Your probation period has been extended to ${pbEnd}.`, terminate: 'Your probation review has resulted in termination. Please contact HR.' };
+      const pbNid = uuidv4();
+      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(pbNid, pbUid, 'Probation Status Update', pbMsg[pbAction]||'Your probation status was updated.', 'probation', '/profile');
+      return res.json({ success: true, action: pbAction, status: pbUpd.employee_status });
+    }
+
+    /* ── Shift Swap ──────────────────────────────────── */
+    case 'createShiftSwapRequest': {
+      const { requester_id: ssReqId, target_user_id: ssTgtId, requester_date: ssReqDate, target_date: ssTgtDate, reason: ssReason } = p;
+      const ssId = uuidv4();
+      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'ShiftSwap',?,'pending',?)").run(ssId, ssReqId,
+        JSON.stringify({ id: ssId, requester_id: ssReqId, target_user_id: ssTgtId, requester_date: ssReqDate, target_date: ssTgtDate||ssReqDate, reason: ssReason, status: 'pending', created_at: new Date().toISOString() }));
+      const ssReqName = db.prepare("SELECT full_name FROM users WHERE id=?").get(ssReqId)?.full_name || 'An employee';
+      const ssNid = uuidv4();
+      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(ssNid, ssTgtId, 'Shift Swap Request', `${ssReqName} has requested a shift swap with you for ${ssReqDate}.`, 'shift_swap', '/shift-management');
+      return res.json({ success: true, swap_id: ssId });
+    }
+
+    case 'approveShiftSwap': case 'rejectShiftSwap': {
+      const { swap_id: ssSwapId, processed_by: ssProcBy } = p;
+      const ssRow = db.prepare("SELECT id,data FROM entities WHERE type='ShiftSwap' AND id=?").get(ssSwapId);
+      if (!ssRow) return res.json({ success: false, error: 'Swap request not found' });
+      const ss = JSON.parse(ssRow.data);
+      const ssIsApprove = name === 'approveShiftSwap';
+      db.prepare("UPDATE entities SET data=?,status=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify({ ...ss, status: ssIsApprove?'approved':'rejected', processed_by: ssProcBy, processed_at: new Date().toISOString() }), ssIsApprove?'approved':'rejected', ssRow.id);
+      const ssNid2 = uuidv4();
+      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(ssNid2, ss.requester_id, `Shift Swap ${ssIsApprove?'Approved':'Rejected'}`, `Your shift swap request for ${ss.requester_date} has been ${ssIsApprove?'approved':'rejected'}.`, 'shift_swap', '/shift-management');
+      return res.json({ success: true });
+    }
+
+    case 'getShiftSwapRequests': {
+      const { user_id: ssUid, status: ssStatus } = p;
+      let ssQ = "SELECT data FROM entities WHERE type='ShiftSwap'";
+      const ssP = [];
+      if (ssUid) { ssQ += " AND (json_extract(data,'$.requester_id')=? OR json_extract(data,'$.target_user_id')=?)"; ssP.push(ssUid, ssUid); }
+      if (ssStatus) { ssQ += " AND json_extract(data,'$.status')=?"; ssP.push(ssStatus); }
+      ssQ += " ORDER BY created_at DESC";
+      const ssUserMap = {};
+      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { ssUserMap[u.id] = u.full_name; });
+      const swaps = db.prepare(ssQ).all(...ssP).map(r => { const d = JSON.parse(r.data); return { ...d, requester_name: ssUserMap[d.requester_id], target_name: ssUserMap[d.target_user_id] }; });
+      return res.json({ success: true, swaps });
+    }
+
+    /* ── Tax Declarations (Form 12BB) ────────────────── */
+    case 'submitTaxDeclaration': {
+      const { user_id: tdUid, financial_year: tdFY, declarations: tdDecl } = p;
+      const existTD = db.prepare("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=? AND json_extract(data,'$.financial_year')=?").get(tdUid, tdFY);
+      const tdTotal = Object.values(tdDecl||{}).reduce((s,v) => s + Number(v||0), 0);
+      const tdData = { user_id: tdUid, financial_year: tdFY, declarations: tdDecl, total_declared: tdTotal, status: 'submitted', submitted_at: new Date().toISOString() };
+      if (existTD) {
+        db.prepare("UPDATE entities SET data=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify({ ...JSON.parse(existTD.data), ...tdData, id: existTD.id }), existTD.id);
+      } else {
+        const tdId = uuidv4();
+        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'TaxDeclaration',?,'submitted',?)").run(tdId, tdUid, JSON.stringify({ ...tdData, id: tdId }));
+      }
+      // Notify HR
+      const hrRows2 = db.prepare("SELECT id FROM users WHERE role IN ('admin','hr')").all();
+      for (const hr of hrRows2) {
+        const tdNid = uuidv4();
+        const tdName = db.prepare("SELECT full_name FROM users WHERE id=?").get(tdUid)?.full_name || 'An employee';
+        db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(tdNid, hr.id, 'Tax Declaration Submitted', `${tdName} submitted tax declaration for FY ${tdFY}.`, 'tax', '/admin-panel');
+      }
+      return res.json({ success: true, total_declared: tdTotal });
+    }
+
+    case 'getTaxDeclaration': {
+      const { user_id: tdGetUid, financial_year: tdGetFY } = p;
+      const tdRow = db.prepare("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=?" + (tdGetFY ? " AND json_extract(data,'$.financial_year')=?" : "")).get(...([tdGetUid, tdGetFY].filter(Boolean)));
+      return res.json({ success: true, declaration: tdRow ? JSON.parse(tdRow.data) : null });
+    }
+
+    case 'getTaxDeclarationSummary': {
+      const { financial_year: tdsFY } = p;
+      let tdsSql = "SELECT data FROM entities WHERE type='TaxDeclaration'";
+      const tdsP = [];
+      if (tdsFY) { tdsSql += " AND json_extract(data,'$.financial_year')=?"; tdsP.push(tdsFY); }
+      const tdsUserMap = {};
+      db.prepare("SELECT id,full_name,email FROM users").all().forEach(u => { tdsUserMap[u.id] = u; });
+      const decls = db.prepare(tdsSql).all(...tdsP).map(r => { const d = JSON.parse(r.data); const u = tdsUserMap[d.user_id]||{}; return { ...d, full_name: u.full_name, email: u.email }; });
+      return res.json({ success: true, declarations: decls, total: decls.length, pending_approval: decls.filter(d=>d.status==='submitted').length });
+    }
+
+    case 'approveTaxDeclaration': {
+      const { user_id: tdaUid, financial_year: tdaFY, approved_by: tdaBy, notes: tdaNotes } = p;
+      const tdaRow = db.prepare("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=?" + (tdaFY?" AND json_extract(data,'$.financial_year')=?":"")).get(...([tdaUid,tdaFY].filter(Boolean)));
+      if (!tdaRow) return res.json({ success: false, error: 'Declaration not found' });
+      const tdaData = { ...JSON.parse(tdaRow.data), status: 'approved', approved_by: tdaBy, approved_at: new Date().toISOString(), hr_notes: tdaNotes };
+      db.prepare("UPDATE entities SET data=?,status='approved',updated_at=datetime('now') WHERE id=?").run(JSON.stringify(tdaData), tdaRow.id);
+      const tdaNid = uuidv4();
+      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(tdaNid, tdaUid, 'Tax Declaration Approved', `Your tax declaration for FY ${tdaFY} has been approved.`, 'tax', '/profile');
+      return res.json({ success: true });
+    }
+
+    /* ── Loan Management ─────────────────────────────── */
+    case 'applyForLoan': {
+      const { user_id: lnUid, loan_type, amount: lnAmt, tenure_months, purpose, requested_disbursement_date } = p;
+      const lnId = uuidv4();
+      const emi = lnAmt && tenure_months ? Math.ceil(Number(lnAmt) / Number(tenure_months)) : 0;
+      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Loan',?,'pending',?)").run(lnId, lnUid,
+        JSON.stringify({ id: lnId, user_id: lnUid, loan_type: loan_type||'personal', amount: Number(lnAmt||0), tenure_months: Number(tenure_months||0), emi_amount: emi, purpose, requested_disbursement_date, status: 'pending', applied_at: new Date().toISOString(), outstanding_amount: Number(lnAmt||0) }));
+      const hrRows3 = db.prepare("SELECT id FROM users WHERE role IN ('admin','hr')").all();
+      const lnName = db.prepare("SELECT full_name FROM users WHERE id=?").get(lnUid)?.full_name||'Employee';
+      for (const hr of hrRows3) {
+        const nid = uuidv4();
+        db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(nid, hr.id, 'Loan Application', `${lnName} applied for a ₹${Number(lnAmt||0).toLocaleString('en-IN')} ${loan_type||'personal'} loan.`, 'loan', '/loan-management');
+      }
+      return res.json({ success: true, loan_id: lnId, emi_amount: emi });
+    }
+
+    case 'approveLoan': case 'rejectLoan': {
+      const { loan_id: lnActId, approved_by: lnActBy, disbursement_date, rejection_reason } = p;
+      const lnRow = db.prepare("SELECT id,data FROM entities WHERE type='Loan' AND id=?").get(lnActId);
+      if (!lnRow) return res.json({ success: false, error: 'Loan not found' });
+      const lnData = JSON.parse(lnRow.data);
+      const isLnApprove = name === 'approveLoan';
+      const lnUpd = { ...lnData, status: isLnApprove?'approved':'rejected', processed_by: lnActBy, processed_at: new Date().toISOString(), ...(isLnApprove ? { disbursement_date, repayment_start_date: disbursement_date } : { rejection_reason }) };
+      db.prepare("UPDATE entities SET data=?,status=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(lnUpd), lnUpd.status, lnRow.id);
+      const lnNid = uuidv4();
+      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(lnNid, lnData.user_id, `Loan ${isLnApprove?'Approved':'Rejected'}`, isLnApprove?`Your loan of ₹${lnData.amount?.toLocaleString('en-IN')} has been approved. Disbursement: ${disbursement_date||'TBD'}.`:`Your loan application was rejected. ${rejection_reason||''}`, 'loan', '/loan-management');
+      return res.json({ success: true });
+    }
+
+    case 'getLoanDetails': {
+      const { user_id: lnGetUid, loan_id: lnGetId } = p;
+      let lnQ = "SELECT data FROM entities WHERE type='Loan'";
+      const lnP2 = [];
+      if (lnGetId) { lnQ += " AND id=?"; lnP2.push(lnGetId); }
+      else if (lnGetUid) { lnQ += " AND user_id=?"; lnP2.push(lnGetUid); }
+      lnQ += " ORDER BY created_at DESC";
+      const lnUserMap2 = {};
+      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { lnUserMap2[u.id] = u.full_name; });
+      const loans = db.prepare(lnQ).all(...lnP2).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: lnUserMap2[d.user_id] }; });
+      return res.json({ success: true, loans });
+    }
+
+    case 'processLoanRepayment': {
+      const { loan_id: lnRepId, amount: lnRepAmt, repayment_date, notes: lnRepNotes } = p;
+      const lnRepRow = db.prepare("SELECT id,data FROM entities WHERE type='Loan' AND id=?").get(lnRepId);
+      if (!lnRepRow) return res.json({ success: false, error: 'Loan not found' });
+      const lnRep = JSON.parse(lnRepRow.data);
+      const newOutstanding = Math.max(0, Number(lnRep.outstanding_amount||lnRep.amount||0) - Number(lnRepAmt||0));
+      const repHistory = [...(lnRep.repayment_history||[]), { amount: Number(lnRepAmt||0), date: repayment_date||new Date().toISOString().slice(0,10), notes: lnRepNotes }];
+      const lnRepUpd = { ...lnRep, outstanding_amount: newOutstanding, repayment_history: repHistory, status: newOutstanding <= 0 ? 'closed' : lnRep.status };
+      db.prepare("UPDATE entities SET data=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(lnRepUpd), lnRepRow.id);
+      return res.json({ success: true, outstanding_amount: newOutstanding, status: lnRepUpd.status });
+    }
+
+    /* ── Helpdesk SLA ────────────────────────────────── */
+    case 'getHelpdeskStats': {
+      const tktRows = db.prepare("SELECT data FROM entities WHERE type='HelpdeskTicket'").all();
+      const tickets = tktRows.map(r => JSON.parse(r.data));
+      const now = new Date();
+      const stats = { total: tickets.length, open: 0, in_progress: 0, resolved: 0, closed: 0, overdue: 0, avg_resolution_hours: 0 };
+      let totalResolvedHours = 0, resolvedCount = 0;
+      for (const t of tickets) {
+        const s = (t.status||'open').toLowerCase().replace(/\s+/g,'_');
+        if (s === 'open') stats.open++;
+        else if (s === 'in_progress') stats.in_progress++;
+        else if (s === 'resolved') { stats.resolved++; if (t.created_at && t.resolved_at) { totalResolvedHours += (new Date(t.resolved_at)-new Date(t.created_at))/(1000*60*60); resolvedCount++; } }
+        else if (s === 'closed') stats.closed++;
+        // SLA: tickets open > 24h are overdue
+        if (['open','in_progress'].includes(s) && t.created_at) {
+          const hoursOpen = (now - new Date(t.created_at))/(1000*60*60);
+          const slaHours = t.priority === 'high' ? 4 : t.priority === 'medium' ? 24 : 72;
+          if (hoursOpen > slaHours) stats.overdue++;
+        }
+      }
+      stats.avg_resolution_hours = resolvedCount ? Math.round(totalResolvedHours/resolvedCount) : 0;
+      return res.json({ success: true, stats });
+    }
+
+    case 'escalateHelpdeskTicket': {
+      const { ticket_id: tktId, escalated_to, reason: tktReason } = p;
+      const tktRow = db.prepare("SELECT id,data FROM entities WHERE type='HelpdeskTicket' AND id=?").get(tktId);
+      if (!tktRow) return res.json({ success: false, error: 'Ticket not found' });
+      const tkt = JSON.parse(tktRow.data);
+      const tktUpd = { ...tkt, status: 'escalated', escalated_to, escalation_reason: tktReason, escalated_at: new Date().toISOString() };
+      db.prepare("UPDATE entities SET data=?,status='escalated',updated_at=datetime('now') WHERE id=?").run(JSON.stringify(tktUpd), tktRow.id);
+      if (escalated_to) {
+        const tktNid = uuidv4();
+        db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(tktNid, escalated_to, 'Ticket Escalated to You', `Helpdesk ticket #${tktId.slice(0,8)} has been escalated. Reason: ${tktReason||'SLA breach'}`, 'helpdesk', '/helpdesk');
+      }
+      return res.json({ success: true });
+    }
+
+    /* ── Insurance Claims ────────────────────────────── */
+    case 'fileInsuranceClaim': {
+      const { user_id: icUid, policy_id, claim_amount, claim_type, description: icDesc, incident_date } = p;
+      const icId = uuidv4();
+      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'InsuranceClaim',?,'pending',?)").run(icId, icUid,
+        JSON.stringify({ id: icId, user_id: icUid, policy_id, claim_amount: Number(claim_amount||0), claim_type, description: icDesc, incident_date, status: 'pending', filed_at: new Date().toISOString() }));
+      const icName = db.prepare("SELECT full_name FROM users WHERE id=?").get(icUid)?.full_name||'Employee';
+      const hrRows4 = db.prepare("SELECT id FROM users WHERE role IN ('admin','hr')").all();
+      for (const hr of hrRows4) {
+        const nid = uuidv4();
+        db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(nid, hr.id, 'Insurance Claim Filed', `${icName} filed an insurance claim for ₹${Number(claim_amount||0).toLocaleString('en-IN')}.`, 'insurance', '/insurance-management');
+      }
+      return res.json({ success: true, claim_id: icId });
+    }
+
+    case 'processInsuranceClaim': {
+      const { claim_id: icActId, action: icAct, approved_amount, rejection_reason: icRej, processed_by: icProcBy } = p;
+      const icRow = db.prepare("SELECT id,data FROM entities WHERE type='InsuranceClaim' AND id=?").get(icActId);
+      if (!icRow) return res.json({ success: false, error: 'Claim not found' });
+      const icData = JSON.parse(icRow.data);
+      const icUpd = { ...icData, status: icAct==='approve'?'approved':'rejected', processed_by: icProcBy, processed_at: new Date().toISOString(), ...(icAct==='approve' ? { approved_amount: Number(approved_amount||icData.claim_amount||0) } : { rejection_reason: icRej }) };
+      db.prepare("UPDATE entities SET data=?,status=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(icUpd), icUpd.status, icRow.id);
+      const icNid = uuidv4();
+      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(icNid, icData.user_id, `Insurance Claim ${icAct==='approve'?'Approved':'Rejected'}`, icAct==='approve'?`Your claim for ₹${icData.claim_amount} has been approved. Approved amount: ₹${approved_amount||icData.claim_amount}.`:`Your claim was rejected. ${icRej||''}`, 'insurance', '/insurance-management');
+      return res.json({ success: true });
+    }
+
+    case 'getInsuranceClaims': {
+      const { user_id: icGetUid } = p;
+      let icQ = "SELECT data FROM entities WHERE type='InsuranceClaim'";
+      const icQP = [];
+      if (icGetUid) { icQ += " AND user_id=?"; icQP.push(icGetUid); }
+      icQ += " ORDER BY created_at DESC";
+      const icUMap = {};
+      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { icUMap[u.id] = u.full_name; });
+      const claims = db.prepare(icQ).all(...icQP).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: icUMap[d.user_id] }; });
+      return res.json({ success: true, claims });
+    }
+
+    /* ── Employee Dashboard (self-service) ───────────── */
+    case 'getEmployeeDashboard': {
+      const { user_id: edUid } = p;
+      if (!edUid) return res.json({ success: false, error: 'user_id required' });
+
+      const edEmp = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(edUid);
+      const emp = edEmp ? JSON.parse(edEmp.data) : {};
+
+      // Recent leaves
+      const edLeaves = db.prepare("SELECT data FROM entities WHERE type='Leave' AND user_id=? ORDER BY created_at DESC LIMIT 5").all(edUid).map(r=>JSON.parse(r.data));
+
+      // Pending regularisations
+      const edRegs = db.prepare("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND user_id=? AND status='pending'").all(edUid).map(r=>JSON.parse(r.data));
+
+      // Active loans
+      const edLoans = db.prepare("SELECT data FROM entities WHERE type='Loan' AND user_id=? AND status IN ('approved','active')").all(edUid).map(r=>JSON.parse(r.data));
+
+      // Latest payslip
+      const edPayroll = db.prepare("SELECT data FROM entities WHERE type='Payroll' AND user_id=? ORDER BY created_at DESC LIMIT 1").get(edUid);
+      const latestPayslip = edPayroll ? JSON.parse(edPayroll.data) : null;
+
+      // Open helpdesk tickets
+      const edTickets = db.prepare("SELECT data FROM entities WHERE type='HelpdeskTicket' AND user_id=? AND status NOT IN ('resolved','closed')").all(edUid).map(r=>JSON.parse(r.data));
+
+      // Tax declaration status
+      const currentFY = new Date().getMonth() >= 3 ? `${new Date().getFullYear()}-${new Date().getFullYear()+1}` : `${new Date().getFullYear()-1}-${new Date().getFullYear()}`;
+      const edTax = db.prepare("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=? ORDER BY created_at DESC LIMIT 1").get(edUid);
+
+      // Upcoming leaves (approved, future)
+      const todayStr = new Date().toISOString().slice(0,10);
+      const edUpcomingLeaves = db.prepare("SELECT data FROM entities WHERE type='Leave' AND user_id=? AND status='approved' AND end_date>=?").all(edUid, todayStr).map(r=>JSON.parse(r.data));
+
+      return res.json({ success: true, employee: emp, recent_leaves: edLeaves, pending_regularisations: edRegs.length, active_loans: edLoans, latest_payslip: latestPayslip, open_tickets: edTickets.length, upcoming_leaves: edUpcomingLeaves, tax_declaration: edTax ? JSON.parse(edTax.data) : null, current_fy: currentFY });
+    }
+
+    /* ── Training ────────────────────────────────────── */
 
     default:
       console.warn(`[functions] Unknown function: ${name}`);

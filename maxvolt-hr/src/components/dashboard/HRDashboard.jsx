@@ -8,7 +8,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import {
   Users, Clock, FileText, DollarSign, CheckCircle2, AlertCircle,
   Calendar, UserPlus, BarChart3, Briefcase, HelpCircle,
-  ChevronRight, CreditCard, Building2, TrendingDown
+  ChevronRight, CreditCard, Building2, TrendingDown,
+  Gift, Star, Timer, LogIn
 } from 'lucide-react';
 import { format, startOfMonth, endOfMonth, isBefore, parseISO } from 'date-fns';
 
@@ -16,6 +17,8 @@ export default function HRDashboard({ user }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [detailModal, setDetailModal] = useState(null);
+  const [upcomingEvents, setUpcomingEvents] = useState([]);
+  const [complianceInsights, setComplianceInsights] = useState([]);
 
   useEffect(() => { loadData(); }, []);
 
@@ -102,6 +105,10 @@ export default function HRDashboard({ user }) {
 
     const openPositions = jobReqs.length;
     const openPositionsList = jobReqs.slice(0, 5);
+
+    // Upcoming events & compliance insights in parallel (non-blocking)
+    base44.functions.invoke('getUpcomingEvents', {}).then(r => setUpcomingEvents(r?.data?.events || [])).catch(() => {});
+    base44.functions.invoke('getComplianceInsights', {}).then(r => setComplianceInsights(r?.data?.insights || [])).catch(() => {});
 
     setData({
       activeEmployeeCount, presentToday, absentToday, onLeaveToday, attendanceRate,
@@ -684,6 +691,70 @@ export default function HRDashboard({ user }) {
             </CardContent>
           </Card>
         )}
+
+        {/* Upcoming Events & Compliance Insights Row */}
+        <div className="grid md:grid-cols-2 gap-4">
+          {/* Upcoming Events */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2 text-foreground">
+                <Calendar className="w-4 h-4 text-indigo-500" /> Upcoming Events
+                <span className="ml-auto text-xs font-normal text-muted-foreground">Next 30 days</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {upcomingEvents.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">No upcoming events in the next 30 days</p>
+              ) : (
+                <div className="space-y-2 max-h-56 overflow-y-auto">
+                  {upcomingEvents.slice(0, 10).map((ev, i) => {
+                    const icons = { birthday: <Gift className="w-3.5 h-3.5 text-pink-500" />, anniversary: <Star className="w-3.5 h-3.5 text-yellow-500" />, probation: <Timer className="w-3.5 h-3.5 text-orange-500" />, probation_overdue: <AlertCircle className="w-3.5 h-3.5 text-red-500" />, leave_return: <LogIn className="w-3.5 h-3.5 text-green-500" /> };
+                    const colors = { birthday: 'bg-pink-50 border-pink-200', anniversary: 'bg-yellow-50 border-yellow-200', probation: 'bg-orange-50 border-orange-200', probation_overdue: 'bg-red-50 border-red-200', leave_return: 'bg-green-50 border-green-200' };
+                    return (
+                      <div key={i} className={`flex items-center gap-3 p-2 rounded-lg border text-sm ${colors[ev.type] || 'bg-gray-50 border-gray-200'}`}>
+                        {icons[ev.type] || <Calendar className="w-3.5 h-3.5 text-gray-400" />}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-gray-800 truncate">{ev.label}</p>
+                          <p className="text-xs text-gray-500">{ev.date}{ev.department ? ` · ${ev.department}` : ''}</p>
+                        </div>
+                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${ev.days_away === 0 ? 'bg-blue-100 text-blue-700' : ev.days_away < 0 ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
+                          {ev.days_away === 0 ? 'Today' : ev.days_away < 0 ? `${Math.abs(ev.days_away)}d ago` : `${ev.days_away}d`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Compliance Insights */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2 text-foreground">
+                <CheckCircle2 className="w-4 h-4 text-green-500" /> Compliance Insights
+                <Link to={createPageUrl('ComplianceDashboard')} className="ml-auto text-xs text-primary font-normal hover:underline">View All →</Link>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {complianceInsights.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">All compliance checks passed</p>
+              ) : (
+                <div className="space-y-2 max-h-56 overflow-y-auto">
+                  {complianceInsights.map((ins, i) => {
+                    const styles = { error: 'bg-red-50 border-red-300 text-red-800', warning: 'bg-orange-50 border-orange-300 text-orange-800', info: 'bg-blue-50 border-blue-200 text-blue-800' };
+                    return (
+                      <div key={i} className={`p-2.5 rounded-lg border text-sm ${styles[ins.type] || styles.info}`}>
+                        <p className="font-semibold">{ins.title}</p>
+                        {ins.detail && <p className="text-xs mt-0.5 opacity-80 line-clamp-2">{ins.detail}</p>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
         {/* Detail Modal */}
         <Dialog open={!!detailModal} onOpenChange={() => setDetailModal(null)}>
