@@ -61,7 +61,7 @@ export default function Login() {
         </div>
 
         {/* Card */}
-        <div className="bg-white dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-white/8 shadow-sm p-6">
+        <div className="bg-card rounded-2xl border border-border shadow-sm p-6">
           {/* Error */}
           {error && (
             <div className="mb-5 px-4 py-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm font-medium flex items-start gap-2">

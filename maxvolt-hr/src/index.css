@@ -165,9 +165,45 @@
   .dark .divide-gray-100 { border-color: hsl(232 30% 12%) !important; }
   .dark .divide-gray-200 { border-color: hsl(232 30% 15%) !important; }
 
+  /* gray-200 / gray-300 surfaces */
+  .dark .bg-gray-200   { background-color: hsl(232 25% 15%) !important; }
+  .dark .bg-gray-300   { background-color: hsl(232 22% 18%) !important; }
+
+  /* slate surfaces */
+  .dark .bg-slate-50   { background-color: hsl(220 30% 9%)  !important; }
+  .dark .bg-slate-100  { background-color: hsl(220 28% 11%) !important; }
+  .dark .bg-slate-200  { background-color: hsl(220 25% 14%) !important; }
+  .dark .bg-slate-800  { background-color: hsl(220 22% 10%) !important; }
+  .dark .bg-slate-900  { background-color: hsl(220 22% 7%)  !important; }
+
+  /* slate text */
+  .dark .text-slate-900 { color: hsl(210 25% 92%) !important; }
+  .dark .text-slate-800 { color: hsl(210 22% 85%) !important; }
+  .dark .text-slate-700 { color: hsl(210 18% 75%) !important; }
+  .dark .text-slate-600 { color: hsl(210 15% 60%) !important; }
+  .dark .text-slate-500 { color: hsl(210 12% 52%) !important; }
+  .dark .text-slate-400 { color: hsl(210 10% 44%) !important; }
+
+  /* slate borders */
+  .dark .border-slate-200 { border-color: hsl(220 25% 16%) !important; }
+  .dark .border-slate-300 { border-color: hsl(220 22% 20%) !important; }
+
   /* Hover backgrounds */
-  .dark .hover\:bg-gray-50:hover  { background-color: hsl(232 35% 11%) !important; }
-  .dark .hover\:bg-gray-100:hover { background-color: hsl(232 35% 13%) !important; }
+  .dark .hover\:bg-gray-50:hover   { background-color: hsl(232 35% 11%) !important; }
+  .dark .hover\:bg-gray-100:hover  { background-color: hsl(232 35% 13%) !important; }
+  .dark .hover\:bg-slate-50:hover  { background-color: hsl(220 30% 11%) !important; }
+  .dark .hover\:bg-slate-100:hover { background-color: hsl(220 28% 13%) !important; }
+
+  /* Gradient from/to — fix gradient-bg pages in dark mode */
+  .dark .from-blue-50    { --tw-gradient-from: hsl(220 30% 9%) var(--tw-gradient-from-position) !important; }
+  .dark .from-indigo-50  { --tw-gradient-from: hsl(245 30% 9%) var(--tw-gradient-from-position) !important; }
+  .dark .to-indigo-100   { --tw-gradient-to:   hsl(245 28% 12%) var(--tw-gradient-to-position) !important; }
+  .dark .to-blue-100     { --tw-gradient-to:   hsl(220 28% 12%) var(--tw-gradient-to-position) !important; }
+  .dark .from-slate-900  { --tw-gradient-from: hsl(220 22% 7%)  var(--tw-gradient-from-position) !important; }
+  .dark .to-slate-800    { --tw-gradient-to:   hsl(220 22% 10%) var(--tw-gradient-to-position) !important; }
+
+  /* min-h-screen pages with hardcoded gradient bg */
+  .dark .min-h-screen.bg-gradient-to-br { background: hsl(var(--background)) !important; }
 
   /* Status text — stay vibrant */
   .dark .text-green-600  { color: hsl(142 60% 52%) !important; }

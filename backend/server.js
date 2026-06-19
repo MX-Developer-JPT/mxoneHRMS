@@ -16,27 +16,66 @@ import notificationsRouter  from './routes/notifications.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ── Auto-start Ollama for local development ─────────────────
-function autoStartOllama() {
-  if (process.env.GROQ_API_KEY) return; // Groq is configured, skip Ollama
-  if (process.env.NODE_ENV === 'production') return; // Railway: use Groq instead
-  try {
-    // Check if ollama is available
-    execSync('ollama --version', { stdio: 'ignore' });
-    // Check if already running
+// ── Auto-start Ollama + pull model ───────────────────────────
+async function ensureOllama() {
+  if (process.env.GROQ_API_KEY) return; // Groq is configured — skip Ollama
+
+  const OLLAMA_URL  = 'http://localhost:11434';
+  const MODEL       = process.env.OLLAMA_MODEL || 'tinyllama';
+  const isProd      = process.env.NODE_ENV === 'production';
+
+  // In dev: start ollama serve if not already running
+  if (!isProd) {
     try {
-      const result = execSync('curl -s http://localhost:11434/api/tags', { timeout: 2000, stdio: 'pipe' });
-      if (result) { console.log('✓ Ollama already running'); return; }
-    } catch {}
-    // Start ollama serve in background
-    const proc = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' });
-    proc.unref();
-    console.log('✓ Ollama started automatically');
-  } catch {
-    // Ollama not installed — that's OK, AI features will be limited
+      execSync('ollama --version', { stdio: 'ignore' });
+      try {
+        execSync(`curl -s ${OLLAMA_URL}/api/tags`, { timeout: 2000, stdio: 'pipe' });
+        console.log('✓ Ollama already running');
+      } catch {
+        const proc = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' });
+        proc.unref();
+        console.log('✓ Ollama started');
+      }
+    } catch { /* Ollama not installed — AI limited */ }
+    return;
   }
+
+  // In production: Ollama is already started by Dockerfile CMD.
+  // Wait for it to be ready, then pull model if not present.
+  console.log(`⚙ Checking Ollama model "${MODEL}"…`);
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      const res  = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      const data = await res.json();
+      const has  = (data.models || []).some(m => m.name.startsWith(MODEL.split(':')[0]));
+
+      if (has) {
+        console.log(`✓ Ollama model "${MODEL}" ready`);
+        return;
+      }
+
+      // Pull model (blocks until done — runs in background via setTimeout)
+      console.log(`⬇ Pulling Ollama model "${MODEL}" (first-run download, may take a few minutes)…`);
+      const pullRes = await fetch(`${OLLAMA_URL}/api/pull`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ name: MODEL, stream: false }),
+        signal:  AbortSignal.timeout(600_000), // 10 min max
+      });
+      if (pullRes.ok) console.log(`✓ Ollama model "${MODEL}" downloaded`);
+      else console.warn(`⚠ Ollama pull returned ${pullRes.status}`);
+      return;
+    } catch {
+      // Ollama not ready yet — wait and retry
+      await wait(3000);
+    }
+  }
+  console.warn('⚠ Ollama did not become ready — AI features unavailable until next restart');
 }
-autoStartOllama();
+// Run in background so server starts immediately
+ensureOllama().catch(() => {});
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
