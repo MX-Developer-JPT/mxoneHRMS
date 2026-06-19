@@ -121,6 +121,45 @@ router.post('/:type', (req, res) => {
         JSON.stringify(data));
 
   const row = db.prepare('SELECT * FROM entities WHERE id=?').get(id);
+
+  // ── Post-creation hooks: notify reporting manager ───
+  try {
+    const NOTIF_TYPES = ['Leave', 'GatePass', 'AttendanceRegularisation', 'Reimbursement'];
+    if (NOTIF_TYPES.includes(type) && data.user_id) {
+      const empRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(data.user_id);
+      const emp    = empRow ? JSON.parse(empRow.data) : null;
+      const managerId = emp?.reporting_manager_id;
+      if (managerId) {
+        const empName = emp?.display_name || 'An employee';
+        let title = '', message = '', link = '';
+        if (type === 'Leave') {
+          title   = `Leave Request from ${empName}`;
+          message = `${empName} has applied for ${data.total_days || ''} day(s) of leave (${data.start_date || ''} – ${data.end_date || ''}).`;
+          link    = '/Approvals';
+        } else if (type === 'GatePass') {
+          const labels = { official_outing:'Official Outing', unofficial_outing:'Unofficial Outing', half_day:'Half Day', short_break:'Short Break', early_leave:'Early Leave' };
+          title   = `Gate Pass Request from ${empName}`;
+          message = `${empName} has requested a gate pass (${labels[data.outing_type] || data.outing_type || 'outing'}).`;
+          link    = '/Approvals';
+        } else if (type === 'AttendanceRegularisation') {
+          title   = `Regularisation Request from ${empName}`;
+          message = `${empName} has submitted a regularisation request for ${data.date || ''} (${data.reason || ''}).`;
+          link    = '/Approvals';
+        } else if (type === 'Reimbursement') {
+          title   = `Expense Claim from ${empName}`;
+          message = `${empName} has submitted a ₹${data.amount || 0} expense claim for ${(data.expense_type || '').replace(/_/g,' ')}.`;
+          link    = '/Approvals';
+        }
+
+        if (title) {
+          const notifId = uuidv4();
+          db.prepare(`INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)`)
+            .run(notifId, managerId, title, message, 'info', link);
+        }
+      }
+    }
+  } catch(ne) { console.error('[notif] post-create hook error:', ne.message); }
+
   res.status(201).json(parseRow(row));
 });
 
