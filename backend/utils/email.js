@@ -8,15 +8,15 @@ function getSetting(key, fallback = '') {
   return process.env[key] || fallback;
 }
 
-function getResendKey() {
-  return getSetting('RESEND_API_KEY', '');
-}
-
+function getProvider()    { return getSetting('EMAIL_PROVIDER', 'resend'); }
+function getResendKey()   { return getSetting('RESEND_API_KEY', ''); }
+function getBrevoKey()    { return getSetting('BREVO_API_KEY', ''); }
 function getFromAddress() {
   const from = getSetting('SMTP_FROM', '');
-  return from.includes('@') ? from : 'Maxvolt HR <onboarding@resend.dev>';
+  return from.includes('@') ? from : null;
 }
 
+// ── Resend ─────────────────────────────────────────────────
 async function resendRequest(apiKey, path, body) {
   const res = await fetch(`https://api.resend.com${path}`, {
     method: body ? 'POST' : 'GET',
@@ -28,13 +28,47 @@ async function resendRequest(apiKey, path, body) {
   return data;
 }
 
+// ── Brevo ──────────────────────────────────────────────────
+async function brevoRequest(apiKey, path, body) {
+  const res = await fetch(`https://api.brevo.com/v3${path}`, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'api-key': apiKey, 'Content-Type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || `Brevo error ${res.status}`);
+  return data;
+}
+
+function parseFrom(fromStr, fallbackName = 'Maxvolt HR', fallbackEmail = 'noreply@maxvoltenergy.com') {
+  if (!fromStr) return { name: fallbackName, email: fallbackEmail };
+  const match = fromStr.match(/^(.*?)\s*<([^>]+)>$/);
+  if (match) return { name: match[1].trim() || fallbackName, email: match[2].trim() };
+  if (fromStr.includes('@')) return { name: fallbackName, email: fromStr.trim() };
+  return { name: fallbackName, email: fallbackEmail };
+}
+
+// ── Public API ─────────────────────────────────────────────
+
 export async function verifyEmail() {
-  const apiKey = getResendKey();
-  if (!apiKey) {
-    return { ok: false, error: 'Resend not configured. Add your API key in Admin Panel → Email Settings.' };
+  const provider = getProvider();
+
+  if (provider === 'brevo') {
+    const key = getBrevoKey();
+    if (!key) return { ok: false, error: 'Brevo API key not configured. Add it in Admin Panel → Email Settings.' };
+    try {
+      await brevoRequest(key, '/account');
+      return { ok: true, provider: 'brevo' };
+    } catch (e) {
+      return { ok: false, provider: 'brevo', error: `Brevo: ${e.message}` };
+    }
   }
+
+  // Default: Resend
+  const key = getResendKey();
+  if (!key) return { ok: false, error: 'Resend API key not configured. Add it in Admin Panel → Email Settings.' };
   try {
-    await resendRequest(apiKey, '/domains');
+    await resendRequest(key, '/domains');
     return { ok: true, provider: 'resend' };
   } catch (e) {
     return { ok: false, provider: 'resend', error: `Resend: ${e.message}` };
@@ -42,22 +76,42 @@ export async function verifyEmail() {
 }
 
 export async function sendEmail({ to, subject, html, text }) {
-  const apiKey = getResendKey();
-  if (!apiKey) {
-    console.warn('[email] Resend not configured — skipped:', subject);
-    return { skipped: true, reason: 'Configure Resend API key in Admin Panel → Email Settings' };
+  const provider = getProvider();
+  const fromStr  = getFromAddress();
+
+  if (provider === 'brevo') {
+    const key = getBrevoKey();
+    if (!key) { console.warn('[email] Brevo not configured — skipped:', subject); return { skipped: true }; }
+    const { name, email } = parseFrom(fromStr);
+    const toArr = Array.isArray(to) ? to.map(e => ({ email: e })) : [{ email: to }];
+    const data = await brevoRequest(key, '/smtp/email', {
+      sender: { name, email },
+      to: toArr,
+      subject,
+      htmlContent: html,
+      textContent: text,
+    });
+    return { success: true, messageId: data.messageId, provider: 'brevo' };
   }
-  const from = getFromAddress();
-  const data = await resendRequest(apiKey, '/emails', { from, to, subject, html, text });
+
+  // Default: Resend
+  const key = getResendKey();
+  if (!key) { console.warn('[email] Resend not configured — skipped:', subject); return { skipped: true }; }
+  const from = fromStr || 'Maxvolt HR <onboarding@resend.dev>';
+  const data = await resendRequest(key, '/emails', { from, to, subject, html, text });
   return { success: true, messageId: data.id, provider: 'resend' };
 }
 
 export function getSmtpPublicConfig() {
-  const apiKey = getResendKey();
+  const provider = getProvider();
   return {
+    provider,
     from:         getSetting('SMTP_FROM', ''),
-    hasResendKey: !!apiKey,
-    activeProvider: apiKey ? 'resend' : 'none',
+    hasResendKey: !!getResendKey(),
+    hasBrevoKey:  !!getBrevoKey(),
+    activeProvider: provider === 'brevo' && getBrevoKey() ? 'brevo'
+                  : provider === 'resend' && getResendKey() ? 'resend'
+                  : 'none',
   };
 }
 

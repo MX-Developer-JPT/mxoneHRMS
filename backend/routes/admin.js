@@ -189,17 +189,17 @@ router.get('/smtp-settings', (_req, res) => {
 
 // ── Email settings: save to DB ────────────────────────────
 router.post('/smtp-settings', (req, res) => {
-  const { resend_api_key, from } = req.body;
+  const { provider, resend_api_key, brevo_api_key, from } = req.body;
   const set = (key, val) => {
     db.prepare(`INSERT INTO settings(key,value,updated_at) VALUES(?,?,datetime('now'))
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`)
       .run(key, String(val));
   };
   const del = (key) => db.prepare('DELETE FROM settings WHERE key=?').run(key);
-  if (resend_api_key !== undefined) {
-    resend_api_key ? set('RESEND_API_KEY', resend_api_key) : del('RESEND_API_KEY');
-  }
-  if (from !== undefined) set('SMTP_FROM', from);
+  if (provider !== undefined)     set('EMAIL_PROVIDER',  provider);
+  if (resend_api_key !== undefined) resend_api_key ? set('RESEND_API_KEY', resend_api_key) : del('RESEND_API_KEY');
+  if (brevo_api_key  !== undefined) brevo_api_key  ? set('BREVO_API_KEY',  brevo_api_key)  : del('BREVO_API_KEY');
+  if (from !== undefined)         set('SMTP_FROM', from);
   res.json({ success: true });
 });
 

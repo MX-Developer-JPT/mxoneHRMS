@@ -422,23 +422,40 @@ function EntitiesTab({ typeCounts }) {
 }
 
 // ── Email settings tab ─────────────────────────────────────
-function EmailTab() {
-  const KEY_MASK = '••••••••••••••••••••••••••••••••';
+const PROVIDERS = {
+  resend: {
+    label: 'Resend',
+    keyPlaceholder: 're_xxxxxxxxxxxxxxxxxxxx',
+    hint: 'resend.com → API Keys → Create Key. Free: 3,000 emails/month.',
+  },
+  brevo: {
+    label: 'Brevo',
+    keyPlaceholder: 'xsmtpsib-xxxxxxxx…',
+    hint: 'brevo.com → SMTP & API → API Keys → Generate. Free: 300 emails/day.',
+  },
+};
+const KEY_MASK = '••••••••••••••••••••••••••••••••';
 
-  const [resendKey, setResendKey] = useState('');
-  const [keyEditing, setKeyEditing] = useState(false);
-  const [from, setFrom]   = useState('');
-  const [configured, setConfigured] = useState(false);
-  const [status, setStatus]     = useState(null);
-  const [checking, setChecking] = useState(false);
-  const [saving, setSaving]     = useState(false);
-  const [sending, setSending]   = useState(false);
-  const [testTo, setTestTo]     = useState('');
+function EmailTab() {
+  const [provider, setProvider]       = useState('resend');
+  const [resendKey, setResendKey]     = useState('');
+  const [resendEditing, setResendEditing] = useState(false);
+  const [brevoKey, setBrevoKey]       = useState('');
+  const [brevoEditing, setBrevoEditing]   = useState(false);
+  const [from, setFrom]               = useState('');
+  const [activeProvider, setActiveProvider] = useState('none');
+  const [status, setStatus]           = useState(null);
+  const [checking, setChecking]       = useState(false);
+  const [saving, setSaving]           = useState(false);
+  const [sending, setSending]         = useState(false);
+  const [testTo, setTestTo]           = useState('');
 
   useEffect(() => {
     adminFetch('/smtp-settings').then(r => {
-      setConfigured(r.hasResendKey);
+      setProvider(r.provider || 'resend');
+      setActiveProvider(r.activeProvider || 'none');
       setResendKey(r.hasResendKey ? KEY_MASK : '');
+      setBrevoKey(r.hasBrevoKey  ? KEY_MASK : '');
       setFrom(r.from || '');
     }).catch(() => {});
   }, []);
@@ -446,12 +463,13 @@ function EmailTab() {
   const save = async () => {
     setSaving(true);
     try {
-      const payload = { from };
-      if (keyEditing) payload.resend_api_key = resendKey;
+      const payload = { provider, from };
+      if (resendEditing) payload.resend_api_key = resendKey;
+      if (brevoEditing)  payload.brevo_api_key  = brevoKey;
       await adminFetch('/smtp-settings', { method: 'POST', body: JSON.stringify(payload) });
       toast.success('Settings saved');
-      setKeyEditing(false);
-      setConfigured(true);
+      setResendEditing(false); setBrevoEditing(false);
+      setActiveProvider(provider);
     } catch (e) { toast.error('Save failed: ' + e.message); }
     finally { setSaving(false); }
   };
@@ -469,51 +487,67 @@ function EmailTab() {
     try {
       const r = await adminFetch('/test-email', { method: 'POST', body: JSON.stringify({ to: testTo }) });
       toast.success(`Test email sent to ${r.sentTo}`);
-      setStatus({ ok: true });
+      setStatus({ ok: true, provider: r.provider });
     } catch (e) { toast.error('Send failed: ' + e.message); }
     finally { setSending(false); }
   };
 
+  const p = PROVIDERS[provider];
+
   return (
     <div className="max-w-xl space-y-5">
 
-      {/* ── Config card ── */}
+      {/* ── Provider toggle ── */}
       <div className="border rounded-xl p-5 space-y-4">
         <div className="flex items-center gap-2">
           <Mail className="w-5 h-5 text-primary" />
-          <h3 className="font-semibold">Resend API</h3>
-          {configured && (
+          <h3 className="font-semibold">Email Provider</h3>
+          {activeProvider !== 'none' && (
             <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 font-medium flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3" /> Active
+              <CheckCircle2 className="w-3 h-3" /> {PROVIDERS[activeProvider]?.label || activeProvider} active
             </span>
           )}
         </div>
 
-        {!configured && (
-          <div className="rounded-lg bg-muted/40 border p-3 text-xs space-y-1 text-muted-foreground">
-            <p className="font-medium text-foreground">Quick setup:</p>
-            <ol className="list-decimal ml-4 space-y-0.5">
-              <li>Go to <strong>resend.com</strong> → API Keys → Create Key</li>
-              <li>To send as <strong>@maxvoltenergy.com</strong>: Domains → Add Domain → add the DNS records</li>
-              <li>Paste key below and save</li>
-            </ol>
-          </div>
-        )}
-
-        <div className="space-y-1">
-          <Label className="text-xs">API Key</Label>
-          <div className="flex gap-2">
-            <Input
-              type={keyEditing ? 'text' : 'password'}
-              value={resendKey}
-              placeholder="re_xxxxxxxxxxxxxxxxxxxx"
-              onFocus={() => { if (resendKey === KEY_MASK) { setResendKey(''); setKeyEditing(true); } }}
-              onChange={e => { setResendKey(e.target.value); setKeyEditing(true); }}
-              className="h-9 text-sm font-mono flex-1"
-            />
-          </div>
+        {/* Toggle */}
+        <div className="grid grid-cols-2 gap-2">
+          {Object.entries(PROVIDERS).map(([key, info]) => (
+            <button
+              key={key}
+              onClick={() => { setProvider(key); setStatus(null); }}
+              className={`rounded-lg border p-3 text-left transition-all ${provider === key ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'}`}
+            >
+              <p className="text-sm font-semibold">{info.label}</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5 leading-tight">{info.hint}</p>
+            </button>
+          ))}
         </div>
 
+        {/* API Key for selected provider */}
+        <div className="space-y-1">
+          <Label className="text-xs">{p.label} API Key</Label>
+          {provider === 'resend' ? (
+            <Input
+              type={resendEditing ? 'text' : 'password'}
+              value={resendKey}
+              placeholder={p.keyPlaceholder}
+              onFocus={() => { if (resendKey === KEY_MASK) { setResendKey(''); setResendEditing(true); } }}
+              onChange={e => { setResendKey(e.target.value); setResendEditing(true); }}
+              className="h-9 text-sm font-mono"
+            />
+          ) : (
+            <Input
+              type={brevoEditing ? 'text' : 'password'}
+              value={brevoKey}
+              placeholder={p.keyPlaceholder}
+              onFocus={() => { if (brevoKey === KEY_MASK) { setBrevoKey(''); setBrevoEditing(true); } }}
+              onChange={e => { setBrevoKey(e.target.value); setBrevoEditing(true); }}
+              className="h-9 text-sm font-mono"
+            />
+          )}
+        </div>
+
+        {/* From address */}
         <div className="space-y-1">
           <Label className="text-xs">From Address</Label>
           <Input
@@ -523,13 +557,13 @@ function EmailTab() {
             className="h-9 text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Must include an email, e.g. <code>Maxvolt HR &lt;hr@maxvoltenergy.com&gt;</code>. Requires a verified domain in Resend. Leave blank to use Resend's default test sender.
+            Format: <code>Name &lt;email@domain.com&gt;</code>. Domain must be verified in your provider's dashboard.
           </p>
         </div>
 
         <Button size="sm" onClick={save} disabled={saving}>
           {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
-          Save
+          Save Settings
         </Button>
       </div>
 
@@ -543,10 +577,11 @@ function EmailTab() {
         {status?.ok && (
           <div className="rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 p-3 flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <p className="text-sm text-emerald-800 dark:text-emerald-300 font-medium">Resend API key is valid</p>
+            <p className="text-sm text-emerald-800 dark:text-emerald-300 font-medium">
+              {PROVIDERS[status.provider]?.label || status.provider} API key is valid
+            </p>
           </div>
         )}
-
         {status && !status.ok && (
           <div className="rounded-lg bg-destructive/5 dark:bg-destructive/10 border border-destructive/30 p-3 flex items-start gap-2">
             <XCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
