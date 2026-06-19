@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
+import { sendEmail, emailTemplates } from '../utils/email.js';
 
 const router = Router();
 
@@ -142,6 +143,31 @@ router.patch('/:type/:id', (req, res) => {
         id);
 
   const newRow = db.prepare('SELECT * FROM entities WHERE id=?').get(id);
+
+  // Send email when a Leave status changes to approved or rejected
+  if (type === 'Leave' && req.body.status && req.body.status !== current.status &&
+      ['approved', 'rejected'].includes(req.body.status)) {
+    try {
+      const uRow = db.prepare('SELECT email, full_name FROM users WHERE id=?').get(updated.user_id || row.user_id);
+      if (uRow?.email) {
+        const polRow = db.prepare("SELECT data FROM entities WHERE type='LeavePolicy' AND id=?").get(updated.leave_policy_id);
+        const polData = polRow ? JSON.parse(polRow.data) : {};
+        const tpl = emailTemplates.leaveUpdate({
+          employeeName: uRow.full_name || 'Employee',
+          leaveType: polData.name || updated.leave_type || updated.leave_policy_id || 'Leave',
+          startDate: updated.start_date || '',
+          endDate: updated.end_date || '',
+          days: updated.total_days || '',
+          status: req.body.status,
+          remarks: updated.rejection_reason || updated.comments || ''
+        });
+        sendEmail({ to: uRow.email, ...tpl }).catch(e =>
+          console.error('[email] Leave notification failed:', e.message)
+        );
+      }
+    } catch(e) { console.error('[email] Leave email error:', e.message); }
+  }
+
   res.json(parseRow(newRow));
 });
 

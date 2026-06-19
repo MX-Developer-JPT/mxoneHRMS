@@ -49,8 +49,8 @@ const auth = {
       method: 'POST',
       body: JSON.stringify(data),
     });
-    setToken(res.token);
-    return res.user;
+    // Token is NOT set here — user must verify OTP first (verifyOtp returns access_token)
+    return res;
   },
 
   logout: (_redirectUrl) => {

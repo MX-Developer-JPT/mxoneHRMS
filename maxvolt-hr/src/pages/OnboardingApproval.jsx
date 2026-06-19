@@ -108,17 +108,9 @@ export default function OnboardingApproval() {
       toast.error('Please provide a rejection reason');
       return;
     }
-    const empRecord = employees.find(e => e.user_id === selectedUser.id);
-    if (empRecord) {
-      await base44.entities.Employee.update(empRecord.id, {
-        onboarding_submitted: false,
-        onboarding_rejection_reason: rejectionReason
-      });
-    }
-    await base44.integrations.Core.SendEmail({
-      to: selectedUser.email,
-      subject: 'Onboarding Submission Rejected',
-      body: `Dear ${selectedUser.display_name || selectedUser.full_name},\n\nYour onboarding submission has been reviewed and requires corrections.\n\nReason: ${rejectionReason}\n\nPlease log back in to correct and re-submit your documents.\n\nRegards,\nHR Team`
+    await base44.functions.invoke('rejectUserOnboarding', {
+      user_id: selectedUser.id,
+      reason: rejectionReason
     });
     toast.success('Rejection sent to employee');
     setShowRejectionDialog(false);

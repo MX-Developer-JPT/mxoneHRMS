@@ -184,6 +184,83 @@ export const emailTemplates = {
 </div>`,
   }),
 
+  otpEmail: ({ name, code, expiresMinutes = 10 }) => ({
+    subject: 'Your Maxvolt HR Verification Code',
+    html: `
+<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px">
+  <div style="background:#2563eb;padding:20px;border-radius:8px 8px 0 0">
+    <h2 style="color:#fff;margin:0">Email Verification</h2>
+  </div>
+  <div style="border:1px solid #e2e8f0;border-top:none;padding:28px;border-radius:0 0 8px 8px">
+    <p>Hi <strong>${name || 'there'}</strong>,</p>
+    <p>Use the code below to verify your email address. It expires in <strong>${expiresMinutes} minutes</strong>.</p>
+    <div style="text-align:center;margin:28px 0">
+      <span style="font-size:40px;font-weight:bold;letter-spacing:12px;color:#2563eb;background:#eff6ff;padding:16px 24px;border-radius:8px;display:inline-block">${code}</span>
+    </div>
+    <p style="color:#64748b;font-size:13px">If you did not request this, you can ignore this email.</p>
+    <p style="color:#64748b;font-size:13px;margin-top:16px">Regards,<br><strong>Maxvolt HR Team</strong></p>
+  </div>
+</div>`,
+    text: `Your Maxvolt HR verification code is: ${code}\nExpires in ${expiresMinutes} minutes.`,
+  }),
+
+  passwordResetEmail: ({ name, resetLink }) => ({
+    subject: 'Reset your Maxvolt HR password',
+    html: `
+<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px">
+  <div style="background:#2563eb;padding:20px;border-radius:8px 8px 0 0">
+    <h2 style="color:#fff;margin:0">Password Reset</h2>
+  </div>
+  <div style="border:1px solid #e2e8f0;border-top:none;padding:28px;border-radius:0 0 8px 8px">
+    <p>Hi <strong>${name || 'there'}</strong>,</p>
+    <p>We received a request to reset your Maxvolt HR password. Click the button below to set a new password.</p>
+    <div style="text-align:center;margin:28px 0">
+      <a href="${resetLink}" style="background:#2563eb;color:#fff;padding:14px 32px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block">Reset Password</a>
+    </div>
+    <p style="color:#64748b;font-size:13px">This link expires in <strong>1 hour</strong>. If you didn't request a password reset, ignore this email — your password won't change.</p>
+    <p style="color:#64748b;font-size:12px;word-break:break-all">Or copy this link: ${resetLink}</p>
+  </div>
+</div>`,
+    text: `Reset your Maxvolt HR password: ${resetLink}\nThis link expires in 1 hour.`,
+  }),
+
+  onboardingApprovedEmail: ({ name, role, department }) => ({
+    subject: 'Welcome to Maxvolt Energy — Onboarding Approved ✓',
+    html: `
+<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px">
+  <div style="background:#16a34a;padding:20px;border-radius:8px 8px 0 0">
+    <h2 style="color:#fff;margin:0">Onboarding Approved!</h2>
+  </div>
+  <div style="border:1px solid #e2e8f0;border-top:none;padding:28px;border-radius:0 0 8px 8px">
+    <p>Dear <strong>${name || 'Employee'}</strong>,</p>
+    <p>We are pleased to inform you that your onboarding has been <strong style="color:#16a34a">approved</strong>. You are now an official member of the Maxvolt Energy team!</p>
+    ${department ? `<p><strong>Department:</strong> ${department}</p>` : ''}
+    ${role ? `<p><strong>Role:</strong> ${role}</p>` : ''}
+    <p>Please log in to the HR portal to complete any remaining setup and explore your employee dashboard.</p>
+    <p style="color:#64748b;font-size:13px;margin-top:24px">Regards,<br><strong>HR Team</strong><br>Maxvolt Energy Industries Limited</p>
+  </div>
+</div>`,
+    text: `Dear ${name}, your onboarding has been approved. Welcome to Maxvolt Energy!`,
+  }),
+
+  onboardingRejectedEmail: ({ name, reason }) => ({
+    subject: 'Maxvolt HR — Onboarding Submission Requires Corrections',
+    html: `
+<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px">
+  <div style="background:#dc2626;padding:20px;border-radius:8px 8px 0 0">
+    <h2 style="color:#fff;margin:0">Action Required</h2>
+  </div>
+  <div style="border:1px solid #e2e8f0;border-top:none;padding:28px;border-radius:0 0 8px 8px">
+    <p>Dear <strong>${name || 'Applicant'}</strong>,</p>
+    <p>Your onboarding submission has been reviewed and requires corrections before it can be approved.</p>
+    ${reason ? `<div style="background:#fef2f2;border-left:4px solid #dc2626;padding:12px 16px;margin:16px 0;border-radius:0 4px 4px 0"><strong>Reason:</strong> ${reason}</div>` : ''}
+    <p>Please log back in to the HR portal, make the necessary corrections, and re-submit your documents.</p>
+    <p style="color:#64748b;font-size:13px;margin-top:24px">Regards,<br><strong>HR Team</strong><br>Maxvolt Energy Industries Limited</p>
+  </div>
+</div>`,
+    text: `Dear ${name}, your onboarding submission requires corrections. Reason: ${reason || 'Please check the HR portal for details.'}`,
+  }),
+
   testEmail: ({ to }) => ({
     subject: 'Maxvolt HR — Email Test ✓',
     html: `

@@ -52,4 +52,20 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_entities_type_active  ON entities(type, is_active);
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS otps (
+    email      TEXT NOT NULL,
+    code       TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS reset_tokens (
+    token      TEXT PRIMARY KEY,
+    email      TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+`);
+
 export default db;

@@ -459,17 +459,60 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     /* ── Email ────────────────────────────────────────── */
     case 'sendInterviewEmail': {
-      const { candidate_email, candidate_name, position, interview_date, interview_time, mode, location, interviewer_name } = p;
-      if (!candidate_email) return res.json({ success:false, error:'candidate_email required' });
+      // Accept either direct fields or candidate_id (from InterviewManagement.jsx)
+      let candidateEmail = p.candidate_email;
+      let candidateName  = p.candidate_name || 'Candidate';
+      let position       = p.position || 'the position';
+      let interviewDate  = p.interview_date;
+      let interviewTime  = p.interview_time;
+      let mode           = p.mode || p.interview_mode;
+      let location       = p.location;
+      let interviewerName = p.interviewer_name;
+
+      // Look up candidate by ID if direct email not provided
+      if (p.candidate_id && !candidateEmail) {
+        const cRow = db.prepare("SELECT data FROM entities WHERE type='Candidate' AND id=?").get(p.candidate_id);
+        if (cRow) {
+          const cand = JSON.parse(cRow.data);
+          candidateEmail  = cand.email;
+          candidateName   = cand.full_name || cand.name || 'Candidate';
+          position        = cand.position_applied || position;
+        }
+      }
+
+      // Parse scheduled_date → date + time
+      if (p.scheduled_date && !interviewDate) {
+        const dt = new Date(p.scheduled_date);
+        interviewDate = dt.toLocaleDateString('en-IN', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+        interviewTime = dt.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', hour12:true });
+      }
+
+      // Look up interviewer name if ID provided
+      if (p.interviewer_id && !interviewerName) {
+        const iUser = db.prepare("SELECT full_name FROM users WHERE id=?").get(p.interviewer_id);
+        if (iUser) interviewerName = iUser.full_name;
+        const iEmp = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(p.interviewer_id);
+        if (iEmp) {
+          const empData = JSON.parse(iEmp.data);
+          interviewerName = `${iUser?.full_name || empData.display_name}${empData.designation ? `, ${empData.designation}` : ''}`;
+        }
+      }
+
+      // Use meeting_link as location for video interviews
+      if (!location && p.meeting_link) location = p.meeting_link;
+
+      if (!candidateEmail) return res.json({ success:false, error:'Candidate email not found' });
+
       const tpl = emailTemplates.interviewInvite({
-        candidateName: candidate_name || 'Candidate',
-        position: position || 'the position',
-        interviewDate: interview_date,
-        interviewTime: interview_time,
-        mode, location,
-        interviewerName: interviewer_name
+        candidateName,
+        position,
+        interviewDate,
+        interviewTime,
+        mode: mode === 'in_person' ? 'In-Person' : mode === 'video' ? 'Video Call' : mode || 'In-Person',
+        location,
+        interviewerName
       });
-      const result = await sendEmail({ to: candidate_email, ...tpl });
+      const result = await sendEmail({ to: candidateEmail, ...tpl });
       return res.json({ success:true, ...result });
     }
 
@@ -519,14 +562,63 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     /* ── Onboarding ──────────────────────────────────── */
     case 'approveUserOnboarding': {
-      const { user_id, custom_role } = p;
-      const role = custom_role || 'employee';
-      db.prepare("UPDATE users SET role=?,custom_role=? WHERE id=?").run(role, role, user_id);
-      const eRow = db.prepare("SELECT id,data FROM entities WHERE type='Employee' AND user_id=?").get(user_id);
+      // Accept both userId (frontend) and user_id (legacy)
+      const uid = p.user_id || p.userId;
+      const role = p.custom_role || p.newUserRole || 'employee';
+      const employeeData = p.employeeData || {};
+      if (!uid) return res.status(400).json({ error: 'user_id required' });
+
+      db.prepare("UPDATE users SET role=?,custom_role=? WHERE id=?").run(role, role, uid);
+
+      const eRow = db.prepare("SELECT id,data FROM entities WHERE type='Employee' AND user_id=?").get(uid);
       if (eRow) {
-        const d = { ...JSON.parse(eRow.data), status:'active' };
+        const d = { ...JSON.parse(eRow.data), ...employeeData, status:'active' };
         db.prepare("UPDATE entities SET data=?,status='active' WHERE id=?").run(JSON.stringify(d), eRow.id);
+      } else {
+        const empId = uuidv4();
+        const d = { id:empId, user_id:uid, ...employeeData, status:'active' };
+        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Employee',?,'active',?)").run(empId, uid, JSON.stringify(d));
       }
+
+      // Send approval email
+      try {
+        const uRow = db.prepare("SELECT email,full_name FROM users WHERE id=?").get(uid);
+        if (uRow?.email) {
+          const tpl = emailTemplates.onboardingApprovedEmail({
+            name: uRow.full_name,
+            role,
+            department: employeeData.department || ''
+          });
+          sendEmail({ to: uRow.email, ...tpl }).catch(e =>
+            console.error('[email] Onboarding approval email failed:', e.message)
+          );
+        }
+      } catch(e) { console.error('[email] Onboarding email error:', e.message); }
+
+      return res.json({ success:true });
+    }
+
+    case 'rejectUserOnboarding': {
+      const uid = p.user_id || p.userId;
+      const reason = p.reason || '';
+      if (!uid) return res.status(400).json({ error: 'user_id required' });
+
+      const eRow = db.prepare("SELECT id,data FROM entities WHERE type='Employee' AND user_id=?").get(uid);
+      if (eRow) {
+        const d = { ...JSON.parse(eRow.data), onboarding_submitted:false, onboarding_rejection_reason:reason };
+        db.prepare("UPDATE entities SET data=? WHERE id=?").run(JSON.stringify(d), eRow.id);
+      }
+
+      try {
+        const uRow = db.prepare("SELECT email,full_name FROM users WHERE id=?").get(uid);
+        if (uRow?.email) {
+          const tpl = emailTemplates.onboardingRejectedEmail({ name: uRow.full_name, reason });
+          sendEmail({ to: uRow.email, ...tpl }).catch(e =>
+            console.error('[email] Onboarding rejection email failed:', e.message)
+          );
+        }
+      } catch(e) { console.error('[email] Onboarding rejection email error:', e.message); }
+
       return res.json({ success:true });
     }
 
