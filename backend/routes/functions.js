@@ -218,9 +218,173 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, marked });
     }
 
-    case 'processEbioLogs': case 'receiveBiometricAttendance':
     case 'receiveMxOneAttendanceSync': case 'fetchBiometricAttendance': case 'ebioWebhook':
       return res.json({ success:true, processed:0, message:'Biometric integration requires device configuration' });
+
+    case 'receiveBiometricAttendance':
+    case 'processEbioLogs': {
+      const { date_from, date_to, raw_records = [] } = p;
+
+      if (raw_records.length === 0 && !date_from) {
+        return res.json({ success:false, error:'Provide raw_records or date_from/date_to' });
+      }
+
+      // Load employee code → user_id mapping (from Employee entities + BiometricCodeMapping)
+      const empRows = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const employees = empRows.map(r => JSON.parse(r.data));
+      // Also check BiometricCodeMapping entity
+      const mappingRows = db.prepare("SELECT data FROM entities WHERE type='BiometricCodeMapping'").all();
+      const codeMap = {};
+      mappingRows.forEach(r => {
+        const m = JSON.parse(r.data);
+        if (m.biometric_code && m.user_id) codeMap[String(m.biometric_code).toLowerCase()] = m.user_id;
+      });
+      // Fallback: match by employee_code field on Employee
+      employees.forEach(e => {
+        if (e.employee_code) codeMap[String(e.employee_code).toLowerCase()] = e.user_id;
+      });
+
+      const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+      const toIST = (utcStr) => {
+        if (!utcStr) return null;
+        const s = String(utcStr).trim();
+        const forceUTC = /Z$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(' ', 'T') + 'Z';
+        const d = new Date(forceUTC);
+        if (isNaN(d.getTime())) return null;
+        return new Date(d.getTime() + IST_OFFSET_MS);
+      };
+
+      // Store logs in AttendanceLog entities + group by (user_id, date)
+      const byEmployeeDate = {}; // key: `userId_date`
+
+      let storedCount = 0;
+      for (const record of raw_records) {
+        const empCode = String(record.EmployeeCode || record.emp_code || record.employee_code || record.EnrollNo || record.pin || '').toLowerCase();
+        const logDateRaw = record.LogDate || record.log_date || record.punch_time || record.datetime || '';
+        if (!empCode || !logDateRaw) continue;
+
+        const userId = codeMap[empCode];
+        if (!userId) continue; // unknown employee code
+
+        const istDate = toIST(logDateRaw);
+        if (!istDate) continue;
+
+        const dateStr = istDate.toISOString().slice(0, 10);
+        const timeStr = `${String(istDate.getUTCHours()).padStart(2,'0')}:${String(istDate.getUTCMinutes()).padStart(2,'0')}`;
+
+        // Persist log in AttendanceLog entity (avoid duplicates)
+        const existingLog = db.prepare(
+          "SELECT id FROM entities WHERE type='AttendanceLog' AND json_extract(data,'$.EmployeeCode')=? AND json_extract(data,'$.LogDate')=?"
+        ).get(record.EmployeeCode || empCode, logDateRaw);
+
+        if (!existingLog) {
+          const logId = uuidv4();
+          const logData = { ...record, id: logId, EmployeeCode: record.EmployeeCode || empCode, LogDate: logDateRaw, user_id: userId, imported_at: new Date().toISOString() };
+          try {
+            db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'AttendanceLog',?,'active',?)")
+              .run(logId, userId, JSON.stringify(logData));
+            storedCount++;
+          } catch {}
+        }
+
+        const key = `${userId}_${dateStr}`;
+        if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId, date: dateStr, times: [] };
+        byEmployeeDate[key].times.push(timeStr);
+      }
+
+      // Also process date range from existing AttendanceLogs in DB if date_from provided
+      if (date_from && raw_records.length === 0) {
+        const logRows = db.prepare(
+          "SELECT data FROM entities WHERE type='AttendanceLog'"
+        ).all();
+        logRows.forEach(row => {
+          const log = JSON.parse(row.data);
+          if (!log.user_id || !log.LogDate) return;
+          const istDate = toIST(log.LogDate);
+          if (!istDate) return;
+          const dateStr = istDate.toISOString().slice(0, 10);
+          if (date_from && dateStr < date_from) return;
+          if (date_to && dateStr > date_to) return;
+          const timeStr = `${String(istDate.getUTCHours()).padStart(2,'0')}:${String(istDate.getUTCMinutes()).padStart(2,'0')}`;
+          const key = `${log.user_id}_${dateStr}`;
+          if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId: log.user_id, date: dateStr, times: [] };
+          byEmployeeDate[key].times.push(timeStr);
+        });
+      }
+
+      // Create/update Attendance records
+      let records_synced = 0;
+      const toMins = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+
+      for (const entry of Object.values(byEmployeeDate)) {
+        const { userId, date, times } = entry;
+        if (!times.length) continue;
+
+        times.sort();
+        const checkIn  = times[0];
+        const checkOut = times.length > 1 ? times[times.length - 1] : null;
+
+        // Get employee's shift
+        const empRow   = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(userId);
+        const emp      = empRow ? JSON.parse(empRow.data) : {};
+        const shiftRow = emp.shift_id
+          ? db.prepare("SELECT data FROM entities WHERE type='Shift' AND id=?").get(emp.shift_id)
+          : db.prepare("SELECT data FROM entities WHERE type='Shift' AND json_extract(data,'$.is_default')=1").get();
+        const shift = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
+
+        // Compute status
+        const inMins  = toMins(checkIn);
+        const outMins = checkOut ? toMins(checkOut) : null;
+        const shiftStart = toMins(shift.start_time || '09:00');
+        const grace = shift.grace_period_minutes || 15;
+        const shiftHours = shift.working_hours || 9;
+
+        let status = 'present', working_hours = 0, late_minutes = 0;
+        if (outMins !== null) {
+          working_hours = (outMins - inMins) / 60;
+          if (working_hours < shiftHours / 2) status = 'short_attendance';
+          else if (working_hours < shiftHours * 0.9) status = 'half_day';
+          else status = 'present';
+        } else {
+          status = 'in_progress';
+        }
+
+        if (inMins > shiftStart + grace) {
+          late_minutes = inMins - shiftStart - grace;
+          if (status === 'present') status = 'late';
+        }
+
+        const attData = {
+          user_id: userId, date, employee_code: emp.employee_code || '',
+          check_in_time: checkIn, check_out_time: checkOut,
+          status, working_hours: Math.round(working_hours * 100) / 100, late_minutes,
+          punch_count: times.length, source: 'biometric',
+          updated_at: new Date().toISOString(),
+        };
+
+        // Upsert attendance record
+        const existAtt = db.prepare(
+          "SELECT id FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date')=?"
+        ).get(userId, date);
+
+        if (existAtt) {
+          const existing = JSON.parse(db.prepare("SELECT data FROM entities WHERE id=?").get(existAtt.id).data);
+          // Don't overwrite regularised records
+          if (!existing.regularised) {
+            db.prepare("UPDATE entities SET status=?, data=? WHERE id=?")
+              .run(status, JSON.stringify({ ...existing, ...attData, id: existAtt.id }), existAtt.id);
+            records_synced++;
+          }
+        } else {
+          const attId = uuidv4();
+          db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'active',?)")
+            .run(attId, userId, JSON.stringify({ ...attData, id: attId, created_at: new Date().toISOString() }));
+          records_synced++;
+        }
+      }
+
+      return res.json({ success:true, records_synced, logs_stored: storedCount, employees_processed: Object.keys(byEmployeeDate).length, message: `Processed ${raw_records.length} biometric punches → ${records_synced} attendance records` });
+    }
 
     case 'processRegularisation': {
       const { regularisation_id, action, comment = '', role = 'manager' } = p;
