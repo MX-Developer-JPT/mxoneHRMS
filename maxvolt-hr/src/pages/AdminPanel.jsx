@@ -558,7 +558,7 @@ function EmailTab() {
             placeholder="Maxvolt HR <hr@maxvoltenergy.com>"
             className="h-9 text-sm"
           />
-          <p className="text-xs text-muted-foreground">Must match a verified Resend domain. Leave blank to use <code>onboarding@resend.dev</code> (test only).</p>
+          <p className="text-xs text-muted-foreground">Must include an email, e.g. <code>Maxvolt HR &lt;hr@maxvoltenergy.com&gt;</code>. Leave blank to use Resend's test address.</p>
         </div>
 
         <Button size="sm" onClick={saveResend} disabled={savingResend || (!keyEditing && resendKey === KEY_MASK)}>

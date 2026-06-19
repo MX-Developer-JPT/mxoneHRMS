@@ -128,7 +128,9 @@ export async function sendEmail({ to, subject, html, text }) {
 
   if (resendKey) {
     const cfg = getSmtpConfig();
-    const from = cfg.from || 'Maxvolt HR <onboarding@resend.dev>';
+    // Only use cfg.from if it contains a valid email address
+    const fromRaw = cfg.from || '';
+    const from = fromRaw.includes('@') ? fromRaw : 'Maxvolt HR <onboarding@resend.dev>';
     const data = await resendRequest(resendKey, '/emails', { from, to, subject, html, text });
     return { success: true, messageId: data.id, provider: 'resend' };
   }
