@@ -12,6 +12,25 @@ function getSetting(key, fallback = '') {
   return process.env[key] || fallback;
 }
 
+// ── Resend ─────────────────────────────────────────────────
+
+function getResendKey() {
+  return getSetting('RESEND_API_KEY', '');
+}
+
+async function resendRequest(apiKey, path, body) {
+  const res = await fetch(`https://api.resend.com${path}`, {
+    method: body ? 'POST' : 'GET',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || data.name || `Resend error ${res.status}`);
+  return data;
+}
+
+// ── SMTP ───────────────────────────────────────────────────
+
 function getSmtpConfig() {
   return {
     host:   getSetting('SMTP_HOST',   'smtp.gmail.com'),
@@ -23,7 +42,7 @@ function getSmtpConfig() {
   };
 }
 
-function isConfigured(cfg) {
+function isSmtpConfigured(cfg) {
   return !!(cfg.user && cfg.pass && cfg.pass !== PLACEHOLDER);
 }
 
@@ -40,7 +59,6 @@ function makeTransporter(cfg) {
   });
 }
 
-// Test raw TCP reachability before attempting SMTP handshake
 async function testTcpPort(host, port, ms = 8000) {
   return new Promise(resolve => {
     const sock = new net.Socket();
@@ -53,75 +71,91 @@ async function testTcpPort(host, port, ms = 8000) {
   });
 }
 
+// ── Public API ─────────────────────────────────────────────
+
 export async function verifyEmail() {
-  const cfg = getSmtpConfig();
-  if (!isConfigured(cfg)) {
-    return { ok: false, error: 'SMTP not configured. Enter your credentials in Admin Panel → Email Settings.' };
+  const resendKey = getResendKey();
+
+  if (resendKey) {
+    try {
+      await resendRequest(resendKey, '/domains');
+      return { ok: true, provider: 'resend' };
+    } catch (e) {
+      return { ok: false, provider: 'resend', error: `Resend: ${e.message}` };
+    }
   }
 
-  // Step 1: TCP port reachability — catches firewall/port-block issues before SMTP handshake
+  // Fall back to SMTP
+  const cfg = getSmtpConfig();
+  if (!isSmtpConfigured(cfg)) {
+    return { ok: false, error: 'Email not configured. Add a Resend API key or SMTP credentials in Admin Panel → Email Settings.' };
+  }
+
   const tcp = await testTcpPort(cfg.host, cfg.port);
   if (tcp !== 'ok') {
-    if (tcp === 'timeout') {
-      const altPort = cfg.port === 465 ? 587 : cfg.port === 587 ? 465 : 587;
-      return {
-        ok: false,
-        tcpBlocked: true,
-        host: cfg.host,
-        port: cfg.port,
-        altPort,
-        error: `Port ${cfg.port} on ${cfg.host} is blocked. Try port ${altPort} instead — change the port in SMTP settings${altPort === 587 ? ' and uncheck SSL' : ' and check SSL'}, then test again.`,
-      };
-    }
+    const altPort = cfg.port === 465 ? 587 : cfg.port === 587 ? 465 : 587;
     return {
       ok: false,
+      tcpBlocked: true,
       host: cfg.host,
       port: cfg.port,
-      error: `Cannot reach ${cfg.host}:${cfg.port} — ${tcp}. Check your SMTP host and port.`,
+      altPort,
+      error: `Port ${cfg.port} on ${cfg.host} is blocked. Try port ${altPort}${altPort === 587 ? ' with SSL off' : ' with SSL on'}.`,
     };
   }
 
-  // Step 2: SMTP authentication
   try {
     const transporter = makeTransporter(cfg);
     await Promise.race([
       transporter.verify(),
       new Promise((_, rej) => setTimeout(() => rej(new Error('SMTP handshake timed out after 20s')), 20000)),
     ]);
-    return { ok: true, user: cfg.user, host: cfg.host, port: cfg.port };
+    return { ok: true, provider: 'smtp', user: cfg.user, host: cfg.host, port: cfg.port };
   } catch (err) {
     let hint = err.message;
-    if (hint.includes('535') || hint.includes('Username and Password not accepted')) {
-      hint = 'Wrong credentials. For Gmail: use the 16-char App Password from myaccount.google.com → Security → App Passwords (not your regular password). For Brevo: use your SMTP login + SMTP key from brevo.com → SMTP & API → SMTP.';
-    } else if (hint.includes('534') || hint.includes('less secure')) {
-      hint = 'Google rejected the login. Enable 2-Step Verification first, then create an App Password at myaccount.google.com → Security → App Passwords.';
-    } else if (hint.includes('ECONNREFUSED')) {
-      hint = `Connection refused on ${cfg.host}:${cfg.port}. Try switching to port 465 with SSL enabled.`;
-    }
-    return { ok: false, host: cfg.host, port: cfg.port, error: hint };
+    if (hint.includes('535') || hint.includes('Username and Password not accepted'))
+      hint = 'Wrong credentials. Check your username and password/app-password.';
+    else if (hint.includes('534') || hint.includes('less secure'))
+      hint = 'Enable 2-Step Verification first, then create an App Password.';
+    else if (hint.includes('ECONNREFUSED'))
+      hint = `Connection refused on ${cfg.host}:${cfg.port}. Try a different port.`;
+    return { ok: false, provider: 'smtp', error: hint };
   }
 }
 
 export async function sendEmail({ to, subject, html, text }) {
+  const resendKey = getResendKey();
+
+  if (resendKey) {
+    const cfg = getSmtpConfig();
+    const from = cfg.from || 'Maxvolt HR <onboarding@resend.dev>';
+    const data = await resendRequest(resendKey, '/emails', { from, to, subject, html, text });
+    return { success: true, messageId: data.id, provider: 'resend' };
+  }
+
+  // Fall back to SMTP
   const cfg = getSmtpConfig();
-  if (!isConfigured(cfg)) {
-    console.warn('[email] SMTP not configured — skipped:', subject);
-    return { skipped: true, reason: 'SMTP not configured in Admin Panel → Email Settings' };
+  if (!isSmtpConfigured(cfg)) {
+    console.warn('[email] not configured — skipped:', subject);
+    return { skipped: true, reason: 'Configure email in Admin Panel → Email Settings' };
   }
   const from = cfg.from || `Maxvolt HR <${cfg.user}>`;
   const info = await makeTransporter(cfg).sendMail({ from, to, subject, html, text });
-  return { success: true, messageId: info.messageId };
+  return { success: true, messageId: info.messageId, provider: 'smtp' };
 }
 
 export function getSmtpPublicConfig() {
   const cfg = getSmtpConfig();
+  const resendKey = getResendKey();
   return {
-    host:    cfg.host,
-    port:    cfg.port,
-    secure:  cfg.secure,
-    user:    cfg.user,
-    from:    cfg.from,
-    hasPass: isConfigured(cfg),
+    host:          cfg.host,
+    port:          cfg.port,
+    secure:        cfg.secure,
+    user:          cfg.user,
+    from:          cfg.from,
+    hasPass:       isSmtpConfigured(cfg),
+    hasResendKey:  !!resendKey,
+    activeProvider: resendKey ? 'resend' : isSmtpConfigured(cfg) ? 'smtp' : 'none',
   };
 }
 
