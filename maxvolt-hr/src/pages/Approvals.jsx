@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { FileText, DollarSign, Check, X, Download } from 'lucide-react';
+import { FileText, DollarSign, Check, X, Download, LogOut, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -14,9 +14,12 @@ export default function Approvals() {
   const [isHR, setIsHR] = useState(false);
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [reimbursements, setReimbursements] = useState([]);
+  const [gatePasses, setGatePasses] = useState([]);
+  const [regularisations, setRegularisations] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [viewerDoc, setViewerDoc] = useState(null);
+  const [processing, setProcessing] = useState({});
 
   useEffect(() => { loadData(); }, []);
 
@@ -31,9 +34,13 @@ export default function Approvals() {
       const empRecords = await base44.entities.Employee.list();
       setEmployees(empRecords);
 
-      let leaves = await base44.entities.Leave.filter({ status: 'pending' }, '-created_date');
+      const directReportUserIds = empRecords
+        .filter(e => e.reporting_manager_id === currentUser.id)
+        .map(e => e.user_id);
 
-      // Reimbursements: manager sees pending where manager_id = me, HR sees manager_approved
+      let leaves = await base44.entities.Leave.filter({ status: 'pending' }, '-created_date');
+      if (!hrRole) leaves = leaves.filter(l => directReportUserIds.includes(l.user_id));
+
       let reimburse;
       if (hrRole) {
         reimburse = await base44.entities.Reimbursement.filter({ status: 'manager_approved' }, '-created_date');
@@ -41,15 +48,22 @@ export default function Approvals() {
         reimburse = await base44.entities.Reimbursement.filter({ manager_id: currentUser.id, status: 'pending' }, '-created_date');
       }
 
-      if (!hrRole) {
-        const directReportUserIds = empRecords
-          .filter(e => e.reporting_manager_id === currentUser.id)
-          .map(e => e.user_id);
-        leaves = leaves.filter(l => directReportUserIds.includes(l.user_id));
-      }
+      // Gate passes pending manager approval
+      const allGatePasses = await base44.entities.GatePass.filter({ status: 'pending_approval' }, '-created_date');
+      const pendingGatePasses = hrRole
+        ? allGatePasses
+        : allGatePasses.filter(gp => directReportUserIds.includes(gp.employee_user_id));
+
+      // Regularisation requests
+      const allRegs = await base44.entities.AttendanceRegularisation.list('-created_date', 300);
+      const pendingRegs = hrRole
+        ? allRegs.filter(r => r.status === 'manager_approved')
+        : allRegs.filter(r => r.status === 'pending' && directReportUserIds.includes(r.user_id));
 
       setLeaveRequests(leaves);
       setReimbursements(reimburse);
+      setGatePasses(pendingGatePasses);
+      setRegularisations(pendingRegs);
       setLoading(false);
     } catch (error) {
       console.error('Error loading approvals:', error);
@@ -96,6 +110,39 @@ export default function Approvals() {
     }
   };
 
+  const handleGatePassAction = async (gatePassId, action) => {
+    setProcessing(p => ({ ...p, [gatePassId]: true }));
+    try {
+      await base44.entities.GatePass.update(gatePassId, {
+        status: action === 'approve' ? 'approved' : 'rejected',
+        manager_action_at: new Date().toISOString(),
+        manager_id: user.id,
+      });
+      toast.success(`Gate pass ${action === 'approve' ? 'approved' : 'rejected'}`);
+      loadData();
+    } catch {
+      toast.error('Failed to update gate pass');
+    }
+    setProcessing(p => ({ ...p, [gatePassId]: false }));
+  };
+
+  const handleRegAction = async (regId, action) => {
+    setProcessing(p => ({ ...p, [regId]: true }));
+    try {
+      const role = isHR ? 'hr' : 'manager';
+      const res = await base44.functions.invoke('processRegularisation', { regularisation_id: regId, action, role });
+      if (res.data?.success) {
+        toast.success(`Regularisation ${action}d`);
+        loadData();
+      } else {
+        toast.error(res.data?.error || 'Action failed');
+      }
+    } catch (e) {
+      toast.error('Error: ' + e.message);
+    }
+    setProcessing(p => ({ ...p, [regId]: false }));
+  };
+
   const downloadExcel = () => {
     // Build CSV with all reimbursement details
     const headers = ['Employee Name', 'Employee Code', 'Department', 'Designation', 'Expense Type', 'Expense Date', 'Amount (₹)', 'Description', 'Status', 'Applied On'];
@@ -127,7 +174,7 @@ export default function Approvals() {
 
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
 
-  const totalPending = leaveRequests.length + reimbursements.length;
+  const totalPending = leaveRequests.length + reimbursements.length + gatePasses.length + regularisations.length;
 
   const statusColors = {
     pending: 'bg-yellow-100 text-yellow-800',
@@ -154,25 +201,128 @@ export default function Approvals() {
                 <p className="text-4xl font-bold text-orange-600">{totalPending}</p>
                 <p className="text-muted-foreground mt-1">Total Pending Approvals</p>
               </div>
-              <div className="text-right text-sm text-muted-foreground">
+              <div className="text-right text-sm text-muted-foreground space-y-0.5">
                 <p>{leaveRequests.length} Leave Requests</p>
-                <p>{reimbursements.length} Reimbursements {isHR ? '(awaiting HR)' : '(awaiting you)'}</p>
+                <p>{reimbursements.length} Reimbursements</p>
+                <p>{gatePasses.length} Gate Passes</p>
+                <p>{regularisations.length} Regularisations {isHR ? '(awaiting HR)' : ''}</p>
               </div>
             </div>
           </CardContent>
         </Card>
 
-        <Tabs defaultValue="reimbursements" className="space-y-6">
-          <TabsList className="grid w-full max-w-md grid-cols-2">
-            <TabsTrigger value="leaves">
-              <FileText className="w-4 h-4 mr-2" />
-              Leave ({leaveRequests.length})
+        <Tabs defaultValue="leaves" className="space-y-6">
+          <TabsList className="flex flex-wrap gap-1 h-auto">
+            <TabsTrigger value="leaves" className="flex items-center gap-1.5">
+              <FileText className="w-4 h-4" />
+              Leave {leaveRequests.length > 0 && <Badge className="bg-yellow-500 text-white h-4 min-w-4 px-1 text-xs">{leaveRequests.length}</Badge>}
             </TabsTrigger>
-            <TabsTrigger value="reimbursements">
-              <DollarSign className="w-4 h-4 mr-2" />
-              Reimbursements ({reimbursements.length})
+            <TabsTrigger value="gate_passes" className="flex items-center gap-1.5">
+              <LogOut className="w-4 h-4" />
+              Gate Pass {gatePasses.length > 0 && <Badge className="bg-orange-500 text-white h-4 min-w-4 px-1 text-xs">{gatePasses.length}</Badge>}
+            </TabsTrigger>
+            <TabsTrigger value="regularisations" className="flex items-center gap-1.5">
+              <RotateCcw className="w-4 h-4" />
+              Regularisation {regularisations.length > 0 && <Badge className="bg-blue-500 text-white h-4 min-w-4 px-1 text-xs">{regularisations.length}</Badge>}
+            </TabsTrigger>
+            <TabsTrigger value="reimbursements" className="flex items-center gap-1.5">
+              <DollarSign className="w-4 h-4" />
+              Expense {reimbursements.length > 0 && <Badge className="bg-green-500 text-white h-4 min-w-4 px-1 text-xs">{reimbursements.length}</Badge>}
             </TabsTrigger>
           </TabsList>
+
+          {/* ── Gate Passes ──────────────────────────────────── */}
+          <TabsContent value="gate_passes">
+            <Card>
+              <CardHeader>
+                <CardTitle>Gate Passes Pending Approval</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {gatePasses.length > 0 ? gatePasses.map(gp => {
+                    const emp = employees.find(e => e.user_id === gp.employee_user_id);
+                    const outingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+                    return (
+                      <div key={gp.id} className="border rounded-lg p-4">
+                        <div className="flex justify-between items-start gap-4 flex-wrap">
+                          <div>
+                            <p className="font-semibold">{emp?.display_name || '—'}</p>
+                            <p className="text-sm text-muted-foreground">{emp?.designation} · {emp?.department}</p>
+                            <p className="text-sm mt-2">
+                              <span className="font-medium">{outingLabels[gp.outing_type] || gp.outing_type}</span>
+                              {gp.expected_return_time && <> · Back by {format(new Date(gp.expected_return_time), 'h:mm a')}</>}
+                            </p>
+                            {gp.reason && <p className="text-sm text-muted-foreground mt-1">{gp.reason}</p>}
+                            <p className="text-xs text-muted-foreground mt-1">{gp.created_date ? format(new Date(gp.created_date), 'dd MMM yyyy h:mm a') : ''}</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button onClick={() => handleGatePassAction(gp.id, 'approve')} size="sm" className="bg-green-600 hover:bg-green-700" disabled={processing[gp.id]}>
+                              <Check className="w-4 h-4 mr-1" /> Approve
+                            </Button>
+                            <Button onClick={() => handleGatePassAction(gp.id, 'reject')} size="sm" variant="destructive" disabled={processing[gp.id]}>
+                              <X className="w-4 h-4 mr-1" /> Reject
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }) : (
+                    <p className="text-center text-muted-foreground py-8">No pending gate pass requests</p>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* ── Regularisations ─────────────────────────────── */}
+          <TabsContent value="regularisations">
+            <Card>
+              <CardHeader>
+                <CardTitle>{isHR ? 'Regularisations Awaiting HR Approval' : 'Regularisation Requests from Your Team'}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {regularisations.length > 0 ? regularisations.map(reg => {
+                    const emp = employees.find(e => e.user_id === reg.user_id);
+                    const reasonLabels = { missed_punch: 'Missed Punch', biometric_failure: 'Biometric Failure', official_duty: 'Official Duty', work_from_home: 'Work from Home', emergency: 'Emergency', other: 'Other' };
+                    return (
+                      <div key={reg.id} className="border rounded-lg p-4">
+                        <div className="flex justify-between items-start gap-4 flex-wrap">
+                          <div>
+                            <p className="font-semibold">{emp?.display_name || '—'}</p>
+                            <p className="text-sm text-muted-foreground">{emp?.designation} · {emp?.department}</p>
+                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm mt-2">
+                              <span className="font-medium">{reg.date}</span>
+                              {reg.reason && <span className="text-muted-foreground">{reasonLabels[reg.reason] || reg.reason}</span>}
+                            </div>
+                            {reg.requested_check_in && (
+                              <p className="text-sm text-muted-foreground">
+                                Requested: {reg.requested_check_in} – {reg.requested_check_out || '?'}
+                              </p>
+                            )}
+                            {reg.remarks && <p className="text-sm mt-1 italic text-muted-foreground">"{reg.remarks}"</p>}
+                            {isHR && reg.status === 'manager_approved' && (
+                              <Badge className="mt-1 bg-blue-100 text-blue-800">Manager Approved</Badge>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            <Button onClick={() => handleRegAction(reg.id, 'approve')} size="sm" className="bg-green-600 hover:bg-green-700" disabled={processing[reg.id]}>
+                              <Check className="w-4 h-4 mr-1" /> {isHR ? 'HR Approve' : 'Approve'}
+                            </Button>
+                            <Button onClick={() => handleRegAction(reg.id, 'reject')} size="sm" variant="destructive" disabled={processing[reg.id]}>
+                              <X className="w-4 h-4 mr-1" /> Reject
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }) : (
+                    <p className="text-center text-muted-foreground py-8">No pending regularisation requests</p>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           <TabsContent value="leaves">
             <Card>
