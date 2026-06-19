@@ -459,8 +459,18 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     case 'getAIStatus': {
       const { checkAI } = await import('../utils/ai.js');
-      const status = await checkAI();
-      return res.json(status);
+      return res.json(await checkAI());
+    }
+
+    case 'testAI': {
+      // Actually calls the LLM to validate key + model
+      const { callAI } = await import('../utils/ai.js');
+      try {
+        await callAI('Say "ok" and nothing else.');
+        return res.json({ ok: true });
+      } catch (e) {
+        return res.json({ ok: false, error: e.message });
+      }
     }
 
     case 'saveAISetting': {

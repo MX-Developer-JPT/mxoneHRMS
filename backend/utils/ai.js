@@ -4,7 +4,7 @@
 
 import db from '../db.js';
 
-const GROQ_MODEL   = process.env.GROQ_MODEL  || 'llama3-8b-8192';
+const GROQ_MODEL   = process.env.GROQ_MODEL  || 'llama-3.1-8b-instant';
 const OLLAMA_URL   = process.env.OLLAMA_URL  || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'tinyllama';
 
@@ -119,26 +119,20 @@ export async function callAI(prompt, { system = '', json = false } = {}) {
 
 export async function checkAI() {
   if (useGroq()) {
-    // Quick test call to verify the key is valid
-    try {
-      await callGroq([{ role: 'user', content: 'Reply with exactly: ok' }]);
-      return { ok: true, provider: 'groq', model: GROQ_MODEL };
-    } catch (e) {
-      return { ok: false, provider: 'groq', model: GROQ_MODEL, error: e.message };
-    }
+    // Key is set — report as configured without making a test call (avoids latency + token waste)
+    return { ok: true, provider: 'groq', model: GROQ_MODEL, running: true, modelReady: true };
   }
 
-  // Ollama
+  // Ollama — check if running and model is present
   try {
     const res  = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) return { ok: false, provider: 'ollama', model: OLLAMA_MODEL, error: 'Ollama not running' };
+    if (!res.ok) return { ok: false, running: false, modelReady: false, provider: 'ollama', model: OLLAMA_MODEL };
     const data = await res.json();
     const models = (data.models || []).map(m => m.name);
     const modelReady = models.some(m => m.startsWith(OLLAMA_MODEL.split(':')[0]));
-    if (!modelReady) return { ok: false, provider: 'ollama', model: OLLAMA_MODEL, error: `Model "${OLLAMA_MODEL}" not yet downloaded`, models };
-    return { ok: true, provider: 'ollama', model: OLLAMA_MODEL, models };
-  } catch (e) {
-    return { ok: false, provider: 'ollama', model: OLLAMA_MODEL, error: e.message };
+    return { ok: modelReady, running: true, modelReady, provider: 'ollama', model: OLLAMA_MODEL, models };
+  } catch {
+    return { ok: false, running: false, modelReady: false, provider: 'ollama', model: OLLAMA_MODEL };
   }
 }
 

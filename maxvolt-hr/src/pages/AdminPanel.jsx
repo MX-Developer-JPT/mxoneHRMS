@@ -624,14 +624,16 @@ function AITab() {
     checkStatus();
   }, []);
 
-  const checkStatus = async () => {
+  const checkStatus = async (live = false) => {
     setChecking(true);
     setStatus(null);
     try {
-      const r = await base44.functions.invoke('getAIStatus', {});
-      setStatus(r.data || r);
-      // If Groq key is configured (env or DB), show mask
-      if (r.data?.provider === 'groq' || r?.provider === 'groq') setHasKey(true);
+      // live=true does a real LLM call to validate key+model; false is just a config check
+      const fn = live ? 'testAI' : 'getAIStatus';
+      const r  = await base44.functions.invoke(fn, {});
+      const s  = r.data || r;
+      setStatus(s);
+      if (s.provider === 'groq' || (!live && s.ok)) setHasKey(true);
     } catch (e) {
       setStatus({ ok: false, error: e.message });
     } finally {
@@ -680,7 +682,7 @@ function AITab() {
             <Bot className="w-5 h-5 text-primary" />
             <h3 className="font-semibold">AI Status</h3>
           </div>
-          <Button size="sm" variant="outline" onClick={checkStatus} disabled={checking}>
+          <Button size="sm" variant="outline" onClick={() => checkStatus(true)} disabled={checking} title="Send a real test message to verify AI">
             {checking ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
           </Button>
         </div>
