@@ -86,6 +86,67 @@ const DATA_PATH    = process.env.NODE_ENV === 'production' ? '/app/data'    : __
 if (!existsSync(UPLOADS_PATH)) mkdirSync(UPLOADS_PATH, { recursive: true });
 if (!existsSync(DATA_PATH))    mkdirSync(DATA_PATH,    { recursive: true });
 
+// Bootstrap critical settings from Railway environment variables on every startup.
+// This ensures the admin account and API keys survive redeploys even if the volume
+// is not yet mounted or was wiped. Set these in Railway → Service → Variables.
+async function bootstrapFromEnv() {
+  try {
+    const db = (await import('./db.js')).default;
+    const bcrypt = (await import('bcryptjs')).default;
+    const { v4: uuid } = await import('uuid');
+
+    // ── Admin user from env ──────────────────────────────────────────
+    const adminEmail    = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    const adminName     = process.env.ADMIN_NAME || 'Admin';
+    if (adminEmail && adminPassword) {
+      const existing = db.prepare('SELECT id FROM users WHERE email=?').get(adminEmail);
+      if (!existing) {
+        const hash = bcrypt.hashSync(adminPassword, 10);
+        db.prepare(`INSERT INTO users(id,email,password,full_name,role,display_name,custom_role)
+                    VALUES(?,?,?,?,'admin',?,'admin')`)
+          .run(uuid(), adminEmail, hash, adminName, adminName);
+        console.log(`✓ Admin user restored from env: ${adminEmail}`);
+      }
+    }
+
+    // ── API keys and settings from env ───────────────────────────────
+    // These env vars act as the permanent source of truth.
+    // Set them once in Railway → Variables; they will be written to the
+    // settings table on every boot, overwriting any stale DB value.
+    const envSettings = {
+      brevo_api_key:   process.env.BREVO_API_KEY,
+      webhook_api_key: process.env.WEBHOOK_API_KEY,
+      smtp_host:       process.env.SMTP_HOST,
+      smtp_port:       process.env.SMTP_PORT,
+      smtp_user:       process.env.SMTP_USER,
+      smtp_pass:       process.env.SMTP_PASS,
+      smtp_from:       process.env.SMTP_FROM,
+      company_name:    process.env.COMPANY_NAME,
+      company_logo:    process.env.COMPANY_LOGO,
+    };
+    const upsert = db.prepare("INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES(?,?,datetime('now'))");
+    for (const [key, value] of Object.entries(envSettings)) {
+      if (value) upsert.run(key, value);
+    }
+
+    // ── Volume health check ──────────────────────────────────────────
+    if (process.env.NODE_ENV === 'production') {
+      const { statSync } = await import('fs');
+      const dbPath = '/app/data/hrms.db';
+      try {
+        const kb = Math.round(statSync(dbPath).size / 1024);
+        console.log(`✓ Persistent DB at ${dbPath} (${kb} KB)`);
+      } catch {
+        console.warn('⚠ /app/data/hrms.db not found — Railway volume may not be mounted. All data will reset on redeploy!');
+        console.warn('  Fix: Railway dashboard → your service → Volumes → Add Volume → mount at /app/data');
+      }
+    }
+  } catch (e) {
+    console.warn('Env bootstrap skipped:', e.message);
+  }
+}
+
 // Auto-seed on first run if no admin user exists
 async function autoSeed() {
   try {
@@ -101,7 +162,9 @@ async function autoSeed() {
     console.warn('Auto-seed skipped:', e.message);
   }
 }
-autoSeed();
+
+// bootstrapFromEnv runs first so env-seeded admin is visible to the autoSeed check
+bootstrapFromEnv().then(() => autoSeed()).catch(() => {});
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '20mb' }));
@@ -111,7 +174,15 @@ const UPLOADS_DIR = process.env.NODE_ENV === 'production'
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Health check — Railway uses this to verify the container is up
-app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/api/health', (_req, res) => {
+  const isProd = process.env.NODE_ENV === 'production';
+  let volumeMounted = null;
+  if (isProd) {
+    try { existsSync('/app/data/hrms.db'); volumeMounted = true; } catch { volumeMounted = false; }
+    volumeMounted = existsSync('/app/data/hrms.db');
+  }
+  res.json({ status: 'ok', volume_mounted: volumeMounted, env: process.env.NODE_ENV || 'development' });
+});
 
 // Mock base44 public-settings so AuthContext doesn't crash on old code
 app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
