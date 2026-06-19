@@ -11,9 +11,14 @@ RUN npm run build
 
 
 # ── Stage 2: Production server ──────────────────────────────
-FROM node:22-alpine AS production
+FROM node:22-slim AS production
 
 WORKDIR /app
+
+# Install system deps + Ollama
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    curl -fsSL https://ollama.ai/install.sh | sh && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install backend dependencies (production only)
 COPY backend/package*.json ./
@@ -33,4 +38,5 @@ EXPOSE 3001
 
 ENV NODE_ENV=production
 
-CMD ["node", "server.js"]
+# Start Ollama in background then start the app
+CMD ["/bin/sh", "-c", "ollama serve &>/dev/null & node server.js"]

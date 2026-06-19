@@ -12,6 +12,7 @@ import {
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
 } from 'lucide-react';
+import NotificationBell from '@/components/NotificationBell';
 import DashboardPage from './pages/Dashboard';
 import MarkAttendancePage from './pages/MarkAttendance';
 import LeavePage from './pages/Leave';
@@ -156,8 +157,8 @@ function NavItem({ item, isActive, onClick }) {
         flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium
         transition-colors duration-150 select-none
         ${isActive
-          ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-sm'
-          : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-slate-100'
+          ? 'bg-white/15 text-white shadow-sm'
+          : 'text-white/70 hover:bg-white/10 hover:text-white'
         }
       `}
     >
@@ -304,54 +305,44 @@ export default function Layout({ children, currentPageName }) {
             </button>
           )}
           <Link to="/Dashboard" className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-[#1a1f36] flex items-center justify-center shadow-sm flex-shrink-0">
-              <svg viewBox="0 0 24 24" className="w-4.5 h-4.5" fill="none">
-                <polygon points="14,2 8,13 12,13 10,22 16,11 12,11 14,2" fill="#f97316"/>
-              </svg>
-            </div>
-            <span className="font-bold text-sm text-slate-800 dark:text-slate-100 tracking-tight">Maxvolt HR</span>
+            <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-8 w-auto object-contain" />
           </Link>
         </div>
-        <button
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-          style={{ minWidth: 44, minHeight: 44 }}
-          className="flex items-center justify-center -mr-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/8 transition-colors"
-          aria-label="Toggle menu"
-        >
-          {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-        </button>
+        <div className="flex items-center gap-1">
+          <NotificationBell />
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            style={{ minWidth: 44, minHeight: 44 }}
+            className="flex items-center justify-center -mr-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/8 transition-colors"
+            aria-label="Toggle menu"
+          >
+            {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+        </div>
       </div>
 
       {/* ── Sidebar ─────────────────────────────────────────── */}
       <aside
         className={`
           fixed lg:relative inset-y-0 left-0 z-50 flex flex-col flex-shrink-0
-          w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-white/8
+          w-64 bg-[#344055] border-r border-[#2a3347]
           transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
           ${sidebarOpen ? 'translate-x-0 shadow-2xl shadow-black/25' : '-translate-x-full lg:translate-x-0'}
         `}
         style={{ paddingTop: 'env(safe-area-inset-top)' }}
       >
         {/* Desktop brand */}
-        <div className="hidden lg:flex items-center gap-3 px-5 py-5 border-b border-slate-200 dark:border-white/8">
-          <div className="w-9 h-9 rounded-xl bg-[#1a1f36] flex items-center justify-center shadow-md flex-shrink-0">
-            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
-              <polygon points="14,2 8,13 12,13 10,22 16,11 12,11 14,2" fill="#f97316"/>
-            </svg>
-          </div>
-          <div className="min-w-0">
-            <p className="font-extrabold text-sm text-slate-900 dark:text-slate-100 truncate tracking-tight">Maxvolt HR</p>
-            <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium">Energy Industries</p>
-          </div>
+        <div className="hidden lg:flex items-center justify-center px-4 py-4 border-b border-[#2a3347]">
+          <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-12 w-auto object-contain brightness-0 invert" />
         </div>
 
         {/* User card */}
-        <div className="px-4 py-3 border-b border-slate-200 dark:border-white/8">
-          <div className="flex items-center gap-3 bg-slate-50 dark:bg-white/5 rounded-xl px-3 py-2.5">
+        <div className="px-4 py-3 border-b border-[#2a3347]">
+          <div className="flex items-center gap-3 bg-white/8 rounded-xl px-3 py-2.5">
             <Avatar name={displayName} role={userRole} />
             <div className="flex-1 min-w-0">
-              <p className="font-semibold text-sm text-slate-900 dark:text-slate-100 truncate">{displayName}</p>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 capitalize font-medium mt-0.5">
+              <p className="font-semibold text-sm text-white truncate">{displayName}</p>
+              <p className="text-[11px] text-white/50 capitalize font-medium mt-0.5">
                 {userRole?.replace(/_/g, ' ')}
               </p>
             </div>
@@ -374,12 +365,15 @@ export default function Layout({ children, currentPageName }) {
 
         {/* Footer */}
         <div
-          className="px-3 py-3 border-t border-slate-200 dark:border-white/8 space-y-1"
+          className="px-3 py-3 border-t border-[#2a3347] space-y-1"
           style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.75rem)' }}
         >
+          <div className="px-1 flex justify-end mb-1">
+            <NotificationBell />
+          </div>
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-slate-100 transition-colors"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-white/70 hover:bg-white/10 hover:text-white transition-colors"
           >
             {theme === 'dark'
               ? <><Sun  className="w-4 h-4 flex-shrink-0 text-amber-500" /><span>Light Mode</span></>
@@ -388,7 +382,7 @@ export default function Layout({ children, currentPageName }) {
           </button>
           <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-red-300 hover:text-red-200 hover:bg-red-500/15 transition-colors"
           >
             <LogOut className="w-4 h-4 flex-shrink-0" />
             <span>Sign out</span>

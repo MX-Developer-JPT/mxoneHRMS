@@ -87,9 +87,9 @@ export default function Register() {
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
             <img
-              src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/699eb9bc720debeb08964bb8/141927f8a_logo-footer.jpg"
-              alt="Maxvolt Energy"
-              className="h-16 mx-auto mb-4 object-contain"
+              src="/maxvolt-logo.jpg"
+              alt="MaxVolt Energy"
+              className="h-16 w-auto object-contain mx-auto mb-5"
             />
             <h1 className="text-2xl font-bold">Verify your email</h1>
             <p className="text-muted-foreground mt-1 text-sm">

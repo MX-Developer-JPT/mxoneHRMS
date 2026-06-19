@@ -6,76 +6,76 @@
 
 @layer base {
   :root {
-    /* ── Light Mode ── */
-    --background:             215 28% 97%;
-    --foreground:             222 47% 10%;
+    /* ── Light Mode — Maxvolt Navy Brand ── */
+    --background:             210 20% 98%;
+    --foreground:             215 25% 15%;
     --card:                   0 0% 100%;
-    --card-foreground:        222 47% 10%;
+    --card-foreground:        215 25% 15%;
     --popover:                0 0% 100%;
-    --popover-foreground:     222 47% 10%;
-    --primary:                245 83% 57%;
+    --popover-foreground:     215 25% 15%;
+    --primary:                215 28% 30%;
     --primary-foreground:     0 0% 100%;
-    --secondary:              245 50% 94%;
-    --secondary-foreground:   245 60% 30%;
-    --muted:                  215 25% 94%;
-    --muted-foreground:       215 18% 48%;
-    --accent:                 262 83% 57%;
+    --secondary:              215 20% 92%;
+    --secondary-foreground:   215 28% 30%;
+    --muted:                  210 15% 94%;
+    --muted-foreground:       215 15% 50%;
+    --accent:                 215 28% 30%;
     --accent-foreground:      0 0% 100%;
     --destructive:            0 84% 56%;
     --destructive-foreground: 0 0% 100%;
-    --border:                 215 24% 88%;
-    --input:                  215 24% 88%;
-    --ring:                   245 83% 57%;
-    --chart-1:  245 83% 57%;
+    --border:                 215 18% 88%;
+    --input:                  215 18% 88%;
+    --ring:                   215 28% 30%;
+    --chart-1:  215 28% 30%;
     --chart-2:  160 65% 42%;
-    --chart-3:  262 83% 57%;
+    --chart-3:  245 83% 57%;
     --chart-4:   43 80% 54%;
     --chart-5:   12 76% 58%;
     --radius:                 0.75rem;
-    --sidebar-background:     0 0% 100%;
-    --sidebar-foreground:     222 47% 10%;
-    --sidebar-primary:        245 83% 57%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent:         215 25% 94%;
-    --sidebar-accent-foreground: 222 47% 10%;
-    --sidebar-border:         215 24% 90%;
-    --sidebar-ring:           245 83% 57%;
+    --sidebar-background:     215 28% 20%;
+    --sidebar-foreground:     0 0% 100%;
+    --sidebar-primary:        0 0% 100%;
+    --sidebar-primary-foreground: 215 28% 20%;
+    --sidebar-accent:         215 28% 27%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border:         215 20% 28%;
+    --sidebar-ring:           0 0% 100%;
   }
 
   .dark {
-    /* ── Dark Mode — Deep Navy ── */
-    --background:             232 45% 5%;
-    --foreground:             215 35% 92%;
-    --card:                   232 40% 8%;
-    --card-foreground:        215 35% 92%;
-    --popover:                232 40% 9%;
-    --popover-foreground:     215 35% 92%;
-    --primary:                245 85% 65%;
-    --primary-foreground:     232 45% 5%;
-    --secondary:              232 35% 14%;
-    --secondary-foreground:   215 35% 85%;
-    --muted:                  232 35% 13%;
-    --muted-foreground:       215 20% 55%;
-    --accent:                 262 80% 68%;
-    --accent-foreground:      0 0% 100%;
+    /* ── Dark Mode ── */
+    --background:             220 20% 8%;
+    --foreground:             210 20% 92%;
+    --card:                   220 18% 11%;
+    --card-foreground:        210 20% 92%;
+    --popover:                220 18% 12%;
+    --popover-foreground:     210 20% 92%;
+    --primary:                215 40% 60%;
+    --primary-foreground:     220 20% 8%;
+    --secondary:              220 15% 18%;
+    --secondary-foreground:   210 20% 85%;
+    --muted:                  220 15% 16%;
+    --muted-foreground:       215 12% 55%;
+    --accent:                 215 40% 60%;
+    --accent-foreground:      220 20% 8%;
     --destructive:            0 70% 58%;
     --destructive-foreground: 0 0% 100%;
-    --border:                 232 30% 16%;
-    --input:                  232 35% 13%;
-    --ring:                   245 85% 65%;
-    --chart-1:  245 85% 65%;
+    --border:                 220 15% 20%;
+    --input:                  220 15% 16%;
+    --ring:                   215 40% 60%;
+    --chart-1:  215 40% 60%;
     --chart-2:  160 65% 52%;
-    --chart-3:  262 80% 68%;
+    --chart-3:  245 85% 65%;
     --chart-4:   43 80% 62%;
     --chart-5:   12 76% 65%;
-    --sidebar-background:     232 42% 6%;
-    --sidebar-foreground:     215 30% 88%;
-    --sidebar-primary:        245 85% 65%;
-    --sidebar-primary-foreground: 232 45% 5%;
-    --sidebar-accent:         232 35% 12%;
-    --sidebar-accent-foreground: 215 30% 88%;
-    --sidebar-border:         232 30% 14%;
-    --sidebar-ring:           245 85% 65%;
+    --sidebar-background:     220 22% 10%;
+    --sidebar-foreground:     210 20% 90%;
+    --sidebar-primary:        215 40% 60%;
+    --sidebar-primary-foreground: 220 20% 8%;
+    --sidebar-accent:         220 18% 16%;
+    --sidebar-accent-foreground: 210 20% 90%;
+    --sidebar-border:         220 15% 18%;
+    --sidebar-ring:           215 40% 60%;
   }
 }
 

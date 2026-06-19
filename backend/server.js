@@ -4,6 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
+import { spawn, execSync } from 'child_process';
 import authRouter           from './routes/auth.js';
 import entitiesRouter       from './routes/entities.js';
 import functionsRouter      from './routes/functions.js';
@@ -11,8 +12,32 @@ import uploadRouter         from './routes/upload.js';
 import aiRouter             from './routes/ai.js';
 import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
+import notificationsRouter  from './routes/notifications.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ── Auto-start Ollama for local development ─────────────────
+function autoStartOllama() {
+  if (process.env.GROQ_API_KEY) return; // Groq is configured, skip Ollama
+  if (process.env.NODE_ENV === 'production') return; // Railway: use Groq instead
+  try {
+    // Check if ollama is available
+    execSync('ollama --version', { stdio: 'ignore' });
+    // Check if already running
+    try {
+      const result = execSync('curl -s http://localhost:11434/api/tags', { timeout: 2000, stdio: 'pipe' });
+      if (result) { console.log('✓ Ollama already running'); return; }
+    } catch {}
+    // Start ollama serve in background
+    const proc = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' });
+    proc.unref();
+    console.log('✓ Ollama started automatically');
+  } catch {
+    // Ollama not installed — that's OK, AI features will be limited
+  }
+}
+autoStartOllama();
+
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
@@ -61,6 +86,7 @@ app.use('/api/upload',          uploadRouter);
 app.use('/api/ai',              aiRouter);
 app.use('/api/admin',           adminRouter);
 app.use('/api/attendance-log',  attendanceLogRouter);
+app.use('/api/notifications',   notificationsRouter);
 
 // ── Production: serve built React frontend ─────────────────
 if (process.env.NODE_ENV === 'production') {

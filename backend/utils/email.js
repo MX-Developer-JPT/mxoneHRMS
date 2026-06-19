@@ -116,34 +116,26 @@ export function getSmtpPublicConfig() {
 }
 
 // ── Shared email chrome ────────────────────────────────────
-const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" style="display:inline-block;vertical-align:middle"><polygon points="14,2 8,13 12,13 10,22 16,11 12,11 14,2" fill="#f97316"/></svg>`;
+const APP_URL = process.env.APP_URL || 'https://your-app.railway.app';
+const LOGO_URL = `${APP_URL}/maxvolt-logo.jpg`;
 
-function emailHeader(title, accentColor = '#1a1f36') {
+function emailHeader(title, accentColor = '#344055') {
   return `
-<div style="background:${accentColor};padding:20px 28px;border-radius:12px 12px 0 0;display:flex;align-items:center;gap:12px">
-  <div style="background:#0f1628;border-radius:8px;padding:6px 8px;display:inline-block">${LOGO_SVG}</div>
-  <div>
-    <div style="color:#f97316;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase">Maxvolt Energy</div>
-    <div style="color:#ffffff;font-size:18px;font-weight:700;margin-top:2px">${title}</div>
+<div style="background:${accentColor};padding:20px 28px;border-radius:12px 12px 0 0;display:flex;align-items:center;gap:16px">
+  <img src="${LOGO_URL}" alt="MaxVolt Energy" style="height:40px;width:auto;object-fit:contain;filter:brightness(0) invert(1);border-radius:4px" />
+  <div style="flex:1">
+    <div style="color:#ffffff;font-size:18px;font-weight:700">${title}</div>
+    <div style="color:rgba(255,255,255,0.65);font-size:11px;margin-top:2px">Maxvolt Energy Industries Limited</div>
   </div>
 </div>`;
 }
 
 function emailFooter() {
   return `
-<div style="border-top:1px solid #e2e8f0;padding:20px 28px;background:#f8fafc;border-radius:0 0 12px 12px">
-  <table style="width:100%">
-    <tr>
-      <td>
-        <div style="font-size:12px;color:#94a3b8">This is an automated message from</div>
-        <div style="font-size:13px;font-weight:600;color:#64748b">Maxvolt Energy Industries Limited</div>
-        <div style="font-size:11px;color:#94a3b8;margin-top:4px">HR Portal — do not reply to this email</div>
-      </td>
-      <td style="text-align:right">
-        <div style="background:#1a1f36;border-radius:8px;padding:8px 10px;display:inline-block">${LOGO_SVG}</div>
-      </td>
-    </tr>
-  </table>
+<div style="border-top:1px solid #e2e8f0;padding:16px 28px;background:#f8fafc;border-radius:0 0 12px 12px;text-align:center">
+  <img src="${LOGO_URL}" alt="MaxVolt Energy" style="height:32px;width:auto;object-fit:contain;margin-bottom:8px" />
+  <div style="font-size:12px;color:#94a3b8;margin-top:4px">This is an automated message. Do not reply to this email.</div>
+  <div style="font-size:11px;color:#cbd5e1;margin-top:2px">© ${new Date().getFullYear()} Maxvolt Energy Industries Limited</div>
 </div>`;
 }
 

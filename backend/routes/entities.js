@@ -165,6 +165,19 @@ router.patch('/:type/:id', (req, res) => {
           console.error('[email] Leave notification failed:', e.message)
         );
       }
+      // Create in-app notification
+      try {
+        const leaveUserId = updated.user_id || row.user_id;
+        const leaveTypeName = polData.name || updated.leave_type || updated.leave_policy_id || 'leave';
+        const notifId = uuidv4();
+        db.prepare(`INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)`)
+          .run(notifId, leaveUserId,
+            `Leave ${req.body.status === 'approved' ? 'Approved' : 'Rejected'}`,
+            `Your ${leaveTypeName} request has been ${req.body.status}.`,
+            req.body.status === 'approved' ? 'success' : 'warning',
+            '/Leave'
+          );
+      } catch(ne) { console.error('[notif] Leave notification error:', ne.message); }
     } catch(e) { console.error('[email] Leave email error:', e.message); }
   }
 
