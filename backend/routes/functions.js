@@ -1251,28 +1251,114 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     /* ── MIS & Reporting ─────────────────────────────── */
     case 'getMISData': {
-      const today       = new Date().toISOString().slice(0, 10);
-      const monthStart  = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
-      const totalEmp    = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'").get().c;
-      const pendLeave   = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'").get().c;
-      const openTickets = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Ticket' AND status='open'").get().c;
-      const todayAtt    = db.prepare("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND json_extract(data,'$.date')=? AND json_extract(data,'$.check_in_time') IS NOT NULL").get(today).c;
-      const pendGatePasses = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='GatePass' AND status='pending_approval'").get().c;
-      const pendRegularisations = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='AttendanceRegularisation' AND status='pending'").get().c;
-      const activeCandidates = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Candidate' AND status IN ('applied','screening','interview_scheduled')").get().c;
-      const monthPayroll = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Payroll' AND json_extract(data,'$.year')=? AND json_extract(data,'$.month')=?").get(new Date().getFullYear(), new Date().getMonth()+1).c;
-      const pendingExits = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND status NOT IN ('completed','fnf_done')").get().c;
+      const today      = new Date().toISOString().slice(0, 10);
+      const now        = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+      const yr12Ago    = new Date(now.getFullYear() - 1, now.getMonth(), 1).toISOString().slice(0, 10);
+
+      // ── Core headcount ──────────────────────────────────────────────────────
+      const totalActive  = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'").get().c;
+      const presentToday = db.prepare("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND json_extract(data,'$.date')=? AND json_extract(data,'$.check_in_time') IS NOT NULL").get(today).c;
+      const absentToday  = Math.max(0, totalActive - presentToday);
       const newJoineesThisMonth = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND json_extract(data,'$.date_of_joining') >= ?").get(monthStart).c;
+      const exitedLast12m = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND json_extract(data,'$.last_working_date') >= ?").get(yr12Ago).c;
+      const attritionRate = totalActive > 0 ? parseFloat(((exitedLast12m / totalActive) * 100).toFixed(1)) : 0;
+
+      // ── Leave ───────────────────────────────────────────────────────────────
+      const pendingLeaveRequests = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'").get().c;
+      const activeLeaves         = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND json_extract(data,'$.start_date') <= ? AND json_extract(data,'$.end_date') >= ?").get(today, today).c;
+
+      // ── Payroll ─────────────────────────────────────────────────────────────
+      const payrollRows      = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND json_extract(data,'$.year')=? AND json_extract(data,'$.month')=?").all(now.getFullYear(), now.getMonth()+1));
+      const totalPayrollCost = payrollRows.reduce((s, r) => s + (r.net_salary || 0), 0);
+
+      // ── Recruitment ─────────────────────────────────────────────────────────
+      const allCandidates = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Candidate'").all());
+      const recruitment = {
+        totalCandidates: allCandidates.length,
+        hired:      allCandidates.filter(c => ['hired','joined'].includes(c.status)).length,
+        inPipeline: allCandidates.filter(c => ['applied','screening','interview_scheduled','interview_done','selected'].includes(c.status)).length,
+        rejected:   allCandidates.filter(c => c.status === 'rejected').length,
+        offered:    allCandidates.filter(c => c.status === 'offered').length,
+        hiringBySource: Object.entries(allCandidates.reduce((acc, c) => { const src = c.source || 'Direct'; acc[src] = (acc[src]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
+      };
+
+      // ── Reimbursements ──────────────────────────────────────────────────────
+      const allReimb = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Reimbursement'").all());
+      const reimbursements = {
+        total:   allReimb.reduce((s, r) => s + (r.amount || 0), 0),
+        pending: allReimb.filter(r => r.status === 'pending').reduce((s, r) => s + (r.amount || 0), 0),
+        byCategory: Object.entries(allReimb.reduce((acc, r) => { const t = r.expense_type || 'Other'; acc[t] = (acc[t]||0)+(r.amount||0); return acc; }, {})).map(([name, amount]) => ({ name, amount })),
+      };
+
+      // ── Helpdesk ────────────────────────────────────────────────────────────
+      const allTickets = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Ticket'").all());
+      const tickets = {
+        openTickets:     allTickets.filter(t => t.status === 'open').length,
+        resolvedTickets: allTickets.filter(t => ['resolved','closed'].includes(t.status)).length,
+        byCategory: Object.entries(allTickets.reduce((acc, t) => { const c = t.category||'General'; acc[c]=(acc[c]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
+      };
+
+      // ── Assets ──────────────────────────────────────────────────────────────
+      const allAssets = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Asset'").all());
+      const assets = {
+        total:        allAssets.length,
+        assigned:     allAssets.filter(a => a.status === 'assigned').length,
+        available:    allAssets.filter(a => ['available','in_stock'].includes(a.status)).length,
+        underRepair:  allAssets.filter(a => ['under_repair','repair'].includes(a.status)).length,
+        discarded:    allAssets.filter(a => ['discarded','retired'].includes(a.status)).length,
+        commonAssets: allAssets.filter(a => a.is_common || a.assignment_type === 'shared').length,
+        overdueReturns: allAssets.filter(a => a.expected_return_date && a.expected_return_date < today && a.status === 'assigned').length,
+        totalValue:   allAssets.reduce((s, a) => s + (a.purchase_cost || 0), 0),
+        byType: Object.entries(allAssets.reduce((acc, a) => { const t = a.asset_type||a.category||'Other'; acc[t]=(acc[t]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
+      };
+
+      // ── Exits ───────────────────────────────────────────────────────────────
+      const allExits = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Exit'").all());
+      const exits = {
+        total:     allExits.length,
+        pending:   allExits.filter(e => !['completed','fnf_done'].includes(e.status)).length,
+        completed: allExits.filter(e => ['completed','fnf_done'].includes(e.status)).length,
+        byType: Object.entries(allExits.reduce((acc, e) => { const t = e.exit_type||'Unknown'; acc[t]=(acc[t]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
+      };
+
+      // ── Attendance trends (last 7 days) ─────────────────────────────────────
+      const attendanceTrends = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().slice(0, 10);
+        const present = db.prepare("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND json_extract(data,'$.date')=? AND json_extract(data,'$.check_in_time') IS NOT NULL").get(dateStr).c;
+        attendanceTrends.push({ date: dateStr, day: d.toLocaleDateString('en-IN',{weekday:'short'}), present, absent: Math.max(0, totalActive - present) });
+      }
+
+      // ── Department breakdown ────────────────────────────────────────────────
+      const allEmps = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all());
+      const departmentBreakdown = Object.entries(allEmps.reduce((acc, e) => { const d = e.department||'Unknown'; acc[d]=(acc[d]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count }));
+
+      // ── Biometric / attendance stats ────────────────────────────────────────
+      const attLogs      = parseEntities(db.prepare("SELECT data FROM entities WHERE type='AttendanceLog' AND json_extract(data,'$.punch_date') >= ?").all(monthStart));
+      const attThisMonth = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Attendance' AND json_extract(data,'$.date') >= ?").all(monthStart));
+      const workedRecs   = attThisMonth.filter(a => a.working_hours > 0);
+      const avgWorkingHours   = workedRecs.length > 0 ? parseFloat((workedRecs.reduce((s,a)=>s+(a.working_hours||0),0)/workedRecs.length).toFixed(1)) : 0;
+      const biometricSyncedCount = attLogs.length;
+      const avgDailyPunches      = biometricSyncedCount > 0 && totalActive > 0 ? parseFloat((biometricSyncedCount / totalActive / 20).toFixed(1)) : 0;
+
+      // ── Performance rating distribution ─────────────────────────────────────
+      const allReviews = parseEntities(db.prepare("SELECT data FROM entities WHERE type='PerformanceReview'").all());
+      const ratingDist = Object.entries(allReviews.reduce((acc, r) => { const rt = r.rating||'Pending'; acc[rt]=(acc[rt]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count }));
+
+      // ── Metrics (camelCase — consumed by MetricCard via m.xxx) ──────────────
+      const metrics = {
+        totalActive, presentToday, absentToday, activeLeaves,
+        pendingLeaveRequests, totalPayrollCost, attritionRate,
+        openTickets: tickets.openTickets, newJoineesThisMonth,
+        biometricSyncedCount, avgWorkingHours, avgBreakHours: 0, avgDailyPunches,
+      };
 
       return res.json({
-        total_employees: totalEmp, active_employees: totalEmp,
-        present_today: todayAtt, absent_today: Math.max(0, totalEmp - todayAtt),
-        attendance_rate_today: totalEmp > 0 ? Math.round((todayAtt / totalEmp) * 100) : 0,
-        pending_leaves: pendLeave, pending_gate_passes: pendGatePasses,
-        pending_regularisations: pendRegularisations,
-        open_tickets: openTickets, active_candidates: activeCandidates,
-        payroll_processed_this_month: monthPayroll,
-        pending_exits: pendingExits, new_joinees_this_month: newJoineesThisMonth,
+        metrics, recruitment, reimbursements, tickets, assets, exits,
+        attendanceTrends, departmentBreakdown, ratingDist,
+        insights: [], leaveTrend: [], headcountGrowth: [], attritionTrend: [], payrollTrend: [], salarByDept: [],
       });
     }
 
