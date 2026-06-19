@@ -346,10 +346,9 @@ export default function OnboardingForm() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
       <div className="max-w-3xl mx-auto">
         <div className="text-center mb-8">
-          <img
-            src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/699eb9bc720debeb08964bb8/141927f8a_logo-footer.jpg"
-            alt="Maxvolt Energy" className="h-12 mx-auto mb-4"
-          />
+          <div className="inline-block bg-white rounded-2xl px-5 py-2.5 shadow-sm mb-4 border border-slate-100">
+            <img src="/maxvolt-logo.jpg" alt="Maxvolt Energy" className="h-12 object-contain" />
+          </div>
           <h1 className="text-2xl font-bold">Employee Onboarding</h1>
           <p className="text-gray-600">Complete your profile to get started</p>
         </div>

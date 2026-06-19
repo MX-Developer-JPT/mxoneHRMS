@@ -31,12 +31,11 @@ COPY backend/ ./
 COPY --from=frontend-builder /build/frontend/dist ./public
 
 # Create persistent data directories (Railway volumes mount here)
-RUN mkdir -p /app/data uploads
+RUN mkdir -p /app/data uploads && chmod +x /app/start.sh
 
 # Expose port (Railway injects $PORT automatically)
 EXPOSE 3001
 
 ENV NODE_ENV=production
 
-# Start Ollama in background then start the app
-CMD ["/bin/sh", "-c", "ollama serve &>/dev/null & node server.js"]
+CMD ["/app/start.sh"]

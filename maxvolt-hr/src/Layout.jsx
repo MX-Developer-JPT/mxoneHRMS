@@ -304,8 +304,10 @@ export default function Layout({ children, currentPageName }) {
               <ArrowLeft className="w-5 h-5" />
             </button>
           )}
-          <Link to="/Dashboard" className="flex items-center gap-2">
-            <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-8 w-auto object-contain" />
+          <Link to="/Dashboard" className="flex items-center">
+            <div className="bg-white dark:bg-white rounded-xl px-2.5 py-1 shadow-sm">
+              <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-7 w-auto object-contain" />
+            </div>
           </Link>
         </div>
         <div className="flex items-center gap-1">
@@ -332,8 +334,10 @@ export default function Layout({ children, currentPageName }) {
         style={{ paddingTop: 'env(safe-area-inset-top)' }}
       >
         {/* Desktop brand */}
-        <div className="hidden lg:flex items-center justify-center px-4 py-4 border-b border-[#2a3347]">
-          <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-12 w-auto object-contain brightness-0 invert" />
+        <div className="hidden lg:flex items-center justify-center px-4 py-5 border-b border-[#2a3347]">
+          <div className="bg-white rounded-2xl px-5 py-2.5 shadow-sm">
+            <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-10 w-auto object-contain" />
+          </div>
         </div>
 
         {/* User card */}

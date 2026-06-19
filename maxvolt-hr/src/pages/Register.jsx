@@ -86,11 +86,9 @@ export default function Register() {
         </button>
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
-            <img
-              src="/maxvolt-logo.jpg"
-              alt="MaxVolt Energy"
-              className="h-16 w-auto object-contain mx-auto mb-5"
-            />
+            <div className="inline-block bg-white rounded-2xl px-6 py-3 shadow-sm mb-5">
+              <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-14 w-auto object-contain" />
+            </div>
             <h1 className="text-2xl font-bold">Verify your email</h1>
             <p className="text-muted-foreground mt-1 text-sm">
               Hi {fullName}! We sent a 6-digit code to <strong>{email}</strong>
@@ -140,11 +138,9 @@ export default function Register() {
 
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <img
-            src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/699eb9bc720debeb08964bb8/141927f8a_logo-footer.jpg"
-            alt="Maxvolt Energy"
-            className="h-16 mx-auto mb-4 object-contain"
-          />
+          <div className="inline-block bg-white rounded-2xl px-6 py-3 shadow-sm mb-5">
+            <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-14 w-auto object-contain" />
+          </div>
           <h1 className="text-2xl font-bold">Create your account</h1>
           <p className="text-muted-foreground mt-1 text-sm">Join Maxvolt HR Portal</p>
         </div>

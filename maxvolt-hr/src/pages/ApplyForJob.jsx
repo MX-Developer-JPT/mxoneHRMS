@@ -149,11 +149,7 @@ export default function ApplyForJob() {
       {/* Header */}
       <div className="bg-white border-b shadow-sm">
         <div className="max-w-3xl mx-auto px-4 py-4 flex items-center gap-4">
-          <img
-            src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/699eb9bc720debeb08964bb8/141927f8a_logo-footer.jpg"
-            alt="Maxvolt Energy"
-            className="h-10"
-          />
+          <img src="/maxvolt-logo.jpg" alt="Maxvolt Energy" className="h-10 object-contain" />
           <div>
             <h1 className="font-bold text-gray-900">Apply for a Position</h1>
             <p className="text-sm text-gray-500">Maxvolt Energy Industries Limited</p>

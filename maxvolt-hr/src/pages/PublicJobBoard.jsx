@@ -44,11 +44,7 @@ export default function PublicJobBoard() {
       {/* Header */}
       <div className="bg-white border-b shadow-sm">
         <div className="max-w-5xl mx-auto px-4 py-6 flex items-center gap-4">
-          <img
-            src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/699eb9bc720debeb08964bb8/141927f8a_logo-footer.jpg"
-            alt="Maxvolt Energy"
-            className="h-12"
-          />
+          <img src="/maxvolt-logo.jpg" alt="Maxvolt Energy" className="h-12 object-contain" />
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Careers at Maxvolt Energy</h1>
             <p className="text-gray-500 text-sm">Explore open positions and join our team</p>
