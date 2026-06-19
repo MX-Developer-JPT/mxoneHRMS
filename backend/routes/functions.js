@@ -1388,8 +1388,44 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     }
 
     case 'getTeamCalendar': {
-      const leaves = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Leave' AND status IN ('approved','pending')").all());
-      return res.json(leaves);
+      const { month, year } = p;
+      const m = parseInt(month) || new Date().getMonth() + 1;
+      const y = parseInt(year)  || new Date().getFullYear();
+      const monthStart = `${y}-${String(m).padStart(2,'0')}-01`;
+      const monthEnd   = new Date(y, m, 0).toISOString().slice(0, 10); // last day of month
+
+      // Employees list
+      const employees = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all())
+        .map(e => ({ user_id: e.user_id, display_name: e.display_name, department: e.department, employee_code: e.employee_code }));
+
+      // Approved leaves for the month
+      const leaves = {};
+      const leaveRows = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Leave' AND status='approved'").all())
+        .filter(l => l.end_date >= monthStart && l.start_date <= monthEnd);
+      for (const lv of leaveRows) {
+        if (!leaves[lv.user_id]) leaves[lv.user_id] = {};
+        // Mark each day of the leave
+        const start = new Date(Math.max(new Date(lv.start_date), new Date(monthStart)));
+        const end   = new Date(Math.min(new Date(lv.end_date),   new Date(monthEnd)));
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+          leaves[lv.user_id][d.toISOString().slice(0,10)] = 'leave';
+        }
+      }
+
+      // Attendance records for the month
+      const attendance = {};
+      const attRows = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Attendance' AND json_extract(data,'$.date') >= ? AND json_extract(data,'$.date') <= ?").all(monthStart, monthEnd));
+      for (const att of attRows) {
+        if (!attendance[att.user_id]) attendance[att.user_id] = {};
+        attendance[att.user_id][att.date] = att.status || (att.check_in_time ? 'present' : 'absent');
+      }
+
+      // Holidays
+      const holidays = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Holiday'").all())
+        .filter(h => h.date >= monthStart && h.date <= monthEnd)
+        .map(h => ({ date: h.date, name: h.name, type: h.holiday_type || 'public' }));
+
+      return res.json({ success: true, data: { employees, holidays, attendance, leaves } });
     }
 
     /* ── Onboarding ──────────────────────────────────── */
