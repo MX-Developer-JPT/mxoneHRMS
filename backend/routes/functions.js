@@ -654,8 +654,113 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, marked });
     }
 
-    case 'receiveMxOneAttendanceSync': case 'fetchBiometricAttendance': case 'ebioWebhook':
-      return res.json({ success:true, processed:0, message:'Biometric integration requires device configuration' });
+    case 'receiveMxOneAttendanceSync': case 'fetchBiometricAttendance': case 'ebioWebhook': {
+      // Accepts eBio-format records from MxOneSync (PascalCase keys)
+      // Each punch arrives as a single JSON object (not a batch) from WebhookClient
+      // Also accepts { records: [...] } batch from any caller
+
+      // ── API key check (same key stored in settings) ────────────────────────
+      const storedKey = db.prepare("SELECT value FROM settings WHERE key='attendance_api_key'").get()?.value || process.env.ATTENDANCE_API_KEY || null;
+      if (storedKey) {
+        const authHeader = req.headers['authorization'] || req.headers['x-api-key'] || '';
+        const qKey = req.query?.key || '';
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+        if (token !== storedKey && qKey !== storedKey) {
+          return res.status(401).json({ success: false, error: 'Invalid API key' });
+        }
+      }
+
+      // Normalise: if body has EmployeeCode it's a single eBio record; if records[] it's a batch
+      let rawRecords = [];
+      if (Array.isArray(p.records)) {
+        rawRecords = p.records;
+      } else if (p.EmployeeCode || p.employee_code) {
+        rawRecords = [p];
+      } else {
+        return res.json({ success: true, processed: 0, message: 'No records in payload' });
+      }
+
+      // Load employee code → user_id mapping
+      const empRows = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const emps = empRows.map(r => JSON.parse(r.data));
+      const mappingRows = db.prepare("SELECT data FROM entities WHERE type='BiometricCodeMapping'").all();
+      const codeMap = {};
+      mappingRows.forEach(r => { const m = JSON.parse(r.data); if (m.biometric_code && m.user_id) codeMap[String(m.biometric_code).toLowerCase()] = m.user_id; });
+      emps.forEach(e => { if (e.employee_code) codeMap[String(e.employee_code).toLowerCase()] = e.user_id; });
+
+      const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+      const toIST = (raw) => {
+        if (!raw) return null;
+        const s = String(raw).trim();
+        const forceUTC = /Z$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(' ', 'T') + 'Z';
+        const d = new Date(forceUTC);
+        return isNaN(d.getTime()) ? null : new Date(d.getTime() + IST_OFFSET_MS);
+      };
+
+      let processed = 0, skipped = 0;
+      const byDate = {}; // key: userId_date → { userId, date, entries }
+
+      for (const rec of rawRecords) {
+        // Support both eBio PascalCase and internal lowercase
+        const empCode = String(rec.EmployeeCode || rec.employee_code || rec.EnrollNo || rec.pin || '').toLowerCase();
+        const logDateRaw = rec.LogDate || rec.log_date || rec.punch_time || rec.datetime || '';
+        const direction  = String(rec.Direction || rec.type || 'in').toUpperCase();
+
+        if (!empCode || !logDateRaw) { skipped++; continue; }
+        const userId = codeMap[empCode];
+        if (!userId) { skipped++; continue; }
+
+        const istDate = toIST(logDateRaw);
+        if (!istDate) { skipped++; continue; }
+
+        const punchType = (direction === 'IN' || direction === 'in') ? 'in' : 'out';
+        const punchIso  = istDate.toISOString(); // store as the actual IST-adjusted UTC moment
+        const dateStr   = punchIso.slice(0, 10);
+
+        // Deduplicate logs
+        const existing = db.prepare("SELECT id FROM entities WHERE type='AttendanceLog' AND json_extract(data,'$.EmployeeCode')=? AND json_extract(data,'$.LogDate')=?").get(rec.EmployeeCode || empCode, logDateRaw);
+        if (!existing) {
+          const logId = uuidv4();
+          const logData = { ...rec, id: logId, EmployeeCode: rec.EmployeeCode || empCode, LogDate: logDateRaw, user_id: userId, punch_type: punchType, punch_iso: punchIso, imported_at: new Date().toISOString() };
+          try {
+            db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'AttendanceLog',?,'active',?)").run(logId, userId, JSON.stringify(logData));
+          } catch {}
+        }
+
+        // Group by employee+date for attendance record creation
+        const key = `${userId}_${dateStr}`;
+        if (!byDate[key]) byDate[key] = { userId, date: dateStr, punches: [] };
+        byDate[key].punches.push({ iso: punchIso, type: punchType });
+        processed++;
+      }
+
+      // Upsert Attendance records
+      for (const { userId, date, punches } of Object.values(byDate)) {
+        if (punches.length === 0) continue;
+        punches.sort((a, b) => a.iso.localeCompare(b.iso));
+        const firstIn  = punches.find(p2 => p2.type === 'in')?.iso  || punches[0].iso;
+        const lastOut  = [...punches].reverse().find(p2 => p2.type === 'out')?.iso || null;
+
+        const existing = db.prepare("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date')=?").get(userId, date);
+        if (existing) {
+          const d = JSON.parse(existing.data);
+          if (d.status === 'regularised') continue; // never overwrite a regularised record
+          const updated = {
+            ...d,
+            check_in_time:  !d.check_in_time  || firstIn  < d.check_in_time  ? firstIn  : d.check_in_time,
+            check_out_time: !d.check_out_time || (lastOut && lastOut > d.check_out_time) ? lastOut : d.check_out_time,
+            biometric_synced: true, status: d.status || 'present',
+          };
+          db.prepare("UPDATE entities SET data=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(updated), existing.id);
+        } else {
+          const attId = uuidv4();
+          const attData = { id: attId, user_id: userId, date, check_in_time: firstIn, check_out_time: lastOut, status: 'present', source: 'biometric', biometric_synced: true };
+          db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'present',?)").run(attId, userId, JSON.stringify(attData));
+        }
+      }
+
+      return res.json({ success: true, received: rawRecords.length, processed, skipped, attendance_records: Object.keys(byDate).length });
+    }
 
     case 'receiveBiometricAttendance':
     case 'processEbioLogs': {
