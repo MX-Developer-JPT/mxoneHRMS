@@ -1251,10 +1251,29 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     /* ── MIS & Reporting ─────────────────────────────── */
     case 'getMISData': {
+      const today       = new Date().toISOString().slice(0, 10);
+      const monthStart  = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
       const totalEmp    = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'").get().c;
       const pendLeave   = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'").get().c;
       const openTickets = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Ticket' AND status='open'").get().c;
-      return res.json({ total_employees:totalEmp, pending_leaves:pendLeave, open_tickets:openTickets, active_employees:totalEmp });
+      const todayAtt    = db.prepare("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND json_extract(data,'$.date')=? AND json_extract(data,'$.check_in_time') IS NOT NULL").get(today).c;
+      const pendGatePasses = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='GatePass' AND status='pending_approval'").get().c;
+      const pendRegularisations = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='AttendanceRegularisation' AND status='pending'").get().c;
+      const activeCandidates = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Candidate' AND status IN ('applied','screening','interview_scheduled')").get().c;
+      const monthPayroll = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Payroll' AND json_extract(data,'$.year')=? AND json_extract(data,'$.month')=?").get(new Date().getFullYear(), new Date().getMonth()+1).c;
+      const pendingExits = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND status NOT IN ('completed','fnf_done')").get().c;
+      const newJoineesThisMonth = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND json_extract(data,'$.date_of_joining') >= ?").get(monthStart).c;
+
+      return res.json({
+        total_employees: totalEmp, active_employees: totalEmp,
+        present_today: todayAtt, absent_today: Math.max(0, totalEmp - todayAtt),
+        attendance_rate_today: totalEmp > 0 ? Math.round((todayAtt / totalEmp) * 100) : 0,
+        pending_leaves: pendLeave, pending_gate_passes: pendGatePasses,
+        pending_regularisations: pendRegularisations,
+        open_tickets: openTickets, active_candidates: activeCandidates,
+        payroll_processed_this_month: monthPayroll,
+        pending_exits: pendingExits, new_joinees_this_month: newJoineesThisMonth,
+      });
     }
 
     case 'getTeamCalendar': {
