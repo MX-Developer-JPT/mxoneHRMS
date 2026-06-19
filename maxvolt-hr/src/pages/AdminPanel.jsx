@@ -9,7 +9,7 @@ import {
   Database, Users, RefreshCw, Trash2, Edit, Plus, Search,
   ChevronLeft, ChevronRight, Eye, Key, AlertTriangle, X, Check,
   BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2,
-  Bot, Sparkles, ExternalLink, Zap
+  Bot, Sparkles, ExternalLink, Zap, Fingerprint, Copy, RotateCcw, Globe, Code2
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -794,6 +794,162 @@ function AITab() {
   );
 }
 
+// ── API Integration Tab ────────────────────────────────────
+function ApiIntegrationTab() {
+  const [apiInfo, setApiInfo]       = useState(null);
+  const [loading, setLoading]       = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [showKey, setShowKey]       = useState(false);
+
+  const loadInfo = async () => {
+    setLoading(true);
+    try {
+      const res = await base44.functions.invoke('getAttendanceApiInfo', {});
+      setApiInfo(res.data);
+    } catch (e) { toast.error(e.message); }
+    setLoading(false);
+  };
+
+  useEffect(() => { loadInfo(); }, []);
+
+  const generateKey = async () => {
+    if (!window.confirm('Generate a new API key? The old key will be invalidated immediately.')) return;
+    setGenerating(true);
+    try {
+      const res = await base44.functions.invoke('generateAttendanceApiKey', {});
+      setApiInfo(p => ({ ...p, api_key: res.data.api_key }));
+      setShowKey(true);
+      toast.success('New API key generated');
+    } catch (e) { toast.error(e.message); }
+    setGenerating(false);
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text).then(() => toast.success('Copied to clipboard'));
+  };
+
+  if (loading) return <div className="flex items-center gap-2 text-muted-foreground py-8"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>;
+
+  const endpoint = apiInfo?.endpoint || '';
+  const apiKey   = apiInfo?.api_key  || '';
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold flex items-center gap-2"><Fingerprint className="w-5 h-5 text-primary" /> External Attendance API</h2>
+        <p className="text-sm text-muted-foreground mt-1">Push attendance punch records from biometric devices, mobile apps, or third-party software into this HRMS in real time.</p>
+      </div>
+
+      {/* Endpoint */}
+      <div className="border rounded-xl p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <Globe className="w-4 h-4 text-blue-500" />
+          <h3 className="font-semibold text-sm">API Endpoint</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 text-xs bg-muted px-3 py-2 rounded font-mono break-all">{endpoint}</code>
+          <Button size="sm" variant="outline" onClick={() => copyToClipboard(endpoint)}><Copy className="w-3.5 h-3.5" /></Button>
+        </div>
+        <div className="text-xs text-muted-foreground space-y-1">
+          <p><span className="font-medium">Method:</span> POST · Content-Type: application/json</p>
+          <p><span className="font-medium">Auth:</span> Authorization: Bearer &lt;API_KEY&gt; &nbsp;or&nbsp; X-Api-Key: &lt;API_KEY&gt;</p>
+        </div>
+      </div>
+
+      {/* API Key */}
+      <div className="border rounded-xl p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Key className="w-4 h-4 text-amber-500" />
+            <h3 className="font-semibold text-sm">API Key</h3>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setShowKey(s => !s)}>
+              <Eye className="w-3.5 h-3.5 mr-1" /> {showKey ? 'Hide' : 'Show'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={generateKey} disabled={generating}>
+              {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <RotateCcw className="w-3.5 h-3.5 mr-1" />}
+              {apiKey ? 'Regenerate' : 'Generate Key'}
+            </Button>
+          </div>
+        </div>
+        {apiKey ? (
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-xs bg-muted px-3 py-2 rounded font-mono">
+              {showKey ? apiKey : '•'.repeat(40)}
+            </code>
+            {showKey && <Button size="sm" variant="outline" onClick={() => copyToClipboard(apiKey)}><Copy className="w-3.5 h-3.5" /></Button>}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No API key set. Click "Generate Key" to create one.</p>
+        )}
+        <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          Keep this key secret. Anyone with this key can push attendance records to your HRMS.
+        </p>
+      </div>
+
+      {/* Request Examples */}
+      <div className="border rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Code2 className="w-4 h-4 text-green-600" />
+          <h3 className="font-semibold text-sm">Request Examples</h3>
+        </div>
+
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground mb-1 uppercase tracking-wide">Single punch (IN/OUT)</p>
+          <pre className="text-xs bg-gray-900 text-green-400 p-3 rounded overflow-x-auto">{`POST ${endpoint}
+Authorization: Bearer ${apiKey || '<YOUR_API_KEY>'}
+Content-Type: application/json
+
+{
+  "employee_code": "EMP001",
+  "punch_time": "${new Date().toISOString()}",
+  "type": "in",
+  "device_id": "DEVICE01"
+}`}</pre>
+          <Button size="sm" variant="ghost" className="text-xs mt-1" onClick={() => copyToClipboard(`POST ${endpoint}\nAuthorization: Bearer ${apiKey || '<YOUR_API_KEY>'}\nContent-Type: application/json\n\n{\n  "employee_code": "EMP001",\n  "punch_time": "${new Date().toISOString()}",\n  "type": "in",\n  "device_id": "DEVICE01"\n}`)}>
+            <Copy className="w-3 h-3 mr-1" /> Copy
+          </Button>
+        </div>
+
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground mb-1 uppercase tracking-wide">Batch punch (multiple employees)</p>
+          <pre className="text-xs bg-gray-900 text-green-400 p-3 rounded overflow-x-auto">{`POST ${endpoint}
+Authorization: Bearer ${apiKey || '<YOUR_API_KEY>'}
+
+{
+  "records": [
+    { "employee_code": "EMP001", "punch_time": "2024-06-19T09:00:00Z", "type": "in" },
+    { "employee_code": "EMP002", "punch_time": "2024-06-19T09:05:00Z", "type": "in" },
+    { "employee_code": "EMP001", "punch_time": "2024-06-19T18:30:00Z", "type": "out" }
+  ]
+}`}</pre>
+        </div>
+
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-800 space-y-1">
+          <p className="font-semibold">Field reference</p>
+          <p><span className="font-medium">employee_code</span> — matches the Emp Code set during onboarding</p>
+          <p><span className="font-medium">punch_time</span> — ISO 8601 format, e.g. 2024-06-19T09:00:00.000Z</p>
+          <p><span className="font-medium">type</span> — <code>"in"</code> (check-in) or <code>"out"</code> (check-out)</p>
+          <p><span className="font-medium">device_id</span> — optional, identifies which device sent the punch</p>
+        </div>
+      </div>
+
+      {/* What happens after push */}
+      <div className="border rounded-xl p-5 space-y-3">
+        <h3 className="font-semibold text-sm">What happens after a push?</h3>
+        <ol className="text-sm text-muted-foreground space-y-2 list-decimal list-inside">
+          <li>The punch record is stored in <strong>Biometric Logs</strong> for audit trail</li>
+          <li>Employee is looked up by <code>employee_code</code> (or <code>user_id</code> if provided)</li>
+          <li>First punch of the day → creates check-in; subsequent punches update check-out</li>
+          <li>Attendance status is computed against the employee's assigned shift rules</li>
+          <li>Records appear immediately on the <strong>All Attendance</strong> page</li>
+        </ol>
+      </div>
+    </div>
+  );
+}
+
 // ── Main AdminPanel page ───────────────────────────────────
 export default function AdminPanel() {
   const { user } = useAuth();
@@ -823,6 +979,7 @@ export default function AdminPanel() {
     { id: 'stats',    label: 'Statistics',        icon: BarChart3 },
     { id: 'email',    label: 'Email Settings',    icon: Mail },
     { id: 'ai',       label: 'AI Settings',       icon: Bot },
+    { id: 'api',      label: 'API Integration',   icon: Fingerprint },
   ];
 
   return (
@@ -854,6 +1011,7 @@ export default function AdminPanel() {
       {tab === 'users'    && <UsersTab />}
       {tab === 'email'    && <EmailTab />}
       {tab === 'ai'       && <AITab />}
+      {tab === 'api'      && <ApiIntegrationTab />}
       {tab === 'stats'    && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           {typeCounts.map(({ type, count }) => (

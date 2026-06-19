@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { DollarSign, Users, TrendingUp, Play, Check, Download, FileText, Printer, Loader2, CheckSquare, Square } from 'lucide-react';
+import { DollarSign, Users, TrendingUp, Play, Check, Download, FileText, Printer, Loader2, CheckSquare, Square, FileSpreadsheet } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import {
@@ -234,6 +234,28 @@ export default function PayrollManagement() {
     setBulkDownloading(false);
   };
 
+  const handleExportSalarySheet = async () => {
+    try {
+      toast.info('Generating salary sheet…');
+      const response = await base44.functions.invoke('exportSalarySheet', { month: selectedMonth, year: selectedYear });
+      if (response.data?.success) {
+        const blob = new Blob([response.data.csv], { type: 'text/csv;charset=utf-8;' });
+        const url  = window.URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url;
+        a.download = response.data.filename;
+        a.click();
+        window.URL.revokeObjectURL(url);
+        const t = response.data.totals;
+        toast.success(`Salary sheet exported — ${response.data.total_employees} employees, Net ₹${(t?.net||0).toLocaleString('en-IN')}`);
+      } else {
+        toast.error(response.data?.error || 'Failed to generate salary sheet');
+      }
+    } catch (error) {
+      toast.error('Error: ' + error.message);
+    }
+  };
+
   const handleDownloadBankFile = async (bankFormat = 'generic') => {
     try {
       const response = await base44.functions.invoke('generateBankTransferFile', {
@@ -349,6 +371,9 @@ export default function PayrollManagement() {
             >
               {bulkDownloading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Printer className="w-4 h-4 mr-2" />}
               Print All Payslips
+            </Button>
+            <Button variant="outline" onClick={handleExportSalarySheet} title="Export complete salary sheet with attendance & components">
+              <FileSpreadsheet className="w-4 h-4 mr-2" /> Salary Sheet
             </Button>
             <Select value="_none" onValueChange={(v) => { if (v !== '_none') handleDownloadBankFile(v); }}>
               <SelectTrigger className="w-44" disabled={processedCount === 0}>

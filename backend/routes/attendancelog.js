@@ -20,13 +20,22 @@ import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
 
+function getApiKey() {
+  // Prefer env var, fall back to DB-stored key
+  if (process.env.ATTENDANCE_API_KEY) return process.env.ATTENDANCE_API_KEY;
+  try {
+    const row = db.prepare("SELECT value FROM settings WHERE key='attendance_api_key'").get();
+    return row?.value || null;
+  } catch { return null; }
+}
+
 function authMiddleware(req, res, next) {
-  const apiKey = process.env.ATTENDANCE_API_KEY;
-  const header = req.headers['authorization'] || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : header;
+  const apiKey = getApiKey();
+  const header = req.headers['authorization'] || req.headers['x-api-key'] || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : header;
 
   if (apiKey && token !== apiKey) {
-    return res.status(401).json({ error: 'Invalid API key' });
+    return res.status(401).json({ error: 'Invalid API key', hint: 'Set Authorization: Bearer <key> header' });
   }
   next();
 }

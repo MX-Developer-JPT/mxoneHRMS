@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX } from 'lucide-react';
+import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import MobileSelect from '@/components/MobileSelect';
@@ -238,6 +238,23 @@ export default function AllAttendance() {
     URL.revokeObjectURL(url);
   };
 
+  const exportDetailedReport = async () => {
+    const [yr, mo] = date.split('-').map(Number);
+    try {
+      toast.info('Generating attendance report…');
+      const res = await base44.functions.invoke('exportAttendanceReport', { month: mo, year: yr });
+      if (!res.data?.success) { toast.error(res.data?.error || 'Export failed'); return; }
+      const blob = new Blob([res.data.csv], { type: 'text/csv;charset=utf-8;' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url;
+      a.download = res.data.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Report exported — ${res.data.total_employees} employees`);
+    } catch (e) { toast.error('Export error: ' + e.message); }
+  };
+
   if (loading) return (
     <div className="flex items-center justify-center h-screen">
       <RefreshCw className="animate-spin w-6 h-6 text-blue-500 mr-2" /> Loading attendance...
@@ -258,8 +275,11 @@ export default function AllAttendance() {
             <Button variant="outline" size="sm" onClick={handleMarkAbsent} disabled={markingAbsent} title="Mark employees without attendance as Absent">
               <UserX className="w-4 h-4 mr-1" /> {markingAbsent ? 'Marking...' : 'Mark Absent'}
             </Button>
-            <Button variant="outline" size="sm" onClick={exportToExcel} title="Export Attendance Muster">
-              <Download className="w-4 h-4 mr-1" /> Export
+            <Button variant="outline" size="sm" onClick={exportToExcel} title="Export Attendance Muster (monthly summary)">
+              <Download className="w-4 h-4 mr-1" /> Muster
+            </Button>
+            <Button variant="outline" size="sm" onClick={exportDetailedReport} title="Export detailed report with session hours and overtime">
+              <FileSpreadsheet className="w-4 h-4 mr-1" /> Report
             </Button>
             <Button variant="outline" size="sm" onClick={loadData}><RefreshCw className="w-4 h-4" /></Button>
           </div>
@@ -387,6 +407,11 @@ export default function AllAttendance() {
                             {record.late_arrival && record.late_arrival_minutes > 0 && (
                               <span className="inline-flex items-center gap-0.5 text-xs text-orange-600">
                                 <AlertTriangle className="w-3 h-3" /> {record.late_arrival_minutes}m late
+                              </span>
+                            )}
+                            {emp?.overtime_eligible && record.overtime_minutes > 0 && (
+                              <span className="inline-flex items-center gap-0.5 text-xs font-semibold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                                <Clock className="w-3 h-3" /> OT {Math.floor(record.overtime_minutes/60)}h{record.overtime_minutes%60>0?`${record.overtime_minutes%60}m`:''}
                               </span>
                             )}
                             <Badge className={`text-xs border ${STATUS_COLORS[displayStatus] || 'bg-gray-100 text-gray-700'}`}>

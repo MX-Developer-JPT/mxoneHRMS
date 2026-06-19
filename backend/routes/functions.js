@@ -267,6 +267,281 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, file_url:`/uploads/${filename}`, records: payrolls.length, total_amount: payrolls.reduce((s,r)=>s+(r.net_salary||0),0) });
     }
 
+    /* ── Attendance Report Export (session time + overtime) ── */
+    case 'exportAttendanceReport': {
+      const { month, year } = p;
+      if (!month || !year) return res.json({ success: false, error: 'month and year required' });
+      const m = parseInt(month), y = parseInt(year);
+      const monthStart = `${y}-${String(m).padStart(2,'0')}-01`;
+      const monthEnd   = new Date(y, m, 0).toISOString().slice(0,10);
+      const daysInMonth = new Date(y, m, 0).getDate();
+
+      const employees = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all());
+      const attRows   = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Attendance' AND json_extract(data,'$.date') >= ? AND json_extract(data,'$.date') <= ?").all(monthStart, monthEnd));
+
+      // Build attendance map: user_id → date → record
+      const attMap = {};
+      for (const a of attRows) {
+        if (!attMap[a.user_id]) attMap[a.user_id] = {};
+        attMap[a.user_id][a.date] = a;
+      }
+
+      // Get shift info per employee
+      const shiftCache = {};
+      const getShift = (shiftId) => {
+        if (!shiftId) return null;
+        if (shiftCache[shiftId]) return shiftCache[shiftId];
+        const sr = db.prepare("SELECT data FROM entities WHERE id=?").get(shiftId);
+        const s  = sr ? JSON.parse(sr.data) : null;
+        shiftCache[shiftId] = s;
+        return s;
+      };
+
+      const defaultShift = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Shift' AND (json_extract(data,'$.is_default')=1 OR json_extract(data,'$.name') LIKE '%General%') LIMIT 1").all())[0] || null;
+
+      const toMinutes = (t) => {
+        if (!t) return 0;
+        const [h, mi] = String(t).split(':').map(Number);
+        return (h||0)*60 + (mi||0);
+      };
+
+      const shiftEndMinutes = (shift) => {
+        const endTime = shift?.end_time || '18:00';
+        return toMinutes(endTime);
+      };
+
+      // Build report rows
+      const rows = employees.map(emp => {
+        const shift  = getShift(emp.shift_id) || defaultShift;
+        const shiftHours = shift ? (toMinutes(shift.end_time) - toMinutes(shift.start_time)) / 60 : 8;
+        const stdMinutes = shiftHours * 60;
+        const isOTEligible = !!emp.overtime_eligible;
+
+        let totalPresent = 0, totalAbsent = 0, totalLeave = 0, totalHoliday = 0, totalOff = 0;
+        let totalWorkingMins = 0, totalOvertimeMins = 0;
+        const dayDetails = [];
+
+        for (let d = 1; d <= daysInMonth; d++) {
+          const dateStr = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+          const rec  = attMap[emp.user_id]?.[dateStr];
+          const dow  = new Date(dateStr).getDay();
+          const isWeekend = dow === 0 || dow === 6;
+
+          let cell = '', workedMins = 0, otMins = 0;
+
+          if (!rec) {
+            if (isWeekend) { cell = 'OFF'; totalOff++; }
+            else { cell = 'A'; totalAbsent++; }
+          } else {
+            const s = rec.status;
+            workedMins = Math.round((rec.working_hours || 0) * 60);
+
+            if (rec.check_in_time && rec.check_out_time) {
+              const checkIn  = new Date(rec.check_in_time);
+              const checkOut = new Date(rec.check_out_time);
+              workedMins = Math.max(0, Math.round((checkOut - checkIn) / 60000));
+            }
+
+            if (workedMins > stdMinutes && stdMinutes > 0) {
+              otMins = workedMins - stdMinutes;
+            }
+
+            if (s === 'week_off') { cell = 'OFF'; totalOff++; }
+            else if (s === 'holiday') { cell = 'H'; totalHoliday++; }
+            else if (s === 'leave') { cell = 'L'; totalLeave++; }
+            else if (s === 'half_day') { cell = 'HD'; totalPresent += 0.5; }
+            else if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home') {
+              cell = s === 'late' ? 'L*' : (s === 'on_duty' ? 'OD' : s === 'work_from_home' ? 'WFH' : 'P');
+              totalPresent++;
+            }
+            else if (s === 'absent') { cell = 'A'; totalAbsent++; }
+            else if (rec.check_in_time) { cell = 'P'; totalPresent++; }
+            else { cell = 'A'; totalAbsent++; }
+
+            totalWorkingMins += workedMins;
+            if (isOTEligible) totalOvertimeMins += otMins;
+          }
+
+          const hhmm = (mins) => `${String(Math.floor(mins/60)).padStart(2,'0')}:${String(mins%60).padStart(2,'0')}`;
+          dayDetails.push({ cell, workedMins, otMins: isOTEligible ? otMins : 0, hhmm: hhmm(workedMins), othhmm: hhmm(isOTEligible ? otMins : 0) });
+        }
+
+        const totalWorkingHrs = (totalWorkingMins / 60).toFixed(2);
+        const totalOvertimeHrs = isOTEligible ? (totalOvertimeMins / 60).toFixed(2) : '—';
+        const avgDailyHrs = totalPresent > 0 ? (totalWorkingMins / 60 / totalPresent).toFixed(2) : '0.00';
+
+        return { emp, shift, isOTEligible, totalPresent, totalAbsent, totalLeave, totalHoliday, totalOff, totalWorkingHrs, totalOvertimeHrs, avgDailyHrs, dayDetails };
+      });
+
+      // Build CSV
+      const monthLabel = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+      const dayNums = Array.from({ length: daysInMonth }, (_, i) => i+1);
+
+      const headers = [
+        'Emp Code', 'Employee Name', 'Department', 'Designation', 'Shift', 'OT Eligible',
+        ...dayNums.map(d => `${d} (Day)`),
+        ...dayNums.map(d => `${d} (Hours)`),
+        ...dayNums.map(d => `${d} (OT Hrs)`),
+        'Days Present', 'Days Absent', 'Days Leave', 'Days Holiday', 'Days Off',
+        'Total Working Hrs', 'Avg Daily Hrs', 'Total OT Hrs',
+      ];
+
+      const csvRows = rows.map(r => {
+        const { emp, shift, isOTEligible, totalPresent, totalAbsent, totalLeave, totalHoliday, totalOff, totalWorkingHrs, totalOvertimeHrs, avgDailyHrs, dayDetails } = r;
+        return [
+          emp.employee_code || '',
+          emp.display_name  || '',
+          emp.department    || '',
+          emp.designation   || '',
+          shift?.name || 'General',
+          isOTEligible ? 'Yes' : 'No',
+          ...dayDetails.map(d => d.cell),
+          ...dayDetails.map(d => d.hhmm),
+          ...dayDetails.map(d => isOTEligible ? d.othhmm : '—'),
+          totalPresent, totalAbsent, totalLeave, totalHoliday, totalOff,
+          totalWorkingHrs, avgDailyHrs, isOTEligible ? totalOvertimeHrs : '—',
+        ];
+      });
+
+      const esc = (v) => `"${String(v ?? '').replace(/"/g,'""')}"`;
+      const titleRow = `"Attendance Detailed Report — ${monthLabel}",,"Generated: ${new Date().toLocaleString('en-IN')}"`;
+      const legendRow = '"P=Present, A=Absent, L=Leave, H=Holiday, HD=Half Day, OD=On Duty, WFH=Work from Home, OFF=Week Off, L*=Late"';
+      const csv = [titleRow, legendRow, headers.map(esc).join(','), ...csvRows.map(r => r.map(esc).join(','))].join('\n');
+
+      return res.json({ success: true, csv, filename: `Attendance_Report_${monthLabel.replace(' ','_')}.csv`, total_employees: rows.length });
+    }
+
+    /* ── Salary Sheet Export ─────────────────────────────── */
+    case 'exportSalarySheet': {
+      const { month, year } = p;
+      if (!month || !year) return res.json({ success: false, error: 'month and year required' });
+      const m = parseInt(month), y = parseInt(year);
+      const monthStart = `${y}-${String(m).padStart(2,'0')}-01`;
+      const monthEnd   = new Date(y, m, 0).toISOString().slice(0,10);
+      const workingDays = 26;
+      const monthLabel = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+
+      const employees = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all());
+      const payrolls  = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND json_extract(data,'$.month')=? AND json_extract(data,'$.year')=?").all(m, y));
+      const payrollMap = Object.fromEntries(payrolls.map(pr => [pr.user_id, pr]));
+
+      const attRows = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Attendance' AND json_extract(data,'$.date') >= ? AND json_extract(data,'$.date') <= ?").all(monthStart, monthEnd));
+      const attMap = {};
+      for (const a of attRows) {
+        if (!attMap[a.user_id]) attMap[a.user_id] = [];
+        attMap[a.user_id].push(a);
+      }
+
+      const headers = [
+        'Emp Code', 'Employee Name', 'Department', 'Designation', 'Account No', 'IFSC', 'Bank',
+        'Days Present', 'Days Half Day', 'Days LOP', 'Days Absent', 'Total Working Days',
+        'Gross Salary', 'Basic', 'HRA', 'Conveyance', 'Special Allowance',
+        'PF Employee', 'PF Employer', 'ESI Employee', 'ESI Employer', 'Professional Tax',
+        'LOP Deduction', 'Total Deductions', 'Net Salary', 'Status',
+      ];
+
+      const csvRows = employees.map(emp => {
+        const pr  = payrollMap[emp.user_id];
+        const recs = attMap[emp.user_id] || [];
+
+        let daysPresent = 0, daysHalfDay = 0, daysLOP = 0;
+        if (pr) {
+          daysPresent  = pr.present_days || 0;
+          daysHalfDay  = pr.half_days    || 0;
+          daysLOP      = pr.lop_days     || 0;
+        } else {
+          // Compute from raw attendance if no payroll
+          daysPresent  = recs.filter(a => ['present','late','on_duty','work_from_home'].includes(a.status)).length;
+          daysHalfDay  = recs.filter(a => a.status === 'half_day').length;
+          daysLOP      = recs.filter(a => ['absent','lop'].includes(a.status)).length;
+        }
+        const effectiveDays = daysPresent + (daysHalfDay * 0.5);
+
+        // Get salary structure
+        const ssRow = db.prepare("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=? AND status='active' LIMIT 1").get(emp.user_id);
+        const ss    = ssRow ? JSON.parse(ssRow.data) : {};
+        const gross = (ss.basic_salary||0) + (ss.hra||0) + (ss.conveyance||0) + (ss.special_allowance||0);
+        const earnedGross = gross > 0 ? Math.round((gross / workingDays) * effectiveDays) : 0;
+
+        const basic    = pr?.basic    || Math.round((ss.basic_salary||0)  / workingDays * effectiveDays);
+        const hra      = pr?.hra      || Math.round((ss.hra||0)           / workingDays * effectiveDays);
+        const conv     = pr?.conveyance || Math.round((ss.conveyance||0)  / workingDays * effectiveDays);
+        const special  = pr?.special_allowance || Math.round((ss.special_allowance||0) / workingDays * effectiveDays);
+        const grossCalc = basic + hra + conv + special;
+
+        const pfEmp  = pr?.pf_employee  ?? Math.round(basic * 0.12);
+        const pfEmpr = pr?.pf_employer  ?? Math.round(basic * 0.12);
+        const esiEmp = pr?.esi_employee ?? (grossCalc <= 21000 ? Math.round(grossCalc * 0.0075) : 0);
+        const esiEmpr= pr?.esi_employer ?? (grossCalc <= 21000 ? Math.round(grossCalc * 0.0325) : 0);
+        const pt     = pr?.professional_tax ?? (grossCalc > 15000 ? 200 : grossCalc > 10000 ? 150 : 0);
+        const lop    = pr?.lop_amount ?? Math.round((gross / workingDays) * daysLOP);
+        const totalDed = pfEmp + esiEmp + pt + lop;
+        const netSalary = Math.max(0, grossCalc - totalDed);
+
+        return [
+          emp.employee_code || '',
+          emp.display_name  || '',
+          emp.department    || '',
+          emp.designation   || '',
+          emp.bank_account_number || '',
+          emp.ifsc_code || '',
+          emp.bank_name || '',
+          daysPresent, daysHalfDay, daysLOP,
+          recs.filter(a => a.status === 'absent').length,
+          effectiveDays,
+          pr?.gross_salary || grossCalc,
+          basic, hra, conv, special,
+          pfEmp, pfEmpr, esiEmp, esiEmpr, pt,
+          lop, totalDed, pr?.net_salary || netSalary,
+          pr ? 'Processed' : 'Pending',
+        ];
+      });
+
+      const esc = (v) => `"${String(v ?? '').replace(/"/g,'""')}"`;
+      const csv = [
+        `"Salary Sheet — ${monthLabel}",,"Generated: ${new Date().toLocaleString('en-IN')}"`,
+        headers.map(esc).join(','),
+        ...csvRows.map(r => r.map(esc).join(','))
+      ].join('\n');
+
+      const totals = csvRows.reduce((acc, r) => {
+        acc.gross      += parseFloat(r[12]) || 0;
+        acc.net        += parseFloat(r[23]) || 0;
+        acc.pf_emp     += parseFloat(r[14]) || 0;
+        acc.esi_emp    += parseFloat(r[16]) || 0;
+        return acc;
+      }, { gross:0, net:0, pf_emp:0, esi_emp:0 });
+
+      return res.json({ success: true, csv, filename: `Salary_Sheet_${monthLabel.replace(' ','_')}.csv`, total_employees: employees.length, totals });
+    }
+
+    /* ── API Key Management (for external attendance push) ─ */
+    case 'getAttendanceApiInfo': {
+      const key = db.prepare("SELECT value FROM settings WHERE key='attendance_api_key'").get()?.value || null;
+      const baseUrl = process.env.APP_URL || (process.env.NODE_ENV === 'production' ? 'https://your-app.up.railway.app' : `http://localhost:${process.env.PORT || 3001}`);
+      return res.json({
+        success: true,
+        api_key: key,
+        endpoint: `${baseUrl}/api/attendance-log`,
+        docs: {
+          method: 'POST',
+          auth: 'Authorization: Bearer <api_key>',
+          single: { employee_code: 'EMP001', punch_time: '2024-06-19T09:00:00.000Z', type: 'in', device_id: 'DEVICE01' },
+          batch: { records: [{ employee_code: 'EMP001', punch_time: '2024-06-19T09:00:00.000Z', type: 'in' }] },
+        },
+      });
+    }
+
+    case 'generateAttendanceApiKey': {
+      // Only admins may regenerate
+      const { randomBytes } = await import('crypto');
+      const newKey = randomBytes(32).toString('hex');
+      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('attendance_api_key',?)").run(newKey);
+      // Also update env-like value so attendancelog.js picks it up via this DB key
+      process.env.ATTENDANCE_API_KEY = newKey;
+      return res.json({ success: true, api_key: newKey });
+    }
+
     case 'autoSendPayslips': {
       const { month, year } = p;
       const payrolls = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND status='processed'").all())
