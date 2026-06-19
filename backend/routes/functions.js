@@ -697,35 +697,40 @@ router.post('/:name', async (req, res) => {
         return isNaN(d.getTime()) ? null : new Date(d.getTime() + IST_OFFSET_MS);
       };
 
-      let processed = 0, skipped = 0;
-      const byDate = {}; // key: userId_date → { userId, date, entries }
+      let stored = 0, processed = 0, skipped = 0, unmatched = 0;
+      const byDate = {}; // key: userId_date → { userId, date, punches }
 
       for (const rec of rawRecords) {
         // Support both eBio PascalCase and internal lowercase
-        const empCode = String(rec.EmployeeCode || rec.employee_code || rec.EnrollNo || rec.pin || '').toLowerCase();
+        const empCodeRaw = String(rec.EmployeeCode || rec.employee_code || rec.EnrollNo || rec.pin || '').trim();
+        const empCode    = empCodeRaw.toLowerCase();
         const logDateRaw = rec.LogDate || rec.log_date || rec.punch_time || rec.datetime || '';
         const direction  = String(rec.Direction || rec.type || 'in').toUpperCase();
 
-        if (!empCode || !logDateRaw) { skipped++; continue; }
-        const userId = codeMap[empCode];
-        if (!userId) { skipped++; continue; }
+        if (!empCodeRaw || !logDateRaw) { skipped++; continue; }
 
         const istDate = toIST(logDateRaw);
         if (!istDate) { skipped++; continue; }
 
         const punchType = (direction === 'IN' || direction === 'in') ? 'in' : 'out';
-        const punchIso  = istDate.toISOString(); // store as the actual IST-adjusted UTC moment
+        const punchIso  = istDate.toISOString();
         const dateStr   = punchIso.slice(0, 10);
+        const userId    = codeMap[empCode] || null;
 
-        // Deduplicate logs
-        const existing = db.prepare("SELECT id FROM entities WHERE type='AttendanceLog' AND json_extract(data,'$.EmployeeCode')=? AND json_extract(data,'$.LogDate')=?").get(rec.EmployeeCode || empCode, logDateRaw);
-        if (!existing) {
+        // Always store the raw log so it's visible on the Biometric Logs page,
+        // even when the employee code isn't mapped yet
+        const existingLog = db.prepare("SELECT id FROM entities WHERE type='AttendanceLog' AND json_extract(data,'$.EmployeeCode')=? AND json_extract(data,'$.LogDate')=?").get(empCodeRaw, logDateRaw);
+        if (!existingLog) {
           const logId = uuidv4();
-          const logData = { ...rec, id: logId, EmployeeCode: rec.EmployeeCode || empCode, LogDate: logDateRaw, user_id: userId, punch_type: punchType, punch_iso: punchIso, imported_at: new Date().toISOString() };
+          const logData = { ...rec, id: logId, EmployeeCode: empCodeRaw, LogDate: logDateRaw, Direction: direction, user_id: userId, punch_type: punchType, punch_iso: punchIso, imported_at: new Date().toISOString() };
           try {
             db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'AttendanceLog',?,'active',?)").run(logId, userId, JSON.stringify(logData));
+            stored++;
           } catch {}
         }
+
+        // Only create Attendance records when employee is matched
+        if (!userId) { unmatched++; continue; }
 
         // Group by employee+date for attendance record creation
         const key = `${userId}_${dateStr}`;
@@ -759,7 +764,7 @@ router.post('/:name', async (req, res) => {
         }
       }
 
-      return res.json({ success: true, received: rawRecords.length, processed, skipped, attendance_records: Object.keys(byDate).length });
+      return res.json({ success: true, received: rawRecords.length, stored, processed, skipped, unmatched, attendance_records: Object.keys(byDate).length });
     }
 
     case 'receiveBiometricAttendance':
