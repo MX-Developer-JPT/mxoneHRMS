@@ -27,8 +27,8 @@ function CandidateScoreCard({ candidate, requisition }) {
           candidate_id: candidate.id,
           job_requisition_id: requisition.id,
         });
-        if (!res.data?.success && !res.data?.overall_score) throw new Error(res.data?.error || 'Scoring failed');
-        const raw = res.data?.result || res.data;
+        if (!res.data?.success) throw new Error(res.data?.error || 'Scoring failed');
+        const raw = res.data?.data || res.data?.result || {};
         d = {
           score:              Math.max(1, Math.round((raw.overall_score || 0) / 10)),
           summary:            raw.summary,
