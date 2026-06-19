@@ -19,50 +19,45 @@ function CandidateScoreCard({ candidate, requisition }) {
   const handleScore = async () => {
     setScoring(true);
     try {
-      const prompt = `You are an expert HR recruiter. Analyze this candidate's profile against the job requirements and provide a structured evaluation.
-
-JOB REQUIREMENTS:
-- Position: ${requisition.position_title}
-- Department: ${requisition.department}
-- Experience Required: ${requisition.experience_required || 'Not specified'}
-- Required Skills: ${Array.isArray(requisition.required_skills) ? requisition.required_skills.join(', ') : requisition.required_skills || 'Not specified'}
-- Job Description: ${requisition.job_description || 'Not specified'}
-
-CANDIDATE PROFILE:
-- Name: ${candidate.full_name}
-- Experience: ${candidate.experience_years} years
-- Current Company: ${candidate.current_company || 'Not mentioned'}
-- Expected CTC: ₹${candidate.expected_ctc?.toLocaleString() || 'Not mentioned'}
-- Cover Letter: ${candidate.cover_letter || 'Not provided'}
-
-${candidate.resume_url ? 'A resume/CV file is attached for analysis.' : 'No resume file provided.'}
-
-Provide a thorough evaluation with:
-1. A brief CV summary (2-3 sentences)
-2. Key strengths (2-3 bullet points)
-3. Potential gaps or concerns (1-2 bullet points)
-4. Overall fit score from 1-10 with justification
-
-Be concise and objective.`;
-
-      const fileUrls = candidate.resume_url ? [candidate.resume_url] : undefined;
-
-      const res = await base44.integrations.Core.InvokeLLM({
-        prompt,
-        file_urls: fileUrls,
-        response_json_schema: {
-          type: 'object',
-          properties: {
-            summary: { type: 'string' },
-            strengths: { type: 'array', items: { type: 'string' } },
-            gaps: { type: 'array', items: { type: 'string' } },
-            score: { type: 'number' },
-            score_justification: { type: 'string' }
-          }
-        }
-      });
-
-      setResult(res);
+      // Use scoreCandidate when requisition is available (JD-matched scoring)
+      // Fall back to scoreAndSummariseCv for generic profile scoring
+      let d;
+      if (requisition?.id && candidate.id) {
+        const res = await base44.functions.invoke('scoreCandidate', {
+          candidate_id: candidate.id,
+          job_requisition_id: requisition.id,
+        });
+        if (!res.data?.success && !res.data?.overall_score) throw new Error(res.data?.error || 'Scoring failed');
+        const raw = res.data?.result || res.data;
+        d = {
+          score:              Math.max(1, Math.round((raw.overall_score || 0) / 10)),
+          summary:            raw.summary,
+          strengths:          raw.strengths || raw.matched_skills || [],
+          gaps:               raw.gaps || raw.missing_skills || [],
+          score_justification: `Skills: ${raw.skills_score || '?'}/100 · Experience: ${raw.experience_score || '?'}/100 · Salary: ${raw.salary_score || '?'}/100`,
+          recommendation:     raw.recommendation,
+        };
+      } else {
+        const res = await base44.functions.invoke('scoreAndSummariseCv', {
+          candidate_id:     candidate.id,
+          position_applied: candidate.position_applied,
+          experience_years: candidate.experience_years,
+          current_company:  candidate.current_company,
+          expected_ctc:     candidate.expected_ctc,
+          notice_period:    candidate.notice_period,
+        });
+        if (!res.data?.success) throw new Error(res.data?.error || 'Scoring failed');
+        const raw = res.data.result;
+        d = {
+          score:              Math.max(1, Math.round((raw.score || 0) / 10)),
+          summary:            raw.summary,
+          strengths:          raw.key_strengths || [],
+          gaps:               raw.areas_for_improvement || [],
+          score_justification:[raw.experience_assessment, raw.compensation_analysis].filter(Boolean).join(' '),
+          recommendation:     raw.recommendation,
+        };
+      }
+      setResult(d);
       setExpanded(true);
     } catch (err) {
       toast.error('Failed to score CV: ' + err.message);
@@ -84,9 +79,14 @@ Be concise and objective.`;
         </div>
         <div className="flex items-center gap-2">
           {result && (
-            <Badge className={SCORE_COLOR(result.score)}>
-              <Star className="w-3 h-3 mr-1" /> {result.score}/10
-            </Badge>
+            <>
+              <Badge className={SCORE_COLOR(result.score)}>
+                <Star className="w-3 h-3 mr-1" /> {result.score}/10
+              </Badge>
+              {result.recommendation && (
+                <Badge variant="outline" className="text-xs">{result.recommendation}</Badge>
+              )}
+            </>
           )}
           {!candidate.resume_url && (
             <span className="text-xs text-gray-400 italic">No resume uploaded</span>

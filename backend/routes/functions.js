@@ -932,6 +932,17 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     }
 
     /* ── Email ────────────────────────────────────────── */
+    case 'sendCustomEmail': {
+      const { to, subject, body: textBody, html } = p;
+      if (!to || !subject) return res.json({ success:false, error:'to and subject are required' });
+      try {
+        const result = await sendEmail({ to, subject, html: html || `<p>${(textBody || '').replace(/\n/g, '<br/>')}</p>`, text: textBody });
+        return res.json({ success:true, ...result });
+      } catch(e) {
+        return res.json({ success:false, error: e.message });
+      }
+    }
+
     case 'sendInterviewEmail': {
       // Accept either direct fields or candidate_id (from InterviewManagement.jsx)
       let candidateEmail = p.candidate_email;

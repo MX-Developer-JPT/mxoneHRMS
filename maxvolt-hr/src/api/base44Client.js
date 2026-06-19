@@ -164,6 +164,19 @@ const integrations = {
       if (!res.ok) throw new Error('File upload failed');
       return res.json(); // { file_url, filename, size }
     },
+
+    SendEmail: async ({ to, subject, body, html }) => {
+      return apiFetch('/functions/sendCustomEmail', {
+        method: 'POST',
+        body: JSON.stringify({ to, subject, body, html }),
+      });
+    },
+
+    ExtractDataFromUploadedFile: async ({ file_url }) => {
+      // Not implemented — return empty so callers don't crash
+      console.warn('[base44] ExtractDataFromUploadedFile not implemented for self-hosted');
+      return { data: [] };
+    },
   },
 };
 
