@@ -123,7 +123,7 @@ export default function ManagementDashboard({ user }) {
 
   if (loading) return (
     <div className="flex items-center justify-center h-64">
-      <div className="w-8 h-8 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+      <div className="w-8 h-8 border-[3px] border-indigo-200 dark:border-indigo-900 border-t-indigo-600 rounded-full animate-spin" />
     </div>
   );
 
@@ -131,35 +131,35 @@ export default function ManagementDashboard({ user }) {
   const openModal = (title, content) => setDetailModal({ title, content });
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-indigo-50 p-4 md:p-6">
+    <div className="p-4 md:p-6">
       <div className="max-w-6xl mx-auto space-y-6">
 
         {/* Header */}
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Management Dashboard</h1>
-          <p className="text-gray-500 mt-1">Welcome, {user.display_name || user.full_name} · {format(new Date(), 'EEEE, MMMM d, yyyy')}</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-foreground">Management Dashboard</h1>
+          <p className="text-muted-foreground mt-1">Welcome, {user.display_name || user.full_name} · {format(new Date(), 'EEEE, MMMM d, yyyy')}</p>
         </div>
 
         {/* Alerts */}
         {(data.teamLeaves.length > 0 || data.pendingRegularisations > 0 || data.teamExpenses > 0) && (
-          <Card className="border-orange-200 bg-orange-50">
+          <Card className="border-orange-200 dark:border-orange-800 bg-orange-50 dark:bg-orange-950/30">
             <CardContent className="p-4 space-y-2">
-              <p className="font-semibold text-orange-800 flex items-center gap-2">
+              <p className="font-semibold text-orange-800 dark:text-orange-300 flex items-center gap-2">
                 <AlertCircle className="w-4 h-4" /> Pending Actions from Your Team
               </p>
               <div className="flex flex-wrap gap-4">
                 {data.teamLeaves.length > 0 && (
-                  <Link to={createPageUrl('LeaveManagement')} className="flex items-center gap-1 text-sm text-orange-800 hover:underline font-medium">
+                  <Link to={createPageUrl('LeaveManagement')} className="flex items-center gap-1 text-sm text-orange-800 dark:text-orange-300 hover:underline font-medium">
                     <FileText className="w-4 h-4" /> {data.teamLeaves.length} leave request(s) <ChevronRight className="w-3 h-3" />
                   </Link>
                 )}
                 {data.pendingRegularisations > 0 && (
-                  <Link to={createPageUrl('RegularisationApproval')} className="flex items-center gap-1 text-sm text-orange-800 hover:underline font-medium">
+                  <Link to={createPageUrl('RegularisationApproval')} className="flex items-center gap-1 text-sm text-orange-800 dark:text-orange-300 hover:underline font-medium">
                     <Clock className="w-4 h-4" /> {data.pendingRegularisations} regularisation(s) <ChevronRight className="w-3 h-3" />
                   </Link>
                 )}
                 {data.teamExpenses > 0 && (
-                  <Link to={createPageUrl('Approvals')} className="flex items-center gap-1 text-sm text-orange-800 hover:underline font-medium">
+                  <Link to={createPageUrl('Approvals')} className="flex items-center gap-1 text-sm text-orange-800 dark:text-orange-300 hover:underline font-medium">
                     <CheckCircle2 className="w-4 h-4" /> {data.teamExpenses} expense claim(s) <ChevronRight className="w-3 h-3" />
                   </Link>
                 )}
@@ -170,136 +170,160 @@ export default function ManagementDashboard({ user }) {
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card className="cursor-pointer hover:shadow-md transition-shadow"
+          <Card className="cursor-pointer hover:shadow-md transition-all group"
             onClick={() => openModal('Your Team Members',
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {data.teamMembers.length === 0
-                  ? <p className="text-gray-400 text-sm text-center py-4">No direct reports found</p>
+                  ? <p className="text-muted-foreground text-sm text-center py-4">No direct reports found</p>
                   : data.teamMembers.map((e, i) => (
-                    <div key={i} className="flex justify-between items-center p-3 bg-indigo-50 rounded-lg">
+                    <div key={i} className="flex justify-between items-center p-3 bg-indigo-50 dark:bg-indigo-950/40 rounded-lg">
                       <div>
-                        <p className="text-sm font-medium text-gray-800">{e.name}</p>
-                        <p className="text-xs text-gray-500">{e.designation}</p>
+                        <p className="text-sm font-medium text-foreground">{e.name}</p>
+                        <p className="text-xs text-muted-foreground">{e.designation}</p>
                       </div>
-                      <span className="text-xs text-gray-500 capitalize">{e.dept}</span>
+                      <span className="text-xs text-muted-foreground capitalize">{e.dept}</span>
                     </div>
                   ))
                 }
               </div>
             )}>
-            <CardContent className="p-4 text-center">
-              <p className="text-3xl font-bold text-indigo-600">{data.teamSize}</p>
-              <p className="text-sm text-gray-500 mt-1">Team Size</p>
-              <p className="text-xs text-gray-400">Click to view team</p>
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between mb-3">
+                <div className="w-10 h-10 bg-indigo-100 dark:bg-indigo-950/60 rounded-xl flex items-center justify-center">
+                  <Users className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:translate-x-0.5 transition-transform" />
+              </div>
+              <p className="text-2xl font-bold text-foreground">{data.teamSize}</p>
+              <p className="text-sm text-muted-foreground mt-0.5">Team Size</p>
+              <p className="text-xs text-muted-foreground/70 mt-1">Click to view team</p>
             </CardContent>
           </Card>
 
-          <Card className="bg-green-50 cursor-pointer hover:shadow-md transition-shadow border-green-200"
+          <Card className="cursor-pointer hover:shadow-md transition-all group"
             onClick={() => openModal(`Present Today (${data.presentToday})`,
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {data.presentEmployees.length === 0
-                  ? <p className="text-gray-400 text-sm text-center py-4">No one checked in yet</p>
+                  ? <p className="text-muted-foreground text-sm text-center py-4">No one checked in yet</p>
                   : data.presentEmployees.map((e, i) => (
-                    <div key={i} className="flex justify-between items-center p-3 bg-green-50 rounded-lg">
+                    <div key={i} className="flex justify-between items-center p-3 bg-emerald-50 dark:bg-emerald-950/40 rounded-lg">
                       <div>
-                        <p className="text-sm font-medium text-gray-800">{e.name}</p>
-                        <p className="text-xs text-gray-500">{e.designation} · {e.dept}</p>
+                        <p className="text-sm font-medium text-foreground">{e.name}</p>
+                        <p className="text-xs text-muted-foreground">{e.designation} · {e.dept}</p>
                       </div>
                       <div className="text-right">
-                        <p className="text-xs text-green-700 font-semibold">{e.checkIn}</p>
-                        <p className="text-xs text-gray-500">{e.workingHours}</p>
+                        <p className="text-xs text-emerald-700 dark:text-emerald-400 font-semibold">{e.checkIn}</p>
+                        <p className="text-xs text-muted-foreground">{e.workingHours}</p>
                       </div>
                     </div>
                   ))
                 }
               </div>
             )}>
-            <CardContent className="p-4 text-center">
-              <p className="text-3xl font-bold text-green-600">{data.presentToday}</p>
-              <p className="text-sm text-gray-500 mt-1">Present Today</p>
-              <p className="text-xs text-gray-400">{attendanceRate}% · click to view</p>
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between mb-3">
+                <div className="w-10 h-10 bg-emerald-100 dark:bg-emerald-950/60 rounded-xl flex items-center justify-center">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                </div>
+                <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">{attendanceRate}%</span>
+              </div>
+              <p className="text-2xl font-bold text-foreground">{data.presentToday}</p>
+              <p className="text-sm text-muted-foreground mt-0.5">Present Today</p>
+              <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1 font-medium">Click to view</p>
             </CardContent>
           </Card>
 
-          <Card className="bg-red-50 cursor-pointer hover:shadow-md transition-shadow border-red-200"
+          <Card className="cursor-pointer hover:shadow-md transition-all group"
             onClick={() => openModal(`Non Attendance Marked (${data.absentToday})`,
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {data.absentEmployees.length === 0
-                  ? <p className="text-gray-400 text-sm text-center py-4">Everyone is present!</p>
+                  ? <p className="text-muted-foreground text-sm text-center py-4">Everyone is present!</p>
                   : data.absentEmployees.map((e, i) => (
-                    <div key={i} className="flex justify-between items-center p-3 bg-red-50 rounded-lg">
+                    <div key={i} className="flex justify-between items-center p-3 bg-red-50 dark:bg-red-950/40 rounded-lg">
                       <div>
-                        <p className="text-sm font-medium text-gray-800">{e.name}</p>
-                        <p className="text-xs text-gray-500">{e.designation}</p>
+                        <p className="text-sm font-medium text-foreground">{e.name}</p>
+                        <p className="text-xs text-muted-foreground">{e.designation}</p>
                       </div>
-                      <span className="text-xs text-gray-500 capitalize">{e.dept}</span>
+                      <span className="text-xs text-muted-foreground capitalize">{e.dept}</span>
                     </div>
                   ))
                 }
               </div>
             )}>
-            <CardContent className="p-4 text-center">
-              <p className="text-3xl font-bold text-red-500">{data.absentToday}</p>
-              <p className="text-sm text-gray-500 mt-1">Non Attendance Marked</p>
-              <p className="text-xs text-gray-400">Click to see who</p>
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between mb-3">
+                <div className="w-10 h-10 bg-red-100 dark:bg-red-950/60 rounded-xl flex items-center justify-center">
+                  <AlertCircle className="w-5 h-5 text-red-500 dark:text-red-400" />
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:translate-x-0.5 transition-transform" />
+              </div>
+              <p className="text-2xl font-bold text-foreground">{data.absentToday}</p>
+              <p className="text-sm text-muted-foreground mt-0.5">Non Attendance Marked</p>
+              <p className="text-xs text-red-500 dark:text-red-400 mt-1 font-medium">Click to see who</p>
             </CardContent>
           </Card>
 
-          <Card className="bg-yellow-50 cursor-pointer hover:shadow-md transition-shadow border-yellow-200"
+          <Card className="cursor-pointer hover:shadow-md transition-all group"
             onClick={() => openModal(`Leave Applied Today (${data.onLeaveToday})`,
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {data.onLeaveEmployees.length === 0
-                  ? <p className="text-gray-400 text-sm text-center py-4">No one on leave today</p>
+                  ? <p className="text-muted-foreground text-sm text-center py-4">No one on leave today</p>
                   : data.onLeaveEmployees.map((e, i) => (
-                    <div key={i} className="flex justify-between items-center p-3 bg-yellow-50 rounded-lg">
-                      <p className="text-sm font-medium text-gray-800">{e.name}</p>
-                      <span className="text-xs text-gray-500 capitalize">{e.dept}</span>
+                    <div key={i} className="flex justify-between items-center p-3 bg-amber-50 dark:bg-amber-950/40 rounded-lg">
+                      <p className="text-sm font-medium text-foreground">{e.name}</p>
+                      <span className="text-xs text-muted-foreground capitalize">{e.dept}</span>
                     </div>
                   ))
                 }
               </div>
             )}>
-            <CardContent className="p-4 text-center">
-              <p className="text-3xl font-bold text-yellow-600">{data.onLeaveToday}</p>
-              <p className="text-sm text-gray-500 mt-1">Leave Applied</p>
-              <p className="text-xs text-gray-400">Today · click</p>
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between mb-3">
+                <div className="w-10 h-10 bg-amber-100 dark:bg-amber-950/60 rounded-xl flex items-center justify-center">
+                  <Calendar className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:translate-x-0.5 transition-transform" />
+              </div>
+              <p className="text-2xl font-bold text-foreground">{data.onLeaveToday}</p>
+              <p className="text-sm text-muted-foreground mt-0.5">Leave Applied</p>
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 font-medium">Today · click</p>
             </CardContent>
           </Card>
         </div>
 
         {/* Team Assets & Training */}
-        <div className="grid grid-cols-2 md:grid-cols-2 gap-4">
-          <Card className="cursor-pointer hover:shadow-md transition-shadow"
+        <div className="grid grid-cols-2 gap-4">
+          <Card className="cursor-pointer hover:shadow-md transition-all group"
             onClick={() => openModal('Team Assets',
               <div className="space-y-2">
-                <p className="text-sm text-gray-600 text-center py-4">{data.teamAssetCount} asset(s) assigned to your team members.</p>
-                <Link to={createPageUrl('AssetTracking')} className="block text-center text-sm text-blue-600 hover:underline">View Assets →</Link>
+                <p className="text-sm text-muted-foreground text-center py-4">{data.teamAssetCount} asset(s) assigned to your team members.</p>
+                <Link to={createPageUrl('AssetTracking')} className="block text-center text-sm text-primary hover:underline">View Assets →</Link>
               </div>
             )}>
             <CardContent className="p-4 flex items-center gap-3">
-              <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center shrink-0">
-                <Laptop className="w-5 h-5 text-blue-600" />
+              <div className="w-10 h-10 bg-blue-100 dark:bg-blue-950/60 rounded-xl flex items-center justify-center shrink-0">
+                <Laptop className="w-5 h-5 text-blue-600 dark:text-blue-400" />
               </div>
               <div>
-                <p className="text-xl font-bold text-gray-800">{data.teamAssetCount}</p>
-                <p className="text-xs text-gray-500">Team Assets</p>
+                <p className="text-xl font-bold text-foreground">{data.teamAssetCount}</p>
+                <p className="text-xs text-muted-foreground">Team Assets</p>
               </div>
             </CardContent>
           </Card>
-          <Card className="cursor-pointer hover:shadow-md transition-shadow"
+          <Card className="cursor-pointer hover:shadow-md transition-all group"
             onClick={() => openModal('Training Progress',
               <div className="space-y-2">
-                <p className="text-sm text-gray-600 text-center py-4">{data.teamTrainingCount} training(s) currently in progress by your team.</p>
-                <Link to={createPageUrl('TrainingManagement')} className="block text-center text-sm text-blue-600 hover:underline">View Training →</Link>
+                <p className="text-sm text-muted-foreground text-center py-4">{data.teamTrainingCount} training(s) currently in progress by your team.</p>
+                <Link to={createPageUrl('TrainingManagement')} className="block text-center text-sm text-primary hover:underline">View Training →</Link>
               </div>
             )}>
             <CardContent className="p-4 flex items-center gap-3">
-              <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center shrink-0">
-                <GraduationCap className="w-5 h-5 text-purple-600" />
+              <div className="w-10 h-10 bg-violet-100 dark:bg-violet-950/60 rounded-xl flex items-center justify-center shrink-0">
+                <GraduationCap className="w-5 h-5 text-violet-600 dark:text-violet-400" />
               </div>
               <div>
-                <p className="text-xl font-bold text-gray-800">{data.teamTrainingCount}</p>
-                <p className="text-xs text-gray-500">In Training</p>
+                <p className="text-xl font-bold text-foreground">{data.teamTrainingCount}</p>
+                <p className="text-xs text-muted-foreground">In Training</p>
               </div>
             </CardContent>
           </Card>
@@ -309,40 +333,36 @@ export default function ManagementDashboard({ user }) {
           {/* Team Attendance Today */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center justify-between">
+              <CardTitle className="text-base flex items-center justify-between text-foreground">
                 Team Attendance Today
-                <Link to={createPageUrl('AllAttendance')} className="text-sm text-blue-600 font-normal hover:underline">View All →</Link>
+                <Link to={createPageUrl('AllAttendance')} className="text-sm text-primary font-normal hover:underline">View All →</Link>
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="mb-4">
                 <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-600">Attendance Rate</span>
-                  <span className="font-semibold text-green-600">{attendanceRate}%</span>
+                  <span className="text-muted-foreground">Attendance Rate</span>
+                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">{attendanceRate}%</span>
                 </div>
-                <div className="w-full bg-gray-100 rounded-full h-3">
-                  <div className="bg-green-500 h-3 rounded-full transition-all" style={{ width: `${attendanceRate}%` }} />
+                <div className="w-full bg-muted rounded-full h-3">
+                  <div className="bg-gradient-to-r from-emerald-500 to-teal-500 h-3 rounded-full transition-all" style={{ width: `${attendanceRate}%` }} />
                 </div>
               </div>
               {data.teamMembers.length > 0 ? (
                 <div className="space-y-2 max-h-56 overflow-y-auto">
                   {data.teamMembers.slice(0, 10).map((emp, i) => {
-                    const att = data.todayTeamAtt.find(a => {
-                      // match by position in employees array from data
-                      return false; // we'll use presentUserIds below
-                    });
                     const isPresent = data.presentEmployees.some(e => e.name === emp.name);
                     const isLeave = data.onLeaveEmployees.some(e => e.name === emp.name);
                     const checkInTime = data.presentEmployees.find(e => e.name === emp.name)?.checkIn;
                     return (
-                      <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-gray-50">
+                      <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-muted/50">
                         <div>
-                          <p className="text-sm font-medium">{emp.name}</p>
-                          <p className="text-xs text-gray-400">{emp.designation} · {emp.dept}</p>
+                          <p className="text-sm font-medium text-foreground">{emp.name}</p>
+                          <p className="text-xs text-muted-foreground">{emp.designation} · {emp.dept}</p>
                         </div>
                         <div className="text-right">
-                          {checkInTime && checkInTime !== '—' && <p className="text-xs text-gray-500">{checkInTime}</p>}
-                          <Badge className={`text-xs ${isPresent ? 'bg-green-100 text-green-800' : isLeave ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>
+                          {checkInTime && checkInTime !== '—' && <p className="text-xs text-muted-foreground">{checkInTime}</p>}
+                          <Badge className={`text-xs border-0 ${isPresent ? 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300' : isLeave ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300' : 'bg-red-100 dark:bg-red-950/40 text-red-800 dark:text-red-300'}`}>
                             {isPresent ? 'Present' : isLeave ? 'Leave Applied' : 'Non-Attend'}
                           </Badge>
                         </div>
@@ -351,7 +371,7 @@ export default function ManagementDashboard({ user }) {
                   })}
                 </div>
               ) : (
-                <p className="text-gray-400 text-sm text-center py-6">No direct reports found</p>
+                <p className="text-muted-foreground text-sm text-center py-6">No direct reports found</p>
               )}
             </CardContent>
           </Card>
@@ -359,29 +379,29 @@ export default function ManagementDashboard({ user }) {
           {/* Pending Leave Requests */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center justify-between">
+              <CardTitle className="text-base flex items-center justify-between text-foreground">
                 Pending Leave Request
-                <Link to={createPageUrl('LeaveManagement')} className="text-sm text-blue-600 font-normal hover:underline">Manage →</Link>
+                <Link to={createPageUrl('LeaveManagement')} className="text-sm text-primary font-normal hover:underline">Manage →</Link>
               </CardTitle>
             </CardHeader>
             <CardContent>
               {data.teamLeaves.length > 0 ? (
                 <div className="space-y-3">
                   {data.teamLeaves.slice(0, 5).map(lv => (
-                    <div key={lv.id} className="flex items-start justify-between p-3 rounded-lg bg-yellow-50 border border-yellow-100">
+                    <div key={lv.id} className="flex items-start justify-between p-3 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-100 dark:border-amber-900/50">
                       <div>
-                        <p className="text-sm font-medium">{format(new Date(lv.start_date), 'MMM d')} – {format(new Date(lv.end_date), 'MMM d')}</p>
-                        <p className="text-xs text-gray-500 line-clamp-1">{lv.reason}</p>
-                        <p className="text-xs text-gray-400">{lv.total_days} day(s)</p>
+                        <p className="text-sm font-medium text-foreground">{format(new Date(lv.start_date), 'MMM d')} – {format(new Date(lv.end_date), 'MMM d')}</p>
+                        <p className="text-xs text-muted-foreground line-clamp-1">{lv.reason}</p>
+                        <p className="text-xs text-muted-foreground">{lv.total_days} day(s)</p>
                       </div>
-                      <Badge className="bg-yellow-100 text-yellow-800 text-xs shrink-0">Pending</Badge>
+                      <Badge className="bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 text-xs shrink-0 border-0">Pending</Badge>
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="text-center py-8">
-                  <CheckCircle2 className="w-10 h-10 mx-auto text-green-300 mb-2" />
-                  <p className="text-gray-400 text-sm">No pending leave requests</p>
+                  <CheckCircle2 className="w-10 h-10 mx-auto text-emerald-300 dark:text-emerald-700 mb-2" />
+                  <p className="text-muted-foreground text-sm">No pending leave requests</p>
                 </div>
               )}
             </CardContent>
@@ -389,20 +409,20 @@ export default function ManagementDashboard({ user }) {
 
           {/* Quick Actions */}
           <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-base">Quick Actions</CardTitle></CardHeader>
+            <CardHeader className="pb-3"><CardTitle className="text-base text-foreground">Quick Actions</CardTitle></CardHeader>
             <CardContent className="grid grid-cols-2 gap-3">
               {[
-                { label: 'Dept Attendance', icon: BarChart3, page: 'AllAttendance', color: 'bg-blue-50 text-blue-700 hover:bg-blue-100' },
-                { label: 'Leave Requests', icon: FileText, page: 'LeaveManagement', color: 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100' },
-                { label: 'Regularisations', icon: Clock, page: 'RegularisationApproval', color: 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100' },
-                { label: 'Expense Approvals', icon: CheckCircle2, page: 'Approvals', color: 'bg-green-50 text-green-700 hover:bg-green-100' },
-                { label: 'My Team', icon: Users, page: 'Employees', color: 'bg-purple-50 text-purple-700 hover:bg-purple-100' },
-                { label: 'Announcements', icon: Calendar, page: 'Announcements', color: 'bg-pink-50 text-pink-700 hover:bg-pink-100' },
+                { label: 'Dept Attendance',  icon: BarChart3,    page: 'AllAttendance',           bg: 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-950/60' },
+                { label: 'Leave Requests',   icon: FileText,     page: 'LeaveManagement',         bg: 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-950/60' },
+                { label: 'Regularisations',  icon: Clock,        page: 'RegularisationApproval',  bg: 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-950/60' },
+                { label: 'Expense Approvals',icon: CheckCircle2, page: 'Approvals',               bg: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-950/60' },
+                { label: 'My Team',          icon: Users,        page: 'Employees',               bg: 'bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-950/60' },
+                { label: 'Announcements',    icon: Calendar,     page: 'Announcements',           bg: 'bg-pink-50 dark:bg-pink-950/40 text-pink-700 dark:text-pink-400 hover:bg-pink-100 dark:hover:bg-pink-950/60' },
               ].map(a => {
                 const Icon = a.icon;
                 return (
                   <Link key={a.page} to={createPageUrl(a.page)}>
-                    <div className={`p-3 rounded-xl flex items-center gap-2 cursor-pointer transition-colors ${a.color}`}>
+                    <div className={`p-3 rounded-xl flex items-center gap-2 cursor-pointer transition-colors ${a.bg}`}>
                       <Icon className="w-4 h-4 shrink-0" />
                       <span className="text-sm font-medium">{a.label}</span>
                     </div>
@@ -414,19 +434,19 @@ export default function ManagementDashboard({ user }) {
 
           {/* Announcements */}
           <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-base">Announcements</CardTitle></CardHeader>
+            <CardHeader className="pb-3"><CardTitle className="text-base text-foreground">Announcements</CardTitle></CardHeader>
             <CardContent>
               {data.announcements.length > 0 ? (
                 <div className="space-y-3">
                   {data.announcements.map(a => (
-                    <div key={a.id} className="p-3 bg-indigo-50 rounded-lg">
-                      <p className="text-sm font-semibold">{a.title}</p>
-                      <p className="text-xs text-gray-500 mt-1 line-clamp-2">{a.content}</p>
+                    <div key={a.id} className="p-3 bg-indigo-50 dark:bg-indigo-950/40 rounded-xl">
+                      <p className="text-sm font-semibold text-foreground">{a.title}</p>
+                      <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{a.content}</p>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-gray-400 text-sm text-center py-6">No announcements</p>
+                <p className="text-muted-foreground text-sm text-center py-6">No announcements</p>
               )}
             </CardContent>
           </Card>
