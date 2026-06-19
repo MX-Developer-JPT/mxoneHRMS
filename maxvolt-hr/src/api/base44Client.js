@@ -172,10 +172,13 @@ const integrations = {
       });
     },
 
-    ExtractDataFromUploadedFile: async ({ file_url }) => {
-      // Not implemented — return empty so callers don't crash
-      console.warn('[base44] ExtractDataFromUploadedFile not implemented for self-hosted');
-      return { data: [] };
+    ExtractDataFromUploadedFile: async ({ file_url, json_schema }) => {
+      // Parse CSV file and map columns to the schema's output item properties
+      const res = await apiFetch(`/functions/extractFileData`, {
+        method: 'POST',
+        body: JSON.stringify({ file_url, json_schema }),
+      });
+      return res; // { output: [...] }
     },
   },
 };

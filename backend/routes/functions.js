@@ -1433,6 +1433,32 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       return res.json({ success:true });
 
     /* ── Employee import ─────────────────────────────── */
+    case 'extractFileData': {
+      // Generic CSV extractor — reads uploaded file and maps columns to schema output
+      const { file_url, json_schema } = p;
+      if (!file_url) return res.json({ output: [] });
+      try {
+        const uploadsDir = process.env.NODE_ENV === 'production' ? '/app/uploads' : './backend/uploads';
+        const filename   = file_url.startsWith('/uploads/') ? file_url.slice(9) : file_url.split('/').pop();
+        const { readFileSync } = await import('fs');
+        const { join } = await import('path');
+        const csvText = readFileSync(join(uploadsDir, filename), 'utf8');
+        const lines   = csvText.trim().split(/\r?\n/).filter(l => l.trim());
+        if (lines.length < 2) return res.json({ output: [] });
+
+        const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g,'').toLowerCase().replace(/\s+/g,'_').replace(/-/g,'_'));
+        const output  = lines.slice(1).map(line => {
+          const vals = line.split(',').map(v => v.trim().replace(/^"|"$/g,''));
+          const obj  = {};
+          headers.forEach((h, i) => { if (vals[i] !== undefined) obj[h] = vals[i]; });
+          return obj;
+        });
+        return res.json({ output });
+      } catch(e) {
+        return res.json({ output: [], error: e.message });
+      }
+    }
+
     case 'generateEmployeeTemplate': {
       const csv = [
         'full_name,email,employee_code,department,designation,mobile,date_of_joining,date_of_birth,gender,ctc',
