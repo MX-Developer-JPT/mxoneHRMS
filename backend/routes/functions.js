@@ -871,6 +871,112 @@ Return ONLY a valid JSON object (no markdown):
       return res.json({ success:true, data: result });
     }
 
+    /* ── Offer Letter ────────────────────────────────── */
+    case 'generateOfferLetter': {
+      const { candidate_id, joining_date, designation, department, ctc, probation_months = 6, reporting_to, location } = p;
+      if (!candidate_id) return res.json({ success:false, error:'candidate_id required' });
+
+      const cRow = db.prepare("SELECT data FROM entities WHERE type='Candidate' AND id=?").get(candidate_id);
+      if (!cRow) return res.json({ success:false, error:'Candidate not found' });
+      const cand = JSON.parse(cRow.data);
+
+      const name          = cand.full_name || cand.name || 'Candidate';
+      const position      = designation   || cand.position_applied || 'Position';
+      const dept          = department    || cand.department        || 'Department';
+      const jDate         = joining_date  || '';
+      const annualCTC     = ctc           || cand.expected_ctc || 0;
+      const monthlyCTC    = annualCTC > 0 ? Math.round(annualCTC / 12) : 0;
+      const probation     = probation_months;
+      const reportingTo   = reporting_to || 'Reporting Manager';
+      const workLocation  = location     || 'Ghaziabad, Uttar Pradesh';
+      const todayDate     = new Date().toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' });
+      const offerRef      = `MEIL/HR/OL/${new Date().getFullYear()}/${String(Math.floor(Math.random()*9000)+1000)}`;
+
+      const letterHtml = `
+<div style="font-family:Arial,sans-serif;font-size:11px;color:#1a1a1a;line-height:1.6;">
+  <div style="text-align:right;margin-bottom:14px;">
+    <strong>Ref:</strong> ${offerRef}<br/>
+    <strong>Date:</strong> ${todayDate}
+  </div>
+
+  <p style="margin-bottom:10px;">To,<br/>
+  <strong>${name}</strong><br/>
+  ${cand.address || cand.email || ''}</p>
+
+  <p style="font-weight:bold;text-align:center;font-size:13px;text-decoration:underline;margin:14px 0;">
+    APPOINTMENT LETTER / OFFER OF EMPLOYMENT
+  </p>
+
+  <p>Dear <strong>${name}</strong>,</p>
+
+  <p>We are pleased to offer you the position of <strong>${position}</strong> in the <strong>${dept}</strong> department at <strong>Maxvolt Energy Industries Limited</strong>, subject to the terms and conditions stated herein.</p>
+
+  <table style="width:100%;border-collapse:collapse;margin:14px 0;font-size:10.5px;">
+    <tr style="background:#f9f9f9;">
+      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;width:40%;">Designation</td>
+      <td style="padding:5px 8px;border:1px solid #ddd;">${position}</td>
+    </tr>
+    <tr>
+      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Department</td>
+      <td style="padding:5px 8px;border:1px solid #ddd;">${dept}</td>
+    </tr>
+    <tr style="background:#f9f9f9;">
+      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Date of Joining</td>
+      <td style="padding:5px 8px;border:1px solid #ddd;">${jDate ? new Date(jDate).toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' }) : 'As mutually agreed'}</td>
+    </tr>
+    <tr>
+      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Reporting To</td>
+      <td style="padding:5px 8px;border:1px solid #ddd;">${reportingTo}</td>
+    </tr>
+    <tr style="background:#f9f9f9;">
+      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Work Location</td>
+      <td style="padding:5px 8px;border:1px solid #ddd;">${workLocation}</td>
+    </tr>
+    <tr>
+      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Annual CTC</td>
+      <td style="padding:5px 8px;border:1px solid #ddd;">₹${annualCTC.toLocaleString('en-IN')} per annum</td>
+    </tr>
+    <tr style="background:#f9f9f9;">
+      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Monthly Gross</td>
+      <td style="padding:5px 8px;border:1px solid #ddd;">₹${monthlyCTC.toLocaleString('en-IN')} per month</td>
+    </tr>
+    <tr>
+      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Probation Period</td>
+      <td style="padding:5px 8px;border:1px solid #ddd;">${probation} months</td>
+    </tr>
+  </table>
+
+  <p><strong>Terms and Conditions:</strong></p>
+  <ol style="padding-left:18px;margin:8px 0;">
+    <li>Your employment will be subject to the rules and regulations of the company, as may be amended from time to time.</li>
+    <li>During the probation period, either party may terminate the contract by giving 7 days' written notice. After confirmation, 1 month's notice is required from both parties.</li>
+    <li>You will not engage in any business activity that is in conflict with the interests of the company.</li>
+    <li>You are required to maintain the confidentiality of company information during and after employment.</li>
+    <li>This offer is conditional upon successful verification of your educational qualifications, previous employment records, and medical fitness.</li>
+    <li>Please confirm your acceptance of this offer by signing and returning a copy of this letter within <strong>7 days</strong> of receipt.</li>
+  </ol>
+
+  <p style="margin-top:14px;">We look forward to welcoming you to the Maxvolt Energy family and are confident that your skills and experience will be a valuable addition to our team.</p>
+
+  <div style="margin-top:40px;display:flex;justify-content:space-between;">
+    <div>
+      <p style="border-top:1px solid #333;padding-top:5px;min-width:180px;">Authorised Signatory<br/><strong>For Maxvolt Energy Industries Limited</strong></p>
+    </div>
+    <div>
+      <p style="border-top:1px solid #333;padding-top:5px;min-width:180px;">Candidate Acceptance<br/><strong>${name}</strong><br/>Date: _______________</p>
+    </div>
+  </div>
+</div>`;
+
+      // Update candidate status to 'offered'
+      try {
+        const updated = { ...cand, status: 'offered', offer_letter_date: new Date().toISOString(), offer_ctc: annualCTC, joining_date };
+        db.prepare("UPDATE entities SET status='offered', data=? WHERE id=?").run(JSON.stringify(updated), candidate_id);
+      } catch {}
+
+      return res.json({ success:true, html: letterHtml, ref: offerRef });
+    }
+
     /* ── AI: HR Assistant ────────────────────────────── */
     case 'askMax': {
       const { question = '', conversationHistory = [] } = p;

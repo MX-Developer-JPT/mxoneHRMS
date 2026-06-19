@@ -8,7 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
-import { Plus, UserPlus, Briefcase, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown } from 'lucide-react';
+import { Plus, UserPlus, Briefcase, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck } from 'lucide-react';
+import { openLetterheadPrintWindow } from '@/utils/letterhead';
 import CandidateDetailDialog from '../components/recruitment/CandidateDetailDialog';
 import CandidateScoreCard from '../components/recruitment/CandidateScoreCard';
 
@@ -244,6 +245,26 @@ export default function Recruitment() {
     await base44.entities.Candidate.update(candidateId, { status: newStatus });
     toast.success('Status updated');
     loadData();
+  };
+
+  const handleGenerateOffer = async (candidate) => {
+    const joiningDate = prompt('Enter proposed joining date (YYYY-MM-DD):', new Date(Date.now() + 14*24*60*60*1000).toISOString().slice(0,10));
+    if (!joiningDate) return;
+    try {
+      const res = await base44.functions.invoke('generateOfferLetter', {
+        candidate_id: candidate.id,
+        joining_date: joiningDate,
+        designation: candidate.position_applied,
+        department: candidate.department,
+        ctc: candidate.expected_ctc,
+      });
+      if (!res.data?.success) throw new Error(res.data?.error || 'Failed');
+      openLetterheadPrintWindow(`Offer Letter — ${candidate.full_name}`, res.data.html, '', false);
+      toast.success('Offer letter generated! Candidate status updated to Offered.');
+      loadData();
+    } catch (e) {
+      toast.error('Failed to generate offer letter: ' + e.message);
+    }
   };
 
   const setFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }));
@@ -563,6 +584,17 @@ export default function Recruitment() {
                             ? <Loader2 className="w-3 h-3 animate-spin" />
                             : <><Sparkles className="w-3 h-3 mr-1" />{scores[candidate.id] ? 'Rescore' : 'Score'}</>
                           }
+                        </Button>
+                      )}
+                      {['selected', 'interview_done', 'offered'].includes(candidate.status) && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleGenerateOffer(candidate)}
+                          className="border-green-300 text-green-700 hover:bg-green-50 h-8"
+                          title="Generate Offer Letter"
+                        >
+                          <FileCheck className="w-3 h-3 mr-1" /> Offer Letter
                         </Button>
                       )}
                       <Button size="sm" variant="outline" onClick={() => setSelectedCandidate(candidate)}>
