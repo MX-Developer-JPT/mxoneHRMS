@@ -149,7 +149,7 @@ router.post('/:name', async (req, res) => {
 
         // Attendance-based LOP calculation
         const attRows = await all(
-          "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date' BETWEEN $2 AND $3"
+          "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' BETWEEN $2 AND $3"
         , [emp.user_id, startDate, endDate]);
         const attRecords = attRows.map(r => JSON.parse(r.data));
 
@@ -196,7 +196,7 @@ router.post('/:name', async (req, res) => {
 
       // Get employees who have an attendance record for this date
       const attRows = await all(
-        "SELECT user_id FROM entities WHERE type='Attendance' AND data->>'date'=$1"
+        "SELECT user_id FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1"
       , [targetDate]);
       const presentUserIds = new Set(attRows.map(r => r.user_id));
 
@@ -273,7 +273,7 @@ router.post('/:name', async (req, res) => {
       const daysInMonth = new Date(y, m, 0).getDate();
 
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
-      const attRows   = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data->>'date' >= $1 AND data->>'date' <= $2", [monthStart, monthEnd]));
+      const attRows   = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
 
       // Build attendance map: user_id → date → record
       const attMap = {};
@@ -292,7 +292,7 @@ router.post('/:name', async (req, res) => {
       }
       const getShift = (shiftId) => shiftId ? (shiftCache[shiftId] || null) : null;
 
-      const defaultShift = parseEntities(await all("SELECT data FROM entities WHERE type='Shift' AND (data->>'is_default'=1 OR data->>'name' LIKE '%General%') LIMIT 1"))[0] || null;
+      const defaultShift = parseEntities(await all("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'=1 OR data::jsonb->>'name' LIKE '%General%') LIMIT 1"))[0] || null;
 
       const toMinutes = (t) => {
         if (!t) return 0;
@@ -417,10 +417,10 @@ router.post('/:name', async (req, res) => {
       const monthLabel = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
-      const payrolls  = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data->>'month'=$1 AND data->>'year'=$2", [m, y]));
+      const payrolls  = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2", [m, y]));
       const payrollMap = Object.fromEntries(payrolls.map(pr => [pr.user_id, pr]));
 
-      const attRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data->>'date' >= $1 AND data->>'date' <= $2", [monthStart, monthEnd]));
+      const attRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
       const attMap = {};
       for (const a of attRows) {
         if (!attMap[a.user_id]) attMap[a.user_id] = [];
@@ -714,7 +714,7 @@ router.post('/:name', async (req, res) => {
 
         // Always store the raw log so it's visible on the Biometric Logs page,
         // even when the employee code isn't mapped yet
-        const existingLog = await one("SELECT id FROM entities WHERE type='AttendanceLog' AND data->>'EmployeeCode'=$1 AND data->>'LogDate'=$2", [empCodeRaw, logDateRaw]);
+        const existingLog = await one("SELECT id FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'EmployeeCode'=$1 AND data::jsonb->>'LogDate'=$2", [empCodeRaw, logDateRaw]);
         if (!existingLog) {
           const logId = uuidv4();
           const logData = { ...rec, id: logId, EmployeeCode: empCodeRaw, LogDate: logDateRaw, Direction: direction, user_id: userId, punch_type: punchType, punch_iso: punchIso, imported_at: new Date().toISOString() };
@@ -741,7 +741,7 @@ router.post('/:name', async (req, res) => {
         const firstIn  = punches.find(p2 => p2.type === 'in')?.iso  || punches[0].iso;
         const lastOut  = [...punches].reverse().find(p2 => p2.type === 'out')?.iso || null;
 
-        const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2", [userId, date]);
+        const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [userId, date]);
         if (existing) {
           const d = JSON.parse(existing.data);
           if (d.status === 'regularised') continue; // never overwrite a regularised record
@@ -815,7 +815,7 @@ router.post('/:name', async (req, res) => {
 
         // Persist log in AttendanceLog entity (avoid duplicates)
         const existingLog = await one(
-          "SELECT id FROM entities WHERE type='AttendanceLog' AND data->>'EmployeeCode'=$1 AND data->>'LogDate'=$2"
+          "SELECT id FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'EmployeeCode'=$1 AND data::jsonb->>'LogDate'=$2"
         , [record.EmployeeCode || empCode, logDateRaw]);
 
         if (!existingLog) {
@@ -868,7 +868,7 @@ router.post('/:name', async (req, res) => {
         const empRow   = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
         const emp      = empRow ? JSON.parse(empRow.data) : {};
         const shiftRow = emp.shift_id
-          ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]): await one("SELECT data FROM entities WHERE type='Shift' AND data->>'is_default'=1");
+          ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]): await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'=1");
         const shift = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
 
         // Compute status
@@ -903,7 +903,7 @@ router.post('/:name', async (req, res) => {
 
         // Upsert attendance record
         const existAtt = await one(
-          "SELECT id FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2"
+          "SELECT id FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
         , [userId, date]);
 
         if (existAtt) {
@@ -956,7 +956,7 @@ router.post('/:name', async (req, res) => {
           // Update the actual Attendance record for that date
           try {
             const attRow = await one(
-              "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2"
+              "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
             , [reg.user_id, reg.date]);
 
             if (attRow) {
@@ -1024,7 +1024,7 @@ router.post('/:name', async (req, res) => {
       const emp    = empRow ? JSON.parse(empRow.data) : {};
 
       const attRows = await all(
-        "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date' BETWEEN $2 AND $3"
+        "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' BETWEEN $2 AND $3"
       , [emp.user_id || employee_id, startDate, endDate]);
       const records = attRows.map(r => JSON.parse(r.data));
 
@@ -1051,7 +1051,7 @@ router.post('/:name', async (req, res) => {
         const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND id=$1", [employee_id]);
         const emp    = empRow ? JSON.parse(empRow.data) : {};
         const row    = await one(
-          "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2"
+          "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
         , [emp.user_id || employee_id, date]);
         if (!row) return res.json({ success:false, error:'No attendance record for that employee/date' });
         attData = JSON.parse(row.data);
@@ -1063,7 +1063,7 @@ router.post('/:name', async (req, res) => {
       const empRow   = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [attData.user_id]);
       const emp      = empRow ? JSON.parse(empRow.data) : {};
       const shiftRow = emp.shift_id
-        ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]): await one("SELECT data FROM entities WHERE type='Shift' AND data->>'is_default'=1");
+        ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]): await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'=1");
       const shift    = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
 
       const toMins = (timeStr) => {
@@ -1189,7 +1189,7 @@ router.post('/:name', async (req, res) => {
     case 'computeCompliance': {
       // Auto-generate compliance records based on payroll data (PF, ESI, PT)
       const { month, year } = p;
-      const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data->>'month'=$1 AND data->>'year'=$2", [month, year]));
+      const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2", [month, year]));
       const pfTotal  = payrolls.reduce((s,r)=>s+(r.pf_employee||0)+(r.pf_employer||0),0);
       const esiTotal = payrolls.reduce((s,r)=>s+(r.esi_employee||0)+(r.esi_employer||0),0);
       const ptTotal  = payrolls.reduce((s,r)=>s+(r.professional_tax||0),0);
@@ -1200,7 +1200,7 @@ router.post('/:name', async (req, res) => {
         { name:`ESI – ${month}/${year}`, amount:esiTotal, type:'esi' },
         { name:`Professional Tax – ${month}/${year}`, amount:ptTotal, type:'pt' },
       ]) {
-        const existing = await one("SELECT id FROM entities WHERE type='ComplianceRecord' AND data->>'compliance_type'=$1 AND data->>'month'=$2 AND data->>'year'=$3", [type, month, year]);
+        const existing = await one("SELECT id FROM entities WHERE type='ComplianceRecord' AND data::jsonb->>'compliance_type'=$1 AND data::jsonb->>'month'=$2 AND data::jsonb->>'year'=$3", [type, month, year]);
         if (!existing) {
           const id = uuidv4();
           await run("INSERT INTO entities(id,type,status,data) VALUES($1,'ComplianceRecord','pending',$2)", [id, JSON.stringify({ id, compliance_type:type, name, amount, month, year, due_date:dueDate, status:'pending' })]);
@@ -1733,18 +1733,18 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
       // ── Core headcount ──────────────────────────────────────────────────────
       const totalActive  = await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'").c;
-      const presentToday = await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data->>'date'=$1 AND data->>'check_in_time' IS NOT NULL", [today]).c;
+      const presentToday = await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [today]).c;
       const absentToday  = Math.max(0, totalActive - presentToday);
-      const newJoineesThisMonth = await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data->>'date_of_joining' >= $1", [monthStart]).c;
-      const exitedLast12m = await one("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND data->>'last_working_date' >= $1", [yr12Ago]).c;
+      const newJoineesThisMonth = await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1", [monthStart]).c;
+      const exitedLast12m = await one("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND data::jsonb->>'last_working_date' >= $1", [yr12Ago]).c;
       const attritionRate = totalActive > 0 ? parseFloat(((exitedLast12m / totalActive) * 100).toFixed(1)) : 0;
 
       // ── Leave ───────────────────────────────────────────────────────────────
       const pendingLeaveRequests = await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'").c;
-      const activeLeaves         = await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND data->>'start_date' <= $1 AND data->>'end_date' >= $2", [today, today]).c;
+      const activeLeaves         = await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date' <= $1 AND data::jsonb->>'end_date' >= $2", [today, today]).c;
 
       // ── Payroll ─────────────────────────────────────────────────────────────
-      const payrollRows      = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data->>'year'=$1 AND data->>'month'=$2", [now.getFullYear(), now.getMonth()+1]));
+      const payrollRows      = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'year'=$1 AND data::jsonb->>'month'=$2", [now.getFullYear(), now.getMonth()+1]));
       const totalPayrollCost = payrollRows.reduce((s, r) => s + (r.net_salary || 0), 0);
 
       // ── Recruitment ─────────────────────────────────────────────────────────
@@ -1802,7 +1802,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       for (let i = 6; i >= 0; i--) {
         const d = new Date(); d.setDate(d.getDate() - i);
         const dateStr = d.toISOString().slice(0, 10);
-        const present = await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data->>'date'=$1 AND data->>'check_in_time' IS NOT NULL", [dateStr]).c;
+        const present = await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [dateStr]).c;
         attendanceTrends.push({ date: dateStr, day: d.toLocaleDateString('en-IN',{weekday:'short'}), present, absent: Math.max(0, totalActive - present) });
       }
 
@@ -1811,8 +1811,8 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const departmentBreakdown = Object.entries(allEmps.reduce((acc, e) => { const d = e.department||'Unknown'; acc[d]=(acc[d]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count }));
 
       // ── Biometric / attendance stats ────────────────────────────────────────
-      const attLogs      = parseEntities(await all("SELECT data FROM entities WHERE type='AttendanceLog' AND data->>'punch_date' >= $1", [monthStart]));
-      const attThisMonth = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data->>'date' >= $1", [monthStart]));
+      const attLogs      = parseEntities(await all("SELECT data FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'punch_date' >= $1", [monthStart]));
+      const attThisMonth = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1", [monthStart]));
       const workedRecs   = attThisMonth.filter(a => a.working_hours > 0);
       const avgWorkingHours   = workedRecs.length > 0 ? parseFloat((workedRecs.reduce((s,a)=>s+(a.working_hours||0),0)/workedRecs.length).toFixed(1)) : 0;
       const biometricSyncedCount = attLogs.length;
@@ -1864,7 +1864,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
       // Attendance records for the month
       const attendance = {};
-      const attRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data->>'date' >= $1 AND data->>'date' <= $2", [monthStart, monthEnd]));
+      const attRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
       for (const att of attRows) {
         if (!attendance[att.user_id]) attendance[att.user_id] = {};
         attendance[att.user_id][att.date] = att.status || (att.check_in_time ? 'present' : 'absent');
@@ -2149,8 +2149,8 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { entity_type: alType, entity_id: alId, limit: alLim = 200 } = p;
       let q = "SELECT data FROM entities WHERE type='AuditLog'";
       const qp = [];
-      if (alType) { q += ` AND data->>'entity_type'=$${qp.push(alType)}`; }
-      if (alId)   { q += ` AND data->>'entity_id'=$${qp.push(alId)}`; }
+      if (alType) { q += ` AND data::jsonb->>'entity_type'=$${qp.push(alType)}`; }
+      if (alId)   { q += ` AND data::jsonb->>'entity_id'=$${qp.push(alId)}`; }
       q += ` ORDER BY created_at DESC LIMIT $${qp.push(Number(alLim))}`;
       const alRows = await all(q, [...qp]);
       const alUserMap = {};
@@ -2329,8 +2329,8 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { user_id: ssUid, status: ssStatus } = p;
       let ssQ = "SELECT data FROM entities WHERE type='ShiftSwap'";
       const ssP = [];
-      if (ssUid) { const p1 = ssP.push(ssUid), p2 = ssP.push(ssUid); ssQ += ` AND (data->>'requester_id'=$${p1} OR data->>'target_user_id'=$${p2})`; }
-      if (ssStatus) { ssQ += ` AND data->>'status'=$${ssP.push(ssStatus)}`; }
+      if (ssUid) { const p1 = ssP.push(ssUid), p2 = ssP.push(ssUid); ssQ += ` AND (data::jsonb->>'requester_id'=$${p1} OR data::jsonb->>'target_user_id'=$${p2})`; }
+      if (ssStatus) { ssQ += ` AND data::jsonb->>'status'=$${ssP.push(ssStatus)}`; }
       ssQ += " ORDER BY created_at DESC";
       const ssUserMap = {};
       (await all("SELECT id,full_name FROM users")).forEach(u => { ssUserMap[u.id] = u.full_name; });
@@ -2341,7 +2341,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     /* ── Tax Declarations (Form 12BB) ────────────────── */
     case 'submitTaxDeclaration': {
       const { user_id: tdUid, financial_year: tdFY, declarations: tdDecl } = p;
-      const existTD = await one("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=$1 AND data->>'financial_year'=$2", [tdUid, tdFY]);
+      const existTD = await one("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=$1 AND data::jsonb->>'financial_year'=$2", [tdUid, tdFY]);
       const tdTotal = Object.values(tdDecl||{}).reduce((s,v) => s + Number(v||0), 0);
       const tdData = { user_id: tdUid, financial_year: tdFY, declarations: tdDecl, total_declared: tdTotal, status: 'submitted', submitted_at: new Date().toISOString() };
       if (existTD) {
@@ -2363,7 +2363,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     case 'getTaxDeclaration': {
       const { user_id: tdGetUid, financial_year: tdGetFY } = p;
       const tdParams = [tdGetUid]; if (tdGetFY) tdParams.push(tdGetFY);
-      const tdRow = await one("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=$1" + (tdGetFY ? " AND data->>'financial_year'=$2" : ""), tdParams);
+      const tdRow = await one("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=$1" + (tdGetFY ? " AND data::jsonb->>'financial_year'=$2" : ""), tdParams);
       return res.json({ success: true, declaration: tdRow ? JSON.parse(tdRow.data) : null });
     }
 
@@ -2371,7 +2371,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { financial_year: tdsFY } = p;
       let tdsSql = "SELECT data FROM entities WHERE type='TaxDeclaration'";
       const tdsP = [];
-      if (tdsFY) { tdsSql += ` AND data->>'financial_year'=$${tdsP.push(tdsFY)}`; }
+      if (tdsFY) { tdsSql += ` AND data::jsonb->>'financial_year'=$${tdsP.push(tdsFY)}`; }
       const tdsUserMap = {};
       (await all("SELECT id,full_name,email FROM users")).forEach(u => { tdsUserMap[u.id] = u; });
       const decls = (await all(tdsSql, [...tdsP])).map(r => { const d = JSON.parse(r.data); const u = tdsUserMap[d.user_id]||{}; return { ...d, full_name: u.full_name, email: u.email }; });
@@ -2381,7 +2381,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     case 'approveTaxDeclaration': {
       const { user_id: tdaUid, financial_year: tdaFY, approved_by: tdaBy, notes: tdaNotes } = p;
       const tdaParams = [tdaUid]; if (tdaFY) tdaParams.push(tdaFY);
-      const tdaRow = await one("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=$1" + (tdaFY ? " AND data->>'financial_year'=$2" : ""), tdaParams);
+      const tdaRow = await one("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=$1" + (tdaFY ? " AND data::jsonb->>'financial_year'=$2" : ""), tdaParams);
       if (!tdaRow) return res.json({ success: false, error: 'Declaration not found' });
       const tdaData = { ...JSON.parse(tdaRow.data), status: 'approved', approved_by: tdaBy, approved_at: new Date().toISOString(), hr_notes: tdaNotes };
       await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(tdaData), tdaRow.id]);

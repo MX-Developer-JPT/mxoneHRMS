@@ -61,7 +61,7 @@ async function processRecord(record) {
   let userId = directUserId;
   if (!userId && employee_code) {
     const emp = await one(
-      "SELECT user_id FROM entities WHERE type='Employee' AND data->>'employee_code'=$1 LIMIT 1",
+      "SELECT user_id FROM entities WHERE type='Employee' AND data::jsonb->>'employee_code'=$1 LIMIT 1",
       [employee_code]
     );
     userId = emp?.user_id;
@@ -70,7 +70,7 @@ async function processRecord(record) {
 
   // Find or create today's attendance record
   const row = await one(
-    "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2 LIMIT 1",
+    "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1",
     [userId, punchDate]
   );
 
