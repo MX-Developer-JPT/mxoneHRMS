@@ -47,23 +47,33 @@ const employeeMenuItems = [
 ];
 
 const managementMenuItems = [
+  // ── Team ──────────────────────────────────────────────────
   { name: 'Dashboard',               icon: LayoutDashboard,   page: 'Dashboard' },
-  { name: 'MIS Analytics',           icon: PieChart,          page: 'MISDashboard' },
-  { name: 'Mark Attendance',         icon: Clock,             page: 'MarkAttendance' },
-  { name: 'My Attendance',           icon: Calendar,          page: 'AttendanceHistory' },
-  { name: 'Department Attendance',   icon: BarChart3,         page: 'AllAttendance' },
-  { name: 'Regularisation Approvals',icon: Clock,             page: 'RegularisationApproval' },
-  { name: 'Leave Management',        icon: FileText,          page: 'LeaveManagement' },
-  { name: 'Leave Dashboard',         icon: PieChart,          page: 'LeaveDashboard' },
-  { name: 'Expense Approvals',       icon: DollarSign,        page: 'Approvals' },
   { name: 'My Team',                 icon: Users,             page: 'Employees' },
-  { name: 'Announcements',           icon: Bell,              page: 'Announcements' },
-  { name: 'My Training',             icon: GraduationCap,     page: 'MyTraining' },
-  { name: 'My Performance',          icon: Target,            page: 'PerformanceManagement' },
-  { name: 'My Exit',                 icon: LogOut,            page: 'MyExit' },
+  { name: 'Team Attendance',         icon: BarChart3,         page: 'AllAttendance' },
+  { name: 'Leave Approvals',         icon: FileText,          page: 'LeaveManagement' },
+  { name: 'Leave Dashboard',         icon: PieChart,          page: 'LeaveDashboard' },
+  { name: 'Regularisation Approvals',icon: Clock,             page: 'RegularisationApproval' },
+  { name: 'Expense Approvals',       icon: DollarSign,        page: 'Approvals' },
   { name: 'Gate Pass Approvals',     icon: ShieldCheck,       page: 'GatePassApproval' },
   { name: 'Team Calendar',           icon: Calendar,          page: 'TeamCalendar' },
+  { name: 'MIS Analytics',           icon: PieChart,          page: 'MISDashboard' },
   { name: 'Job Requisitions',        icon: Briefcase,         page: 'JobRequisitions' },
+  // ── Personal ─────────────────────────────────────────────
+  { name: 'Mark Attendance',         icon: Clock,             page: 'MarkAttendance' },
+  { name: 'My Attendance',           icon: Calendar,          page: 'AttendanceHistory' },
+  { name: 'Regularisation',          icon: Clock,             page: 'AttendanceRegularisation' },
+  { name: 'Apply Leave',             icon: FileText,          page: 'Leave' },
+  { name: 'My Payslips',             icon: CreditCard,        page: 'Payslips' },
+  { name: 'My Documents',            icon: FolderOpen,        page: 'Documents' },
+  { name: 'Expenses',                icon: DollarSign,        page: 'Reimbursements' },
+  { name: 'My Performance',          icon: Target,            page: 'PerformanceManagement' },
+  { name: 'My Training',             icon: GraduationCap,     page: 'MyTraining' },
+  { name: 'My Insurance',            icon: Shield,            page: 'MyInsurance' },
+  { name: 'My Assets',               icon: Laptop,            page: 'MyAssets' },
+  { name: 'My Exit',                 icon: LogOut,            page: 'MyExit' },
+  // ── General ──────────────────────────────────────────────
+  { name: 'Announcements',           icon: Bell,              page: 'Announcements' },
   { name: 'Helpdesk',                icon: HelpCircle,        page: 'Helpdesk' },
   { name: 'Employee Portal',         icon: Users,             page: 'EmployeeEngagementPortal' },
   { name: 'AskMax AI',               icon: Sparkles,          page: 'AskMax' },
@@ -264,7 +274,7 @@ export default function Layout({ children, currentPageName }) {
   }
 
   const isHR         = userRole === 'hr'         || userRole === 'admin'      || user.role === 'hr'    || user.role === 'admin';
-  const isManagement = userRole === 'management'  || user.role === 'management';
+  const isManagement = userRole === 'management'  || userRole === 'manager'    || user.role === 'management' || user.role === 'manager';
   const isGateAdmin  = userRole === 'gate_admin'  || user.role === 'gate_admin';
   const isITDept     = employeeDepartment?.toLowerCase() === 'it';
 

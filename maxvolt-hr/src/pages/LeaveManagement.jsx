@@ -64,12 +64,13 @@ export default function LeaveManagement() {
       let requests = await base44.entities.Leave.list('-created_date', 500);
 
       const isHR = ['hr', 'admin'].includes(currentUser.role) || ['hr', 'admin'].includes(currentUser.custom_role);
-      const isManagement = currentUser.role === 'management' || currentUser.custom_role === 'management';
+      const isManager = ['manager', 'management'].includes(currentUser.role) || ['manager', 'management'].includes(currentUser.custom_role);
 
-      if (isManagement && !isHR) {
+      if (isManager && !isHR) {
+        // Manager sees only leaves from their direct reports
         const subordinates = empRecords.filter(e => e.reporting_manager_id === currentUser.id);
-        const subUserIds = subordinates.map(e => e.user_id);
-        requests = requests.filter(r => subUserIds.includes(r.user_id));
+        const subUserIds = new Set(subordinates.map(e => e.user_id));
+        requests = requests.filter(r => subUserIds.has(r.user_id));
       }
 
       setLeaveRequests(requests);
@@ -83,7 +84,7 @@ export default function LeaveManagement() {
 
   const isHR = user && (['hr', 'admin'].includes(user.role) || ['hr', 'admin'].includes(user.custom_role));
   const isAdmin = user && (user.role === 'admin' || user.custom_role === 'admin');
-  const isManagement = user && (user.role === 'management' || user.custom_role === 'management');
+  const isManagement = user && (['management', 'manager'].includes(user.role) || ['management', 'manager'].includes(user.custom_role));
 
   const canApproveLevel = (leave) => {
     if (!leave || leave.status !== 'pending') return false;

@@ -17,6 +17,6 @@ export default function Dashboard() {
 
   const role = user.custom_role || user.role;
   if (role === 'hr' || role === 'admin') return <HRDashboard user={user} />;
-  if (role === 'management') return <ManagementDashboard user={user} />;
+  if (role === 'management' || role === 'manager') return <ManagementDashboard user={user} />;
   return <EmployeeDashboard user={user} />;
 }

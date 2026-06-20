@@ -65,7 +65,11 @@ export default function AllAttendance() {
     const dayRecords = attendanceResp.data?.records || [];
     let emps = empRecords.map(e => ({ ...e, _user: users.find(u => u.id === e.user_id) }));
 
-    if (userRole === 'management') {
+    if (userRole === 'manager') {
+      // Manager sees only their direct reports (employees whose reporting_manager_id = this user)
+      emps = emps.filter(e => e.reporting_manager_id === currentUser.id);
+    } else if (userRole === 'management') {
+      // Management sees their department
       try {
         const depts = await base44.entities.Department.filter({ head_user_id: currentUser.id });
         if (depts.length > 0) {
@@ -73,7 +77,6 @@ export default function AllAttendance() {
           emps = emps.filter(e => codes.has(e.department));
         }
       } catch (e) {
-        // If department filter fails (permissions), show all managed employees
         console.warn('Could not filter by department:', e.message);
       }
     }

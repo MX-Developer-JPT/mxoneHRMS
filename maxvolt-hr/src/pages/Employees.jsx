@@ -51,7 +51,10 @@ export default function Employees() {
       let updatedEmpRecords = await base44.entities.Employee.list('-created_date', 500);
 
       const userRole = currentUser.custom_role || currentUser.role;
-      if (userRole === 'management') {
+      if (userRole === 'manager') {
+        // Manager sees only their direct reports
+        updatedEmpRecords = updatedEmpRecords.filter(e => e.reporting_manager_id === currentUser.id);
+      } else if (userRole === 'management') {
         const departments = await base44.entities.Department.filter({ head_user_id: currentUser.id });
         if (departments.length > 0) {
           const deptCodes = departments.map(d => d.code);
