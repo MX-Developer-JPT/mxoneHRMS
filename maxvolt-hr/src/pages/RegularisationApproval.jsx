@@ -41,6 +41,7 @@ export default function RegularisationApproval() {
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterEmployee, setFilterEmployee] = useState('all');
   const [filterDept, setFilterDept] = useState('all');
+  const [departments, setDepartments] = useState([]);
   const [bulkSelected, setBulkSelected] = useState([]);
 
   useEffect(() => { loadData(); }, []);
@@ -53,9 +54,10 @@ export default function RegularisationApproval() {
       setUserRole(role);
 
       const isHR = role === 'hr' || role === 'admin';
-      const [allReqs, empRecords] = await Promise.all([
+      const [allReqs, empRecords, deptRecords] = await Promise.all([
         base44.entities.AttendanceRegularisation.list('-created_date', 500),
         base44.entities.Employee.list(),
+        base44.entities.Department.list(),
       ]);
 
       let filtered = allReqs;
@@ -67,6 +69,7 @@ export default function RegularisationApproval() {
 
       setRequests(filtered);
       setEmployees(empRecords);
+      setDepartments(deptRecords);
       setUsers([]);
     } catch (e) { console.error(e); }
     setLoading(false);
@@ -121,7 +124,6 @@ export default function RegularisationApproval() {
   const getEmployeeName = (userId) => employees.find(e => e.user_id === userId)?.display_name || 'Unknown';
   const getEmployeeDept = (userId) => employees.find(e => e.user_id === userId)?.department || '';
 
-  const departments = [...new Set(employees.map(e => e.department).filter(Boolean))];
 
   const filtered = requests.filter(r => {
     const matchStatus = filterStatus === 'all' || r.status === filterStatus;
@@ -192,7 +194,7 @@ export default function RegularisationApproval() {
                 <SelectTrigger className="w-44 bg-white"><SelectValue placeholder="All Departments" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Departments</SelectItem>
-                  {departments.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                  {departments.map(d => <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>)}
                 </SelectContent>
               </Select>
               <Select value={filterEmployee} onValueChange={setFilterEmployee}>

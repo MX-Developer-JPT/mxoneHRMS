@@ -12,15 +12,16 @@ export default function PublicJobBoard() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterDept, setFilterDept] = useState('all');
+  const [departments, setDepartments] = useState([]);
 
   useEffect(() => {
     loadJobs();
+    base44.entities.Department.list().then(setDepartments).catch(() => {});
   }, []);
 
   const loadJobs = async () => {
     try {
       const all = await base44.entities.JobRequisition.filter({ is_published: true, status: 'published' });
-      // Filter out expired
       const active = all.filter(j => !j.application_deadline || !isPast(new Date(j.application_deadline)));
       setJobs(active);
     } catch (e) {
@@ -28,8 +29,6 @@ export default function PublicJobBoard() {
     }
     setLoading(false);
   };
-
-  const departments = ['all', ...Array.from(new Set(jobs.map(j => j.department).filter(Boolean)))];
 
   const filtered = jobs.filter(j => {
     const matchSearch = !search || j.position_title?.toLowerCase().includes(search.toLowerCase()) || j.department?.toLowerCase().includes(search.toLowerCase());
@@ -65,15 +64,18 @@ export default function PublicJobBoard() {
             />
           </div>
           <div className="flex gap-2 flex-wrap">
+            <Button size="sm" variant={filterDept === 'all' ? 'default' : 'outline'} onClick={() => setFilterDept('all')} className={filterDept === 'all' ? 'bg-orange-500 hover:bg-orange-600' : ''}>
+              All Departments
+            </Button>
             {departments.map(d => (
               <Button
-                key={d}
+                key={d.id}
                 size="sm"
-                variant={filterDept === d ? 'default' : 'outline'}
-                onClick={() => setFilterDept(d)}
-                className={filterDept === d ? 'bg-orange-500 hover:bg-orange-600' : ''}
+                variant={filterDept === d.name ? 'default' : 'outline'}
+                onClick={() => setFilterDept(d.name)}
+                className={filterDept === d.name ? 'bg-orange-500 hover:bg-orange-600' : ''}
               >
-                {d === 'all' ? 'All Departments' : d}
+                {d.name}
               </Button>
             ))}
           </div>

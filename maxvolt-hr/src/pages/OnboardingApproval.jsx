@@ -16,6 +16,7 @@ export default function OnboardingApproval() {
   const [employees, setEmployees] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [shifts, setShifts] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [managers, setManagers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedUser, setSelectedUser] = useState(null);
@@ -54,9 +55,12 @@ export default function OnboardingApproval() {
         return userRole === 'onboarding_pending';
       });
       
-      const empRecords = await base44.entities.Employee.list('-created_date', 500);
-      const depts = await base44.entities.Department.list();
-      const shiftList = await base44.entities.Shift.list();
+      const [empRecords, depts, shiftList, locationList] = await Promise.all([
+        base44.entities.Employee.list('-created_date', 500),
+        base44.entities.Department.list(),
+        base44.entities.Shift.list(),
+        base44.entities.AppLocation.list(),
+      ]);
       
       const managementUsers = allUsers.filter(u => {
         const userRole = u.custom_role || u.role;
@@ -67,6 +71,7 @@ export default function OnboardingApproval() {
       setEmployees(empRecords);
       setDepartments(depts);
       setShifts(shiftList);
+      setLocations(locationList);
       setManagers(managementUsers);
       setLoading(false);
     } catch (error) {
@@ -337,11 +342,14 @@ export default function OnboardingApproval() {
 
                 <div>
                   <Label>Work Location *</Label>
-                  <Input
-                    value={formData.work_location}
-                    onChange={(e) => setFormData({...formData, work_location: e.target.value})}
-                    placeholder="Duhai Office"
-                  />
+                  <Select value={formData.work_location} onValueChange={(value) => setFormData({...formData, work_location: value})}>
+                    <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
+                    <SelectContent>
+                      {locations.map(loc => (
+                        <SelectItem key={loc.id} value={loc.name}>{loc.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <div>

@@ -230,6 +230,7 @@ function printSalaryStructure(structure, emp) {
 export default function SalaryStructureManagement() {
   const [salaryStructures, setSalaryStructures] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showDialog, setShowDialog] = useState(false);
   const [editingStructure, setEditingStructure] = useState(null);
@@ -270,11 +271,12 @@ export default function SalaryStructureManagement() {
 
   const loadData = async () => {
     try {
-      const [structures, empRecords, users, configs] = await Promise.all([
+      const [structures, empRecords, users, configs, deptRecords] = await Promise.all([
         base44.entities.SalaryStructure.filter({ status: 'active' }, '-effective_from'),
         base44.entities.Employee.list(),
         base44.entities.User.list(),
-        base44.entities.PayrollConfiguration.list()
+        base44.entities.PayrollConfiguration.list(),
+        base44.entities.Department.list(),
       ]);
       // Apply payroll config settings to calc constants
       if (configs.length > 0) {
@@ -285,6 +287,7 @@ export default function SalaryStructureManagement() {
       const enriched = empRecords.map(e => ({ ...e, user: users.find(u => u.id === e.user_id) }));
       setSalaryStructures(structures);
       setEmployees(enriched);
+      setDepartments(deptRecords);
     } catch (error) {
       console.error('Error loading:', error);
     }
@@ -409,7 +412,6 @@ export default function SalaryStructureManagement() {
     }
   };
 
-  const departments = [...new Set(employees.map(e => e.department).filter(Boolean))];
   const totalCTC = salaryStructures.reduce((s, st) => s + (st.ctc || 0), 0);
 
   const filteredStructures = salaryStructures.filter(s => {
@@ -471,7 +473,7 @@ export default function SalaryStructureManagement() {
             <SelectTrigger className="w-48"><SelectValue placeholder="All Departments" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Departments</SelectItem>
-              {departments.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              {departments.map(d => <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>

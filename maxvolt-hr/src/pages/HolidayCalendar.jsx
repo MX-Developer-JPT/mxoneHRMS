@@ -96,6 +96,7 @@ export default function HolidayCalendar() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState('calendar');
+  const [allDepartments, setAllDepartments] = useState([]);
   const [selectedDayHolidays, setSelectedDayHolidays] = useState(null);
   // workingDayOverrides: { 'yyyy-MM-dd': true (working) | false (off) }
   const [workingDayOverrides, setWorkingDayOverrides] = useState(() => {
@@ -117,8 +118,12 @@ export default function HolidayCalendar() {
 
   const loadData = async () => {
     try {
-      const holidayData = await base44.entities.Holiday.filter({ year: selectedYear }, 'date');
+      const [holidayData, deptData] = await Promise.all([
+        base44.entities.Holiday.filter({ year: selectedYear }, 'date'),
+        base44.entities.Department.list(),
+      ]);
       setHolidays(holidayData);
+      setAllDepartments(deptData);
       setLoading(false);
     } catch (error) {
       console.error('Error loading holidays:', error);
@@ -279,6 +284,32 @@ export default function HolidayCalendar() {
                       </SelectContent>
                     </Select>
                   </div>
+                  {formData.type !== 'public' && allDepartments.length > 0 && (
+                    <div>
+                      <Label>Applicable Departments <span className="text-gray-400 font-normal">(leave empty for all)</span></Label>
+                      <div className="mt-1 border rounded-md p-2 max-h-36 overflow-y-auto space-y-1">
+                        {allDepartments.map(dept => (
+                          <label key={dept.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
+                            <input
+                              type="checkbox"
+                              checked={(formData.applicable_departments || []).includes(dept.name)}
+                              onChange={(e) => {
+                                const current = formData.applicable_departments || [];
+                                setFormData({
+                                  ...formData,
+                                  applicable_departments: e.target.checked
+                                    ? [...current, dept.name]
+                                    : current.filter(d => d !== dept.name)
+                                });
+                              }}
+                              className="rounded"
+                            />
+                            {dept.name}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <Label>Description</Label>
                     <Textarea

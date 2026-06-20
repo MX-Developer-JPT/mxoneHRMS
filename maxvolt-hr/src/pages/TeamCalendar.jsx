@@ -25,9 +25,11 @@ export default function TeamCalendar() {
   const [calendarData, setCalendarData] = useState({ employees: [], holidays: [], attendance: {}, leaves: {} });
   const [selectedEmployee, setSelectedEmployee] = useState('all');
   const [selectedDepartment, setSelectedDepartment] = useState('all');
+  const [departments, setDepartments] = useState([]);
   const [viewMode, setViewMode] = useState('grid'); // grid | list
 
   useEffect(() => { loadCalendarData(); }, [currentMonth]);
+  useEffect(() => { base44.entities.Department.list().then(setDepartments).catch(() => {}); }, []);
 
   const loadCalendarData = async () => {
     setLoading(true);
@@ -42,10 +44,6 @@ export default function TeamCalendar() {
     setLoading(false);
   };
 
-  const departments = useMemo(() => {
-    const depts = new Set(calendarData.employees.map(e => e.department).filter(Boolean));
-    return [...depts].sort();
-  }, [calendarData.employees]);
 
   const filteredEmployees = useMemo(() => {
     return calendarData.employees.filter(e => {
@@ -184,7 +182,7 @@ export default function TeamCalendar() {
                   <SelectTrigger className="w-36 h-8 text-xs"><SelectValue placeholder="All Depts" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Departments</SelectItem>
-                    {departments.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                    {departments.map(d => <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>

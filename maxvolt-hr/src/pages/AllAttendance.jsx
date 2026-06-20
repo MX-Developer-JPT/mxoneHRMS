@@ -35,6 +35,7 @@ export default function AllAttendance() {
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [attendanceMap, setAttendanceMap] = useState({});
   const [employees, setEmployees] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -55,10 +56,11 @@ export default function AllAttendance() {
     const currentUser = await base44.auth.me();
     const userRole = currentUser.custom_role || currentUser.role;
 
-    const [empRecords, usersResp, attendanceResp] = await Promise.all([
+    const [empRecords, usersResp, attendanceResp, deptRecords] = await Promise.all([
       base44.entities.Employee.filter({ status: 'active' }, '-created_date', 500),
       base44.functions.invoke('getAllUsers', {}),
       base44.functions.invoke('getAllAttendance', { date }),
+      base44.entities.Department.list(),
     ]);
 
     const users = usersResp.data?.users || [];
@@ -86,6 +88,7 @@ export default function AllAttendance() {
 
     setEmployees(emps);
     setAttendanceMap(map);
+    setDepartments(deptRecords.map(d => ({ value: d.name, label: d.name })));
     setLoading(false);
   };
 
@@ -120,7 +123,6 @@ export default function AllAttendance() {
     });
   }, [rows, statusFilter, deptFilter, searchTerm]);
 
-  const departments = useMemo(() => [...new Set(employees.map(e => e.department).filter(Boolean))].sort(), [employees]);
 
   const grouped = useMemo(() => {
     return filtered.reduce((acc, r) => {
@@ -337,7 +339,7 @@ export default function AllAttendance() {
               ]} />
               <MobileSelect value={deptFilter} onValueChange={setDeptFilter} label="Department" className="w-[160px]" options={[
                 { value: 'all', label: 'All Departments' },
-                ...departments.map(d => ({ value: d, label: d }))
+                ...departments
               ]} />
             </div>
           </CardContent>
