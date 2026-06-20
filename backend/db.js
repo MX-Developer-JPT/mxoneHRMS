@@ -9,6 +9,10 @@ const db = new DatabaseSync(join(DATA_DIR, 'hrms.db'));
 
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
+db.exec("PRAGMA cache_size = -16000");   // 16 MB page cache
+db.exec("PRAGMA synchronous = NORMAL");  // safe with WAL, faster than FULL
+db.exec("PRAGMA busy_timeout = 5000");   // wait up to 5s on lock instead of failing
+db.exec("PRAGMA temp_store = MEMORY");   // temp tables in RAM
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS settings (
@@ -50,6 +54,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_entities_type_user    ON entities(type, user_id);
   CREATE INDEX IF NOT EXISTS idx_entities_type_status  ON entities(type, status);
   CREATE INDEX IF NOT EXISTS idx_entities_type_active  ON entities(type, is_active);
+  CREATE INDEX IF NOT EXISTS idx_entities_created      ON entities(created_at);
+  CREATE INDEX IF NOT EXISTS idx_entities_type_created ON entities(type, created_at);
+  CREATE INDEX IF NOT EXISTS idx_entities_updated      ON entities(updated_at);
 `);
 
 db.exec(`
@@ -67,5 +74,9 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 `);
+
+// Purge expired OTPs and reset tokens so they don't accumulate over time
+db.exec("DELETE FROM otps WHERE expires_at < datetime('now')");
+db.exec("DELETE FROM reset_tokens WHERE expires_at < datetime('now')");
 
 export default db;
