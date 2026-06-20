@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import db from '../db.js';
+import { one, all, run } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { sendEmail, verifyEmail, emailTemplates, getSmtpPublicConfig } from '../utils/email.js';
 
@@ -25,42 +25,47 @@ router.use((req, res, next) => {
 });
 
 // ── Stats ──────────────────────────────────────────────────
-router.get('/stats', (_req, res) => {
-  const userCount = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
-  const entityCount = db.prepare('SELECT COUNT(*) as c FROM entities').get().c;
-  const typeCounts = db.prepare(
+router.get('/stats', async (_req, res) => {
+  const ucRow = await one('SELECT COUNT(*) as c FROM users');
+  const ecRow = await one('SELECT COUNT(*) as c FROM entities');
+  const typeCounts = await all(
     "SELECT type, COUNT(*) as count FROM entities GROUP BY type ORDER BY count DESC"
-  ).all();
-  res.json({ users: userCount, entities: entityCount, by_type: typeCounts });
+  );
+  res.json({
+    users: parseInt(ucRow.c, 10),
+    entities: parseInt(ecRow.c, 10),
+    by_type: typeCounts.map(r => ({ ...r, count: parseInt(r.count, 10) })),
+  });
 });
 
 // ── List entity types ──────────────────────────────────────
-router.get('/entity-types', (_req, res) => {
-  const rows = db.prepare(
+router.get('/entity-types', async (_req, res) => {
+  const rows = await all(
     "SELECT type, COUNT(*) as count FROM entities GROUP BY type ORDER BY type ASC"
-  ).all();
-  res.json(rows);
+  );
+  res.json(rows.map(r => ({ ...r, count: parseInt(r.count, 10) })));
 });
 
 // ── List entities of a type (paginated) ───────────────────
-router.get('/entities/:type', (req, res) => {
+router.get('/entities/:type', async (req, res) => {
   const { type } = req.params;
-  const page  = parseInt(req.query.page  || 1,  10);
-  const limit = parseInt(req.query.limit || 50, 10);
+  const page   = parseInt(req.query.page  || 1,  10);
+  const limit  = parseInt(req.query.limit || 50, 10);
   const search = req.query.search || '';
   const offset = (page - 1) * limit;
 
-  let rows, total;
+  let rows, totalRow;
   if (search) {
     const like = `%${search}%`;
-    rows  = db.prepare("SELECT * FROM entities WHERE type=? AND data LIKE ? LIMIT ? OFFSET ?").all(type, like, limit, offset);
-    total = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type=? AND data LIKE ?").get(type, like).c;
+    rows     = await all("SELECT * FROM entities WHERE type=$1 AND data LIKE $2 LIMIT $3 OFFSET $4", [type, like, limit, offset]);
+    totalRow = await one("SELECT COUNT(*) as c FROM entities WHERE type=$1 AND data LIKE $2", [type, like]);
   } else {
-    rows  = db.prepare("SELECT * FROM entities WHERE type=? ORDER BY created_at DESC LIMIT ? OFFSET ?").all(type, limit, offset);
-    total = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type=?").get(type).c;
+    rows     = await all("SELECT * FROM entities WHERE type=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3", [type, limit, offset]);
+    totalRow = await one("SELECT COUNT(*) as c FROM entities WHERE type=$1", [type]);
   }
 
-  const data = rows.map(r => {
+  const total = parseInt(totalRow.c, 10);
+  const data  = rows.map(r => {
     const d = JSON.parse(r.data);
     d._created_at = r.created_at;
     d._updated_at = r.updated_at;
@@ -70,8 +75,8 @@ router.get('/entities/:type', (req, res) => {
 });
 
 // ── Get single entity ──────────────────────────────────────
-router.get('/entities/:type/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM entities WHERE type=? AND id=?').get(req.params.type, req.params.id);
+router.get('/entities/:type/:id', async (req, res) => {
+  const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [req.params.type, req.params.id]);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const d = JSON.parse(row.data);
   d._created_at = row.created_at;
@@ -80,133 +85,144 @@ router.get('/entities/:type/:id', (req, res) => {
 });
 
 // ── Create entity ──────────────────────────────────────────
-router.post('/entities/:type', (req, res) => {
+router.post('/entities/:type', async (req, res) => {
   const { type } = req.params;
   const id   = req.body.id || uuidv4();
   const data = { ...req.body, id };
-  db.prepare("INSERT INTO entities(id,type,user_id,status,is_active,data) VALUES(?,?,?,?,1,?)")
-    .run(id, type, data.user_id ?? null, data.status ?? null, JSON.stringify(data));
+  await run(
+    "INSERT INTO entities(id,type,user_id,status,is_active,data) VALUES($1,$2,$3,$4,1,$5)",
+    [id, type, data.user_id ?? null, data.status ?? null, JSON.stringify(data)]
+  );
   res.status(201).json(data);
 });
 
 // ── Update entity (full replace of data) ──────────────────
-router.put('/entities/:type/:id', (req, res) => {
+router.put('/entities/:type/:id', async (req, res) => {
   const { type, id } = req.params;
-  const row = db.prepare('SELECT * FROM entities WHERE type=? AND id=?').get(type, id);
+  const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const data = { ...req.body, id };
-  db.prepare("UPDATE entities SET data=?,user_id=?,status=?,updated_at=datetime('now') WHERE id=?")
-    .run(JSON.stringify(data), data.user_id ?? row.user_id, data.status ?? row.status, id);
+  await run(
+    "UPDATE entities SET data=$1,user_id=$2,status=$3,updated_at=NOW()::TEXT WHERE id=$4",
+    [JSON.stringify(data), data.user_id ?? row.user_id, data.status ?? row.status, id]
+  );
   res.json(data);
 });
 
 // ── Delete entity ──────────────────────────────────────────
-router.delete('/entities/:type/:id', (req, res) => {
-  const r = db.prepare('DELETE FROM entities WHERE type=? AND id=?').run(req.params.type, req.params.id);
-  if (r.changes === 0) return res.status(404).json({ error: 'Not found' });
+router.delete('/entities/:type/:id', async (req, res) => {
+  const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [req.params.type, req.params.id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   res.json({ success: true });
 });
 
 // ── Bulk delete entities ───────────────────────────────────
-router.post('/entities/:type/bulk-delete', (req, res) => {
+router.post('/entities/:type/bulk-delete', async (req, res) => {
   const { ids = [] } = req.body;
   let deleted = 0;
   for (const id of ids) {
-    const r = db.prepare('DELETE FROM entities WHERE type=? AND id=?').run(req.params.type, id);
-    deleted += r.changes;
+    const r = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [req.params.type, id]);
+    deleted += r.rowCount;
   }
   res.json({ success: true, deleted });
 });
 
 // ── List users ─────────────────────────────────────────────
-router.get('/users', (_req, res) => {
-  const users = db.prepare(
+router.get('/users', async (_req, res) => {
+  const users = await all(
     "SELECT id,email,full_name,first_name,last_name,role,custom_role,display_name,created_at FROM users ORDER BY created_at DESC"
-  ).all();
+  );
   res.json(users);
 });
 
 // ── Get single user ────────────────────────────────────────
-router.get('/users/:id', (req, res) => {
-  const u = db.prepare(
-    "SELECT id,email,full_name,first_name,last_name,role,custom_role,display_name,created_at FROM users WHERE id=?"
-  ).get(req.params.id);
+router.get('/users/:id', async (req, res) => {
+  const u = await one(
+    "SELECT id,email,full_name,first_name,last_name,role,custom_role,display_name,created_at FROM users WHERE id=$1",
+    [req.params.id]
+  );
   if (!u) return res.status(404).json({ error: 'Not found' });
   res.json(u);
 });
 
 // ── Create user ────────────────────────────────────────────
-router.post('/users', (req, res) => {
+router.post('/users', async (req, res) => {
   const { email, password, full_name, first_name, last_name, role = 'employee', custom_role } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'email and password required' });
   const id = uuidv4();
   const hash = bcrypt.hashSync(password, 10);
   const name = full_name || [first_name, last_name].filter(Boolean).join(' ');
-  db.prepare("INSERT INTO users(id,email,password,full_name,first_name,last_name,role,custom_role,display_name) VALUES(?,?,?,?,?,?,?,?,?)")
-    .run(id, email.toLowerCase().trim(), hash, name, first_name || '', last_name || '', role, custom_role || role, name);
-  const u = db.prepare("SELECT id,email,full_name,role,custom_role,display_name FROM users WHERE id=?").get(id);
+  await run(
+    "INSERT INTO users(id,email,password,full_name,first_name,last_name,role,custom_role,display_name) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+    [id, email.toLowerCase().trim(), hash, name, first_name || '', last_name || '', role, custom_role || role, name]
+  );
+  const u = await one("SELECT id,email,full_name,role,custom_role,display_name FROM users WHERE id=$1", [id]);
   res.status(201).json(u);
 });
 
 // ── Update user ────────────────────────────────────────────
-router.patch('/users/:id', (req, res) => {
-  // Changing role or custom_role requires admin — HR cannot promote users
+router.patch('/users/:id', async (req, res) => {
   if ((req.body.role || req.body.custom_role) && !req.isAdmin)
     return res.status(403).json({ error: 'Only admins can change user roles' });
 
   const { full_name, first_name, last_name, role, custom_role, email } = req.body;
-  const fields = []; const vals = [];
-  if (full_name)   { fields.push('full_name=?');    vals.push(full_name); }
-  if (first_name)  { fields.push('first_name=?');   vals.push(first_name); }
-  if (last_name)   { fields.push('last_name=?');    vals.push(last_name); }
-  if (role)        { fields.push('role=?');          vals.push(role); fields.push('custom_role=?'); vals.push(custom_role || role); }
-  else if (custom_role) { fields.push('custom_role=?'); vals.push(custom_role); }
-  if (email)       { fields.push('email=?');         vals.push(email.toLowerCase().trim()); }
+  const fields = []; const vals = []; let pi = 0;
+  if (full_name)  { fields.push(`full_name=$${++pi}`);  vals.push(full_name); }
+  if (first_name) { fields.push(`first_name=$${++pi}`); vals.push(first_name); }
+  if (last_name)  { fields.push(`last_name=$${++pi}`);  vals.push(last_name); }
+  if (role) {
+    fields.push(`role=$${++pi}`);        vals.push(role);
+    fields.push(`custom_role=$${++pi}`); vals.push(custom_role || role);
+  } else if (custom_role) {
+    fields.push(`custom_role=$${++pi}`); vals.push(custom_role);
+  }
+  if (email) { fields.push(`email=$${++pi}`); vals.push(email.toLowerCase().trim()); }
   if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
-  fields.push("updated_at=datetime('now')");
+  fields.push(`updated_at=NOW()::TEXT`);
   vals.push(req.params.id);
-  db.prepare(`UPDATE users SET ${fields.join(',')} WHERE id=?`).run(...vals);
-  const u = db.prepare("SELECT id,email,full_name,role,custom_role,display_name FROM users WHERE id=?").get(req.params.id);
+  await run(`UPDATE users SET ${fields.join(',')} WHERE id=$${++pi}`, vals);
+  const u = await one("SELECT id,email,full_name,role,custom_role,display_name FROM users WHERE id=$1", [req.params.id]);
   res.json(u);
 });
 
 // ── Reset user password ────────────────────────────────────
-router.patch('/users/:id/password', (req, res) => {
+router.patch('/users/:id/password', async (req, res) => {
   const { password } = req.body;
   if (!password || password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-  db.prepare("UPDATE users SET password=? WHERE id=?").run(bcrypt.hashSync(password, 10), req.params.id);
+  await run("UPDATE users SET password=$1 WHERE id=$2", [bcrypt.hashSync(password, 10), req.params.id]);
   res.json({ success: true });
 });
 
 // ── Delete user ────────────────────────────────────────────
-router.delete('/users/:id', (req, res) => {
+router.delete('/users/:id', async (req, res) => {
   if (!req.isAdmin)
     return res.status(403).json({ error: 'Only admins can delete users' });
   if (req.currentUser.id === req.params.id)
     return res.status(400).json({ error: 'Cannot delete your own account' });
-  const r = db.prepare('DELETE FROM users WHERE id=?').run(req.params.id);
-  if (r.changes === 0) return res.status(404).json({ error: 'Not found' });
+  const result = await run('DELETE FROM users WHERE id=$1', [req.params.id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   res.json({ success: true });
 });
 
 // ── SMTP settings: get (password masked) ──────────────────
-router.get('/smtp-settings', (_req, res) => {
-  res.json(getSmtpPublicConfig());
+router.get('/smtp-settings', async (_req, res) => {
+  res.json(await getSmtpPublicConfig());
 });
 
 // ── Email settings: save to DB ────────────────────────────
-router.post('/smtp-settings', (req, res) => {
+router.post('/smtp-settings', async (req, res) => {
   const { provider, resend_api_key, brevo_api_key, from } = req.body;
-  const set = (key, val) => {
-    db.prepare(`INSERT INTO settings(key,value,updated_at) VALUES(?,?,datetime('now'))
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`)
-      .run(key, String(val));
-  };
-  const del = (key) => db.prepare('DELETE FROM settings WHERE key=?').run(key);
-  if (provider !== undefined)     set('EMAIL_PROVIDER',  provider);
-  if (resend_api_key !== undefined) resend_api_key ? set('RESEND_API_KEY', resend_api_key) : del('RESEND_API_KEY');
-  if (brevo_api_key  !== undefined) brevo_api_key  ? set('BREVO_API_KEY',  brevo_api_key)  : del('BREVO_API_KEY');
-  if (from !== undefined)         set('SMTP_FROM', from);
+  const set = (key, val) => run(
+    `INSERT INTO settings(key,value,updated_at) VALUES($1,$2,NOW()::TEXT)
+     ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT`,
+    [key, String(val)]
+  );
+  const del = (key) => run('DELETE FROM settings WHERE key=$1', [key]);
+
+  if (provider !== undefined)       await set('EMAIL_PROVIDER', provider);
+  if (resend_api_key !== undefined) await (resend_api_key ? set('RESEND_API_KEY', resend_api_key) : del('RESEND_API_KEY'));
+  if (brevo_api_key  !== undefined) await (brevo_api_key  ? set('BREVO_API_KEY',  brevo_api_key)  : del('BREVO_API_KEY'));
+  if (from !== undefined)           await set('SMTP_FROM', from);
   res.json({ success: true });
 });
 

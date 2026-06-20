@@ -1,82 +1,113 @@
-import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import pg from 'pg';
+const { Pool } = pg;
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// In production Railway mounts a persistent volume at /app/data
-const DATA_DIR = process.env.NODE_ENV === 'production' ? '/app/data' : __dirname;
-const db = new DatabaseSync(join(DATA_DIR, 'hrms.db'));
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes('localhost') || process.env.DATABASE_URL?.includes('127.0.0.1')
+    ? false
+    : { rejectUnauthorized: false },
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+});
 
-db.exec("PRAGMA journal_mode = WAL");
-db.exec("PRAGMA foreign_keys = ON");
-db.exec("PRAGMA cache_size = -16000");   // 16 MB page cache
-db.exec("PRAGMA synchronous = NORMAL");  // safe with WAL, faster than FULL
-db.exec("PRAGMA busy_timeout = 5000");   // wait up to 5s on lock instead of failing
-db.exec("PRAGMA temp_store = MEMORY");   // temp tables in RAM
+pool.on('error', (err) => {
+  console.error('[pg] Unexpected pool error:', err.message);
+});
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS settings (
-    key        TEXT PRIMARY KEY,
-    value      TEXT,
-    updated_at TEXT DEFAULT (datetime('now'))
-  );
-`);
+async function initSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key        TEXT PRIMARY KEY,
+      value      TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
+    );
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id          TEXT PRIMARY KEY,
-    email       TEXT UNIQUE NOT NULL,
-    password    TEXT NOT NULL,
-    full_name   TEXT,
-    first_name  TEXT,
-    middle_name TEXT,
-    last_name   TEXT,
-    role        TEXT DEFAULT 'user',
-    custom_role TEXT,
-    display_name TEXT,
-    created_at  TEXT DEFAULT (datetime('now')),
-    updated_at  TEXT DEFAULT (datetime('now'))
-  );
+    CREATE TABLE IF NOT EXISTS users (
+      id           TEXT PRIMARY KEY,
+      email        TEXT UNIQUE NOT NULL,
+      password     TEXT NOT NULL,
+      full_name    TEXT,
+      first_name   TEXT,
+      middle_name  TEXT,
+      last_name    TEXT,
+      role         TEXT DEFAULT 'user',
+      custom_role  TEXT,
+      display_name TEXT,
+      created_at   TEXT DEFAULT CURRENT_TIMESTAMP::TEXT,
+      updated_at   TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
+    );
 
-  CREATE TABLE IF NOT EXISTS entities (
-    id          TEXT PRIMARY KEY,
-    type        TEXT NOT NULL,
-    user_id     TEXT,
-    status      TEXT,
-    is_active   INTEGER DEFAULT 1,
-    data        TEXT NOT NULL,
-    created_at  TEXT DEFAULT (datetime('now')),
-    updated_at  TEXT DEFAULT (datetime('now'))
-  );
+    CREATE TABLE IF NOT EXISTS entities (
+      id         TEXT PRIMARY KEY,
+      type       TEXT NOT NULL,
+      user_id    TEXT,
+      status     TEXT,
+      is_active  INTEGER DEFAULT 1,
+      data       TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP::TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
+    );
 
-  CREATE INDEX IF NOT EXISTS idx_entities_type         ON entities(type);
-  CREATE INDEX IF NOT EXISTS idx_entities_user_id      ON entities(user_id);
-  CREATE INDEX IF NOT EXISTS idx_entities_type_user    ON entities(type, user_id);
-  CREATE INDEX IF NOT EXISTS idx_entities_type_status  ON entities(type, status);
-  CREATE INDEX IF NOT EXISTS idx_entities_type_active  ON entities(type, is_active);
-  CREATE INDEX IF NOT EXISTS idx_entities_created      ON entities(created_at);
-  CREATE INDEX IF NOT EXISTS idx_entities_type_created ON entities(type, created_at);
-  CREATE INDEX IF NOT EXISTS idx_entities_updated      ON entities(updated_at);
-`);
+    CREATE INDEX IF NOT EXISTS idx_entities_type         ON entities(type);
+    CREATE INDEX IF NOT EXISTS idx_entities_user_id      ON entities(user_id);
+    CREATE INDEX IF NOT EXISTS idx_entities_type_user    ON entities(type, user_id);
+    CREATE INDEX IF NOT EXISTS idx_entities_type_status  ON entities(type, status);
+    CREATE INDEX IF NOT EXISTS idx_entities_type_active  ON entities(type, is_active);
+    CREATE INDEX IF NOT EXISTS idx_entities_created      ON entities(created_at);
+    CREATE INDEX IF NOT EXISTS idx_entities_type_created ON entities(type, created_at);
+    CREATE INDEX IF NOT EXISTS idx_entities_updated      ON entities(updated_at);
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS otps (
-    email      TEXT NOT NULL,
-    code       TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+    CREATE TABLE IF NOT EXISTS otps (
+      email      TEXT NOT NULL,
+      code       TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
+    );
 
-  CREATE TABLE IF NOT EXISTS reset_tokens (
-    token      TEXT PRIMARY KEY,
-    email      TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-`);
+    CREATE TABLE IF NOT EXISTS reset_tokens (
+      token      TEXT PRIMARY KEY,
+      email      TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
+    );
 
-// Purge expired OTPs and reset tokens so they don't accumulate over time
-db.exec("DELETE FROM otps WHERE expires_at < datetime('now')");
-db.exec("DELETE FROM reset_tokens WHERE expires_at < datetime('now')");
+    CREATE TABLE IF NOT EXISTS notifications (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL,
+      title      TEXT NOT NULL,
+      message    TEXT NOT NULL,
+      type       TEXT DEFAULT 'info',
+      is_read    INTEGER DEFAULT 0,
+      link       TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
+    );
 
-export default db;
+    CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read);
+  `);
+
+  // Purge expired OTPs and tokens on startup
+  await pool.query("DELETE FROM otps WHERE expires_at::TIMESTAMPTZ < NOW()");
+  await pool.query("DELETE FROM reset_tokens WHERE expires_at::TIMESTAMPTZ < NOW()");
+}
+
+await initSchema().catch(err => {
+  console.error('[pg] Schema initialization failed:', err.message);
+  process.exit(1);
+});
+
+export const q   = (text, params = []) => pool.query(text, params);
+export const one = async (text, params = []) => {
+  const { rows } = await pool.query(text, params);
+  return rows[0] || null;
+};
+export const all = async (text, params = []) => {
+  const { rows } = await pool.query(text, params);
+  return rows;
+};
+export const run = async (text, params = []) => {
+  const res = await pool.query(text, params);
+  return { rowCount: res.rowCount };
+};
+
+export default pool;

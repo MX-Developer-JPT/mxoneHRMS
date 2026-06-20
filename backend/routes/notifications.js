@@ -1,5 +1,5 @@
 import express from 'express';
-import db from '../db.js';
+import { one, all, run } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
 
@@ -17,48 +17,40 @@ function requireAuth(req, res, next) {
   }
 }
 
-// Ensure notifications table exists
-db.exec(`
-  CREATE TABLE IF NOT EXISTS notifications (
-    id          TEXT PRIMARY KEY,
-    user_id     TEXT NOT NULL,
-    title       TEXT NOT NULL,
-    message     TEXT NOT NULL,
-    type        TEXT DEFAULT 'info',
-    is_read     INTEGER DEFAULT 0,
-    link        TEXT,
-    created_at  TEXT DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read);
-`);
-
 // GET /api/notifications - get my notifications (latest 50)
-router.get('/', requireAuth, (req, res) => {
-  const rows = db.prepare(`
-    SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50
-  `).all(req.user.id);
-  const unread = db.prepare(`SELECT COUNT(*) as c FROM notifications WHERE user_id=? AND is_read=0`).get(req.user.id).c;
-  res.json({ notifications: rows, unread });
+router.get('/', requireAuth, async (req, res) => {
+  const rows = await all(
+    `SELECT * FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`,
+    [req.user.id]
+  );
+  const unread_row = await one(
+    `SELECT COUNT(*) as c FROM notifications WHERE user_id=$1 AND is_read=0`,
+    [req.user.id]
+  );
+  res.json({ notifications: rows, unread: parseInt(unread_row?.c || 0, 10) });
 });
 
 // PATCH /api/notifications/read-all - mark all as read (must be before /:id/read)
-router.patch('/read-all', requireAuth, (req, res) => {
-  db.prepare(`UPDATE notifications SET is_read=1 WHERE user_id=?`).run(req.user.id);
+router.patch('/read-all', requireAuth, async (req, res) => {
+  await run(`UPDATE notifications SET is_read=1 WHERE user_id=$1`, [req.user.id]);
   res.json({ success: true });
 });
 
 // PATCH /api/notifications/:id/read - mark one as read
-router.patch('/:id/read', requireAuth, (req, res) => {
-  db.prepare(`UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?`).run(req.params.id, req.user.id);
+router.patch('/:id/read', requireAuth, async (req, res) => {
+  await run(`UPDATE notifications SET is_read=1 WHERE id=$1 AND user_id=$2`, [req.params.id, req.user.id]);
   res.json({ success: true });
 });
 
 // POST /api/notifications - create notification (internal use / admin)
-router.post('/', requireAuth, (req, res) => {
+router.post('/', requireAuth, async (req, res) => {
   const { user_id, title, message, type = 'info', link } = req.body;
   const targetUserId = user_id || req.user.id;
   const id = uuidv4();
-  db.prepare(`INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)`).run(id, targetUserId, title, message, type, link || null);
+  await run(
+    `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
+    [id, targetUserId, title, message, type, link || null]
+  );
   res.json({ success: true, id });
 });
 

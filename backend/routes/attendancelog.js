@@ -15,22 +15,21 @@
  */
 
 import express from 'express';
-import db from '../db.js';
+import { one, run } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
 
-function getApiKey() {
-  // Prefer env var, fall back to DB-stored key
+async function getApiKey() {
   if (process.env.ATTENDANCE_API_KEY) return process.env.ATTENDANCE_API_KEY;
   try {
-    const row = db.prepare("SELECT value FROM settings WHERE key='attendance_api_key'").get();
+    const row = await one("SELECT value FROM settings WHERE key='attendance_api_key'");
     return row?.value || null;
   } catch { return null; }
 }
 
-function authMiddleware(req, res, next) {
-  const apiKey = getApiKey();
+async function authMiddleware(req, res, next) {
+  const apiKey = await getApiKey();
   const header = req.headers['authorization'] || req.headers['x-api-key'] || '';
   const token  = header.startsWith('Bearer ') ? header.slice(7) : header;
 
@@ -44,7 +43,7 @@ function toDateStr(dt) {
   return new Date(dt).toISOString().slice(0, 10);
 }
 
-function processRecord(record) {
+async function processRecord(record) {
   const { employee_code, user_id: directUserId, punch_time, type = 'in', device_id } = record;
 
   if (!punch_time) return { ok: false, reason: 'punch_time is required' };
@@ -55,17 +54,19 @@ function processRecord(record) {
   // Resolve user
   let userId = directUserId;
   if (!userId && employee_code) {
-    const emp = db.prepare(
-      "SELECT user_id FROM entities WHERE type='Employee' AND json_extract(data,'$.employee_code')=? LIMIT 1"
-    ).get(employee_code);
+    const emp = await one(
+      "SELECT user_id FROM entities WHERE type='Employee' AND data->>'employee_code'=$1 LIMIT 1",
+      [employee_code]
+    );
     userId = emp?.user_id;
   }
   if (!userId) return { ok: false, reason: `No user found for employee_code=${employee_code}` };
 
   // Find or create today's attendance record
-  let row = db.prepare(
-    "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date')=? LIMIT 1"
-  ).get(userId, punchDate);
+  const row = await one(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2 LIMIT 1",
+    [userId, punchDate]
+  );
 
   if (!row) {
     const id = uuidv4();
@@ -78,9 +79,10 @@ function processRecord(record) {
       device_id: device_id || null,
       punch_sessions: [{ time: punchIso, type }],
     };
-    db.prepare(
-      "INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'present',?)"
-    ).run(id, userId, JSON.stringify(data));
+    await run(
+      "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)",
+      [id, userId, JSON.stringify(data)]
+    );
     return { ok: true, attendance_id: id, action: 'created' };
   }
 
@@ -92,40 +94,36 @@ function processRecord(record) {
   data.device_id = device_id || data.device_id;
 
   if (type === 'in') {
-    // Keep earliest check-in
     if (!data.check_in_time || punchIso < data.check_in_time) {
       data.check_in_time = punchIso;
     }
   } else if (type === 'out') {
-    // Keep latest check-out
     if (!data.check_out_time || punchIso > data.check_out_time) {
       data.check_out_time = punchIso;
     }
   }
 
-  db.prepare(
-    "UPDATE entities SET data=?, updated_at=datetime('now') WHERE id=?"
-  ).run(JSON.stringify(data), row.id);
+  await run(
+    "UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2",
+    [JSON.stringify(data), row.id]
+  );
   return { ok: true, attendance_id: row.id, action: 'updated' };
 }
 
-// Single punch
-router.post('/', authMiddleware, (req, res) => {
+// Single / batch punch
+router.post('/', authMiddleware, async (req, res) => {
   try {
     const body = req.body;
 
-    // Batch mode
     if (Array.isArray(body.records)) {
-      const results = body.records.map(r => {
-        try { return processRecord(r); }
-        catch (e) { return { ok: false, reason: e.message }; }
-      });
-      const success = results.filter(r => r.ok).length;
-      return res.json({ success: true, processed: results.length, succeeded: success, results });
+      const results = await Promise.all(
+        body.records.map(r => processRecord(r).catch(e => ({ ok: false, reason: e.message })))
+      );
+      const succeeded = results.filter(r => r.ok).length;
+      return res.json({ success: true, processed: results.length, succeeded, results });
     }
 
-    // Single mode
-    const result = processRecord(body);
+    const result = await processRecord(body);
     if (!result.ok) return res.status(400).json({ error: result.reason });
     return res.json({ success: true, ...result });
   } catch (e) {

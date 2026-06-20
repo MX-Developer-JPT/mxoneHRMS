@@ -1,18 +1,18 @@
-import db from '../db.js';
+import { one } from '../db.js';
 
-function getSetting(key, fallback = '') {
+async function getSetting(key, fallback = '') {
   try {
-    const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+    const row = await one('SELECT value FROM settings WHERE key=$1', [key]);
     if (row?.value) return row.value;
   } catch {}
   return process.env[key] || fallback;
 }
 
-function getProvider()    { return getSetting('EMAIL_PROVIDER', 'resend'); }
-function getResendKey()   { return getSetting('RESEND_API_KEY', ''); }
-function getBrevoKey()    { return getSetting('BREVO_API_KEY', ''); }
-function getFromAddress() {
-  const from = getSetting('SMTP_FROM', '');
+async function getProvider()    { return getSetting('EMAIL_PROVIDER', 'resend'); }
+async function getResendKey()   { return getSetting('RESEND_API_KEY', ''); }
+async function getBrevoKey()    { return getSetting('BREVO_API_KEY', ''); }
+async function getFromAddress() {
+  const from = await getSetting('SMTP_FROM', '');
   return from.includes('@') ? from : null;
 }
 
@@ -51,10 +51,10 @@ function parseFrom(fromStr, fallbackName = 'Maxvolt HR', fallbackEmail = 'norepl
 // ── Public API ─────────────────────────────────────────────
 
 export async function verifyEmail() {
-  const provider = getProvider();
+  const provider = await getProvider();
 
   if (provider === 'brevo') {
-    const key = getBrevoKey();
+    const key = await getBrevoKey();
     if (!key) return { ok: false, error: 'Brevo API key not configured. Add it in Admin Panel → Email Settings.' };
     try {
       await brevoRequest(key, '/account');
@@ -64,8 +64,7 @@ export async function verifyEmail() {
     }
   }
 
-  // Default: Resend
-  const key = getResendKey();
+  const key = await getResendKey();
   if (!key) return { ok: false, error: 'Resend API key not configured. Add it in Admin Panel → Email Settings.' };
   try {
     await resendRequest(key, '/domains');
@@ -76,11 +75,11 @@ export async function verifyEmail() {
 }
 
 export async function sendEmail({ to, subject, html, text }) {
-  const provider = getProvider();
-  const fromStr  = getFromAddress();
+  const provider = await getProvider();
+  const fromStr  = await getFromAddress();
 
   if (provider === 'brevo') {
-    const key = getBrevoKey();
+    const key = await getBrevoKey();
     if (!key) { console.warn('[email] Brevo not configured — skipped:', subject); return { skipped: true }; }
     const { name, email } = parseFrom(fromStr);
     const toArr = Array.isArray(to) ? to.map(e => ({ email: e })) : [{ email: to }];
@@ -94,29 +93,31 @@ export async function sendEmail({ to, subject, html, text }) {
     return { success: true, messageId: data.messageId, provider: 'brevo' };
   }
 
-  // Default: Resend
-  const key = getResendKey();
+  const key = await getResendKey();
   if (!key) { console.warn('[email] Resend not configured — skipped:', subject); return { skipped: true }; }
   const from = fromStr || 'Maxvolt HR <onboarding@resend.dev>';
   const data = await resendRequest(key, '/emails', { from, to, subject, html, text });
   return { success: true, messageId: data.id, provider: 'resend' };
 }
 
-export function getSmtpPublicConfig() {
-  const provider = getProvider();
+export async function getSmtpPublicConfig() {
+  const provider    = await getProvider();
+  const resendKey   = await getResendKey();
+  const brevoKey    = await getBrevoKey();
+  const from        = await getSetting('SMTP_FROM', '');
   return {
     provider,
-    from:         getSetting('SMTP_FROM', ''),
-    hasResendKey: !!getResendKey(),
-    hasBrevoKey:  !!getBrevoKey(),
-    activeProvider: provider === 'brevo' && getBrevoKey() ? 'brevo'
-                  : provider === 'resend' && getResendKey() ? 'resend'
+    from,
+    hasResendKey:   !!resendKey,
+    hasBrevoKey:    !!brevoKey,
+    activeProvider: provider === 'brevo' && brevoKey ? 'brevo'
+                  : provider === 'resend' && resendKey ? 'resend'
                   : 'none',
   };
 }
 
 // ── Shared email chrome ────────────────────────────────────
-const APP_URL = process.env.APP_URL || 'https://your-app.railway.app';
+const APP_URL  = process.env.APP_URL || 'https://your-app.railway.app';
 const LOGO_URL = `${APP_URL}/maxvolt-logo.jpg`;
 
 function emailHeader(title, accentColor = '#344055') {

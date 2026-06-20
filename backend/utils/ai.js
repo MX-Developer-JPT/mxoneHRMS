@@ -2,27 +2,27 @@
 // Get a free Groq key at https://console.groq.com — no credit card needed.
 // Admin can also set GROQ_API_KEY via Admin Panel → AI Settings (stored in DB).
 
-import db from '../db.js';
+import { one } from '../db.js';
 
 const GROQ_MODEL   = process.env.GROQ_MODEL  || 'llama-3.1-8b-instant';
 const OLLAMA_URL   = process.env.OLLAMA_URL  || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'tinyllama';
 
 // Read key at request time so DB-saved key is picked up without restart
-function getGroqKey() {
+async function getGroqKey() {
   if (process.env.GROQ_API_KEY) return process.env.GROQ_API_KEY;
   try {
-    const row = db.prepare("SELECT value FROM settings WHERE key='GROQ_API_KEY'").get();
+    const row = await one("SELECT value FROM settings WHERE key='GROQ_API_KEY'");
     return row?.value || '';
   } catch { return ''; }
 }
 
-const useGroq = () => !!getGroqKey();
+const useGroq = async () => !!(await getGroqKey());
 
 // ── Groq ────────────────────────────────────────────────────
 
 async function callGroq(messages, { json = false } = {}) {
-  const apiKey = getGroqKey();
+  const apiKey = await getGroqKey();
   const body = {
     model: GROQ_MODEL,
     messages,
@@ -107,7 +107,7 @@ async function callOllama(messages, { json = false } = {}) {
 // ── Public API ──────────────────────────────────────────────
 
 export async function callAIMessages(messages, opts = {}) {
-  return useGroq() ? callGroq(messages, opts) : callOllama(messages, opts);
+  return (await useGroq()) ? callGroq(messages, opts) : callOllama(messages, opts);
 }
 
 export async function callAI(prompt, { system = '', json = false } = {}) {
@@ -118,7 +118,7 @@ export async function callAI(prompt, { system = '', json = false } = {}) {
 }
 
 export async function checkAI() {
-  if (useGroq()) {
+  if (await useGroq()) {
     // Key is set — report as configured without making a test call (avoids latency + token waste)
     return { ok: true, provider: 'groq', model: GROQ_MODEL, running: true, modelReady: true };
   }
