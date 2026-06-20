@@ -3,15 +3,17 @@
  * Receives punch events from biometric devices / external attendance apps.
  *
  * Auth: Bearer token using ATTENDANCE_API_KEY env var (set in Railway).
- * If ATTENDANCE_API_KEY is not set, any request with "Bearer anykey" is accepted
- * (useful for dev). Set it in production.
  *
  * POST /api/attendance-log
- * Body (single punch):
- *   { employee_code, user_id, punch_time, type: "in"|"out", device_id? }
- *
+ * Body (single eBio punch):
+ *   { EmployeeCode, LogDate, Direction, DeviceName?, SerialNumber?, VerificationType? }
+ * Body (direct format):
+ *   { employee_code, punch_time, type: "in"|"out", device_id? }
  * Body (batch):
- *   { records: [{ employee_code, user_id, punch_time, type }] }
+ *   { records: [...] }
+ *
+ * All punches are stored as AttendanceLog entities regardless of employee match.
+ * If employee is found (by employee_code or biometric_id), Attendance record is also updated.
  */
 
 import express from 'express';
@@ -30,37 +32,63 @@ async function getApiKey() {
 
 async function authMiddleware(req, res, next) {
   const apiKey = await getApiKey();
+  if (!apiKey) {
+    // No key configured — reject to prevent unguarded access
+    return res.status(401).json({ error: 'Attendance API key not configured. Generate one in HRMS Settings.' });
+  }
   const header = req.headers['authorization'] || req.headers['x-api-key'] || '';
   const token  = header.startsWith('Bearer ') ? header.slice(7) : header;
-
-  if (apiKey && token !== apiKey) {
+  if (token !== apiKey) {
     return res.status(401).json({ error: 'Invalid API key', hint: 'Set Authorization: Bearer <key> header' });
   }
   next();
 }
 
-function toDateStr(dt) {
-  return new Date(dt).toISOString().slice(0, 10);
-}
-
 async function processRecord(record) {
-  // Accept both eBio webhook format (EmployeeCode, LogDate, Direction) and direct format (employee_code, punch_time, type)
-  const employee_code = record.employee_code || record.EmployeeCode;
-  const directUserId  = record.user_id;
-  const punch_time    = record.punch_time || record.LogDate || record.DownloadDate;
-  const direction     = (record.type || record.Direction || 'in').toString().toLowerCase();
-  const type          = direction === 'out' || direction === 'exit' ? 'out' : 'in';
-  const device_id     = record.device_id || record.SerialNumber || record.DeviceName || null;
+  // Normalise field names — accept eBio Pascal-case and snake_case formats
+  const codeStr    = String(record.employee_code || record.EmployeeCode || '');
+  const directUid  = record.user_id;
+  const punch_time = record.punch_time || record.LogDate || record.DownloadDate;
+  const dirRaw     = (record.type || record.Direction || 'IN').toString().toUpperCase();
+  const direction  = dirRaw === 'OUT' || dirRaw === 'EXIT' ? 'OUT' : 'IN';
+  const deviceName = record.DeviceName || record.device_id || null;
+  const serial     = record.SerialNumber || null;
+  const verType    = record.VerificationType || null;
 
   if (!punch_time) return { ok: false, reason: 'punch_time is required' };
 
-  const punchDate = toDateStr(punch_time);
   const punchIso  = new Date(punch_time).toISOString();
+  const punchDate = punchIso.slice(0, 10);
 
-  // Resolve user — try employee_code first, then biometric_id (numeric ID assigned in device)
-  let userId = directUserId;
-  if (!userId && employee_code) {
-    const codeStr = String(employee_code);
+  // 1. Always store the raw punch as AttendanceLog (shown in Biometric Attendance Log page)
+  //    Deduplicate by EmployeeCode + exact punch timestamp
+  let logStored = false;
+  const existingLog = await one(
+    "SELECT id FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'EmployeeCode'=$1 AND data::jsonb->>'LogDate'=$2",
+    [codeStr, punchIso]
+  );
+  if (!existingLog) {
+    const logId = uuidv4();
+    await run(
+      "INSERT INTO entities(id,type,status,data) VALUES($1,'AttendanceLog','active',$2)",
+      [logId, JSON.stringify({
+        id: logId,
+        EmployeeCode: codeStr,
+        LogDate: punchIso,
+        Direction: direction,
+        DeviceName: deviceName,
+        SerialNumber: serial,
+        VerificationType: verType,
+        ProcessedAt: new Date().toISOString(),
+        source: 'webhook',
+      })]
+    );
+    logStored = true;
+  }
+
+  // 2. Try to resolve to an HRMS employee (employee_code first, then biometric_id)
+  let userId = directUid;
+  if (!userId && codeStr) {
     let emp = await one(
       "SELECT user_id FROM entities WHERE type='Employee' AND data::jsonb->>'employee_code'=$1 LIMIT 1",
       [codeStr]
@@ -73,9 +101,19 @@ async function processRecord(record) {
     }
     userId = emp?.user_id;
   }
-  if (!userId) return { ok: false, reason: `No user found for employee_code=${employee_code} — set the Biometric ID field on the employee record to match the device user ID` };
 
-  // Find or create today's attendance record
+  // No employee match — log is stored, attendance will be mapped once Biometric ID is set
+  if (!userId) {
+    return {
+      ok: true,
+      log_stored: logStored,
+      attendance_updated: false,
+      note: `employee_code=${codeStr} not yet mapped — set the Biometric ID on the employee record`,
+    };
+  }
+
+  // 3. Find or create today's Attendance record
+  const type = direction === 'OUT' ? 'out' : 'in';
   const row = await one(
     "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1",
     [userId, punchDate]
@@ -87,40 +125,34 @@ async function processRecord(record) {
       id, user_id: userId, date: punchDate,
       check_in_time:  type === 'in'  ? punchIso : null,
       check_out_time: type === 'out' ? punchIso : null,
-      status: 'present',
-      source: 'biometric',
-      device_id: device_id || null,
+      status: 'present', source: 'biometric', device_id: deviceName,
       punch_sessions: [{ time: punchIso, type }],
     };
     await run(
       "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)",
       [id, userId, JSON.stringify(data)]
     );
-    return { ok: true, attendance_id: id, action: 'created' };
+    return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: id, action: 'created' };
   }
 
-  // Update existing record
+  // Update existing attendance record
   const data = JSON.parse(row.data);
   const sessions = data.punch_sessions || [];
   sessions.push({ time: punchIso, type });
   data.punch_sessions = sessions;
-  data.device_id = device_id || data.device_id;
+  data.device_id = deviceName || data.device_id;
 
   if (type === 'in') {
-    if (!data.check_in_time || punchIso < data.check_in_time) {
-      data.check_in_time = punchIso;
-    }
-  } else if (type === 'out') {
-    if (!data.check_out_time || punchIso > data.check_out_time) {
-      data.check_out_time = punchIso;
-    }
+    if (!data.check_in_time || punchIso < data.check_in_time) data.check_in_time = punchIso;
+  } else {
+    if (!data.check_out_time || punchIso > data.check_out_time) data.check_out_time = punchIso;
   }
 
   await run(
     "UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2",
     [JSON.stringify(data), row.id]
   );
-  return { ok: true, attendance_id: row.id, action: 'updated' };
+  return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: row.id, action: 'updated' };
 }
 
 // Single / batch punch
@@ -132,8 +164,17 @@ router.post('/', authMiddleware, async (req, res) => {
       const results = await Promise.all(
         body.records.map(r => processRecord(r).catch(e => ({ ok: false, reason: e.message })))
       );
-      const succeeded = results.filter(r => r.ok).length;
-      return res.json({ success: true, processed: results.length, succeeded, results });
+      const logsStored = results.filter(r => r.ok && r.log_stored).length;
+      const attUpdated = results.filter(r => r.ok && r.attendance_updated).length;
+      const unmapped   = results.filter(r => r.ok && !r.attendance_updated).length;
+      return res.json({
+        success: true,
+        processed: results.length,
+        logs_stored: logsStored,
+        attendance_updated: attUpdated,
+        unmapped_employees: unmapped,
+        results,
+      });
     }
 
     const result = await processRecord(body);
@@ -148,12 +189,14 @@ router.post('/', authMiddleware, async (req, res) => {
 router.get('/', (_req, res) => {
   res.json({
     description: 'Maxvolt HR — External Attendance Log API',
-    version: '1.0',
+    version: '2.0',
     auth: 'Authorization: Bearer <ATTENDANCE_API_KEY>',
+    note: 'All punches stored as AttendanceLog. Attendance record updated only if employee Biometric ID matches.',
     endpoints: {
       'POST /api/attendance-log': {
-        single: { employee_code: 'string', punch_time: 'ISO8601', type: '"in"|"out"', device_id: 'optional' },
-        batch:  { records: '[{ employee_code, punch_time, type }]' },
+        eBio: { EmployeeCode: 'string', LogDate: 'ISO8601', Direction: 'IN|OUT', DeviceName: 'optional' },
+        direct: { employee_code: 'string', punch_time: 'ISO8601', type: '"in"|"out"' },
+        batch: { records: '[{ EmployeeCode, LogDate, Direction }]' },
       },
     },
   });
