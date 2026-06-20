@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
-import db from '../db.js';
+import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
@@ -27,23 +27,22 @@ router.post('/:name', async (req, res) => {
 
     /* ── User management ──────────────────────────────── */
     case 'getAllUsers': {
-      const users = db.prepare(
+      const users = await all(
         'SELECT id,email,full_name,first_name,last_name,role,custom_role,display_name FROM users'
-      ).all();
+      );
       return res.json({ users });
     }
 
     case 'initNewUser': {
       const { user_id, email, full_name } = p;
-      const ex = db.prepare("SELECT id FROM entities WHERE type='Employee' AND user_id=?").get(user_id);
+      const ex = await one("SELECT id FROM entities WHERE type='Employee' AND user_id=$1", [user_id]);
       if (!ex) {
         const id = uuidv4();
         const d = { id, user_id, email: email||'', display_name: full_name||'',
                     status:'active', employee_status:'probation' };
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Employee',?,'active',?)")
-          .run(id, user_id, JSON.stringify(d));
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'active',$3)", [id, user_id, JSON.stringify(d)]);
       }
-      db.prepare("UPDATE users SET role='employee',custom_role='employee' WHERE id=?").run(user_id);
+      await run("UPDATE users SET role='employee',custom_role='employee' WHERE id=$1", [user_id]);
       return res.json({ success: true });
     }
 
@@ -51,35 +50,34 @@ router.post('/:name', async (req, res) => {
       if (!cu) return res.status(401).json({ error:'Unauthorized' });
       const { first_name='', middle_name='', last_name='' } = p;
       const full = [first_name, middle_name, last_name].filter(Boolean).join(' ');
-      db.prepare("UPDATE users SET first_name=?,middle_name=?,last_name=?,full_name=?,display_name=?,updated_at=datetime('now') WHERE id=?")
-        .run(first_name, middle_name, last_name, full, full, cu.id);
+      await run("UPDATE users SET first_name=$1,middle_name=$2,last_name=$3,full_name=$4,display_name=$5,updated_at=NOW()::TEXT WHERE id=$6", [first_name, middle_name, last_name, full, full, cu.id]);
       return res.json({ success: true });
     }
 
     case 'updateUserDetails': {
       const uid = p.user_id || cu?.id;
       if (!uid) return res.status(400).json({ error:'user_id required' });
-      const fields = []; const vals = [];
-      if (p.full_name)    { fields.push('full_name=?');    vals.push(p.full_name); }
-      if (p.display_name) { fields.push('display_name=?'); vals.push(p.display_name); }
-      if (p.role)         { fields.push('role=?');         vals.push(p.role); }
-      if (p.custom_role)  { fields.push('custom_role=?');  vals.push(p.custom_role); }
-      if (fields.length) { vals.push(uid); db.prepare(`UPDATE users SET ${fields.join(',')} WHERE id=?`).run(...vals); }
+      const fields = []; const vals = []; let pi = 0;
+      if (p.full_name)    { fields.push(`full_name=$${++pi}`);    vals.push(p.full_name); }
+      if (p.display_name) { fields.push(`display_name=$${++pi}`); vals.push(p.display_name); }
+      if (p.role)         { fields.push(`role=$${++pi}`);         vals.push(p.role); }
+      if (p.custom_role)  { fields.push(`custom_role=$${++pi}`);  vals.push(p.custom_role); }
+      if (fields.length) { vals.push(uid); await run(`UPDATE users SET ${fields.join(',')} WHERE id=$${++pi}`, vals); }
       return res.json({ success: true });
     }
 
     case 'updateUserRole': {
       const { user_id, role, custom_role } = p;
-      db.prepare("UPDATE users SET role=?,custom_role=? WHERE id=?").run(role, custom_role||role, user_id);
+      await run("UPDATE users SET role=$1,custom_role=$2 WHERE id=$3", [role, custom_role||role, user_id]);
       return res.json({ success: true });
     }
 
     case 'linkUserToEmployee': {
       const { user_id, employee_id } = p;
-      const row = db.prepare("SELECT data FROM entities WHERE type='Employee' AND id=?").get(employee_id);
+      const row = await one("SELECT data FROM entities WHERE type='Employee' AND id=$1", [employee_id]);
       if (row) {
         const d = { ...JSON.parse(row.data), user_id };
-        db.prepare("UPDATE entities SET data=?,user_id=? WHERE id=?").run(JSON.stringify(d), user_id, employee_id);
+        await run("UPDATE entities SET data=$1,user_id=$2 WHERE id=$3", [JSON.stringify(d), user_id, employee_id]);
       }
       return res.json({ success: true });
     }
@@ -93,7 +91,7 @@ router.post('/:name', async (req, res) => {
       const diff  = Math.ceil((end - start) / 86400000) + 1;
       const adjusted_days = half_day ? 0.5 : diff;
       const uid = user_id || cu?.id;
-      const balRows = db.prepare("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=?").all(uid);
+      const balRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [uid]);
       const bal = balRows.map(r=>JSON.parse(r.data)).find(b=>b.leave_policy_id===leave_policy_id);
       const available_balance = bal?.available ?? 999;
       const errors = [];
@@ -103,22 +101,22 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'accrueLeaveBalances': {
-      const policies  = parseEntities(db.prepare("SELECT data FROM entities WHERE type='LeavePolicy' AND is_active=1").all());
-      const employees = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all());
+      const policies  = parseEntities(await all("SELECT data FROM entities WHERE type='LeavePolicy' AND is_active=1"));
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
       const year = new Date().getFullYear();
       let accrued = 0;
       for (const emp of employees) {
         for (const pol of policies) {
           const monthly = (pol.total_days||0) / 12;
-          const existing = parseEntities(db.prepare("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=?").all(emp.user_id))
+          const existing = parseEntities(await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [emp.user_id]))
             .find(b=>b.leave_policy_id===pol.id && b.year===year);
           if (existing) {
             const updated = { ...existing, accrued_this_year:(existing.accrued_this_year||0)+monthly, available:(existing.available||0)+monthly };
-            db.prepare("UPDATE entities SET data=? WHERE id=?").run(JSON.stringify(updated), existing.id);
+            await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(updated), existing.id]);
           } else {
             const id = uuidv4();
             const d  = { id, user_id:emp.user_id, leave_policy_id:pol.id, year, total_allocated:pol.total_days, accrued_this_year:monthly, used:0, pending_approval:0, available:monthly, carried_forward:0 };
-            db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'LeaveBalance',?,'active',?)").run(id,emp.user_id,JSON.stringify(d));
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [id,emp.user_id,JSON.stringify(d)]);
           }
           accrued++;
         }
@@ -130,7 +128,7 @@ router.post('/:name', async (req, res) => {
     case 'processPayroll':
     case 'processAdvancedPayroll': {
       const { month, year } = p;
-      const employees = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all());
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
 
       // Date range for the month
       const startDate = `${year}-${String(month).padStart(2,'0')}-01`;
@@ -140,19 +138,19 @@ router.post('/:name', async (req, res) => {
 
       let processed = 0;
       for (const emp of employees) {
-        const ex = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND user_id=?").all(emp.user_id))
+        const ex = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND user_id=$1", [emp.user_id]))
           .find(r=>r.month===month && r.year===year);
         if (ex) continue;
 
         // Salary structure
-        const ss    = parseEntities(db.prepare("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=? AND status='active'").all(emp.user_id)).at(-1);
+        const ss    = parseEntities(await all("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [emp.user_id])).at(-1);
         const basic = ss?.basic_salary||0; const hra=ss?.hra||0; const conv=ss?.conveyance||0; const spec=ss?.special_allowance||0;
         const gross = basic+hra+conv+spec;
 
         // Attendance-based LOP calculation
-        const attRows = db.prepare(
-          "SELECT data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date') BETWEEN ? AND ?"
-        ).all(emp.user_id, startDate, endDate);
+        const attRows = await all(
+          "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date' BETWEEN $2 AND $3"
+        , [emp.user_id, startDate, endDate]);
         const attRecords = attRows.map(r => JSON.parse(r.data));
 
         const presentDays = attRecords.filter(a => ['present', 'late', 'on_duty', 'work_from_home'].includes(a.status)).length;
@@ -182,7 +180,7 @@ router.post('/:name', async (req, res) => {
           status: 'processed', processed_by: cu?.id,
           processed_at: new Date().toISOString(),
         };
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Payroll',?,'processed',?)").run(id, emp.user_id, JSON.stringify(payrollData));
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Payroll',$2,'processed',$3)", [id, emp.user_id, JSON.stringify(payrollData)]);
         processed++;
       }
       return res.json({ success:true, processed, message:`Processed payroll for ${processed} employees` });
@@ -193,17 +191,17 @@ router.post('/:name', async (req, res) => {
       const targetDate = date || new Date().toISOString().slice(0, 10);
 
       // Get all active employees
-      const empRows = db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all();
+      const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
       const employees = empRows.map(r => JSON.parse(r.data));
 
       // Get employees who have an attendance record for this date
-      const attRows = db.prepare(
-        "SELECT user_id FROM entities WHERE type='Attendance' AND json_extract(data,'$.date')=?"
-      ).all(targetDate);
+      const attRows = await all(
+        "SELECT user_id FROM entities WHERE type='Attendance' AND data->>'date'=$1"
+      , [targetDate]);
       const presentUserIds = new Set(attRows.map(r => r.user_id));
 
       // Check for approved leaves on this date
-      const leaveRows = db.prepare("SELECT data FROM entities WHERE type='Leave' AND status='approved'").all();
+      const leaveRows = await all("SELECT data FROM entities WHERE type='Leave' AND status='approved'");
       const onLeaveUserIds = new Set();
       leaveRows.forEach(row => {
         const leave = JSON.parse(row.data);
@@ -218,10 +216,8 @@ router.post('/:name', async (req, res) => {
         if (onLeaveUserIds.has(emp.user_id)) { skipped++; continue; }
 
         const attId = uuidv4();
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'absent',?)").run(
-          attId, emp.user_id,
-          JSON.stringify({ id: attId, user_id: emp.user_id, date: targetDate, status: 'absent', source: 'auto_marked', created_at: new Date().toISOString() })
-        );
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'absent',$3)", [attId, emp.user_id,
+          JSON.stringify({ id: attId, user_id: emp.user_id, date: targetDate, status: 'absent', source: 'auto_marked', created_at: new Date().toISOString() })]);
         marked++;
       }
       return res.json({ success:true, marked, skipped, date: targetDate, message:`Marked ${marked} employees absent for ${targetDate}` });
@@ -229,10 +225,10 @@ router.post('/:name', async (req, res) => {
 
     case 'generatePayslip': {
       const { payroll_id } = p;
-      const pRow = db.prepare("SELECT data FROM entities WHERE type='Payroll' AND id=?").get(payroll_id);
+      const pRow = await one("SELECT data FROM entities WHERE type='Payroll' AND id=$1", [payroll_id]);
       if (!pRow) return res.json({ success:false, error:'Payroll record not found' });
       const payroll = JSON.parse(pRow.data);
-      const eRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(payroll.user_id);
+      const eRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [payroll.user_id]);
       const emp  = eRow ? JSON.parse(eRow.data) : {};
       const html = buildPayslipHtml(payroll, emp);
       return res.json({ success:true, html, data:payroll });
@@ -240,13 +236,13 @@ router.post('/:name', async (req, res) => {
 
     case 'generateBankTransferFile': {
       const { month, year, format = 'csv' } = p;
-      const payrolls = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND status='processed'").all())
+      const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND status='processed'"))
         .filter(r => r.month === month && r.year === year);
       if (payrolls.length === 0) return res.json({ success:false, error:'No processed payroll records for this period' });
 
       const lines = ['Beneficiary Name,Account Number,IFSC Code,Bank Name,Branch,Amount,Remarks'];
       for (const pr of payrolls) {
-        const empRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(pr.user_id);
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pr.user_id]);
         const emp    = empRow ? JSON.parse(empRow.data) : {};
         const bank   = emp.bank_account_number || '';
         const ifsc   = emp.ifsc_code || '';
@@ -276,8 +272,8 @@ router.post('/:name', async (req, res) => {
       const monthEnd   = new Date(y, m, 0).toISOString().slice(0,10);
       const daysInMonth = new Date(y, m, 0).getDate();
 
-      const employees = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all());
-      const attRows   = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Attendance' AND json_extract(data,'$.date') >= ? AND json_extract(data,'$.date') <= ?").all(monthStart, monthEnd));
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const attRows   = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data->>'date' >= $1 AND data->>'date' <= $2", [monthStart, monthEnd]));
 
       // Build attendance map: user_id → date → record
       const attMap = {};
@@ -291,13 +287,13 @@ router.post('/:name', async (req, res) => {
       const getShift = (shiftId) => {
         if (!shiftId) return null;
         if (shiftCache[shiftId]) return shiftCache[shiftId];
-        const sr = db.prepare("SELECT data FROM entities WHERE id=?").get(shiftId);
+        const sr = await one("SELECT data FROM entities WHERE id=$1", [shiftId]);
         const s  = sr ? JSON.parse(sr.data) : null;
         shiftCache[shiftId] = s;
         return s;
       };
 
-      const defaultShift = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Shift' AND (json_extract(data,'$.is_default')=1 OR json_extract(data,'$.name') LIKE '%General%') LIMIT 1").all())[0] || null;
+      const defaultShift = parseEntities(await all("SELECT data FROM entities WHERE type='Shift' AND (data->>'is_default'=1 OR data->>'name' LIKE '%General%') LIMIT 1"))[0] || null;
 
       const toMinutes = (t) => {
         if (!t) return 0;
@@ -421,11 +417,11 @@ router.post('/:name', async (req, res) => {
       const workingDays = 26;
       const monthLabel = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
-      const employees = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all());
-      const payrolls  = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND json_extract(data,'$.month')=? AND json_extract(data,'$.year')=?").all(m, y));
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const payrolls  = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data->>'month'=$1 AND data->>'year'=$2", [m, y]));
       const payrollMap = Object.fromEntries(payrolls.map(pr => [pr.user_id, pr]));
 
-      const attRows = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Attendance' AND json_extract(data,'$.date') >= ? AND json_extract(data,'$.date') <= ?").all(monthStart, monthEnd));
+      const attRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data->>'date' >= $1 AND data->>'date' <= $2", [monthStart, monthEnd]));
       const attMap = {};
       for (const a of attRows) {
         if (!attMap[a.user_id]) attMap[a.user_id] = [];
@@ -458,7 +454,7 @@ router.post('/:name', async (req, res) => {
         const effectiveDays = daysPresent + (daysHalfDay * 0.5);
 
         // Get salary structure
-        const ssRow = db.prepare("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=? AND status='active' LIMIT 1").get(emp.user_id);
+        const ssRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active' LIMIT 1", [emp.user_id]);
         const ss    = ssRow ? JSON.parse(ssRow.data) : {};
         const gross = (ss.basic_salary||0) + (ss.hra||0) + (ss.conveyance||0) + (ss.special_allowance||0);
         const earnedGross = gross > 0 ? Math.round((gross / workingDays) * effectiveDays) : 0;
@@ -517,7 +513,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── API Key Management (for external attendance push) ─ */
     case 'getAttendanceApiInfo': {
-      const key = db.prepare("SELECT value FROM settings WHERE key='attendance_api_key'").get()?.value || null;
+      const key = await one("SELECT value FROM settings WHERE key='attendance_api_key'")?.value || null;
       const baseUrl = process.env.APP_URL || (process.env.NODE_ENV === 'production' ? 'https://your-app.up.railway.app' : `http://localhost:${process.env.PORT || 3001}`);
       return res.json({
         success: true,
@@ -536,7 +532,7 @@ router.post('/:name', async (req, res) => {
       // Only admins may regenerate
       const { randomBytes } = await import('crypto');
       const newKey = randomBytes(32).toString('hex');
-      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('attendance_api_key',?)").run(newKey);
+      await run("INSERT OR REPLACE INTO settings(key,value) VALUES('attendance_api_key',$1)", [newKey]);
       // Also update env-like value so attendancelog.js picks it up via this DB key
       process.env.ATTENDANCE_API_KEY = newKey;
       return res.json({ success: true, api_key: newKey });
@@ -544,14 +540,14 @@ router.post('/:name', async (req, res) => {
 
     case 'autoSendPayslips': {
       const { month, year } = p;
-      const payrolls = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND status='processed'").all())
+      const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND status='processed'"))
         .filter(r=>r.month===month && r.year===year);
       const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
       let sent = 0; const errors = [];
       for (const payroll of payrolls) {
-        const uRow = db.prepare("SELECT email,full_name FROM users WHERE id=?").get(payroll.user_id);
+        const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [payroll.user_id]);
         if (!uRow?.email) continue;
-        const eRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(payroll.user_id);
+        const eRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [payroll.user_id]);
         const emp  = eRow ? JSON.parse(eRow.data) : {};
         const html = buildPayslipHtml(payroll, emp);
         const tpl  = emailTemplates.payslip({ employeeName:uRow.full_name, month:months[month-1], year, netPay:payroll.net_salary, payslipHtml:html });
@@ -568,15 +564,14 @@ router.post('/:name', async (req, res) => {
       if (!exit_id && !employee_id) return res.json({ success:false, error:'exit_id or employee_id required' });
 
       const exitRow = exit_id
-        ? db.prepare("SELECT data FROM entities WHERE type='Exit' AND id=?").get(exit_id)
-        : db.prepare("SELECT data FROM entities WHERE type='Exit' AND user_id=?").get(employee_id);
+        ? await one("SELECT data FROM entities WHERE type='Exit' AND id=$1", [exit_id]): await one("SELECT data FROM entities WHERE type='Exit' AND user_id=$1", [employee_id]);
       if (!exitRow) return res.json({ success:false, error:'Exit record not found' });
       const exitData = JSON.parse(exitRow.data);
 
-      const empRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(exitData.user_id || employee_id);
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [exitData.user_id || employee_id]);
       const emp    = empRow ? JSON.parse(empRow.data) : {};
 
-      const ssRow = db.prepare("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=? AND status='active'").get(emp.user_id || employee_id);
+      const ssRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [emp.user_id || employee_id]);
       const ss    = ssRow ? JSON.parse(ssRow.data) : {};
 
       const gross        = (ss.basic_salary||0) + (ss.hra||0) + (ss.conveyance||0) + (ss.special_allowance||0);
@@ -589,7 +584,7 @@ router.post('/:name', async (req, res) => {
       const noticePeriodDeduction = Math.round(shortfallDays * dailySalary);
 
       // Leave encashment for pending earned leave
-      const leaveBalRows = db.prepare("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=?").all(emp.user_id || employee_id);
+      const leaveBalRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [emp.user_id || employee_id]);
       const earnedLeaveBalance = leaveBalRows.map(r => JSON.parse(r.data)).find(lb => lb.balance_type === 'earned' || lb.leave_type === 'earned_leave')?.balance || 0;
       const leaveEncashment = Math.round(earnedLeaveBalance * dailySalary);
 
@@ -618,7 +613,7 @@ router.post('/:name', async (req, res) => {
 
       // Save to exit record
       const updatedExit = { ...exitData, fnf_settlement: fnf, fnf_computed_at: new Date().toISOString() };
-      db.prepare("UPDATE entities SET data=? WHERE id=?").run(JSON.stringify(updatedExit), exitRow.id);
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(updatedExit), exitRow.id]);
 
       return res.json({ success:true, ...fnf });
     }
@@ -627,8 +622,7 @@ router.post('/:name', async (req, res) => {
     case 'getAllAttendance': {
       const { date, user_id: uid, date_from, date_to } = p;
       let rows = uid
-        ? db.prepare("SELECT data FROM entities WHERE type='Attendance' AND user_id=?").all(uid)
-        : db.prepare("SELECT data FROM entities WHERE type='Attendance'").all();
+        ? await all("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1", [uid]): await all("SELECT data FROM entities WHERE type='Attendance'");
       let records = rows.map(r=>JSON.parse(r.data));
       if (date) records = records.filter(a=>a.date===date);
       if (date_from) records = records.filter(a=>a.date>=date_from);
@@ -638,16 +632,16 @@ router.post('/:name', async (req, res) => {
 
     case 'markExemptEmployeesPresent': {
       const { date } = p;
-      const exempts = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all())
+      const exempts = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
         .filter(e=>e.is_attendance_exempt);
       let marked = 0;
       for (const emp of exempts) {
-        const ex = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Attendance' AND user_id=?").all(emp.user_id))
+        const ex = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1", [emp.user_id]))
           .find(a=>a.date===date);
         if (!ex) {
           const id = uuidv4();
           const d  = { id, user_id:emp.user_id, date, status:'present', auto_marked:true, working_hours:9 };
-          db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'present',?)").run(id,emp.user_id,JSON.stringify(d));
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [id,emp.user_id,JSON.stringify(d)]);
           marked++;
         }
       }
@@ -660,7 +654,7 @@ router.post('/:name', async (req, res) => {
       // Also accepts { records: [...] } batch from any caller
 
       // ── API key check (same key stored in settings) ────────────────────────
-      const storedKey = db.prepare("SELECT value FROM settings WHERE key='attendance_api_key'").get()?.value || process.env.ATTENDANCE_API_KEY || null;
+      const storedKey = await one("SELECT value FROM settings WHERE key='attendance_api_key'")?.value || process.env.ATTENDANCE_API_KEY || null;
       if (storedKey) {
         const authHeader = req.headers['authorization'] || req.headers['x-api-key'] || '';
         const qKey = req.query?.key || '';
@@ -681,9 +675,9 @@ router.post('/:name', async (req, res) => {
       }
 
       // Load employee code → user_id mapping
-      const empRows = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const empRows = await all("SELECT data FROM entities WHERE type='Employee'");
       const emps = empRows.map(r => JSON.parse(r.data));
-      const mappingRows = db.prepare("SELECT data FROM entities WHERE type='BiometricCodeMapping'").all();
+      const mappingRows = await all("SELECT data FROM entities WHERE type='BiometricCodeMapping'");
       const codeMap = {};
       mappingRows.forEach(r => { const m = JSON.parse(r.data); if (m.biometric_code && m.user_id) codeMap[String(m.biometric_code).toLowerCase()] = m.user_id; });
       emps.forEach(e => { if (e.employee_code) codeMap[String(e.employee_code).toLowerCase()] = e.user_id; });
@@ -719,12 +713,12 @@ router.post('/:name', async (req, res) => {
 
         // Always store the raw log so it's visible on the Biometric Logs page,
         // even when the employee code isn't mapped yet
-        const existingLog = db.prepare("SELECT id FROM entities WHERE type='AttendanceLog' AND json_extract(data,'$.EmployeeCode')=? AND json_extract(data,'$.LogDate')=?").get(empCodeRaw, logDateRaw);
+        const existingLog = await one("SELECT id FROM entities WHERE type='AttendanceLog' AND data->>'EmployeeCode'=$1 AND data->>'LogDate'=$2", [empCodeRaw, logDateRaw]);
         if (!existingLog) {
           const logId = uuidv4();
           const logData = { ...rec, id: logId, EmployeeCode: empCodeRaw, LogDate: logDateRaw, Direction: direction, user_id: userId, punch_type: punchType, punch_iso: punchIso, imported_at: new Date().toISOString() };
           try {
-            db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'AttendanceLog',?,'active',?)").run(logId, userId, JSON.stringify(logData));
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AttendanceLog',$2,'active',$3)", [logId, userId, JSON.stringify(logData)]);
             stored++;
           } catch {}
         }
@@ -746,7 +740,7 @@ router.post('/:name', async (req, res) => {
         const firstIn  = punches.find(p2 => p2.type === 'in')?.iso  || punches[0].iso;
         const lastOut  = [...punches].reverse().find(p2 => p2.type === 'out')?.iso || null;
 
-        const existing = db.prepare("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date')=?").get(userId, date);
+        const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2", [userId, date]);
         if (existing) {
           const d = JSON.parse(existing.data);
           if (d.status === 'regularised') continue; // never overwrite a regularised record
@@ -756,11 +750,11 @@ router.post('/:name', async (req, res) => {
             check_out_time: !d.check_out_time || (lastOut && lastOut > d.check_out_time) ? lastOut : d.check_out_time,
             biometric_synced: true, status: d.status || 'present',
           };
-          db.prepare("UPDATE entities SET data=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(updated), existing.id);
+          await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(updated), existing.id]);
         } else {
           const attId = uuidv4();
           const attData = { id: attId, user_id: userId, date, check_in_time: firstIn, check_out_time: lastOut, status: 'present', source: 'biometric', biometric_synced: true };
-          db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'present',?)").run(attId, userId, JSON.stringify(attData));
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [attId, userId, JSON.stringify(attData)]);
         }
       }
 
@@ -776,10 +770,10 @@ router.post('/:name', async (req, res) => {
       }
 
       // Load employee code → user_id mapping (from Employee entities + BiometricCodeMapping)
-      const empRows = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const empRows = await all("SELECT data FROM entities WHERE type='Employee'");
       const employees = empRows.map(r => JSON.parse(r.data));
       // Also check BiometricCodeMapping entity
-      const mappingRows = db.prepare("SELECT data FROM entities WHERE type='BiometricCodeMapping'").all();
+      const mappingRows = await all("SELECT data FROM entities WHERE type='BiometricCodeMapping'");
       const codeMap = {};
       mappingRows.forEach(r => {
         const m = JSON.parse(r.data);
@@ -819,16 +813,15 @@ router.post('/:name', async (req, res) => {
         const timeStr = `${String(istDate.getUTCHours()).padStart(2,'0')}:${String(istDate.getUTCMinutes()).padStart(2,'0')}`;
 
         // Persist log in AttendanceLog entity (avoid duplicates)
-        const existingLog = db.prepare(
-          "SELECT id FROM entities WHERE type='AttendanceLog' AND json_extract(data,'$.EmployeeCode')=? AND json_extract(data,'$.LogDate')=?"
-        ).get(record.EmployeeCode || empCode, logDateRaw);
+        const existingLog = await one(
+          "SELECT id FROM entities WHERE type='AttendanceLog' AND data->>'EmployeeCode'=$1 AND data->>'LogDate'=$2"
+        , [record.EmployeeCode || empCode, logDateRaw]);
 
         if (!existingLog) {
           const logId = uuidv4();
           const logData = { ...record, id: logId, EmployeeCode: record.EmployeeCode || empCode, LogDate: logDateRaw, user_id: userId, imported_at: new Date().toISOString() };
           try {
-            db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'AttendanceLog',?,'active',?)")
-              .run(logId, userId, JSON.stringify(logData));
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AttendanceLog',$2,'active',$3)", [logId, userId, JSON.stringify(logData)]);
             storedCount++;
           } catch {}
         }
@@ -840,9 +833,9 @@ router.post('/:name', async (req, res) => {
 
       // Also process date range from existing AttendanceLogs in DB if date_from provided
       if (date_from && raw_records.length === 0) {
-        const logRows = db.prepare(
+        const logRows = await all(
           "SELECT data FROM entities WHERE type='AttendanceLog'"
-        ).all();
+        );
         logRows.forEach(row => {
           const log = JSON.parse(row.data);
           if (!log.user_id || !log.LogDate) return;
@@ -871,11 +864,10 @@ router.post('/:name', async (req, res) => {
         const checkOut = times.length > 1 ? times[times.length - 1] : null;
 
         // Get employee's shift
-        const empRow   = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(userId);
+        const empRow   = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
         const emp      = empRow ? JSON.parse(empRow.data) : {};
         const shiftRow = emp.shift_id
-          ? db.prepare("SELECT data FROM entities WHERE type='Shift' AND id=?").get(emp.shift_id)
-          : db.prepare("SELECT data FROM entities WHERE type='Shift' AND json_extract(data,'$.is_default')=1").get();
+          ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]): await one("SELECT data FROM entities WHERE type='Shift' AND data->>'is_default'=1");
         const shift = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
 
         // Compute status
@@ -909,22 +901,20 @@ router.post('/:name', async (req, res) => {
         };
 
         // Upsert attendance record
-        const existAtt = db.prepare(
-          "SELECT id FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date')=?"
-        ).get(userId, date);
+        const existAtt = await one(
+          "SELECT id FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2"
+        , [userId, date]);
 
         if (existAtt) {
-          const existing = JSON.parse(db.prepare("SELECT data FROM entities WHERE id=?").get(existAtt.id).data);
+          const existing = JSON.parse(await one("SELECT data FROM entities WHERE id=$1", [existAtt.id]).data);
           // Don't overwrite regularised records
           if (!existing.regularised) {
-            db.prepare("UPDATE entities SET status=?, data=? WHERE id=?")
-              .run(status, JSON.stringify({ ...existing, ...attData, id: existAtt.id }), existAtt.id);
+            await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [status, JSON.stringify({ ...existing, ...attData, id: existAtt.id }), existAtt.id]);
             records_synced++;
           }
         } else {
           const attId = uuidv4();
-          db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'active',?)")
-            .run(attId, userId, JSON.stringify({ ...attData, id: attId, created_at: new Date().toISOString() }));
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'active',$3)", [attId, userId, JSON.stringify({ ...attData, id: attId, created_at: new Date().toISOString() })]);
           records_synced++;
         }
       }
@@ -936,7 +926,7 @@ router.post('/:name', async (req, res) => {
       const { regularisation_id, action, comment = '', role = 'manager' } = p;
       if (!regularisation_id || !action) return res.status(400).json({ error: 'regularisation_id and action required' });
 
-      const row = db.prepare("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND id=?").get(regularisation_id);
+      const row = await one("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND id=$1", [regularisation_id]);
       if (!row) return res.status(404).json({ error: 'Regularisation request not found' });
       const reg = JSON.parse(row.data);
 
@@ -964,9 +954,9 @@ router.post('/:name', async (req, res) => {
 
           // Update the actual Attendance record for that date
           try {
-            const attRow = db.prepare(
-              "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date')=?"
-            ).get(reg.user_id, reg.date);
+            const attRow = await one(
+              "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2"
+            , [reg.user_id, reg.date]);
 
             if (attRow) {
               const att = JSON.parse(attRow.data);
@@ -978,8 +968,7 @@ router.post('/:name', async (req, res) => {
                 check_in_time:  reg.requested_check_in  || att.check_in_time,
                 check_out_time: reg.requested_check_out || att.check_out_time,
               };
-              db.prepare("UPDATE entities SET status=?, data=? WHERE id=?")
-                .run(updAtt.status, JSON.stringify(updAtt), attRow.id);
+              await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [updAtt.status, JSON.stringify(updAtt), attRow.id]);
             } else {
               // Create attendance record if it doesn't exist
               const newAttId = uuidv4();
@@ -994,8 +983,7 @@ router.post('/:name', async (req, res) => {
                 check_out_time: reg.requested_check_out || null,
                 created_at: new Date().toISOString(),
               };
-              db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Attendance',?,'present',?)")
-                .run(newAttId, reg.user_id, JSON.stringify(newAtt));
+              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [newAttId, reg.user_id, JSON.stringify(newAtt)]);
             }
           } catch (e) { console.warn('Attendance update on regularisation approval failed:', e.message); }
 
@@ -1007,8 +995,7 @@ router.post('/:name', async (req, res) => {
       }
 
       const updReg = { ...reg, ...update, status: newStatus };
-      db.prepare("UPDATE entities SET status=?, data=? WHERE id=?")
-        .run(newStatus, JSON.stringify(updReg), regularisation_id);
+      await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [newStatus, JSON.stringify(updReg), regularisation_id]);
 
       // In-app notification to employee
       try {
@@ -1019,8 +1006,7 @@ router.post('/:name', async (req, res) => {
           message: `Your regularisation request for ${reg.date} has been ${newStatus.replace('_', ' ')}.${comment ? ' Comment: ' + comment : ''}`,
           read: false, created_at: new Date().toISOString(),
         };
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Notification',?,'unread',?)")
-          .run(notifId, reg.user_id, JSON.stringify(notifData));
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Notification',$2,'unread',$3)", [notifId, reg.user_id, JSON.stringify(notifData)]);
       } catch {}
 
       return res.json({ success: true, status: newStatus });
@@ -1033,12 +1019,12 @@ router.post('/:name', async (req, res) => {
       const startDate = `${year || new Date().getFullYear()}-${String(month || new Date().getMonth()+1).padStart(2,'0')}-01`;
       const endDate   = new Date(year || new Date().getFullYear(), month || new Date().getMonth()+1, 0).toISOString().slice(0,10);
 
-      const empRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND id=?").get(employee_id);
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND id=$1", [employee_id]);
       const emp    = empRow ? JSON.parse(empRow.data) : {};
 
-      const attRows = db.prepare(
-        "SELECT data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date') BETWEEN ? AND ?"
-      ).all(emp.user_id || employee_id, startDate, endDate);
+      const attRows = await all(
+        "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date' BETWEEN $2 AND $3"
+      , [emp.user_id || employee_id, startDate, endDate]);
       const records = attRows.map(r => JSON.parse(r.data));
 
       const lop_days = records.filter(r => r.status === 'absent' || r.status === 'lop').length;
@@ -1057,15 +1043,15 @@ router.post('/:name', async (req, res) => {
       // Get attendance record
       let attData;
       if (attendance_id) {
-        const row = db.prepare("SELECT data FROM entities WHERE type='Attendance' AND id=?").get(attendance_id);
+        const row = await one("SELECT data FROM entities WHERE type='Attendance' AND id=$1", [attendance_id]);
         if (!row) return res.json({ success:false, error:'Attendance record not found' });
         attData = JSON.parse(row.data);
       } else if (employee_id && date) {
-        const empRow = db.prepare("SELECT data FROM entities WHERE type='Employee' AND id=?").get(employee_id);
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND id=$1", [employee_id]);
         const emp    = empRow ? JSON.parse(empRow.data) : {};
-        const row    = db.prepare(
-          "SELECT data FROM entities WHERE type='Attendance' AND user_id=? AND json_extract(data,'$.date')=?"
-        ).get(emp.user_id || employee_id, date);
+        const row    = await one(
+          "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date'=$2"
+        , [emp.user_id || employee_id, date]);
         if (!row) return res.json({ success:false, error:'No attendance record for that employee/date' });
         attData = JSON.parse(row.data);
       } else {
@@ -1073,11 +1059,10 @@ router.post('/:name', async (req, res) => {
       }
 
       // Get shift
-      const empRow   = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(attData.user_id);
+      const empRow   = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [attData.user_id]);
       const emp      = empRow ? JSON.parse(empRow.data) : {};
       const shiftRow = emp.shift_id
-        ? db.prepare("SELECT data FROM entities WHERE type='Shift' AND id=?").get(emp.shift_id)
-        : db.prepare("SELECT data FROM entities WHERE type='Shift' AND json_extract(data,'$.is_default')=1").get();
+        ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]): await one("SELECT data FROM entities WHERE type='Shift' AND data->>'is_default'=1");
       const shift    = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
 
       const toMins = (timeStr) => {
@@ -1132,8 +1117,7 @@ router.post('/:name', async (req, res) => {
       // Persist the computed values
       const idToUpdate = attData.id || attendance_id;
       if (idToUpdate) {
-        db.prepare("UPDATE entities SET status=?, data=? WHERE type='Attendance' AND id=?")
-          .run(status, JSON.stringify(updated), idToUpdate);
+        await run("UPDATE entities SET status=$1, data=$2 WHERE type='Attendance' AND id=$3", [status, JSON.stringify(updated), idToUpdate]);
       }
 
       return res.json({ success:true, status, working_hours: updated.working_hours, late_minutes, overtime_minutes, shift_name: shift.name });
@@ -1141,7 +1125,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Performance ─────────────────────────────────── */
     case 'pmsGetDashboard': {
-      const reviews   = parseEntities(db.prepare("SELECT data FROM entities WHERE type='PerformanceReview'").all());
+      const reviews   = parseEntities(await all("SELECT data FROM entities WHERE type='PerformanceReview'"));
       const completed = reviews.filter(r=>r.status==='completed').length;
       const pending   = reviews.filter(r=>r.status==='pending').length;
       const avg       = reviews.length ? (reviews.reduce((s,r)=>s+(r.final_score||0),0)/reviews.length).toFixed(1) : 0;
@@ -1151,7 +1135,7 @@ router.post('/:name', async (req, res) => {
     case 'pmsCalculateScore': {
       const { review_id } = p;
       if (!review_id) return res.json({ score:0, rating:'Pending' });
-      const rRow = db.prepare("SELECT data FROM entities WHERE type='PerformanceReview' AND id=?").get(review_id);
+      const rRow = await one("SELECT data FROM entities WHERE type='PerformanceReview' AND id=$1", [review_id]);
       if (!rRow) return res.json({ score:0, rating:'Not Found' });
       const review = JSON.parse(rRow.data);
 
@@ -1176,14 +1160,14 @@ router.post('/:name', async (req, res) => {
 
       // Persist the score
       const updated = { ...review, final_score: score, rating, score_computed_at: new Date().toISOString() };
-      db.prepare("UPDATE entities SET data=? WHERE id=?").run(JSON.stringify(updated), review_id);
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(updated), review_id]);
 
       return res.json({ score, rating });
     }
 
     case 'pmsRecommendTraining': {
       const { review_id, employee_id } = p;
-      const rRow = review_id ? db.prepare("SELECT data FROM entities WHERE type='PerformanceReview' AND id=?").get(review_id) : null;
+      const rRow = review_id ? await one("SELECT data FROM entities WHERE type='PerformanceReview' AND id=$1", [review_id]): null;
       const review = rRow ? JSON.parse(rRow.data) : {};
       const gap = review.rating === 'Below Expectations' || review.rating === 'Needs Improvement';
 
@@ -1204,7 +1188,7 @@ router.post('/:name', async (req, res) => {
     case 'computeCompliance': {
       // Auto-generate compliance records based on payroll data (PF, ESI, PT)
       const { month, year } = p;
-      const payrolls = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND json_extract(data,'$.month')=? AND json_extract(data,'$.year')=?").all(month, year));
+      const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data->>'month'=$1 AND data->>'year'=$2", [month, year]));
       const pfTotal  = payrolls.reduce((s,r)=>s+(r.pf_employee||0)+(r.pf_employer||0),0);
       const esiTotal = payrolls.reduce((s,r)=>s+(r.esi_employee||0)+(r.esi_employer||0),0);
       const ptTotal  = payrolls.reduce((s,r)=>s+(r.professional_tax||0),0);
@@ -1215,10 +1199,10 @@ router.post('/:name', async (req, res) => {
         { name:`ESI – ${month}/${year}`, amount:esiTotal, type:'esi' },
         { name:`Professional Tax – ${month}/${year}`, amount:ptTotal, type:'pt' },
       ]) {
-        const existing = db.prepare("SELECT id FROM entities WHERE type='ComplianceRecord' AND json_extract(data,'$.compliance_type')=? AND json_extract(data,'$.month')=? AND json_extract(data,'$.year')=?").get(type, month, year);
+        const existing = await one("SELECT id FROM entities WHERE type='ComplianceRecord' AND data->>'compliance_type'=$1 AND data->>'month'=$2 AND data->>'year'=$3", [type, month, year]);
         if (!existing) {
           const id = uuidv4();
-          db.prepare("INSERT INTO entities(id,type,status,data) VALUES(?,'ComplianceRecord','pending',?)").run(id, JSON.stringify({ id, compliance_type:type, name, amount, month, year, due_date:dueDate, status:'pending' }));
+          await run("INSERT INTO entities(id,type,status,data) VALUES($1,'ComplianceRecord','pending',$2)", [id, JSON.stringify({ id, compliance_type:type, name, amount, month, year, due_date:dueDate, status:'pending' })]);
         }
       }
       return res.json({ success:true });
@@ -1226,16 +1210,16 @@ router.post('/:name', async (req, res) => {
 
     case 'updateComplianceStatus': {
       const { record_id, status, paid_date, reference } = p;
-      const row = db.prepare("SELECT id,data FROM entities WHERE id=?").get(record_id);
+      const row = await one("SELECT id,data FROM entities WHERE id=$1", [record_id]);
       if (!row) return res.json({ success:false, error:'Record not found' });
       const updated = { ...JSON.parse(row.data), status, paid_date, reference };
-      db.prepare("UPDATE entities SET data=?,status=? WHERE id=?").run(JSON.stringify(updated), status, record_id);
+      await run("UPDATE entities SET data=$1,status=$2 WHERE id=$3", [JSON.stringify(updated), status, record_id]);
       return res.json({ success:true });
     }
 
     case 'getComplianceSummary': {
       const { month, year } = p;
-      const allRecs = parseEntities(db.prepare("SELECT data FROM entities WHERE type='ComplianceRecord'").all());
+      const allRecs = parseEntities(await all("SELECT data FROM entities WHERE type='ComplianceRecord'"));
       const recs = month && year ? allRecs.filter(r => String(r.month)===String(month) && String(r.year)===String(year)) : allRecs;
 
       const today = new Date().toISOString().slice(0,10);
@@ -1258,9 +1242,9 @@ router.post('/:name', async (req, res) => {
 
     case 'getComplianceInsights': {
       const today = new Date();
-      const compRows = db.prepare("SELECT data FROM entities WHERE type='Compliance'").all();
+      const compRows = await all("SELECT data FROM entities WHERE type='Compliance'");
       const records = compRows.map(r => JSON.parse(r.data));
-      const empRows2 = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const empRows2 = await all("SELECT data FROM entities WHERE type='Employee'");
       const activeEmps = empRows2.map(r => JSON.parse(r.data)).filter(e => e.employee_status === 'active' || !e.employee_status);
 
       const insights = [], recommendations = [];
@@ -1296,7 +1280,7 @@ router.post('/:name', async (req, res) => {
     /* ── AI: Recruitment ─────────────────────────────── */
     case 'parseResume': {
       const { candidate_id, resume_url } = p;
-      const cRow = db.prepare("SELECT data FROM entities WHERE type='Candidate' AND id=?").get(candidate_id);
+      const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       const cand = cRow ? JSON.parse(cRow.data) : {};
 
       const prompt = `You are an expert resume parser. Based on the following candidate profile information, generate a detailed parsed resume JSON. Be realistic and infer reasonable details.
@@ -1365,13 +1349,12 @@ Return ONLY a valid JSON object (no markdown, no explanation) with these exact f
         parsed_at: new Date().toISOString(),
         ...parsed,
       };
-      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'ParsedResume',?,'completed',?)")
-        .run(parsedId, candidate_id, JSON.stringify(parsedData));
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ParsedResume',$2,'completed',$3)", [parsedId, candidate_id, JSON.stringify(parsedData)]);
 
       // Link parsed resume to candidate
       if (cRow) {
         const updCand = { ...cand, parsed_resume_id: parsedId };
-        db.prepare("UPDATE entities SET data=? WHERE id=?").run(JSON.stringify(updCand), candidate_id);
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(updCand), candidate_id]);
       }
 
       const skills_extracted = (parsed.primary_skills?.length||0) + (parsed.secondary_skills?.length||0) + (parsed.tools_and_platforms?.length||0);
@@ -1412,8 +1395,8 @@ Return ONLY a valid JSON object (no markdown) with:
 
     case 'scoreCandidate': {
       const { candidate_id, job_requisition_id } = p;
-      const cRow  = db.prepare("SELECT data FROM entities WHERE type='Candidate' AND id=?").get(candidate_id);
-      const jdRow = db.prepare("SELECT data FROM entities WHERE type='JobRequisition' AND id=?").get(job_requisition_id);
+      const cRow  = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+      const jdRow = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [job_requisition_id]);
       const cand  = cRow  ? JSON.parse(cRow.data)  : {};
       const jd    = jdRow ? JSON.parse(jdRow.data) : {};
 
@@ -1469,7 +1452,7 @@ Return ONLY a valid JSON object (no markdown):
       const { candidate_id, joining_date, designation, department, ctc, probation_months = 6, reporting_to, location } = p;
       if (!candidate_id) return res.json({ success:false, error:'candidate_id required' });
 
-      const cRow = db.prepare("SELECT data FROM entities WHERE type='Candidate' AND id=?").get(candidate_id);
+      const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       if (!cRow) return res.json({ success:false, error:'Candidate not found' });
       const cand = JSON.parse(cRow.data);
 
@@ -1564,7 +1547,7 @@ Return ONLY a valid JSON object (no markdown):
       // Update candidate status to 'offered'
       try {
         const updated = { ...cand, status: 'offered', offer_letter_date: new Date().toISOString(), offer_ctc: annualCTC, joining_date };
-        db.prepare("UPDATE entities SET status='offered', data=? WHERE id=?").run(JSON.stringify(updated), candidate_id);
+        await run("UPDATE entities SET status='offered', data=$1 WHERE id=$2", [JSON.stringify(updated), candidate_id]);
       } catch {}
 
       return res.json({ success:true, html: letterHtml, ref: offerRef });
@@ -1622,9 +1605,9 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { groq_api_key } = p;
       if (groq_api_key !== undefined) {
         if (groq_api_key) {
-          db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('GROQ_API_KEY',?)").run(groq_api_key.trim());
+          await run("INSERT OR REPLACE INTO settings(key,value) VALUES('GROQ_API_KEY',$1)", [groq_api_key.trim()]);
         } else {
-          db.prepare("DELETE FROM settings WHERE key='GROQ_API_KEY'").run();
+          await run("DELETE FROM settings WHERE key='GROQ_API_KEY'");
         }
       }
       return res.json({ success: true });
@@ -1655,7 +1638,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
       // Look up candidate by ID if direct email not provided
       if (p.candidate_id && !candidateEmail) {
-        const cRow = db.prepare("SELECT data FROM entities WHERE type='Candidate' AND id=?").get(p.candidate_id);
+        const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [p.candidate_id]);
         if (cRow) {
           const cand = JSON.parse(cRow.data);
           candidateEmail  = cand.email;
@@ -1673,9 +1656,9 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
       // Look up interviewer name if ID provided
       if (p.interviewer_id && !interviewerName) {
-        const iUser = db.prepare("SELECT full_name FROM users WHERE id=?").get(p.interviewer_id);
+        const iUser = await one("SELECT full_name FROM users WHERE id=$1", [p.interviewer_id]);
         if (iUser) interviewerName = iUser.full_name;
-        const iEmp = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(p.interviewer_id);
+        const iEmp = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [p.interviewer_id]);
         if (iEmp) {
           const empData = JSON.parse(iEmp.data);
           interviewerName = `${iUser?.full_name || empData.display_name}${empData.designation ? `, ${empData.designation}` : ''}`;
@@ -1704,7 +1687,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { user_ids = [], training_title, start_date, end_date, trainer, location: loc } = p;
       let sent = 0;
       for (const uid of user_ids) {
-        const uRow = db.prepare("SELECT email,full_name FROM users WHERE id=?").get(uid);
+        const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [uid]);
         if (!uRow?.email) continue;
         const tpl = emailTemplates.trainingNotification({
           employeeName: uRow.full_name,
@@ -1730,13 +1713,13 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
         status: 'applied',
         applied_date: new Date().toISOString(),
       };
-      db.prepare("INSERT INTO entities(id,type,status,data) VALUES(?,'Candidate','applied',?)").run(id, JSON.stringify(d));
+      await run("INSERT INTO entities(id,type,status,data) VALUES($1,'Candidate','applied',$2)", [id, JSON.stringify(d)]);
       return res.json({ success: true, application_id: id, candidate_id: id });
     }
 
     case 'getPublishedJob': {
       const jobId = p.job_id || p.jobId;
-      const row = db.prepare("SELECT data FROM entities WHERE type='Recruitment' AND id=?").get(jobId);
+      const row = await one("SELECT data FROM entities WHERE type='Recruitment' AND id=$1", [jobId]);
       return res.json(row ? { job: JSON.parse(row.data) } : { job: null });
     }
 
@@ -1748,23 +1731,23 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const yr12Ago    = new Date(now.getFullYear() - 1, now.getMonth(), 1).toISOString().slice(0, 10);
 
       // ── Core headcount ──────────────────────────────────────────────────────
-      const totalActive  = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'").get().c;
-      const presentToday = db.prepare("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND json_extract(data,'$.date')=? AND json_extract(data,'$.check_in_time') IS NOT NULL").get(today).c;
+      const totalActive  = await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'").c;
+      const presentToday = await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data->>'date'=$1 AND data->>'check_in_time' IS NOT NULL", [today]).c;
       const absentToday  = Math.max(0, totalActive - presentToday);
-      const newJoineesThisMonth = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND json_extract(data,'$.date_of_joining') >= ?").get(monthStart).c;
-      const exitedLast12m = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND json_extract(data,'$.last_working_date') >= ?").get(yr12Ago).c;
+      const newJoineesThisMonth = await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data->>'date_of_joining' >= $1", [monthStart]).c;
+      const exitedLast12m = await one("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND data->>'last_working_date' >= $1", [yr12Ago]).c;
       const attritionRate = totalActive > 0 ? parseFloat(((exitedLast12m / totalActive) * 100).toFixed(1)) : 0;
 
       // ── Leave ───────────────────────────────────────────────────────────────
-      const pendingLeaveRequests = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'").get().c;
-      const activeLeaves         = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND json_extract(data,'$.start_date') <= ? AND json_extract(data,'$.end_date') >= ?").get(today, today).c;
+      const pendingLeaveRequests = await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'").c;
+      const activeLeaves         = await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND data->>'start_date' <= $1 AND data->>'end_date' >= $2", [today, today]).c;
 
       // ── Payroll ─────────────────────────────────────────────────────────────
-      const payrollRows      = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Payroll' AND json_extract(data,'$.year')=? AND json_extract(data,'$.month')=?").all(now.getFullYear(), now.getMonth()+1));
+      const payrollRows      = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data->>'year'=$1 AND data->>'month'=$2", [now.getFullYear(), now.getMonth()+1]));
       const totalPayrollCost = payrollRows.reduce((s, r) => s + (r.net_salary || 0), 0);
 
       // ── Recruitment ─────────────────────────────────────────────────────────
-      const allCandidates = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Candidate'").all());
+      const allCandidates = parseEntities(await all("SELECT data FROM entities WHERE type='Candidate'"));
       const recruitment = {
         totalCandidates: allCandidates.length,
         hired:      allCandidates.filter(c => ['hired','joined'].includes(c.status)).length,
@@ -1775,7 +1758,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       };
 
       // ── Reimbursements ──────────────────────────────────────────────────────
-      const allReimb = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Reimbursement'").all());
+      const allReimb = parseEntities(await all("SELECT data FROM entities WHERE type='Reimbursement'"));
       const reimbursements = {
         total:   allReimb.reduce((s, r) => s + (r.amount || 0), 0),
         pending: allReimb.filter(r => r.status === 'pending').reduce((s, r) => s + (r.amount || 0), 0),
@@ -1783,7 +1766,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       };
 
       // ── Helpdesk ────────────────────────────────────────────────────────────
-      const allTickets = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Ticket'").all());
+      const allTickets = parseEntities(await all("SELECT data FROM entities WHERE type='Ticket'"));
       const tickets = {
         openTickets:     allTickets.filter(t => t.status === 'open').length,
         resolvedTickets: allTickets.filter(t => ['resolved','closed'].includes(t.status)).length,
@@ -1791,7 +1774,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       };
 
       // ── Assets ──────────────────────────────────────────────────────────────
-      const allAssets = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Asset'").all());
+      const allAssets = parseEntities(await all("SELECT data FROM entities WHERE type='Asset'"));
       const assets = {
         total:        allAssets.length,
         assigned:     allAssets.filter(a => a.status === 'assigned').length,
@@ -1805,7 +1788,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       };
 
       // ── Exits ───────────────────────────────────────────────────────────────
-      const allExits = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Exit'").all());
+      const allExits = parseEntities(await all("SELECT data FROM entities WHERE type='Exit'"));
       const exits = {
         total:     allExits.length,
         pending:   allExits.filter(e => !['completed','fnf_done'].includes(e.status)).length,
@@ -1818,24 +1801,24 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       for (let i = 6; i >= 0; i--) {
         const d = new Date(); d.setDate(d.getDate() - i);
         const dateStr = d.toISOString().slice(0, 10);
-        const present = db.prepare("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND json_extract(data,'$.date')=? AND json_extract(data,'$.check_in_time') IS NOT NULL").get(dateStr).c;
+        const present = await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data->>'date'=$1 AND data->>'check_in_time' IS NOT NULL", [dateStr]).c;
         attendanceTrends.push({ date: dateStr, day: d.toLocaleDateString('en-IN',{weekday:'short'}), present, absent: Math.max(0, totalActive - present) });
       }
 
       // ── Department breakdown ────────────────────────────────────────────────
-      const allEmps = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all());
+      const allEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
       const departmentBreakdown = Object.entries(allEmps.reduce((acc, e) => { const d = e.department||'Unknown'; acc[d]=(acc[d]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count }));
 
       // ── Biometric / attendance stats ────────────────────────────────────────
-      const attLogs      = parseEntities(db.prepare("SELECT data FROM entities WHERE type='AttendanceLog' AND json_extract(data,'$.punch_date') >= ?").all(monthStart));
-      const attThisMonth = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Attendance' AND json_extract(data,'$.date') >= ?").all(monthStart));
+      const attLogs      = parseEntities(await all("SELECT data FROM entities WHERE type='AttendanceLog' AND data->>'punch_date' >= $1", [monthStart]));
+      const attThisMonth = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data->>'date' >= $1", [monthStart]));
       const workedRecs   = attThisMonth.filter(a => a.working_hours > 0);
       const avgWorkingHours   = workedRecs.length > 0 ? parseFloat((workedRecs.reduce((s,a)=>s+(a.working_hours||0),0)/workedRecs.length).toFixed(1)) : 0;
       const biometricSyncedCount = attLogs.length;
       const avgDailyPunches      = biometricSyncedCount > 0 && totalActive > 0 ? parseFloat((biometricSyncedCount / totalActive / 20).toFixed(1)) : 0;
 
       // ── Performance rating distribution ─────────────────────────────────────
-      const allReviews = parseEntities(db.prepare("SELECT data FROM entities WHERE type='PerformanceReview'").all());
+      const allReviews = parseEntities(await all("SELECT data FROM entities WHERE type='PerformanceReview'"));
       const ratingDist = Object.entries(allReviews.reduce((acc, r) => { const rt = r.rating||'Pending'; acc[rt]=(acc[rt]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count }));
 
       // ── Metrics (camelCase — consumed by MetricCard via m.xxx) ──────────────
@@ -1861,12 +1844,12 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const monthEnd   = new Date(y, m, 0).toISOString().slice(0, 10); // last day of month
 
       // Employees list
-      const employees = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Employee' AND status='active'").all())
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
         .map(e => ({ user_id: e.user_id, display_name: e.display_name, department: e.department, employee_code: e.employee_code }));
 
       // Approved leaves for the month
       const leaves = {};
-      const leaveRows = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Leave' AND status='approved'").all())
+      const leaveRows = parseEntities(await all("SELECT data FROM entities WHERE type='Leave' AND status='approved'"))
         .filter(l => l.end_date >= monthStart && l.start_date <= monthEnd);
       for (const lv of leaveRows) {
         if (!leaves[lv.user_id]) leaves[lv.user_id] = {};
@@ -1880,14 +1863,14 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
       // Attendance records for the month
       const attendance = {};
-      const attRows = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Attendance' AND json_extract(data,'$.date') >= ? AND json_extract(data,'$.date') <= ?").all(monthStart, monthEnd));
+      const attRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data->>'date' >= $1 AND data->>'date' <= $2", [monthStart, monthEnd]));
       for (const att of attRows) {
         if (!attendance[att.user_id]) attendance[att.user_id] = {};
         attendance[att.user_id][att.date] = att.status || (att.check_in_time ? 'present' : 'absent');
       }
 
       // Holidays
-      const holidays = parseEntities(db.prepare("SELECT data FROM entities WHERE type='Holiday'").all())
+      const holidays = parseEntities(await all("SELECT data FROM entities WHERE type='Holiday'"))
         .filter(h => h.date >= monthStart && h.date <= monthEnd)
         .map(h => ({ date: h.date, name: h.name, type: h.holiday_type || 'public' }));
 
@@ -1902,21 +1885,21 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const employeeData = p.employeeData || {};
       if (!uid) return res.status(400).json({ error: 'user_id required' });
 
-      db.prepare("UPDATE users SET role=?,custom_role=? WHERE id=?").run(role, role, uid);
+      await run("UPDATE users SET role=$1,custom_role=$2 WHERE id=$3", [role, role, uid]);
 
-      const eRow = db.prepare("SELECT id,data FROM entities WHERE type='Employee' AND user_id=?").get(uid);
+      const eRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
       if (eRow) {
         const d = { ...JSON.parse(eRow.data), ...employeeData, status:'active' };
-        db.prepare("UPDATE entities SET data=?,status='active' WHERE id=?").run(JSON.stringify(d), eRow.id);
+        await run("UPDATE entities SET data=$1,status='active' WHERE id=$2", [JSON.stringify(d), eRow.id]);
       } else {
         const empId = uuidv4();
         const d = { id:empId, user_id:uid, ...employeeData, status:'active' };
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Employee',?,'active',?)").run(empId, uid, JSON.stringify(d));
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'active',$3)", [empId, uid, JSON.stringify(d)]);
       }
 
       // Send approval email
       try {
-        const uRow = db.prepare("SELECT email,full_name FROM users WHERE id=?").get(uid);
+        const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [uid]);
         if (uRow?.email) {
           const tpl = emailTemplates.onboardingApprovedEmail({
             name: uRow.full_name,
@@ -1937,14 +1920,14 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const reason = p.reason || '';
       if (!uid) return res.status(400).json({ error: 'user_id required' });
 
-      const eRow = db.prepare("SELECT id,data FROM entities WHERE type='Employee' AND user_id=?").get(uid);
+      const eRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
       if (eRow) {
         const d = { ...JSON.parse(eRow.data), onboarding_submitted:false, onboarding_rejection_reason:reason };
-        db.prepare("UPDATE entities SET data=? WHERE id=?").run(JSON.stringify(d), eRow.id);
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(d), eRow.id]);
       }
 
       try {
-        const uRow = db.prepare("SELECT email,full_name FROM users WHERE id=?").get(uid);
+        const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [uid]);
         if (uRow?.email) {
           const tpl = emailTemplates.onboardingRejectedEmail({ name: uRow.full_name, reason });
           sendEmail({ to: uRow.email, ...tpl }).catch(e =>
@@ -1959,14 +1942,13 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     case 'handleNewUserSignup': case 'autoCreateEmployee': {
       const { user_id, email, full_name } = p;
       if (!user_id) return res.json({ success: true });
-      const existingEmp = db.prepare("SELECT id FROM entities WHERE type='Employee' AND user_id=?").get(user_id);
+      const existingEmp = await one("SELECT id FROM entities WHERE type='Employee' AND user_id=$1", [user_id]);
       if (!existingEmp) {
         const empId = uuidv4();
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Employee',?,'pending',?)")
-          .run(empId, user_id, JSON.stringify({ id: empId, user_id, display_name: full_name, email, employee_status: 'pending_onboarding', created_at: new Date().toISOString() }));
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'pending',$3)", [empId, user_id, JSON.stringify({ id: empId, user_id, display_name: full_name, email, employee_status: 'pending_onboarding', created_at: new Date().toISOString() })]);
       }
       try {
-        const smtpCfg = db.prepare("SELECT value FROM settings WHERE key='smtp_config'").get();
+        const smtpCfg = await one("SELECT value FROM settings WHERE key='smtp_config'");
         if (smtpCfg?.value) {
           const smtp = JSON.parse(smtpCfg.value);
           if (smtp.host && smtp.user) {
@@ -2086,19 +2068,18 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
         if (!row.valid) { results.push({ ...row, status:'skipped', reason:'Validation errors' }); continue; }
 
         // Check if user exists by email
-        let user = db.prepare("SELECT id, full_name FROM users WHERE email=?").get(row.email);
+        let user = await one("SELECT id, full_name FROM users WHERE email=$1", [row.email]);
         if (!user) {
           // Create user account with temporary password
           const { v4 } = await import('uuid');
           const userId = v4();
           const hash   = await import('bcrypt').then(b => b.hash('Maxvolt@123', 10));
-          db.prepare("INSERT INTO users(id,email,full_name,role,status,custom_role) VALUES(?,?,?,'employee','active','employee')")
-            .run(userId, row.email, row.name);
+          await run("INSERT INTO users(id,email,full_name,role,status,custom_role) VALUES($1,$2,$3,'employee','active','employee')", [userId, row.email, row.name]);
           user = { id: userId, full_name: row.name };
         }
 
         // Check if employee record exists
-        const existingEmp = db.prepare("SELECT id FROM entities WHERE type='Employee' AND user_id=?").get(user.id);
+        const existingEmp = await one("SELECT id FROM entities WHERE type='Employee' AND user_id=$1", [user.id]);
         if (existingEmp) {
           results.push({ ...row, status: 'existing', user_id: user.id });
           continue;
@@ -2113,8 +2094,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
           gender: row.gender, ctc: row.ctc, status: 'active',
           created_at: new Date().toISOString(),
         };
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Employee',?,'active',?)")
-          .run(empId, user.id, JSON.stringify(empData));
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'active',$3)", [empId, user.id, JSON.stringify(empData)]);
         results.push({ ...row, status:'created', user_id: user.id, employee_id: empId });
       }
 
@@ -2124,17 +2104,17 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     case 'updateEmployeeConfirmation': {
       const { user_id, confirmation_date } = p;
-      const eRow = db.prepare("SELECT id,data FROM entities WHERE type='Employee' AND user_id=?").get(user_id);
+      const eRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [user_id]);
       if (eRow) {
         const d = { ...JSON.parse(eRow.data), employee_status:'confirmation', confirmation_date };
-        db.prepare("UPDATE entities SET data=? WHERE id=?").run(JSON.stringify(d), eRow.id);
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(d), eRow.id]);
       }
       return res.json({ success:true });
     }
 
     /* ── Business Cards ──────────────────────────────── */
     case 'getBusinessCard': {
-      const row = db.prepare("SELECT data FROM entities WHERE type='DigitalBusinessCard' AND user_id=?").get(p.user_id||cu?.id);
+      const row = await one("SELECT data FROM entities WHERE type='DigitalBusinessCard' AND user_id=$1", [p.user_id||cu?.id]);
       return res.json(row ? JSON.parse(row.data) : null);
     }
 
@@ -2146,10 +2126,8 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { user_id: njUserId, employee_name, department: njDept, designation: njDesig } = p;
       if (njUserId) {
         const annId = uuidv4();
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Announcement',?,'active',?)").run(
-          annId, njUserId,
-          JSON.stringify({ id: annId, title: `Welcome ${employee_name || 'New Team Member'}!`, content: `Please join us in welcoming ${employee_name || 'our new colleague'} to the ${njDept||'team'} as ${njDesig||'a new team member'}. We look forward to working together!`, category: 'new_joiner', is_published: true, created_at: new Date().toISOString() })
-        );
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Announcement',$2,'active',$3)", [annId, njUserId,
+          JSON.stringify({ id: annId, title: `Welcome ${employee_name || 'New Team Member'}!`, content: `Please join us in welcoming ${employee_name || 'our new colleague'} to the ${njDept||'team'} as ${njDesig||'a new team member'}. We look forward to working together!`, category: 'new_joiner', is_published: true, created_at: new Date().toISOString() })]);
       }
       return res.json({ success: true });
     }
@@ -2157,10 +2135,8 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     case 'onAssetChanged': {
       const { asset_id: auditAssetId, changed_by: auditBy, change_type, old_data: oldD, new_data: newD } = p;
       const auditId = uuidv4();
-      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'AuditLog',?,'active',?)").run(
-        auditId, auditBy||null,
-        JSON.stringify({ id: auditId, entity_type: 'Asset', entity_id: auditAssetId, changed_by: auditBy, change_type: change_type||'update', old_data: oldD, new_data: newD, timestamp: new Date().toISOString() })
-      );
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AuditLog',$2,'active',$3)", [auditId, auditBy||null,
+        JSON.stringify({ id: auditId, entity_type: 'Asset', entity_id: auditAssetId, changed_by: auditBy, change_type: change_type||'update', old_data: oldD, new_data: newD, timestamp: new Date().toISOString() })]);
       return res.json({ success: true });
     }
 
@@ -2172,12 +2148,12 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { entity_type: alType, entity_id: alId, limit: alLim = 200 } = p;
       let q = "SELECT data FROM entities WHERE type='AuditLog'";
       const qp = [];
-      if (alType) { q += " AND json_extract(data,'$.entity_type')=?"; qp.push(alType); }
-      if (alId)   { q += " AND json_extract(data,'$.entity_id')=?";   qp.push(alId); }
-      q += " ORDER BY created_at DESC LIMIT ?"; qp.push(Number(alLim));
-      const alRows = db.prepare(q).all(...qp);
+      if (alType) { q += ` AND data->>'entity_type'=$${qp.push(alType)}`; }
+      if (alId)   { q += ` AND data->>'entity_id'=$${qp.push(alId)}`; }
+      q += ` ORDER BY created_at DESC LIMIT $${qp.push(Number(alLim))}`;
+      const alRows = await all(q, [...qp]);
       const alUserMap = {};
-      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { alUserMap[u.id] = u.full_name; });
+      (await all("SELECT id,full_name FROM users")).forEach(u => { alUserMap[u.id] = u.full_name; });
       const logs = alRows.map(r => { const d = JSON.parse(r.data); return { ...d, changed_by_name: alUserMap[d.changed_by] || d.changed_by }; });
       return res.json({ success: true, logs, total: logs.length });
     }
@@ -2185,10 +2161,8 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     case 'addAuditLog': {
       const { entity_type: aType, entity_id: aId, changed_by: aBy, change_type: aCt, summary: aSummary, old_data: aOld, new_data: aNew } = p;
       const aLogId = uuidv4();
-      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'AuditLog',?,'active',?)").run(
-        aLogId, aBy||null,
-        JSON.stringify({ id: aLogId, entity_type: aType, entity_id: aId, changed_by: aBy, change_type: aCt||'update', summary: aSummary, old_data: aOld, new_data: aNew, timestamp: new Date().toISOString() })
-      );
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AuditLog',$2,'active',$3)", [aLogId, aBy||null,
+        JSON.stringify({ id: aLogId, entity_type: aType, entity_id: aId, changed_by: aBy, change_type: aCt||'update', summary: aSummary, old_data: aOld, new_data: aNew, timestamp: new Date().toISOString() })]);
       return res.json({ success: true });
     }
 
@@ -2198,9 +2172,9 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const todayMD = `${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
       const events = [];
 
-      const ueEmpRows = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const ueEmpRows = await all("SELECT data FROM entities WHERE type='Employee'");
       const ueUserMap = {};
-      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { ueUserMap[u.id] = u.full_name; });
+      (await all("SELECT id,full_name FROM users")).forEach(u => { ueUserMap[u.id] = u.full_name; });
 
       for (const row of ueEmpRows) {
         const emp = JSON.parse(row.data);
@@ -2236,7 +2210,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       }
 
       // Employees returning from leave today/this week
-      const leaveReturnRows = db.prepare("SELECT data FROM entities WHERE type='Leave' AND status='approved'").all();
+      const leaveReturnRows = await all("SELECT data FROM entities WHERE type='Leave' AND status='approved'");
       for (const row of leaveReturnRows) {
         const lv = JSON.parse(row.data);
         if (!lv.end_date) continue;
@@ -2259,15 +2233,15 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       let approved = 0, failed = 0;
       for (const lid of leave_ids) {
         try {
-          const row = db.prepare("SELECT id,data FROM entities WHERE type='Leave' AND id=?").get(lid);
+          const row = await one("SELECT id,data FROM entities WHERE type='Leave' AND id=$1", [lid]);
           if (!row) { failed++; continue; }
           const lv = JSON.parse(row.data);
           if (lv.status === 'approved') { approved++; continue; }
           const upd = { ...lv, status: 'approved', approved_by: blApprover, approved_at: new Date().toISOString(), approval_note: blComment||'Bulk approved' };
-          db.prepare("UPDATE entities SET data=?,status='approved',updated_at=datetime('now') WHERE id=?").run(JSON.stringify(upd), row.id);
+          await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
           // Notify employee
           const nid = uuidv4();
-          db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(nid, lv.user_id, 'Leave Approved', `Your leave request (${lv.start_date} – ${lv.end_date}) has been approved.`, 'leave', '/leave');
+          await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [nid, lv.user_id, 'Leave Approved', `Your leave request (${lv.start_date} – ${lv.end_date}) has been approved.`, 'leave', '/leave']);
           approved++;
         } catch { failed++; }
       }
@@ -2280,14 +2254,14 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       let rejected = 0, failed = 0;
       for (const lid of rlIds) {
         try {
-          const row = db.prepare("SELECT id,data FROM entities WHERE type='Leave' AND id=?").get(lid);
+          const row = await one("SELECT id,data FROM entities WHERE type='Leave' AND id=$1", [lid]);
           if (!row) { failed++; continue; }
           const lv = JSON.parse(row.data);
           if (['approved','rejected'].includes(lv.status)) { rejected++; continue; }
           const upd = { ...lv, status: 'rejected', rejected_by: rlBy, rejected_at: new Date().toISOString(), rejection_reason: rlReason||'Bulk rejected' };
-          db.prepare("UPDATE entities SET data=?,status='rejected',updated_at=datetime('now') WHERE id=?").run(JSON.stringify(upd), row.id);
+          await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
           const nid = uuidv4();
-          db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(nid, lv.user_id, 'Leave Rejected', `Your leave request (${lv.start_date} – ${lv.end_date}) has been rejected.${rlReason?' Reason: '+rlReason:''}`, 'leave', '/leave');
+          await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [nid, lv.user_id, 'Leave Rejected', `Your leave request (${lv.start_date} – ${lv.end_date}) has been rejected.${rlReason?' Reason: '+rlReason:''}`, 'leave', '/leave']);
           rejected++;
         } catch { failed++; }
       }
@@ -2297,9 +2271,9 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     /* ── Probation Management ────────────────────────── */
     case 'getProbationEmployees': {
       const today2 = new Date();
-      const pbEmpRows = db.prepare("SELECT data FROM entities WHERE type='Employee'").all();
+      const pbEmpRows = await all("SELECT data FROM entities WHERE type='Employee'");
       const pbUserMap = {};
-      db.prepare("SELECT id,full_name,email FROM users").all().forEach(u => { pbUserMap[u.id] = u; });
+      (await all("SELECT id,full_name,email FROM users")).forEach(u => { pbUserMap[u.id] = u; });
       const result = pbEmpRows.map(r => JSON.parse(r.data)).filter(e => e.employee_status === 'probation' || e.employee_status === 'active').map(e => {
         const u = pbUserMap[e.user_id] || {};
         const doj = e.date_of_joining ? new Date(e.date_of_joining) : null;
@@ -2312,17 +2286,17 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     case 'processProbationAction': {
       const { user_id: pbUid, action: pbAction, probation_end_date: pbEnd, note: pbNote } = p;
-      const pbRow = db.prepare("SELECT id,data FROM entities WHERE type='Employee' AND user_id=?").get(pbUid);
+      const pbRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [pbUid]);
       if (!pbRow) return res.json({ success: false, error: 'Employee not found' });
       const pbEmp = JSON.parse(pbRow.data);
       const pbUpd = { ...pbEmp };
       if (pbAction === 'confirm') { pbUpd.employee_status = 'active'; pbUpd.confirmation_date = new Date().toISOString().slice(0,10); }
       else if (pbAction === 'extend') { pbUpd.employee_status = 'probation'; pbUpd.probation_end_date = pbEnd; pbUpd.probation_extension_note = pbNote; }
       else if (pbAction === 'terminate') { pbUpd.employee_status = 'terminated'; pbUpd.termination_date = new Date().toISOString().slice(0,10); pbUpd.termination_reason = pbNote||'Probation not cleared'; }
-      db.prepare("UPDATE entities SET data=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(pbUpd), pbRow.id);
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(pbUpd), pbRow.id]);
       const pbMsg = { confirm: 'Congratulations! Your probation is complete and employment is confirmed.', extend: `Your probation period has been extended to ${pbEnd}.`, terminate: 'Your probation review has resulted in termination. Please contact HR.' };
       const pbNid = uuidv4();
-      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(pbNid, pbUid, 'Probation Status Update', pbMsg[pbAction]||'Your probation status was updated.', 'probation', '/profile');
+      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [pbNid, pbUid, 'Probation Status Update', pbMsg[pbAction]||'Your probation status was updated.', 'probation', '/profile']);
       return res.json({ success: true, action: pbAction, status: pbUpd.employee_status });
     }
 
@@ -2330,23 +2304,23 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     case 'createShiftSwapRequest': {
       const { requester_id: ssReqId, target_user_id: ssTgtId, requester_date: ssReqDate, target_date: ssTgtDate, reason: ssReason } = p;
       const ssId = uuidv4();
-      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'ShiftSwap',?,'pending',?)").run(ssId, ssReqId,
-        JSON.stringify({ id: ssId, requester_id: ssReqId, target_user_id: ssTgtId, requester_date: ssReqDate, target_date: ssTgtDate||ssReqDate, reason: ssReason, status: 'pending', created_at: new Date().toISOString() }));
-      const ssReqName = db.prepare("SELECT full_name FROM users WHERE id=?").get(ssReqId)?.full_name || 'An employee';
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ShiftSwap',$2,'pending',$3)", [ssId, ssReqId,
+        JSON.stringify({ id: ssId, requester_id: ssReqId, target_user_id: ssTgtId, requester_date: ssReqDate, target_date: ssTgtDate||ssReqDate, reason: ssReason, status: 'pending', created_at: new Date().toISOString() })]);
+      const ssReqName = await one("SELECT full_name FROM users WHERE id=$1", [ssReqId])?.full_name || 'An employee';
       const ssNid = uuidv4();
-      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(ssNid, ssTgtId, 'Shift Swap Request', `${ssReqName} has requested a shift swap with you for ${ssReqDate}.`, 'shift_swap', '/shift-management');
+      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [ssNid, ssTgtId, 'Shift Swap Request', `${ssReqName} has requested a shift swap with you for ${ssReqDate}.`, 'shift_swap', '/shift-management']);
       return res.json({ success: true, swap_id: ssId });
     }
 
     case 'approveShiftSwap': case 'rejectShiftSwap': {
       const { swap_id: ssSwapId, processed_by: ssProcBy } = p;
-      const ssRow = db.prepare("SELECT id,data FROM entities WHERE type='ShiftSwap' AND id=?").get(ssSwapId);
+      const ssRow = await one("SELECT id,data FROM entities WHERE type='ShiftSwap' AND id=$1", [ssSwapId]);
       if (!ssRow) return res.json({ success: false, error: 'Swap request not found' });
       const ss = JSON.parse(ssRow.data);
       const ssIsApprove = name === 'approveShiftSwap';
-      db.prepare("UPDATE entities SET data=?,status=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify({ ...ss, status: ssIsApprove?'approved':'rejected', processed_by: ssProcBy, processed_at: new Date().toISOString() }), ssIsApprove?'approved':'rejected', ssRow.id);
+      await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify({ ...ss, status: ssIsApprove?'approved':'rejected', processed_by: ssProcBy, processed_at: new Date().toISOString() }), ssIsApprove?'approved':'rejected', ssRow.id]);
       const ssNid2 = uuidv4();
-      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(ssNid2, ss.requester_id, `Shift Swap ${ssIsApprove?'Approved':'Rejected'}`, `Your shift swap request for ${ss.requester_date} has been ${ssIsApprove?'approved':'rejected'}.`, 'shift_swap', '/shift-management');
+      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [ssNid2, ss.requester_id, `Shift Swap ${ssIsApprove?'Approved':'Rejected'}`, `Your shift swap request for ${ss.requester_date} has been ${ssIsApprove?'approved':'rejected'}.`, 'shift_swap', '/shift-management']);
       return res.json({ success: true });
     }
 
@@ -2354,40 +2328,41 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { user_id: ssUid, status: ssStatus } = p;
       let ssQ = "SELECT data FROM entities WHERE type='ShiftSwap'";
       const ssP = [];
-      if (ssUid) { ssQ += " AND (json_extract(data,'$.requester_id')=? OR json_extract(data,'$.target_user_id')=?)"; ssP.push(ssUid, ssUid); }
-      if (ssStatus) { ssQ += " AND json_extract(data,'$.status')=?"; ssP.push(ssStatus); }
+      if (ssUid) { const p1 = ssP.push(ssUid), p2 = ssP.push(ssUid); ssQ += ` AND (data->>'requester_id'=$${p1} OR data->>'target_user_id'=$${p2})`; }
+      if (ssStatus) { ssQ += ` AND data->>'status'=$${ssP.push(ssStatus)}`; }
       ssQ += " ORDER BY created_at DESC";
       const ssUserMap = {};
-      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { ssUserMap[u.id] = u.full_name; });
-      const swaps = db.prepare(ssQ).all(...ssP).map(r => { const d = JSON.parse(r.data); return { ...d, requester_name: ssUserMap[d.requester_id], target_name: ssUserMap[d.target_user_id] }; });
+      (await all("SELECT id,full_name FROM users")).forEach(u => { ssUserMap[u.id] = u.full_name; });
+      const swaps = (await all(ssQ, [...ssP])).map(r => { const d = JSON.parse(r.data); return { ...d, requester_name: ssUserMap[d.requester_id], target_name: ssUserMap[d.target_user_id] }; });
       return res.json({ success: true, swaps });
     }
 
     /* ── Tax Declarations (Form 12BB) ────────────────── */
     case 'submitTaxDeclaration': {
       const { user_id: tdUid, financial_year: tdFY, declarations: tdDecl } = p;
-      const existTD = db.prepare("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=? AND json_extract(data,'$.financial_year')=?").get(tdUid, tdFY);
+      const existTD = await one("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=$1 AND data->>'financial_year'=$2", [tdUid, tdFY]);
       const tdTotal = Object.values(tdDecl||{}).reduce((s,v) => s + Number(v||0), 0);
       const tdData = { user_id: tdUid, financial_year: tdFY, declarations: tdDecl, total_declared: tdTotal, status: 'submitted', submitted_at: new Date().toISOString() };
       if (existTD) {
-        db.prepare("UPDATE entities SET data=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify({ ...JSON.parse(existTD.data), ...tdData, id: existTD.id }), existTD.id);
+        await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...JSON.parse(existTD.data), ...tdData, id: existTD.id }), existTD.id]);
       } else {
         const tdId = uuidv4();
-        db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'TaxDeclaration',?,'submitted',?)").run(tdId, tdUid, JSON.stringify({ ...tdData, id: tdId }));
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'TaxDeclaration',$2,'submitted',$3)", [tdId, tdUid, JSON.stringify({ ...tdData, id: tdId })]);
       }
       // Notify HR
-      const hrRows2 = db.prepare("SELECT id FROM users WHERE role IN ('admin','hr')").all();
+      const hrRows2 = await all("SELECT id FROM users WHERE role IN ('admin','hr')");
       for (const hr of hrRows2) {
         const tdNid = uuidv4();
-        const tdName = db.prepare("SELECT full_name FROM users WHERE id=?").get(tdUid)?.full_name || 'An employee';
-        db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(tdNid, hr.id, 'Tax Declaration Submitted', `${tdName} submitted tax declaration for FY ${tdFY}.`, 'tax', '/admin-panel');
+        const tdName = await one("SELECT full_name FROM users WHERE id=$1", [tdUid])?.full_name || 'An employee';
+        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [tdNid, hr.id, 'Tax Declaration Submitted', `${tdName} submitted tax declaration for FY ${tdFY}.`, 'tax', '/admin-panel']);
       }
       return res.json({ success: true, total_declared: tdTotal });
     }
 
     case 'getTaxDeclaration': {
       const { user_id: tdGetUid, financial_year: tdGetFY } = p;
-      const tdRow = db.prepare("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=?" + (tdGetFY ? " AND json_extract(data,'$.financial_year')=?" : "")).get(...([tdGetUid, tdGetFY].filter(Boolean)));
+      const tdParams = [tdGetUid]; if (tdGetFY) tdParams.push(tdGetFY);
+      const tdRow = await one("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=$1" + (tdGetFY ? " AND data->>'financial_year'=$2" : ""), tdParams);
       return res.json({ success: true, declaration: tdRow ? JSON.parse(tdRow.data) : null });
     }
 
@@ -2395,21 +2370,22 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { financial_year: tdsFY } = p;
       let tdsSql = "SELECT data FROM entities WHERE type='TaxDeclaration'";
       const tdsP = [];
-      if (tdsFY) { tdsSql += " AND json_extract(data,'$.financial_year')=?"; tdsP.push(tdsFY); }
+      if (tdsFY) { tdsSql += ` AND data->>'financial_year'=$${tdsP.push(tdsFY)}`; }
       const tdsUserMap = {};
-      db.prepare("SELECT id,full_name,email FROM users").all().forEach(u => { tdsUserMap[u.id] = u; });
-      const decls = db.prepare(tdsSql).all(...tdsP).map(r => { const d = JSON.parse(r.data); const u = tdsUserMap[d.user_id]||{}; return { ...d, full_name: u.full_name, email: u.email }; });
+      (await all("SELECT id,full_name,email FROM users")).forEach(u => { tdsUserMap[u.id] = u; });
+      const decls = (await all(tdsSql, [...tdsP])).map(r => { const d = JSON.parse(r.data); const u = tdsUserMap[d.user_id]||{}; return { ...d, full_name: u.full_name, email: u.email }; });
       return res.json({ success: true, declarations: decls, total: decls.length, pending_approval: decls.filter(d=>d.status==='submitted').length });
     }
 
     case 'approveTaxDeclaration': {
       const { user_id: tdaUid, financial_year: tdaFY, approved_by: tdaBy, notes: tdaNotes } = p;
-      const tdaRow = db.prepare("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=?" + (tdaFY?" AND json_extract(data,'$.financial_year')=?":"")).get(...([tdaUid,tdaFY].filter(Boolean)));
+      const tdaParams = [tdaUid]; if (tdaFY) tdaParams.push(tdaFY);
+      const tdaRow = await one("SELECT id,data FROM entities WHERE type='TaxDeclaration' AND user_id=$1" + (tdaFY ? " AND data->>'financial_year'=$2" : ""), tdaParams);
       if (!tdaRow) return res.json({ success: false, error: 'Declaration not found' });
       const tdaData = { ...JSON.parse(tdaRow.data), status: 'approved', approved_by: tdaBy, approved_at: new Date().toISOString(), hr_notes: tdaNotes };
-      db.prepare("UPDATE entities SET data=?,status='approved',updated_at=datetime('now') WHERE id=?").run(JSON.stringify(tdaData), tdaRow.id);
+      await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(tdaData), tdaRow.id]);
       const tdaNid = uuidv4();
-      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(tdaNid, tdaUid, 'Tax Declaration Approved', `Your tax declaration for FY ${tdaFY} has been approved.`, 'tax', '/profile');
+      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [tdaNid, tdaUid, 'Tax Declaration Approved', `Your tax declaration for FY ${tdaFY} has been approved.`, 'tax', '/profile']);
       return res.json({ success: true });
     }
 
@@ -2418,27 +2394,27 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { user_id: lnUid, loan_type, amount: lnAmt, tenure_months, purpose, requested_disbursement_date } = p;
       const lnId = uuidv4();
       const emi = lnAmt && tenure_months ? Math.ceil(Number(lnAmt) / Number(tenure_months)) : 0;
-      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'Loan',?,'pending',?)").run(lnId, lnUid,
-        JSON.stringify({ id: lnId, user_id: lnUid, loan_type: loan_type||'personal', amount: Number(lnAmt||0), tenure_months: Number(tenure_months||0), emi_amount: emi, purpose, requested_disbursement_date, status: 'pending', applied_at: new Date().toISOString(), outstanding_amount: Number(lnAmt||0) }));
-      const hrRows3 = db.prepare("SELECT id FROM users WHERE role IN ('admin','hr')").all();
-      const lnName = db.prepare("SELECT full_name FROM users WHERE id=?").get(lnUid)?.full_name||'Employee';
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Loan',$2,'pending',$3)", [lnId, lnUid,
+        JSON.stringify({ id: lnId, user_id: lnUid, loan_type: loan_type||'personal', amount: Number(lnAmt||0), tenure_months: Number(tenure_months||0), emi_amount: emi, purpose, requested_disbursement_date, status: 'pending', applied_at: new Date().toISOString(), outstanding_amount: Number(lnAmt||0) })]);
+      const hrRows3 = await all("SELECT id FROM users WHERE role IN ('admin','hr')");
+      const lnName = await one("SELECT full_name FROM users WHERE id=$1", [lnUid])?.full_name||'Employee';
       for (const hr of hrRows3) {
         const nid = uuidv4();
-        db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(nid, hr.id, 'Loan Application', `${lnName} applied for a ₹${Number(lnAmt||0).toLocaleString('en-IN')} ${loan_type||'personal'} loan.`, 'loan', '/loan-management');
+        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [nid, hr.id, 'Loan Application', `${lnName} applied for a ₹${Number(lnAmt||0).toLocaleString('en-IN')} ${loan_type||'personal'} loan.`, 'loan', '/loan-management']);
       }
       return res.json({ success: true, loan_id: lnId, emi_amount: emi });
     }
 
     case 'approveLoan': case 'rejectLoan': {
       const { loan_id: lnActId, approved_by: lnActBy, disbursement_date, rejection_reason } = p;
-      const lnRow = db.prepare("SELECT id,data FROM entities WHERE type='Loan' AND id=?").get(lnActId);
+      const lnRow = await one("SELECT id,data FROM entities WHERE type='Loan' AND id=$1", [lnActId]);
       if (!lnRow) return res.json({ success: false, error: 'Loan not found' });
       const lnData = JSON.parse(lnRow.data);
       const isLnApprove = name === 'approveLoan';
       const lnUpd = { ...lnData, status: isLnApprove?'approved':'rejected', processed_by: lnActBy, processed_at: new Date().toISOString(), ...(isLnApprove ? { disbursement_date, repayment_start_date: disbursement_date } : { rejection_reason }) };
-      db.prepare("UPDATE entities SET data=?,status=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(lnUpd), lnUpd.status, lnRow.id);
+      await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(lnUpd), lnUpd.status, lnRow.id]);
       const lnNid = uuidv4();
-      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(lnNid, lnData.user_id, `Loan ${isLnApprove?'Approved':'Rejected'}`, isLnApprove?`Your loan of ₹${lnData.amount?.toLocaleString('en-IN')} has been approved. Disbursement: ${disbursement_date||'TBD'}.`:`Your loan application was rejected. ${rejection_reason||''}`, 'loan', '/loan-management');
+      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [lnNid, lnData.user_id, `Loan ${isLnApprove?'Approved':'Rejected'}`, isLnApprove?`Your loan of ₹${lnData.amount?.toLocaleString('en-IN')} has been approved. Disbursement: ${disbursement_date||'TBD'}.`:`Your loan application was rejected. ${rejection_reason||''}`, 'loan', '/loan-management']);
       return res.json({ success: true });
     }
 
@@ -2446,30 +2422,30 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { user_id: lnGetUid, loan_id: lnGetId } = p;
       let lnQ = "SELECT data FROM entities WHERE type='Loan'";
       const lnP2 = [];
-      if (lnGetId) { lnQ += " AND id=?"; lnP2.push(lnGetId); }
-      else if (lnGetUid) { lnQ += " AND user_id=?"; lnP2.push(lnGetUid); }
+      if (lnGetId) { lnQ += ` AND id=$${lnP2.push(lnGetId)}`; }
+      else if (lnGetUid) { lnQ += ` AND user_id=$${lnP2.push(lnGetUid)}`; }
       lnQ += " ORDER BY created_at DESC";
       const lnUserMap2 = {};
-      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { lnUserMap2[u.id] = u.full_name; });
-      const loans = db.prepare(lnQ).all(...lnP2).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: lnUserMap2[d.user_id] }; });
+      (await all("SELECT id,full_name FROM users")).forEach(u => { lnUserMap2[u.id] = u.full_name; });
+      const loans = (await all(lnQ, [...lnP2])).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: lnUserMap2[d.user_id] }; });
       return res.json({ success: true, loans });
     }
 
     case 'processLoanRepayment': {
       const { loan_id: lnRepId, amount: lnRepAmt, repayment_date, notes: lnRepNotes } = p;
-      const lnRepRow = db.prepare("SELECT id,data FROM entities WHERE type='Loan' AND id=?").get(lnRepId);
+      const lnRepRow = await one("SELECT id,data FROM entities WHERE type='Loan' AND id=$1", [lnRepId]);
       if (!lnRepRow) return res.json({ success: false, error: 'Loan not found' });
       const lnRep = JSON.parse(lnRepRow.data);
       const newOutstanding = Math.max(0, Number(lnRep.outstanding_amount||lnRep.amount||0) - Number(lnRepAmt||0));
       const repHistory = [...(lnRep.repayment_history||[]), { amount: Number(lnRepAmt||0), date: repayment_date||new Date().toISOString().slice(0,10), notes: lnRepNotes }];
       const lnRepUpd = { ...lnRep, outstanding_amount: newOutstanding, repayment_history: repHistory, status: newOutstanding <= 0 ? 'closed' : lnRep.status };
-      db.prepare("UPDATE entities SET data=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(lnRepUpd), lnRepRow.id);
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lnRepUpd), lnRepRow.id]);
       return res.json({ success: true, outstanding_amount: newOutstanding, status: lnRepUpd.status });
     }
 
     /* ── Helpdesk SLA ────────────────────────────────── */
     case 'getHelpdeskStats': {
-      const tktRows = db.prepare("SELECT data FROM entities WHERE type='HelpdeskTicket'").all();
+      const tktRows = await all("SELECT data FROM entities WHERE type='HelpdeskTicket'");
       const tickets = tktRows.map(r => JSON.parse(r.data));
       const now = new Date();
       const stats = { total: tickets.length, open: 0, in_progress: 0, resolved: 0, closed: 0, overdue: 0, avg_resolution_hours: 0 };
@@ -2493,14 +2469,14 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     case 'escalateHelpdeskTicket': {
       const { ticket_id: tktId, escalated_to, reason: tktReason } = p;
-      const tktRow = db.prepare("SELECT id,data FROM entities WHERE type='HelpdeskTicket' AND id=?").get(tktId);
+      const tktRow = await one("SELECT id,data FROM entities WHERE type='HelpdeskTicket' AND id=$1", [tktId]);
       if (!tktRow) return res.json({ success: false, error: 'Ticket not found' });
       const tkt = JSON.parse(tktRow.data);
       const tktUpd = { ...tkt, status: 'escalated', escalated_to, escalation_reason: tktReason, escalated_at: new Date().toISOString() };
-      db.prepare("UPDATE entities SET data=?,status='escalated',updated_at=datetime('now') WHERE id=?").run(JSON.stringify(tktUpd), tktRow.id);
+      await run("UPDATE entities SET data=$1,status='escalated',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(tktUpd), tktRow.id]);
       if (escalated_to) {
         const tktNid = uuidv4();
-        db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(tktNid, escalated_to, 'Ticket Escalated to You', `Helpdesk ticket #${tktId.slice(0,8)} has been escalated. Reason: ${tktReason||'SLA breach'}`, 'helpdesk', '/helpdesk');
+        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [tktNid, escalated_to, 'Ticket Escalated to You', `Helpdesk ticket #${tktId.slice(0,8)} has been escalated. Reason: ${tktReason||'SLA breach'}`, 'helpdesk', '/helpdesk']);
       }
       return res.json({ success: true });
     }
@@ -2509,26 +2485,26 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
     case 'fileInsuranceClaim': {
       const { user_id: icUid, policy_id, claim_amount, claim_type, description: icDesc, incident_date } = p;
       const icId = uuidv4();
-      db.prepare("INSERT INTO entities(id,type,user_id,status,data) VALUES(?,'InsuranceClaim',?,'pending',?)").run(icId, icUid,
-        JSON.stringify({ id: icId, user_id: icUid, policy_id, claim_amount: Number(claim_amount||0), claim_type, description: icDesc, incident_date, status: 'pending', filed_at: new Date().toISOString() }));
-      const icName = db.prepare("SELECT full_name FROM users WHERE id=?").get(icUid)?.full_name||'Employee';
-      const hrRows4 = db.prepare("SELECT id FROM users WHERE role IN ('admin','hr')").all();
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'InsuranceClaim',$2,'pending',$3)", [icId, icUid,
+        JSON.stringify({ id: icId, user_id: icUid, policy_id, claim_amount: Number(claim_amount||0), claim_type, description: icDesc, incident_date, status: 'pending', filed_at: new Date().toISOString() })]);
+      const icName = await one("SELECT full_name FROM users WHERE id=$1", [icUid])?.full_name||'Employee';
+      const hrRows4 = await all("SELECT id FROM users WHERE role IN ('admin','hr')");
       for (const hr of hrRows4) {
         const nid = uuidv4();
-        db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(nid, hr.id, 'Insurance Claim Filed', `${icName} filed an insurance claim for ₹${Number(claim_amount||0).toLocaleString('en-IN')}.`, 'insurance', '/insurance-management');
+        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [nid, hr.id, 'Insurance Claim Filed', `${icName} filed an insurance claim for ₹${Number(claim_amount||0).toLocaleString('en-IN')}.`, 'insurance', '/insurance-management']);
       }
       return res.json({ success: true, claim_id: icId });
     }
 
     case 'processInsuranceClaim': {
       const { claim_id: icActId, action: icAct, approved_amount, rejection_reason: icRej, processed_by: icProcBy } = p;
-      const icRow = db.prepare("SELECT id,data FROM entities WHERE type='InsuranceClaim' AND id=?").get(icActId);
+      const icRow = await one("SELECT id,data FROM entities WHERE type='InsuranceClaim' AND id=$1", [icActId]);
       if (!icRow) return res.json({ success: false, error: 'Claim not found' });
       const icData = JSON.parse(icRow.data);
       const icUpd = { ...icData, status: icAct==='approve'?'approved':'rejected', processed_by: icProcBy, processed_at: new Date().toISOString(), ...(icAct==='approve' ? { approved_amount: Number(approved_amount||icData.claim_amount||0) } : { rejection_reason: icRej }) };
-      db.prepare("UPDATE entities SET data=?,status=?,updated_at=datetime('now') WHERE id=?").run(JSON.stringify(icUpd), icUpd.status, icRow.id);
+      await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(icUpd), icUpd.status, icRow.id]);
       const icNid = uuidv4();
-      db.prepare("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES(?,?,?,?,?,?)").run(icNid, icData.user_id, `Insurance Claim ${icAct==='approve'?'Approved':'Rejected'}`, icAct==='approve'?`Your claim for ₹${icData.claim_amount} has been approved. Approved amount: ₹${approved_amount||icData.claim_amount}.`:`Your claim was rejected. ${icRej||''}`, 'insurance', '/insurance-management');
+      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [icNid, icData.user_id, `Insurance Claim ${icAct==='approve'?'Approved':'Rejected'}`, icAct==='approve'?`Your claim for ₹${icData.claim_amount} has been approved. Approved amount: ₹${approved_amount||icData.claim_amount}.`:`Your claim was rejected. ${icRej||''}`, 'insurance', '/insurance-management']);
       return res.json({ success: true });
     }
 
@@ -2536,11 +2512,11 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { user_id: icGetUid } = p;
       let icQ = "SELECT data FROM entities WHERE type='InsuranceClaim'";
       const icQP = [];
-      if (icGetUid) { icQ += " AND user_id=?"; icQP.push(icGetUid); }
+      if (icGetUid) { icQ += ` AND user_id=$${icQP.push(icGetUid)}`; }
       icQ += " ORDER BY created_at DESC";
       const icUMap = {};
-      db.prepare("SELECT id,full_name FROM users").all().forEach(u => { icUMap[u.id] = u.full_name; });
-      const claims = db.prepare(icQ).all(...icQP).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: icUMap[d.user_id] }; });
+      (await all("SELECT id,full_name FROM users")).forEach(u => { icUMap[u.id] = u.full_name; });
+      const claims = (await all(icQ, [...icQP])).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: icUMap[d.user_id] }; });
       return res.json({ success: true, claims });
     }
 
@@ -2549,32 +2525,32 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { user_id: edUid } = p;
       if (!edUid) return res.json({ success: false, error: 'user_id required' });
 
-      const edEmp = db.prepare("SELECT data FROM entities WHERE type='Employee' AND user_id=?").get(edUid);
+      const edEmp = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [edUid]);
       const emp = edEmp ? JSON.parse(edEmp.data) : {};
 
       // Recent leaves
-      const edLeaves = db.prepare("SELECT data FROM entities WHERE type='Leave' AND user_id=? ORDER BY created_at DESC LIMIT 5").all(edUid).map(r=>JSON.parse(r.data));
+      const edLeaves = (await all("SELECT data FROM entities WHERE type='Leave' AND user_id=$1 ORDER BY created_at DESC LIMIT 5", [edUid])).map(r=>JSON.parse(r.data));
 
       // Pending regularisations
-      const edRegs = db.prepare("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND user_id=? AND status='pending'").all(edUid).map(r=>JSON.parse(r.data));
+      const edRegs = (await all("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1 AND status='pending'", [edUid])).map(r=>JSON.parse(r.data));
 
       // Active loans
-      const edLoans = db.prepare("SELECT data FROM entities WHERE type='Loan' AND user_id=? AND status IN ('approved','active')").all(edUid).map(r=>JSON.parse(r.data));
+      const edLoans = (await all("SELECT data FROM entities WHERE type='Loan' AND user_id=$1 AND status IN ('approved','active')", [edUid])).map(r=>JSON.parse(r.data));
 
       // Latest payslip
-      const edPayroll = db.prepare("SELECT data FROM entities WHERE type='Payroll' AND user_id=? ORDER BY created_at DESC LIMIT 1").get(edUid);
+      const edPayroll = await one("SELECT data FROM entities WHERE type='Payroll' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [edUid]);
       const latestPayslip = edPayroll ? JSON.parse(edPayroll.data) : null;
 
       // Open helpdesk tickets
-      const edTickets = db.prepare("SELECT data FROM entities WHERE type='HelpdeskTicket' AND user_id=? AND status NOT IN ('resolved','closed')").all(edUid).map(r=>JSON.parse(r.data));
+      const edTickets = (await all("SELECT data FROM entities WHERE type='HelpdeskTicket' AND user_id=$1 AND status NOT IN ('resolved','closed')", [edUid])).map(r=>JSON.parse(r.data));
 
       // Tax declaration status
       const currentFY = new Date().getMonth() >= 3 ? `${new Date().getFullYear()}-${new Date().getFullYear()+1}` : `${new Date().getFullYear()-1}-${new Date().getFullYear()}`;
-      const edTax = db.prepare("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=? ORDER BY created_at DESC LIMIT 1").get(edUid);
+      const edTax = await one("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [edUid]);
 
       // Upcoming leaves (approved, future)
       const todayStr = new Date().toISOString().slice(0,10);
-      const edUpcomingLeaves = db.prepare("SELECT data FROM entities WHERE type='Leave' AND user_id=? AND status='approved' AND end_date>=?").all(edUid, todayStr).map(r=>JSON.parse(r.data));
+      const edUpcomingLeaves = (await all("SELECT data FROM entities WHERE type='Leave' AND user_id=$1 AND status='approved' AND end_date>=$2", [edUid, todayStr])).map(r=>JSON.parse(r.data));
 
       return res.json({ success: true, employee: emp, recent_leaves: edLeaves, pending_regularisations: edRegs.length, active_loans: edLoans, latest_payslip: latestPayslip, open_tickets: edTickets.length, upcoming_leaves: edUpcomingLeaves, tax_declaration: edTax ? JSON.parse(edTax.data) : null, current_fy: currentFY });
     }
