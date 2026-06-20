@@ -213,11 +213,12 @@ app.listen(PORT, () => {
   console.log(`\n✓ Maxvolt HR Backend  http://localhost:${PORT}  [${process.env.NODE_ENV || 'development'}]`);
 
   if (process.env.NODE_ENV === 'production') {
-    // Initial backup 60s after startup (let the app fully boot first)
-    setTimeout(() => backupDB({ force: true }).catch(() => {}), 60_000);
+    // First backup 15s after startup — short enough that any data created in the
+    // first minute is captured, but long enough for bootstrapFromEnv to finish.
+    setTimeout(() => backupDB({ force: true }).catch(() => {}), 15_000);
 
-    // Periodic backup every 10 minutes — only uploads if the DB has changed
-    setInterval(() => backupDB().catch(() => {}), 10 * 60 * 1000);
+    // Periodic backup every 5 minutes — only uploads if the DB has changed
+    setInterval(() => backupDB().catch(() => {}), 5 * 60 * 1000);
   }
 });
 

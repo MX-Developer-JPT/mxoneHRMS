@@ -10,7 +10,7 @@ const BACKUP_ID  = 'maxvolt-hr-db/hrms-backup';
 const MIN_SIZE   = 8192; // bytes — anything smaller is an empty/just-created DB
 
 if (!process.env.CLOUDINARY_URL && !process.env.CLOUDINARY_CLOUD_NAME) {
-  console.log('[restore] CLOUDINARY_URL not configured — skipping DB restore');
+  console.log('[restore] Cloudinary not configured — skipping DB restore');
   process.exit(0);
 }
 
@@ -25,20 +25,30 @@ if (existsSync(DB_PATH)) {
 
 try {
   const { v2: cloudinary } = await import('cloudinary');
-  cloudinary.config(); // reads CLOUDINARY_URL or CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET
+  cloudinary.config(); // reads CLOUDINARY_URL automatically
 
-  // Generate a signed URL so we can download the raw DB file
-  const url = cloudinary.url(BACKUP_ID, {
-    resource_type: 'raw',
-    sign_url: true,
-    type: 'authenticated',
-  });
+  // Try 'private' first, then fall back to 'authenticated' (old backup format)
+  let resp;
+  for (const type of ['private', 'authenticated']) {
+    const url = cloudinary.url(BACKUP_ID, {
+      resource_type: 'raw',
+      type,
+      sign_url: true,
+      secure: true,
+    });
 
-  const resp = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    console.log(`[restore] Trying type='${type}'…`);
+    try {
+      resp = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (resp.ok) break;
+      console.log(`[restore] type='${type}' returned HTTP ${resp.status}`);
+    } catch (fetchErr) {
+      console.error(`[restore] type='${type}' fetch error: ${fetchErr.message}`);
+    }
+  }
 
-  if (!resp.ok) {
-    // No backup exists yet (first ever run, or backup was deleted)
-    console.log(`[restore] No backup found (HTTP ${resp.status}) — starting fresh`);
+  if (!resp || !resp.ok) {
+    console.log('[restore] No usable backup found — starting fresh');
     process.exit(0);
   }
 
