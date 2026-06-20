@@ -86,6 +86,15 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read);
   `);
 
+  // Ensure columns added after initial schema exist (ALTER TABLE is idempotent with IF NOT EXISTS)
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name   TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS middle_name  TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name    TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_role  TEXT;
+  `);
+
   // Purge expired OTPs and tokens on startup
   await pool.query("DELETE FROM otps WHERE expires_at::TIMESTAMPTZ < NOW()");
   await pool.query("DELETE FROM reset_tokens WHERE expires_at::TIMESTAMPTZ < NOW()");

@@ -166,7 +166,7 @@ export default function OnboardingApproval() {
       loadData();
     } catch (error) {
       console.error('Error approving user:', error);
-      toast.error('Failed to approve user');
+      toast.error(`Approval failed: ${error.message || 'Please try again.'}`);
     }
   };
 
