@@ -282,16 +282,15 @@ router.post('/:name', async (req, res) => {
         attMap[a.user_id][a.date] = a;
       }
 
-      // Get shift info per employee
+      // Pre-load all shifts referenced by employees (avoids N+1 queries)
       const shiftCache = {};
-      const getShift = (shiftId) => {
-        if (!shiftId) return null;
-        if (shiftCache[shiftId]) return shiftCache[shiftId];
-        const sr = await one("SELECT data FROM entities WHERE id=$1", [shiftId]);
-        const s  = sr ? JSON.parse(sr.data) : null;
-        shiftCache[shiftId] = s;
-        return s;
-      };
+      const shiftIds = [...new Set(employees.map(e => e.shift_id).filter(Boolean))];
+      if (shiftIds.length > 0) {
+        const placeholders = shiftIds.map((_, i) => `$${i+1}`).join(',');
+        const shiftRows = await all(`SELECT id,data FROM entities WHERE id IN (${placeholders})`, shiftIds);
+        for (const sr of shiftRows) shiftCache[sr.id] = JSON.parse(sr.data);
+      }
+      const getShift = (shiftId) => shiftId ? (shiftCache[shiftId] || null) : null;
 
       const defaultShift = parseEntities(await all("SELECT data FROM entities WHERE type='Shift' AND (data->>'is_default'=1 OR data->>'name' LIKE '%General%') LIMIT 1"))[0] || null;
 
@@ -436,6 +435,11 @@ router.post('/:name', async (req, res) => {
         'LOP Deduction', 'Total Deductions', 'Net Salary', 'Status',
       ];
 
+      // Pre-fetch all salary structures
+      const ssAllRows = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND status='active'");
+      const ssMap = {};
+      for (const r of ssAllRows) ssMap[r.user_id] = JSON.parse(r.data);
+
       const csvRows = employees.map(emp => {
         const pr  = payrollMap[emp.user_id];
         const recs = attMap[emp.user_id] || [];
@@ -446,16 +450,13 @@ router.post('/:name', async (req, res) => {
           daysHalfDay  = pr.half_days    || 0;
           daysLOP      = pr.lop_days     || 0;
         } else {
-          // Compute from raw attendance if no payroll
           daysPresent  = recs.filter(a => ['present','late','on_duty','work_from_home'].includes(a.status)).length;
           daysHalfDay  = recs.filter(a => a.status === 'half_day').length;
           daysLOP      = recs.filter(a => ['absent','lop'].includes(a.status)).length;
         }
         const effectiveDays = daysPresent + (daysHalfDay * 0.5);
 
-        // Get salary structure
-        const ssRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active' LIMIT 1", [emp.user_id]);
-        const ss    = ssRow ? JSON.parse(ssRow.data) : {};
+        const ss = ssMap[emp.user_id] || {};
         const gross = (ss.basic_salary||0) + (ss.hra||0) + (ss.conveyance||0) + (ss.special_allowance||0);
         const earnedGross = gross > 0 ? Math.round((gross / workingDays) * effectiveDays) : 0;
 
