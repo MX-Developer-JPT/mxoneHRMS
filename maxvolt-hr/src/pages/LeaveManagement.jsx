@@ -82,10 +82,13 @@ export default function LeaveManagement() {
   };
 
   const isHR = user && (['hr', 'admin'].includes(user.role) || ['hr', 'admin'].includes(user.custom_role));
+  const isAdmin = user && (user.role === 'admin' || user.custom_role === 'admin');
   const isManagement = user && (user.role === 'management' || user.custom_role === 'management');
 
   const canApproveLevel = (leave) => {
     if (!leave || leave.status !== 'pending') return false;
+    // Admin can approve/reject any pending leave at any level
+    if (isAdmin) return true;
     // Level 1: Reporting Manager approves first
     if (leave.current_approval_level === 1) {
       const leaveEmp = employees.find(e => e.user_id === leave.user_id);
@@ -117,8 +120,8 @@ export default function LeaveManagement() {
       };
 
       if (actionType === 'approve') {
-        if (leave.current_approval_level === 1) {
-          // Move to level 2 (HR/HOD approval)
+        if (leave.current_approval_level === 1 && !isAdmin) {
+          // Move to level 2 (HR/HOD approval) — non-admin managers only
           await base44.entities.Leave.update(leave.id, {
             current_approval_level: 2,
             approval_history: [...history, newHistoryEntry]

@@ -17,6 +17,7 @@ router.use((req, res, next) => {
     if (!['admin', 'hr'].includes(decoded.role))
       return res.status(403).json({ error: 'Admin or HR role required' });
     req.currentUser = decoded;
+    req.isAdmin = decoded.role === 'admin';
     next();
   } catch {
     res.status(401).json({ error: 'Invalid token' });
@@ -149,13 +150,17 @@ router.post('/users', (req, res) => {
 
 // ── Update user ────────────────────────────────────────────
 router.patch('/users/:id', (req, res) => {
+  // Changing role or custom_role requires admin — HR cannot promote users
+  if ((req.body.role || req.body.custom_role) && !req.isAdmin)
+    return res.status(403).json({ error: 'Only admins can change user roles' });
+
   const { full_name, first_name, last_name, role, custom_role, email } = req.body;
   const fields = []; const vals = [];
   if (full_name)   { fields.push('full_name=?');    vals.push(full_name); }
   if (first_name)  { fields.push('first_name=?');   vals.push(first_name); }
   if (last_name)   { fields.push('last_name=?');    vals.push(last_name); }
-  if (role)        { fields.push('role=?');          vals.push(role); }
-  if (custom_role) { fields.push('custom_role=?');   vals.push(custom_role); }
+  if (role)        { fields.push('role=?');          vals.push(role); fields.push('custom_role=?'); vals.push(custom_role || role); }
+  else if (custom_role) { fields.push('custom_role=?'); vals.push(custom_role); }
   if (email)       { fields.push('email=?');         vals.push(email.toLowerCase().trim()); }
   if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
   fields.push("updated_at=datetime('now')");
@@ -175,6 +180,8 @@ router.patch('/users/:id/password', (req, res) => {
 
 // ── Delete user ────────────────────────────────────────────
 router.delete('/users/:id', (req, res) => {
+  if (!req.isAdmin)
+    return res.status(403).json({ error: 'Only admins can delete users' });
   if (req.currentUser.id === req.params.id)
     return res.status(400).json({ error: 'Cannot delete your own account' });
   const r = db.prepare('DELETE FROM users WHERE id=?').run(req.params.id);

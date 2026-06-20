@@ -109,12 +109,84 @@ function StatsBar({ stats }) {
 }
 
 // ── User management tab ────────────────────────────────────
+const ROLES = [
+  { value: 'admin',              label: 'Admin',              color: 'bg-red-100 text-red-800' },
+  { value: 'hr',                 label: 'HR',                 color: 'bg-purple-100 text-purple-800' },
+  { value: 'manager',            label: 'Manager',            color: 'bg-orange-100 text-orange-800' },
+  { value: 'employee',           label: 'Employee',           color: 'bg-blue-100 text-blue-800' },
+  { value: 'management',         label: 'Management',         color: 'bg-teal-100 text-teal-800' },
+  { value: 'gate_admin',         label: 'Gate Admin',         color: 'bg-green-100 text-green-800' },
+  { value: 'onboarding_pending', label: 'Onboarding Pending', color: 'bg-gray-100 text-gray-700' },
+];
+const roleColor = (role) => ROLES.find(r => r.value === role)?.color || 'bg-gray-100 text-gray-700';
+
+function UserFormModal({ title, initial, onSave, onClose, isNew }) {
+  const [form, setForm] = useState({
+    full_name: initial?.full_name || '',
+    email: initial?.email || '',
+    role: initial?.role || 'employee',
+    password: '',
+  });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const handleSubmit = () => {
+    if (!form.email) return toast.error('Email is required');
+    if (isNew && form.password.length < 6) return toast.error('Password must be at least 6 characters');
+    const payload = { full_name: form.full_name, email: form.email, role: form.role };
+    if (isNew) payload.password = form.password;
+    onSave(payload);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-background rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-lg">{title}</h3>
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}><X className="w-4 h-4" /></Button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <Label className="text-sm font-medium">Full Name</Label>
+            <Input className="mt-1" placeholder="e.g. Jai Pratap Tyagi" value={form.full_name} onChange={e => set('full_name', e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-sm font-medium">Email <span className="text-red-500">*</span></Label>
+            <Input className="mt-1" type="email" placeholder="user@company.com" value={form.email} onChange={e => set('email', e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-sm font-medium">Role <span className="text-red-500">*</span></Label>
+            <select
+              className="mt-1 w-full border rounded-md px-3 py-2 text-sm bg-background focus:ring-2 ring-primary outline-none"
+              value={form.role}
+              onChange={e => set('role', e.target.value)}
+            >
+              {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+            </select>
+          </div>
+          {isNew && (
+            <div>
+              <Label className="text-sm font-medium">Password <span className="text-red-500">*</span></Label>
+              <Input className="mt-1" type="password" placeholder="Min 6 characters" value={form.password} onChange={e => set('password', e.target.value)} />
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 justify-end pt-2">
+          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={handleSubmit}>{isNew ? 'Create User' : 'Save Changes'}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UsersTab() {
   const [users, setUsers]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch]   = useState('');
   const [editUser, setEditUser]     = useState(null);
-  const [newUserForm, setNewUserForm] = useState(null);
+  const [newUserForm, setNewUserForm] = useState(false);
   const [pwdModal, setPwdModal]       = useState(null);
   const [confirm, setConfirm]         = useState(null);
 
@@ -141,7 +213,7 @@ function UsersTab() {
   const handleCreate = async (data) => {
     try {
       await adminFetch('/users', { method: 'POST', body: JSON.stringify(data) });
-      toast.success('User created'); setNewUserForm(null); load();
+      toast.success('User created'); setNewUserForm(false); load();
     } catch(e) { toast.error(e.message); }
   };
 
@@ -159,8 +231,6 @@ function UsersTab() {
     } catch(e) { toast.error(e.message); }
   };
 
-  const ROLE_COLORS = { admin:'bg-red-100 text-red-800', hr:'bg-purple-100 text-purple-800', employee:'bg-blue-100 text-blue-800', manager:'bg-orange-100 text-orange-800', gate_admin:'bg-green-100 text-green-800' };
-
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -168,7 +238,7 @@ function UsersTab() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input className="pl-9 h-9" placeholder="Search users…" value={search} onChange={e=>setSearch(e.target.value)} />
         </div>
-        <Button size="sm" onClick={() => setNewUserForm({ email:'', password:'', full_name:'', role:'employee' })}>
+        <Button size="sm" onClick={() => setNewUserForm(true)}>
           <Plus className="w-4 h-4 mr-1" /> Add User
         </Button>
       </div>
@@ -177,41 +247,45 @@ function UsersTab() {
         <div className="overflow-x-auto rounded-xl border">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr>{['Name','Email','Role','Actions'].map(h=><th key={h} className="text-left px-4 py-2.5 font-medium text-muted-foreground">{h}</th>)}</tr>
+              <tr>{['Name','Email','Role','Joined','Actions'].map(h=><th key={h} className="text-left px-4 py-2.5 font-medium text-muted-foreground">{h}</th>)}</tr>
             </thead>
             <tbody className="divide-y">
               {filtered.map(u => (
                 <tr key={u.id} className="hover:bg-muted/30">
                   <td className="px-4 py-2.5 font-medium">{u.full_name || '—'}</td>
-                  <td className="px-4 py-2.5 text-muted-foreground">{u.email}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground text-xs">{u.email}</td>
                   <td className="px-4 py-2.5">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${ROLE_COLORS[u.role]||'bg-gray-100 text-gray-700'}`}>{u.role}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${roleColor(u.role)}`}>{u.role}</span>
                   </td>
+                  <td className="px-4 py-2.5 text-muted-foreground text-xs">{u.created_at ? new Date(u.created_at).toLocaleDateString('en-IN') : '—'}</td>
                   <td className="px-4 py-2.5">
                     <div className="flex gap-1">
-                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditUser(u)} title="Edit">
+                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditUser(u)} title="Edit user">
                         <Edit className="w-3.5 h-3.5" />
                       </Button>
                       <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setPwdModal(u)} title="Reset password">
                         <Key className="w-3.5 h-3.5" />
                       </Button>
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" onClick={() => setConfirm(u)} title="Delete">
+                      <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setConfirm(u)} title="Delete user">
                         <Trash2 className="w-3.5 h-3.5" />
                       </Button>
                     </div>
                   </td>
                 </tr>
               ))}
+              {!filtered.length && (
+                <tr><td colSpan={5} className="text-center py-8 text-muted-foreground text-sm">No users found</td></tr>
+              )}
             </tbody>
           </table>
         </div>
       )}
 
       {editUser && (
-        <JsonEditorModal title={`Edit User — ${editUser.email}`} data={{ full_name:editUser.full_name, role:editUser.role, custom_role:editUser.custom_role, email:editUser.email }} onSave={handleSaveEdit} onClose={() => setEditUser(null)} />
+        <UserFormModal title={`Edit User — ${editUser.email}`} initial={editUser} onSave={handleSaveEdit} onClose={() => setEditUser(null)} />
       )}
       {newUserForm && (
-        <JsonEditorModal title="Create New User" data={newUserForm} onSave={handleCreate} onClose={() => setNewUserForm(null)} isNew />
+        <UserFormModal title="Create New User" isNew onSave={handleCreate} onClose={() => setNewUserForm(false)} />
       )}
       {pwdModal && <PasswordModal user={pwdModal} onSave={handlePasswordReset} onClose={() => setPwdModal(null)} />}
       {confirm && <ConfirmDialog message={`Delete user "${confirm.email}"? This cannot be undone.`} onConfirm={() => handleDelete(confirm.id)} onCancel={() => setConfirm(null)} />}
