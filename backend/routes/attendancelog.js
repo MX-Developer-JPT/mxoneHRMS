@@ -57,16 +57,23 @@ async function processRecord(record) {
   const punchDate = toDateStr(punch_time);
   const punchIso  = new Date(punch_time).toISOString();
 
-  // Resolve user
+  // Resolve user — try employee_code first, then biometric_id (numeric ID assigned in device)
   let userId = directUserId;
   if (!userId && employee_code) {
-    const emp = await one(
+    const codeStr = String(employee_code);
+    let emp = await one(
       "SELECT user_id FROM entities WHERE type='Employee' AND data::jsonb->>'employee_code'=$1 LIMIT 1",
-      [employee_code]
+      [codeStr]
     );
+    if (!emp?.user_id) {
+      emp = await one(
+        "SELECT user_id FROM entities WHERE type='Employee' AND data::jsonb->>'biometric_id'=$1 LIMIT 1",
+        [codeStr]
+      );
+    }
     userId = emp?.user_id;
   }
-  if (!userId) return { ok: false, reason: `No user found for employee_code=${employee_code}` };
+  if (!userId) return { ok: false, reason: `No user found for employee_code=${employee_code} — set the Biometric ID field on the employee record to match the device user ID` };
 
   // Find or create today's attendance record
   const row = await one(
