@@ -533,7 +533,7 @@ router.post('/:name', async (req, res) => {
       // Only admins may regenerate
       const { randomBytes } = await import('crypto');
       const newKey = randomBytes(32).toString('hex');
-      await run("INSERT OR REPLACE INTO settings(key,value) VALUES('attendance_api_key',$1)", [newKey]);
+      await run("INSERT INTO settings(key,value,updated_at) VALUES('attendance_api_key',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [newKey]);
       // Also update env-like value so attendancelog.js picks it up via this DB key
       process.env.ATTENDANCE_API_KEY = newKey;
       return res.json({ success: true, api_key: newKey });
@@ -1606,7 +1606,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
       const { groq_api_key } = p;
       if (groq_api_key !== undefined) {
         if (groq_api_key) {
-          await run("INSERT OR REPLACE INTO settings(key,value) VALUES('GROQ_API_KEY',$1)", [groq_api_key.trim()]);
+          await run("INSERT INTO settings(key,value,updated_at) VALUES('GROQ_API_KEY',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [groq_api_key.trim()]);
         } else {
           await run("DELETE FROM settings WHERE key='GROQ_API_KEY'");
         }

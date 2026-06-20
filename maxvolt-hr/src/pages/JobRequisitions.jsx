@@ -14,7 +14,7 @@ import { format } from 'date-fns';
 import {
   Plus, Briefcase, Check, X, Eye, Printer, Loader2,
   Clock, CheckCircle2, XCircle, ChevronRight, Globe, Copy,
-  Sparkles, Edit3, FileCheck, Users
+  Sparkles, Edit3, FileCheck, Users, CalendarClock, XOctagon, Filter
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -64,6 +64,9 @@ export default function JobRequisitions() {
   const [rejectReason, setRejectReason] = useState('');
   const [formData, setFormData] = useState(EMPTY_FORM);
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterDept, setFilterDept] = useState('all');
+  const [extendDialog, setExtendDialog] = useState(null); // req to extend
+  const [extendDate, setExtendDate] = useState('');
   const [publishDialog, setPublishDialog] = useState(null);
   const [applicationDeadline, setApplicationDeadline] = useState('');
   // JD workflow state
@@ -337,7 +340,32 @@ Return ONLY the job description content as plain text with clear section headers
   // Can create: HR, admin, management
   const canCreate = isManagement;
 
-  const filtered = filterStatus === 'all' ? requisitions : requisitions.filter(r => r.status === filterStatus);
+  const handleExtendDate = async () => {
+    if (!extendDate || !extendDialog) return;
+    try {
+      await base44.entities.JobRequisition.update(extendDialog.id, { target_hire_date: extendDate });
+      setRequisitions(prev => prev.map(r => r.id === extendDialog.id ? { ...r, target_hire_date: extendDate } : r));
+      toast.success('Target hire date extended');
+      setExtendDialog(null);
+      setExtendDate('');
+    } catch { toast.error('Failed to extend date'); }
+  };
+
+  const handleClosePosition = async (req) => {
+    if (!confirm(`Close position "${req.position_title}"? This will remove it from the job board.`)) return;
+    try {
+      await base44.entities.JobRequisition.update(req.id, { status: 'closed', is_published: false });
+      setRequisitions(prev => prev.map(r => r.id === req.id ? { ...r, status: 'closed', is_published: false } : r));
+      if (viewRequisition?.id === req.id) setViewRequisition(prev => ({ ...prev, status: 'closed', is_published: false }));
+      toast.success('Position closed');
+    } catch { toast.error('Failed to close position'); }
+  };
+
+  const filtered = requisitions.filter(r => {
+    if (filterStatus !== 'all' && r.status !== filterStatus) return false;
+    if (filterDept !== 'all' && r.department !== filterDept) return false;
+    return true;
+  });
 
   const stats = {
     total: requisitions.length,
@@ -391,7 +419,8 @@ Return ONLY the job description content as plain text with clear section headers
         </div>
 
         {/* Filter */}
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex flex-wrap gap-3 items-center">
+          <div className="flex gap-2 flex-wrap">
           {['all', 'pending_manager_approval', 'pending_hr_approval', 'approved', 'published', 'manager_rejected', 'hr_rejected', 'closed'].map(s => (
             <Button key={s} size="sm" variant={filterStatus === s ? 'default' : 'outline'}
               onClick={() => setFilterStatus(s)}
@@ -399,6 +428,14 @@ Return ONLY the job description content as plain text with clear section headers
               {s === 'all' ? 'All' : STATUS_CONFIG[s]?.label || s}
             </Button>
           ))}
+          </div>
+          {departments.length > 0 && (
+            <div className="flex items-center gap-1.5 ml-auto">
+              <Filter className="w-3.5 h-3.5 text-gray-400" />
+              <MobileSelect value={filterDept} onValueChange={setFilterDept} label="Department" className="w-44"
+                options={[{ value: 'all', label: 'All Departments' }, ...departments.map(d => ({ value: d.name, label: d.name }))]} />
+            </div>
+          )}
         </div>
 
         {/* Requisitions List */}
@@ -502,6 +539,18 @@ Return ONLY the job description content as plain text with clear section headers
                           {req.status === 'published' && (
                             <Button size="sm" variant="outline" onClick={() => copyLink(req)}>
                               <Copy className="w-3 h-3 mr-1" /> Copy Link
+                            </Button>
+                          )}
+                          {isHR && ['approved', 'published'].includes(req.status) && (
+                            <Button size="sm" variant="outline" className="border-amber-300 text-amber-700 hover:bg-amber-50"
+                              onClick={() => { setExtendDialog(req); setExtendDate(req.target_hire_date || ''); }}>
+                              <CalendarClock className="w-3 h-3 mr-1" /> Extend Date
+                            </Button>
+                          )}
+                          {isHR && ['approved', 'published', 'on_hold'].includes(req.status) && (
+                            <Button size="sm" variant="outline" className="border-red-300 text-red-700 hover:bg-red-50"
+                              onClick={() => handleClosePosition(req)}>
+                              <XOctagon className="w-3 h-3 mr-1" /> Close
                             </Button>
                           )}
                         </div>
@@ -860,6 +909,31 @@ Return ONLY the job description content as plain text with clear section headers
           </DialogContent>
         </Dialog>
       )}
+
+      {/* Extend Target Hire Date Dialog */}
+      <Dialog open={!!extendDialog} onOpenChange={() => { setExtendDialog(null); setExtendDate(''); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Extend Target Hire Date</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-500">
+              Current date: <strong>{extendDialog?.target_hire_date || 'Not set'}</strong>
+            </p>
+            <div>
+              <Label>New Target Hire Date *</Label>
+              <Input type="date" value={extendDate} onChange={e => setExtendDate(e.target.value)}
+                min={new Date().toISOString().split('T')[0]} />
+            </div>
+            <div className="flex gap-3 justify-end">
+              <Button variant="outline" onClick={() => { setExtendDialog(null); setExtendDate(''); }}>Cancel</Button>
+              <Button onClick={handleExtendDate} disabled={!extendDate} className="bg-amber-600 hover:bg-amber-700">
+                <CalendarClock className="w-4 h-4 mr-2" /> Extend Date
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
