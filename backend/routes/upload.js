@@ -10,63 +10,69 @@ const router = Router();
 
 const USE_CLOUDINARY = !!(process.env.CLOUDINARY_URL || (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY));
 
-let upload;
+// Always accept upload into memory first; we decide where to store after
+const memUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
 
-if (USE_CLOUDINARY) {
-  // ── Cloudinary storage (production with env vars set) ───────────
+// ── Cloudinary upload helper (v2 SDK) ─────────────────────────────────────
+async function uploadToCloudinary(buffer, originalname) {
   const { v2: cloudinary } = await import('cloudinary');
-  const { CloudinaryStorage } = await import('multer-storage-cloudinary');
+  cloudinary.config(); // reads CLOUDINARY_URL or CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET
 
-  cloudinary.config(); // reads CLOUDINARY_URL or individual env vars automatically
+  const ext = path.extname(originalname).replace('.', '').toLowerCase();
+  const isImg = ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext);
+  const resource_type = isImg ? 'image' : 'raw';
 
-  const cloudStorage = new CloudinaryStorage({
-    cloudinary,
-    params: (req, file) => {
-      const ext = path.extname(file.originalname).replace('.', '').toLowerCase();
-      const isPdf  = ext === 'pdf';
-      const isImg  = ['jpg','jpeg','png','gif','webp','svg'].includes(ext);
-      return {
-        folder: 'maxvolt-hr',
-        resource_type: isPdf ? 'raw' : (isImg ? 'image' : 'raw'),
-        public_id: uuidv4(),
-        // PDFs and raw files: keep original format
-        ...(isPdf ? {} : isImg ? { format: ext === 'png' ? 'webp' : ext } : {}),
-      };
-    },
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder: 'maxvolt-hr', public_id: uuidv4(), resource_type },
+      (err, result) => (err ? reject(err) : resolve(result))
+    );
+    stream.end(buffer);
   });
-
-  upload = multer({
-    storage: cloudStorage,
-    limits: { fileSize: 20 * 1024 * 1024 },
-  });
-
-  console.log('✓ File uploads → Cloudinary');
-} else {
-  // ── Local disk storage (dev or no Cloudinary env vars) ──────────
-  const UPLOADS_DIR = process.env.NODE_ENV === 'production'
-    ? '/app/uploads'
-    : path.join(__dirname, '../uploads');
-
-  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
-
-  const diskStorage = multer.diskStorage({
-    destination: UPLOADS_DIR,
-    filename: (_req, file, cb) => cb(null, `${uuidv4()}${path.extname(file.originalname)}`),
-  });
-
-  upload = multer({ storage: diskStorage, limits: { fileSize: 20 * 1024 * 1024 } });
-
-  if (process.env.NODE_ENV === 'production') {
-    console.warn('⚠ CLOUDINARY_URL not set — uploads stored on local disk. Set CLOUDINARY_URL in Railway Variables for persistent file storage.');
-  }
 }
 
-router.post('/', upload.single('file'), (req, res) => {
+// ── Local disk fallback ───────────────────────────────────────────────────
+const UPLOADS_DIR = process.env.NODE_ENV === 'production'
+  ? '/app/uploads'
+  : path.join(__dirname, '../uploads');
+
+function saveLocally(buffer, originalname) {
+  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+  const filename = `${uuidv4()}${path.extname(originalname)}`;
+  const { writeFileSync } = require('fs'); // sync is fine for small files
+  const filepath = path.join(UPLOADS_DIR, filename);
+  require('fs').writeFileSync(filepath, buffer);
+  return { file_url: `/uploads/${filename}`, filename };
+}
+
+if (USE_CLOUDINARY) {
+  console.log('✓ File uploads → Cloudinary');
+} else if (process.env.NODE_ENV === 'production') {
+  console.warn('⚠ CLOUDINARY_URL not set — uploads stored on local disk only. Set it in Railway Variables.');
+}
+
+router.post('/', memUpload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
 
-  // Cloudinary gives req.file.path as the secure URL; disk gives req.file.filename
-  const file_url = req.file.path || `/uploads/${req.file.filename}`;
-  res.json({ file_url, filename: req.file.filename || req.file.public_id, size: req.file.size });
+  try {
+    if (USE_CLOUDINARY) {
+      const result = await uploadToCloudinary(req.file.buffer, req.file.originalname);
+      return res.json({ file_url: result.secure_url, filename: result.public_id, size: req.file.size });
+    }
+
+    // Local fallback: write buffer to disk
+    if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+    const { writeFileSync } = await import('fs');
+    const filename = `${uuidv4()}${path.extname(req.file.originalname)}`;
+    writeFileSync(path.join(UPLOADS_DIR, filename), req.file.buffer);
+    return res.json({ file_url: `/uploads/${filename}`, filename, size: req.file.size });
+  } catch (err) {
+    console.error('Upload error:', err);
+    return res.status(500).json({ error: 'Upload failed: ' + err.message });
+  }
 });
 
 export default router;
