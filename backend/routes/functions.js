@@ -1720,7 +1720,7 @@ Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector
 
     case 'getPublishedJob': {
       const jobId = p.job_id || p.jobId;
-      const row = await one("SELECT data FROM entities WHERE type='Recruitment' AND id=$1", [jobId]);
+      const row = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [jobId]);
       return res.json(row ? { job: JSON.parse(row.data) } : { job: null });
     }
 
