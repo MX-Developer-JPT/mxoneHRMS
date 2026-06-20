@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
 import { spawn, execSync } from 'child_process';
+import { backupDB } from './utils/dbBackup.js';
 import authRouter           from './routes/auth.js';
 import entitiesRouter       from './routes/entities.js';
 import functionsRouter      from './routes/functions.js';
@@ -208,6 +209,22 @@ if (process.env.NODE_ENV === 'production') {
   app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 }
 
-app.listen(PORT, () =>
-  console.log(`\n✓ Maxvolt HR Backend  http://localhost:${PORT}  [${process.env.NODE_ENV || 'development'}]`)
-);
+app.listen(PORT, () => {
+  console.log(`\n✓ Maxvolt HR Backend  http://localhost:${PORT}  [${process.env.NODE_ENV || 'development'}]`);
+
+  if (process.env.NODE_ENV === 'production') {
+    // Initial backup 60s after startup (let the app fully boot first)
+    setTimeout(() => backupDB({ force: true }).catch(() => {}), 60_000);
+
+    // Periodic backup every 10 minutes — only uploads if the DB has changed
+    setInterval(() => backupDB().catch(() => {}), 10 * 60 * 1000);
+  }
+});
+
+// ── Graceful shutdown: backup DB before Railway stops the container ──
+process.on('SIGTERM', async () => {
+  console.log('[shutdown] SIGTERM received — backing up DB before exit…');
+  await backupDB({ force: true }).catch(() => {});
+  console.log('[shutdown] Done. Exiting.');
+  process.exit(0);
+});
