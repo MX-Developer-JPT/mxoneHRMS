@@ -142,17 +142,19 @@ const gateAdminMenuItems = [
 ];
 
 /* ── Avatar ────────────────────────────────────────────────── */
-function Avatar({ name, role }) {
+function Avatar({ name, role, size = 'md' }) {
   const initial = (name || '?').charAt(0).toUpperCase();
-  const gradients = {
-    admin: 'from-violet-600 to-indigo-600',
-    hr:    'from-indigo-500 to-blue-500',
-    management: 'from-emerald-500 to-teal-600',
-    gate_admin: 'from-amber-500 to-orange-500',
+  const colors = {
+    admin:      'bg-[#AF52DE]',   // Apple purple
+    hr:         'bg-[#007AFF]',   // Apple blue
+    management: 'bg-[#34C759]',   // Apple green
+    manager:    'bg-[#34C759]',
+    gate_admin: 'bg-[#FF9500]',   // Apple orange
   };
-  const gradient = gradients[role] || 'from-slate-500 to-slate-600';
+  const bg   = colors[role] || 'bg-[#8E8E93]';
+  const dims  = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-9 h-9 text-sm';
   return (
-    <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${gradient} flex items-center justify-center font-bold text-white text-sm flex-shrink-0 shadow-sm`}>
+    <div className={`${dims} rounded-xl ${bg} flex items-center justify-center font-semibold text-white flex-shrink-0`}>
       {initial}
     </div>
   );
@@ -166,17 +168,17 @@ function NavItem({ item, isActive, onClick }) {
       to={createPageUrl(item.page)}
       onClick={onClick}
       className={`
-        flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium
-        transition-colors duration-150 select-none
+        flex items-center gap-2.5 px-3 py-[9px] rounded-xl text-[13.5px] font-medium
+        transition-all duration-150 select-none group
         ${isActive
-          ? 'bg-white/15 text-white shadow-sm'
-          : 'text-white/70 hover:bg-white/10 hover:text-white'
+          ? 'bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/15 dark:text-[#0A84FF]'
+          : 'text-[#6E6E73] dark:text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-white/6 hover:text-[#1D1D1F] dark:hover:text-white'
         }
       `}
     >
-      <Icon className="w-4 h-4 flex-shrink-0" />
+      <Icon className={`w-4 h-4 flex-shrink-0 transition-colors ${isActive ? 'text-[#007AFF] dark:text-[#0A84FF]' : 'text-[#8E8E93] group-hover:text-[#1D1D1F] dark:group-hover:text-white'}`} />
       <span className="flex-1 truncate">{item.name}</span>
-      {isActive && <ChevronRight className="w-3.5 h-3.5 opacity-60 flex-shrink-0" />}
+      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-[#007AFF] dark:bg-[#0A84FF] flex-shrink-0" />}
     </Link>
   );
 }
@@ -190,7 +192,7 @@ export default function Layout({ children, currentPageName }) {
   const [user,                setUser]               = useState(null);
   const [employeeDisplayName, setEmployeeDisplayName]= useState('');
   const [employeeDepartment,  setEmployeeDepartment] = useState('');
-  const [sidebarOpen,         setSidebarOpen]        = useState(false);
+  const [moreSheetOpen,       setMoreSheetOpen]      = useState(false);
   const [pullDistance,        setPullDistance]       = useState(0);
   const [isRefreshing,        setIsRefreshing]       = useState(false);
 
@@ -206,11 +208,11 @@ export default function Layout({ children, currentPageName }) {
     if (!touchStartY.current) return;
     const delta = e.touches[0].clientY - touchStartY.current;
     if (delta > 0 && contentRef.current?.scrollTop === 0)
-      setPullDistance(Math.min(delta * 0.4, 64));
+      setPullDistance(Math.min(delta * 0.4, 60));
   }, []);
 
   const handleTouchEnd = useCallback(() => {
-    if (pullDistance > 50) {
+    if (pullDistance > 48) {
       setIsRefreshing(true);
       setTimeout(() => window.location.reload(), 600);
     } else {
@@ -259,8 +261,8 @@ export default function Layout({ children, currentPageName }) {
 
   if (!user) {
     return (
-      <div className="flex items-center justify-center h-screen bg-background">
-        <div className="w-8 h-8 border-[3px] border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+      <div className="flex items-center justify-center h-dvh bg-background">
+        <div className="w-8 h-8 border-[3px] border-[#007AFF]/20 border-t-[#007AFF] rounded-full animate-spin" />
       </div>
     );
   }
@@ -287,78 +289,97 @@ export default function Layout({ children, currentPageName }) {
 
   const displayName = employeeDisplayName || user.display_name || user.full_name || user.email;
 
-  const bottomTabs = [
-    { label: 'Home',       icon: LayoutDashboard, page: 'Dashboard',      path: '/Dashboard' },
-    { label: 'Attendance', icon: Clock,           page: 'MarkAttendance', path: '/MarkAttendance' },
-    { label: 'Leave',      icon: FileText,        page: 'Leave',          path: '/Leave' },
-    { label: 'Profile',    icon: User2,           page: 'Profile',        path: '/Profile' },
-  ];
+  // Role-aware primary bottom tabs (max 4, plus "More")
+  const primaryTabs = isHR
+    ? [
+        { label: 'Home',      icon: LayoutDashboard, page: 'Dashboard',    path: '/Dashboard' },
+        { label: 'Employees', icon: Users,            page: 'Employees',    path: '/Employees' },
+        { label: 'Attendance',icon: Clock,            page: 'AllAttendance',path: '/AllAttendance' },
+        { label: 'Leaves',    icon: FileText,         page: 'LeaveManagement', path: '/LeaveManagement' },
+      ]
+    : isManagement
+    ? [
+        { label: 'Home',      icon: LayoutDashboard, page: 'Dashboard',    path: '/Dashboard' },
+        { label: 'My Team',   icon: Users,            page: 'Employees',    path: '/Employees' },
+        { label: 'Attendance',icon: Clock,            page: 'MarkAttendance',path: '/MarkAttendance' },
+        { label: 'Leave',     icon: FileText,         page: 'Leave',        path: '/Leave' },
+      ]
+    : [
+        { label: 'Home',      icon: LayoutDashboard, page: 'Dashboard',    path: '/Dashboard' },
+        { label: 'Attendance',icon: Clock,            page: 'MarkAttendance',path: '/MarkAttendance' },
+        { label: 'Leave',     icon: FileText,         page: 'Leave',        path: '/Leave' },
+        { label: 'Profile',   icon: User2,            page: 'Profile',      path: '/Profile' },
+      ];
+
+  const currentTabActive = primaryTabs.some(t => t.page === currentPageName);
 
   return (
     <div className="flex h-dvh bg-background overflow-hidden">
 
-      {/* ── Mobile header ───────────────────────────────────── */}
+      {/* ── Mobile header — iOS Navigation Bar ──────────────── */}
       <div
-        className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-white/8 flex items-center justify-between px-4"
+        className="lg:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4"
         style={{
-          paddingTop:    'env(safe-area-inset-top)',
-          height:        'calc(3.5rem + env(safe-area-inset-top))',
+          paddingTop: 'env(safe-area-inset-top)',
+          height: 'calc(3rem + env(safe-area-inset-top))',
+          background: 'rgba(242,242,247,0.85)',
+          backdropFilter: 'saturate(180%) blur(20px)',
+          WebkitBackdropFilter: 'saturate(180%) blur(20px)',
+          borderBottom: '0.5px solid rgba(0,0,0,0.12)',
         }}
       >
-        <div className="flex items-center gap-2.5">
-          {location.pathname !== '/' && location.pathname !== '/Dashboard' && (
+        {/* Left: Back button or Logo */}
+        <div className="flex items-center gap-1 w-24">
+          {location.pathname !== '/' && location.pathname !== '/Dashboard' ? (
             <button
               onClick={() => navigate(-1)}
               style={{ minWidth: 44, minHeight: 44 }}
-              className="flex items-center justify-center -ml-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/8 transition-colors"
+              className="flex items-center gap-0.5 -ml-2 text-[#007AFF] dark:text-[#0A84FF] font-medium text-[17px]"
               aria-label="Go back"
             >
-              <ArrowLeft className="w-5 h-5" />
+              <ArrowLeft className="w-5 h-5" strokeWidth={2.5} />
             </button>
+          ) : (
+            <Link to="/Dashboard">
+              <img src="/maxvolt-logo.jpg" alt="MaxVolt" className="h-6 w-auto object-contain rounded-lg" />
+            </Link>
           )}
-          <Link to="/Dashboard" className="flex items-center">
-            <div className="bg-white dark:bg-white rounded-xl px-2.5 py-1 shadow-sm">
-              <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-7 w-auto object-contain" />
-            </div>
-          </Link>
         </div>
-        <div className="flex items-center gap-1">
+
+        {/* Center: Page title */}
+        <span className="font-semibold text-[17px] text-[#1D1D1F] dark:text-white tracking-[-0.02em] truncate max-w-[40vw] text-center">
+          {currentPageName?.replace(/([A-Z])/g, ' $1').trim() || 'Home'}
+        </span>
+
+        {/* Right: Notifications */}
+        <div className="flex items-center justify-end gap-1 w-24">
           <NotificationBell />
-          <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            style={{ minWidth: 44, minHeight: 44 }}
-            className="flex items-center justify-center -mr-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/8 transition-colors"
-            aria-label="Toggle menu"
-          >
-            {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-          </button>
         </div>
       </div>
 
-      {/* ── Sidebar ─────────────────────────────────────────── */}
+      {/* ── Desktop Sidebar — Apple macOS style ─────────────── */}
       <aside
-        className={`
-          fixed lg:relative inset-y-0 left-0 z-50 flex flex-col flex-shrink-0
-          w-64 bg-[#344055] border-r border-[#2a3347]
-          transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
-          ${sidebarOpen ? 'translate-x-0 shadow-2xl shadow-black/25' : '-translate-x-full lg:translate-x-0'}
-        `}
+        className="hidden lg:flex flex-col flex-shrink-0 w-60 bg-white dark:bg-[#111113] border-r border-[#E0E0E5] dark:border-[#38383A]"
         style={{ paddingTop: 'env(safe-area-inset-top)' }}
       >
-        {/* Desktop brand */}
-        <div className="hidden lg:flex items-center justify-center px-4 py-5 border-b border-[#2a3347]">
-          <div className="bg-white rounded-2xl px-5 py-2.5 shadow-sm">
-            <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-10 w-auto object-contain" />
+        {/* Brand */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-[#E0E0E5] dark:border-[#38383A]">
+          <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0 bg-white shadow-apple-sm">
+            <img src="/maxvolt-logo.jpg" alt="MaxVolt" className="w-full h-full object-contain" />
+          </div>
+          <div className="min-w-0">
+            <p className="font-semibold text-[13px] text-[#1D1D1F] dark:text-white truncate leading-none">Maxvolt HRMS</p>
+            <p className="text-[11px] text-[#6E6E73] dark:text-[#8E8E93] mt-0.5">Human Resources</p>
           </div>
         </div>
 
         {/* User card */}
-        <div className="px-4 py-3 border-b border-[#2a3347]">
-          <div className="flex items-center gap-3 bg-white/8 rounded-xl px-3 py-2.5">
+        <div className="px-3 py-3 border-b border-[#E0E0E5] dark:border-[#38383A]">
+          <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl bg-[#F2F2F7] dark:bg-white/6">
             <Avatar name={displayName} role={userRole} />
             <div className="flex-1 min-w-0">
-              <p className="font-semibold text-sm text-white truncate">{displayName}</p>
-              <p className="text-[11px] text-white/50 capitalize font-medium mt-0.5">
+              <p className="font-semibold text-[13px] text-[#1D1D1F] dark:text-white truncate leading-tight">{displayName}</p>
+              <p className="text-[11px] text-[#6E6E73] dark:text-[#8E8E93] capitalize mt-0.5 leading-none">
                 {userRole?.replace(/_/g, ' ')}
               </p>
             </div>
@@ -366,14 +387,14 @@ export default function Layout({ children, currentPageName }) {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto px-3 py-3">
+        <nav className="flex-1 overflow-y-auto px-2 py-2">
           <div className="space-y-0.5">
             {menuItems.map((item, idx) => (
               <NavItem
                 key={`${item.page}-${idx}`}
                 item={item}
                 isActive={currentPageName === item.page}
-                onClick={() => setSidebarOpen(false)}
+                onClick={() => {}}
               />
             ))}
           </div>
@@ -381,38 +402,30 @@ export default function Layout({ children, currentPageName }) {
 
         {/* Footer */}
         <div
-          className="px-3 py-3 border-t border-[#2a3347] space-y-1"
-          style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.75rem)' }}
+          className="px-2 py-2 border-t border-[#E0E0E5] dark:border-[#38383A] space-y-0.5"
+          style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.5rem)' }}
         >
           <div className="px-1 flex justify-end mb-1">
             <NotificationBell />
           </div>
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-white/70 hover:bg-white/10 hover:text-white transition-colors"
+            className="w-full flex items-center gap-2.5 px-3 py-[9px] rounded-xl text-[13.5px] font-medium text-[#6E6E73] dark:text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-white/6 hover:text-[#1D1D1F] dark:hover:text-white transition-colors"
           >
             {theme === 'dark'
-              ? <><Sun  className="w-4 h-4 flex-shrink-0 text-amber-500" /><span>Light Mode</span></>
-              : <><Moon className="w-4 h-4 flex-shrink-0 text-indigo-500" /><span>Dark Mode</span></>
+              ? <><Sun  className="w-4 h-4 flex-shrink-0 text-[#FF9500]" /><span>Light Mode</span></>
+              : <><Moon className="w-4 h-4 flex-shrink-0 text-[#007AFF]" /><span>Dark Mode</span></>
             }
           </button>
           <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-red-300 hover:text-red-200 hover:bg-red-500/15 transition-colors"
+            className="w-full flex items-center gap-2.5 px-3 py-[9px] rounded-xl text-[13.5px] font-medium text-[#FF3B30] hover:bg-[#FF3B30]/8 transition-colors"
           >
             <LogOut className="w-4 h-4 flex-shrink-0" />
             <span>Sign out</span>
           </button>
         </div>
       </aside>
-
-      {/* Overlay */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 z-40 lg:hidden bg-black/50 backdrop-blur-sm"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
 
       {/* ── Main content ─────────────────────────────────────── */}
       <div
@@ -423,26 +436,20 @@ export default function Layout({ children, currentPageName }) {
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
       >
-        {/* Mobile top spacer — exact height of fixed header */}
-        <div
-          className="lg:hidden flex-shrink-0"
-          style={{ height: 'calc(3.5rem + env(safe-area-inset-top))' }}
-        />
+        {/* Mobile top spacer */}
+        <div className="lg:hidden flex-shrink-0" style={{ height: 'calc(3rem + env(safe-area-inset-top))' }} />
 
-        {/* Pull-to-refresh */}
+        {/* Pull-to-refresh indicator */}
         <div
-          className="lg:hidden overflow-hidden flex items-center justify-center text-xs text-muted-foreground gap-2 transition-all duration-200"
-          style={{ height: isRefreshing ? 40 : pullDistance > 0 ? pullDistance : 0 }}
+          className="lg:hidden overflow-hidden flex items-center justify-center gap-2 transition-all duration-200"
+          style={{ height: isRefreshing ? 36 : pullDistance > 0 ? pullDistance : 0 }}
         >
-          <svg
-            className={`w-4 h-4 text-indigo-500 ${isRefreshing ? 'animate-spin' : ''}`}
-            fill="none" viewBox="0 0 24 24" stroke="currentColor"
-          >
+          <svg className={`w-4 h-4 text-[#007AFF] ${isRefreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
               d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
-          <span className="font-medium">
-            {isRefreshing ? 'Refreshing…' : pullDistance > 50 ? 'Release to refresh' : 'Pull to refresh'}
+          <span className="text-xs font-medium text-[#6E6E73]">
+            {isRefreshing ? 'Refreshing…' : pullDistance > 48 ? 'Release to refresh' : 'Pull to refresh'}
           </span>
         </div>
 
@@ -453,52 +460,177 @@ export default function Layout({ children, currentPageName }) {
         {mountedTabs.has('Leave')          && <div style={{ display: currentPageName === 'Leave'          ? 'block' : 'none' }}><LeavePage /></div>}
         {mountedTabs.has('Profile')        && <div style={{ display: currentPageName === 'Profile'        ? 'block' : 'none' }}><ProfilePage /></div>}
 
-        {/* Mobile bottom spacer — keeps content above fixed bottom nav */}
-        <div
-          className="lg:hidden"
-          style={{ height: 'calc(4.5rem + env(safe-area-inset-bottom))' }}
-        />
+        {/* Mobile bottom spacer */}
+        <div className="lg:hidden" style={{ height: 'calc(4.5rem + env(safe-area-inset-bottom))' }} />
       </div>
 
-      {/* ── Mobile bottom tab bar ────────────────────────────── */}
+      {/* ── "More" bottom sheet (iOS style) ─────────────────── */}
+      {moreSheetOpen && (
+        <>
+          {/* Scrim */}
+          <div
+            className="lg:hidden fixed inset-0 z-50 bg-black/40"
+            style={{ backdropFilter: 'blur(2px)', WebkitBackdropFilter: 'blur(2px)' }}
+            onClick={() => setMoreSheetOpen(false)}
+          />
+          {/* Sheet */}
+          <div
+            className="lg:hidden fixed bottom-0 left-0 right-0 z-50 rounded-t-[28px] overflow-hidden animate-slide-up"
+            style={{
+              background: 'rgba(242,242,247,0.96)',
+              backdropFilter: 'saturate(180%) blur(40px)',
+              WebkitBackdropFilter: 'saturate(180%) blur(40px)',
+              maxHeight: '78dvh',
+              paddingBottom: 'env(safe-area-inset-bottom)',
+            }}
+          >
+            {/* Drag handle */}
+            <div className="flex justify-center pt-3 pb-1">
+              <div className="w-9 h-1 rounded-full bg-[#8E8E93]/35" />
+            </div>
+
+            {/* Sheet header */}
+            <div className="flex items-center justify-between px-5 py-2 border-b border-[#E0E0E5]/80">
+              <div className="flex items-center gap-2.5">
+                <Avatar name={displayName} role={userRole} size="sm" />
+                <div>
+                  <p className="font-semibold text-[14px] text-[#1D1D1F] leading-tight">{displayName}</p>
+                  <p className="text-[11px] text-[#6E6E73] capitalize">{userRole?.replace(/_/g, ' ')}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                  className="w-9 h-9 rounded-full bg-[#E5E5EA] flex items-center justify-center"
+                  aria-label="Toggle theme"
+                >
+                  {theme === 'dark'
+                    ? <Sun className="w-4 h-4 text-[#FF9500]" />
+                    : <Moon className="w-4 h-4 text-[#007AFF]" />
+                  }
+                </button>
+                <button
+                  onClick={() => setMoreSheetOpen(false)}
+                  className="w-9 h-9 rounded-full bg-[#E5E5EA] flex items-center justify-center"
+                  aria-label="Close"
+                >
+                  <X className="w-4 h-4 text-[#6E6E73]" />
+                </button>
+              </div>
+            </div>
+
+            {/* Menu list */}
+            <nav className="overflow-y-auto px-3 py-2" style={{ maxHeight: 'calc(78dvh - 10rem)' }}>
+              <div className="space-y-0.5">
+                {menuItems.map((item, idx) => {
+                  const Icon = item.icon;
+                  const isActive = currentPageName === item.page;
+                  return (
+                    <Link
+                      key={`sheet-${item.page}-${idx}`}
+                      to={createPageUrl(item.page)}
+                      onClick={() => setMoreSheetOpen(false)}
+                      className={`
+                        flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-medium select-none
+                        transition-colors duration-150
+                        ${isActive
+                          ? 'bg-[#007AFF]/10 text-[#007AFF]'
+                          : 'text-[#1D1D1F] hover:bg-[#E5E5EA]/60'
+                        }
+                      `}
+                      style={{ minHeight: 48 }}
+                    >
+                      <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${isActive ? 'bg-[#007AFF]' : 'bg-[#E5E5EA]'}`}>
+                        <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-[#6E6E73]'}`} />
+                      </div>
+                      <span className="flex-1">{item.name}</span>
+                      {isActive && <div className="w-2 h-2 rounded-full bg-[#007AFF]" />}
+                    </Link>
+                  );
+                })}
+              </div>
+            </nav>
+
+            {/* Sheet footer */}
+            <div className="px-3 py-2 border-t border-[#E0E0E5]/80">
+              <button
+                onClick={handleLogout}
+                className="w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-medium text-[#FF3B30] hover:bg-[#FF3B30]/8 transition-colors"
+                style={{ minHeight: 48 }}
+              >
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center bg-[#FF3B30]/10 flex-shrink-0">
+                  <LogOut className="w-4 h-4 text-[#FF3B30]" />
+                </div>
+                Sign out
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Mobile bottom tab bar — iOS style ───────────────── */}
       <nav
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-white/8"
-        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-40"
+        style={{
+          paddingBottom: 'env(safe-area-inset-bottom)',
+          background: 'rgba(242,242,247,0.88)',
+          backdropFilter: 'saturate(180%) blur(20px)',
+          WebkitBackdropFilter: 'saturate(180%) blur(20px)',
+          borderTop: '0.5px solid rgba(0,0,0,0.12)',
+        }}
       >
-        <div className="flex items-center justify-around px-2 pt-1 pb-1.5">
-          {bottomTabs.map(item => {
-            const Icon    = item.icon;
+        <div className="flex items-center pt-1 pb-1">
+          {/* Primary tabs */}
+          {primaryTabs.map(item => {
+            const Icon     = item.icon;
             const isActive = currentPageName === item.page;
             return (
               <Link
                 key={item.page}
                 to={item.path}
                 onClick={(e) => {
-                  setSidebarOpen(false);
                   if (isActive) {
                     e.preventDefault();
-                    navigate(item.path, { replace: true });
                     contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
                   }
                 }}
-                className="flex flex-col items-center gap-0.5 select-none"
-                style={{ minWidth: 56, minHeight: 44, paddingTop: 4, paddingBottom: 4 }}
+                className="flex-1 flex flex-col items-center gap-0.5 py-1 select-none"
+                style={{ minHeight: 44 }}
               >
-                <div className={`
-                  flex items-center justify-center w-10 h-7 rounded-2xl transition-all duration-200
-                  ${isActive
-                    ? 'bg-gradient-to-br from-indigo-600 to-violet-600 shadow-sm'
-                    : 'bg-transparent'
-                  }
-                `}>
-                  <Icon className={`w-5 h-5 transition-colors ${isActive ? 'text-white' : 'text-slate-400 dark:text-slate-500'}`} />
-                </div>
-                <span className={`text-[10px] font-semibold leading-none transition-colors ${isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}`}>
+                <Icon
+                  className="w-6 h-6 transition-colors duration-150"
+                  style={{ color: isActive ? '#007AFF' : '#8E8E93' }}
+                  strokeWidth={isActive ? 2 : 1.75}
+                />
+                <span
+                  className="text-[10px] font-medium leading-none transition-colors duration-150"
+                  style={{ color: isActive ? '#007AFF' : '#8E8E93' }}
+                >
                   {item.label}
                 </span>
               </Link>
             );
           })}
+
+          {/* More tab */}
+          <button
+            onClick={() => setMoreSheetOpen(true)}
+            className="flex-1 flex flex-col items-center gap-0.5 py-1 select-none"
+            style={{ minHeight: 44 }}
+            aria-label="More"
+          >
+            <Menu
+              className="w-6 h-6 transition-colors duration-150"
+              style={{ color: moreSheetOpen || (!currentTabActive && currentPageName !== 'Dashboard') ? '#007AFF' : '#8E8E93' }}
+              strokeWidth={1.75}
+            />
+            <span
+              className="text-[10px] font-medium leading-none"
+              style={{ color: moreSheetOpen || (!currentTabActive && currentPageName !== 'Dashboard') ? '#007AFF' : '#8E8E93' }}
+            >
+              More
+            </span>
+          </button>
         </div>
       </nav>
 

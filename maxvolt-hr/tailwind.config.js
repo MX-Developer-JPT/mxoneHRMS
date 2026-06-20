@@ -5,14 +5,22 @@ module.exports = {
   theme: {
   	extend: {
   		fontFamily: {
-  			sans: ['Plus Jakarta Sans', 'system-ui', '-apple-system', 'sans-serif'],
+  			sans: ['-apple-system', 'BlinkMacSystemFont', 'SF Pro Text', 'SF Pro Display',
+                 'Helvetica Neue', 'Inter', 'system-ui', 'sans-serif'],
   		},
   		borderRadius: {
-  			'2xl': '1rem',
-  			'3xl': '1.25rem',
-  			lg: 'var(--radius)',
-  			md: 'calc(var(--radius) - 2px)',
-  			sm: 'calc(var(--radius) - 4px)'
+  			'2xl': '1.25rem',   /* 20px — Apple large card */
+  			'3xl': '1.5rem',    /* 24px — Apple extra large */
+  			lg: 'var(--radius)',                    /* 12px */
+  			md: 'calc(var(--radius) - 2px)',        /* 10px */
+  			sm: 'calc(var(--radius) - 4px)',        /* 8px  */
+  		},
+  		boxShadow: {
+  			/* Apple-style elevation system */
+  			'apple-sm': '0 1px 3px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.04)',
+  			'apple':    '0 2px 8px rgba(0,0,0,0.08), 0 0 0 0.5px rgba(0,0,0,0.04)',
+  			'apple-md': '0 4px 16px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.04)',
+  			'apple-lg': '0 8px 32px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.04)',
   		},
   		colors: {
   			background: 'hsl(var(--background))',
