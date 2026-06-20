@@ -44,7 +44,13 @@ function toDateStr(dt) {
 }
 
 async function processRecord(record) {
-  const { employee_code, user_id: directUserId, punch_time, type = 'in', device_id } = record;
+  // Accept both eBio webhook format (EmployeeCode, LogDate, Direction) and direct format (employee_code, punch_time, type)
+  const employee_code = record.employee_code || record.EmployeeCode;
+  const directUserId  = record.user_id;
+  const punch_time    = record.punch_time || record.LogDate || record.DownloadDate;
+  const direction     = (record.type || record.Direction || 'in').toString().toLowerCase();
+  const type          = direction === 'out' || direction === 'exit' ? 'out' : 'in';
+  const device_id     = record.device_id || record.SerialNumber || record.DeviceName || null;
 
   if (!punch_time) return { ok: false, reason: 'punch_time is required' };
 
