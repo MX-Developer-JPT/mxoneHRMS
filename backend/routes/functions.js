@@ -2840,6 +2840,82 @@ Return ONLY valid JSON (no markdown):
       return res.json({ success: true, plan });
     }
 
+    /* ── Statutory: Gratuity (Payment of Gratuity Act) ─ */
+    case 'getGratuityReport': {
+      const GRATUITY_CAP = 2000000; // ₹20,00,000 statutory ceiling
+      const now = new Date();
+      const today = now.toISOString().slice(0, 10);
+
+      const employees = (await all("SELECT id,user_id,data FROM entities WHERE type='Employee' AND status='active'"))
+        .map(r => ({ ...JSON.parse(r.data), _id: r.id }));
+
+      // Latest salary structure per user (for last-drawn basic + DA)
+      const ssRows = (await all("SELECT user_id,data,created_at FROM entities WHERE type='SalaryStructure'"))
+        .map(r => ({ user_id: r.user_id, _created: r.created_at, ...JSON.parse(r.data) }));
+      const latestSS = {};
+      for (const s of ssRows) {
+        if (!latestSS[s.user_id] || (s._created || '') > (latestSS[s.user_id]._created || '')) latestSS[s.user_id] = s;
+      }
+
+      const yearsBetween = (fromStr) => {
+        const f = new Date(fromStr);
+        if (isNaN(f.getTime())) return null;
+        return (now - f) / (365.25 * 864e5);
+      };
+      // Payment of Gratuity Act rounding: >6 months rounds up, else down
+      const completedYearsForPayout = (yrs) => {
+        const whole = Math.floor(yrs);
+        const frac = yrs - whole;
+        return frac > 0.5 ? whole + 1 : whole;
+      };
+
+      const rows = [];
+      let totalLiability = 0, totalPayableNow = 0;
+      for (const emp of employees) {
+        if (!emp.date_of_joining) continue;
+        const yrs = yearsBetween(emp.date_of_joining);
+        if (yrs === null || yrs < 0) continue;
+        const ss = latestSS[emp.user_id] || {};
+        const monthlyBasic = (ss.basic_salary || 0) + (ss.dearness_allowance || ss.da || 0);
+        if (!monthlyBasic) continue; // no salary structure → can't compute
+
+        // Accrued accounting liability (from day one, on exact tenure)
+        const accrued = Math.min(GRATUITY_CAP, Math.round((15 / 26) * monthlyBasic * yrs));
+        // Payable if exit today (only if eligible ≥5 yrs, statutory rounding)
+        const eligible = yrs >= 5;
+        const payableNow = eligible ? Math.min(GRATUITY_CAP, Math.round((15 / 26) * monthlyBasic * completedYearsForPayout(yrs))) : 0;
+
+        totalLiability += accrued;
+        totalPayableNow += payableNow;
+
+        rows.push({
+          user_id: emp.user_id,
+          name: emp.display_name || emp.full_name || 'Employee',
+          employee_code: emp.employee_code || '',
+          department: emp.department || '',
+          date_of_joining: emp.date_of_joining,
+          years_of_service: parseFloat(yrs.toFixed(2)),
+          monthly_basic: Math.round(monthlyBasic),
+          eligible,
+          near_eligible: !eligible && yrs >= 4,
+          accrued_liability: accrued,
+          payable_if_exit_today: payableNow,
+        });
+      }
+
+      rows.sort((a, b) => b.accrued_liability - a.accrued_liability);
+      const summary = {
+        as_of: today,
+        cap: GRATUITY_CAP,
+        employees_with_structure: rows.length,
+        eligible_count: rows.filter(r => r.eligible).length,
+        near_eligible_count: rows.filter(r => r.near_eligible).length,
+        total_accrued_liability: totalLiability,
+        total_payable_if_exit: totalPayableNow,
+      };
+      return res.json({ success: true, summary, employees: rows });
+    }
+
     /* ── Employee Experience: Recognition (Kudos) ────── */
     case 'giveKudos': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });

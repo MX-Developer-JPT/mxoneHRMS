@@ -9,7 +9,7 @@ import {
   Target, HelpCircle, Settings, LogOut, Menu, X, Briefcase,
   DollarSign, FolderOpen, Bell, UserPlus, TrendingDown, BarChart3,
   UserCog, Building2, ShieldOff, PieChart, Shield, GraduationCap,
-  ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award,
+  ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
@@ -104,6 +104,7 @@ const hrMenuItems = [
   { name: 'Loans',                   icon: DollarSign,        page: 'LoanManagement' },
   { name: 'Tax Declarations',        icon: FileText,          page: 'TaxDeclaration' },
   { name: 'Off-Cycle Payments',      icon: DollarSign,        page: 'OffCyclePayments' },
+  { name: 'Gratuity Report',         icon: Landmark,          page: 'GratuityReport' },
   { name: 'Compliance Reports',      icon: FileText,          page: 'ComplianceReports' },
   { name: 'Payroll Settings',        icon: Settings,          page: 'PayrollSettings' },
   { name: 'Departments',             icon: Building2,         page: 'DepartmentManagement' },

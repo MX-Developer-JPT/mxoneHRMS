@@ -98,6 +98,7 @@ import HelpdeskCategoryManagement from './pages/HelpdeskCategoryManagement';
 import AttendanceLogDashboard from './pages/AttendanceLogDashboard';
 import AttritionRisk from './pages/AttritionRisk';
 import Recognition from './pages/Recognition';
+import GratuityReport from './pages/GratuityReport';
 import __Layout from './Layout.jsx';
 
 
@@ -153,6 +154,7 @@ export const PAGES = {
     "LocationMaster": LocationMaster,
     "AttritionRisk": AttritionRisk,
     "Recognition": Recognition,
+    "GratuityReport": GratuityReport,
 
 }
 
