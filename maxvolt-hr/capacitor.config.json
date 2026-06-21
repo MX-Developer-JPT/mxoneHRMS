@@ -1,0 +1,13 @@
+{
+  "appId": "com.maxvolt.hr",
+  "appName": "Maxvolt HR",
+  "webDir": "dist",
+  "server": {
+    "url": "https://hr.maxvolt-one.co.in",
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}
