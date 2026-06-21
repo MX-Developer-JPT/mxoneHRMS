@@ -93,6 +93,16 @@ async function initSchema() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+
+    CREATE TABLE IF NOT EXISTS files (
+      id          TEXT PRIMARY KEY,
+      filename    TEXT,
+      mime        TEXT,
+      size        INTEGER,
+      data        BYTEA NOT NULL,
+      uploaded_by TEXT,
+      created_at  TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
+    );
   `);
 
   // Ensure columns added after initial schema exist (ALTER TABLE is idempotent with IF NOT EXISTS)
