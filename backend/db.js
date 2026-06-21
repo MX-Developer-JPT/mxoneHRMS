@@ -84,6 +84,15 @@ async function initSchema() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read);
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint   TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL,
+      keys       TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
   `);
 
   // Ensure columns added after initial schema exist (ALTER TABLE is idempotent with IF NOT EXISTS)

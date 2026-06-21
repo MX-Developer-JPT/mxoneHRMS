@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Sun, Moon, LogOut, Trash2, Settings, Monitor, MapPin, Plus, X, Pencil } from 'lucide-react';
+import { Sun, Moon, LogOut, Trash2, Settings, Monitor, MapPin, Plus, X, Pencil, Bell, BellOff, Download, Smartphone } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from "@/components/ui/badge";
+import { pushSupported, getPushState, enablePush, disablePush } from '@/utils/pwa';
 
 export default function AppSettings() {
   const { theme, setTheme } = useTheme();
@@ -20,9 +21,53 @@ export default function AppSettings() {
   const [editingLoc, setEditingLoc] = useState(null);
   const [locForm, setLocForm] = useState({ name: '', address: '', city: '', state: '' });
 
+  // PWA / push
+  const [pushState, setPushState] = useState('default'); // default | subscribed | denied | unsupported
+  const [pushBusy, setPushBusy] = useState(false);
+  const [installEvt, setInstallEvt] = useState(null);
+  const [installed, setInstalled] = useState(false);
+
   useEffect(() => {
     loadData();
+    getPushState().then(setPushState).catch(() => {});
+    const onPrompt = (e) => { e.preventDefault(); setInstallEvt(e); };
+    const onInstalled = () => { setInstalled(true); setInstallEvt(null); };
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+    if (window.matchMedia?.('(display-mode: standalone)')?.matches) setInstalled(true);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onPrompt);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
   }, []);
+
+  const togglePush = async () => {
+    setPushBusy(true);
+    try {
+      if (pushState === 'subscribed') {
+        await disablePush();
+        setPushState('default');
+        toast.success('Push notifications turned off');
+      } else {
+        await enablePush();
+        setPushState('subscribed');
+        toast.success('Push notifications enabled');
+      }
+    } catch (e) {
+      toast.error(e.message);
+    }
+    setPushBusy(false);
+  };
+
+  const handleInstall = async () => {
+    if (!installEvt) {
+      toast.info('To install: use your browser menu → "Add to Home Screen" / "Install app".');
+      return;
+    }
+    installEvt.prompt();
+    const { outcome } = await installEvt.userChoice;
+    if (outcome === 'accepted') { setInstalled(true); setInstallEvt(null); }
+  };
 
   const loadData = async () => {
     const [currentUser, locData] = await Promise.all([
@@ -125,6 +170,58 @@ export default function AppSettings() {
                   </button>
                 );
               })}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Notifications & App */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Bell className="w-4 h-4 text-blue-600" /> Notifications & App
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {/* Push toggle */}
+            <div className="flex items-center justify-between p-3 border rounded-lg">
+              <div className="flex items-center gap-3">
+                {pushState === 'subscribed'
+                  ? <Bell className="w-5 h-5 text-green-600" />
+                  : <BellOff className="w-5 h-5 text-gray-400" />}
+                <div>
+                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Push notifications</p>
+                  <p className="text-xs text-gray-500">
+                    {pushState === 'unsupported' ? 'Not supported on this device/browser'
+                      : pushState === 'denied' ? 'Blocked — enable notifications in browser settings'
+                      : pushState === 'subscribed' ? 'On — you\'ll get approvals, recognition & alerts'
+                      : 'Get real-time alerts even when the app is closed'}
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" variant={pushState === 'subscribed' ? 'outline' : 'default'}
+                disabled={pushBusy || pushState === 'unsupported' || pushState === 'denied'}
+                onClick={togglePush}
+                className={pushState === 'subscribed' ? '' : 'bg-blue-600 hover:bg-blue-700'}>
+                {pushBusy ? '…' : pushState === 'subscribed' ? 'Turn off' : 'Enable'}
+              </Button>
+            </div>
+
+            {/* Install */}
+            <div className="flex items-center justify-between p-3 border rounded-lg">
+              <div className="flex items-center gap-3">
+                <Smartphone className="w-5 h-5 text-indigo-500" />
+                <div>
+                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Install app</p>
+                  <p className="text-xs text-gray-500">
+                    {installed ? 'Installed — launch it from your home screen' : 'Add Maxvolt HR to your home screen for quick access'}
+                  </p>
+                </div>
+              </div>
+              {!installed && (
+                <Button size="sm" variant="outline" onClick={handleInstall}>
+                  <Download className="w-4 h-4 mr-1" /> Install
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>

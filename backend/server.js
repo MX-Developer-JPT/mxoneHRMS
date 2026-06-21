@@ -13,6 +13,7 @@ import aiRouter             from './routes/ai.js';
 import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
 import notificationsRouter  from './routes/notifications.js';
+import pushRouter           from './routes/push.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -164,6 +165,7 @@ app.use('/api/ai',              aiRouter);
 app.use('/api/admin',           adminRouter);
 app.use('/api/attendance-log',  attendanceLogRouter);
 app.use('/api/notifications',   notificationsRouter);
+app.use('/api/push',            pushRouter);
 
 // Production: serve built React frontend
 if (process.env.NODE_ENV === 'production') {

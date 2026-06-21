@@ -3001,12 +3001,15 @@ Return ONLY valid JSON (no markdown):
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Kudos',$2,'active',$3)", [kid, receiver_id, JSON.stringify(kData)]);
 
-      // Notify the receiver
+      // Notify the receiver (in-app + push)
       try {
+        const notifMsg = `${giverName} recognised you for ${value}${message ? ': ' + message.slice(0, 120) : ''}`;
         await run(
           "INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)",
-          [uuidv4(), receiver_id, `🎉 You received recognition!`, `${giverName} recognised you for ${value}${message ? ': ' + message.slice(0, 120) : ''}`, 'success', '/Recognition']
+          [uuidv4(), receiver_id, `🎉 You received recognition!`, notifMsg, 'success', '/Recognition']
         );
+        const { sendPushToUser } = await import('../utils/push.js');
+        sendPushToUser(receiver_id, { title: '🎉 You received recognition!', message: notifMsg, type: 'success', link: '/Recognition' });
       } catch (ne) { console.warn('[giveKudos] notify failed:', ne.message); }
 
       return res.json({ success: true, kudos: kData });

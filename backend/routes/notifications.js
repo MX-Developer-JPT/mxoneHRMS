@@ -2,6 +2,7 @@ import express from 'express';
 import { one, all, run } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
+import { sendPushToUser } from '../utils/push.js';
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'maxvolt-hr-jwt-secret';
@@ -51,6 +52,7 @@ router.post('/', requireAuth, async (req, res) => {
     `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
     [id, targetUserId, title, message, type, link || null]
   );
+  sendPushToUser(targetUserId, { title, message, type, link }); // fire-and-forget
   res.json({ success: true, id });
 });
 
