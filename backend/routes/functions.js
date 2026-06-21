@@ -2821,6 +2821,99 @@ ${contextBlock || 'No employee context available — answer from general policy 
       return res.json({ success: true, employee: emp, recent_leaves: edLeaves, pending_regularisations: edRegs.length, active_loans: edLoans, latest_payslip: latestPayslip, open_tickets: edTickets.length, upcoming_leaves: edUpcomingLeaves, tax_declaration: edTax ? JSON.parse(edTax.data) : null, current_fy: currentFY });
     }
 
+    /* ── Anomaly Detection (attendance + payroll) ────── */
+    case 'getAnomalies': {
+      const now = new Date();
+      const today = now.toISOString().slice(0, 10);
+      const d60 = new Date(now.getTime() - 60 * 864e5).toISOString().slice(0, 10);
+
+      const empRows = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")).map(r => JSON.parse(r.data));
+      const empByUser = {};
+      for (const e of empRows) empByUser[e.user_id] = e;
+      const nameOf = (uid) => empByUser[uid]?.display_name || empByUser[uid]?.full_name || 'Employee';
+      const activeSet = new Set(empRows.map(e => e.user_id));
+
+      const anomalies = [];
+      const add = (category, severity, user_id, when, description) =>
+        anomalies.push({ category, severity, user_id, name: nameOf(user_id), department: empByUser[user_id]?.department || '', when, description });
+
+      // ── Attendance (last 60 days) ──
+      const att = (await all("SELECT user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1", [d60])).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+      for (const a of att) {
+        if (!activeSet.has(a.user_id)) continue;
+        const ci = a.check_in_time ? new Date(a.check_in_time) : null;
+        const co = a.check_out_time ? new Date(a.check_out_time) : null;
+        if (ci && co) {
+          const hrs = (co - ci) / 3600000;
+          if (hrs < 0) add('attendance', 'high', a.user_id, a.date, `Check-out is before check-in on ${a.date}`);
+          else if (hrs > 16) add('attendance', 'medium', a.user_id, a.date, `Implausibly long workday (${hrs.toFixed(1)}h) on ${a.date}`);
+        }
+        if (ci && !co && a.date < today && a.status === 'present') {
+          add('attendance', 'low', a.user_id, a.date, `Missing check-out on ${a.date}`);
+        }
+        const punches = Array.isArray(a.punch_sessions) ? a.punch_sessions.length : 0;
+        if (punches > 10) add('attendance', 'low', a.user_id, a.date, `Unusually high punch count (${punches}) on ${a.date}`);
+      }
+
+      // Present while on approved leave
+      const approvedLeaves = (await all("SELECT user_id,data FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'end_date' >= $1", [d60])).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+      const attByKey = new Set(att.filter(a => a.check_in_time).map(a => `${a.user_id}|${a.date}`));
+      for (const lv of approvedLeaves) {
+        if (!lv.start_date || !lv.end_date) continue;
+        for (let d = new Date(lv.start_date); d <= new Date(lv.end_date); d.setDate(d.getDate() + 1)) {
+          const ds = d.toISOString().slice(0, 10);
+          if (ds < d60 || ds > today) continue;
+          if (attByKey.has(`${lv.user_id}|${ds}`)) add('attendance', 'medium', lv.user_id, ds, `Marked present on ${ds} while on approved leave`);
+        }
+      }
+
+      // ── Payroll ──
+      const payrolls = (await all("SELECT user_id,data FROM entities WHERE type='Payroll'")).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+      // Duplicates + invalid values
+      const seen = {};
+      const byUser = {};
+      for (const pr of payrolls) {
+        const key = `${pr.user_id}|${pr.year}|${pr.month}`;
+        if (seen[key]) add('payroll', 'high', pr.user_id, `${pr.month}/${pr.year}`, `Duplicate payroll record for ${pr.month}/${pr.year}`);
+        seen[key] = true;
+
+        const net = Number(pr.net_salary || 0), gross = Number(pr.gross_salary ?? pr.gross ?? 0);
+        if (activeSet.has(pr.user_id)) {
+          if (gross > 0 && net > gross) add('payroll', 'high', pr.user_id, `${pr.month}/${pr.year}`, `Net salary (₹${net}) exceeds gross (₹${gross})`);
+          if (net <= 0) add('payroll', 'medium', pr.user_id, `${pr.month}/${pr.year}`, `Zero / negative net salary for ${pr.month}/${pr.year}`);
+        }
+        if (!byUser[pr.user_id]) byUser[pr.user_id] = [];
+        byUser[pr.user_id].push(pr);
+      }
+      // Month-over-month deviation > 30%
+      for (const uid of Object.keys(byUser)) {
+        if (!activeSet.has(uid)) continue;
+        const list = byUser[uid].filter(p => p.net_salary).sort((a, b) => (a.year - b.year) || (a.month - b.month));
+        for (let i = 1; i < list.length; i++) {
+          const prev = Number(list[i - 1].net_salary), cur = Number(list[i].net_salary);
+          if (prev > 0) {
+            const dev = ((cur - prev) / prev) * 100;
+            if (Math.abs(dev) >= 30) {
+              add('payroll', 'medium', uid, `${list[i].month}/${list[i].year}`, `Net salary ${dev > 0 ? 'jumped' : 'dropped'} ${Math.abs(dev).toFixed(0)}% vs previous month (₹${prev} → ₹${cur})`);
+            }
+          }
+        }
+      }
+
+      const order = { high: 0, medium: 1, low: 2 };
+      anomalies.sort((a, b) => order[a.severity] - order[b.severity]);
+      const summary = {
+        total: anomalies.length,
+        high: anomalies.filter(a => a.severity === 'high').length,
+        medium: anomalies.filter(a => a.severity === 'medium').length,
+        low: anomalies.filter(a => a.severity === 'low').length,
+        attendance: anomalies.filter(a => a.category === 'attendance').length,
+        payroll: anomalies.filter(a => a.category === 'payroll').length,
+        as_of: today,
+      };
+      return res.json({ success: true, summary, anomalies });
+    }
+
     /* ── Attrition Risk (predictive) ─────────────────── */
     case 'getAttritionRisk': {
       const now = new Date();

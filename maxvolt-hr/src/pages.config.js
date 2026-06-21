@@ -103,6 +103,7 @@ import LetterGenerator from './pages/LetterGenerator';
 import Form16 from './pages/Form16';
 import StatutoryRegisters from './pages/StatutoryRegisters';
 import PulseSurveys from './pages/PulseSurveys';
+import AnomalyDetection from './pages/AnomalyDetection';
 import __Layout from './Layout.jsx';
 
 
@@ -163,6 +164,7 @@ export const PAGES = {
     "Form16": Form16,
     "StatutoryRegisters": StatutoryRegisters,
     "PulseSurveys": PulseSurveys,
+    "AnomalyDetection": AnomalyDetection,
 
 }
 
