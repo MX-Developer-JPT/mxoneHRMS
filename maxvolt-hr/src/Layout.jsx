@@ -9,7 +9,7 @@ import {
   Target, HelpCircle, Settings, LogOut, Menu, X, Briefcase,
   DollarSign, FolderOpen, Bell, UserPlus, TrendingDown, BarChart3,
   UserCog, Building2, ShieldOff, PieChart, Shield, GraduationCap,
-  ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert,
+  ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
@@ -40,6 +40,7 @@ const employeeMenuItems = [
   { name: 'Gate Pass',        icon: ShieldCheck,       page: 'GatePassRequest' },
   { name: 'My Assets',        icon: Laptop,            page: 'MyAssets' },
   { name: 'Team Calendar',    icon: Calendar,          page: 'TeamCalendar' },
+  { name: 'Recognition',      icon: Award,             page: 'Recognition' },
   { name: 'Employee Portal',  icon: Users,             page: 'EmployeeEngagementPortal' },
   { name: 'AskMax AI',        icon: Sparkles,          page: 'AskMax' },
   { name: 'My Profile',       icon: User2,             page: 'Profile' },
@@ -76,6 +77,7 @@ const managementMenuItems = [
   // ── General ──────────────────────────────────────────────
   { name: 'Announcements',           icon: Bell,              page: 'Announcements' },
   { name: 'Helpdesk',                icon: HelpCircle,        page: 'Helpdesk' },
+  { name: 'Recognition',             icon: Award,             page: 'Recognition' },
   { name: 'Employee Portal',         icon: Users,             page: 'EmployeeEngagementPortal' },
   { name: 'AskMax AI',               icon: Sparkles,          page: 'AskMax' },
   { name: 'My Profile',              icon: User2,             page: 'Profile' },
@@ -123,6 +125,7 @@ const hrMenuItems = [
   { name: 'My Insurance',            icon: Shield,            page: 'MyInsurance' },
   { name: 'LOP Configuration',       icon: TrendingDown,      page: 'LOPConfiguration' },
   { name: 'Exit Management',         icon: LogOut,            page: 'ExitManagement' },
+  { name: 'Recognition',             icon: Award,             page: 'Recognition' },
   { name: 'Employee Portal',         icon: Users,             page: 'EmployeeEngagementPortal' },
   { name: 'Training Programs',       icon: GraduationCap,     page: 'TrainingManagement' },
   { name: 'Training Needs',          icon: GraduationCap,     page: 'TrainingNeeds' },

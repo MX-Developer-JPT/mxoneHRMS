@@ -97,6 +97,7 @@ import EmployeeDocuments from './pages/EmployeeDocuments';
 import HelpdeskCategoryManagement from './pages/HelpdeskCategoryManagement';
 import AttendanceLogDashboard from './pages/AttendanceLogDashboard';
 import AttritionRisk from './pages/AttritionRisk';
+import Recognition from './pages/Recognition';
 import __Layout from './Layout.jsx';
 
 
@@ -151,6 +152,7 @@ export const PAGES = {
     "LeaveDashboard": LeaveDashboard,
     "LocationMaster": LocationMaster,
     "AttritionRisk": AttritionRisk,
+    "Recognition": Recognition,
 
 }
 

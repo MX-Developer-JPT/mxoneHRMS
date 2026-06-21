@@ -2840,6 +2840,82 @@ Return ONLY valid JSON (no markdown):
       return res.json({ success: true, plan });
     }
 
+    /* ── Employee Experience: Recognition (Kudos) ────── */
+    case 'giveKudos': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { receiver_id, value, message } = p;
+      if (!receiver_id || !value) return res.json({ success: false, error: 'receiver_id and value are required' });
+      if (receiver_id === cu.id) return res.json({ success: false, error: 'You cannot recognise yourself' });
+
+      // Resolve names
+      const giverEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+      const giverName = giverEmpRow ? (JSON.parse(giverEmpRow.data).display_name || cu.email) : cu.email;
+      const recvEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [receiver_id]);
+      const recv = recvEmpRow ? JSON.parse(recvEmpRow.data) : {};
+
+      const kid = uuidv4();
+      const kData = {
+        id: kid,
+        giver_id: cu.id, giver_name: giverName,
+        receiver_id, receiver_name: recv.display_name || 'Colleague',
+        receiver_dept: recv.department || '',
+        value, message: (message || '').slice(0, 500),
+        created_at: new Date().toISOString(),
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Kudos',$2,'active',$3)", [kid, receiver_id, JSON.stringify(kData)]);
+
+      // Notify the receiver
+      try {
+        await run(
+          "INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)",
+          [uuidv4(), receiver_id, `🎉 You received recognition!`, `${giverName} recognised you for ${value}${message ? ': ' + message.slice(0, 120) : ''}`, 'success', '/Recognition']
+        );
+      } catch (ne) { console.warn('[giveKudos] notify failed:', ne.message); }
+
+      return res.json({ success: true, kudos: kData });
+    }
+
+    case 'getRecognitionData': {
+      const now = new Date();
+      const curMonth = now.getMonth(); // 0-based
+      const monthStart = new Date(now.getFullYear(), curMonth, 1).toISOString();
+
+      // Feed — most recent kudos
+      const feed = (await all("SELECT data,created_at FROM entities WHERE type='Kudos' ORDER BY created_at DESC LIMIT 60"))
+        .map(r => ({ ...JSON.parse(r.data), _created: r.created_at }));
+
+      // Leaderboard — kudos received this month
+      const monthKudos = feed.filter(k => (k.created_at || k._created || '') >= monthStart);
+      const lbMap = {};
+      for (const k of monthKudos) {
+        if (!lbMap[k.receiver_id]) lbMap[k.receiver_id] = { user_id: k.receiver_id, name: k.receiver_name, dept: k.receiver_dept, count: 0, values: {} };
+        lbMap[k.receiver_id].count++;
+        lbMap[k.receiver_id].values[k.value] = (lbMap[k.receiver_id].values[k.value] || 0) + 1;
+      }
+      const leaderboard = Object.values(lbMap).sort((a, b) => b.count - a.count).slice(0, 10);
+
+      // Celebrations — birthdays & work anniversaries this month
+      const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")).map(r => JSON.parse(r.data));
+      const birthdays = [], anniversaries = [];
+      const dayOf = (s) => { const d = new Date(s); return isNaN(d.getTime()) ? null : d; };
+      for (const e of emps) {
+        const dob = dayOf(e.date_of_birth);
+        if (dob && dob.getMonth() === curMonth) {
+          birthdays.push({ user_id: e.user_id, name: e.display_name || 'Employee', dept: e.department || '', day: dob.getDate(), profile_picture_url: e.profile_picture_url || null });
+        }
+        const doj = dayOf(e.date_of_joining);
+        if (doj && doj.getMonth() === curMonth && doj.getFullYear() < now.getFullYear()) {
+          anniversaries.push({ user_id: e.user_id, name: e.display_name || 'Employee', dept: e.department || '', day: doj.getDate(), years: now.getFullYear() - doj.getFullYear(), profile_picture_url: e.profile_picture_url || null });
+        }
+      }
+      birthdays.sort((a, b) => a.day - b.day);
+      anniversaries.sort((a, b) => a.day - b.day);
+
+      // Totals
+      const totalThisMonth = monthKudos.length;
+      return res.json({ success: true, feed, leaderboard, birthdays, anniversaries, total_this_month: totalThisMonth, month: now.toLocaleString('en-US', { month: 'long' }) });
+    }
+
     /* ── Training ────────────────────────────────────── */
 
     default:
