@@ -2974,6 +2974,132 @@ Return ONLY valid JSON (no markdown):
       return res.json({ success: true, plan });
     }
 
+    /* ── Employee Experience: Pulse Surveys / eNPS ───── */
+    case 'createPulseSurvey': {
+      if (!cu || !['hr', 'admin'].includes(cu.role)) return res.status(403).json({ error: 'HR access required' });
+      const { title, description = '', type = 'pulse', questions = [], closes_at = null } = p;
+      if (!title || !Array.isArray(questions) || questions.length === 0) return res.json({ success: false, error: 'Title and at least one question are required' });
+      const sid = uuidv4();
+      const sData = {
+        id: sid, title, description, type, // 'pulse' | 'enps'
+        questions: questions.map((q, i) => ({ id: q.id || `q${i + 1}`, text: q.text, type: q.type || 'rating' })),
+        status: 'active', anonymous: true, created_by: cu.id, created_at: new Date().toISOString(), closes_at,
+      };
+      await run("INSERT INTO entities(id,type,status,data) VALUES($1,'PulseSurvey','active',$2)", [sid, JSON.stringify(sData)]);
+
+      // Notify all active employees
+      try {
+        const targets = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
+        const { sendPushToUser } = await import('../utils/push.js');
+        for (const t of targets) {
+          if (!t.user_id) continue;
+          await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)",
+            [uuidv4(), t.user_id, '📋 New survey', `Please share your feedback: ${title}`, 'info', '/PulseSurveys']);
+          sendPushToUser(t.user_id, { title: '📋 New survey', message: title, type: 'info', link: '/PulseSurveys' });
+        }
+      } catch (ne) { console.warn('[createPulseSurvey] notify failed:', ne.message); }
+
+      return res.json({ success: true, survey: sData });
+    }
+
+    case 'getPulseSurveys': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const isHR = ['hr', 'admin'].includes(cu.role);
+      const surveys = (await all("SELECT id,data,status,created_at FROM entities WHERE type='PulseSurvey' ORDER BY created_at DESC"))
+        .map(r => ({ ...JSON.parse(r.data), status: r.status }));
+      // Which surveys has the current user responded to?
+      const myResp = (await all("SELECT data FROM entities WHERE type='SurveyResponse' AND user_id=$1", [cu.id]))
+        .map(r => JSON.parse(r.data).survey_id);
+      const mySet = new Set(myResp);
+      // Response counts
+      const counts = {};
+      (await all("SELECT data FROM entities WHERE type='SurveyResponse'")).forEach(r => {
+        const sid = JSON.parse(r.data).survey_id; counts[sid] = (counts[sid] || 0) + 1;
+      });
+      const out = surveys.map(s => ({
+        ...s,
+        completed: mySet.has(s.id),
+        response_count: counts[s.id] || 0,
+      }));
+      return res.json({ success: true, surveys: out, is_hr: isHR });
+    }
+
+    case 'submitSurveyResponse': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { survey_id, answers } = p;
+      if (!survey_id || !answers) return res.json({ success: false, error: 'survey_id and answers required' });
+      const sRow = await one("SELECT data,status FROM entities WHERE type='PulseSurvey' AND id=$1", [survey_id]);
+      if (!sRow) return res.json({ success: false, error: 'Survey not found' });
+      if (sRow.status !== 'active') return res.json({ success: false, error: 'This survey is closed' });
+      const dup = await one("SELECT id FROM entities WHERE type='SurveyResponse' AND user_id=$1 AND data::jsonb->>'survey_id'=$2", [cu.id, survey_id]);
+      if (dup) return res.json({ success: false, error: 'You have already responded to this survey' });
+      const rid = uuidv4();
+      // user_id stored only for dedup; never returned in aggregation
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SurveyResponse',$2,'submitted',$3)",
+        [rid, cu.id, JSON.stringify({ id: rid, survey_id, answers, submitted_at: new Date().toISOString() })]);
+      return res.json({ success: true });
+    }
+
+    case 'closePulseSurvey': {
+      if (!cu || !['hr', 'admin'].includes(cu.role)) return res.status(403).json({ error: 'HR access required' });
+      const { survey_id } = p;
+      const sRow = await one("SELECT data FROM entities WHERE type='PulseSurvey' AND id=$1", [survey_id]);
+      if (!sRow) return res.json({ success: false, error: 'Survey not found' });
+      const sd = { ...JSON.parse(sRow.data), status: 'closed', closed_at: new Date().toISOString() };
+      await run("UPDATE entities SET status='closed', data=$1 WHERE id=$2", [JSON.stringify(sd), survey_id]);
+      return res.json({ success: true });
+    }
+
+    case 'getSurveyResults': {
+      if (!cu || !['hr', 'admin'].includes(cu.role)) return res.status(403).json({ error: 'HR access required' });
+      const { survey_id } = p;
+      const sRow = await one("SELECT data,status FROM entities WHERE type='PulseSurvey' AND id=$1", [survey_id]);
+      if (!sRow) return res.json({ success: false, error: 'Survey not found' });
+      const survey = { ...JSON.parse(sRow.data), status: sRow.status };
+
+      const responses = (await all("SELECT data FROM entities WHERE type='SurveyResponse' AND data::jsonb->>'survey_id'=$1", [survey_id]))
+        .map(r => JSON.parse(r.data).answers || {}); // identity intentionally dropped
+
+      const totalActive = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'"))?.c || 0;
+      const responseCount = responses.length;
+      const responseRate = totalActive > 0 ? Math.round((responseCount / Number(totalActive)) * 100) : 0;
+
+      // Per-question aggregation
+      const questionStats = survey.questions.map(q => {
+        const vals = responses.map(a => a[q.id]).filter(v => v !== undefined && v !== '');
+        if (q.type === 'text') {
+          return { id: q.id, text: q.text, type: 'text', comments: vals.map(String).slice(0, 200) };
+        }
+        const nums = vals.map(Number).filter(v => !isNaN(v));
+        const avg = nums.length ? parseFloat((nums.reduce((s, v) => s + v, 0) / nums.length).toFixed(2)) : 0;
+        // distribution
+        const dist = {};
+        nums.forEach(v => { dist[v] = (dist[v] || 0) + 1; });
+        return { id: q.id, text: q.text, type: q.type, average: avg, count: nums.length, distribution: dist };
+      });
+
+      // eNPS — find an 'nps' (0-10) question
+      let enps = null;
+      const npsQ = survey.questions.find(q => q.type === 'nps');
+      if (npsQ) {
+        const scores = responses.map(a => Number(a[npsQ.id])).filter(v => !isNaN(v));
+        if (scores.length) {
+          const promoters = scores.filter(v => v >= 9).length;
+          const detractors = scores.filter(v => v <= 6).length;
+          const passives = scores.length - promoters - detractors;
+          enps = {
+            score: Math.round(((promoters - detractors) / scores.length) * 100),
+            promoters, passives, detractors, total: scores.length,
+            promoter_pct: Math.round((promoters / scores.length) * 100),
+            passive_pct: Math.round((passives / scores.length) * 100),
+            detractor_pct: Math.round((detractors / scores.length) * 100),
+          };
+        }
+      }
+
+      return res.json({ success: true, survey, response_count: responseCount, response_rate: responseRate, questions: questionStats, enps });
+    }
+
     /* ── Statutory: Gratuity (Payment of Gratuity Act) ─ */
     case 'getGratuityReport': {
       const GRATUITY_CAP = 2000000; // ₹20,00,000 statutory ceiling

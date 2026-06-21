@@ -102,6 +102,7 @@ import GratuityReport from './pages/GratuityReport';
 import LetterGenerator from './pages/LetterGenerator';
 import Form16 from './pages/Form16';
 import StatutoryRegisters from './pages/StatutoryRegisters';
+import PulseSurveys from './pages/PulseSurveys';
 import __Layout from './Layout.jsx';
 
 
@@ -161,6 +162,7 @@ export const PAGES = {
     "LetterGenerator": LetterGenerator,
     "Form16": Form16,
     "StatutoryRegisters": StatutoryRegisters,
+    "PulseSurveys": PulseSurveys,
 
 }
 
