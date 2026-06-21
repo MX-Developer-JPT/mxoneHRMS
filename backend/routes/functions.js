@@ -587,7 +587,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── API Key Management (for external attendance push) ─ */
     case 'getAttendanceApiInfo': {
-      const key = await one("SELECT value FROM settings WHERE key='attendance_api_key'")?.value || null;
+      const key = (await one("SELECT value FROM settings WHERE key='attendance_api_key'"))?.value || null;
       const baseUrl = process.env.APP_URL || (process.env.NODE_ENV === 'production' ? 'https://your-app.up.railway.app' : `http://localhost:${process.env.PORT || 3001}`);
       return res.json({
         success: true,
@@ -728,7 +728,7 @@ router.post('/:name', async (req, res) => {
       // Also accepts { records: [...] } batch from any caller
 
       // ── API key check (same key stored in settings) ────────────────────────
-      const storedKey = await one("SELECT value FROM settings WHERE key='attendance_api_key'")?.value || process.env.ATTENDANCE_API_KEY || null;
+      const storedKey = (await one("SELECT value FROM settings WHERE key='attendance_api_key'"))?.value || process.env.ATTENDANCE_API_KEY || null;
       if (storedKey) {
         const authHeader = req.headers['authorization'] || req.headers['x-api-key'] || '';
         const qKey = req.query?.key || '';
@@ -980,7 +980,7 @@ router.post('/:name', async (req, res) => {
         , [userId, date]);
 
         if (existAtt) {
-          const existing = JSON.parse(await one("SELECT data FROM entities WHERE id=$1", [existAtt.id]).data);
+          const existing = JSON.parse((await one("SELECT data FROM entities WHERE id=$1", [existAtt.id])).data);
           // Don't overwrite regularised records
           if (!existing.regularised) {
             await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [status, JSON.stringify({ ...existing, ...attData, id: existAtt.id }), existAtt.id]);
@@ -1997,16 +1997,16 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const yr12Ago    = new Date(now.getFullYear() - 1, now.getMonth(), 1).toISOString().slice(0, 10);
 
       // ── Core headcount ──────────────────────────────────────────────────────
-      const totalActive  = await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'").c;
-      const presentToday = await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [today]).c;
+      const totalActive  = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'")).c;
+      const presentToday = (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [today])).c;
       const absentToday  = Math.max(0, totalActive - presentToday);
-      const newJoineesThisMonth = await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1", [monthStart]).c;
-      const exitedLast12m = await one("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND data::jsonb->>'last_working_date' >= $1", [yr12Ago]).c;
+      const newJoineesThisMonth = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1", [monthStart])).c;
+      const exitedLast12m = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND data::jsonb->>'last_working_date' >= $1", [yr12Ago])).c;
       const attritionRate = totalActive > 0 ? parseFloat(((exitedLast12m / totalActive) * 100).toFixed(1)) : 0;
 
       // ── Leave ───────────────────────────────────────────────────────────────
-      const pendingLeaveRequests = await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'").c;
-      const activeLeaves         = await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date' <= $1 AND data::jsonb->>'end_date' >= $2", [today, today]).c;
+      const pendingLeaveRequests = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'")).c;
+      const activeLeaves         = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date' <= $1 AND data::jsonb->>'end_date' >= $2", [today, today])).c;
 
       // ── Payroll ─────────────────────────────────────────────────────────────
       const payrollRows      = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'year'=$1 AND data::jsonb->>'month'=$2", [now.getFullYear(), now.getMonth()+1]));
@@ -2067,7 +2067,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
       for (let i = 6; i >= 0; i--) {
         const d = new Date(); d.setDate(d.getDate() - i);
         const dateStr = d.toISOString().slice(0, 10);
-        const present = await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [dateStr]).c;
+        const present = (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [dateStr])).c;
         attendanceTrends.push({ date: dateStr, day: d.toLocaleDateString('en-IN',{weekday:'short'}), present, absent: Math.max(0, totalActive - present) });
       }
 
@@ -2572,7 +2572,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const ssId = uuidv4();
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ShiftSwap',$2,'pending',$3)", [ssId, ssReqId,
         JSON.stringify({ id: ssId, requester_id: ssReqId, target_user_id: ssTgtId, requester_date: ssReqDate, target_date: ssTgtDate||ssReqDate, reason: ssReason, status: 'pending', created_at: new Date().toISOString() })]);
-      const ssReqName = await one("SELECT full_name FROM users WHERE id=$1", [ssReqId])?.full_name || 'An employee';
+      const ssReqName = (await one("SELECT full_name FROM users WHERE id=$1", [ssReqId]))?.full_name || 'An employee';
       const ssNid = uuidv4();
       await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [ssNid, ssTgtId, 'Shift Swap Request', `${ssReqName} has requested a shift swap with you for ${ssReqDate}.`, 'shift_swap', '/shift-management']);
       return res.json({ success: true, swap_id: ssId });
@@ -2619,7 +2619,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const hrRows2 = await all("SELECT id FROM users WHERE role IN ('admin','hr')");
       for (const hr of hrRows2) {
         const tdNid = uuidv4();
-        const tdName = await one("SELECT full_name FROM users WHERE id=$1", [tdUid])?.full_name || 'An employee';
+        const tdName = (await one("SELECT full_name FROM users WHERE id=$1", [tdUid]))?.full_name || 'An employee';
         await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [tdNid, hr.id, 'Tax Declaration Submitted', `${tdName} submitted tax declaration for FY ${tdFY}.`, 'tax', '/admin-panel']);
       }
       return res.json({ success: true, total_declared: tdTotal });
@@ -2663,7 +2663,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Loan',$2,'pending',$3)", [lnId, lnUid,
         JSON.stringify({ id: lnId, user_id: lnUid, loan_type: loan_type||'personal', amount: Number(lnAmt||0), tenure_months: Number(tenure_months||0), emi_amount: emi, purpose, requested_disbursement_date, status: 'pending', applied_at: new Date().toISOString(), outstanding_amount: Number(lnAmt||0) })]);
       const hrRows3 = await all("SELECT id FROM users WHERE role IN ('admin','hr')");
-      const lnName = await one("SELECT full_name FROM users WHERE id=$1", [lnUid])?.full_name||'Employee';
+      const lnName = (await one("SELECT full_name FROM users WHERE id=$1", [lnUid]))?.full_name||'Employee';
       for (const hr of hrRows3) {
         const nid = uuidv4();
         await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [nid, hr.id, 'Loan Application', `${lnName} applied for a ₹${Number(lnAmt||0).toLocaleString('en-IN')} ${loan_type||'personal'} loan.`, 'loan', '/loan-management']);
@@ -2753,7 +2753,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const icId = uuidv4();
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'InsuranceClaim',$2,'pending',$3)", [icId, icUid,
         JSON.stringify({ id: icId, user_id: icUid, policy_id, claim_amount: Number(claim_amount||0), claim_type, description: icDesc, incident_date, status: 'pending', filed_at: new Date().toISOString() })]);
-      const icName = await one("SELECT full_name FROM users WHERE id=$1", [icUid])?.full_name||'Employee';
+      const icName = (await one("SELECT full_name FROM users WHERE id=$1", [icUid]))?.full_name||'Employee';
       const hrRows4 = await all("SELECT id FROM users WHERE role IN ('admin','hr')");
       for (const hr of hrRows4) {
         const nid = uuidv4();
