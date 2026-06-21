@@ -3050,6 +3050,73 @@ Return ONLY valid JSON (no markdown):
       return res.json({ success: true, summary, employees: rows });
     }
 
+    /* ── Statutory: PF ECR + ESI registers ───────────── */
+    case 'getStatutoryRegisters': {
+      const PF_WAGE_CEILING = 15000;
+      const ESI_GROSS_CEILING = 21000;
+      const now = new Date();
+      const month = Number(p.month) || (now.getMonth() + 1); // 1-12
+      const year = Number(p.year) || now.getFullYear();
+      const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
+      const monthEnd = `${year}-${String(month).padStart(2, '0')}-31`;
+
+      const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")).map(r => JSON.parse(r.data));
+      const ssAll = (await all("SELECT user_id,data,created_at FROM entities WHERE type='SalaryStructure'"));
+      const latestSS = {};
+      for (const s of ssAll) { if (!latestSS[s.user_id] || (s.created_at || '') > (latestSS[s.user_id]._c || '')) latestSS[s.user_id] = { ...JSON.parse(s.data), _c: s.created_at }; }
+
+      // Non-contributory (LOP/absent) days per user this month
+      const attMonth = (await all("SELECT user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd])).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+      const ncpByUser = attMonth.reduce((m, a) => { if (a.status === 'absent') m[a.user_id] = (m[a.user_id] || 0) + 1; else if (a.status === 'half_day') m[a.user_id] = (m[a.user_id] || 0) + 0.5; return m; }, {});
+
+      const pfRows = [], esiRows = [];
+      let pfTot = { gross: 0, epfWages: 0, ee: 0, erEPS: 0, erEPF: 0, total: 0 };
+      let esiTot = { gross: 0, ee: 0, er: 0, total: 0 };
+
+      for (const emp of emps) {
+        const ss = latestSS[emp.user_id];
+        if (!ss) continue;
+        const basic = (ss.basic_salary || 0) + (ss.dearness_allowance || ss.da || 0);
+        const gross = Math.round(ss.grossMonthly || 0);
+        const name = emp.display_name || emp.full_name || 'Employee';
+        const ncp = ncpByUser[emp.user_id] || 0;
+
+        // ── PF ──
+        const epfWages = Math.round(Math.min(basic, PF_WAGE_CEILING));
+        if (epfWages > 0) {
+          const ee = Math.round(epfWages * 0.12);
+          const erEPS = Math.round(epfWages * 0.0833);
+          const erEPF = Math.round(epfWages * 0.12) - erEPS;
+          pfRows.push({
+            uan: emp.uan_number || '', name,
+            gross_wages: gross, epf_wages: epfWages, eps_wages: epfWages, edli_wages: epfWages,
+            ee_epf: ee, er_eps: erEPS, er_epf: erEPF, ncp_days: ncp, refund: 0,
+          });
+          pfTot.gross += gross; pfTot.epfWages += epfWages; pfTot.ee += ee; pfTot.erEPS += erEPS; pfTot.erEPF += erEPF; pfTot.total += ee + erEPS + erEPF;
+        }
+
+        // ── ESI (gross ≤ 21000 and applicable) ──
+        if (gross > 0 && gross <= ESI_GROSS_CEILING && emp.is_esi_applicable !== false) {
+          const ee = Math.round(gross * 0.0075);
+          const er = Math.round(gross * 0.0325);
+          esiRows.push({ esi_number: emp.esi_number || '', name, gross_wages: gross, ee_esi: ee, er_esi: er, total: ee + er });
+          esiTot.gross += gross; esiTot.ee += ee; esiTot.er += er; esiTot.total += ee + er;
+        }
+      }
+
+      // EPFO ECR v2.0 text — 11 fields, #~# delimited, one member per line
+      const ecrText = pfRows.map(r =>
+        [r.uan, r.name, r.gross_wages, r.epf_wages, r.eps_wages, r.edli_wages, r.ee_epf, r.er_eps, r.er_epf, r.ncp_days, r.refund].join('#~#')
+      ).join('\n');
+
+      return res.json({
+        success: true,
+        period: { month, year, label: new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' }) },
+        pf: { rows: pfRows, totals: pfTot, ecr_text: ecrText, member_count: pfRows.length },
+        esi: { rows: esiRows, totals: esiTot, member_count: esiRows.length },
+      });
+    }
+
     /* ── Statutory: Form 16 / TDS (Income Tax) ───────── */
     case 'getForm16Data': {
       const f16Uid = p.user_id;

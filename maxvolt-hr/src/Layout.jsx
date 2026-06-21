@@ -105,6 +105,7 @@ const hrMenuItems = [
   { name: 'Loans',                   icon: DollarSign,        page: 'LoanManagement' },
   { name: 'Tax Declarations',        icon: FileText,          page: 'TaxDeclaration' },
   { name: 'Form 16 & TDS',           icon: Receipt,           page: 'Form16' },
+  { name: 'PF & ESI Registers',      icon: ShieldCheck,       page: 'StatutoryRegisters' },
   { name: 'Off-Cycle Payments',      icon: DollarSign,        page: 'OffCyclePayments' },
   { name: 'Gratuity Report',         icon: Landmark,          page: 'GratuityReport' },
   { name: 'Compliance Reports',      icon: FileText,          page: 'ComplianceReports' },
