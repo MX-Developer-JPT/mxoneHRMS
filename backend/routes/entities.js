@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
+import { sendPushToUser } from '../utils/push.js';
 
 const router = Router();
 
@@ -145,6 +146,7 @@ router.post('/:type', async (req, res) => {
               `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
               [notifId, managerId, title, message, 'info', link]
             );
+            sendPushToUser(managerId, { title, message, type: 'info', link });
           }
         }
       }
@@ -171,41 +173,50 @@ router.patch('/:type/:id', async (req, res) => {
 
   const newRow = await one('SELECT * FROM entities WHERE id=$1', [id]);
 
-  // Send email when Leave status changes to approved/rejected (fire and forget)
-  if (type === 'Leave' && req.body.status && req.body.status !== current.status &&
+  // Notify the employee when any request's status changes to approved/rejected.
+  const APPROVAL_TYPES = {
+    Leave:                    { label: 'Leave request',      link: '/Leave' },
+    GatePass:                 { label: 'Gate pass',          link: '/GatePassRequest' },
+    Reimbursement:            { label: 'Expense claim',      link: '/Reimbursements' },
+    AttendanceRegularisation: { label: 'Regularisation request', link: '/AttendanceRegularisation' },
+  };
+  if (APPROVAL_TYPES[type] && req.body.status && req.body.status !== current.status &&
       ['approved', 'rejected'].includes(req.body.status)) {
+    const cfg = APPROVAL_TYPES[type];
+    const targetUserId = updated.user_id || row.user_id;
+    const isApproved = req.body.status === 'approved';
+    const title = `${cfg.label} ${isApproved ? 'Approved' : 'Rejected'}`;
+    const reason = updated.rejection_reason || updated.comments || updated.approval_comments || '';
+    const message = `Your ${cfg.label.toLowerCase()} has been ${req.body.status}${reason ? ` — ${reason}` : '.'}`;
     (async () => {
       try {
-        const uRow = await one('SELECT email, full_name FROM users WHERE id=$1', [updated.user_id || row.user_id]);
-        if (uRow?.email) {
-          const polRow = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND id=$1", [updated.leave_policy_id]);
-          const polData = polRow ? JSON.parse(polRow.data) : {};
-          const tpl = emailTemplates.leaveUpdate({
-            employeeName: uRow.full_name || 'Employee',
-            leaveType: polData.name || updated.leave_type || updated.leave_policy_id || 'Leave',
-            startDate: updated.start_date || '',
-            endDate: updated.end_date || '',
-            days: updated.total_days || '',
-            status: req.body.status,
-            remarks: updated.rejection_reason || updated.comments || ''
-          });
-          sendEmail({ to: uRow.email, ...tpl }).catch(e =>
-            console.error('[email] Leave notification failed:', e.message)
-          );
+        // In-app notification
+        await run(
+          `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
+          [uuidv4(), targetUserId, title, message, isApproved ? 'success' : 'warning', cfg.link]
+        );
+        // Push notification
+        sendPushToUser(targetUserId, { title, message, type: isApproved ? 'success' : 'warning', link: cfg.link });
 
-          const leaveUserId = updated.user_id || row.user_id;
-          const leaveTypeName = polData.name || updated.leave_type || updated.leave_policy_id || 'leave';
-          const notifId = uuidv4();
-          await run(
-            `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
-            [notifId, leaveUserId,
-             `Leave ${req.body.status === 'approved' ? 'Approved' : 'Rejected'}`,
-             `Your ${leaveTypeName} request has been ${req.body.status}.`,
-             req.body.status === 'approved' ? 'success' : 'warning',
-             '/Leave']
-          );
+        // Leave also gets a formatted email
+        if (type === 'Leave') {
+          const uRow = await one('SELECT email, full_name FROM users WHERE id=$1', [targetUserId]);
+          if (uRow?.email) {
+            const polRow = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND id=$1", [updated.leave_policy_id]);
+            const polData = polRow ? JSON.parse(polRow.data) : {};
+            const tpl = emailTemplates.leaveUpdate({
+              employeeName: uRow.full_name || 'Employee',
+              leaveType: polData.name || updated.leave_type || updated.leave_policy_id || 'Leave',
+              startDate: updated.start_date || '',
+              endDate: updated.end_date || '',
+              days: updated.total_days || '',
+              status: req.body.status,
+              remarks: reason,
+            });
+            sendEmail({ to: uRow.email, ...tpl }).catch(e => console.error('[email] Leave notification failed:', e.message));
+          }
         }
-      } catch(e) { console.error('[email] Leave email error:', e.message); }
+      } catch (e) { console.error('[approval-notify] error:', e.message); }
     })();
   }
 

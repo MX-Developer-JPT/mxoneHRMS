@@ -14,6 +14,19 @@ const getUser = (req) => {
   try { return jwt.verify(t, JWT_SECRET); } catch { return null; }
 };
 
+// Role guard — checks the JWT role first, then the DB role/custom_role
+// (the two are usually kept in sync, but custom_role can differ).
+async function hasRole(cu, roles) {
+  if (!cu) return false;
+  if (roles.includes(cu.role)) return true;
+  try {
+    const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
+    return !!u && (roles.includes(u.role) || roles.includes(u.custom_role));
+  } catch { return false; }
+}
+const HR_ROLES = ['hr', 'admin'];
+const MGR_ROLES = ['hr', 'admin', 'management', 'manager'];
+
 const parseEntities = (rows) => rows.map(r => JSON.parse(r.data));
 
 /* ── India income-tax engine (FY 2025-26 / AY 2026-27) ───────── */
@@ -1468,6 +1481,7 @@ Return ONLY a valid JSON object (no markdown) with:
     }
 
     case 'scoreCandidate': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
       const { candidate_id, job_requisition_id } = p;
       const cRow  = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       const jdRow = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [job_requisition_id]);
@@ -1656,6 +1670,7 @@ Return ONLY a valid JSON object (no markdown):
 
     /* ── AI: HR Letter Generation ────────────────────── */
     case 'generateEmployeeLetter': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const letterUid = p.user_id;
       const letterType = p.letter_type;
       const extra = p.extra || {};
@@ -2823,6 +2838,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
     /* ── Anomaly Detection (attendance + payroll) ────── */
     case 'getAnomalies': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const now = new Date();
       const today = now.toISOString().slice(0, 10);
       const d60 = new Date(now.getTime() - 60 * 864e5).toISOString().slice(0, 10);
@@ -2916,6 +2932,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
     /* ── Attrition Risk (predictive) ─────────────────── */
     case 'getAttritionRisk': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'Manager/HR access required' });
       const now = new Date();
       const today = now.toISOString().slice(0, 10);
       const d90 = new Date(now.getTime() - 90 * 864e5).toISOString().slice(0, 10);
@@ -3038,6 +3055,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
     }
 
     case 'getRetentionPlan': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'Manager/HR access required' });
       const ruid = p.user_id;
       if (!ruid) return res.json({ success: false, error: 'user_id required' });
       const rEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [ruid]);
@@ -3069,7 +3087,7 @@ Return ONLY valid JSON (no markdown):
 
     /* ── Employee Experience: Pulse Surveys / eNPS ───── */
     case 'createPulseSurvey': {
-      if (!cu || !['hr', 'admin'].includes(cu.role)) return res.status(403).json({ error: 'HR access required' });
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { title, description = '', type = 'pulse', questions = [], closes_at = null } = p;
       if (!title || !Array.isArray(questions) || questions.length === 0) return res.json({ success: false, error: 'Title and at least one question are required' });
       const sid = uuidv4();
@@ -3134,7 +3152,7 @@ Return ONLY valid JSON (no markdown):
     }
 
     case 'closePulseSurvey': {
-      if (!cu || !['hr', 'admin'].includes(cu.role)) return res.status(403).json({ error: 'HR access required' });
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { survey_id } = p;
       const sRow = await one("SELECT data FROM entities WHERE type='PulseSurvey' AND id=$1", [survey_id]);
       if (!sRow) return res.json({ success: false, error: 'Survey not found' });
@@ -3144,7 +3162,7 @@ Return ONLY valid JSON (no markdown):
     }
 
     case 'getSurveyResults': {
-      if (!cu || !['hr', 'admin'].includes(cu.role)) return res.status(403).json({ error: 'HR access required' });
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { survey_id } = p;
       const sRow = await one("SELECT data,status FROM entities WHERE type='PulseSurvey' AND id=$1", [survey_id]);
       if (!sRow) return res.json({ success: false, error: 'Survey not found' });
@@ -3195,6 +3213,7 @@ Return ONLY valid JSON (no markdown):
 
     /* ── Statutory: Gratuity (Payment of Gratuity Act) ─ */
     case 'getGratuityReport': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const GRATUITY_CAP = 2000000; // ₹20,00,000 statutory ceiling
       const now = new Date();
       const today = now.toISOString().slice(0, 10);
@@ -3271,6 +3290,7 @@ Return ONLY valid JSON (no markdown):
 
     /* ── Statutory: PF ECR + ESI registers ───────────── */
     case 'getStatutoryRegisters': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const PF_WAGE_CEILING = 15000;
       const ESI_GROSS_CEILING = 21000;
       const now = new Date();
@@ -3339,6 +3359,8 @@ Return ONLY valid JSON (no markdown):
     /* ── Statutory: Form 16 / TDS (Income Tax) ───────── */
     case 'getForm16Data': {
       const f16Uid = p.user_id;
+      // HR can view anyone; an employee may view only their own
+      if (!(await hasRole(cu, HR_ROLES)) && cu?.id !== f16Uid) return res.status(403).json({ error: 'Access denied' });
       const fy = p.financial_year || (() => { const n = new Date(); return n.getMonth() >= 3 ? `${n.getFullYear()}-${n.getFullYear() + 1}` : `${n.getFullYear() - 1}-${n.getFullYear()}`; })();
       if (!f16Uid) return res.json({ success: false, error: 'user_id required' });
 
@@ -3416,6 +3438,7 @@ Return ONLY valid JSON (no markdown):
     }
 
     case 'getTDSSummary': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const fy2 = p.financial_year || (() => { const n = new Date(); return n.getMonth() >= 3 ? `${n.getFullYear()}-${n.getFullYear() + 1}` : `${n.getFullYear() - 1}-${n.getFullYear()}`; })();
       const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")).map(r => JSON.parse(r.data));
       const ssAll = (await all("SELECT user_id,data,created_at FROM entities WHERE type='SalaryStructure'"));
