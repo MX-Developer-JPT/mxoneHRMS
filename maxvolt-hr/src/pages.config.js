@@ -100,6 +100,7 @@ import AttritionRisk from './pages/AttritionRisk';
 import Recognition from './pages/Recognition';
 import GratuityReport from './pages/GratuityReport';
 import LetterGenerator from './pages/LetterGenerator';
+import Form16 from './pages/Form16';
 import __Layout from './Layout.jsx';
 
 
@@ -157,6 +158,7 @@ export const PAGES = {
     "Recognition": Recognition,
     "GratuityReport": GratuityReport,
     "LetterGenerator": LetterGenerator,
+    "Form16": Form16,
 
 }
 

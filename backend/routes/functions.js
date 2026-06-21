@@ -16,6 +16,79 @@ const getUser = (req) => {
 
 const parseEntities = (rows) => rows.map(r => JSON.parse(r.data));
 
+/* ── India income-tax engine (FY 2025-26 / AY 2026-27) ───────── */
+const TAX_SLABS = {
+  // New regime (Budget 2025, effective FY 2025-26)
+  new: [
+    [400000, 0], [800000, 0.05], [1200000, 0.10], [1600000, 0.15],
+    [2000000, 0.20], [2400000, 0.25], [Infinity, 0.30],
+  ],
+  // Old regime (unchanged) — below-60 individual
+  old: [
+    [250000, 0], [500000, 0.05], [1000000, 0.20], [Infinity, 0.30],
+  ],
+};
+
+function slabTax(income, slabs) {
+  let tax = 0, prev = 0;
+  for (const [ceiling, rate] of slabs) {
+    if (income > prev) {
+      tax += (Math.min(income, ceiling) - prev) * rate;
+      prev = ceiling;
+    } else break;
+  }
+  return Math.round(tax);
+}
+
+function surcharge(tax, income, regime) {
+  let rate = 0;
+  if (income > 50000000) rate = regime === 'new' ? 0.25 : 0.37;
+  else if (income > 20000000) rate = 0.25;
+  else if (income > 10000000) rate = 0.15;
+  else if (income > 5000000) rate = 0.10;
+  return Math.round(tax * rate);
+}
+
+// Returns a full Form-16-style computation for one regime.
+function computeRegime(regime, { grossSalary, hraExemption = 0, chapterVIA = 0, profTax = 0, otherExempt = 0 }) {
+  const std = regime === 'new' ? 75000 : 50000;
+  let taxableIncome;
+  if (regime === 'new') {
+    // New regime: only standard deduction (no HRA / Chapter VI-A except 80CCD(2))
+    taxableIncome = Math.max(0, grossSalary - std);
+  } else {
+    taxableIncome = Math.max(0, grossSalary - std - hraExemption - otherExempt - profTax - chapterVIA);
+  }
+  taxableIncome = Math.round(taxableIncome);
+
+  const slabs = TAX_SLABS[regime];
+  let tax = slabTax(taxableIncome, slabs);
+
+  // Section 87A rebate
+  let rebate = 0;
+  if (regime === 'new' && taxableIncome <= 1200000) rebate = Math.min(tax, 60000);
+  else if (regime === 'old' && taxableIncome <= 500000) rebate = Math.min(tax, 12500);
+  const taxAfterRebate = Math.max(0, tax - rebate);
+
+  const sur = surcharge(taxAfterRebate, taxableIncome, regime);
+  const cess = Math.round((taxAfterRebate + sur) * 0.04);
+  const totalTax = taxAfterRebate + sur + cess;
+
+  return {
+    regime,
+    standard_deduction: std,
+    hra_exemption: regime === 'new' ? 0 : Math.round(hraExemption),
+    chapter_via: regime === 'new' ? 0 : Math.round(chapterVIA),
+    professional_tax: regime === 'new' ? 0 : Math.round(profTax),
+    taxable_income: taxableIncome,
+    tax_before_rebate: tax,
+    rebate_87a: rebate,
+    surcharge: sur,
+    cess,
+    total_tax: totalTax,
+  };
+}
+
 /* ─────────────────────────────────────────────────────── */
 router.post('/:name', async (req, res) => {
   const { name } = req.params;
@@ -2975,6 +3048,133 @@ Return ONLY valid JSON (no markdown):
         total_payable_if_exit: totalPayableNow,
       };
       return res.json({ success: true, summary, employees: rows });
+    }
+
+    /* ── Statutory: Form 16 / TDS (Income Tax) ───────── */
+    case 'getForm16Data': {
+      const f16Uid = p.user_id;
+      const fy = p.financial_year || (() => { const n = new Date(); return n.getMonth() >= 3 ? `${n.getFullYear()}-${n.getFullYear() + 1}` : `${n.getFullYear() - 1}-${n.getFullYear()}`; })();
+      if (!f16Uid) return res.json({ success: false, error: 'user_id required' });
+
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [f16Uid]);
+      if (!empRow) return res.json({ success: false, error: 'Employee not found' });
+      const emp = JSON.parse(empRow.data);
+      const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [f16Uid]);
+
+      const ssRow = await one("SELECT data,created_at FROM entities WHERE type='SalaryStructure' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [f16Uid]);
+      const ss = ssRow ? JSON.parse(ssRow.data) : {};
+      const basicAnnual = (ss.basic_salary || 0) * 12;
+      const hraReceivedAnnual = (ss.hra || 0) * 12;
+      const grossSalary = Math.round((ss.grossMonthly || 0) * 12);
+
+      // Declared investments
+      const tdRow = await one("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=$1 AND data::jsonb->>'financial_year'=$2", [f16Uid, fy]);
+      const decl = tdRow ? (JSON.parse(tdRow.data).declarations || {}) : {};
+      const num = (k) => Number(decl[k] || 0);
+
+      // Chapter VI-A
+      const sec80C = Math.min(150000,
+        num('life_insurance_premium') + num('ppf') + num('elss') + num('nsc') + num('home_loan_principal') +
+        num('tuition_fees') + num('sukanya_samriddhi') + num('five_yr_fd') + num('nps_80c'));
+      const sec80D = Math.min(75000, num('health_insurance_self') + num('health_insurance_parents') + Math.min(5000, num('preventive_checkup')));
+      const sec80CCD1B = Math.min(50000, num('nps_additional'));
+      const sec80E = num('education_loan_interest'); // no cap
+      const sec80G = num('donations_100pct') + Math.round(num('donations_50pct') * 0.5);
+      const chapterVIA = sec80C + sec80D + sec80CCD1B + sec80E + sec80G;
+
+      // HRA exemption (old regime) = least of: actual HRA, rent − 10% basic, 50%/40% basic
+      const rentPaid = num('hra_rent_paid');
+      const isMetro = (decl.hra_city || '').toLowerCase() === 'metro';
+      let hraExemption = 0;
+      if (rentPaid > 0 && hraReceivedAnnual > 0) {
+        hraExemption = Math.max(0, Math.min(
+          hraReceivedAnnual,
+          rentPaid - 0.10 * basicAnnual,
+          (isMetro ? 0.50 : 0.40) * basicAnnual
+        ));
+      }
+      const profTax = 2400; // standard annual professional tax
+
+      const oldCalc = computeRegime('old', { grossSalary, hraExemption, chapterVIA, profTax });
+      const newCalc = computeRegime('new', { grossSalary });
+      const recommended = newCalc.total_tax <= oldCalc.total_tax ? 'new' : 'old';
+      const chosen = (decl.regime === 'old' || decl.regime === 'new') ? decl.regime : recommended;
+      const annualTax = chosen === 'new' ? newCalc.total_tax : oldCalc.total_tax;
+
+      return res.json({
+        success: true,
+        financial_year: fy,
+        assessment_year: (() => { const [a, b] = fy.split('-').map(Number); return `${b}-${b + 1}`; })(),
+        employee: {
+          name: emp.display_name || uRow?.full_name || 'Employee',
+          employee_code: emp.employee_code || '',
+          pan: emp.pan_number || emp.pan || '',
+          designation: emp.designation || '',
+          department: emp.department || '',
+          date_of_joining: emp.date_of_joining || '',
+        },
+        income: {
+          gross_salary: grossSalary,
+          basic_annual: basicAnnual,
+          hra_received_annual: hraReceivedAnnual,
+        },
+        deductions: { sec80C, sec80D, sec80CCD1B, sec80E, sec80G, hra_exemption: Math.round(hraExemption), professional_tax: profTax, chapter_via_total: chapterVIA },
+        old_regime: oldCalc,
+        new_regime: newCalc,
+        recommended_regime: recommended,
+        chosen_regime: chosen,
+        annual_tax: annualTax,
+        monthly_tds: Math.round(annualTax / 12),
+        declaration_status: tdRow ? (JSON.parse(tdRow.data).status || 'none') : 'none',
+      });
+    }
+
+    case 'getTDSSummary': {
+      const fy2 = p.financial_year || (() => { const n = new Date(); return n.getMonth() >= 3 ? `${n.getFullYear()}-${n.getFullYear() + 1}` : `${n.getFullYear() - 1}-${n.getFullYear()}`; })();
+      const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")).map(r => JSON.parse(r.data));
+      const ssAll = (await all("SELECT user_id,data,created_at FROM entities WHERE type='SalaryStructure'"));
+      const latestSS = {};
+      for (const s of ssAll) { if (!latestSS[s.user_id] || (s.created_at || '') > (latestSS[s.user_id]._c || '')) latestSS[s.user_id] = { ...JSON.parse(s.data), _c: s.created_at }; }
+      const tds = (await all("SELECT user_id,data FROM entities WHERE type='TaxDeclaration' AND data::jsonb->>'financial_year'=$1", [fy2]));
+      const declByUser = {};
+      for (const t of tds) { const d = JSON.parse(t.data); declByUser[t.user_id] = d.declarations || {}; }
+
+      const rows = [];
+      let totalTDS = 0;
+      for (const emp of emps) {
+        const ss = latestSS[emp.user_id];
+        if (!ss) continue;
+        const grossSalary = Math.round((ss.grossMonthly || 0) * 12);
+        if (!grossSalary) continue;
+        const decl = declByUser[emp.user_id] || {};
+        const num = (k) => Number(decl[k] || 0);
+        const sec80C = Math.min(150000, num('life_insurance_premium') + num('ppf') + num('elss') + num('nsc') + num('home_loan_principal') + num('tuition_fees') + num('sukanya_samriddhi') + num('five_yr_fd') + num('nps_80c'));
+        const sec80D = Math.min(75000, num('health_insurance_self') + num('health_insurance_parents') + Math.min(5000, num('preventive_checkup')));
+        const chapterVIA = sec80C + sec80D + Math.min(50000, num('nps_additional')) + num('education_loan_interest') + num('donations_100pct') + Math.round(num('donations_50pct') * 0.5);
+        const basicAnnual = (ss.basic_salary || 0) * 12;
+        const rentPaid = num('hra_rent_paid');
+        const isMetro = (decl.hra_city || '').toLowerCase() === 'metro';
+        const hraReceived = (ss.hra || 0) * 12;
+        let hraExemption = 0;
+        if (rentPaid > 0 && hraReceived > 0) hraExemption = Math.max(0, Math.min(hraReceived, rentPaid - 0.10 * basicAnnual, (isMetro ? 0.50 : 0.40) * basicAnnual));
+        const oldCalc = computeRegime('old', { grossSalary, hraExemption, chapterVIA, profTax: 2400 });
+        const newCalc = computeRegime('new', { grossSalary });
+        const chosen = (decl.regime === 'old' || decl.regime === 'new') ? decl.regime : (newCalc.total_tax <= oldCalc.total_tax ? 'new' : 'old');
+        const annualTax = chosen === 'new' ? newCalc.total_tax : oldCalc.total_tax;
+        totalTDS += annualTax;
+        rows.push({
+          user_id: emp.user_id, name: emp.display_name || 'Employee', employee_code: emp.employee_code || '',
+          department: emp.department || '', pan: emp.pan_number || emp.pan || '',
+          gross_salary: grossSalary, regime: chosen, annual_tax: annualTax, monthly_tds: Math.round(annualTax / 12),
+          declared: !!declByUser[emp.user_id],
+        });
+      }
+      rows.sort((a, b) => b.annual_tax - a.annual_tax);
+      return res.json({
+        success: true, financial_year: fy2,
+        summary: { employees: rows.length, total_annual_tds: totalTDS, total_monthly_tds: Math.round(totalTDS / 12), taxable_employees: rows.filter(r => r.annual_tax > 0).length, not_declared: rows.filter(r => !r.declared).length },
+        employees: rows,
+      });
     }
 
     /* ── Employee Experience: Recognition (Kudos) ────── */
