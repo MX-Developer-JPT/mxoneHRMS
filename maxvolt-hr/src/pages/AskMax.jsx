@@ -6,11 +6,12 @@ import { Send, Bot, User, Sparkles, RefreshCw, AlertTriangle, CheckCircle2 } fro
 import ReactMarkdown from 'react-markdown';
 
 const SUGGESTED_QUESTIONS = [
-  "How many casual leaves am I entitled to?",
+  "How many casual leaves do I have left?",
+  "What was my last month's net salary?",
+  "Do I have any pending requests?",
+  "What are my upcoming holidays?",
+  "Summarise my attendance this month",
   "What is the gratuity calculation formula?",
-  "How does the Flexi Hours policy work?",
-  "What is the maternity leave duration?",
-  "What expenses are covered under travel policy?",
 ];
 
 const AI_UNAVAILABLE_PHRASES = [
@@ -32,7 +33,7 @@ export default function AskMax() {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: "Hi! I'm **AskMax**, your HR assistant at Maxvolt Energy. I can help you understand company policies on leave, travel, gratuity, uniform, and more. What would you like to know?"
+      content: "Hi! I'm **AskMax**, your AI HR copilot at Maxvolt Energy. I now know *your* details — I can tell you your actual leave balance, last payslip, attendance this month, pending requests, and upcoming holidays, plus answer any company policy question. What would you like to know?"
     }
   ]);
   const [input, setInput] = useState('');
@@ -116,7 +117,7 @@ export default function AskMax() {
   const resetChat = () => {
     setMessages([{
       role: 'assistant',
-      content: "Hi! I'm **AskMax**, your HR assistant at Maxvolt Energy. I can help you understand company policies on leave, travel, gratuity, uniform, and more. What would you like to know?"
+      content: "Hi! I'm **AskMax**, your AI HR copilot at Maxvolt Energy. I now know *your* details — I can tell you your actual leave balance, last payslip, attendance this month, pending requests, and upcoming holidays, plus answer any company policy question. What would you like to know?"
     }]);
     setInput('');
     clearInterval(pollRef.current);

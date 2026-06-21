@@ -1557,13 +1557,117 @@ Return ONLY a valid JSON object (no markdown):
     /* ── AI: HR Assistant ────────────────────────────── */
     case 'askMax': {
       const { question = '', conversationHistory = [] } = p;
+      const uid = cu?.id || p.user_id;
+
+      // ── Build personalised HR context grounded in the user's real data ──
+      let contextBlock = '';
+      try {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const now = new Date();
+        const currentFY = now.getMonth() >= 3
+          ? `${now.getFullYear()}-${now.getFullYear() + 1}`
+          : `${now.getFullYear() - 1}-${now.getFullYear()}`;
+
+        const parts = [];
+
+        if (uid) {
+          // Employee record
+          const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
+          const emp = empRow ? JSON.parse(empRow.data) : null;
+          if (emp) {
+            parts.push(`EMPLOYEE PROFILE:
+- Name: ${emp.display_name || cu?.email || 'Employee'}
+- Employee Code: ${emp.employee_code || 'N/A'}
+- Department: ${emp.department || 'N/A'} | Designation: ${emp.designation || 'N/A'}
+- Status: ${emp.employee_status || 'N/A'} | Date of Joining: ${emp.date_of_joining || 'N/A'}
+- Work Location: ${emp.work_location || 'N/A'} | Employment Type: ${emp.employment_type || 'N/A'}`);
+          }
+
+          // Leave balances with policy names
+          const balRows = (await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [uid])).map(r => JSON.parse(r.data));
+          const polRows = (await all("SELECT id,data FROM entities WHERE type='LeavePolicy'")).map(r => ({ id: r.id, ...JSON.parse(r.data) }));
+          const polName = (pid) => polRows.find(pp => pp.id === pid)?.name || pid;
+          const thisYearBals = balRows.filter(b => !b.year || b.year === now.getFullYear());
+          if (thisYearBals.length) {
+            parts.push(`LEAVE BALANCES (${now.getFullYear()}):\n` + thisYearBals.map(b =>
+              `- ${polName(b.leave_policy_id)}: ${b.available ?? 0} available (allocated ${b.total_allocated ?? 0}, used ${b.used ?? 0}, pending ${b.pending_approval ?? 0})`
+            ).join('\n'));
+          }
+
+          // Recent + upcoming leaves
+          const recentLeaves = (await all("SELECT data FROM entities WHERE type='Leave' AND user_id=$1 ORDER BY created_at DESC LIMIT 5", [uid])).map(r => JSON.parse(r.data));
+          if (recentLeaves.length) {
+            parts.push(`RECENT LEAVE REQUESTS:\n` + recentLeaves.map(l =>
+              `- ${l.start_date} to ${l.end_date} (${l.total_days || '?'} day(s)) — ${polName(l.leave_policy_id) || l.leave_type || 'Leave'} — status: ${l.status}`
+            ).join('\n'));
+          }
+
+          // Latest payslip
+          const payRow = await one("SELECT data FROM entities WHERE type='Payroll' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [uid]);
+          if (payRow) {
+            const ps = JSON.parse(payRow.data);
+            parts.push(`LATEST PAYSLIP: ${ps.month || ''} ${ps.year || ''} — Gross ₹${ps.gross_salary ?? ps.gross ?? 'N/A'}, Net ₹${ps.net_salary ?? 'N/A'}, Deductions ₹${ps.total_deductions ?? 'N/A'} (status: ${ps.status || 'N/A'})`);
+          }
+
+          // Pending items
+          const pendingRegs = (await all("SELECT id FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1 AND status='pending'", [uid])).length;
+          const openTickets = (await all("SELECT id FROM entities WHERE type='HelpdeskTicket' AND user_id=$1 AND status NOT IN ('resolved','closed')", [uid])).length;
+          const activeLoans = (await all("SELECT data FROM entities WHERE type='Loan' AND user_id=$1 AND status IN ('approved','active')", [uid])).map(r => JSON.parse(r.data));
+          const pendingBits = [];
+          if (pendingRegs) pendingBits.push(`${pendingRegs} pending regularisation(s)`);
+          if (openTickets) pendingBits.push(`${openTickets} open helpdesk ticket(s)`);
+          if (activeLoans.length) pendingBits.push(`${activeLoans.length} active loan(s) (outstanding ₹${activeLoans.reduce((s, l) => s + (l.outstanding_amount || l.remaining_amount || 0), 0)})`);
+          if (pendingBits.length) parts.push(`OPEN ITEMS: ${pendingBits.join(', ')}.`);
+
+          // This month's attendance summary
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+          const attRows = (await all("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' >= $2", [uid, monthStart])).map(r => JSON.parse(r.data));
+          if (attRows.length) {
+            const present = attRows.filter(a => a.status === 'present').length;
+            const half = attRows.filter(a => a.status === 'half_day').length;
+            const absent = attRows.filter(a => a.status === 'absent').length;
+            parts.push(`THIS MONTH ATTENDANCE: ${present} present, ${half} half-day, ${absent} absent (${attRows.length} days recorded).`);
+          }
+        }
+
+        // Active company policies (grounding documents)
+        const policyRows = (await all("SELECT data FROM entities WHERE type='CompanyPolicy'")).map(r => JSON.parse(r.data)).filter(pp => pp.is_active !== false);
+        if (policyRows.length) {
+          parts.push(`COMPANY POLICIES (official):\n` + policyRows.slice(0, 40).map(pp =>
+            `- [${pp.category || 'general'}] ${pp.title}: ${(pp.description || '').slice(0, 400)}`
+          ).join('\n'));
+        }
+
+        // Upcoming holidays
+        const holRows = (await all("SELECT data FROM entities WHERE type='Holiday'")).map(r => JSON.parse(r.data))
+          .filter(h => h.date >= todayStr).sort((a, b) => (a.date || '').localeCompare(b.date || '')).slice(0, 5);
+        if (holRows.length) {
+          parts.push(`UPCOMING HOLIDAYS:\n` + holRows.map(h => `- ${h.date}: ${h.name || h.holiday_name || 'Holiday'}`).join('\n'));
+        }
+
+        parts.unshift(`Today's date: ${todayStr}. Current financial year: ${currentFY}.`);
+        contextBlock = parts.join('\n\n');
+      } catch (ctxErr) {
+        console.warn('[askMax] context build failed:', ctxErr.message);
+      }
+
       const systemMsg = {
         role: 'system',
-        content: `You are AskMax, an expert HR assistant for Maxvolt Energy Industries Limited.
-You help employees understand HR policies, leave rules, payroll, attendance, benefits, and company procedures.
-Be concise, friendly, and professional. Format answers clearly with bullet points when listing items.
-If you don't know a specific policy detail, say so and suggest contacting HR directly.
-Company: Maxvolt Energy Industries Limited | India | Manufacturing/Energy sector`
+        content: `You are AskMax, the AI HR copilot for Maxvolt Energy Industries Limited (India, Manufacturing/Energy sector).
+You help employees with HR policies, leave, payroll, attendance, benefits, and procedures.
+
+You have access to the CURRENT EMPLOYEE'S REAL HR DATA below. Use it to give specific, personalised answers (e.g. quote their actual leave balance, payslip figures, or pending items). When the user asks about "my" anything, answer from this data.
+
+Rules:
+- Be concise, friendly, professional. Use bullet points for lists.
+- Prefer the official COMPANY POLICIES text when answering policy questions; quote specifics.
+- If the data needed isn't in the context, say so and suggest contacting HR — never invent figures.
+- For numbers (leave balance, salary), only state values present in the context.
+- Never reveal another employee's personal data.
+
+──────── EMPLOYEE CONTEXT ────────
+${contextBlock || 'No employee context available — answer from general policy knowledge and suggest contacting HR for specifics.'}
+──────────────────────────────────`
       };
 
       const history = [
