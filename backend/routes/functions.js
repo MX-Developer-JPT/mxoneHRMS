@@ -1581,6 +1581,67 @@ Return ONLY a valid JSON object (no markdown):
       return res.json({ success:true, html: letterHtml, ref: offerRef });
     }
 
+    /* ── AI: HR Letter Generation ────────────────────── */
+    case 'generateEmployeeLetter': {
+      const letterUid = p.user_id;
+      const letterType = p.letter_type;
+      const extra = p.extra || {};
+      if (!letterUid || !letterType) return res.json({ success: false, error: 'user_id and letter_type are required' });
+
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [letterUid]);
+      if (!empRow) return res.json({ success: false, error: 'Employee not found' });
+      const emp = JSON.parse(empRow.data);
+      const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [letterUid]);
+
+      // Latest salary structure → CTC
+      const ssRow = await one("SELECT data,created_at FROM entities WHERE type='SalaryStructure' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [letterUid]);
+      const ss = ssRow ? JSON.parse(ssRow.data) : {};
+      const annualCTC = ss.annualCTC || (ss.grossMonthly ? Math.round(ss.grossMonthly * 12) : 0);
+
+      const todayDate = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+      const refPrefix = { confirmation: 'CONF', experience: 'EXP', relieving: 'REL', appointment: 'APPT', salary_revision: 'SAL', address_proof: 'ADDR', warning: 'WARN', promotion: 'PROMO' }[letterType] || 'LTR';
+      const ref = `MEIL/HR/${refPrefix}/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
+
+      const typeInstructions = {
+        confirmation: 'a confirmation letter confirming the employee in permanent service after successful completion of probation.',
+        experience: 'an experience / service certificate stating designation, period of service and a positive remark on conduct and performance.',
+        relieving: 'a relieving letter confirming acceptance of resignation and release from duties, with a goodwill closing.',
+        appointment: 'a formal appointment letter with terms of employment.',
+        salary_revision: 'a salary revision letter communicating the revised compensation, effective date.',
+        address_proof: 'an employment / address verification letter suitable for bank or visa purposes.',
+        warning: 'a formal written warning letter regarding the stated issue, professional and firm in tone.',
+        promotion: 'a promotion letter communicating the new designation, effective date and congratulations.',
+      };
+
+      const extraLines = Object.entries(extra).filter(([, v]) => v !== '' && v != null)
+        .map(([k, v]) => `- ${k.replace(/_/g, ' ')}: ${v}`).join('\n');
+
+      const prompt = `You are the HR department of Maxvolt Energy Industries Limited (India). Write ${typeInstructions[letterType] || 'a professional HR letter.'}
+
+Use the following details. Do NOT invent facts not provided; if a needed detail is missing, use a clearly bracketed placeholder like [____].
+
+LETTER REFERENCE: ${ref}
+DATE: ${todayDate}
+EMPLOYEE NAME: ${emp.display_name || uRow?.full_name || 'Employee'}
+EMPLOYEE CODE: ${emp.employee_code || '[____]'}
+DESIGNATION: ${emp.designation || '[____]'}
+DEPARTMENT: ${emp.department || '[____]'}
+DATE OF JOINING: ${emp.date_of_joining || '[____]'}
+WORK LOCATION: ${emp.work_location || 'Ghaziabad, Uttar Pradesh'}
+EMPLOYMENT TYPE: ${emp.employment_type || '[____]'}
+ANNUAL CTC: ${annualCTC ? '₹' + annualCTC.toLocaleString('en-IN') : '[____]'}
+${extraLines ? 'ADDITIONAL DETAILS:\n' + extraLines : ''}
+
+Format the output in clean Markdown. Include the reference and date at the top, a proper salutation, well-structured body paragraphs, and a closing signature block reading "For Maxvolt Energy Industries Limited" with "Authorised Signatory, Human Resources". Keep it concise and legally appropriate for India. Output ONLY the letter, no preamble or explanation.`;
+
+      let letter;
+      try { letter = await callAI(prompt); }
+      catch (e) { return res.json({ success: false, error: `AI failed: ${e.message}` }); }
+      if (!letter) return res.json({ success: false, error: 'AI returned an empty letter' });
+
+      return res.json({ success: true, letter, ref, letter_type: letterType });
+    }
+
     /* ── AI: HR Assistant ────────────────────────────── */
     case 'askMax': {
       const { question = '', conversationHistory = [] } = p;

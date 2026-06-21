@@ -9,7 +9,7 @@ import {
   Target, HelpCircle, Settings, LogOut, Menu, X, Briefcase,
   DollarSign, FolderOpen, Bell, UserPlus, TrendingDown, BarChart3,
   UserCog, Building2, ShieldOff, PieChart, Shield, GraduationCap,
-  ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark,
+  ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
@@ -90,6 +90,7 @@ const hrMenuItems = [
   { name: 'Attrition Risk (AI)',     icon: ShieldAlert,       page: 'AttritionRisk' },
   { name: 'Onboarding Approval',     icon: UserPlus,          page: 'OnboardingApproval' },
   { name: 'Employee Documents',      icon: FolderOpen,        page: 'EmployeeDocuments' },
+  { name: 'Letter Generator (AI)',   icon: FileSignature,     page: 'LetterGenerator' },
   { name: 'Employees',               icon: Users,             page: 'Employees' },
   { name: 'All Attendance',          icon: Clock,             page: 'AllAttendance' },
   { name: 'Regularisation Approvals',icon: Clock,             page: 'RegularisationApproval' },

@@ -99,6 +99,7 @@ import AttendanceLogDashboard from './pages/AttendanceLogDashboard';
 import AttritionRisk from './pages/AttritionRisk';
 import Recognition from './pages/Recognition';
 import GratuityReport from './pages/GratuityReport';
+import LetterGenerator from './pages/LetterGenerator';
 import __Layout from './Layout.jsx';
 
 
@@ -155,6 +156,7 @@ export const PAGES = {
     "AttritionRisk": AttritionRisk,
     "Recognition": Recognition,
     "GratuityReport": GratuityReport,
+    "LetterGenerator": LetterGenerator,
 
 }
 
