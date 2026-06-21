@@ -99,7 +99,9 @@ async function initSchema() {
       filename    TEXT,
       mime        TEXT,
       size        INTEGER,
-      data        BYTEA NOT NULL,
+      data        BYTEA,
+      storage     TEXT DEFAULT 'db',
+      r2_key      TEXT,
       uploaded_by TEXT,
       created_at  TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
     );
@@ -112,6 +114,13 @@ async function initSchema() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name    TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_role  TEXT;
+  `);
+
+  // files: support R2-backed rows (key reference instead of inline bytes)
+  await pool.query(`
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS storage TEXT DEFAULT 'db';
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS r2_key  TEXT;
+    ALTER TABLE files ALTER COLUMN data DROP NOT NULL;
   `);
 
   // Purge expired OTPs and tokens on startup
