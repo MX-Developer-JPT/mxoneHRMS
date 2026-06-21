@@ -2687,6 +2687,159 @@ ${contextBlock || 'No employee context available — answer from general policy 
       return res.json({ success: true, employee: emp, recent_leaves: edLeaves, pending_regularisations: edRegs.length, active_loans: edLoans, latest_payslip: latestPayslip, open_tickets: edTickets.length, upcoming_leaves: edUpcomingLeaves, tax_declaration: edTax ? JSON.parse(edTax.data) : null, current_fy: currentFY });
     }
 
+    /* ── Attrition Risk (predictive) ─────────────────── */
+    case 'getAttritionRisk': {
+      const now = new Date();
+      const today = now.toISOString().slice(0, 10);
+      const d90 = new Date(now.getTime() - 90 * 864e5).toISOString().slice(0, 10);
+      const d60 = new Date(now.getTime() - 60 * 864e5).toISOString().slice(0, 10);
+
+      // Batch-load everything once (avoid N+1)
+      const employees = (await all("SELECT id,user_id,data,created_at FROM entities WHERE type='Employee' AND status='active'"))
+        .map(r => ({ ...JSON.parse(r.data), _id: r.id, _created: r.created_at }));
+      const exits = (await all("SELECT user_id FROM entities WHERE type='Exit'")).map(r => r.user_id);
+      const exitedSet = new Set(exits.filter(Boolean));
+
+      const pips = (await all("SELECT user_id,status FROM entities WHERE type='PerformanceImprovementPlan'"))
+        .reduce((m, r) => { if (['active', 'in_progress', 'open'].includes((r.status || '').toLowerCase())) m.add(r.user_id); return m; }, new Set());
+
+      const reviews = (await all("SELECT user_id,data,created_at FROM entities WHERE type='PerformanceReview'")).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data), _created: r.created_at }));
+      const latestReview = {};
+      for (const rv of reviews) {
+        if (!latestReview[rv.user_id] || (rv._created || '') > (latestReview[rv.user_id]._created || '')) latestReview[rv.user_id] = rv;
+      }
+
+      const recentLeaves = (await all("SELECT user_id,data FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date' >= $1", [d90])).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+      const leaveDaysByUser = recentLeaves.reduce((m, l) => { m[l.user_id] = (m[l.user_id] || 0) + (Number(l.total_days) || 1); return m; }, {});
+
+      const recentAtt = (await all("SELECT user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1", [d60])).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+      const absentByUser = recentAtt.reduce((m, a) => { if (['absent', 'half_day'].includes(a.status)) m[a.user_id] = (m[a.user_id] || 0) + 1; return m; }, {});
+
+      const openTix = (await all("SELECT user_id FROM entities WHERE type='HelpdeskTicket' AND status NOT IN ('resolved','closed')"))
+        .reduce((m, r) => { m[r.user_id] = (m[r.user_id] || 0) + 1; return m; }, {});
+
+      // Latest salary structure per user → compensation staleness
+      const salStructs = (await all("SELECT user_id,created_at FROM entities WHERE type='SalaryStructure'"));
+      const lastSalaryDate = {};
+      for (const s of salStructs) {
+        if (!lastSalaryDate[s.user_id] || (s.created_at || '') > lastSalaryDate[s.user_id]) lastSalaryDate[s.user_id] = s.created_at;
+      }
+
+      const monthsBetween = (fromStr) => {
+        if (!fromStr) return null;
+        const f = new Date(fromStr);
+        if (isNaN(f.getTime())) return null;
+        return (now.getFullYear() - f.getFullYear()) * 12 + (now.getMonth() - f.getMonth());
+      };
+
+      const results = [];
+      for (const emp of employees) {
+        const uid = emp.user_id;
+        if (!uid || exitedSet.has(uid)) continue;
+
+        let score = 0;
+        const factors = [];
+
+        // Resignation / notice period
+        const st = (emp.employee_status || '').toLowerCase();
+        if (['resigned', 'notice', 'serving_notice', 'absconding'].some(s => st.includes(s))) {
+          score += 45; factors.push({ label: 'Serving notice / resigned', weight: 45, severity: 'high' });
+        }
+
+        // Active PIP
+        if (pips.has(uid)) { score += 30; factors.push({ label: 'On active performance improvement plan', weight: 30, severity: 'high' }); }
+
+        // Performance rating (0–5)
+        const rating = latestReview[uid]?.overall_rating;
+        if (typeof rating === 'number') {
+          if (rating < 2.5) { score += 22; factors.push({ label: `Low performance rating (${rating.toFixed(1)}/5)`, weight: 22, severity: 'high' }); }
+          else if (rating < 3.2) { score += 11; factors.push({ label: `Below-par performance rating (${rating.toFixed(1)}/5)`, weight: 11, severity: 'medium' }); }
+          else if (rating >= 4.5) { score += 6; factors.push({ label: `Top performer (${rating.toFixed(1)}/5) — high-value retention target`, weight: 6, severity: 'low' }); }
+        }
+
+        // Tenure sweet-spot (12–30 months is peak flight window)
+        const tenure = monthsBetween(emp.date_of_joining);
+        if (tenure !== null) {
+          if (tenure >= 12 && tenure <= 30) { score += 12; factors.push({ label: `In peak attrition window (${tenure} months tenure)`, weight: 12, severity: 'medium' }); }
+          else if (tenure > 48) { score += 8; factors.push({ label: `Long tenure without recent change (${Math.floor(tenure / 12)}+ yrs)`, weight: 8, severity: 'low' }); }
+        }
+
+        // Compensation staleness
+        const salMonths = monthsBetween(lastSalaryDate[uid]);
+        if (salMonths !== null && salMonths >= 18) { score += 14; factors.push({ label: `No salary revision in ${salMonths} months`, weight: 14, severity: 'medium' }); }
+
+        // Recent leave spike
+        const ld = leaveDaysByUser[uid] || 0;
+        if (ld > 8) { score += 14; factors.push({ label: `High recent leave (${ld} days / 90d)`, weight: 14, severity: 'medium' }); }
+        else if (ld >= 5) { score += 7; factors.push({ label: `Elevated recent leave (${ld} days / 90d)`, weight: 7, severity: 'low' }); }
+
+        // Absenteeism
+        const ab = absentByUser[uid] || 0;
+        if (ab >= 4) { score += 14; factors.push({ label: `Frequent absence/half-days (${ab} in 60d)`, weight: 14, severity: 'medium' }); }
+        else if (ab >= 2) { score += 7; factors.push({ label: `Some absence/half-days (${ab} in 60d)`, weight: 7, severity: 'low' }); }
+
+        // Unresolved grievances
+        const tix = openTix[uid] || 0;
+        if (tix >= 2) { score += 8; factors.push({ label: `${tix} open helpdesk grievances`, weight: 8, severity: 'low' }); }
+
+        score = Math.min(100, score);
+        const band = score >= 60 ? 'High' : score >= 32 ? 'Medium' : 'Low';
+
+        results.push({
+          user_id: uid,
+          employee_id: emp._id,
+          name: emp.display_name || emp.full_name || 'Employee',
+          employee_code: emp.employee_code || '',
+          department: emp.department || '',
+          designation: emp.designation || '',
+          tenure_months: tenure,
+          risk_score: score,
+          risk_band: band,
+          factors: factors.sort((a, b) => b.weight - a.weight),
+        });
+      }
+
+      results.sort((a, b) => b.risk_score - a.risk_score);
+      const summary = {
+        total: results.length,
+        high: results.filter(r => r.risk_band === 'High').length,
+        medium: results.filter(r => r.risk_band === 'Medium').length,
+        low: results.filter(r => r.risk_band === 'Low').length,
+        as_of: today,
+      };
+      return res.json({ success: true, summary, employees: results });
+    }
+
+    case 'getRetentionPlan': {
+      const ruid = p.user_id;
+      if (!ruid) return res.json({ success: false, error: 'user_id required' });
+      const rEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [ruid]);
+      const rEmp = rEmpRow ? JSON.parse(rEmpRow.data) : {};
+      const factors = Array.isArray(p.factors) ? p.factors : [];
+
+      const prompt = `You are a senior HR business partner at Maxvolt Energy (India, manufacturing/energy).
+Create a concise, practical retention plan for this at-risk employee.
+
+EMPLOYEE: ${rEmp.display_name || 'Employee'} — ${rEmp.designation || 'N/A'}, ${rEmp.department || 'N/A'} dept.
+Tenure: ${p.tenure_months ?? 'N/A'} months. Risk score: ${p.risk_score ?? 'N/A'}/100 (${p.risk_band || 'N/A'}).
+DETECTED RISK FACTORS: ${factors.map(f => f.label).join('; ') || 'general flight risk'}.
+
+Return ONLY valid JSON (no markdown):
+{
+  "summary": "2-sentence assessment of why this person may leave",
+  "immediate_actions": ["action manager should take this week", "..."],
+  "medium_term_actions": ["action over next 1-3 months", "..."],
+  "talking_points": ["specific thing the manager should say in a 1:1", "..."],
+  "retention_levers": ["lever like compensation review / growth path / workload", "..."]
+}`;
+
+      let plan;
+      try { plan = await callAI(prompt, { json: true }); }
+      catch (e) { return res.json({ success: false, error: `AI failed: ${e.message}` }); }
+      if (!plan) return res.json({ success: false, error: 'AI returned invalid response' });
+      return res.json({ success: true, plan });
+    }
+
     /* ── Training ────────────────────────────────────── */
 
     default:

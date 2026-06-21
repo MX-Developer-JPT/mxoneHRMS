@@ -9,7 +9,7 @@ import {
   Target, HelpCircle, Settings, LogOut, Menu, X, Briefcase,
   DollarSign, FolderOpen, Bell, UserPlus, TrendingDown, BarChart3,
   UserCog, Building2, ShieldOff, PieChart, Shield, GraduationCap,
-  ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2,
+  ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
@@ -58,6 +58,7 @@ const managementMenuItems = [
   { name: 'Gate Pass Approvals',     icon: ShieldCheck,       page: 'GatePassApproval' },
   { name: 'Team Calendar',           icon: Calendar,          page: 'TeamCalendar' },
   { name: 'MIS Analytics',           icon: PieChart,          page: 'MISDashboard' },
+  { name: 'Attrition Risk (AI)',     icon: ShieldAlert,       page: 'AttritionRisk' },
   { name: 'Job Requisitions',        icon: Briefcase,         page: 'JobRequisitions' },
   // ── Personal ─────────────────────────────────────────────
   { name: 'Mark Attendance',         icon: Clock,             page: 'MarkAttendance' },
@@ -84,6 +85,7 @@ const managementMenuItems = [
 const hrMenuItems = [
   { name: 'Dashboard',               icon: LayoutDashboard,   page: 'Dashboard' },
   { name: 'MIS Analytics',           icon: PieChart,          page: 'MISDashboard' },
+  { name: 'Attrition Risk (AI)',     icon: ShieldAlert,       page: 'AttritionRisk' },
   { name: 'Onboarding Approval',     icon: UserPlus,          page: 'OnboardingApproval' },
   { name: 'Employee Documents',      icon: FolderOpen,        page: 'EmployeeDocuments' },
   { name: 'Employees',               icon: Users,             page: 'Employees' },
