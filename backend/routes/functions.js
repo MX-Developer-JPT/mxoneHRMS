@@ -1445,6 +1445,33 @@ Return ONLY a valid JSON object (no markdown):
       catch(e) { return res.json({ success:false, error:`AI scoring failed: ${e.message}` }); }
 
       if (!result) return res.json({ success:false, error:'AI returned invalid response' });
+
+      // Persist the score as a CandidateScore entity (upsert by candidate + requisition)
+      // so rankings survive page reload and power the leaderboard.
+      try {
+        const scoredAt = new Date().toISOString();
+        const existingScore = await one(
+          "SELECT id FROM entities WHERE type='CandidateScore' AND data::jsonb->>'candidate_id'=$1 AND data::jsonb->>'job_requisition_id'=$2 LIMIT 1",
+          [candidate_id, job_requisition_id]
+        );
+        const scoreData = { ...result, candidate_id, job_requisition_id, scored_at: scoredAt };
+        if (existingScore) {
+          scoreData.id = existingScore.id;
+          await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(scoreData), existingScore.id]);
+        } else {
+          const scoreId = uuidv4();
+          scoreData.id = scoreId;
+          await run("INSERT INTO entities(id,type,status,data) VALUES($1,'CandidateScore','active',$2)", [scoreId, JSON.stringify(scoreData)]);
+        }
+        // Mirror a quick summary onto the candidate record for at-a-glance display
+        if (cRow) {
+          const updCand = { ...cand, ai_score: result.overall_score, ai_recommendation: result.recommendation, ai_scored_at: scoredAt };
+          await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE type='Candidate' AND id=$2", [JSON.stringify(updCand), candidate_id]);
+        }
+      } catch (persistErr) {
+        console.warn('[scoreCandidate] persist failed:', persistErr.message);
+      }
+
       return res.json({ success:true, data: result });
     }
 
