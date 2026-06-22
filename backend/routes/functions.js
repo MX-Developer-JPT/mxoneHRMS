@@ -3554,6 +3554,207 @@ Return ONLY valid JSON (no markdown):
 
     /* ── Training ────────────────────────────────────── */
 
+    /* ── HR Reports ─────────────────────────────────── */
+    case 'generateReport': {
+      const { report_type, from_date, to_date, department } = p;
+      const now   = new Date();
+      const fd    = from_date || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+      const td    = to_date   || now.toISOString().slice(0, 10);
+      const byDept = (rows) => department && department !== 'all'
+        ? rows.filter(e => e.department === department)
+        : rows;
+
+      switch (report_type) {
+
+        case 'employee_master': {
+          const rows = byDept(parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")));
+          rows.sort((a, b) => (a.employee_code || '').localeCompare(b.employee_code || ''));
+          return res.json({
+            report_type,
+            columns: ['Emp Code','Name','Department','Designation','Date of Joining','Email','Mobile','Location','PF Number','ESI Number','Bank Account','IFSC'],
+            rows: rows.map(e => [
+              e.employee_code||'', e.display_name||e.full_name||'',
+              e.department||'', e.designation||'',
+              e.date_of_joining||'', e.email||'', e.mobile||e.phone||'',
+              e.location||'', e.pf_number||'', e.esi_number||'',
+              e.bank_account_number||'', e.ifsc_code||'',
+            ]),
+            total: rows.length,
+          });
+        }
+
+        case 'attendance_monthly': {
+          const emps    = byDept(parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")));
+          const attRows = parseEntities(await all(
+            "SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
+            [fd, td]
+          ));
+          const byUser = {};
+          for (const a of attRows) {
+            if (!byUser[a.user_id]) byUser[a.user_id] = { present: 0, absent: 0, leave: 0, half_day: 0, hours: 0 };
+            const s = a.status || (a.check_in_time ? 'present' : 'absent');
+            if (s === 'present')  { byUser[a.user_id].present++;  byUser[a.user_id].hours += (a.working_hours || 0); }
+            else if (s === 'absent')   byUser[a.user_id].absent++;
+            else if (s === 'leave')    byUser[a.user_id].leave++;
+            else if (s === 'half_day') { byUser[a.user_id].half_day++; byUser[a.user_id].hours += (a.working_hours || 0); }
+          }
+          return res.json({
+            report_type,
+            columns: ['Emp Code','Name','Department','Present','Absent','Leave','Half Day','Avg Work Hrs'],
+            rows: emps.map(e => {
+              const a = byUser[e.user_id] || { present:0, absent:0, leave:0, half_day:0, hours:0 };
+              return [
+                e.employee_code||'', e.display_name||'', e.department||'',
+                a.present, a.absent, a.leave, a.half_day,
+                a.present > 0 ? (a.hours / a.present).toFixed(1) : '0.0',
+              ];
+            }),
+            total: emps.length,
+          });
+        }
+
+        case 'leave_balance': {
+          const emps   = byDept(parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")));
+          const leaves = parseEntities(await all("SELECT data FROM entities WHERE type='Leave' AND status='approved'"));
+          const usedByUser = {};
+          for (const l of leaves) {
+            if (!usedByUser[l.user_id]) usedByUser[l.user_id] = { cl: 0, sl: 0, el: 0, other: 0 };
+            const t = (l.leave_type || '').toLowerCase();
+            const d = parseFloat(l.days || l.total_days || 0);
+            if (t.includes('casual') || t === 'cl')              usedByUser[l.user_id].cl += d;
+            else if (t.includes('sick') || t.includes('medical') || t === 'sl') usedByUser[l.user_id].sl += d;
+            else if (t.includes('earn') || t.includes('annual') || t === 'el') usedByUser[l.user_id].el += d;
+            else usedByUser[l.user_id].other += d;
+          }
+          return res.json({
+            report_type,
+            columns: ['Emp Code','Name','Department','Casual Used','Sick Used','Earned Used','Other','Total Used'],
+            rows: emps.map(e => {
+              const u = usedByUser[e.user_id] || { cl:0, sl:0, el:0, other:0 };
+              return [e.employee_code||'', e.display_name||'', e.department||'', u.cl, u.sl, u.el, u.other, +(u.cl+u.sl+u.el+u.other).toFixed(1)];
+            }),
+            total: emps.length,
+          });
+        }
+
+        case 'payroll_summary': {
+          const payRows = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll'"))
+            .filter(r => {
+              const d = `${r.year}-${String(r.month||1).padStart(2,'0')}-01`;
+              return d >= fd && d <= td;
+            });
+          const filtered = department && department !== 'all'
+            ? payRows.filter(r => r.department === department)
+            : payRows;
+          filtered.sort((a, b) => (a.year - b.year) || (a.month - b.month) || (a.employee_code||'').localeCompare(b.employee_code||''));
+          return res.json({
+            report_type,
+            columns: ['Emp Code','Name','Department','Month','Year','Basic','HRA','Gross','TDS','PF','PT','LOP','Net Pay'],
+            rows: filtered.map(r => [
+              r.employee_code||'', r.employee_name||r.display_name||'', r.department||'',
+              r.month, r.year,
+              r.basic_salary||0, r.hra||0, r.gross_salary||0,
+              r.deductions?.tds||0, r.deductions?.pf||0, r.deductions?.pt||0,
+              r.loss_of_pay_amount||0, r.net_salary||0,
+            ]),
+            total: filtered.length,
+          });
+        }
+
+        case 'new_joiners': {
+          const rows = byDept(parseEntities(await all(
+            "SELECT data FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1 AND data::jsonb->>'date_of_joining' <= $2",
+            [fd, td]
+          )));
+          rows.sort((a, b) => (a.date_of_joining||'').localeCompare(b.date_of_joining||''));
+          return res.json({
+            report_type,
+            columns: ['Emp Code','Name','Department','Designation','Date of Joining','Email','Mobile','Location'],
+            rows: rows.map(e => [
+              e.employee_code||'', e.display_name||'', e.department||'',
+              e.designation||'', e.date_of_joining||'', e.email||'', e.mobile||e.phone||'', e.location||'',
+            ]),
+            total: rows.length,
+          });
+        }
+
+        case 'exit_report': {
+          const rows = parseEntities(await all(
+            "SELECT data FROM entities WHERE type='Exit' AND data::jsonb->>'resignation_date' >= $1 AND data::jsonb->>'resignation_date' <= $2",
+            [fd, td]
+          ));
+          const filtered = byDept(rows);
+          filtered.sort((a, b) => (a.resignation_date||'').localeCompare(b.resignation_date||''));
+          return res.json({
+            report_type,
+            columns: ['Name','Department','Designation','Resignation Date','Last Working Day','Exit Type','Status','Reason'],
+            rows: filtered.map(r => [
+              r.employee_name||'', r.department||'', r.designation||'',
+              r.resignation_date||'', r.last_working_date||'',
+              r.exit_type||'', r.status||'', r.reason||'',
+            ]),
+            total: filtered.length,
+          });
+        }
+
+        case 'training_status': {
+          const trainings   = parseEntities(await all("SELECT data FROM entities WHERE type='Training'"));
+          const enrollments = parseEntities(await all("SELECT data FROM entities WHERE type='TrainingEnrollment'"));
+          const emps        = byDept(parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")));
+          const trMap = Object.fromEntries(trainings.map(t => [t.id, t]));
+          const enrollByUser = {};
+          for (const en of enrollments) {
+            if (!enrollByUser[en.user_id]) enrollByUser[en.user_id] = [];
+            const tr = trMap[en.training_id];
+            if (tr) enrollByUser[en.user_id].push({ title: tr.title, status: en.completion_status || en.status || 'enrolled', score: en.score || '' });
+          }
+          const rows = [];
+          for (const e of emps) {
+            const enList = enrollByUser[e.user_id] || [];
+            if (enList.length === 0) {
+              rows.push([e.employee_code||'', e.display_name||'', e.department||'', '—', 'Not enrolled', '']);
+            } else {
+              for (const en of enList) {
+                rows.push([e.employee_code||'', e.display_name||'', e.department||'', en.title, en.status, String(en.score)]);
+              }
+            }
+          }
+          return res.json({
+            report_type,
+            columns: ['Emp Code','Name','Department','Training','Status','Score'],
+            rows,
+            total: rows.length,
+          });
+        }
+
+        case 'asset_assignment': {
+          const assets = parseEntities(await all("SELECT data FROM entities WHERE type='Asset' AND data::jsonb->>'status'='assigned'"));
+          const emps   = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+          const empMap = Object.fromEntries(emps.map(e => [e.user_id, e]));
+          const filtered = department && department !== 'all'
+            ? assets.filter(a => empMap[a.assigned_to]?.department === department)
+            : assets;
+          return res.json({
+            report_type,
+            columns: ['Asset ID','Asset Name','Type','Brand','Serial No','Assigned To','Department','Assigned Date','Expected Return'],
+            rows: filtered.map(a => {
+              const e = empMap[a.assigned_to] || {};
+              return [
+                a.asset_id||a.id||'', a.asset_name||a.name||'', a.asset_type||a.category||'',
+                a.brand||'', a.serial_number||'',
+                e.display_name||a.assigned_to_name||'', e.department||'',
+                a.assigned_date||'', a.expected_return_date||'—',
+              ];
+            }),
+            total: filtered.length,
+          });
+        }
+
+        default:
+          return res.status(400).json({ error: `Unknown report type: ${report_type}` });
+      }
+    }
+
     default:
       console.warn(`[functions] Unknown function: ${name}`);
       return res.status(404).json({ error: `Function '${name}' not implemented` });
