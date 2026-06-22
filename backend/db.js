@@ -33,7 +33,8 @@ async function initSchema() {
       last_name    TEXT,
       role         TEXT DEFAULT 'user',
       custom_role  TEXT,
-      display_name TEXT,
+      display_name          TEXT,
+      must_change_password  BOOLEAN DEFAULT FALSE,
       created_at   TEXT DEFAULT CURRENT_TIMESTAMP::TEXT,
       updated_at   TEXT DEFAULT CURRENT_TIMESTAMP::TEXT
     );
@@ -113,7 +114,8 @@ async function initSchema() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS middle_name  TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name    TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_role  TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_role           TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password  BOOLEAN DEFAULT FALSE;
   `);
 
   // files: support R2-backed rows (key reference instead of inline bytes)

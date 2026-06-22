@@ -1,4 +1,4 @@
-import { Suspense } from 'react'
+import { Suspense, useState } from 'react'
 import { Toaster } from "@/components/ui/toaster"
 import { Toaster as SonnerToaster } from 'sonner'
 import AiStatusBanner from '@/components/AiStatusBanner'
@@ -11,6 +11,7 @@ import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-d
 import PageNotFound from './lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import { base44 } from '@/api/base44Client';
 import Login from '@/pages/Login';
 import Register from '@/pages/Register';
 import ForgotPassword from '@/pages/ForgotPassword';
@@ -120,10 +121,81 @@ const LayoutWrapper = ({ children, currentPageName }) => {
   return Layout ? <Layout currentPageName={currentPageName}>{content}</Layout> : content;
 };
 
+// ── Forced password change screen (shown to bulk-imported employees on first login) ──
+const ForceChangePassword = ({ onDone }) => {
+  const [pwd, setPwd] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (pwd.length < 6) { setError('Password must be at least 6 characters'); return; }
+    if (pwd !== confirm) { setError('Passwords do not match'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ new_password: pwd }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to change password');
+      onDone();
+    } catch (err) {
+      setError(err.message);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-8">
+        <div className="text-center mb-6">
+          <div className="w-14 h-14 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-3">
+            <svg className="w-7 h-7 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <h2 className="text-xl font-bold text-slate-900">Set Your Password</h2>
+          <p className="text-sm text-slate-500 mt-1">You are using a default password. Please set a new personal password to continue.</p>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">New Password</label>
+            <input
+              type="password" value={pwd} onChange={e => setPwd(e.target.value)} required minLength={6}
+              placeholder="Min. 6 characters"
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Confirm Password</label>
+            <input
+              type="password" value={confirm} onChange={e => setConfirm(e.target.value)} required
+              placeholder="Re-enter password"
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
+          <button
+            type="submit" disabled={loading}
+            className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg text-sm transition-colors"
+          >
+            {loading ? 'Saving...' : 'Set Password & Continue'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
 const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept'];
 
 const AuthenticatedApp = () => {
-  const { isLoadingAuth, isLoadingPublicSettings, authError } = useAuth();
+  const { isLoadingAuth, isLoadingPublicSettings, authError, user, checkAppState } = useAuth();
   const isPublicPath = PUBLIC_PATHS.some(p => window.location.pathname.startsWith(p));
 
   if ((isLoadingPublicSettings || isLoadingAuth) && !isPublicPath) {
@@ -141,6 +213,10 @@ const AuthenticatedApp = () => {
   }
 
   return (
+    <>
+    {user?.must_change_password && (
+      <ForceChangePassword onDone={() => checkAppState()} />
+    )}
     <Routes>
       {/* Public auth routes */}
       <Route path="/login" element={<Login />} />
@@ -392,6 +468,7 @@ const AuthenticatedApp = () => {
       </Route>{/* end ProtectedRoute */}
       <Route path="*" element={<PageNotFound />} />
     </Routes>
+    </>
   );
 };
 

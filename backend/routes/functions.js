@@ -2581,102 +2581,287 @@ ${contextBlock || 'No employee context available — answer from general policy 
     }
 
     case 'importEmployeeData': {
-      const { fileUrl, mode = 'validate', raw_records } = p;
+      const { fileUrl, mode = 'validate' } = p;
+      if (!fileUrl) return res.json({ success: false, error: 'fileUrl is required' });
 
-      // Parse CSV
-      let rows = [];
-      if (raw_records && Array.isArray(raw_records)) {
-        rows = raw_records;
-      } else if (fileUrl) {
-        try {
-          const filePath = fileUrl.startsWith('/uploads/') ? `${process.env.NODE_ENV === 'production' ? '/app/uploads' : './backend/uploads'}/${fileUrl.slice(9)}` : fileUrl;
-          const { readFileSync } = await import('fs');
-          const csvText = readFileSync(filePath, 'utf8');
-          const lines = csvText.trim().split(/\r?\n/).filter(l => l.trim());
-          if (lines.length < 2) return res.json({ success:false, error:'CSV must have headers and at least one data row' });
-          const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase().replace(/\s+/g,'_'));
-          rows = lines.slice(1).map(line => {
-            const vals = line.split(',').map(v => v.trim().replace(/^"|"$/g, ''));
-            const obj = {};
-            headers.forEach((h, i) => { obj[h] = vals[i] || ''; });
-            return obj;
-          });
-        } catch(e) {
-          return res.json({ success:false, error:`Failed to read file: ${e.message}` });
+      // Fetch file buffer from storage (R2 or DB)
+      let fileBuffer;
+      try {
+        const fileId = String(fileUrl).match(/\/api\/upload\/file\/([^.]+)/)?.[1];
+        if (!fileId) throw new Error('Cannot parse file ID from URL');
+        const fileRow = await one("SELECT data, storage, r2_key FROM files WHERE id=$1", [fileId]);
+        if (!fileRow) throw new Error('File not found in storage');
+        if (fileRow.storage === 'r2' && fileRow.r2_key) {
+          const { presignGet } = await import('../utils/r2.js');
+          const signedUrl = await presignGet(fileRow.r2_key, { expiresIn: 300 });
+          const resp = await fetch(signedUrl);
+          fileBuffer = Buffer.from(await resp.arrayBuffer());
+        } else {
+          fileBuffer = Buffer.from(fileRow.data);
         }
-      } else {
-        return res.json({ success:false, error:'Provide fileUrl or raw_records' });
+      } catch (e) {
+        return res.json({ success: false, error: `Failed to fetch file: ${e.message}` });
       }
 
-      // Field aliases
-      const get = (row, ...keys) => {
-        for (const k of keys) { if (row[k]) return row[k]; }
-        return '';
+      // Parse XLSX workbook
+      let wb;
+      try {
+        const XLSX = await import('xlsx');
+        wb = XLSX.read(fileBuffer, { type: 'buffer', cellDates: true });
+      } catch (e) {
+        return res.json({ success: false, error: `Failed to parse Excel file: ${e.message}` });
+      }
+
+      // Parse sheet to array of objects (headers normalised to lowercase_underscore)
+      const XLSX = await import('xlsx');
+      const parseSheet = (sheetName) => {
+        const ws = wb.Sheets[sheetName];
+        if (!ws) return [];
+        const raw = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false });
+        return raw.map(row => {
+          const out = {};
+          for (const [k, v] of Object.entries(row)) {
+            const key = String(k).trim().replace(/\*$/,'').replace(/\s+/g,'_').toLowerCase();
+            out[key] = v === null || v === undefined ? '' : String(v).trim();
+          }
+          return out;
+        });
       };
 
+      const profiles    = parseSheet('Employee_Profile');
+      const salaries    = parseSheet('Salary_Structure (2)');
+      const statutory   = parseSheet('Statutory_Info');
+      const bankDetails = parseSheet('Bank_Details');
+      const leaveCL     = parseSheet('Leave_Balances');
+      const leaveEL     = parseSheet('Leave_Balances (2)');
+
+      if (!profiles.length) return res.json({ success: false, error: 'Employee_Profile sheet is empty or missing' });
+
+      // Build lookup maps keyed by employee_code and personal_email
+      const salaryByCode  = Object.fromEntries(salaries.map(r => [String(r['employee_id'] || r['sl.no'] || '').trim(), r]));
+      const salaryByName  = Object.fromEntries(salaries.map(r => [String(r['employee_name'] || '').trim().toLowerCase(), r]));
+      const statutoryByEmail = Object.fromEntries(statutory.map(r => [String(r.personal_email || '').toLowerCase(), r]));
+      const bankByCode    = Object.fromEntries(bankDetails.map(r => [String(r.employee_code || '').trim(), r]));
+      const bankByEmail   = Object.fromEntries(bankDetails.map(r => [String(r.personal_email || '').toLowerCase(), r]));
+      const leaveByEmail  = {};
+      for (const r of [...leaveCL, ...leaveEL]) {
+        const em = String(r.personal_email || '').toLowerCase();
+        if (!leaveByEmail[em]) leaveByEmail[em] = [];
+        leaveByEmail[em].push(r);
+      }
+
+      const DEFAULT_PASSWORD = 'Maxvolt@1234';
       const errors = [];
-      const validated = rows.map((row, idx) => {
+      const warnings = [];
+
+      // Validate all profiles
+      const validated = profiles.map((row, idx) => {
         const rowNum = idx + 2;
-        const email = get(row, 'email', 'work_email', 'employee_email') || '';
-        const name  = get(row, 'full_name', 'name', 'employee_name', 'display_name') || '';
-        const code  = get(row, 'employee_code', 'emp_code', 'emp_id', 'employee_id') || '';
-        if (!email) errors.push({ row: rowNum, field:'email', message:'Email is required' });
-        if (!name)  errors.push({ row: rowNum, field:'name',  message:'Name is required'  });
+        const email = String(row.personal_email || '').toLowerCase().trim();
+        const name  = String(row.full_name || '').trim();
+        const code  = String(row.employee_code || '').trim();
+        if (!email)  errors.push({ row: rowNum, field: 'personal_email', message: `Row ${rowNum}: Email is missing` });
+        if (!name)   errors.push({ row: rowNum, field: 'full_name',      message: `Row ${rowNum}: Name is missing` });
+        if (!code)   errors.push({ row: rowNum, field: 'employee_code',  message: `Row ${rowNum}: Employee code is missing` });
+
+        const sal   = salaryByCode[code] || salaryByName[name.toLowerCase()] || null;
+        const stat  = statutoryByEmail[email] || null;
+        const bank  = bankByCode[code] || bankByEmail[email] || null;
+        const leave = leaveByEmail[email] || [];
+
+        if (!sal)  warnings.push({ row: rowNum, message: `${name}: No salary data found` });
+        if (!bank) warnings.push({ row: rowNum, message: `${name}: No bank details found` });
+
+        const joining = row.date_of_joining ? new Date(row.date_of_joining) : null;
+        const doj = joining && !isNaN(joining) ? joining.toISOString().split('T')[0] : row.date_of_joining || '';
+        const dob = row.date_of_birth ? (new Date(row.date_of_birth).toISOString().split('T')[0] || row.date_of_birth) : '';
+        const confirmDate = row.employee_confirmation_date ? (new Date(row.employee_confirmation_date).toISOString().split('T')[0] || '') : '';
+
         return {
           rowNum, email, name, code,
-          department: get(row, 'department', 'dept'),
-          designation: get(row, 'designation', 'role', 'position'),
-          mobile: get(row, 'mobile', 'phone', 'contact'),
-          date_of_joining: get(row, 'date_of_joining', 'doj', 'joining_date'),
-          date_of_birth: get(row, 'date_of_birth', 'dob'),
-          gender: get(row, 'gender'),
-          ctc: parseFloat(get(row, 'ctc', 'annual_ctc', 'salary') || 0),
+          department: row.department || '', designation: row.designation || '',
+          designation_tier: row.designation_tier || '', employee_status: row.employee_status || row.status || 'active',
+          work_location: row.work_location || '', date_of_joining: doj, date_of_birth: dob,
+          confirmation_date: confirmDate, gender: row.gender || '', phone: row.phone || '',
+          blood_group: row.blood_group || '', employment_type: row.employment_type || 'full_time',
+          father_spouse_name: row.father_spouse_name || '', reporting_manager_email: row.reporting_manager_email || '',
+          is_attendance_exempt: row.is_attendance_exempt === 'True' || row.is_attendance_exempt === 'true',
+          sal, stat, bank, leave,
           valid: !errors.find(e => e.row === rowNum),
         };
       });
 
       if (mode === 'validate') {
-        return res.json({ success:true, total: rows.length, valid: validated.filter(r=>r.valid).length, errors, preview: validated.slice(0, 10) });
+        return res.json({
+          success: true,
+          total_employees: profiles.length,
+          salary_structure: salaries,
+          leave_balances: [...leaveCL, ...leaveEL],
+          insurance_policies: [],
+          errors,
+          warnings,
+          employees: validated.slice(0, 20).map(r => ({
+            name: r.name, code: r.code, email: r.email,
+            department: r.department, designation: r.designation, date_of_joining: r.date_of_joining,
+            has_salary: !!r.sal, has_bank: !!r.bank, has_statutory: !!r.stat, leave_records: r.leave.length,
+          })),
+        });
       }
 
-      // Import mode
+      // ── Import mode ──────────────────────────────────────────────────────
       const results = [];
+      const bcryptLib = await import('bcryptjs');
+      const hash = bcryptLib.hashSync(DEFAULT_PASSWORD, 10);
+
       for (const row of validated) {
-        if (!row.valid) { results.push({ ...row, status:'skipped', reason:'Validation errors' }); continue; }
+        if (!row.valid) { results.push({ name: row.name, code: row.code, status: 'skipped', reason: 'Validation error' }); continue; }
 
-        // Check if user exists by email
-        let user = await one("SELECT id, full_name FROM users WHERE email=$1", [row.email]);
-        if (!user) {
-          // Create user account with temporary password
-          const { v4 } = await import('uuid');
-          const userId = v4();
-          const hash   = await import('bcrypt').then(b => b.hash('Maxvolt@123', 10));
-          await run("INSERT INTO users(id,email,full_name,role,status,custom_role) VALUES($1,$2,$3,'employee','active','employee')", [userId, row.email, row.name]);
-          user = { id: userId, full_name: row.name };
+        try {
+          // 1. User account
+          let userId;
+          const existingUser = await one("SELECT id FROM users WHERE email=$1", [row.email]);
+          if (existingUser) {
+            userId = existingUser.id;
+            results.push({ name: row.name, code: row.code, status: 'existing_user', email: row.email });
+          } else {
+            userId = uuidv4();
+            await run(
+              "INSERT INTO users(id,email,password,full_name,role,custom_role,must_change_password) VALUES($1,$2,$3,$4,'employee','employee',TRUE)",
+              [userId, row.email, hash, row.name]
+            );
+          }
+
+          // 2. Employee entity
+          let empId;
+          const existingEmp = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
+          if (existingEmp) {
+            empId = existingEmp.id;
+            // Update with richer data if existing record is sparse
+            const existing = JSON.parse(existingEmp.data);
+            const merged = {
+              ...existing,
+              employee_code: row.code || existing.employee_code,
+              department: row.department || existing.department,
+              designation: row.designation || existing.designation,
+              designation_tier: row.designation_tier || existing.designation_tier,
+              employee_status: row.employee_status || existing.employee_status,
+              work_location: row.work_location || existing.work_location,
+              date_of_joining: row.date_of_joining || existing.date_of_joining,
+              date_of_birth: row.date_of_birth || existing.date_of_birth,
+              confirmation_date: row.confirmation_date || existing.confirmation_date,
+              gender: row.gender || existing.gender,
+              phone: row.phone || existing.phone,
+              blood_group: row.blood_group || existing.blood_group,
+              employment_type: row.employment_type || existing.employment_type,
+              father_spouse_name: row.father_spouse_name || existing.father_spouse_name,
+              reporting_manager_email: row.reporting_manager_email || existing.reporting_manager_email,
+              is_attendance_exempt: row.is_attendance_exempt,
+              pan_number: row.stat?.pan_number || existing.pan_number,
+              aadhar_number: row.stat?.aadhar_number || existing.aadhar_number,
+              uan_number: row.stat?.uan_number || existing.uan_number,
+              pf_account_number: row.stat?.pf_account_number || existing.pf_account_number,
+              esi_number: row.stat?.esi_number || existing.esi_number,
+            };
+            await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(merged), empId]);
+          } else {
+            empId = uuidv4();
+            const empData = {
+              id: empId, user_id: userId,
+              employee_code: row.code, display_name: row.name,
+              department: row.department, designation: row.designation,
+              designation_tier: row.designation_tier, employee_status: row.employee_status,
+              work_location: row.work_location, date_of_joining: row.date_of_joining,
+              date_of_birth: row.date_of_birth, confirmation_date: row.confirmation_date,
+              gender: row.gender, phone: row.phone, blood_group: row.blood_group,
+              employment_type: row.employment_type, father_spouse_name: row.father_spouse_name,
+              reporting_manager_email: row.reporting_manager_email,
+              is_attendance_exempt: row.is_attendance_exempt,
+              pan_number: row.stat?.pan_number || '', aadhar_number: row.stat?.aadhar_number || '',
+              uan_number: row.stat?.uan_number || '', pf_account_number: row.stat?.pf_account_number || '',
+              esi_number: row.stat?.esi_number || '',
+              status: 'active', created_at: new Date().toISOString(),
+            };
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'active',$3)", [empId, userId, JSON.stringify(empData)]);
+          }
+
+          // 3. Salary structure
+          if (row.sal) {
+            const existingSal = await one("SELECT id FROM entities WHERE type='SalaryStructure' AND user_id=$1", [userId]);
+            if (!existingSal) {
+              const s = row.sal;
+              const toNum = (v) => parseFloat(String(v).replace(/,/g,'')) || 0;
+              const salData = {
+                id: uuidv4(), user_id: userId, employee_id: empId, employee_code: row.code,
+                employee_name: row.name, effective_date: row.date_of_joining || new Date().toISOString().split('T')[0],
+                basic_monthly: toNum(s['basic_salary']), hra_monthly: toNum(s['hra']),
+                conveyance_monthly: toNum(s['conveyance']),
+                car_fuel_maintenance: toNum(s['car_fuel_maintenance']),
+                health_and_wellness: toNum(s['health_and_wellness']),
+                hard_furnishing: toNum(s['hard_furnishing']),
+                pf_employee: toNum(s['provident_fund']), medical_insurance: toNum(s['medical_insurance']),
+                vpp_deduction: toNum(s['vpp_deduction']), ctc_bonus: toNum(s['ctc_bonus']),
+                esi_employer: toNum(s['esi_employer']), nps_employee: toNum(s['nps_employee']),
+                car_lease: toNum(s['car_lease']), total_ctc: toNum(s['totalctc']),
+                status: 'active', created_at: new Date().toISOString(),
+              };
+              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SalaryStructure',$2,'active',$3)", [uuidv4(), userId, JSON.stringify(salData)]);
+            }
+          }
+
+          // 4. Bank details
+          if (row.bank) {
+            const existingBank = await one("SELECT id FROM entities WHERE type='BankDetails' AND user_id=$1", [userId]);
+            if (!existingBank) {
+              const b = row.bank;
+              const bankData = {
+                id: uuidv4(), user_id: userId, employee_id: empId,
+                account_number: b.account_number || '', ifsc_code: b.ifsc_code || '',
+                bank_name: b.bank_name || '', branch: b.branch || '',
+                account_type: 'savings', is_primary: true,
+                created_at: new Date().toISOString(),
+              };
+              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'BankDetails',$2,'active',$3)", [uuidv4(), userId, JSON.stringify(bankData)]);
+            }
+          }
+
+          // 5. Leave balances
+          for (const lb of row.leave) {
+            const policy = lb.leave_policy_code || '';
+            const year   = lb.year || new Date().getFullYear();
+            const exists = await one(
+              "SELECT id FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data->>'leave_policy_code'=$2 AND data->>'year'=$3",
+              [userId, policy, String(year)]
+            );
+            if (!exists) {
+              const lbData = {
+                id: uuidv4(), user_id: userId, employee_id: empId,
+                leave_policy_code: policy, year: String(year),
+                total_allocated: parseFloat(lb.total_allocated) || 0,
+                accrued_this_year: parseFloat(lb.accrued_this_year) || 0,
+                used: parseFloat(lb.used) || 0,
+                carried_forward: parseFloat(lb.carried_forward) || 0,
+                last_accrual_month: lb.last_accrual_month || '',
+                last_accrual_year: lb.last_accrual_year || '',
+                created_at: new Date().toISOString(),
+              };
+              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [uuidv4(), userId, JSON.stringify(lbData)]);
+            }
+          }
+
+          if (!existingUser) {
+            results.push({ name: row.name, code: row.code, status: 'created', email: row.email,
+              has_salary: !!row.sal, has_bank: !!row.bank, leave_records: row.leave.length });
+          }
+        } catch (err) {
+          results.push({ name: row.name, code: row.code, status: 'error', reason: err.message });
         }
-
-        // Check if employee record exists
-        const existingEmp = await one("SELECT id FROM entities WHERE type='Employee' AND user_id=$1", [user.id]);
-        if (existingEmp) {
-          results.push({ ...row, status: 'existing', user_id: user.id });
-          continue;
-        }
-
-        // Create employee record
-        const empId = uuidv4();
-        const empData = {
-          id: empId, user_id: user.id, employee_code: row.code || `EMP${String(Math.floor(Math.random()*9000)+1000)}`,
-          display_name: row.name, department: row.department, designation: row.designation,
-          mobile: row.mobile, date_of_joining: row.date_of_joining, date_of_birth: row.date_of_birth,
-          gender: row.gender, ctc: row.ctc, status: 'active',
-          created_at: new Date().toISOString(),
-        };
-        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'active',$3)", [empId, user.id, JSON.stringify(empData)]);
-        results.push({ ...row, status:'created', user_id: user.id, employee_id: empId });
       }
 
-      const imported = results.filter(r => r.status === 'created').length;
-      return res.json({ success:true, imported, total: rows.length, results });
+      const created  = results.filter(r => r.status === 'created').length;
+      const existing = results.filter(r => r.status === 'existing_user').length;
+      const failed   = results.filter(r => r.status === 'error').length;
+      return res.json({ success: true, created, existing, failed, total: validated.length, results,
+        default_password: DEFAULT_PASSWORD, message: `Imported ${created} new employees (${existing} already existed, ${failed} errors). Default password: ${DEFAULT_PASSWORD}` });
     }
 
     case 'updateEmployeeConfirmation': {

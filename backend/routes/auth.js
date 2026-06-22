@@ -16,7 +16,8 @@ const formatUser = (u) => u ? {
   full_name: u.full_name, first_name: u.first_name,
   middle_name: u.middle_name, last_name: u.last_name,
   role: u.role, custom_role: u.custom_role,
-  display_name: u.display_name || u.full_name
+  display_name: u.display_name || u.full_name,
+  must_change_password: !!u.must_change_password
 } : null;
 
 function generateOTP() {
@@ -173,6 +174,30 @@ router.post('/reset-password', async (req, res) => {
   const hash = bcrypt.hashSync(pwd, 10);
   await run('UPDATE users SET password=$1, updated_at=NOW()::TEXT WHERE email=$2', [hash, record.email]);
   await run('DELETE FROM reset_tokens WHERE token = $1', [resetToken]);
+  res.json({ success: true });
+});
+
+// POST /api/auth/change-password  — authenticated; clears must_change_password flag
+router.post('/change-password', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'No token' });
+  let decoded;
+  try { decoded = jwt.verify(token, JWT_SECRET); } catch { return res.status(401).json({ error: 'Invalid token' }); }
+
+  const { current_password, new_password } = req.body;
+  if (!new_password || new_password.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
+
+  const user = await one('SELECT * FROM users WHERE id=$1', [decoded.id]);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  // For bulk-imported users with must_change_password, skip current password check
+  if (!user.must_change_password) {
+    if (!current_password) return res.status(400).json({ error: 'Current password required' });
+    if (!bcrypt.compareSync(current_password, user.password)) return res.status(401).json({ error: 'Current password is incorrect' });
+  }
+
+  const hash = bcrypt.hashSync(new_password, 10);
+  await run('UPDATE users SET password=$1, must_change_password=FALSE, updated_at=NOW()::TEXT WHERE id=$2', [hash, user.id]);
   res.json({ success: true });
 });
 

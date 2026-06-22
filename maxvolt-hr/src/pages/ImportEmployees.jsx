@@ -40,15 +40,15 @@ export default function ImportEmployees() {
     setFile(selectedFile);
     setLoading(true);
     try {
-      // Upload the file first, then pass the URL to the backend function
       const { file_url } = await base44.integrations.Core.UploadFile({ file: selectedFile });
       setUploadedFileUrl(file_url);
       const res = await base44.functions.invoke('importEmployeeData', { fileUrl: file_url, mode: 'validate' });
       const data = res.data;
+      if (data.error) throw new Error(data.error);
       setPreview(data);
       setStep(1);
     } catch (e) {
-      alert('Failed to parse file: ' + e.message);
+      alert('Failed to parse file: ' + (e.message || String(e)));
     }
     setLoading(false);
   };
@@ -60,10 +60,10 @@ export default function ImportEmployees() {
       const res = await base44.functions.invoke('importEmployeeData', { fileUrl: uploadedFileUrl, mode: 'import' });
       const data = res.data;
       if (data.error) throw new Error(data.error);
-      setImportResults(data.results || []);
+      setImportResults(data);
       setStep(3);
     } catch (e) {
-      alert('Import failed: ' + e.message);
+      alert('Import failed: ' + (e.message || String(e)));
     }
     setLoading(false);
   };
@@ -149,8 +149,13 @@ export default function ImportEmployees() {
                 <li><strong>{preview.insurance_policies?.length || 0}</strong> insurance policy records</li>
               </ul>
               <p className="text-sm text-blue-700 mt-2">
-                Employee <strong>user accounts will be created immediately</strong> and all records (profile, salary, leave balances) will be linked on the spot. Employees will receive an email to set their password and can log in straight away.
+                Employee <strong>user accounts will be created immediately</strong> with all records (profile, salary, bank details, leave balances) linked. Each employee gets a temporary default password.
               </p>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <p className="text-sm font-semibold text-amber-800">Default Password for all imported employees:</p>
+              <p className="text-lg font-mono font-bold text-amber-900 mt-1">Maxvolt@1234</p>
+              <p className="text-xs text-amber-700 mt-1">Employees will be forced to change this password on first login.</p>
             </div>
             <div className="flex justify-between pt-2">
               <Button variant="outline" onClick={() => setStep(1)} className="gap-2">
@@ -170,7 +175,38 @@ export default function ImportEmployees() {
               <h2 className="text-lg font-semibold text-gray-800">Import Complete</h2>
               <Button variant="outline" onClick={reset} size="sm">Start New Import</Button>
             </div>
-            <ImportResultsDashboard results={importResults} />
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-green-50 border border-green-100 rounded-lg p-4 text-center">
+                <p className="text-2xl font-bold text-green-700">{importResults.created || 0}</p>
+                <p className="text-xs text-green-600 mt-1">Accounts Created</p>
+              </div>
+              <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 text-center">
+                <p className="text-2xl font-bold text-blue-700">{importResults.existing || 0}</p>
+                <p className="text-xs text-blue-600 mt-1">Already Existed</p>
+              </div>
+              <div className="bg-red-50 border border-red-100 rounded-lg p-4 text-center">
+                <p className="text-2xl font-bold text-red-700">{importResults.failed || 0}</p>
+                <p className="text-xs text-red-600 mt-1">Errors</p>
+              </div>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <p className="text-sm font-semibold text-amber-800">Share with employees:</p>
+              <p className="text-sm text-amber-700 mt-1">Login URL: <strong>{window.location.origin}/login</strong></p>
+              <p className="text-sm text-amber-700">Default Password: <strong className="font-mono">Maxvolt@1234</strong></p>
+              <p className="text-xs text-amber-600 mt-1">Each employee will be prompted to set their own password on first login.</p>
+            </div>
+            {(importResults.results || []).filter(r => r.status === 'error').length > 0 && (
+              <div>
+                <p className="text-sm font-medium text-red-700 mb-2">Errors:</p>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {(importResults.results || []).filter(r => r.status === 'error').map((r, i) => (
+                    <div key={i} className="text-xs text-red-700 bg-red-50 border border-red-100 rounded px-3 py-1.5">
+                      {r.name} ({r.code}): {r.reason}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
