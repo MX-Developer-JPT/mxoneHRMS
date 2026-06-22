@@ -61,6 +61,10 @@ function buildTransportOptions(cfg) {
       // tolerate self-signed / chain certs (common on shared mail servers like Titan)
       rejectUnauthorized: false,
     },
+    // Fail fast — without these nodemailer waits 2+ minutes on a blocked port
+    connectionTimeout: 10_000,
+    greetingTimeout:   8_000,
+    socketTimeout:     10_000,
     ...(cfg.dkim ? { dkim: cfg.dkim } : {}),
   };
 }
@@ -74,17 +78,22 @@ async function getTransport() {
   return transporter;
 }
 
+const withTimeout = (promise, ms, label) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s — the SMTP port may be blocked by the server/firewall`)), ms)
+    ),
+  ]);
+
 export async function verifySmtp() {
   const cfg = await getSmtpConfig();
   if (!isSmtpConfigured(cfg)) return { ok: false, error: 'SMTP host / user not configured. Add them in Admin Panel → Email Settings.' };
   try {
-    // Use a fresh single-connection transport for verification — pooled transports
-    // can report verify() as ok even when credentials are wrong.
     const { default: nodemailer } = await import('nodemailer');
     const probe = nodemailer.createTransport(buildTransportOptions(cfg));
-    await probe.verify();
+    await withTimeout(probe.verify(), 15_000, `Connecting to ${cfg.host}:${cfg.port}`);
     probe.close();
-    // Reset the cached transport so next send uses fresh cfg.
     transporter = null;
     return { ok: true, provider: 'smtp', host: cfg.host, port: cfg.port };
   } catch (e) {
@@ -100,13 +109,11 @@ export async function sendSmtpDirect({ to, from, subject, html, text }) {
   const { default: nodemailer } = await import('nodemailer');
   const t = nodemailer.createTransport(buildTransportOptions(cfg));
   try {
-    const info = await t.sendMail({
-      from: from || cfg.from || undefined,
-      to,
-      subject,
-      html: html || undefined,
-      text: text || undefined,
-    });
+    const info = await withTimeout(
+      t.sendMail({ from: from || cfg.from || undefined, to, subject, html: html || undefined, text: text || undefined }),
+      15_000,
+      `Sending via ${cfg.host}:${cfg.port}`
+    );
     return { success: true, messageId: info.messageId, provider: 'smtp' };
   } finally {
     t.close();
