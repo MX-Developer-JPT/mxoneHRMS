@@ -877,7 +877,7 @@ function EmployeeAttrsTab() {
                   <SelectTrigger><SelectValue placeholder="Select manager" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="">None</SelectItem>
-                    {employees.filter(e => e.id !== editEmp.id).map(e => (
+                    {employees.filter(e => e.id !== editEmp.id && e.user_id).map(e => (
                       <SelectItem key={e.id} value={e.user_id}>{getName(e.user_id)}</SelectItem>
                     ))}
                   </SelectContent>

@@ -1,9 +1,9 @@
+import { Suspense } from 'react'
 import { Toaster } from "@/components/ui/toaster"
 import { Toaster as SonnerToaster } from 'sonner'
 import AiStatusBanner from '@/components/AiStatusBanner'
 import { ThemeProvider } from 'next-themes'
-import { AnimatePresence, motion } from 'framer-motion'
-import { useLocation } from 'react-router-dom'
+import { motion } from 'framer-motion'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClientInstance } from '@/lib/query-client'
 import { pagesConfig } from './pages.config'
@@ -90,6 +90,12 @@ const tabVariants = {
 
 const TAB_PAGES = ['Dashboard', 'MarkAttendance', 'Leave', 'Profile', 'MISDashboard', 'AllAttendance'];
 
+const PageLoader = () => (
+  <div className="flex items-center justify-center min-h-[60vh]">
+    <div className="w-6 h-6 border-2 border-slate-200 border-t-slate-600 rounded-full animate-spin" />
+  </div>
+);
+
 const AnimatedPage = ({ children, pageName }) => {
   const variants = TAB_PAGES.includes(pageName) ? tabVariants : pageVariants;
   return (
@@ -98,7 +104,6 @@ const AnimatedPage = ({ children, pageName }) => {
       variants={variants}
       initial="initial"
       animate="animate"
-      exit="exit"
       style={{ width: '100%', height: '100%' }}
     >
       {children}
@@ -106,15 +111,19 @@ const AnimatedPage = ({ children, pageName }) => {
   );
 };
 
-const LayoutWrapper = ({ children, currentPageName }) => Layout ?
-  <Layout currentPageName={currentPageName}><AnimatedPage pageName={currentPageName}>{children}</AnimatedPage></Layout>
-  : <AnimatedPage pageName={currentPageName}>{children}</AnimatedPage>;
+const LayoutWrapper = ({ children, currentPageName }) => {
+  const content = (
+    <Suspense fallback={<PageLoader />}>
+      <AnimatedPage pageName={currentPageName}>{children}</AnimatedPage>
+    </Suspense>
+  );
+  return Layout ? <Layout currentPageName={currentPageName}>{content}</Layout> : content;
+};
 
 const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept'];
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError } = useAuth();
-  const location = useLocation();
   const isPublicPath = PUBLIC_PATHS.some(p => window.location.pathname.startsWith(p));
 
   if ((isLoadingPublicSettings || isLoadingAuth) && !isPublicPath) {
@@ -132,8 +141,7 @@ const AuthenticatedApp = () => {
   }
 
   return (
-    <AnimatePresence mode="wait">
-    <Routes location={location} key={location.pathname}>
+    <Routes>
       {/* Public auth routes */}
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
@@ -384,7 +392,6 @@ const AuthenticatedApp = () => {
       </Route>{/* end ProtectedRoute */}
       <Route path="*" element={<PageNotFound />} />
     </Routes>
-    </AnimatePresence>
   );
 };
 

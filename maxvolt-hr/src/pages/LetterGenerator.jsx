@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, ChevronLeft, Save, CheckCircle2
+  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, Save, CheckCircle2, Send, Users
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
@@ -24,6 +24,123 @@ const LETTER_TYPES = [
   { key: 'warning',         label: 'Warning Letter',          fields: [{ k: 'subject', label: 'Subject' }, { k: 'details', label: 'Issue Details', type: 'textarea' }] },
 ];
 const typeMeta = (k) => LETTER_TYPES.find(t => t.key === k);
+
+function OfferLetterPanel() {
+  const defaultJoining = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const [candidates, setCandidates] = useState([]);
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [form, setForm] = useState({ annual_ctc: '', joining_date: defaultJoining, designation: '', department: '', location: 'Ghaziabad, Uttar Pradesh', probation_months: 6, offer_valid_days: 7 });
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [acceptLink, setAcceptLink] = useState('');
+
+  useEffect(() => {
+    base44.entities.Candidate.filter({}).then(rows => {
+      setCandidates(rows.filter(c => ['selected', 'interview_done', 'shortlisted'].includes(c.status) && c.email));
+    }).catch(() => {});
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return candidates.filter(c => !q || (c.full_name || '').toLowerCase().includes(q) || (c.position_applied || '').toLowerCase().includes(q));
+  }, [candidates, search]);
+
+  const handleSend = async () => {
+    if (!selected) { toast.error('Select a candidate'); return; }
+    if (!form.annual_ctc || !form.joining_date) { toast.error('CTC and Joining Date are required'); return; }
+    setSending(true);
+    try {
+      const res = await base44.functions.invoke('sendOfferLetter', {
+        candidate_id: selected.id,
+        annual_ctc: Number(form.annual_ctc),
+        joining_date: form.joining_date,
+        designation: form.designation || selected.position_applied,
+        department: form.department || selected.department,
+        location: form.location,
+        probation_months: Number(form.probation_months) || 6,
+        offer_valid_days: Number(form.offer_valid_days) || 7,
+      });
+      if (res.data?.success) {
+        setSent(true);
+        setAcceptLink(res.data.accept_link || '');
+        if (res.data.email_error) {
+          toast.warning(`Saved but email failed: ${res.data.email_error}`);
+        } else {
+          toast.success(`Offer letter sent to ${selected.email}`);
+        }
+      } else {
+        toast.error(res.data?.error || 'Failed to send');
+      }
+    } catch (e) { toast.error(e.message); }
+    setSending(false);
+  };
+
+  if (sent) return (
+    <Card>
+      <CardContent className="p-6 text-center space-y-3">
+        <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto" />
+        <p className="font-semibold text-gray-800">Offer letter sent to {selected?.email}</p>
+        {acceptLink && (
+          <div className="flex items-center gap-2 justify-center flex-wrap">
+            <span className="text-xs text-gray-500 break-all">{acceptLink}</span>
+            <Button size="sm" variant="outline" onClick={() => { navigator.clipboard.writeText(acceptLink); toast.success('Link copied'); }}>Copy Link</Button>
+          </div>
+        )}
+        <Button size="sm" onClick={() => { setSent(false); setSelected(null); setAcceptLink(''); setForm({ annual_ctc: '', joining_date: defaultJoining, designation: '', department: '', location: 'Ghaziabad, Uttar Pradesh', probation_months: 6, offer_valid_days: 7 }); }}>New Offer</Button>
+      </CardContent>
+    </Card>
+  );
+
+  return (
+    <Card>
+      <CardContent className="p-5 space-y-4">
+        <div className="flex items-center gap-2 mb-1">
+          <Users className="w-4 h-4 text-orange-500" />
+          <span className="font-semibold text-gray-800">Candidate Offer Letter</span>
+        </div>
+        {selected ? (
+          <div className="flex items-center gap-3 border rounded-lg p-2.5 bg-orange-50">
+            <div className="w-9 h-9 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold">{(selected.full_name || '?')[0]}</div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{selected.full_name}</p>
+              <p className="text-xs text-gray-400 truncate">{selected.position_applied} · {selected.email}</p>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>Change</Button>
+          </div>
+        ) : (
+          <div>
+            <div className="relative mb-2">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Input className="pl-9" placeholder="Search candidate…" value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+            <div className="max-h-44 overflow-y-auto border rounded-lg divide-y">
+              {filtered.length === 0
+                ? <p className="p-3 text-sm text-gray-400">No eligible candidates (must be selected/interviewed with email)</p>
+                : filtered.map(c => (
+                  <button key={c.id} onClick={() => { setSelected(c); setForm(f => ({ ...f, designation: c.position_applied || '', department: c.department || '' })); }} className="w-full flex items-center gap-3 p-2.5 hover:bg-orange-50 text-left">
+                    <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">{(c.full_name || '?')[0]}</div>
+                    <div className="min-w-0"><p className="text-sm font-medium truncate">{c.full_name}</p><p className="text-xs text-gray-400 truncate">{c.position_applied} · {c.email}</p></div>
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label className="text-xs">Annual CTC (₹) *</Label><Input type="number" className="mt-1" placeholder="e.g. 500000" value={form.annual_ctc} onChange={e => setForm(f => ({ ...f, annual_ctc: e.target.value }))} /></div>
+          <div><Label className="text-xs">Joining Date *</Label><Input type="date" className="mt-1" value={form.joining_date} onChange={e => setForm(f => ({ ...f, joining_date: e.target.value }))} /></div>
+          <div><Label className="text-xs">Designation</Label><Input className="mt-1" placeholder="As per offer" value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))} /></div>
+          <div><Label className="text-xs">Department</Label><Input className="mt-1" placeholder="Department" value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} /></div>
+          <div><Label className="text-xs">Probation (months)</Label><Input type="number" className="mt-1" value={form.probation_months} onChange={e => setForm(f => ({ ...f, probation_months: e.target.value }))} /></div>
+          <div><Label className="text-xs">Offer Valid (days)</Label><Input type="number" className="mt-1" value={form.offer_valid_days} onChange={e => setForm(f => ({ ...f, offer_valid_days: e.target.value }))} /></div>
+        </div>
+        <Button onClick={handleSend} disabled={sending || !selected} className="w-full bg-orange-500 hover:bg-orange-600 text-white">
+          {sending ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Sending…</> : <><Send className="w-4 h-4 mr-2" /> Send Offer Letter</>}
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
 
 function initials(name) {
   return (name || '?').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
@@ -118,6 +235,8 @@ export default function LetterGenerator() {
         </h1>
         <p className="text-gray-500 text-sm mt-1">Draft HR letters in seconds — pre-filled from employee data, editable, and print-ready on company letterhead.</p>
       </div>
+
+      <OfferLetterPanel />
 
       <div className="grid lg:grid-cols-5 gap-6">
         {/* Config panel */}

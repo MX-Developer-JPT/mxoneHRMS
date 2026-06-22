@@ -1692,35 +1692,43 @@ Return ONLY a valid JSON object (no markdown):
       const probation  = probation_months;
       const validTill  = new Date(Date.now() + (offer_valid_days || 7) * 24 * 60 * 60 * 1000);
 
-      // Salary breakdown
-      const basicM       = Math.round(monthlyCTC * 0.5);
-      const hraM         = Math.round(monthlyCTC * 0.2);
-      const convM        = Math.round(monthlyCTC * 0.05);
-      const ltaM         = Math.round(monthlyCTC * 0.1);
-      const pfWage       = Math.min(basicM, 15000);
-      const pfEmpM       = Math.round(pfWage * 0.12);
-      const pfEmployerM  = Math.round(pfWage * 0.13);
-      const medicalM     = 330;
-      const bonusM       = Math.round(basicM * 0.0833);
-      const contribM     = pfEmployerM + medicalM + bonusM;
-      const grossM       = monthlyCTC - contribM;
-      const specialM     = grossM - basicM - hraM - convM - ltaM;
-      const netM         = grossM - pfEmpM;
+      // Salary breakdown — consistent with SalaryStructureManagement formula
+      const PF_CEIL = 15000, ESI_CEIL = 21000;
+      const basicM      = Math.round(monthlyCTC * 0.5);
+      const hraM        = Math.round(basicM * 0.4);
+      const isPF        = basicM > ESI_CEIL;
+      const isESI       = basicM <= ESI_CEIL;
+      let bonusM, bonusType;
+      if (ctc <= 1000000) { bonusM = Math.round(basicM * 0.0833); bonusType = 'Bonus (8.33% of Basic)'; }
+      else { const vp = ctc <= 1500000 ? 0.05 : ctc <= 2000000 ? 0.08 : ctc <= 2500000 ? 0.12 : 0.15; bonusM = Math.round(ctc * vp / 12); bonusType = `VPP (${Math.round(vp*100)}% of CTC)`; }
+      const medicalM    = 330;
+      const pfBase      = isPF ? Math.min(basicM, PF_CEIL) : 0;
+      const pfEmpM      = Math.round(pfBase * 0.12);
+      const pfEmployerM = Math.round(pfBase * 0.13);
+      const contribNoESI = pfEmployerM + medicalM + bonusM;
+      const grossEst    = monthlyCTC - contribNoESI;
+      const esiEmpM     = isESI ? Math.round(grossEst * 0.0075) : 0;
+      const esiEmployerM = isESI ? Math.round(grossEst * 0.0325) : 0;
+      const contribM    = contribNoESI + esiEmployerM;
+      const grossM      = monthlyCTC - contribM;
+      const convM       = Math.max(grossM - basicM - hraM, 0);
+      const netM        = grossM - pfEmpM - esiEmpM;
 
       const sal = {
         monthly_ctc: monthlyCTC, annual_ctc: ctc,
         basic_monthly: basicM, basic_annual: basicM * 12,
         hra_monthly: hraM, hra_annual: hraM * 12,
         conveyance_monthly: convM, conveyance_annual: convM * 12,
-        lta_monthly: ltaM, lta_annual: ltaM * 12,
-        special_monthly: specialM, special_annual: specialM * 12,
         gross_monthly: grossM, gross_annual: grossM * 12,
         pf_emp_monthly: pfEmpM, pf_emp_annual: pfEmpM * 12,
+        esi_emp_monthly: esiEmpM, esi_emp_annual: esiEmpM * 12,
         pf_employer_monthly: pfEmployerM, pf_employer_annual: pfEmployerM * 12,
+        esi_employer_monthly: esiEmployerM, esi_employer_annual: esiEmployerM * 12,
         medical_monthly: medicalM, medical_annual: medicalM * 12,
-        bonus_monthly: bonusM, bonus_annual: bonusM * 12,
+        bonus_monthly: bonusM, bonus_annual: bonusM * 12, bonusType,
         contribution_monthly: contribM, contribution_annual: contribM * 12,
         net_monthly: netM, net_annual: netM * 12,
+        isPF, isESI,
       };
 
       const offerRef    = `MEIL/HR/OL/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
@@ -1733,6 +1741,15 @@ Return ONLY a valid JSON object (no markdown):
       const appBase = process.env.APP_URL || 'https://hr.maxvolt-one.co.in';
       const acceptLink = `${appBase}/offer-accept/${acceptToken}`;
 
+      const dedRow = isPF
+        ? `<tr><td style="padding:6px 8px;border:1px solid #ddd;">PF Employee (12% on ≤₹15,000)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_monthly)}</td></tr>`
+        : `<tr><td style="padding:6px 8px;border:1px solid #ddd;">ESI Employee (0.75% of Gross)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.esi_emp_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.esi_emp_monthly)}</td></tr>`;
+      const empRow = isPF
+        ? `<tr><td style="padding:6px 8px;border:1px solid #ddd;">PF Employer (13% on ≤₹15,000)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_employer_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_employer_monthly)}</td></tr>`
+        : `<tr><td style="padding:6px 8px;border:1px solid #ddd;">ESI Employer (3.25% of Gross)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.esi_employer_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.esi_employer_monthly)}</td></tr>`;
+      const totalDed = isPF ? sal.pf_emp_annual : sal.esi_emp_annual;
+      const totalDedM = isPF ? sal.pf_emp_monthly : sal.esi_emp_monthly;
+
       const salaryTableHtml = `
 <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:12px;">
   <thead>
@@ -1744,15 +1761,16 @@ Return ONLY a valid JSON object (no markdown):
   </thead>
   <tbody>
     <tr><td colspan="3" style="padding:5px 8px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;font-size:11px;color:#555;text-transform:uppercase;">Earnings</td></tr>
-    ${[['Basic', sal.basic_annual, sal.basic_monthly],['HRA', sal.hra_annual, sal.hra_monthly],['Conveyance', sal.conveyance_annual, sal.conveyance_monthly],['LTA', sal.lta_annual, sal.lta_monthly],['Special Allowance', sal.special_annual, sal.special_monthly]].map(([l,a,m])=>`<tr><td style="padding:6px 8px;border:1px solid #ddd;">${l}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(a)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(m)}</td></tr>`).join('')}
+    ${[['Basic (50% of CTC)', sal.basic_annual, sal.basic_monthly],['HRA (40% of Basic)', sal.hra_annual, sal.hra_monthly],['Conveyance (Balance)', sal.conveyance_annual, sal.conveyance_monthly]].map(([l,a,m])=>`<tr><td style="padding:6px 8px;border:1px solid #ddd;">${l}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(a)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(m)}</td></tr>`).join('')}
     <tr style="background:#eff6ff;font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Gross (A)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.gross_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.gross_monthly)}</td></tr>
     <tr><td colspan="3" style="padding:5px 8px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;font-size:11px;color:#555;text-transform:uppercase;">Deductions</td></tr>
-    <tr><td style="padding:6px 8px;border:1px solid #ddd;">PF Employee Contribution</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_monthly)}</td></tr>
-    <tr><td style="padding:6px 8px;border:1px solid #ddd;">ESI Employee Contribution</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">—</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">—</td></tr>
-    <tr style="font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Deduction (B)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_monthly)}</td></tr>
+    ${dedRow}
+    <tr style="font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Deduction (B)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(totalDed)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(totalDedM)}</td></tr>
     <tr style="background:#f0fdf4;font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Net Salary (A-B)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.net_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.net_monthly)}</td></tr>
     <tr><td colspan="3" style="padding:5px 8px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;font-size:11px;color:#555;text-transform:uppercase;">Employer Contributions</td></tr>
-    ${[['PF Employer Contribution', sal.pf_employer_annual, sal.pf_employer_monthly],['Medical', sal.medical_annual, sal.medical_monthly],['Bonus', sal.bonus_annual, sal.bonus_monthly]].map(([l,a,m])=>`<tr><td style="padding:6px 8px;border:1px solid #ddd;">${l}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(a)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(m)}</td></tr>`).join('')}
+    ${empRow}
+    <tr><td style="padding:6px 8px;border:1px solid #ddd;">Medical Allowance</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.medical_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.medical_monthly)}</td></tr>
+    <tr><td style="padding:6px 8px;border:1px solid #ddd;">${sal.bonusType}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.bonus_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.bonus_monthly)}</td></tr>
     <tr style="font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Contribution (C)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.contribution_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.contribution_monthly)}</td></tr>
     <tr style="background:#fff7ed;font-weight:700;font-size:13px;"><td style="padding:8px;border:1px solid #ddd;">Annual CTC (A+C)</td><td style="padding:8px;border:1px solid #ddd;text-align:right;">${fmtIN(ctc)}</td><td style="padding:8px;border:1px solid #ddd;text-align:right;">${fmtIN(monthlyCTC)}</td></tr>
   </tbody>
@@ -1799,6 +1817,9 @@ Return ONLY a valid JSON object (no markdown):
     </ul>
     <p style="margin-top:20px;font-size:13px;">We look forward to welcoming you to the Maxvolt Energy family!</p>
     <p style="font-size:13px;">Warm regards,<br/><strong>Human Resources</strong><br/>Maxvolt Energy Industries Limited</p>
+    <div style="margin-top:20px;padding:10px 14px;background:#fef9f0;border:1px solid #fcd34d;border-radius:6px;font-size:11px;color:#92400e;">
+      <strong>Important:</strong> Please do not reply to this email. This is an automated notification. To accept your offer, use the button above. For any queries, contact us at <a href="mailto:hr@maxvoltenergy.com" style="color:#ea580c;">hr@maxvoltenergy.com</a>
+    </div>
   </div>
   <div style="background:#f9fafb;padding:12px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;text-align:center;font-size:11px;color:#999;">
     E-82 Bulandshahr Road Industrial Area, Ghaziabad, UP – 201009 &nbsp;|&nbsp; CIN: U40106DL2019PLC349854
@@ -1826,13 +1847,19 @@ Return ONLY a valid JSON object (no markdown):
       };
       await run("UPDATE entities SET status='offered', data=$1 WHERE id=$2", [JSON.stringify(offerData), candidate_id]);
 
-      await sendEmail({
-        to: cand.email,
-        subject: `Offer Letter – ${pos} at Maxvolt Energy Industries Limited`,
-        html: emailHtml,
-      });
+      let emailError = null;
+      try {
+        await sendEmail({
+          to: cand.email,
+          subject: `Offer Letter – ${pos} at Maxvolt Energy Industries Limited`,
+          html: emailHtml,
+        });
+      } catch (emailErr) {
+        console.error('sendOfferLetter email failed:', emailErr.message);
+        emailError = emailErr.message;
+      }
 
-      return res.json({ success: true, accept_link: acceptLink, offer_ref: offerRef });
+      return res.json({ success: true, accept_link: acceptLink, offer_ref: offerRef, email_error: emailError });
     }
 
     /* ── Get Offer by Accept Token (public) ─────────── */
