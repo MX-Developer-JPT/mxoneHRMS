@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle } from 'lucide-react';
+import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Zap, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import LeavePolicyManager from '../components/leave/LeavePolicyManager';
@@ -27,6 +27,27 @@ const POLICY_COLORS = {
   EL: 'bg-green-100 text-green-700',
   SL: 'bg-purple-100 text-purple-700'
 };
+
+function ELGrantButton() {
+  const [running, setRunning] = useState(false);
+  const run = async () => {
+    if (!window.confirm('Run auto EL grant for all employees?\n\nThis will credit 1 Earned Leave for every 40 present days (including Sundays and official holidays) that have not yet been credited.')) return;
+    setRunning(true);
+    try {
+      const res = await base44.functions.invoke('grantEarnedLeaveFor40Days', {});
+      toast.success(`Granted ${res.total_granted} Earned Leave(s) across ${res.results?.length || 0} employee(s)`);
+    } catch (e) {
+      toast.error('EL grant failed: ' + e.message);
+    }
+    setRunning(false);
+  };
+  return (
+    <Button size="sm" variant="outline" onClick={run} disabled={running} className="border-green-300 text-green-700 hover:bg-green-50">
+      {running ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Zap className="w-4 h-4 mr-1" />}
+      Auto-Grant EL (40-day rule)
+    </Button>
+  );
+}
 
 export default function LeaveManagement() {
   const [user, setUser] = useState(null);
@@ -63,7 +84,7 @@ export default function LeaveManagement() {
 
       let requests = await base44.entities.Leave.list('-created_date', 500);
 
-      const isHR = ['hr', 'admin'].includes(currentUser.role) || ['hr', 'admin'].includes(currentUser.custom_role);
+      const isHR = ['hr', 'admin', 'management'].includes(currentUser.role) || ['hr', 'admin', 'management'].includes(currentUser.custom_role);
       const isManager = ['manager', 'management'].includes(currentUser.role) || ['manager', 'management'].includes(currentUser.custom_role);
 
       if (isManager && !isHR) {
@@ -82,7 +103,7 @@ export default function LeaveManagement() {
     }
   };
 
-  const isHR = user && (['hr', 'admin'].includes(user.role) || ['hr', 'admin'].includes(user.custom_role));
+  const isHR = user && (['hr', 'admin', 'management'].includes(user.role) || ['hr', 'admin', 'management'].includes(user.custom_role));
   const isAdmin = user && (user.role === 'admin' || user.custom_role === 'admin');
   const isManagement = user && (['management', 'manager'].includes(user.role) || ['management', 'manager'].includes(user.custom_role));
 
@@ -244,9 +265,12 @@ export default function LeaveManagement() {
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Leave Management</h1>
-          <p className="text-gray-500 text-sm mt-1">Review and approve employee leave requests</p>
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Leave Management</h1>
+            <p className="text-gray-500 text-sm mt-1">Review and approve employee leave requests</p>
+          </div>
+          {isHR && <ELGrantButton />}
         </div>
 
         <Tabs defaultValue="requests" className="space-y-6">

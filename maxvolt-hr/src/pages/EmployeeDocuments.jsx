@@ -21,6 +21,7 @@ const documentTypes = [
   { value: 'experience_letter', label: 'Experience Letter' },
   { value: 'offer_letter', label: 'Offer Letter' },
   { value: 'contract', label: 'Employment Contract' },
+  { value: 'hr_letter', label: 'HR Letter (Generated)' },
   { value: 'other', label: 'Other' }
 ];
 

@@ -22,15 +22,9 @@
       "purpose": "any maskable"
     },
     {
-      "src": "/icons/icon.svg",
+      "src": "/favicon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any"
-    },
-    {
-      "src": "/maxvolt-logo.jpg",
-      "sizes": "any",
-      "type": "image/jpeg",
       "purpose": "any"
     }
   ],

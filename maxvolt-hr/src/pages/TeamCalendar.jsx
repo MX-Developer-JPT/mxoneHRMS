@@ -62,38 +62,28 @@ export default function TeamCalendar() {
   const dayAbbreviations = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   const getStatusForDay = (userId, dateStr) => {
-    const leaves = calendarData.leaves[userId] || [];
-    const attendance = calendarData.attendance[userId] || {};
-    const holidays = calendarData.holidays || [];
+    // leaves[userId] is { "YYYY-MM-DD": "leave" } — a plain object, not an array
+    const leaveMap    = calendarData.leaves[userId]     || {};
+    const attendance  = calendarData.attendance[userId] || {};
+    const holidays    = calendarData.holidays            || [];
 
-    // Check holidays first
-    const isHoliday = holidays.some(h => h.date === dateStr);
-    if (isHoliday) return 'holiday';
+    // Holidays first
+    if (holidays.some(h => h.date === dateStr)) return 'holiday';
 
-    // Check if it's a week off (Sunday)
-    const dayOfWeek = getDay(parseISO(dateStr));
-    if (dayOfWeek === 0) return 'week_off';
+    // Sunday = week off
+    if (getDay(parseISO(dateStr)) === 0) return 'week_off';
 
-    // Check leave
-    const leaveOnDay = leaves.find(l => {
-      const leaveStart = l.start_date;
-      const leaveEnd = l.end_date || l.start_date;
-      return dateStr >= leaveStart && dateStr <= leaveEnd;
-    });
-    if (leaveOnDay) {
-      return leaveOnDay.is_half_day ? 'half_day' : 'leave';
+    // Leave
+    if (leaveMap[dateStr]) return leaveMap[dateStr] === 'half_day' ? 'half_day' : 'leave';
+
+    // Attendance record
+    const rec = attendance[dateStr];
+    if (rec) {
+      if (rec === 'half_day') return 'half_day';
+      if (rec === 'present' || rec === 'on_duty') return 'present';
+      return rec;
     }
 
-    // Check attendance
-    const dayAttendance = attendance[dateStr];
-    if (dayAttendance) {
-      if (dayAttendance.status === 'present' || dayAttendance.status === 'half_day' || dayAttendance.status === 'on_duty') {
-        return dayAttendance.status === 'half_day' ? 'half_day' : 'present';
-      }
-      return dayAttendance.status;
-    }
-
-    // Future dates — no record
     return 'no_record';
   };
 

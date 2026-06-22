@@ -21,8 +21,13 @@ export default function PublicJobBoard() {
 
   const loadJobs = async () => {
     try {
-      const all = await base44.entities.JobRequisition.filter({ is_published: true, status: 'published' });
-      const active = all.filter(j => !j.application_deadline || !isPast(new Date(j.application_deadline)));
+      const allJobs = await base44.entities.JobRequisition.list('-published_date', 500);
+      const active = allJobs.filter(j => {
+        const isPublished = j.is_published === true || j.status === 'published' || j.status === 'approved';
+        const notExpired = !j.application_deadline || !isPast(new Date(j.application_deadline));
+        const notClosed  = !['closed', 'cancelled', 'rejected', 'hr_rejected', 'manager_rejected'].includes(j.status);
+        return isPublished && notExpired && notClosed;
+      });
       setJobs(active);
     } catch (e) {
       console.error(e);
@@ -43,7 +48,7 @@ export default function PublicJobBoard() {
       {/* Header */}
       <div className="bg-white border-b shadow-sm">
         <div className="max-w-5xl mx-auto px-4 py-6 flex items-center gap-4">
-          <img src="/maxvolt-logo.jpg" alt="Maxvolt Energy" className="h-12 object-contain" />
+          <img src="/favicon.svg" alt="Maxvolt Energy" className="h-12 object-contain" />
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Careers at Maxvolt Energy</h1>
             <p className="text-gray-500 text-sm">Explore open positions and join our team</p>

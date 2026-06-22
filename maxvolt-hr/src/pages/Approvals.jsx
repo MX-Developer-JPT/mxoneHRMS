@@ -28,7 +28,7 @@ export default function Approvals() {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
       const userRole = currentUser.custom_role || currentUser.role;
-      const hrRole = userRole === 'hr' || userRole === 'admin';
+      const hrRole = ['hr', 'admin', 'management'].includes(userRole);
       setIsHR(hrRole);
 
       const empRecords = await base44.entities.Employee.list();
@@ -129,7 +129,7 @@ export default function Approvals() {
   const handleRegAction = async (regId, action) => {
     setProcessing(p => ({ ...p, [regId]: true }));
     try {
-      const role = isHR ? 'hr' : 'manager';
+      const role = isHR ? 'management' : 'manager';
       const res = await base44.functions.invoke('processRegularisation', { regularisation_id: regId, action, role });
       if (res.data?.success) {
         toast.success(`Regularisation ${action}d`);

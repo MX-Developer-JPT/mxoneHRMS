@@ -5,12 +5,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Database, Users, RefreshCw, Trash2, Edit, Plus, Search,
   ChevronLeft, ChevronRight, Eye, Key, AlertTriangle, X, Check,
   BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2,
   Bot, Sparkles, ExternalLink, Zap, Fingerprint, Copy, RotateCcw, Globe, Code2,
-  ScrollText, Clock
+  ScrollText, Clock, Download, Settings2
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -106,6 +107,22 @@ function StatsBar({ stats }) {
       ))}
     </div>
   );
+}
+
+// ── CSV export helper ──────────────────────────────────────
+function exportUsersCSV(users) {
+  const header = ['Name', 'Email', 'Role', 'Joined'];
+  const rows = users.map(u => [
+    (u.full_name || '').replace(/,/g, ' '),
+    u.email || '',
+    u.role || '',
+    u.created_at ? new Date(u.created_at).toLocaleDateString('en-IN') : '',
+  ]);
+  const csv = '﻿' + [header, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `users_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ── User management tab ────────────────────────────────────
@@ -233,14 +250,19 @@ function UsersTab() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
         <div className="relative flex-1 max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input className="pl-9 h-9" placeholder="Search users…" value={search} onChange={e=>setSearch(e.target.value)} />
         </div>
-        <Button size="sm" onClick={() => setNewUserForm(true)}>
-          <Plus className="w-4 h-4 mr-1" /> Add User
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => exportUsersCSV(users)}>
+            <Download className="w-4 h-4 mr-1" /> Export CSV
+          </Button>
+          <Button size="sm" onClick={() => setNewUserForm(true)}>
+            <Plus className="w-4 h-4 mr-1" /> Add User
+          </Button>
+        </div>
       </div>
 
       {loading ? <p className="text-sm text-muted-foreground p-4">Loading…</p> : (
@@ -735,6 +757,144 @@ function AuditLogTab() {
   );
 }
 
+// ── Employee Attributes Tab ────────────────────────────────
+function EmployeeAttrsTab() {
+  const [employees, setEmployees] = useState([]);
+  const [users, setUsers]         = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [search, setSearch]       = useState('');
+  const [editEmp, setEditEmp]     = useState(null);
+  const [form, setForm]           = useState({});
+  const [saving, setSaving]       = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const [emps, usersRes] = await Promise.all([
+          base44.entities.Employee.list('-created_date', 500),
+          base44.functions.invoke('getAllUsers', {}),
+        ]);
+        setEmployees(emps);
+        setUsers(usersRes.data.users || []);
+      } catch (e) { toast.error(e.message); }
+      setLoading(false);
+    })();
+  }, []);
+
+  const allManagers = employees.filter(e => e.designation || e.department);
+
+  const getName = (uid) => {
+    const e = employees.find(x => x.user_id === uid);
+    if (e?.display_name) return e.display_name;
+    const u = users.find(x => x.id === uid);
+    return u ? (u.full_name || u.email) : 'Unknown';
+  };
+
+  const filtered = employees.filter(e => {
+    const q = search.toLowerCase();
+    return !q || getName(e.user_id).toLowerCase().includes(q) || (e.department || '').toLowerCase().includes(q) || (e.employee_code || '').toLowerCase().includes(q);
+  });
+
+  const openEdit = (emp) => {
+    setEditEmp(emp);
+    setForm({
+      shift:             emp.shift || '',
+      department:        emp.department || '',
+      location:          emp.location || '',
+      reporting_manager: emp.reporting_manager || '',
+      designation:       emp.designation || '',
+    });
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await base44.entities.Employee.update(editEmp.id, form);
+      setEmployees(prev => prev.map(e => e.id === editEmp.id ? { ...e, ...form } : e));
+      toast.success('Employee attributes updated');
+      setEditEmp(null);
+    } catch (e) { toast.error(e.message); }
+    setSaving(false);
+  };
+
+  if (loading) return <div className="flex items-center gap-2 text-muted-foreground py-8"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold flex items-center gap-2"><Settings2 className="w-5 h-5 text-primary" /> Employee Attributes</h2>
+        <p className="text-sm text-muted-foreground">Change shift, department, location, designation, and reporting manager for any employee.</p>
+      </div>
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <Input className="pl-9 h-9" placeholder="Search employees…" value={search} onChange={e => setSearch(e.target.value)} />
+      </div>
+      <div className="border rounded-xl overflow-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/50">
+            <tr>{['Employee', 'Department', 'Designation', 'Shift', 'Location', 'Reporting Manager', 'Actions'].map(h => (
+              <th key={h} className="text-left px-4 py-2.5 font-medium text-muted-foreground whitespace-nowrap">{h}</th>
+            ))}</tr>
+          </thead>
+          <tbody className="divide-y">
+            {filtered.map(emp => (
+              <tr key={emp.id} className="hover:bg-muted/30">
+                <td className="px-4 py-2.5 font-medium whitespace-nowrap">{getName(emp.user_id)}<br/><span className="text-xs text-muted-foreground">{emp.employee_code}</span></td>
+                <td className="px-4 py-2.5 text-muted-foreground">{emp.department || '—'}</td>
+                <td className="px-4 py-2.5 text-muted-foreground">{emp.designation || '—'}</td>
+                <td className="px-4 py-2.5 text-muted-foreground">{emp.shift || '—'}</td>
+                <td className="px-4 py-2.5 text-muted-foreground">{emp.location || '—'}</td>
+                <td className="px-4 py-2.5 text-muted-foreground">{emp.reporting_manager ? getName(emp.reporting_manager) : '—'}</td>
+                <td className="px-4 py-2.5">
+                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEdit(emp)}><Edit className="w-3.5 h-3.5" /></Button>
+                </td>
+              </tr>
+            ))}
+            {!filtered.length && <tr><td colSpan={7} className="text-center py-8 text-muted-foreground text-sm">No employees found</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Edit modal */}
+      {editEmp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-background rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-lg">Edit — {getName(editEmp.user_id)}</h3>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditEmp(null)}><X className="w-4 h-4" /></Button>
+            </div>
+            <div className="space-y-3">
+              {[['Shift', 'shift'], ['Department', 'department'], ['Location', 'location'], ['Designation', 'designation']].map(([label, key]) => (
+                <div key={key}>
+                  <Label className="text-xs mb-1 block">{label}</Label>
+                  <Input value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder={label} />
+                </div>
+              ))}
+              <div>
+                <Label className="text-xs mb-1 block">Reporting Manager</Label>
+                <Select value={form.reporting_manager} onValueChange={v => setForm(f => ({ ...f, reporting_manager: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Select manager" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
+                    {employees.filter(e => e.id !== editEmp.id).map(e => (
+                      <SelectItem key={e.id} value={e.user_id}>{getName(e.user_id)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" size="sm" onClick={() => setEditEmp(null)}>Cancel</Button>
+              <Button size="sm" disabled={saving} onClick={handleSave}>{saving ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <Check className="w-3.5 h-3.5 mr-1" />} Save</Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── API Integration Tab ────────────────────────────────────
 function ApiIntegrationTab() {
   const [apiInfo, setApiInfo]       = useState(null);
@@ -917,6 +1077,7 @@ export default function AdminPanel() {
   const TABS = [
     { id: 'entities', label: 'Data Browser',     icon: Database },
     { id: 'users',    label: 'User Management',   icon: UserCog  },
+    { id: 'emp',      label: 'Employee Attrs',    icon: Settings2 },
     { id: 'stats',    label: 'Statistics',        icon: BarChart3 },
     { id: 'email',    label: 'Email Settings',    icon: Mail },
     { id: 'ai',       label: 'AI Settings',       icon: Bot },
@@ -951,6 +1112,7 @@ export default function AdminPanel() {
 
       {tab === 'entities' && <EntitiesTab typeCounts={typeCounts} />}
       {tab === 'users'    && <UsersTab />}
+      {tab === 'emp'      && <EmployeeAttrsTab />}
       {tab === 'email'    && <EmailTab />}
       {tab === 'ai'       && <AITab />}
       {tab === 'api'      && <ApiIntegrationTab />}

@@ -70,7 +70,7 @@ export async function getEmailConfig() {
 
 // ── Shared email chrome ────────────────────────────────────
 const APP_URL  = process.env.APP_URL || 'https://hr.maxvolt-one.co.in';
-const LOGO_URL = `${APP_URL}/maxvolt-logo.jpg`;
+const LOGO_URL = `${APP_URL}/favicon.svg`;
 
 function emailHeader(title, accentColor = '#344055') {
   return `

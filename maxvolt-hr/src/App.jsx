@@ -34,6 +34,7 @@ import MyInsurance from './pages/MyInsurance';
 import OnboardingApproval from './pages/OnboardingApproval';
 import PublicJobBoard from './pages/PublicJobBoard';
 import ApplyForJob from './pages/ApplyForJob';
+import CareersPage from './pages/CareersPage';
 import LOPConfiguration from './pages/LOPConfiguration';
 import MyExit from './pages/MyExit';
 import ExitManagement from './pages/ExitManagement';
@@ -108,7 +109,7 @@ const LayoutWrapper = ({ children, currentPageName }) => Layout ?
   <Layout currentPageName={currentPageName}><AnimatedPage pageName={currentPageName}>{children}</AnimatedPage></Layout>
   : <AnimatedPage pageName={currentPageName}>{children}</AnimatedPage>;
 
-const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard'];
+const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers'];
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError } = useAuth();
@@ -397,6 +398,8 @@ function App() {
           <Route path="/PublicJobBoard" element={<PublicJobBoard />} />
           <Route path="/ApplyForJob" element={<ApplyForJob />} />
           <Route path="/PublicBusinessCard" element={<PublicBusinessCard />} />
+          <Route path="/careers" element={<CareersPage />} />
+          <Route path="/careers/:jobId" element={<CareersPage />} />
           {/* All other routes go through auth */}
           <Route path="*" element={
             <AuthProvider>

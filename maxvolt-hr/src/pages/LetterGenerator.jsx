@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, ChevronLeft
+  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, ChevronLeft, Save, CheckCircle2
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
@@ -40,6 +40,8 @@ export default function LetterGenerator() {
   const [letter, setLetter] = useState('');
   const [ref, setRef] = useState('');
   const [editMode, setEditMode] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => { load(); }, []);
   const load = async () => {
@@ -73,6 +75,7 @@ export default function LetterGenerator() {
         setLetter(d.letter);
         setRef(d.ref || '');
         setEditMode(false);
+        setSaved(false);
       } else toast.error(d.error || 'Generation failed');
     } catch (e) { toast.error('Error: ' + e.message); }
     setGenerating(false);
@@ -87,6 +90,25 @@ export default function LetterGenerator() {
   };
 
   const copyLetter = () => { navigator.clipboard.writeText(letter); toast.success('Letter copied'); };
+
+  const saveToDocuments = async () => {
+    if (!letter || !selectedEmp) return;
+    setSaving(true);
+    try {
+      await base44.functions.invoke('saveLetterAsDocument', {
+        user_id: selectedEmp.user_id,
+        letter_type: letterType,
+        letter_content: letter,
+        ref,
+        employee_name: selectedEmp.display_name,
+      });
+      setSaved(true);
+      toast.success('Letter saved to employee Documents');
+    } catch (e) {
+      toast.error('Failed to save: ' + e.message);
+    }
+    setSaving(false);
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -192,11 +214,16 @@ export default function LetterGenerator() {
                 <>
                   <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                     <div className="text-xs text-gray-400">{ref && `Ref: ${ref}`}</div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap">
                       <Button size="sm" variant="outline" onClick={() => setEditMode(m => !m)}>
                         {editMode ? 'Preview' : 'Edit'}
                       </Button>
                       <Button size="sm" variant="outline" onClick={copyLetter}><Copy className="w-3.5 h-3.5 mr-1" /> Copy</Button>
+                      <Button size="sm" onClick={saveToDocuments} disabled={saving || saved}
+                        className={saved ? 'bg-green-600 hover:bg-green-600 text-white' : 'bg-emerald-600 hover:bg-emerald-700 text-white'}>
+                        {saving ? <RefreshCw className="w-3.5 h-3.5 mr-1 animate-spin" /> : saved ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Save className="w-3.5 h-3.5 mr-1" />}
+                        {saved ? 'Saved' : 'Save to Docs'}
+                      </Button>
                       <Button size="sm" onClick={printLetter} className="bg-indigo-600 hover:bg-indigo-700 text-white">
                         <Printer className="w-3.5 h-3.5 mr-1" /> Print / PDF
                       </Button>

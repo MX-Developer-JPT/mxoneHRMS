@@ -49,7 +49,7 @@ export default function GatePassApproval() {
     setUser(currentUser);
 
     const role = currentUser.custom_role || currentUser.role;
-    const hrUser = role === 'hr' || role === 'admin';
+    const hrUser = ['hr', 'admin', 'management'].includes(role);
     setIsHR(hrUser);
 
     const [allPasses, allEmployees] = await Promise.all([

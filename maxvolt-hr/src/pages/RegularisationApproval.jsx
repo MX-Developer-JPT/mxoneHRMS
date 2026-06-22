@@ -75,14 +75,17 @@ export default function RegularisationApproval() {
     setLoading(false);
   };
 
-  const isHR = userRole === 'hr' || userRole === 'admin';
-  const isManager = userRole === 'management' || userRole === 'manager';
+  const isHR = ['hr', 'admin', 'management'].includes(userRole);
+  const isManager = userRole === 'manager';
+
+  // Role sent to backend: admin/hr/management → 'hr' (full approve), manager → 'manager' (step-1)
+  const approvalRole = isHR ? 'hr' : 'manager';
 
   const handleAction = async () => {
     if (!actionDialog) return;
     setProcessing(true);
     try {
-      const role = isHR ? 'hr' : 'manager';
+      const role = approvalRole;
       const response = await base44.functions.invoke('processRegularisation', {
         regularisation_id: actionDialog.request.id,
         action: actionDialog.action,
@@ -104,12 +107,12 @@ export default function RegularisationApproval() {
     setProcessing(false);
   };
 
-  const handleBulkAction = async (action) => {
-    if (!bulkSelected.length) { toast.error('Select requests first'); return; }
+  const handleBulkAction = async (action, ids = bulkSelected) => {
+    if (!ids.length) { toast.error('Select requests first'); return; }
     setProcessing(true);
     let successCount = 0;
-    const role = isHR ? 'hr' : 'manager';
-    for (const id of bulkSelected) {
+    const role = approvalRole;
+    for (const id of ids) {
       try {
         const res = await base44.functions.invoke('processRegularisation', { regularisation_id: id, action, comment: 'Bulk action', role });
         if (res.data?.success) successCount++;
@@ -208,7 +211,7 @@ export default function RegularisationApproval() {
           )}
         </div>
 
-        {/* Request Cards */}
+        {/* Request Cards — grouped by employee with per-employee bulk actions */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -219,30 +222,73 @@ export default function RegularisationApproval() {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              {filtered.map(req => {
+            <div className="space-y-6">
+              {/* Group by employee */}
+              {(() => {
+                const groups = {};
+                filtered.forEach(req => {
+                  if (!groups[req.user_id]) groups[req.user_id] = [];
+                  groups[req.user_id].push(req);
+                });
+                if (Object.keys(groups).length === 0) return (
+                  <div className="text-center py-12">
+                    <CheckCircle2 className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                    <p className="text-gray-500">No requests found</p>
+                  </div>
+                );
+                return Object.entries(groups).map(([uid, empReqs]) => {
+                  const empName = getEmployeeName(uid);
+                  const empDept = getEmployeeDept(uid);
+                  const actionableIds = empReqs
+                    .filter(r => isHR ? (r.status === 'pending' || r.status === 'manager_approved') : (r.status === 'pending' || r.status === 'sent_back'))
+                    .map(r => r.id);
+                  return (
+                    <div key={uid} className="border rounded-xl overflow-hidden">
+                      {/* Employee group header with bulk buttons */}
+                      <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b">
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs flex-shrink-0">
+                            {empName.charAt(0)}
+                          </div>
+                          <div>
+                            <span className="font-semibold text-sm">{empName}</span>
+                            {empDept && <span className="text-xs text-gray-500 ml-2">· {empDept}</span>}
+                          </div>
+                          <Badge className="bg-blue-100 text-blue-700 text-xs border-0 ml-1">{empReqs.length} request{empReqs.length > 1 ? 's' : ''}</Badge>
+                        </div>
+                        {actionableIds.length > 0 && (
+                          <div className="flex gap-1.5">
+                            <Button size="sm" className="h-6 text-xs bg-green-600 hover:bg-green-700 px-2"
+                              disabled={processing}
+                              onClick={() => handleBulkAction('approved', actionableIds)}>
+                              <CheckCircle2 className="w-3 h-3 mr-1" /> Approve All ({actionableIds.length})
+                            </Button>
+                            <Button size="sm" variant="destructive" className="h-6 text-xs px-2"
+                              disabled={processing}
+                              onClick={() => handleBulkAction('rejected', actionableIds)}>
+                              <XCircle className="w-3 h-3 mr-1" /> Reject All
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                      {/* Individual requests */}
+                      <div className="divide-y">
+              {empReqs.map(req => {
                 const cfg = statusConfig[req.status] || statusConfig.pending;
-                const empName = getEmployeeName(req.user_id);
-                const empDept = getEmployeeDept(req.user_id);
                 const canManagerAct = !isHR && (req.status === 'pending' || req.status === 'sent_back');
                 const canHRAct = isHR && (req.status === 'manager_approved' || req.status === 'pending');
                 const canAct = canManagerAct || canHRAct;
                 const isSelected = bulkSelected.includes(req.id);
 
                 return (
-                  <div key={req.id} className={`border rounded-xl p-4 transition-colors ${isSelected ? 'bg-blue-50 border-blue-300' : 'hover:bg-gray-50'}`}>
+                  <div key={req.id} className={`p-4 transition-colors ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
                     <div className="flex flex-col sm:flex-row justify-between items-start gap-3">
                       <div className="flex items-start gap-3">
                         {canAct && (
                           <input type="checkbox" className="mt-1 rounded" checked={isSelected}
                             onChange={e => setBulkSelected(prev => e.target.checked ? [...prev, req.id] : prev.filter(id => id !== req.id))} />
                         )}
-                        <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
-                          <span className="text-blue-700 font-bold text-sm">{empName.charAt(0)}</span>
-                        </div>
                         <div>
-                          <p className="font-semibold">{empName}</p>
-                          <p className="text-xs text-gray-500">{empDept}</p>
                           <div className="flex items-center gap-2 mt-1 text-sm text-gray-600">
                             <Calendar className="w-3.5 h-3.5" />
                             <span>{format(new Date(req.attendance_date), 'EEE, MMM d, yyyy')}</span>
@@ -279,17 +325,17 @@ export default function RegularisationApproval() {
                             </Button>
                           </>
                         )}
+                        </div>
                       </div>
                     </div>
                   </div>
                 );
               })}
-              {filtered.length === 0 && (
-                <div className="text-center py-12">
-                  <CheckCircle2 className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                  <p className="text-gray-500">No requests found</p>
-                </div>
-              )}
+                      </div>{/* divide-y */}
+                    </div>
+                  );
+                });
+              })()}
             </div>
           </CardContent>
         </Card>

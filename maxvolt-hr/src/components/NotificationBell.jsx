@@ -70,7 +70,7 @@ export default function NotificationBell() {
     <div className="relative" ref={ref}>
       <button
         onClick={() => { setOpen(!open); if (!open) load(); }}
-        className="relative flex items-center justify-center w-9 h-9 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+        className="relative flex items-center justify-center w-9 h-9 rounded-xl text-[#6E6E73] dark:text-white/70 hover:text-[#1D1D1F] dark:hover:text-white hover:bg-black/6 dark:hover:bg-white/10 transition-colors"
         aria-label="Notifications"
       >
         <Bell className="w-4 h-4" />

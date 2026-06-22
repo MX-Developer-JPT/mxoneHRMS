@@ -1020,7 +1020,10 @@ router.post('/:name', async (req, res) => {
       let newStatus = reg.status;
       const update  = { updated_at: new Date().toISOString() };
 
-      if (role === 'manager') {
+      // admin / hr / management can fully approve (→ completed); manager does step-1 only
+      const isFullApprover = ['hr', 'admin', 'management'].includes(role);
+
+      if (!isFullApprover && role === 'manager') {
         if (action === 'approve') {
           newStatus = 'manager_approved';
           update.manager_approved_at = new Date().toISOString();
@@ -1033,7 +1036,7 @@ router.post('/:name', async (req, res) => {
           newStatus = 'sent_back';
           update.manager_comment = comment;
         }
-      } else if (role === 'hr') {
+      } else if (isFullApprover) {
         if (action === 'approve') {
           newStatus = 'completed';
           update.hr_approved_at = new Date().toISOString();
@@ -3553,6 +3556,120 @@ Return ONLY valid JSON (no markdown):
     }
 
     /* ── Training ────────────────────────────────────── */
+
+    /* ── Auto-grant 1 EL per 40 present days ────────── */
+    case 'grantEarnedLeaveFor40Days': {
+      // Counts attendance records (present/half_day) + Sundays + official holidays.
+      // Every time an employee crosses a new 40-day threshold, credit 1 EL (no duplicates).
+      const now        = new Date();
+      const empRows    = await all("SELECT id,user_id,data FROM entities WHERE type='Employee' AND status='active'");
+      const employees  = empRows.map(r => ({ id: r.id, user_id: r.user_id, ...JSON.parse(r.data) }));
+      const holidayRows = await all("SELECT data FROM entities WHERE type='Holiday'");
+      const holidayDates = new Set(
+        holidayRows.map(r => { try { return JSON.parse(r.data).date?.slice(0,10); } catch { return null; } }).filter(Boolean)
+      );
+
+      function isSunday(dateStr) { return new Date(dateStr).getDay() === 0; }
+
+      let granted = 0;
+      const results = [];
+      for (const emp of employees) {
+        const startDate = emp.date_of_joining || emp.joining_date || '2020-01-01';
+        const attRows = await all(
+          "SELECT data->>'date' as d, data->>'status' as s FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date' >= $2",
+          [emp.user_id, startDate]
+        );
+
+        // Count all dates from joining to today where employee was present/half_day, on Sunday, or official holiday
+        let presentCount = 0;
+        const joinDate = new Date(startDate);
+        const todayDate = new Date(now.toISOString().slice(0,10));
+        const attMap = {};
+        for (const r of attRows) {
+          attMap[r.d] = r.s;
+        }
+
+        let d = new Date(joinDate);
+        while (d <= todayDate) {
+          const ds = d.toISOString().slice(0,10);
+          const status = attMap[ds];
+          if (status === 'present' || status === 'half_day' || isSunday(ds) || holidayDates.has(ds)) {
+            presentCount++;
+          }
+          d.setDate(d.getDate() + 1);
+        }
+
+        const elEntitledCount = Math.floor(presentCount / 40);
+        if (elEntitledCount <= 0) continue;
+
+        // Check how many EL grants we've already credited
+        const existingGrants = await all(
+          "SELECT COUNT(*) as c FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data->>'leave_type'='el_auto_40day'",
+          [emp.user_id]
+        );
+        const alreadyGranted = parseInt(existingGrants[0]?.c || 0);
+        const toGrant = elEntitledCount - alreadyGranted;
+        if (toGrant <= 0) continue;
+
+        // Credit the EL balance
+        const lbRow = await one(
+          "SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data->>'leave_type'='earned_leave'",
+          [emp.user_id]
+        );
+        if (lbRow) {
+          const lb = JSON.parse(lbRow.data);
+          const newBalance = (parseFloat(lb.balance) || 0) + toGrant;
+          await run(
+            "UPDATE entities SET data=$1 WHERE id=$2",
+            [JSON.stringify({ ...lb, balance: newBalance, updated_at: new Date().toISOString() }), lbRow.id]
+          );
+        } else {
+          // Create EL balance entry
+          const newId = uuidv4();
+          const newLb = { id: newId, user_id: emp.user_id, leave_type: 'earned_leave', balance: toGrant, used: 0, created_at: now.toISOString(), updated_at: now.toISOString() };
+          await run("INSERT INTO entities(id,type,user_id,data) VALUES($1,'LeaveBalance',$2,$3)", [newId, emp.user_id, JSON.stringify(newLb)]);
+        }
+
+        // Record each grant so we don't double-credit
+        for (let i = 0; i < toGrant; i++) {
+          const grantId = uuidv4();
+          const grantData = { id: grantId, user_id: emp.user_id, leave_type: 'el_auto_40day', days: 1, present_count_at_grant: presentCount, granted_at: now.toISOString() };
+          await run("INSERT INTO entities(id,type,user_id,data) VALUES($1,'LeaveBalance',$2,$3)", [grantId, emp.user_id, JSON.stringify(grantData)]);
+        }
+
+        granted += toGrant;
+        results.push({ employee: emp.display_name || emp.user_id, granted: toGrant, presentCount });
+      }
+      return res.json({ success: true, total_granted: granted, results });
+    }
+
+    /* ── Save generated letter to employee Documents ─── */
+    case 'saveLetterAsDocument': {
+      const { user_id, letter_type, letter_content, ref, employee_name } = p;
+      if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
+
+      const LETTER_LABELS = {
+        appointment: 'Appointment Letter', confirmation: 'Confirmation Letter',
+        promotion: 'Promotion Letter', salary_revision: 'Salary Revision Letter',
+        experience: 'Experience Certificate', relieving: 'Relieving Letter',
+        address_proof: 'Employment / Address Proof', warning: 'Warning Letter',
+      };
+      const docId   = uuidv4();
+      const label   = LETTER_LABELS[letter_type] || 'HR Letter';
+      const today   = new Date().toISOString().slice(0, 10);
+      const docData = {
+        id: docId, user_id,
+        document_type: 'hr_letter',
+        document_name: `${label}${ref ? ` (${ref})` : ''} — ${today}`,
+        letter_type, letter_content, ref: ref || '',
+        employee_name: employee_name || '',
+        status: 'verified',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, user_id, JSON.stringify(docData)]);
+      return res.json({ success: true, document_id: docId });
+    }
 
     /* ── HR Reports ─────────────────────────────────── */
     case 'generateReport': {
