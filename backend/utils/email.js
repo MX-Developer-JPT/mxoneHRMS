@@ -1,4 +1,5 @@
 import { one } from '../db.js';
+import { enqueueEmail, verifySmtp } from './emailQueue.js';
 
 async function getSetting(key, fallback = '') {
   try {
@@ -40,6 +41,10 @@ async function brevoRequest(apiKey, path, body) {
   return data;
 }
 
+// ── Our Mail Server (SMTP) ─────────────────────────────────
+// Provider 'smtp' sends through our own mail server via the built-in durable
+// queue + worker (utils/emailQueue.js). No external service to host.
+
 function parseFrom(fromStr, fallbackName = 'Maxvolt HR', fallbackEmail = 'noreply@maxvoltenergy.com') {
   if (!fromStr) return { name: fallbackName, email: fallbackEmail };
   const match = fromStr.match(/^(.*?)\s*<([^>]+)>$/);
@@ -52,6 +57,11 @@ function parseFrom(fromStr, fallbackName = 'Maxvolt HR', fallbackEmail = 'norepl
 
 export async function verifyEmail() {
   const provider = await getProvider();
+
+  if (provider === 'smtp') {
+    // Verifies our own mail server connection (see utils/emailQueue.js).
+    return verifySmtp();
+  }
 
   if (provider === 'brevo') {
     const key = await getBrevoKey();
@@ -77,6 +87,12 @@ export async function verifyEmail() {
 export async function sendEmail({ to, subject, html, text }) {
   const provider = await getProvider();
   const fromStr  = await getFromAddress();
+
+  if (provider === 'smtp') {
+    // Queue into our own mail server; the worker sends + retries asynchronously.
+    const id = await enqueueEmail({ to, from: fromStr || undefined, subject, html, text });
+    return { success: true, messageId: String(id), provider: 'smtp' };
+  }
 
   if (provider === 'brevo') {
     const key = await getBrevoKey();
@@ -104,13 +120,24 @@ export async function getSmtpPublicConfig() {
   const provider    = await getProvider();
   const resendKey   = await getResendKey();
   const brevoKey    = await getBrevoKey();
+  const smtpHost    = await getSetting('SMTP_HOST', '');
+  const smtpPort    = await getSetting('SMTP_PORT', '');
+  const smtpUser    = await getSetting('SMTP_USER', '');
+  const smtpPass    = await getSetting('SMTP_PASS', '');
+  const smtpSecure  = await getSetting('SMTP_SECURE', '');
   const from        = await getSetting('SMTP_FROM', '');
   return {
     provider,
     from,
     hasResendKey:   !!resendKey,
     hasBrevoKey:    !!brevoKey,
-    activeProvider: provider === 'brevo' && brevoKey ? 'brevo'
+    smtpHost,
+    smtpPort,
+    smtpUser,
+    smtpSecure: smtpSecure === 'true' || smtpSecure === '1',
+    hasSmtpPass:    !!smtpPass,
+    activeProvider: provider === 'smtp' && smtpHost && smtpUser ? 'smtp'
+                  : provider === 'brevo' && brevoKey ? 'brevo'
                   : provider === 'resend' && resendKey ? 'resend'
                   : 'none',
   };

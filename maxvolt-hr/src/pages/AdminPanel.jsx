@@ -509,6 +509,11 @@ const PROVIDERS = {
     keyPlaceholder: 'xsmtpsib-xxxxxxxx…',
     hint: 'brevo.com → SMTP & API → API Keys → Generate. Free: 300 emails/day.',
   },
+  smtp: {
+    label: 'Our Mail Server',
+    keyPlaceholder: '',
+    hint: 'Send via our own mail server (SMTP). Built-in queue + retries. No monthly cap.',
+  },
 };
 const KEY_MASK = '••••••••••••••••••••••••••••••••';
 
@@ -518,6 +523,12 @@ function EmailTab() {
   const [resendEditing, setResendEditing] = useState(false);
   const [brevoKey, setBrevoKey]       = useState('');
   const [brevoEditing, setBrevoEditing]   = useState(false);
+  const [smtpHost, setSmtpHost]       = useState('');
+  const [smtpPort, setSmtpPort]       = useState('587');
+  const [smtpUser, setSmtpUser]       = useState('');
+  const [smtpPass, setSmtpPass]       = useState('');
+  const [smtpPassEditing, setSmtpPassEditing] = useState(false);
+  const [smtpSecure, setSmtpSecure]   = useState(false);
   const [from, setFrom]               = useState('');
   const [activeProvider, setActiveProvider] = useState('none');
   const [status, setStatus]           = useState(null);
@@ -532,6 +543,11 @@ function EmailTab() {
       setActiveProvider(r.activeProvider || 'none');
       setResendKey(r.hasResendKey ? KEY_MASK : '');
       setBrevoKey(r.hasBrevoKey  ? KEY_MASK : '');
+      setSmtpHost(r.smtpHost || '');
+      setSmtpPort(r.smtpPort || '587');
+      setSmtpUser(r.smtpUser || '');
+      setSmtpPass(r.hasSmtpPass ? KEY_MASK : '');
+      setSmtpSecure(!!r.smtpSecure);
       setFrom(r.from || '');
     }).catch(() => {});
   }, []);
@@ -542,9 +558,16 @@ function EmailTab() {
       const payload = { provider, from };
       if (resendEditing) payload.resend_api_key = resendKey;
       if (brevoEditing)  payload.brevo_api_key  = brevoKey;
+      if (provider === 'smtp') {
+        payload.smtp_host = smtpHost;
+        payload.smtp_port = smtpPort;
+        payload.smtp_user = smtpUser;
+        payload.smtp_secure = smtpSecure;
+        if (smtpPassEditing) payload.smtp_pass = smtpPass;
+      }
       await adminFetch('/smtp-settings', { method: 'POST', body: JSON.stringify(payload) });
       toast.success('Settings saved');
-      setResendEditing(false); setBrevoEditing(false);
+      setResendEditing(false); setBrevoEditing(false); setSmtpPassEditing(false);
       setActiveProvider(provider);
     } catch (e) { toast.error('Save failed: ' + e.message); }
     finally { setSaving(false); }
@@ -586,7 +609,7 @@ function EmailTab() {
         </div>
 
         {/* Toggle */}
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {Object.entries(PROVIDERS).map(([key, info]) => (
             <button
               key={key}
@@ -599,29 +622,83 @@ function EmailTab() {
           ))}
         </div>
 
-        {/* API Key for selected provider */}
-        <div className="space-y-1">
-          <Label className="text-xs">{p.label} API Key</Label>
-          {provider === 'resend' ? (
-            <Input
-              type={resendEditing ? 'text' : 'password'}
-              value={resendKey}
-              placeholder={p.keyPlaceholder}
-              onFocus={() => { if (resendKey === KEY_MASK) { setResendKey(''); setResendEditing(true); } }}
-              onChange={e => { setResendKey(e.target.value); setResendEditing(true); }}
-              className="h-9 text-sm font-mono"
-            />
-          ) : (
-            <Input
-              type={brevoEditing ? 'text' : 'password'}
-              value={brevoKey}
-              placeholder={p.keyPlaceholder}
-              onFocus={() => { if (brevoKey === KEY_MASK) { setBrevoKey(''); setBrevoEditing(true); } }}
-              onChange={e => { setBrevoKey(e.target.value); setBrevoEditing(true); }}
-              className="h-9 text-sm font-mono"
-            />
-          )}
-        </div>
+        {/* Credentials for selected provider */}
+        {provider === 'smtp' ? (
+          <>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2 space-y-1">
+                <Label className="text-xs">SMTP Host</Label>
+                <Input
+                  value={smtpHost}
+                  placeholder="smtp.maxvolt-one.co.in"
+                  onChange={e => setSmtpHost(e.target.value)}
+                  className="h-9 text-sm font-mono"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Port</Label>
+                <Input
+                  value={smtpPort}
+                  placeholder="587"
+                  onChange={e => setSmtpPort(e.target.value)}
+                  className="h-9 text-sm font-mono"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Username</Label>
+              <Input
+                value={smtpUser}
+                placeholder="noreply@maxvolt-one.co.in"
+                onChange={e => setSmtpUser(e.target.value)}
+                className="h-9 text-sm font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Password</Label>
+              <Input
+                type={smtpPassEditing ? 'text' : 'password'}
+                value={smtpPass}
+                placeholder="SMTP password"
+                onFocus={() => { if (smtpPass === KEY_MASK) { setSmtpPass(''); setSmtpPassEditing(true); } }}
+                onChange={e => { setSmtpPass(e.target.value); setSmtpPassEditing(true); }}
+                className="h-9 text-sm font-mono"
+              />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={smtpSecure}
+                onChange={e => setSmtpSecure(e.target.checked)}
+                className="rounded border-border"
+              />
+              Use implicit TLS (port 465). Leave unchecked for STARTTLS (587/25).
+            </label>
+          </>
+        ) : (
+          <div className="space-y-1">
+            <Label className="text-xs">{p.label} API Key</Label>
+            {provider === 'resend' ? (
+              <Input
+                type={resendEditing ? 'text' : 'password'}
+                value={resendKey}
+                placeholder={p.keyPlaceholder}
+                onFocus={() => { if (resendKey === KEY_MASK) { setResendKey(''); setResendEditing(true); } }}
+                onChange={e => { setResendKey(e.target.value); setResendEditing(true); }}
+                className="h-9 text-sm font-mono"
+              />
+            ) : (
+              <Input
+                type={brevoEditing ? 'text' : 'password'}
+                value={brevoKey}
+                placeholder={p.keyPlaceholder}
+                onFocus={() => { if (brevoKey === KEY_MASK) { setBrevoKey(''); setBrevoEditing(true); } }}
+                onChange={e => { setBrevoKey(e.target.value); setBrevoEditing(true); }}
+                className="h-9 text-sm font-mono"
+              />
+            )}
+          </div>
+        )}
 
         {/* From address */}
         <div className="space-y-1">

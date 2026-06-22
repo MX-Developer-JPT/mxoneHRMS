@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { one, all, run } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { sendEmail, verifyEmail, emailTemplates, getSmtpPublicConfig } from '../utils/email.js';
+import { resetEmailTransport } from '../utils/emailQueue.js';
 
 const router = Router();
 
@@ -211,7 +212,10 @@ router.get('/smtp-settings', async (_req, res) => {
 
 // ── Email settings: save to DB ────────────────────────────
 router.post('/smtp-settings', async (req, res) => {
-  const { provider, resend_api_key, brevo_api_key, from } = req.body;
+  const {
+    provider, resend_api_key, brevo_api_key, from,
+    smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure,
+  } = req.body;
   const set = (key, val) => run(
     `INSERT INTO settings(key,value,updated_at) VALUES($1,$2,NOW()::TEXT)
      ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT`,
@@ -219,10 +223,19 @@ router.post('/smtp-settings', async (req, res) => {
   );
   const del = (key) => run('DELETE FROM settings WHERE key=$1', [key]);
 
-  if (provider !== undefined)       await set('EMAIL_PROVIDER', provider);
-  if (resend_api_key !== undefined) await (resend_api_key ? set('RESEND_API_KEY', resend_api_key) : del('RESEND_API_KEY'));
-  if (brevo_api_key  !== undefined) await (brevo_api_key  ? set('BREVO_API_KEY',  brevo_api_key)  : del('BREVO_API_KEY'));
-  if (from !== undefined)           await set('SMTP_FROM', from);
+  if (provider !== undefined)        await set('EMAIL_PROVIDER', provider);
+  if (resend_api_key !== undefined)  await (resend_api_key ? set('RESEND_API_KEY', resend_api_key) : del('RESEND_API_KEY'));
+  if (brevo_api_key  !== undefined)  await (brevo_api_key  ? set('BREVO_API_KEY',  brevo_api_key)  : del('BREVO_API_KEY'));
+  if (smtp_host !== undefined)       await (smtp_host ? set('SMTP_HOST', smtp_host) : del('SMTP_HOST'));
+  if (smtp_port !== undefined)       await set('SMTP_PORT', smtp_port || '587');
+  if (smtp_user !== undefined)       await (smtp_user ? set('SMTP_USER', smtp_user) : del('SMTP_USER'));
+  if (smtp_pass !== undefined)       await (smtp_pass ? set('SMTP_PASS', smtp_pass) : del('SMTP_PASS'));
+  if (smtp_secure !== undefined)     await set('SMTP_SECURE', smtp_secure ? 'true' : 'false');
+  if (from !== undefined)            await set('SMTP_FROM', from);
+
+  // SMTP config may have changed — drop the cached transporter so the next
+  // send rebuilds it with fresh credentials.
+  resetEmailTransport();
   res.json({ success: true });
 });
 
