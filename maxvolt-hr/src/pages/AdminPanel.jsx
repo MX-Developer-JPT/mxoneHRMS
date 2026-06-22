@@ -499,6 +499,10 @@ function EntitiesTab({ typeCounts }) {
 
 // ── Email settings tab ─────────────────────────────────────
 const PROVIDERS = {
+  relay: {
+    label: 'Office Relay',
+    hint: 'Self-hosted relay.exe on your office server → Titan Mail. No third-party, no monthly cap.',
+  },
   resend: {
     label: 'Resend',
     keyPlaceholder: 're_xxxxxxxxxxxxxxxxxxxx',
@@ -510,15 +514,18 @@ const PROVIDERS = {
     hint: 'brevo.com → SMTP & API → API Keys → Generate. Free: 300 emails/day.',
   },
   smtp: {
-    label: 'Our Mail Server',
+    label: 'Direct SMTP',
     keyPlaceholder: '',
-    hint: 'Send via our own mail server (SMTP). Built-in queue + retries. No monthly cap.',
+    hint: 'Direct SMTP — only works if your host allows outbound port 465/587.',
   },
 };
 const KEY_MASK = '••••••••••••••••••••••••••••••••';
 
 function EmailTab() {
-  const [provider, setProvider]       = useState('resend');
+  const [provider, setProvider]       = useState('relay');
+  const [relayUrl, setRelayUrl]       = useState('');
+  const [relayKey, setRelayKey]       = useState('');
+  const [relayKeyEditing, setRelayKeyEditing] = useState(false);
   const [resendKey, setResendKey]     = useState('');
   const [resendEditing, setResendEditing] = useState(false);
   const [brevoKey, setBrevoKey]       = useState('');
@@ -539,8 +546,10 @@ function EmailTab() {
 
   useEffect(() => {
     adminFetch('/smtp-settings').then(r => {
-      setProvider(r.provider || 'resend');
+      setProvider(r.provider || 'relay');
       setActiveProvider(r.activeProvider || 'none');
+      setRelayUrl(r.relayUrl || '');
+      setRelayKey(r.hasRelayKey ? KEY_MASK : '');
       setResendKey(r.hasResendKey ? KEY_MASK : '');
       setBrevoKey(r.hasBrevoKey  ? KEY_MASK : '');
       setSmtpHost(r.smtpHost || '');
@@ -556,8 +565,12 @@ function EmailTab() {
     setSaving(true);
     try {
       const payload = { provider, from };
-      if (resendEditing) payload.resend_api_key = resendKey;
-      if (brevoEditing)  payload.brevo_api_key  = brevoKey;
+      if (resendEditing)   payload.resend_api_key = resendKey;
+      if (brevoEditing)    payload.brevo_api_key  = brevoKey;
+      if (provider === 'relay') {
+        payload.relay_url = relayUrl;
+        if (relayKeyEditing) payload.relay_api_key = relayKey;
+      }
       if (provider === 'smtp') {
         payload.smtp_host = smtpHost;
         payload.smtp_port = smtpPort;
@@ -623,7 +636,31 @@ function EmailTab() {
         </div>
 
         {/* Credentials for selected provider */}
-        {provider === 'smtp' ? (
+        {provider === 'relay' ? (
+          <>
+            <div className="space-y-1">
+              <Label className="text-xs">Relay URL <span className="text-red-500">*</span></Label>
+              <Input
+                value={relayUrl}
+                placeholder="http://YOUR-OFFICE-IP:2525"
+                onChange={e => setRelayUrl(e.target.value)}
+                className="h-9 text-sm font-mono"
+              />
+              <p className="text-xs text-muted-foreground">Public IP or domain of your office server + the port the relay exe is listening on.</p>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">API Key (optional but recommended)</Label>
+              <Input
+                type={relayKeyEditing ? 'text' : 'password'}
+                value={relayKey}
+                placeholder="secret key set in relay config.json"
+                onFocus={() => { if (relayKey === KEY_MASK) { setRelayKey(''); setRelayKeyEditing(true); } }}
+                onChange={e => { setRelayKey(e.target.value); setRelayKeyEditing(true); }}
+                className="h-9 text-sm font-mono"
+              />
+            </div>
+          </>
+        ) : provider === 'smtp' ? (
           <>
             <div className="grid grid-cols-3 gap-2">
               <div className="col-span-2 space-y-1">

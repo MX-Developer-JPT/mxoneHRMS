@@ -12,9 +12,29 @@ async function getSetting(key, fallback = '') {
 async function getProvider()    { return getSetting('EMAIL_PROVIDER', 'resend'); }
 async function getResendKey()   { return getSetting('RESEND_API_KEY', ''); }
 async function getBrevoKey()    { return getSetting('BREVO_API_KEY', ''); }
+async function getRelayUrl()    { return getSetting('RELAY_URL', ''); }
+async function getRelayKey()    { return getSetting('RELAY_API_KEY', ''); }
 async function getFromAddress() {
   const from = await getSetting('SMTP_FROM', '');
   return from.includes('@') ? from : null;
+}
+
+// ── Office Mail Relay ──────────────────────────────────────
+// Sends via the self-hosted maxvolt-mail-relay.exe running on the office server.
+// Railway → HTTPS → relay.exe → Titan Mail SMTP (no SMTP from Railway).
+async function relayRequest(url, key, body) {
+  const res = await fetch(`${url.replace(/\/$/, '')}/send`, {
+    method:  'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      ...(key ? { Authorization: `Bearer ${key}` } : {}),
+    },
+    body:   JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Relay returned ${res.status}`);
+  return data;
 }
 
 // ── Resend ─────────────────────────────────────────────────
@@ -58,6 +78,23 @@ function parseFrom(fromStr, fallbackName = 'Maxvolt HR', fallbackEmail = 'norepl
 export async function verifyEmail() {
   const provider = await getProvider();
 
+  if (provider === 'relay') {
+    const url = await getRelayUrl();
+    const key = await getRelayKey();
+    if (!url) return { ok: false, error: 'Relay URL not configured. Add it in Admin Panel → Email Settings.' };
+    try {
+      const res = await fetch(`${url.replace(/\/$/, '')}/verify`, {
+        headers: key ? { Authorization: `Bearer ${key}` } : {},
+        signal: AbortSignal.timeout(20_000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Relay returned ${res.status}`);
+      return { ok: true, provider: 'relay', host: data.host, port: data.port };
+    } catch (e) {
+      return { ok: false, provider: 'relay', error: `Relay: ${e.message}` };
+    }
+  }
+
   if (provider === 'smtp') {
     // Verifies our own mail server connection (see utils/emailQueue.js).
     return verifySmtp();
@@ -87,6 +124,14 @@ export async function verifyEmail() {
 export async function sendEmail({ to, subject, html, text }) {
   const provider = await getProvider();
   const fromStr  = await getFromAddress();
+
+  if (provider === 'relay') {
+    const url = await getRelayUrl();
+    const key = await getRelayKey();
+    if (!url) { console.warn('[email] Relay URL not configured — skipped:', subject); return { skipped: true }; }
+    const data = await relayRequest(url, key, { to, from: fromStr || undefined, subject, html, text });
+    return { success: true, messageId: data.messageId, provider: 'relay' };
+  }
 
   if (provider === 'smtp') {
     // Queue into our own mail server; the worker sends + retries asynchronously.
@@ -120,6 +165,8 @@ export async function getSmtpPublicConfig() {
   const provider    = await getProvider();
   const resendKey   = await getResendKey();
   const brevoKey    = await getBrevoKey();
+  const relayUrl    = await getRelayUrl();
+  const relayKey    = await getRelayKey();
   const smtpHost    = await getSetting('SMTP_HOST', '');
   const smtpPort    = await getSetting('SMTP_PORT', '');
   const smtpUser    = await getSetting('SMTP_USER', '');
@@ -131,13 +178,16 @@ export async function getSmtpPublicConfig() {
     from,
     hasResendKey:   !!resendKey,
     hasBrevoKey:    !!brevoKey,
+    relayUrl,
+    hasRelayKey:    !!relayKey,
     smtpHost,
     smtpPort,
     smtpUser,
     smtpSecure: smtpSecure === 'true' || smtpSecure === '1',
     hasSmtpPass:    !!smtpPass,
-    activeProvider: provider === 'smtp' && smtpHost && smtpUser ? 'smtp'
-                  : provider === 'brevo' && brevoKey ? 'brevo'
+    activeProvider: provider === 'relay'  && relayUrl  ? 'relay'
+                  : provider === 'smtp'   && smtpHost && smtpUser ? 'smtp'
+                  : provider === 'brevo'  && brevoKey  ? 'brevo'
                   : provider === 'resend' && resendKey ? 'resend'
                   : 'none',
   };

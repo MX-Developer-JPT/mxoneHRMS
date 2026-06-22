@@ -1,0 +1,21 @@
+{
+  "name": "maxvolt-mail-relay",
+  "version": "1.0.0",
+  "description": "Self-hosted SMTP relay for Maxvolt HR — bridges Railway to Titan Mail",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "build": "npx @yao-pkg/pkg index.js --target node18-win-x64 --output dist/maxvolt-mail-relay.exe"
+  },
+  "dependencies": {
+    "nodemailer": "^9.0.1"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^5.12.1"
+  },
+  "pkg": {
+    "targets": ["node18-win-x64"],
+    "outputPath": "dist",
+    "assets": []
+  }
+}

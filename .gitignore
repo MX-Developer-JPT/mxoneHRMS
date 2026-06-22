@@ -33,3 +33,5 @@ Thumbs.db
 
 # Generated helper scripts
 generate-icons.js
+tools/mail-relay/dist/
+tools/mail-relay/node_modules/
