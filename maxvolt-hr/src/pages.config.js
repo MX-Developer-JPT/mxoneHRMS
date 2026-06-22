@@ -104,6 +104,7 @@ import Form16 from './pages/Form16';
 import StatutoryRegisters from './pages/StatutoryRegisters';
 import PulseSurveys from './pages/PulseSurveys';
 import AnomalyDetection from './pages/AnomalyDetection';
+import OfferLetters from './pages/OfferLetters';
 import __Layout from './Layout.jsx';
 
 
@@ -165,7 +166,7 @@ export const PAGES = {
     "StatutoryRegisters": StatutoryRegisters,
     "PulseSurveys": PulseSurveys,
     "AnomalyDetection": AnomalyDetection,
-
+    "OfferLetters": OfferLetters,
 }
 
 export const pagesConfig = {

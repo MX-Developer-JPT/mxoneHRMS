@@ -62,6 +62,7 @@ const managementMenuItems = [
   { name: 'MIS Analytics',           icon: PieChart,          page: 'MISDashboard' },
   { name: 'Attrition Risk (AI)',     icon: ShieldAlert,       page: 'AttritionRisk' },
   { name: 'Job Requisitions',        icon: Briefcase,         page: 'JobRequisitions' },
+  { name: 'Offer Letters',           icon: FileSignature,     page: 'OfferLetters' },
   // ── Personal ─────────────────────────────────────────────
   { name: 'Mark Attendance',         icon: Clock,             page: 'MarkAttendance' },
   { name: 'My Attendance',           icon: Calendar,          page: 'AttendanceHistory' },
@@ -121,6 +122,7 @@ const hrMenuItems = [
   { name: 'Job Requisitions',        icon: Briefcase,         page: 'JobRequisitions' },
   { name: 'Candidates',              icon: UserPlus,          page: 'Recruitment' },
   { name: 'Interviews',              icon: Calendar,          page: 'InterviewManagement' },
+  { name: 'Offer Letters',           icon: FileSignature,     page: 'OfferLetters' },
   { name: 'Helpdesk',                icon: HelpCircle,        page: 'Helpdesk' },
   { name: 'Helpdesk Categories',     icon: Settings,          page: 'HelpdeskCategoryManagement' },
   { name: 'Performance',             icon: Target,            page: 'PerformanceManagement' },
