@@ -29,6 +29,29 @@ const MGR_ROLES = ['hr', 'admin', 'management', 'manager'];
 
 const parseEntities = (rows) => rows.map(r => JSON.parse(r.data));
 
+/* ── Professional Tax: state-wise monthly slab ───────────────── */
+function calcProfessionalTax(grossMonthly, state = 'UTTAR PRADESH') {
+  const s = String(state || '').toUpperCase().trim();
+  // States with no PT:
+  if (['UTTAR PRADESH','DELHI','RAJASTHAN','HARYANA','HIMACHAL PRADESH','UTTARAKHAND','JHARKHAND','BIHAR','ODISHA','ASSAM'].includes(s)) return 0;
+  // Maharashtra
+  if (s === 'MAHARASHTRA') return grossMonthly <= 7500 ? 0 : grossMonthly <= 10000 ? 175 : 200;
+  // Karnataka
+  if (s === 'KARNATAKA') return grossMonthly < 15000 ? 0 : grossMonthly <= 29999 ? 150 : grossMonthly <= 44999 ? 200 : 200;
+  // Tamil Nadu
+  if (s === 'TAMIL NADU') return grossMonthly <= 21000 ? 0 : grossMonthly <= 30000 ? 135 : grossMonthly <= 45000 ? 315 : grossMonthly <= 60000 ? 690 : grossMonthly <= 75000 ? 1025 : grossMonthly <= 100000 ? 1250 : 1250;
+  // West Bengal
+  if (['WEST BENGAL','WESTBENGAL'].includes(s)) return grossMonthly <= 10000 ? 0 : grossMonthly <= 15000 ? 110 : grossMonthly <= 25000 ? 130 : grossMonthly <= 40000 ? 150 : 200;
+  // Gujarat
+  if (s === 'GUJARAT') return grossMonthly <= 5999 ? 0 : grossMonthly <= 8999 ? 80 : grossMonthly <= 11999 ? 150 : 200;
+  // Andhra Pradesh / Telangana
+  if (['ANDHRA PRADESH','TELANGANA'].includes(s)) return grossMonthly <= 15000 ? 0 : grossMonthly <= 20000 ? 150 : 200;
+  // Kerala
+  if (s === 'KERALA') return grossMonthly < 2000 ? 0 : grossMonthly <= 3999 ? 20 : grossMonthly <= 4999 ? 30 : grossMonthly <= 7499 ? 50 : grossMonthly <= 9999 ? 75 : grossMonthly <= 12499 ? 100 : grossMonthly <= 16499 ? 125 : grossMonthly <= 20000 ? 166 : 208;
+  // Default: 200 if gross > 10000
+  return grossMonthly > 10000 ? 200 : 0;
+}
+
 /* ── India income-tax engine (FY 2025-26 / AY 2026-27) ───────── */
 const TAX_SLABS = {
   // New regime (Budget 2025, effective FY 2025-26)
@@ -249,8 +272,13 @@ router.post('/:name', async (req, res) => {
         const grossAfterLop = Math.max(0, gross - lopAmount);
 
         const pf  = Math.round(basic * 0.12);
-        const pt  = grossAfterLop > 20000 ? 200 : 0;
+        const pt  = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
         const esi = grossAfterLop <= 21000 ? Math.round(grossAfterLop * 0.0075) : 0;
+        // Statutory Bonus (Payment of Bonus Act 1965) — for employees with basic ≤ ₹21000
+        const bonusWageCeil = 7000; // minimum wages notified
+        const bonusCalcWage = Math.min(basic, bonusWageCeil);
+        const isEligibleBonus = basic <= 21000; // eligible if basic ≤ ₹21000/month
+        const bonusMonthly = isEligibleBonus ? Math.round(bonusCalcWage * 0.0833) : 0; // 8.33% minimum
         const totalDed = pf + pt + esi + lopAmount;
         const net = Math.max(0, gross - totalDed);
 
@@ -261,6 +289,7 @@ router.post('/:name', async (req, res) => {
           gross_salary: gross,
           deductions: { pf, pt, esi, lop: lopAmount },
           total_deductions: totalDed, net_salary: net,
+          statutory_bonus: bonusMonthly,
           working_days: workingDays, present_days: Math.round(effectivePresentDays),
           loss_of_pay_days: lopDays, loss_of_pay_amount: lopAmount,
           status: 'processed', processed_by: cu?.id,
@@ -627,23 +656,39 @@ router.post('/:name', async (req, res) => {
 
     case 'autoSendPayslips': {
       const { month, year } = p;
-      const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND status='processed'"))
-        .filter(r=>r.month===month && r.year===year);
+      const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll'"))
+        .filter(r => r.month === month && r.year === year);
+
+      let sent = 0, failed = 0, errors = [];
       const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-      let sent = 0; const errors = [];
-      for (const payroll of payrolls) {
-        const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [payroll.user_id]);
-        if (!uRow?.email) continue;
-        const eRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [payroll.user_id]);
-        const emp  = eRow ? JSON.parse(eRow.data) : {};
-        const html = buildPayslipHtml(payroll, emp);
-        const tpl  = emailTemplates.payslip({ employeeName:uRow.full_name, month:months[month-1], year, netPay:payroll.net_salary, payslipHtml:html });
+      const monLabel = `${months[month - 1]} ${year}`;
+
+      for (const pr of payrolls) {
         try {
-          await sendEmail({ to:uRow.email, ...tpl });
+          const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pr.user_id]);
+          const emp = empRow ? JSON.parse(empRow.data) : {};
+          const userRow = await one("SELECT email FROM users WHERE id=$1", [pr.user_id]);
+          const email = userRow?.email;
+          if (!email) { failed++; errors.push(`No email for ${emp.display_name}`); continue; }
+
+          const html = buildPayslipHtml(pr, emp);
+          await sendEmail({
+            to: email,
+            subject: `Your Payslip for ${monLabel} — Maxvolt Energy`,
+            html: `<div style="font-family:Arial,sans-serif;max-width:600px">
+              <p>Dear ${emp.display_name || 'Employee'},</p>
+              <p>Please find your payslip for <strong>${monLabel}</strong> below.</p>
+              ${html}
+              <p style="color:#999;font-size:12px;margin-top:20px">This is an auto-generated email. For queries, contact HR.</p>
+            </div>`
+          });
           sent++;
-        } catch(e) { errors.push(`${uRow.email}: ${e.message}`); }
+        } catch (e) {
+          failed++;
+          errors.push(e.message);
+        }
       }
-      return res.json({ success:true, sent, errors, message:`Sent ${sent} payslips` });
+      return res.json({ success: true, sent, failed, errors, message: `Sent ${sent} payslips, ${failed} failed` });
     }
 
     case 'processFnFSettlement': {
@@ -4361,6 +4406,532 @@ Return ONLY valid JSON (no markdown):
         default:
           return res.status(400).json({ error: `Unknown report type: ${report_type}` });
       }
+    }
+
+    case 'getOvertimeData': {
+      const { month, year } = p;
+      const startDate = `${year}-${String(month).padStart(2,'0')}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const endDate = `${year}-${String(month).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+
+      const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
+      const employees = empRows.map(r => JSON.parse(r.data));
+
+      const overtimeData = [];
+      for (const emp of employees) {
+        const attRows = await all(
+          "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' BETWEEN $2 AND $3",
+          [emp.user_id, startDate, endDate]
+        );
+        const records = attRows.map(r => JSON.parse(r.data));
+        const otRecords = records.filter(a => a.work_hours > (a.shift_hours || 8));
+        const totalOTHours = otRecords.reduce((sum, a) => sum + Math.max(0, (a.work_hours || 0) - (a.shift_hours || 8)), 0);
+        if (totalOTHours > 0) {
+          const ssRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [emp.user_id]);
+          const ss = ssRow ? JSON.parse(ssRow.data) : {};
+          const dailyRate = (ss.basic_salary || ss.basic_monthly || 0) / 26;
+          const hourlyRate = dailyRate / 8;
+          const otAmount = Math.round(hourlyRate * 2 * totalOTHours); // 2x rate
+          overtimeData.push({
+            employee_id: emp.id, user_id: emp.user_id,
+            name: emp.display_name, code: emp.employee_code, department: emp.department,
+            total_ot_hours: Math.round(totalOTHours * 10) / 10,
+            ot_amount: otAmount, dates: otRecords.map(a => ({ date: a.date, ot_hours: Math.max(0, (a.work_hours || 0) - (a.shift_hours || 8)) }))
+          });
+        }
+      }
+      return res.json({ success: true, month, year, overtime: overtimeData, total_ot_amount: overtimeData.reduce((s, r) => s + r.ot_amount, 0) });
+    }
+
+    case 'getWFHReport': {
+      const { month, year } = p;
+      const startDate = `${year}-${String(month).padStart(2,'0')}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const endDate = `${year}-${String(month).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+
+      const wfhRows = await all(
+        "SELECT e.user_id, e.data FROM entities e WHERE e.type='Attendance' AND e.data::jsonb->>'status'='work_from_home' AND e.data::jsonb->>'date' BETWEEN $1 AND $2",
+        [startDate, endDate]
+      );
+
+      const byUser = {};
+      for (const row of wfhRows) {
+        const d = JSON.parse(row.data);
+        if (!byUser[row.user_id]) byUser[row.user_id] = [];
+        byUser[row.user_id].push(d.date);
+      }
+
+      const result = [];
+      for (const [uid, dates] of Object.entries(byUser)) {
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
+        const emp = empRow ? JSON.parse(empRow.data) : {};
+        result.push({ user_id: uid, name: emp.display_name, code: emp.employee_code, department: emp.department, wfh_days: dates.length, dates });
+      }
+
+      return res.json({ success: true, month, year, wfh_records: result, total_wfh_days: result.reduce((s, r) => s + r.wfh_days, 0) });
+    }
+
+    case 'getTallyExport': {
+      const { month, year } = p;
+      const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll'"))
+        .filter(r => r.month === month && r.year === year);
+
+      if (!payrolls.length) return res.json({ success: false, error: 'No payroll records found for this period' });
+
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const monLabel = `${months[month - 1]} ${year}`;
+
+      let totalBasic = 0, totalHRA = 0, totalConv = 0, totalSpecial = 0, totalGross = 0;
+      let totalPF = 0, totalPT = 0, totalESI = 0, totalLOP = 0, totalNet = 0;
+
+      for (const pr of payrolls) {
+        totalBasic += pr.basic_salary || 0;
+        totalHRA += pr.hra || 0;
+        totalConv += pr.conveyance || 0;
+        totalSpecial += pr.special_allowance || 0;
+        totalGross += pr.gross_salary || 0;
+        totalPF += pr.deductions?.pf || 0;
+        totalPT += pr.deductions?.pt || 0;
+        totalESI += pr.deductions?.esi || 0;
+        totalLOP += pr.loss_of_pay_amount || 0;
+        totalNet += pr.net_salary || 0;
+      }
+
+      // Tally XML journal voucher format
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ENVELOPE>
+  <HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <VOUCHER VCHTYPE="Journal" ACTION="Create">
+            <DATE>${year}${String(month).padStart(2,'0')}28</DATE>
+            <VOUCHERTYPENAME>Journal</VOUCHERTYPENAME>
+            <NARRATION>Salary for ${monLabel} — ${payrolls.length} employees</NARRATION>
+            <ALLLEDGERENTRIES.LIST>
+              <LEDGERNAME>Salary — Basic</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-${totalBasic}</AMOUNT>
+            </ALLLEDGERENTRIES.LIST>
+            <ALLLEDGERENTRIES.LIST>
+              <LEDGERNAME>Salary — HRA</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-${totalHRA}</AMOUNT>
+            </ALLLEDGERENTRIES.LIST>
+            <ALLLEDGERENTRIES.LIST>
+              <LEDGERNAME>Salary — Conveyance</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-${totalConv}</AMOUNT>
+            </ALLLEDGERENTRIES.LIST>
+            <ALLLEDGERENTRIES.LIST>
+              <LEDGERNAME>Salary — Special Allowance</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-${totalSpecial}</AMOUNT>
+            </ALLLEDGERENTRIES.LIST>
+            <ALLLEDGERENTRIES.LIST>
+              <LEDGERNAME>PF Payable</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${totalPF}</AMOUNT>
+            </ALLLEDGERENTRIES.LIST>
+            <ALLLEDGERENTRIES.LIST>
+              <LEDGERNAME>Professional Tax Payable</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${totalPT}</AMOUNT>
+            </ALLLEDGERENTRIES.LIST>
+            <ALLLEDGERENTRIES.LIST>
+              <LEDGERNAME>ESI Payable</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${totalESI}</AMOUNT>
+            </ALLLEDGERENTRIES.LIST>
+            <ALLLEDGERENTRIES.LIST>
+              <LEDGERNAME>Salary Payable</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${totalNet}</AMOUNT>
+            </ALLLEDGERENTRIES.LIST>
+          </VOUCHER>
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>`;
+
+      // Also return CSV rows
+      const csvLines = ['Employee,Code,Gross,Basic,HRA,Conveyance,Special,PF,PT,ESI,LOP,Net'];
+      for (const pr of payrolls) {
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pr.user_id]);
+        const emp = empRow ? JSON.parse(empRow.data) : {};
+        csvLines.push(`"${emp.display_name}","${emp.employee_code}",${pr.gross_salary||0},${pr.basic_salary||0},${pr.hra||0},${pr.conveyance||0},${pr.special_allowance||0},${pr.deductions?.pf||0},${pr.deductions?.pt||0},${pr.deductions?.esi||0},${pr.loss_of_pay_amount||0},${pr.net_salary||0}`);
+      }
+
+      return res.json({ success: true, month, year, employee_count: payrolls.length, totals: { gross: totalGross, pf: totalPF, pt: totalPT, esi: totalESI, lop: totalLOP, net: totalNet }, tally_xml: xml, csv: csvLines.join('\n') });
+    }
+
+    case 'getAttendanceNarrative': {
+      const { user_id, month, year } = p;
+      const targetUser = user_id || cu?.id;
+      const m = month || new Date().getMonth() + 1;
+      const y = year || new Date().getFullYear();
+      const startDate = `${y}-${String(m).padStart(2,'0')}-01`;
+      const lastDay = new Date(y, m, 0).getDate();
+      const endDate = `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [targetUser]);
+      const emp = empRow ? JSON.parse(empRow.data) : {};
+
+      const attRows = await all(
+        "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' BETWEEN $2 AND $3",
+        [targetUser, startDate, endDate]
+      );
+      const records = attRows.map(r => JSON.parse(r.data));
+
+      const present = records.filter(a => ['present','late','on_duty','work_from_home'].includes(a.status)).length;
+      const absent = records.filter(a => ['absent','lop'].includes(a.status)).length;
+      const late = records.filter(a => a.status === 'late').length;
+      const wfh = records.filter(a => a.status === 'work_from_home').length;
+      const halfDay = records.filter(a => a.status === 'half_day').length;
+
+      const monthsArr = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      const monLabel = monthsArr[m - 1];
+
+      const Groq = (await import('groq-sdk')).default;
+      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+      const completion = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{
+          role: 'user',
+          content: `Write a 3-4 sentence professional attendance summary for ${emp.display_name || 'this employee'} for ${monLabel} ${y}.
+Data: Present: ${present} days, Absent: ${absent} days, Late arrivals: ${late}, WFH: ${wfh} days, Half days: ${halfDay}.
+Be specific about patterns, mention if late arrivals are a concern, if WFH is high, if absences seem high for the month. Be constructive.`
+        }],
+        temperature: 0.6, max_tokens: 200
+      });
+
+      return res.json({ success: true, narrative: completion.choices[0].message.content, stats: { present, absent, late, wfh, half_day: halfDay, month: m, year: y } });
+    }
+
+    case 'getWeeklyHRDigest': {
+      const now = new Date();
+      const m = now.getMonth() + 1;
+      const y = now.getFullYear();
+      const startDate = `${y}-${String(m).padStart(2,'0')}-01`;
+
+      const [empCount, newJoinees, pendingLeaves, payrollCount, openPositions] = await Promise.all([
+        one("SELECT COUNT(*) as cnt FROM entities WHERE type='Employee' AND status='active'"),
+        all(`SELECT data FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1`, [startDate]),
+        all("SELECT COUNT(*) as cnt FROM entities WHERE type='Leave' AND status='pending'"),
+        one(`SELECT COUNT(*) as cnt FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2`, [String(m), String(y)]),
+        one("SELECT COUNT(*) as cnt FROM entities WHERE type='JobRequisition' AND status='active'"),
+      ]);
+
+      // Attrition this month
+      const exitRows = await all(`SELECT data FROM entities WHERE type='ExitRequest' AND status='approved' AND data::jsonb->>'exit_date' >= $1`, [startDate]);
+
+      // High-risk attrition employees
+      const highRiskRows = await all("SELECT data FROM entities WHERE type='AttritionRisk' AND data::jsonb->>'risk_level'='High'");
+
+      const Groq = (await import('groq-sdk')).default;
+      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+      const completion = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{
+          role: 'user',
+          content: `You are an AI HR assistant. Write a professional weekly HR digest summary (5-7 sentences) based on this data:
+- Total active employees: ${empCount?.cnt || 0}
+- New joiners this month: ${newJoinees.length}
+- Pending leave approvals: ${pendingLeaves[0]?.cnt || 0}
+- Payroll processed for ${payrollCount?.cnt || 0} employees this month
+- Open job positions: ${openPositions?.cnt || 0}
+- Exits/resignations this month: ${exitRows.length}
+- Employees flagged as high attrition risk: ${highRiskRows.length}
+
+Be actionable and highlight anything that needs HR attention. Professional tone.`
+        }],
+        temperature: 0.7, max_tokens: 350
+      });
+
+      return res.json({
+        success: true,
+        digest: completion.choices[0].message.content,
+        stats: {
+          headcount: parseInt(empCount?.cnt || 0),
+          new_joiners: newJoinees.length,
+          pending_leaves: parseInt(pendingLeaves[0]?.cnt || 0),
+          payroll_processed: parseInt(payrollCount?.cnt || 0),
+          open_positions: parseInt(openPositions?.cnt || 0),
+          exits: exitRows.length,
+          high_risk_employees: highRiskRows.length,
+        }
+      });
+    }
+
+    case 'getSurveySentiment': {
+      const { survey_id } = p;
+      const responseRows = await all(
+        "SELECT data FROM entities WHERE type='SurveyResponse' AND data::jsonb->>'survey_id'=$1",
+        [survey_id]
+      );
+      const responses = responseRows.map(r => JSON.parse(r.data));
+      const openTexts = responses.flatMap(r => Object.values(r.answers || {}).filter(v => typeof v === 'string' && v.length > 10));
+
+      if (openTexts.length === 0) return res.json({ success: true, sentiment: 'neutral', themes: [], summary: 'No open text responses to analyze.' });
+
+      const Groq = (await import('groq-sdk')).default;
+      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+      const completion = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{
+          role: 'user',
+          content: `Analyze these anonymous employee survey responses and provide: 1) Overall sentiment (positive/neutral/negative), 2) Top 3-5 recurring themes, 3) A brief 2-3 sentence summary for HR.
+Responses: ${openTexts.slice(0, 50).join(' | ')}
+Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","theme2",...], "summary": "..." }`
+        }],
+        temperature: 0.4, max_tokens: 300
+      });
+
+      let parsed = { sentiment: 'neutral', themes: [], summary: completion.choices[0].message.content };
+      try { parsed = JSON.parse(completion.choices[0].message.content); } catch {}
+
+      return res.json({ success: true, survey_id, response_count: responses.length, open_text_count: openTexts.length, ...parsed });
+    }
+
+    case 'getDIMetrics': {
+      const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
+      const employees = empRows.map(r => JSON.parse(r.data));
+
+      const genderCounts = { male: 0, female: 0, other: 0, unknown: 0 };
+      const deptGender = {};
+      const levelGender = {};
+      const salaryByGender = { male: [], female: [] };
+
+      for (const emp of employees) {
+        const g = (emp.gender || '').toLowerCase();
+        const key = ['male','female'].includes(g) ? g : g ? 'other' : 'unknown';
+        genderCounts[key]++;
+
+        if (!deptGender[emp.department]) deptGender[emp.department] = { male: 0, female: 0, other: 0 };
+        deptGender[emp.department][key === 'unknown' ? 'other' : key]++;
+
+        const tier = emp.designation_tier || 'other';
+        if (!levelGender[tier]) levelGender[tier] = { male: 0, female: 0 };
+        if (['male','female'].includes(key)) levelGender[tier][key]++;
+
+        const ssRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [emp.user_id]);
+        if (ssRow) {
+          const ss = JSON.parse(ssRow.data);
+          const salary = ss.total_ctc || (ss.basic_salary || 0) * 12 || 0;
+          if (key === 'male') salaryByGender.male.push(salary);
+          else if (key === 'female') salaryByGender.female.push(salary);
+        }
+      }
+
+      const avgSalary = (arr) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
+      const genderPayGap = salaryByGender.male.length && salaryByGender.female.length
+        ? Math.round(((avgSalary(salaryByGender.male) - avgSalary(salaryByGender.female)) / avgSalary(salaryByGender.male)) * 100)
+        : 0;
+
+      return res.json({
+        success: true,
+        total_employees: employees.length,
+        gender_distribution: genderCounts,
+        gender_by_department: deptGender,
+        gender_by_level: levelGender,
+        pay_equity: { avg_male_salary: avgSalary(salaryByGender.male), avg_female_salary: avgSalary(salaryByGender.female), pay_gap_percent: genderPayGap },
+      });
+    }
+
+    case 'getRecruitmentFunnel': {
+      const { days = 90 } = p;
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      const [reqRows, candRows, interviewRows, offerRows] = await Promise.all([
+        all("SELECT data FROM entities WHERE type='JobRequisition'"),
+        all(`SELECT data FROM entities WHERE type='Candidate' AND created_at >= $1`, [since]),
+        all(`SELECT data FROM entities WHERE type='Interview'`),
+        all("SELECT data FROM entities WHERE type='OfferLetter'"),
+      ]);
+
+      const reqs = reqRows.map(r => JSON.parse(r.data));
+      const candidates = candRows.map(r => JSON.parse(r.data));
+      const interviews = interviewRows.map(r => JSON.parse(r.data));
+      const offers = offerRows.map(r => JSON.parse(r.data));
+
+      const byStatus = {};
+      for (const c of candidates) {
+        byStatus[c.status || 'applied'] = (byStatus[c.status || 'applied'] || 0) + 1;
+      }
+
+      const byDept = {};
+      for (const r of reqs) {
+        byDept[r.department || 'Other'] = (byDept[r.department || 'Other'] || 0) + 1;
+      }
+
+      const sourceCount = {};
+      for (const c of candidates) {
+        const src = c.source || 'Walk-in';
+        sourceCount[src] = (sourceCount[src] || 0) + 1;
+      }
+
+      // Time to fill (days between req created and offer accepted)
+      const filledReqs = reqs.filter(r => r.status === 'filled' && r.created_at && r.filled_date);
+      const avgTimeToFill = filledReqs.length
+        ? Math.round(filledReqs.reduce((sum, r) => sum + (new Date(r.filled_date) - new Date(r.created_at)) / 86400000, 0) / filledReqs.length)
+        : null;
+
+      return res.json({
+        success: true,
+        period_days: days,
+        funnel: {
+          job_requisitions: reqs.length,
+          total_candidates: candidates.length,
+          interviews_scheduled: interviews.length,
+          offers_sent: offers.length,
+          offers_accepted: offers.filter(o => o.status === 'accepted').length,
+        },
+        by_status: byStatus,
+        by_department: byDept,
+        by_source: sourceCount,
+        avg_time_to_fill_days: avgTimeToFill,
+        open_positions: reqs.filter(r => r.status === 'active' || r.status === 'open').length,
+      });
+    }
+
+    case 'getMinimumWagesReport': {
+      // Central minimum wages (unskilled) — approximate for 2025 (₹ per month)
+      const MINIMUM_WAGES = {
+        'unskilled': 9360, 'semi_skilled': 10296, 'skilled': 11334,
+        'highly_skilled': 12126, 'default': 9360
+      };
+
+      const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
+      const employees = empRows.map(r => JSON.parse(r.data));
+
+      const violations = [];
+      const compliant = [];
+
+      for (const emp of employees) {
+        const ssRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [emp.user_id]);
+        if (!ssRow) continue;
+        const ss = JSON.parse(ssRow.data);
+        const gross = (ss.basic_salary || ss.basic_monthly || 0) + (ss.hra || ss.hra_monthly || 0) + (ss.conveyance || ss.conveyance_monthly || 0);
+        const minWage = MINIMUM_WAGES[emp.skill_category || 'default'];
+
+        if (gross < minWage) {
+          violations.push({ name: emp.display_name, code: emp.employee_code, department: emp.department, gross_monthly: gross, minimum_wage: minWage, shortfall: minWage - gross });
+        } else {
+          compliant.push({ name: emp.display_name, code: emp.employee_code });
+        }
+      }
+
+      return res.json({ success: true, total: employees.length, violations: violations.length, compliant: compliant.length, violation_list: violations });
+    }
+
+    case 'savePOSHRecord': {
+      const { id, record_type, date, description, parties, action_taken, status, outcome } = p;
+      const recordId = id || uuidv4();
+      const data = { id: recordId, record_type, date, description, parties: parties || [], action_taken: action_taken || '', status: status || 'open', outcome: outcome || '', created_by: cu?.id, created_at: new Date().toISOString() };
+      if (id) {
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2 AND type='POSHRecord'", [JSON.stringify(data), id]);
+      } else {
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'POSHRecord',$2,$3,$4)", [recordId, cu?.id, status || 'open', JSON.stringify(data)]);
+      }
+      return res.json({ success: true, id: recordId });
+    }
+
+    case 'getPOSHData': {
+      const rows = await all("SELECT data FROM entities WHERE type='POSHRecord' ORDER BY created_at DESC");
+      const records = rows.map(r => JSON.parse(r.data));
+      const summary = {
+        total: records.length,
+        open: records.filter(r => r.status === 'open').length,
+        closed: records.filter(r => r.status === 'closed').length,
+        by_type: records.reduce((acc, r) => { acc[r.record_type || 'other'] = (acc[r.record_type || 'other'] || 0) + 1; return acc; }, {}),
+      };
+      return res.json({ success: true, records, summary });
+    }
+
+    case 'submit360Feedback': {
+      const { subject_user_id, relationship, answers, period } = p;
+      const feedbackId = uuidv4();
+      const data = { id: feedbackId, subject_user_id, reviewer_user_id: cu?.id, relationship, answers: answers || {}, period: period || `${new Date().getFullYear()}-H1`, submitted_at: new Date().toISOString() };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Feedback360',$2,'submitted',$3)", [feedbackId, subject_user_id, JSON.stringify(data)]);
+      return res.json({ success: true, feedback_id: feedbackId });
+    }
+
+    case 'get360FeedbackData': {
+      const { subject_user_id, period } = p;
+      const targetUser = subject_user_id || cu?.id;
+      const rows = await all("SELECT data FROM entities WHERE type='Feedback360' AND user_id=$1", [targetUser]);
+      const feedbacks = rows.map(r => JSON.parse(r.data)).filter(f => !period || f.period === period);
+
+      if (!feedbacks.length) return res.json({ success: true, feedbacks: [], aggregate: null });
+
+      // Aggregate scores
+      const allScores = {};
+      for (const fb of feedbacks) {
+        for (const [k, v] of Object.entries(fb.answers || {})) {
+          if (typeof v === 'number') {
+            if (!allScores[k]) allScores[k] = [];
+            allScores[k].push(v);
+          }
+        }
+      }
+      const aggregate = Object.fromEntries(Object.entries(allScores).map(([k, vals]) => [k, Math.round((vals.reduce((a,b) => a+b, 0)/vals.length)*10)/10]));
+
+      // Anonymize: don't return reviewer IDs
+      const anonymized = feedbacks.map(f => ({ relationship: f.relationship, answers: f.answers, period: f.period }));
+      return res.json({ success: true, feedbacks: anonymized, aggregate, total_reviewers: feedbacks.length });
+    }
+
+    case 'getSkillMatrix': {
+      const rows = await all("SELECT data FROM entities WHERE type='SkillEntry'");
+      const entries = rows.map(r => JSON.parse(r.data));
+
+      // All unique skills across org
+      const allSkills = [...new Set(entries.map(e => e.skill_name))];
+
+      // Group by employee
+      const byEmployee = {};
+      for (const e of entries) {
+        if (!byEmployee[e.user_id]) byEmployee[e.user_id] = { user_id: e.user_id, skills: [] };
+        byEmployee[e.user_id].skills.push({ skill: e.skill_name, level: e.proficiency_level, validated: e.validated });
+      }
+
+      // Skill coverage across org
+      const skillCoverage = {};
+      for (const skill of allSkills) {
+        const count = entries.filter(e => e.skill_name === skill).length;
+        skillCoverage[skill] = count;
+      }
+
+      return res.json({ success: true, employee_count: Object.keys(byEmployee).length, all_skills: allSkills, skill_coverage: skillCoverage, matrix: Object.values(byEmployee) });
+    }
+
+    case 'saveSkillEntry': {
+      const { skill_name, proficiency_level, validated, target_user_id } = p;
+      const userId = target_user_id || cu?.id;
+      const existing = await one("SELECT id FROM entities WHERE type='SkillEntry' AND user_id=$1 AND data::jsonb->>'skill_name'=$2", [userId, skill_name]);
+      const entryId = existing?.id || uuidv4();
+      const data = { id: entryId, user_id: userId, skill_name, proficiency_level: proficiency_level || 1, validated: validated || false, updated_at: new Date().toISOString() };
+      if (existing) {
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(data), entryId]);
+      } else {
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SkillEntry',$2,'active',$3)", [entryId, userId, JSON.stringify(data)]);
+      }
+      return res.json({ success: true, id: entryId });
+    }
+
+    case 'getWorkforcePlan': {
+      const rows = await all("SELECT data FROM entities WHERE type='WorkforcePlan' ORDER BY created_at DESC");
+      const plans = rows.map(r => JSON.parse(r.data));
+
+      // Current headcount by dept
+      const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
+      const employees = empRows.map(r => JSON.parse(r.data));
+      const headcountByDept = {};
+      for (const emp of employees) {
+        const d = emp.department || 'Other';
+        headcountByDept[d] = (headcountByDept[d] || 0) + 1;
+      }
+
+      return res.json({ success: true, plans, current_headcount: headcountByDept, total_employees: employees.length });
+    }
+
+    case 'saveWorkforcePlan': {
+      const { id, department, current_count, planned_count, planned_date, notes, status } = p;
+      const planId = id || uuidv4();
+      const data = { id: planId, department, current_count, planned_count, planned_date, notes: notes || '', status: status || 'draft', created_by: cu?.id, created_at: new Date().toISOString() };
+      if (id) {
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2 AND type='WorkforcePlan'", [JSON.stringify(data), id]);
+      } else {
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'WorkforcePlan',$2,'active',$3)", [planId, cu?.id, JSON.stringify(data)]);
+      }
+      return res.json({ success: true, id: planId });
     }
 
     default:
