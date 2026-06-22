@@ -1,28 +1,17 @@
-// AI provider: Groq (free cloud) when GROQ_API_KEY is set, Ollama (local) otherwise.
-// Get a free Groq key at https://console.groq.com — no credit card needed.
-// Admin can also set GROQ_API_KEY via Admin Panel → AI Settings (stored in DB).
+// AI provider: Groq (free cloud) when GROQ_API_KEY env var is set, Ollama (local) otherwise.
+// Set GROQ_API_KEY in Railway environment variables.
 
-import { one } from '../db.js';
+const GROQ_KEY     = process.env.GROQ_API_KEY || '';
+const GROQ_MODEL   = process.env.GROQ_MODEL   || 'llama-3.1-8b-instant';
+const OLLAMA_URL   = process.env.OLLAMA_URL   || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL  || 'tinyllama';
 
-const GROQ_MODEL   = process.env.GROQ_MODEL  || 'llama-3.1-8b-instant';
-const OLLAMA_URL   = process.env.OLLAMA_URL  || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'tinyllama';
-
-// Read key at request time so DB-saved key is picked up without restart
-async function getGroqKey() {
-  if (process.env.GROQ_API_KEY) return process.env.GROQ_API_KEY;
-  try {
-    const row = await one("SELECT value FROM settings WHERE key='GROQ_API_KEY'");
-    return row?.value || '';
-  } catch { return ''; }
-}
-
-const useGroq = async () => !!(await getGroqKey());
+const useGroq = () => !!GROQ_KEY;
 
 // ── Groq ────────────────────────────────────────────────────
 
 async function callGroq(messages, { json = false } = {}) {
-  const apiKey = await getGroqKey();
+  const apiKey = GROQ_KEY;
   const body = {
     model: GROQ_MODEL,
     messages,
@@ -107,7 +96,7 @@ async function callOllama(messages, { json = false } = {}) {
 // ── Public API ──────────────────────────────────────────────
 
 export async function callAIMessages(messages, opts = {}) {
-  return (await useGroq()) ? callGroq(messages, opts) : callOllama(messages, opts);
+  return useGroq() ? callGroq(messages, opts) : callOllama(messages, opts);
 }
 
 export async function callAI(prompt, { system = '', json = false } = {}) {
@@ -118,7 +107,7 @@ export async function callAI(prompt, { system = '', json = false } = {}) {
 }
 
 export async function checkAI() {
-  if (await useGroq()) {
+  if (useGroq()) {
     // Key is set — report as configured without making a test call (avoids latency + token waste)
     return { ok: true, provider: 'groq', model: GROQ_MODEL, running: true, modelReady: true };
   }

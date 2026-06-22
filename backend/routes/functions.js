@@ -1881,19 +1881,6 @@ ${contextBlock || 'No employee context available — answer from general policy 
       }
     }
 
-    case 'saveAISetting': {
-      if (!cu || cu.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
-      const { groq_api_key } = p;
-      if (groq_api_key !== undefined) {
-        if (groq_api_key) {
-          await run("INSERT INTO settings(key,value,updated_at) VALUES('GROQ_API_KEY',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [groq_api_key.trim()]);
-        } else {
-          await run("DELETE FROM settings WHERE key='GROQ_API_KEY'");
-        }
-      }
-      return res.json({ success: true });
-    }
-
     /* ── Email ────────────────────────────────────────── */
     case 'sendCustomEmail': {
       const { to, subject, body: textBody, html } = p;
