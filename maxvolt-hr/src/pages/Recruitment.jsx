@@ -7,11 +7,253 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from 'sonner';
-import { Plus, UserPlus, Briefcase, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck } from 'lucide-react';
+import { Plus, UserPlus, Briefcase, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy } from 'lucide-react';
 import { openLetterheadPrintWindow } from '@/utils/letterhead';
 import CandidateDetailDialog from '../components/recruitment/CandidateDetailDialog';
 import CandidateScoreCard from '../components/recruitment/CandidateScoreCard';
+
+const TODAY = new Date().toISOString().slice(0, 10);
+
+function calcSalary(annualCTC) {
+  const m = Math.round(annualCTC / 12);
+  const basic = Math.round(m * 0.5);
+  const hra = Math.round(m * 0.2);
+  const conv = Math.round(m * 0.05);
+  const lta = Math.round(m * 0.1);
+  const pfWage = Math.min(basic, 15000);
+  const pfEmp = Math.round(pfWage * 0.12);
+  const pfEmployer = Math.round(pfWage * 0.13);
+  const medical = 330;
+  const bonus = Math.round(basic * 0.0833);
+  const contrib = pfEmployer + medical + bonus;
+  const gross = m - contrib;
+  const special = gross - basic - hra - conv - lta;
+  return {
+    monthly_ctc: m, annual_ctc: annualCTC,
+    basic_monthly: basic, basic_annual: basic * 12,
+    hra_monthly: hra, hra_annual: hra * 12,
+    conveyance_monthly: conv, conveyance_annual: conv * 12,
+    lta_monthly: lta, lta_annual: lta * 12,
+    special_monthly: special, special_annual: special * 12,
+    gross_monthly: gross, gross_annual: gross * 12,
+    pf_emp_monthly: pfEmp, pf_emp_annual: pfEmp * 12,
+    pf_employer_monthly: pfEmployer, pf_employer_annual: pfEmployer * 12,
+    medical_monthly: medical, medical_annual: medical * 12,
+    bonus_monthly: bonus, bonus_annual: bonus * 12,
+    contribution_monthly: contrib, contribution_annual: contrib * 12,
+    net_monthly: gross - pfEmp, net_annual: (gross - pfEmp) * 12,
+  };
+}
+
+function fmt(n) { return Number(n || 0).toLocaleString('en-IN'); }
+
+function OfferLetterDialog({ candidate, onClose, onRefresh }) {
+  const defaultJoining = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const [form, setForm] = useState({
+    joining_date: defaultJoining,
+    designation: candidate?.position_applied || '',
+    department: candidate?.department || '',
+    location: 'Ghaziabad, Uttar Pradesh',
+    reporting_to: '',
+    annual_ctc: candidate?.expected_ctc || 0,
+    probation_months: 6,
+    offer_valid_days: 7,
+    notes: '',
+  });
+  const [previewing, setPreviewing] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [acceptLink, setAcceptLink] = useState('');
+
+  const sal = calcSalary(Number(form.annual_ctc) || 0);
+
+  const setF = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
+
+  const handlePreview = async () => {
+    setPreviewing(true);
+    try {
+      const res = await base44.functions.invoke('generateOfferLetter', {
+        candidate_id: candidate.id,
+        joining_date: form.joining_date,
+        designation: form.designation,
+        department: form.department,
+        location: form.location,
+        reporting_to: form.reporting_to,
+        ctc: Number(form.annual_ctc),
+        probation_months: Number(form.probation_months),
+      });
+      if (res.data?.success) {
+        openLetterheadPrintWindow(`Offer Letter — ${candidate.full_name}`, res.data.html, '', false);
+      } else {
+        toast.error(res.data?.error || 'Failed to generate preview');
+      }
+    } catch (e) { toast.error(e.message); }
+    setPreviewing(false);
+  };
+
+  const handleSend = async () => {
+    if (!candidate.email) { toast.error('Candidate has no email address'); return; }
+    setSending(true);
+    try {
+      const res = await base44.functions.invoke('sendOfferLetter', {
+        candidate_id: candidate.id,
+        joining_date: form.joining_date,
+        designation: form.designation,
+        department: form.department,
+        location: form.location,
+        reporting_to: form.reporting_to,
+        annual_ctc: Number(form.annual_ctc),
+        probation_months: Number(form.probation_months),
+        offer_valid_days: Number(form.offer_valid_days),
+        notes: form.notes,
+      });
+      if (res.data?.success) {
+        setSent(true);
+        setAcceptLink(res.data.accept_link || '');
+        toast.success('Offer letter sent to ' + candidate.email);
+        onRefresh();
+      } else {
+        toast.error(res.data?.error || 'Failed to send offer letter');
+      }
+    } catch (e) { toast.error(e.message); }
+    setSending(false);
+  };
+
+  if (sent) return (
+    <div className="text-center py-6 space-y-4">
+      <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto">
+        <Send className="w-8 h-8 text-green-600" />
+      </div>
+      <h3 className="font-semibold text-lg text-gray-800">Offer Letter Sent!</h3>
+      <p className="text-sm text-gray-500">Sent to <strong>{candidate.email}</strong></p>
+      {acceptLink && (
+        <div className="bg-gray-50 rounded-lg p-3 text-left">
+          <p className="text-xs text-gray-500 mb-1">Candidate acceptance link:</p>
+          <div className="flex items-center gap-2">
+            <code className="text-xs text-blue-700 flex-1 truncate">{acceptLink}</code>
+            <button onClick={() => { navigator.clipboard.writeText(acceptLink); toast.success('Copied!'); }}
+              className="p-1 hover:bg-gray-200 rounded">
+              <Copy className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
+      <Button onClick={onClose} variant="outline">Close</Button>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4 max-h-[80vh] overflow-y-auto pr-1">
+      <p className="text-sm text-gray-500">Configure and send offer letter to <strong>{candidate.full_name}</strong> ({candidate.email})</p>
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <div>
+          <Label className="text-xs">Joining Date *</Label>
+          <Input type="date" value={form.joining_date} onChange={e => setF('joining_date', e.target.value)} />
+        </div>
+        <div>
+          <Label className="text-xs">Probation Period (months)</Label>
+          <Input type="number" value={form.probation_months} onChange={e => setF('probation_months', e.target.value)} min="0" max="24" />
+        </div>
+        <div>
+          <Label className="text-xs">Designation</Label>
+          <Input value={form.designation} onChange={e => setF('designation', e.target.value)} />
+        </div>
+        <div>
+          <Label className="text-xs">Department</Label>
+          <Input value={form.department} onChange={e => setF('department', e.target.value)} />
+        </div>
+        <div>
+          <Label className="text-xs">Work Location</Label>
+          <Input value={form.location} onChange={e => setF('location', e.target.value)} />
+        </div>
+        <div>
+          <Label className="text-xs">Reporting To</Label>
+          <Input value={form.reporting_to} onChange={e => setF('reporting_to', e.target.value)} placeholder="Manager name" />
+        </div>
+        <div>
+          <Label className="text-xs">Annual CTC (₹)</Label>
+          <Input type="number" value={form.annual_ctc} onChange={e => setF('annual_ctc', e.target.value)} />
+        </div>
+        <div>
+          <Label className="text-xs">Offer Valid for (days)</Label>
+          <Input type="number" value={form.offer_valid_days} onChange={e => setF('offer_valid_days', e.target.value)} min="1" max="30" />
+        </div>
+        <div className="md:col-span-2">
+          <Label className="text-xs">Additional Notes (optional)</Label>
+          <Textarea value={form.notes} onChange={e => setF('notes', e.target.value)} rows={2} placeholder="Any special terms or notes..." />
+        </div>
+      </div>
+
+      {/* Live Salary Preview */}
+      {Number(form.annual_ctc) > 0 && (
+        <div className="border rounded-lg overflow-hidden">
+          <div className="bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">Salary Structure Preview</div>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="text-left px-3 py-1.5 border-b">Component</th>
+                <th className="text-right px-3 py-1.5 border-b">Annual (₹)</th>
+                <th className="text-right px-3 py-1.5 border-b">Monthly (₹)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                ['Basic', sal.basic_annual, sal.basic_monthly],
+                ['HRA', sal.hra_annual, sal.hra_monthly],
+                ['Conveyance', sal.conveyance_annual, sal.conveyance_monthly],
+                ['LTA', sal.lta_annual, sal.lta_monthly],
+                ['Special Allowance', sal.special_annual, sal.special_monthly],
+              ].map(([l, a, m]) => (
+                <tr key={l} className="border-b">
+                  <td className="px-3 py-1">{l}</td>
+                  <td className="px-3 py-1 text-right">{fmt(a)}</td>
+                  <td className="px-3 py-1 text-right">{fmt(m)}</td>
+                </tr>
+              ))}
+              <tr className="bg-blue-50 font-semibold border-b">
+                <td className="px-3 py-1.5">Total Gross (A)</td>
+                <td className="px-3 py-1.5 text-right">{fmt(sal.gross_annual)}</td>
+                <td className="px-3 py-1.5 text-right">{fmt(sal.gross_monthly)}</td>
+              </tr>
+              <tr className="border-b text-gray-500">
+                <td className="px-3 py-1">PF Employee (deduction)</td>
+                <td className="px-3 py-1 text-right">{fmt(sal.pf_emp_annual)}</td>
+                <td className="px-3 py-1 text-right">{fmt(sal.pf_emp_monthly)}</td>
+              </tr>
+              <tr className="bg-green-50 font-semibold border-b">
+                <td className="px-3 py-1.5">Net Take-Home (A-B)</td>
+                <td className="px-3 py-1.5 text-right">{fmt(sal.net_annual)}</td>
+                <td className="px-3 py-1.5 text-right">{fmt(sal.net_monthly)}</td>
+              </tr>
+              <tr className="bg-orange-50 font-bold">
+                <td className="px-3 py-1.5">Annual CTC (A+C)</td>
+                <td className="px-3 py-1.5 text-right">{fmt(sal.annual_ctc)}</td>
+                <td className="px-3 py-1.5 text-right">{fmt(sal.monthly_ctc)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex gap-3 pt-2">
+        <Button variant="outline" onClick={handlePreview} disabled={previewing} className="flex-1">
+          {previewing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileCheck className="w-4 h-4 mr-2" />}
+          Preview Letter
+        </Button>
+        <Button onClick={handleSend} disabled={sending || !form.joining_date} className="flex-1 bg-green-600 hover:bg-green-700">
+          {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+          Send to Candidate
+        </Button>
+      </div>
+      <p className="text-xs text-gray-400 text-center">
+        Sends offer letter + consent form to {candidate.email} with a digital acceptance link
+      </p>
+    </div>
+  );
+}
 
 const STATUS_COLORS = {
   applied: 'bg-blue-100 text-blue-800',
@@ -21,7 +263,8 @@ const STATUS_COLORS = {
   selected: 'bg-green-100 text-green-800',
   rejected: 'bg-red-100 text-red-800',
   offered: 'bg-teal-100 text-teal-800',
-  joined: 'bg-green-200 text-green-900'
+  offer_accepted: 'bg-emerald-100 text-emerald-800',
+  joined: 'bg-green-200 text-green-900',
 };
 
 const SCORE_COLOR = (score) => {
@@ -143,6 +386,8 @@ export default function Recruitment() {
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedCandidate, setSelectedCandidate] = useState(null);
+  const [offerDialogCandidate, setOfferDialogCandidate] = useState(null);
+  const [invitingId, setInvitingId] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [formData, setFormData] = useState(EMPTY_FORM);
@@ -247,24 +492,18 @@ export default function Recruitment() {
     loadData();
   };
 
-  const handleGenerateOffer = async (candidate) => {
-    const joiningDate = prompt('Enter proposed joining date (YYYY-MM-DD):', new Date(Date.now() + 14*24*60*60*1000).toISOString().slice(0,10));
-    if (!joiningDate) return;
+  const handleInviteJoiner = async (candidate) => {
+    setInvitingId(candidate.id);
     try {
-      const res = await base44.functions.invoke('generateOfferLetter', {
-        candidate_id: candidate.id,
-        joining_date: joiningDate,
-        designation: candidate.position_applied,
-        department: candidate.department,
-        ctc: candidate.expected_ctc,
-      });
-      if (!res.data?.success) throw new Error(res.data?.error || 'Failed');
-      openLetterheadPrintWindow(`Offer Letter — ${candidate.full_name}`, res.data.html, '', false);
-      toast.success('Offer letter generated! Candidate status updated to Offered.');
-      loadData();
-    } catch (e) {
-      toast.error('Failed to generate offer letter: ' + e.message);
-    }
+      const res = await base44.functions.invoke('inviteJoinerToApp', { candidate_id: candidate.id });
+      if (res.data?.success) {
+        toast.success('Invitation email sent to ' + candidate.email);
+        loadData();
+      } else {
+        toast.error(res.data?.error || 'Failed to send invite');
+      }
+    } catch (e) { toast.error(e.message); }
+    setInvitingId(null);
   };
 
   const setFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }));
@@ -546,9 +785,14 @@ export default function Recruitment() {
                           <p className="font-semibold">{candidate.full_name}</p>
                           <p className="text-sm text-gray-600">{candidate.position_applied}</p>
                         </div>
-                        <Badge className={STATUS_COLORS[candidate.status]}>
+                        <Badge className={STATUS_COLORS[candidate.status] || 'bg-gray-100 text-gray-700'}>
                           {candidate.status.replace(/_/g, ' ').toUpperCase()}
                         </Badge>
+                        {candidate.joining_date === TODAY && (
+                          <Badge className="bg-purple-100 text-purple-800 animate-pulse">
+                            Joining Today!
+                          </Badge>
+                        )}
                         {candidate.source && (
                           <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">{candidate.source.replace('_', ' ')}</span>
                         )}
@@ -571,7 +815,7 @@ export default function Recruitment() {
                         />
                       )}
                     </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
+                    <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
                       {selectedJdId && (
                         <Button
                           size="sm"
@@ -586,15 +830,30 @@ export default function Recruitment() {
                           }
                         </Button>
                       )}
-                      {['selected', 'interview_done', 'offered'].includes(candidate.status) && (
+                      {['selected', 'interview_done', 'offered', 'offer_accepted'].includes(candidate.status) && (
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => handleGenerateOffer(candidate)}
+                          onClick={() => setOfferDialogCandidate(candidate)}
                           className="border-green-300 text-green-700 hover:bg-green-50 h-8"
-                          title="Generate Offer Letter"
+                          title="Create & Send Offer Letter"
                         >
                           <FileCheck className="w-3 h-3 mr-1" /> Offer Letter
+                        </Button>
+                      )}
+                      {candidate.joining_date === TODAY && candidate.status === 'offer_accepted' && (
+                        <Button
+                          size="sm"
+                          onClick={() => handleInviteJoiner(candidate)}
+                          disabled={invitingId === candidate.id}
+                          className="bg-purple-600 hover:bg-purple-700 text-white h-8"
+                          title="Today is joining date! Invite to app"
+                        >
+                          {invitingId === candidate.id
+                            ? <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                            : <CalendarCheck className="w-3 h-3 mr-1" />
+                          }
+                          Invite to App
                         </Button>
                       )}
                       <Button size="sm" variant="outline" onClick={() => setSelectedCandidate(candidate)}>
@@ -606,6 +865,7 @@ export default function Recruitment() {
                           {Object.keys(STATUS_COLORS).map(s => (
                             <SelectItem key={s} value={s}>{s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</SelectItem>
                           ))}
+                          <SelectItem value="interview_done">Interview Done</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -624,6 +884,25 @@ export default function Recruitment() {
         open={!!selectedCandidate}
         onClose={() => setSelectedCandidate(null)}
       />
+
+      {/* Offer Letter Dialog */}
+      <Dialog open={!!offerDialogCandidate} onOpenChange={open => { if (!open) setOfferDialogCandidate(null); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileCheck className="w-5 h-5 text-green-600" />
+              Offer Letter — {offerDialogCandidate?.full_name}
+            </DialogTitle>
+          </DialogHeader>
+          {offerDialogCandidate && (
+            <OfferLetterDialog
+              candidate={offerDialogCandidate}
+              onClose={() => setOfferDialogCandidate(null)}
+              onRefresh={loadData}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

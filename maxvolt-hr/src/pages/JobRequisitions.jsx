@@ -232,7 +232,7 @@ export default function JobRequisitions() {
     loadData();
   };
 
-  const getJobLink = (req) => `https://maxvolt-one.co.in/ApplyForJob?jobId=${req.id}`;
+  const getJobLink = (req) => `https://hr.maxvolt-one.co.in/career/${req.id}`;
   const copyLink = (req) => {
     navigator.clipboard.writeText(getJobLink(req));
     toast.success('Application link copied!');

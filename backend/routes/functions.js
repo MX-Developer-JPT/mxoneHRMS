@@ -1671,6 +1671,285 @@ Return ONLY a valid JSON object (no markdown):
       return res.json({ success:true, html: letterHtml, ref: offerRef });
     }
 
+    /* ── Send Offer Letter (email to candidate) ─────── */
+    case 'sendOfferLetter': {
+      const { candidate_id, joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, notes } = p;
+      if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
+
+      const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+      if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
+      const cand = JSON.parse(cRow.data);
+
+      if (!cand.email) return res.json({ success: false, error: 'Candidate has no email address' });
+
+      const name       = cand.full_name || cand.name || 'Candidate';
+      const pos        = designation || cand.position_applied || 'Position';
+      const dept       = department || cand.department || 'Department';
+      const loc        = location || 'Ghaziabad, Uttar Pradesh';
+      const ctc        = annual_ctc || cand.expected_ctc || 0;
+      const monthlyCTC = Math.round(ctc / 12);
+      const jDate      = joining_date || '';
+      const probation  = probation_months;
+      const validTill  = new Date(Date.now() + (offer_valid_days || 7) * 24 * 60 * 60 * 1000);
+
+      // Salary breakdown
+      const basicM       = Math.round(monthlyCTC * 0.5);
+      const hraM         = Math.round(monthlyCTC * 0.2);
+      const convM        = Math.round(monthlyCTC * 0.05);
+      const ltaM         = Math.round(monthlyCTC * 0.1);
+      const pfWage       = Math.min(basicM, 15000);
+      const pfEmpM       = Math.round(pfWage * 0.12);
+      const pfEmployerM  = Math.round(pfWage * 0.13);
+      const medicalM     = 330;
+      const bonusM       = Math.round(basicM * 0.0833);
+      const contribM     = pfEmployerM + medicalM + bonusM;
+      const grossM       = monthlyCTC - contribM;
+      const specialM     = grossM - basicM - hraM - convM - ltaM;
+      const netM         = grossM - pfEmpM;
+
+      const sal = {
+        monthly_ctc: monthlyCTC, annual_ctc: ctc,
+        basic_monthly: basicM, basic_annual: basicM * 12,
+        hra_monthly: hraM, hra_annual: hraM * 12,
+        conveyance_monthly: convM, conveyance_annual: convM * 12,
+        lta_monthly: ltaM, lta_annual: ltaM * 12,
+        special_monthly: specialM, special_annual: specialM * 12,
+        gross_monthly: grossM, gross_annual: grossM * 12,
+        pf_emp_monthly: pfEmpM, pf_emp_annual: pfEmpM * 12,
+        pf_employer_monthly: pfEmployerM, pf_employer_annual: pfEmployerM * 12,
+        medical_monthly: medicalM, medical_annual: medicalM * 12,
+        bonus_monthly: bonusM, bonus_annual: bonusM * 12,
+        contribution_monthly: contribM, contribution_annual: contribM * 12,
+        net_monthly: netM, net_annual: netM * 12,
+      };
+
+      const offerRef    = `MEIL/HR/OL/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
+      const acceptToken = uuidv4();
+      const todayStr    = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+      const jDateStr    = jDate ? new Date(jDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }) : 'As mutually agreed';
+      const validTillStr = validTill.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+      const fmtIN       = n => Number(n || 0).toLocaleString('en-IN');
+
+      const appBase = process.env.APP_URL || 'https://hr.maxvolt-one.co.in';
+      const acceptLink = `${appBase}/offer-accept/${acceptToken}`;
+
+      const salaryTableHtml = `
+<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:12px;">
+  <thead>
+    <tr style="background:#f3f4f6;">
+      <th style="padding:8px;border:1px solid #ddd;text-align:left;">Salary Head</th>
+      <th style="padding:8px;border:1px solid #ddd;text-align:right;">Annually (₹)</th>
+      <th style="padding:8px;border:1px solid #ddd;text-align:right;">Monthly (₹)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td colspan="3" style="padding:5px 8px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;font-size:11px;color:#555;text-transform:uppercase;">Earnings</td></tr>
+    ${[['Basic', sal.basic_annual, sal.basic_monthly],['HRA', sal.hra_annual, sal.hra_monthly],['Conveyance', sal.conveyance_annual, sal.conveyance_monthly],['LTA', sal.lta_annual, sal.lta_monthly],['Special Allowance', sal.special_annual, sal.special_monthly]].map(([l,a,m])=>`<tr><td style="padding:6px 8px;border:1px solid #ddd;">${l}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(a)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(m)}</td></tr>`).join('')}
+    <tr style="background:#eff6ff;font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Gross (A)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.gross_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.gross_monthly)}</td></tr>
+    <tr><td colspan="3" style="padding:5px 8px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;font-size:11px;color:#555;text-transform:uppercase;">Deductions</td></tr>
+    <tr><td style="padding:6px 8px;border:1px solid #ddd;">PF Employee Contribution</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_monthly)}</td></tr>
+    <tr><td style="padding:6px 8px;border:1px solid #ddd;">ESI Employee Contribution</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">—</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">—</td></tr>
+    <tr style="font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Deduction (B)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_monthly)}</td></tr>
+    <tr style="background:#f0fdf4;font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Net Salary (A-B)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.net_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.net_monthly)}</td></tr>
+    <tr><td colspan="3" style="padding:5px 8px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;font-size:11px;color:#555;text-transform:uppercase;">Employer Contributions</td></tr>
+    ${[['PF Employer Contribution', sal.pf_employer_annual, sal.pf_employer_monthly],['Medical', sal.medical_annual, sal.medical_monthly],['Bonus', sal.bonus_annual, sal.bonus_monthly]].map(([l,a,m])=>`<tr><td style="padding:6px 8px;border:1px solid #ddd;">${l}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(a)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(m)}</td></tr>`).join('')}
+    <tr style="font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Contribution (C)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.contribution_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.contribution_monthly)}</td></tr>
+    <tr style="background:#fff7ed;font-weight:700;font-size:13px;"><td style="padding:8px;border:1px solid #ddd;">Annual CTC (A+C)</td><td style="padding:8px;border:1px solid #ddd;text-align:right;">${fmtIN(ctc)}</td><td style="padding:8px;border:1px solid #ddd;text-align:right;">${fmtIN(monthlyCTC)}</td></tr>
+  </tbody>
+</table>`;
+
+      const emailHtml = `
+<div style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;color:#1a1a1a;">
+  <div style="background:#ea580c;color:#fff;padding:24px;border-radius:12px 12px 0 0;text-align:center;">
+    <h1 style="margin:0;font-size:22px;">Offer Letter</h1>
+    <p style="margin:4px 0 0;opacity:.9;font-size:13px;">Maxvolt Energy Industries Limited</p>
+  </div>
+  <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;">
+    <p style="margin:0 0 8px;"><strong>Ref:</strong> ${offerRef}</p>
+    <p style="margin:0 0 20px;"><strong>Date:</strong> ${todayStr}</p>
+    <p style="margin:0 0 6px;">Dear <strong>${name}</strong>,</p>
+    <p style="margin:0 0 16px;"><strong>Congratulations!</strong></p>
+    <p style="margin:0 0 16px;">We are pleased to offer you the position of <strong>${pos}</strong> in the <strong>${dept}</strong> department at <strong>Maxvolt Energy Industries Limited</strong>.</p>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;">
+      <tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;width:40%;">Designation</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${pos}</td></tr>
+      <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Department</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${dept}</td></tr>
+      <tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Date of Joining</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${jDateStr}</td></tr>
+      <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Work Location</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${loc}</td></tr>
+      ${reporting_to ? `<tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Reporting To</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${reporting_to}</td></tr>` : ''}
+      <tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Probation Period</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${probation} months</td></tr>
+      <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Annual CTC</td><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;color:#ea580c;">₹${fmtIN(ctc)} per annum</td></tr>
+    </table>
+    <h3 style="margin:20px 0 8px;font-size:14px;">Salary Structure</h3>
+    ${salaryTableHtml}
+    ${notes ? `<div style="background:#f9fafb;border-left:4px solid #ea580c;padding:12px;margin:16px 0;font-size:13px;"><strong>Additional Note:</strong> ${notes}</div>` : ''}
+    <p style="margin:16px 0;font-size:13px;">This offer is valid until <strong>${validTillStr}</strong>.</p>
+    <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:16px;margin:20px 0;">
+      <p style="margin:0 0 8px;font-weight:600;font-size:14px;">Action Required: Accept Your Offer</p>
+      <p style="margin:0 0 12px;font-size:13px;">Please click the button below to review the complete offer, sign the background verification consent form, and formally accept this offer digitally.</p>
+      <a href="${acceptLink}" style="display:inline-block;background:#ea580c;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">Accept Offer Letter</a>
+    </div>
+    <p style="font-size:13px;">Documents required at joining:</p>
+    <ul style="font-size:12px;color:#555;padding-left:16px;">
+      <li>Proof of address &amp; ID (Local &amp; Permanent)</li>
+      <li>Five color recent passport-size photos</li>
+      <li>10th, 12th &amp; highest degree certificates</li>
+      <li>Offer, Appointment &amp; Increment Letters (last 3)</li>
+      <li>Experience/Relieving letters (last 3)</li>
+      <li>Last 3 months salary slips &amp; 6 months bank statement</li>
+    </ul>
+    <p style="margin-top:20px;font-size:13px;">We look forward to welcoming you to the Maxvolt Energy family!</p>
+    <p style="font-size:13px;">Warm regards,<br/><strong>Human Resources</strong><br/>Maxvolt Energy Industries Limited</p>
+  </div>
+  <div style="background:#f9fafb;padding:12px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;text-align:center;font-size:11px;color:#999;">
+    E-82 Bulandshahr Road Industrial Area, Ghaziabad, UP – 201009 &nbsp;|&nbsp; CIN: U40106DL2019PLC349854
+  </div>
+</div>`;
+
+      // Store offer in candidate
+      const offerData = {
+        ...cand,
+        status: 'offered',
+        offer_ref: offerRef,
+        offer_accept_token: acceptToken,
+        offer_letter_date: new Date().toISOString(),
+        offer_ctc: ctc,
+        offer_ctc_annual: ctc,
+        joining_date: jDate,
+        designation: pos,
+        department: dept,
+        location: loc,
+        reporting_to: reporting_to || '',
+        probation_months: probation,
+        salary: sal,
+        offer_valid_till: validTill.toISOString(),
+        offer_status: 'sent',
+      };
+      await run("UPDATE entities SET status='offered', data=$1 WHERE id=$2", [JSON.stringify(offerData), candidate_id]);
+
+      await sendEmail({
+        to: cand.email,
+        subject: `Offer Letter – ${pos} at Maxvolt Energy Industries Limited`,
+        html: emailHtml,
+      });
+
+      return res.json({ success: true, accept_link: acceptLink, offer_ref: offerRef });
+    }
+
+    /* ── Get Offer by Accept Token (public) ─────────── */
+    case 'getOfferByToken': {
+      const { token } = p;
+      if (!token) return res.json({ error: 'Token required' });
+      const row = await one("SELECT data FROM entities WHERE type='Candidate' AND data::jsonb->>'offer_accept_token'=$1", [token]);
+      if (!row) return res.json({ error: 'Offer not found or link has expired.' });
+      const cand = JSON.parse(row.data);
+      if (cand.offer_status === 'accepted') return res.json({ error: 'This offer has already been accepted.' });
+      if (cand.offer_valid_till && new Date(cand.offer_valid_till) < new Date()) {
+        return res.json({ error: 'This offer link has expired. Please contact HR.' });
+      }
+      return res.json({ offer: {
+        full_name: cand.full_name,
+        email: cand.email,
+        designation: cand.designation || cand.position_applied,
+        department: cand.department,
+        location: cand.location,
+        joining_date: cand.joining_date,
+        reporting_to: cand.reporting_to,
+        probation_months: cand.probation_months,
+        offer_ref: cand.offer_ref,
+        salary: cand.salary,
+      }});
+    }
+
+    /* ── Accept Offer Letter (public, token-based) ───── */
+    case 'acceptOfferLetter': {
+      const { token, full_name, parent_name, contact_no } = p;
+      if (!token) return res.json({ success: false, error: 'Token required' });
+
+      const row = await one("SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'offer_accept_token'=$1", [token]);
+      if (!row) return res.json({ success: false, error: 'Offer not found.' });
+      const cand = JSON.parse(row.data);
+      if (cand.offer_status === 'accepted') return res.json({ success: false, error: 'Already accepted.' });
+
+      const updated = {
+        ...cand,
+        status: 'offer_accepted',
+        offer_status: 'accepted',
+        offer_accepted_at: new Date().toISOString(),
+        offer_accepted_name: full_name || cand.full_name,
+        offer_parent_name: parent_name,
+        offer_contact: contact_no,
+      };
+      await run("UPDATE entities SET status='offer_accepted', data=$1 WHERE id=$2", [JSON.stringify(updated), row.id]);
+
+      // Notify HR
+      const hrEmail = process.env.HR_EMAIL || 'hr@maxvoltenergy.com';
+      await sendEmail({
+        to: hrEmail,
+        subject: `Offer Accepted: ${updated.full_name} – ${updated.designation || updated.position_applied}`,
+        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+          <div style="background:#16a34a;color:#fff;padding:20px;border-radius:8px;text-align:center;">
+            <h2 style="margin:0;">Offer Accepted!</h2>
+          </div>
+          <div style="padding:24px;border:1px solid #e5e7eb;border-top:none;">
+            <p><strong>${updated.full_name}</strong> has accepted the offer letter.</p>
+            <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:12px;">
+              <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600;width:40%;">Position</td><td style="padding:6px 12px;border:1px solid #e5e7eb;">${updated.designation || updated.position_applied}</td></tr>
+              <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600;">Joining Date</td><td style="padding:6px 12px;border:1px solid #e5e7eb;">${updated.joining_date || '—'}</td></tr>
+              <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600;">Contact</td><td style="padding:6px 12px;border:1px solid #e5e7eb;">${updated.email} · ${contact_no}</td></tr>
+              <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600;">Accepted On</td><td style="padding:6px 12px;border:1px solid #e5e7eb;">${new Date().toLocaleString('en-IN')}</td></tr>
+            </table>
+          </div>
+        </div>`,
+      }).catch(() => {});
+
+      return res.json({ success: true });
+    }
+
+    /* ── Invite Joiner to App ─────────────────────────── */
+    case 'inviteJoinerToApp': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorised' });
+      const { candidate_id } = p;
+      const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+      if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
+      const cand = JSON.parse(cRow.data);
+      if (!cand.email) return res.json({ success: false, error: 'Candidate has no email' });
+
+      const appBase = process.env.APP_URL || 'https://hr.maxvolt-one.co.in';
+      const registerLink = `${appBase}/register`;
+
+      await sendEmail({
+        to: cand.email,
+        subject: `Welcome to Maxvolt HR System – Your Account Awaits!`,
+        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
+          <div style="background:#ea580c;color:#fff;padding:28px;border-radius:12px 12px 0 0;text-align:center;">
+            <h1 style="margin:0;font-size:24px;">Welcome to Maxvolt Energy!</h1>
+            <p style="margin:8px 0 0;opacity:.9;">We're excited to have you join us today.</p>
+          </div>
+          <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;">
+            <p>Dear <strong>${cand.full_name}</strong>,</p>
+            <p>Today is your joining date and we are thrilled to welcome you to the <strong>Maxvolt Energy</strong> family!</p>
+            <p>As part of our digital onboarding, please register on our HR system using the button below. Your onboarding formalities, documents submission, and attendance will all be managed through this portal.</p>
+            <div style="text-align:center;margin:28px 0;">
+              <a href="${registerLink}" style="display:inline-block;background:#ea580c;color:#fff;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;">Register on HR Portal</a>
+            </div>
+            <p style="font-size:13px;color:#555;">Please register using your official email address: <strong>${cand.email}</strong></p>
+            <p style="font-size:13px;color:#555;">If you have any questions, please reach out to HR at <a href="mailto:hr@maxvoltenergy.com">hr@maxvoltenergy.com</a> or call +91 120 4291595.</p>
+            <p style="margin-top:24px;">Once again, welcome aboard! We are glad to have you with us.</p>
+            <p style="margin-top:4px;">Warm regards,<br/><strong>Human Resources Team</strong><br/>Maxvolt Energy Industries Limited</p>
+          </div>
+          <div style="background:#f9fafb;padding:12px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;text-align:center;font-size:11px;color:#999;">
+            E-82 Bulandshahr Road Industrial Area, Ghaziabad, UP – 201009 &nbsp;|&nbsp; CIN: U40106DL2019PLC349854
+          </div>
+        </div>`,
+      });
+
+      // Mark candidate as joined
+      const updCand = { ...cand, status: 'joined', app_invite_sent_at: new Date().toISOString() };
+      await run("UPDATE entities SET status='joined', data=$1 WHERE id=$2", [JSON.stringify(updCand), candidate_id]);
+
+      return res.json({ success: true });
+    }
+
     /* ── AI: HR Letter Generation ────────────────────── */
     case 'generateEmployeeLetter': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });

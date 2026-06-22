@@ -35,6 +35,7 @@ import OnboardingApproval from './pages/OnboardingApproval';
 import PublicJobBoard from './pages/PublicJobBoard';
 import ApplyForJob from './pages/ApplyForJob';
 import CareersPage from './pages/CareersPage';
+import OfferAcceptPage from './pages/OfferAcceptPage';
 import LOPConfiguration from './pages/LOPConfiguration';
 import MyExit from './pages/MyExit';
 import ExitManagement from './pages/ExitManagement';
@@ -109,7 +110,7 @@ const LayoutWrapper = ({ children, currentPageName }) => Layout ?
   <Layout currentPageName={currentPageName}><AnimatedPage pageName={currentPageName}>{children}</AnimatedPage></Layout>
   : <AnimatedPage pageName={currentPageName}>{children}</AnimatedPage>;
 
-const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers'];
+const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept'];
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError } = useAuth();
@@ -400,6 +401,9 @@ function App() {
           <Route path="/PublicBusinessCard" element={<PublicBusinessCard />} />
           <Route path="/careers" element={<CareersPage />} />
           <Route path="/careers/:jobId" element={<CareersPage />} />
+          <Route path="/career" element={<CareersPage />} />
+          <Route path="/career/:jobId" element={<CareersPage />} />
+          <Route path="/offer-accept/:token" element={<OfferAcceptPage />} />
           {/* All other routes go through auth */}
           <Route path="*" element={
             <AuthProvider>
