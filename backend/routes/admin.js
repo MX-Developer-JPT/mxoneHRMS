@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 import { one, all, run } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { sendEmail, verifyEmail, emailTemplates, getSmtpPublicConfig } from '../utils/email.js';
-import { resetEmailTransport } from '../utils/emailQueue.js';
+import { resetEmailTransport, sendSmtpDirect } from '../utils/emailQueue.js';
 
 const router = Router();
 
@@ -246,17 +246,26 @@ router.get('/email-status', async (_req, res) => {
 });
 
 // ── Email: send test email ─────────────────────────────────
+// Sends synchronously (bypasses the queue for SMTP) so the caller sees the
+// real SMTP error immediately rather than getting a silent queue job ID.
 router.post('/test-email', async (req, res) => {
   const to = req.body?.to || req.currentUser.email;
   if (!to) return res.status(400).json({ error: 'No recipient email address found' });
 
-  const verify = await verifyEmail();
-  if (!verify.ok) return res.status(500).json({ error: verify.error });
-
   try {
     const tmpl = emailTemplates.testEmail({ to });
-    const result = await sendEmail({ to, ...tmpl });
-    res.json({ success: true, sentTo: to, messageId: result.messageId });
+    const cfg = await getSmtpPublicConfig();
+
+    let result;
+    if (cfg.provider === 'smtp') {
+      // Send direct (not via queue) so any SMTP error surfaces immediately.
+      result = await sendSmtpDirect({ to, ...tmpl });
+    } else {
+      const verify = await verifyEmail();
+      if (!verify.ok) return res.status(500).json({ error: verify.error });
+      result = await sendEmail({ to, ...tmpl });
+    }
+    res.json({ success: true, sentTo: to, messageId: result.messageId, provider: result.provider });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

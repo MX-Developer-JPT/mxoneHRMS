@@ -84,11 +84,32 @@ export async function verifySmtp() {
     const probe = nodemailer.createTransport(buildTransportOptions(cfg));
     await probe.verify();
     probe.close();
-    // Also reset the cached pooled transport so next send uses fresh cfg.
+    // Reset the cached transport so next send uses fresh cfg.
     transporter = null;
     return { ok: true, provider: 'smtp', host: cfg.host, port: cfg.port };
   } catch (e) {
     return { ok: false, provider: 'smtp', error: `SMTP: ${e.message}` };
+  }
+}
+
+// Send directly via SMTP without the queue — used by admin test-email so the
+// caller sees the real error immediately instead of getting a queue job ID.
+export async function sendSmtpDirect({ to, from, subject, html, text }) {
+  const cfg = await getSmtpConfig();
+  if (!isSmtpConfigured(cfg)) throw new Error('SMTP is not configured (set host + user in Admin → Email Settings).');
+  const { default: nodemailer } = await import('nodemailer');
+  const t = nodemailer.createTransport(buildTransportOptions(cfg));
+  try {
+    const info = await t.sendMail({
+      from: from || cfg.from || undefined,
+      to,
+      subject,
+      html: html || undefined,
+      text: text || undefined,
+    });
+    return { success: true, messageId: info.messageId, provider: 'smtp' };
+  } finally {
+    t.close();
   }
 }
 
