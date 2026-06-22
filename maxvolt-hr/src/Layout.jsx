@@ -20,140 +20,205 @@ import ProfilePage from './pages/Profile';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
-/* ── Menu definitions ──────────────────────────────────────── */
-const employeeMenuItems = [
-  { name: 'Dashboard',        icon: LayoutDashboard,   page: 'Dashboard' },
-  { name: 'Mark Attendance',  icon: Clock,             page: 'MarkAttendance' },
-  { name: 'My Attendance',    icon: Calendar,          page: 'AttendanceHistory' },
-  { name: 'Regularisation',   icon: Clock,             page: 'AttendanceRegularisation' },
-  { name: 'Apply Leave',      icon: FileText,          page: 'Leave' },
-  { name: 'My Payslips',      icon: CreditCard,        page: 'Payslips' },
-  { name: 'Tax Declaration',  icon: FileText,          page: 'TaxDeclaration' },
-  { name: 'My Documents',     icon: FolderOpen,        page: 'Documents' },
-  { name: 'Expenses',         icon: DollarSign,        page: 'Reimbursements' },
-  { name: 'My Performance',   icon: Target,            page: 'PerformanceManagement' },
-  { name: 'Helpdesk',         icon: HelpCircle,        page: 'Helpdesk' },
-  { name: 'Announcements',    icon: Bell,              page: 'Announcements' },
-  { name: 'My Insurance',     icon: Shield,            page: 'MyInsurance' },
-  { name: 'My Training',      icon: GraduationCap,     page: 'MyTraining' },
-  { name: 'My Exit',          icon: LogOut,            page: 'MyExit' },
-  { name: 'Gate Pass',        icon: ShieldCheck,       page: 'GatePassRequest' },
-  { name: 'My Assets',        icon: Laptop,            page: 'MyAssets' },
-  { name: 'Team Calendar',    icon: Calendar,          page: 'TeamCalendar' },
-  { name: 'Recognition',      icon: Award,             page: 'Recognition' },
-  { name: 'Pulse Surveys',    icon: ClipboardList,     page: 'PulseSurveys' },
-  { name: 'Employee Portal',  icon: Users,             page: 'EmployeeEngagementPortal' },
-  { name: 'AskMax AI',        icon: Sparkles,          page: 'AskMax' },
-  { name: 'My Profile',       icon: User2,             page: 'Profile' },
-  { name: 'App Settings',     icon: SlidersHorizontal, page: 'AppSettings' },
+/* ── Menu definitions (grouped) ────────────────────────────── */
+const employeeMenuGroups = [
+  { label: 'Overview', items: [
+    { name: 'Dashboard',       icon: LayoutDashboard, page: 'Dashboard' },
+  ]},
+  { label: 'Attendance', items: [
+    { name: 'Mark Attendance', icon: Clock,           page: 'MarkAttendance' },
+    { name: 'My Attendance',   icon: Calendar,        page: 'AttendanceHistory' },
+    { name: 'Regularisation',  icon: Clock,           page: 'AttendanceRegularisation' },
+  ]},
+  { label: 'Leave', items: [
+    { name: 'Apply Leave',     icon: FileText,        page: 'Leave' },
+    { name: 'Team Calendar',   icon: Calendar,        page: 'TeamCalendar' },
+  ]},
+  { label: 'Payroll', items: [
+    { name: 'My Payslips',     icon: CreditCard,      page: 'Payslips' },
+    { name: 'Tax Declaration', icon: FileText,        page: 'TaxDeclaration' },
+  ]},
+  { label: 'Documents & Expenses', items: [
+    { name: 'My Documents',    icon: FolderOpen,      page: 'Documents' },
+    { name: 'Expenses',        icon: DollarSign,      page: 'Reimbursements' },
+  ]},
+  { label: 'Career & Learning', items: [
+    { name: 'My Performance',  icon: Target,          page: 'PerformanceManagement' },
+    { name: 'My Training',     icon: GraduationCap,   page: 'MyTraining' },
+  ]},
+  { label: 'Benefits', items: [
+    { name: 'My Insurance',    icon: Shield,          page: 'MyInsurance' },
+    { name: 'My Assets',       icon: Laptop,          page: 'MyAssets' },
+  ]},
+  { label: 'Engagement', items: [
+    { name: 'Announcements',   icon: Bell,            page: 'Announcements' },
+    { name: 'Helpdesk',        icon: HelpCircle,      page: 'Helpdesk' },
+    { name: 'Recognition',     icon: Award,           page: 'Recognition' },
+    { name: 'Pulse Surveys',   icon: ClipboardList,   page: 'PulseSurveys' },
+    { name: 'Employee Portal', icon: Users,           page: 'EmployeeEngagementPortal' },
+  ]},
+  { label: 'AI', items: [
+    { name: 'AskMax AI',       icon: Sparkles,        page: 'AskMax' },
+  ]},
+  { label: 'Account', items: [
+    { name: 'Gate Pass',       icon: ShieldCheck,     page: 'GatePassRequest' },
+    { name: 'My Exit',         icon: LogOut,          page: 'MyExit' },
+    { name: 'My Profile',      icon: User2,           page: 'Profile' },
+    { name: 'App Settings',    icon: SlidersHorizontal, page: 'AppSettings' },
+  ]},
 ];
 
-const managementMenuItems = [
-  // ── Team ──────────────────────────────────────────────────
-  { name: 'Dashboard',               icon: LayoutDashboard,   page: 'Dashboard' },
-  { name: 'My Team',                 icon: Users,             page: 'Employees' },
-  { name: 'Team Attendance',         icon: BarChart3,         page: 'AllAttendance' },
-  { name: 'Leave Approvals',         icon: FileText,          page: 'LeaveManagement' },
-  { name: 'Leave Dashboard',         icon: PieChart,          page: 'LeaveDashboard' },
-  { name: 'Regularisation Approvals',icon: Clock,             page: 'RegularisationApproval' },
-  { name: 'Expense Approvals',       icon: DollarSign,        page: 'Approvals' },
-  { name: 'Gate Pass Approvals',     icon: ShieldCheck,       page: 'GatePassApproval' },
-  { name: 'Team Calendar',           icon: Calendar,          page: 'TeamCalendar' },
-  { name: 'MIS Analytics',           icon: PieChart,          page: 'MISDashboard' },
-  { name: 'Attrition Risk (AI)',     icon: ShieldAlert,       page: 'AttritionRisk' },
-  { name: 'Job Requisitions',        icon: Briefcase,         page: 'JobRequisitions' },
-  { name: 'Offer Letters',           icon: FileSignature,     page: 'OfferLetters' },
-  // ── Personal ─────────────────────────────────────────────
-  { name: 'Mark Attendance',         icon: Clock,             page: 'MarkAttendance' },
-  { name: 'My Attendance',           icon: Calendar,          page: 'AttendanceHistory' },
-  { name: 'Regularisation',          icon: Clock,             page: 'AttendanceRegularisation' },
-  { name: 'Apply Leave',             icon: FileText,          page: 'Leave' },
-  { name: 'My Payslips',             icon: CreditCard,        page: 'Payslips' },
-  { name: 'My Documents',            icon: FolderOpen,        page: 'Documents' },
-  { name: 'Expenses',                icon: DollarSign,        page: 'Reimbursements' },
-  { name: 'My Performance',          icon: Target,            page: 'PerformanceManagement' },
-  { name: 'My Training',             icon: GraduationCap,     page: 'MyTraining' },
-  { name: 'My Insurance',            icon: Shield,            page: 'MyInsurance' },
-  { name: 'My Assets',               icon: Laptop,            page: 'MyAssets' },
-  { name: 'My Exit',                 icon: LogOut,            page: 'MyExit' },
-  // ── General ──────────────────────────────────────────────
-  { name: 'Announcements',           icon: Bell,              page: 'Announcements' },
-  { name: 'Helpdesk',                icon: HelpCircle,        page: 'Helpdesk' },
-  { name: 'Recognition',             icon: Award,             page: 'Recognition' },
-  { name: 'Pulse Surveys',           icon: ClipboardList,     page: 'PulseSurveys' },
-  { name: 'Employee Portal',         icon: Users,             page: 'EmployeeEngagementPortal' },
-  { name: 'AskMax AI',               icon: Sparkles,          page: 'AskMax' },
-  { name: 'My Profile',              icon: User2,             page: 'Profile' },
-  { name: 'App Settings',            icon: SlidersHorizontal, page: 'AppSettings' },
+const managementMenuGroups = [
+  { label: 'Overview', items: [
+    { name: 'Dashboard',                icon: LayoutDashboard, page: 'Dashboard' },
+    { name: 'MIS Analytics',            icon: PieChart,        page: 'MISDashboard' },
+  ]},
+  { label: 'My Team', items: [
+    { name: 'My Team',                  icon: Users,           page: 'Employees' },
+    { name: 'Team Attendance',          icon: BarChart3,       page: 'AllAttendance' },
+    { name: 'Leave Approvals',          icon: FileText,        page: 'LeaveManagement' },
+    { name: 'Leave Dashboard',          icon: PieChart,        page: 'LeaveDashboard' },
+    { name: 'Regularisation Approvals', icon: Clock,           page: 'RegularisationApproval' },
+    { name: 'Expense Approvals',        icon: DollarSign,      page: 'Approvals' },
+    { name: 'Gate Pass Approvals',      icon: ShieldCheck,     page: 'GatePassApproval' },
+    { name: 'Team Calendar',            icon: Calendar,        page: 'TeamCalendar' },
+  ]},
+  { label: 'AI Insights', items: [
+    { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
+    { name: 'AskMax AI',                icon: Sparkles,        page: 'AskMax' },
+  ]},
+  { label: 'Recruitment', items: [
+    { name: 'Job Requisitions',         icon: Briefcase,       page: 'JobRequisitions' },
+    { name: 'Offer Letters',            icon: FileSignature,   page: 'OfferLetters' },
+  ]},
+  { label: 'My Attendance', items: [
+    { name: 'Mark Attendance',          icon: Clock,           page: 'MarkAttendance' },
+    { name: 'My Attendance',            icon: Calendar,        page: 'AttendanceHistory' },
+    { name: 'Regularisation',           icon: Clock,           page: 'AttendanceRegularisation' },
+  ]},
+  { label: 'My Work', items: [
+    { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
+    { name: 'My Payslips',              icon: CreditCard,      page: 'Payslips' },
+    { name: 'My Documents',             icon: FolderOpen,      page: 'Documents' },
+    { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
+    { name: 'My Performance',           icon: Target,          page: 'PerformanceManagement' },
+    { name: 'My Training',              icon: GraduationCap,   page: 'MyTraining' },
+    { name: 'My Insurance',             icon: Shield,          page: 'MyInsurance' },
+    { name: 'My Assets',                icon: Laptop,          page: 'MyAssets' },
+    { name: 'My Exit',                  icon: LogOut,          page: 'MyExit' },
+  ]},
+  { label: 'Engagement', items: [
+    { name: 'Announcements',            icon: Bell,            page: 'Announcements' },
+    { name: 'Helpdesk',                 icon: HelpCircle,      page: 'Helpdesk' },
+    { name: 'Recognition',              icon: Award,           page: 'Recognition' },
+    { name: 'Pulse Surveys',            icon: ClipboardList,   page: 'PulseSurveys' },
+    { name: 'Employee Portal',          icon: Users,           page: 'EmployeeEngagementPortal' },
+  ]},
+  { label: 'Account', items: [
+    { name: 'My Profile',               icon: User2,           page: 'Profile' },
+    { name: 'App Settings',             icon: SlidersHorizontal, page: 'AppSettings' },
+  ]},
 ];
 
-const hrMenuItems = [
-  { name: 'Dashboard',               icon: LayoutDashboard,   page: 'Dashboard' },
-  { name: 'MIS Analytics',           icon: PieChart,          page: 'MISDashboard' },
-  { name: 'Attrition Risk (AI)',     icon: ShieldAlert,       page: 'AttritionRisk' },
-  { name: 'Anomaly Detection (AI)',  icon: ScanSearch,        page: 'AnomalyDetection' },
-  { name: 'Onboarding Approval',     icon: UserPlus,          page: 'OnboardingApproval' },
-  { name: 'Employee Documents',      icon: FolderOpen,        page: 'EmployeeDocuments' },
-  { name: 'Letter Generator (AI)',   icon: FileSignature,     page: 'LetterGenerator' },
-  { name: 'Employees',               icon: Users,             page: 'Employees' },
-  { name: 'All Attendance',          icon: Clock,             page: 'AllAttendance' },
-  { name: 'Regularisation Approvals',icon: Clock,             page: 'RegularisationApproval' },
-  { name: 'Attendance Reports',      icon: BarChart3,         page: 'AttendanceReports' },
-  { name: 'Biometric Logs',          icon: Clock,             page: 'AttendanceLogDashboard' },
-  { name: 'Shift Management',        icon: UserCog,           page: 'ShiftManagement' },
-  { name: 'Leave Management',        icon: FileText,          page: 'LeaveManagement' },
-  { name: 'Leave Dashboard',         icon: PieChart,          page: 'LeaveDashboard' },
-  { name: 'Approvals',               icon: Bell,              page: 'Approvals' },
-  { name: 'Payroll',                 icon: CreditCard,        page: 'PayrollManagement' },
-  { name: 'Salary Structure',        icon: DollarSign,        page: 'SalaryStructureManagement' },
-  { name: 'Loans',                   icon: DollarSign,        page: 'LoanManagement' },
-  { name: 'Tax Declarations',        icon: FileText,          page: 'TaxDeclaration' },
-  { name: 'Form 16 & TDS',           icon: Receipt,           page: 'Form16' },
-  { name: 'PF & ESI Registers',      icon: ShieldCheck,       page: 'StatutoryRegisters' },
-  { name: 'Off-Cycle Payments',      icon: DollarSign,        page: 'OffCyclePayments' },
-  { name: 'Gratuity Report',         icon: Landmark,          page: 'GratuityReport' },
-  { name: 'Compliance Reports',      icon: FileText,          page: 'ComplianceReports' },
-  { name: 'Payroll Settings',        icon: Settings,          page: 'PayrollSettings' },
-  { name: 'Departments',             icon: Building2,         page: 'DepartmentManagement' },
-  { name: 'Location Master',         icon: MapPin,            page: 'LocationMaster' },
-  { name: 'Asset Tracking',          icon: Laptop,            page: 'AssetTracking' },
-  { name: 'Holiday Calendar',        icon: Calendar,          page: 'HolidayCalendar' },
-  { name: 'Announcements',           icon: Bell,              page: 'AnnouncementManagement' },
-  { name: 'Job Requisitions',        icon: Briefcase,         page: 'JobRequisitions' },
-  { name: 'Candidates',              icon: UserPlus,          page: 'Recruitment' },
-  { name: 'Interviews',              icon: Calendar,          page: 'InterviewManagement' },
-  { name: 'Offer Letters',           icon: FileSignature,     page: 'OfferLetters' },
-  { name: 'Helpdesk',                icon: HelpCircle,        page: 'Helpdesk' },
-  { name: 'Helpdesk Categories',     icon: Settings,          page: 'HelpdeskCategoryManagement' },
-  { name: 'Performance',             icon: Target,            page: 'PerformanceManagement' },
-  { name: 'PIP Management',          icon: AlertTriangle,     page: 'PIPManagement' },
-  { name: 'PMS Settings',            icon: Settings,          page: 'PMSConfiguration' },
-  { name: 'User Roles',              icon: UserCog,           page: 'UserRoleManagement' },
-  { name: 'Attendance Exemption',    icon: ShieldOff,         page: 'AttendanceExemption' },
-  { name: 'Insurance Management',    icon: Shield,            page: 'InsuranceManagement' },
-  { name: 'My Insurance',            icon: Shield,            page: 'MyInsurance' },
-  { name: 'LOP Configuration',       icon: TrendingDown,      page: 'LOPConfiguration' },
-  { name: 'Exit Management',         icon: LogOut,            page: 'ExitManagement' },
-  { name: 'Recognition',             icon: Award,             page: 'Recognition' },
-  { name: 'Pulse Surveys & eNPS',    icon: ClipboardList,     page: 'PulseSurveys' },
-  { name: 'Employee Portal',         icon: Users,             page: 'EmployeeEngagementPortal' },
-  { name: 'Training Programs',       icon: GraduationCap,     page: 'TrainingManagement' },
-  { name: 'Training Needs',          icon: GraduationCap,     page: 'TrainingNeeds' },
-  { name: 'My Training',             icon: GraduationCap,     page: 'MyTraining' },
-  { name: 'Gate Pass Management',    icon: ShieldCheck,       page: 'GatePassManagement' },
-  { name: 'Team Calendar',           icon: Calendar,          page: 'TeamCalendar' },
-  { name: 'Import Employees',        icon: UserPlus,          page: 'ImportEmployees' },
-  { name: 'Business Cards',          icon: QrCode,            page: 'BusinessCardAdmin' },
-  { name: 'Compliance',              icon: Shield,            page: 'ComplianceDashboard' },
-  { name: 'Company Policies',        icon: BookOpen,          page: 'CompanyPolicies' },
-  { name: 'AskMax AI',               icon: Sparkles,          page: 'AskMax' },
-  { name: 'App Settings',            icon: SlidersHorizontal, page: 'AppSettings' },
-  { name: 'Admin Panel',             icon: Shield,            page: 'AdminPanel' },
+const hrMenuGroups = [
+  { label: 'Overview', items: [
+    { name: 'Dashboard',               icon: LayoutDashboard, page: 'Dashboard' },
+    { name: 'MIS Analytics',           icon: PieChart,        page: 'MISDashboard' },
+  ]},
+  { label: 'AI & Intelligence', items: [
+    { name: 'Attrition Risk (AI)',     icon: ShieldAlert,     page: 'AttritionRisk' },
+    { name: 'Anomaly Detection (AI)',  icon: ScanSearch,      page: 'AnomalyDetection' },
+    { name: 'AskMax AI',              icon: Sparkles,         page: 'AskMax' },
+  ]},
+  { label: 'Employees', items: [
+    { name: 'Employees',               icon: Users,           page: 'Employees' },
+    { name: 'Onboarding Approval',     icon: UserPlus,        page: 'OnboardingApproval' },
+    { name: 'Import Employees',        icon: UserPlus,        page: 'ImportEmployees' },
+    { name: 'Employee Documents',      icon: FolderOpen,      page: 'EmployeeDocuments' },
+    { name: 'Letter Generator (AI)',   icon: FileSignature,   page: 'LetterGenerator' },
+  ]},
+  { label: 'Attendance', items: [
+    { name: 'All Attendance',          icon: Clock,           page: 'AllAttendance' },
+    { name: 'Regularisation Approvals',icon: Clock,           page: 'RegularisationApproval' },
+    { name: 'Attendance Reports',      icon: BarChart3,       page: 'AttendanceReports' },
+    { name: 'Biometric Logs',          icon: Clock,           page: 'AttendanceLogDashboard' },
+    { name: 'Shift Management',        icon: UserCog,         page: 'ShiftManagement' },
+    { name: 'Attendance Exemption',    icon: ShieldOff,       page: 'AttendanceExemption' },
+  ]},
+  { label: 'Leave', items: [
+    { name: 'Leave Management',        icon: FileText,        page: 'LeaveManagement' },
+    { name: 'Leave Dashboard',         icon: PieChart,        page: 'LeaveDashboard' },
+    { name: 'Approvals',               icon: Bell,            page: 'Approvals' },
+  ]},
+  { label: 'Payroll', items: [
+    { name: 'Payroll',                 icon: CreditCard,      page: 'PayrollManagement' },
+    { name: 'Salary Structure',        icon: DollarSign,      page: 'SalaryStructureManagement' },
+    { name: 'Loans',                   icon: DollarSign,      page: 'LoanManagement' },
+    { name: 'Off-Cycle Payments',      icon: DollarSign,      page: 'OffCyclePayments' },
+    { name: 'LOP Configuration',       icon: TrendingDown,    page: 'LOPConfiguration' },
+  ]},
+  { label: 'Tax & Statutory', items: [
+    { name: 'Tax Declarations',        icon: FileText,        page: 'TaxDeclaration' },
+    { name: 'Form 16 & TDS',           icon: Receipt,         page: 'Form16' },
+    { name: 'PF & ESI Registers',      icon: ShieldCheck,     page: 'StatutoryRegisters' },
+    { name: 'Gratuity Report',         icon: Landmark,        page: 'GratuityReport' },
+    { name: 'Compliance Reports',      icon: FileText,        page: 'ComplianceReports' },
+    { name: 'Payroll Settings',        icon: Settings,        page: 'PayrollSettings' },
+  ]},
+  { label: 'Recruitment', items: [
+    { name: 'Job Requisitions',        icon: Briefcase,       page: 'JobRequisitions' },
+    { name: 'Candidates',              icon: UserPlus,        page: 'Recruitment' },
+    { name: 'Interviews',              icon: Calendar,        page: 'InterviewManagement' },
+    { name: 'Offer Letters',           icon: FileSignature,   page: 'OfferLetters' },
+  ]},
+  { label: 'Performance', items: [
+    { name: 'Performance',             icon: Target,          page: 'PerformanceManagement' },
+    { name: 'PIP Management',          icon: AlertTriangle,   page: 'PIPManagement' },
+    { name: 'PMS Settings',            icon: Settings,        page: 'PMSConfiguration' },
+  ]},
+  { label: 'Learning & Development', items: [
+    { name: 'Training Programs',       icon: GraduationCap,   page: 'TrainingManagement' },
+    { name: 'Training Needs',          icon: GraduationCap,   page: 'TrainingNeeds' },
+    { name: 'My Training',             icon: GraduationCap,   page: 'MyTraining' },
+  ]},
+  { label: 'Engagement', items: [
+    { name: 'Announcements',           icon: Bell,            page: 'AnnouncementManagement' },
+    { name: 'Helpdesk',                icon: HelpCircle,      page: 'Helpdesk' },
+    { name: 'Helpdesk Categories',     icon: Settings,        page: 'HelpdeskCategoryManagement' },
+    { name: 'Recognition',             icon: Award,           page: 'Recognition' },
+    { name: 'Pulse Surveys & eNPS',    icon: ClipboardList,   page: 'PulseSurveys' },
+    { name: 'Employee Portal',         icon: Users,           page: 'EmployeeEngagementPortal' },
+    { name: 'Business Cards',          icon: QrCode,          page: 'BusinessCardAdmin' },
+  ]},
+  { label: 'Benefits & Exit', items: [
+    { name: 'Insurance Management',    icon: Shield,          page: 'InsuranceManagement' },
+    { name: 'My Insurance',            icon: Shield,          page: 'MyInsurance' },
+    { name: 'Exit Management',         icon: LogOut,          page: 'ExitManagement' },
+  ]},
+  { label: 'Operations', items: [
+    { name: 'Departments',             icon: Building2,       page: 'DepartmentManagement' },
+    { name: 'Location Master',         icon: MapPin,          page: 'LocationMaster' },
+    { name: 'Asset Tracking',          icon: Laptop,          page: 'AssetTracking' },
+    { name: 'Holiday Calendar',        icon: Calendar,        page: 'HolidayCalendar' },
+    { name: 'Gate Pass Management',    icon: ShieldCheck,     page: 'GatePassManagement' },
+    { name: 'Team Calendar',           icon: Calendar,        page: 'TeamCalendar' },
+  ]},
+  { label: 'Compliance', items: [
+    { name: 'Compliance',              icon: Shield,          page: 'ComplianceDashboard' },
+    { name: 'Company Policies',        icon: BookOpen,        page: 'CompanyPolicies' },
+  ]},
+  { label: 'Administration', items: [
+    { name: 'User Roles',              icon: UserCog,         page: 'UserRoleManagement' },
+    { name: 'App Settings',            icon: SlidersHorizontal, page: 'AppSettings' },
+    { name: 'Admin Panel',             icon: Shield,          page: 'AdminPanel' },
+  ]},
 ];
 
-const gateAdminMenuItems = [
-  { name: 'Gate Admin', icon: ShieldCheck, page: 'GateAdminDashboard' },
-  { name: 'My Profile', icon: User2,       page: 'GateAdminProfile' },
+const gateAdminMenuGroups = [
+  { label: '', items: [
+    { name: 'Gate Admin', icon: ShieldCheck, page: 'GateAdminDashboard' },
+    { name: 'My Profile', icon: User2,       page: 'GateAdminProfile' },
+  ]},
 ];
 
 /* ── Avatar ────────────────────────────────────────────────── */
@@ -172,6 +237,16 @@ function Avatar({ name, role, size = 'md' }) {
     <div className={`${dims} rounded-xl ${bg} flex items-center justify-center font-semibold text-white flex-shrink-0`}>
       {initial}
     </div>
+  );
+}
+
+/* ── Section label ─────────────────────────────────────────── */
+function NavSectionLabel({ label }) {
+  if (!label) return null;
+  return (
+    <p className="px-3 pt-4 pb-0.5 text-[10px] font-semibold tracking-widest uppercase text-[#8E8E93] dark:text-[#636366] select-none">
+      {label}
+    </p>
   );
 }
 
@@ -295,12 +370,14 @@ export default function Layout({ children, currentPageName }) {
   const isGateAdmin  = userRole === 'gate_admin'  || user.role === 'gate_admin';
   const isITDept     = employeeDepartment?.toLowerCase() === 'it';
 
-  let menuItems = employeeMenuItems;
-  if (isHR)              menuItems = hrMenuItems;
-  else if (isManagement) menuItems = managementMenuItems;
-  else if (isGateAdmin)  menuItems = gateAdminMenuItems;
-  if (isITDept && !isHR)
-    menuItems = [...menuItems, { name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }];
+  let menuGroups = employeeMenuGroups;
+  if (isHR)              menuGroups = hrMenuGroups;
+  else if (isManagement) menuGroups = managementMenuGroups;
+  else if (isGateAdmin)  menuGroups = gateAdminMenuGroups;
+  if (isITDept && !isHR) {
+    menuGroups = [...menuGroups, { label: 'IT', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
+  }
+  const menuItems = menuGroups.flatMap(g => g.items);
 
   const displayName = employeeDisplayName || user.display_name || user.full_name || user.email;
 
@@ -403,16 +480,21 @@ export default function Layout({ children, currentPageName }) {
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto px-2 py-2">
-          <div className="space-y-0.5">
-            {menuItems.map((item, idx) => (
-              <NavItem
-                key={`${item.page}-${idx}`}
-                item={item}
-                isActive={currentPageName === item.page}
-                onClick={() => {}}
-              />
-            ))}
-          </div>
+          {menuGroups.map((group, gi) => (
+            <div key={gi}>
+              <NavSectionLabel label={group.label} />
+              <div className="space-y-0.5">
+                {group.items.map((item, idx) => (
+                  <NavItem
+                    key={`${item.page}-${idx}`}
+                    item={item}
+                    isActive={currentPageName === item.page}
+                    onClick={() => {}}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
         </nav>
 
         {/* Footer */}
@@ -536,34 +618,43 @@ export default function Layout({ children, currentPageName }) {
 
             {/* Menu list */}
             <nav className="overflow-y-auto px-3 py-2" style={{ maxHeight: 'calc(78dvh - 10rem)' }}>
-              <div className="space-y-0.5">
-                {menuItems.map((item, idx) => {
-                  const Icon = item.icon;
-                  const isActive = currentPageName === item.page;
-                  return (
-                    <Link
-                      key={`sheet-${item.page}-${idx}`}
-                      to={createPageUrl(item.page)}
-                      onClick={() => setMoreSheetOpen(false)}
-                      className={`
-                        flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-medium select-none
-                        transition-colors duration-150
-                        ${isActive
-                          ? 'bg-[#007AFF]/10 text-[#007AFF]'
-                          : 'text-[#1D1D1F] hover:bg-[#E5E5EA]/60'
-                        }
-                      `}
-                      style={{ minHeight: 48 }}
-                    >
-                      <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${isActive ? 'bg-[#007AFF]' : 'bg-[#E5E5EA]'}`}>
-                        <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-[#6E6E73]'}`} />
-                      </div>
-                      <span className="flex-1">{item.name}</span>
-                      {isActive && <div className="w-2 h-2 rounded-full bg-[#007AFF]" />}
-                    </Link>
-                  );
-                })}
-              </div>
+              {menuGroups.map((group, gi) => (
+                <div key={gi}>
+                  {group.label ? (
+                    <p className="px-3 pt-4 pb-1 text-[11px] font-semibold tracking-widest uppercase text-[#8E8E93] select-none">
+                      {group.label}
+                    </p>
+                  ) : null}
+                  <div className="space-y-0.5">
+                    {group.items.map((item, idx) => {
+                      const Icon = item.icon;
+                      const isActive = currentPageName === item.page;
+                      return (
+                        <Link
+                          key={`sheet-${item.page}-${idx}`}
+                          to={createPageUrl(item.page)}
+                          onClick={() => setMoreSheetOpen(false)}
+                          className={`
+                            flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-medium select-none
+                            transition-colors duration-150
+                            ${isActive
+                              ? 'bg-[#007AFF]/10 text-[#007AFF]'
+                              : 'text-[#1D1D1F] hover:bg-[#E5E5EA]/60'
+                            }
+                          `}
+                          style={{ minHeight: 48 }}
+                        >
+                          <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${isActive ? 'bg-[#007AFF]' : 'bg-[#E5E5EA]'}`}>
+                            <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-[#6E6E73]'}`} />
+                          </div>
+                          <span className="flex-1">{item.name}</span>
+                          {isActive && <div className="w-2 h-2 rounded-full bg-[#007AFF]" />}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </nav>
 
             {/* Sheet footer */}
