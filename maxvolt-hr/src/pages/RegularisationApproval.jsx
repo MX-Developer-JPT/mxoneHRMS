@@ -140,6 +140,15 @@ export default function RegularisationApproval() {
 
   if (loading) return <div className="flex items-center justify-center h-screen"><div className="w-8 h-8 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" /></div>;
 
+  // Group filtered requests by employee (computed outside JSX to avoid IIFE-in-JSX issues)
+  const employeeGroups = Object.entries(
+    filtered.reduce((acc, req) => {
+      if (!acc[req.user_id]) acc[req.user_id] = [];
+      acc[req.user_id].push(req);
+      return acc;
+    }, {})
+  );
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-5">
@@ -223,118 +232,113 @@ export default function RegularisationApproval() {
           </CardHeader>
           <CardContent>
             <div className="space-y-6">
-              {/* Group by employee */}
-              {(() => {
-                const groups = {};
-                filtered.forEach(req => {
-                  if (!groups[req.user_id]) groups[req.user_id] = [];
-                  groups[req.user_id].push(req);
-                });
-                if (Object.keys(groups).length === 0) return (
-                  <div className="text-center py-12">
-                    <CheckCircle2 className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                    <p className="text-gray-500">No requests found</p>
-                  </div>
-                );
-                return Object.entries(groups).map(([uid, empReqs]) => {
-                  const empName = getEmployeeName(uid);
-                  const empDept = getEmployeeDept(uid);
-                  const actionableIds = empReqs
-                    .filter(r => isHR ? (r.status === 'pending' || r.status === 'manager_approved') : (r.status === 'pending' || r.status === 'sent_back'))
-                    .map(r => r.id);
-                  return (
-                    <div key={uid} className="border rounded-xl overflow-hidden">
-                      {/* Employee group header with bulk buttons */}
-                      <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b">
-                        <div className="flex items-center gap-2">
-                          <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs flex-shrink-0">
-                            {empName.charAt(0)}
-                          </div>
-                          <div>
-                            <span className="font-semibold text-sm">{empName}</span>
-                            {empDept && <span className="text-xs text-gray-500 ml-2">· {empDept}</span>}
-                          </div>
-                          <Badge className="bg-blue-100 text-blue-700 text-xs border-0 ml-1">{empReqs.length} request{empReqs.length > 1 ? 's' : ''}</Badge>
-                        </div>
-                        {actionableIds.length > 0 && (
-                          <div className="flex gap-1.5">
-                            <Button size="sm" className="h-6 text-xs bg-green-600 hover:bg-green-700 px-2"
-                              disabled={processing}
-                              onClick={() => handleBulkAction('approved', actionableIds)}>
-                              <CheckCircle2 className="w-3 h-3 mr-1" /> Approve All ({actionableIds.length})
-                            </Button>
-                            <Button size="sm" variant="destructive" className="h-6 text-xs px-2"
-                              disabled={processing}
-                              onClick={() => handleBulkAction('rejected', actionableIds)}>
-                              <XCircle className="w-3 h-3 mr-1" /> Reject All
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                      {/* Individual requests */}
-                      <div className="divide-y">
-              {empReqs.map(req => {
-                const cfg = statusConfig[req.status] || statusConfig.pending;
-                const canManagerAct = !isHR && (req.status === 'pending' || req.status === 'sent_back');
-                const canHRAct = isHR && (req.status === 'manager_approved' || req.status === 'pending');
-                const canAct = canManagerAct || canHRAct;
-                const isSelected = bulkSelected.includes(req.id);
-
+              {employeeGroups.length === 0 && (
+                <div className="text-center py-12">
+                  <CheckCircle2 className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                  <p className="text-gray-500">No requests found</p>
+                </div>
+              )}
+              {employeeGroups.map(([uid, empReqs]) => {
+                const empName = getEmployeeName(uid);
+                const empDept = getEmployeeDept(uid);
+                const actionableIds = empReqs
+                  .filter(r => isHR
+                    ? (r.status === 'pending' || r.status === 'manager_approved')
+                    : (r.status === 'pending' || r.status === 'sent_back'))
+                  .map(r => r.id);
                 return (
-                  <div key={req.id} className={`p-4 transition-colors ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
-                    <div className="flex flex-col sm:flex-row justify-between items-start gap-3">
-                      <div className="flex items-start gap-3">
-                        {canAct && (
-                          <input type="checkbox" className="mt-1 rounded" checked={isSelected}
-                            onChange={e => setBulkSelected(prev => e.target.checked ? [...prev, req.id] : prev.filter(id => id !== req.id))} />
-                        )}
-                        <div>
-                          <div className="flex items-center gap-2 mt-1 text-sm text-gray-600">
-                            <Calendar className="w-3.5 h-3.5" />
-                            <span>{format(new Date(req.attendance_date), 'EEE, MMM d, yyyy')}</span>
-                          </div>
-                          <p className="text-xs text-gray-500 mt-0.5">{REASON_LABELS[req.reason_category] || req.reason_category}</p>
-                          <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">{req.reason}</p>
-                          <div className="flex gap-3 text-xs text-gray-500 mt-1">
-                            {req.existing_status && <span>Was: <strong>{req.existing_status}</strong></span>}
-                            {req.requested_check_in && <span>Req In: <strong>{req.requested_check_in}</strong></span>}
-                            {req.requested_check_out && <span>Req Out: <strong>{req.requested_check_out}</strong></span>}
-                          </div>
+                  <div key={uid} className="border rounded-xl overflow-hidden">
+                    {/* Employee group header */}
+                    <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs flex-shrink-0">
+                          {empName.charAt(0)}
                         </div>
+                        <div>
+                          <span className="font-semibold text-sm">{empName}</span>
+                          {empDept && <span className="text-xs text-gray-500 ml-2">· {empDept}</span>}
+                        </div>
+                        <Badge className="bg-blue-100 text-blue-700 text-xs border-0 ml-1">
+                          {empReqs.length} request{empReqs.length > 1 ? 's' : ''}
+                        </Badge>
                       </div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Badge className={cfg.color}>{cfg.label}</Badge>
-                        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setSelectedRequest(req)}>
-                          <Eye className="w-3 h-3 mr-1" /> Details
-                        </Button>
-                        {canAct && (
-                          <>
-                            <Button size="sm" className="bg-green-600 hover:bg-green-700 h-7 text-xs"
-                              onClick={() => { setActionDialog({ request: req, action: 'approved' }); setComment(''); }}>
-                              <CheckCircle2 className="w-3 h-3 mr-1" /> Approve
-                            </Button>
-                            {!isHR && (
-                              <Button size="sm" variant="outline" className="h-7 text-xs"
-                                onClick={() => { setActionDialog({ request: req, action: 'sent_back' }); setComment(''); }}>
-                                <RotateCcw className="w-3 h-3 mr-1" /> Send Back
-                              </Button>
-                            )}
-                            <Button size="sm" variant="destructive" className="h-7 text-xs"
-                              onClick={() => { setActionDialog({ request: req, action: 'rejected' }); setComment(''); }}>
-                              <XCircle className="w-3 h-3 mr-1" /> Reject
-                            </Button>
-                          </>
-                        )}
-                      </div>
+                      {actionableIds.length > 0 && (
+                        <div className="flex gap-1.5">
+                          <Button size="sm" className="h-6 text-xs bg-green-600 hover:bg-green-700 px-2"
+                            disabled={processing}
+                            onClick={() => handleBulkAction('approved', actionableIds)}>
+                            <CheckCircle2 className="w-3 h-3 mr-1" /> Approve All ({actionableIds.length})
+                          </Button>
+                          <Button size="sm" variant="destructive" className="h-6 text-xs px-2"
+                            disabled={processing}
+                            onClick={() => handleBulkAction('rejected', actionableIds)}>
+                            <XCircle className="w-3 h-3 mr-1" /> Reject All
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                    {/* Individual request rows */}
+                    <div className="divide-y">
+                      {empReqs.map(req => {
+                        const cfg = statusConfig[req.status] || statusConfig.pending;
+                        const canManagerAct = !isHR && (req.status === 'pending' || req.status === 'sent_back');
+                        const canHRAct = isHR && (req.status === 'manager_approved' || req.status === 'pending');
+                        const canAct = canManagerAct || canHRAct;
+                        const isSelected = bulkSelected.includes(req.id);
+                        return (
+                          <div key={req.id} className={`p-4 transition-colors ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
+                            <div className="flex flex-col sm:flex-row justify-between items-start gap-3">
+                              <div className="flex items-start gap-3">
+                                {canAct && (
+                                  <input type="checkbox" className="mt-1 rounded" checked={isSelected}
+                                    onChange={e => setBulkSelected(prev => e.target.checked ? [...prev, req.id] : prev.filter(id => id !== req.id))} />
+                                )}
+                                <div>
+                                  <div className="flex items-center gap-2 mt-1 text-sm text-gray-600">
+                                    <Calendar className="w-3.5 h-3.5" />
+                                    <span>{format(new Date(req.attendance_date), 'EEE, MMM d, yyyy')}</span>
+                                  </div>
+                                  <p className="text-xs text-gray-500 mt-0.5">{REASON_LABELS[req.reason_category] || req.reason_category}</p>
+                                  <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">{req.reason}</p>
+                                  <div className="flex gap-3 text-xs text-gray-500 mt-1">
+                                    {req.existing_status && <span>Was: <strong>{req.existing_status}</strong></span>}
+                                    {req.requested_check_in && <span>Req In: <strong>{req.requested_check_in}</strong></span>}
+                                    {req.requested_check_out && <span>Req Out: <strong>{req.requested_check_out}</strong></span>}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <Badge className={cfg.color}>{cfg.label}</Badge>
+                                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setSelectedRequest(req)}>
+                                  <Eye className="w-3 h-3 mr-1" /> Details
+                                </Button>
+                                {canAct && (
+                                  <React.Fragment>
+                                    <Button size="sm" className="bg-green-600 hover:bg-green-700 h-7 text-xs"
+                                      onClick={() => { setActionDialog({ request: req, action: 'approved' }); setComment(''); }}>
+                                      <CheckCircle2 className="w-3 h-3 mr-1" /> Approve
+                                    </Button>
+                                    {!isHR && (
+                                      <Button size="sm" variant="outline" className="h-7 text-xs"
+                                        onClick={() => { setActionDialog({ request: req, action: 'sent_back' }); setComment(''); }}>
+                                        <RotateCcw className="w-3 h-3 mr-1" /> Send Back
+                                      </Button>
+                                    )}
+                                    <Button size="sm" variant="destructive" className="h-7 text-xs"
+                                      onClick={() => { setActionDialog({ request: req, action: 'rejected' }); setComment(''); }}>
+                                      <XCircle className="w-3 h-3 mr-1" /> Reject
+                                    </Button>
+                                  </React.Fragment>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
               })}
-                      </div>{/* divide-y */}
-                    </div>
-                  );
-                });
-              })()}
             </div>
           </CardContent>
         </Card>
