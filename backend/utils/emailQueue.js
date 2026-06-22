@@ -48,21 +48,29 @@ export function resetEmailTransport() {
   transporter = null;
 }
 
+function buildTransportOptions(cfg) {
+  const is587 = cfg.port === 587;
+  return {
+    host: cfg.host,
+    port: cfg.port,
+    // port 465 = implicit TLS (secure:true), 587 = STARTTLS (secure:false + requireTLS:true)
+    secure: cfg.secure,
+    requireTLS: is587 ? true : undefined,
+    auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+    tls: {
+      // tolerate self-signed / chain certs (common on shared mail servers like Titan)
+      rejectUnauthorized: false,
+    },
+    ...(cfg.dkim ? { dkim: cfg.dkim } : {}),
+  };
+}
+
 async function getTransport() {
   if (transporter) return transporter;
   const cfg = await getSmtpConfig();
   if (!isSmtpConfigured(cfg)) throw new Error('SMTP is not configured (set host + user in Admin → Email Settings).');
   const { default: nodemailer } = await import('nodemailer');
-  transporter = nodemailer.createTransport({
-    host: cfg.host,
-    port: cfg.port,
-    secure: cfg.secure,
-    auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
-    pool: true,
-    maxConnections: Number(process.env.EMAIL_MAX_CONNECTIONS) || 5,
-    maxMessages: Number(process.env.EMAIL_MAX_MESSAGES) || 100,
-    ...(cfg.dkim ? { dkim: cfg.dkim } : {}),
-  });
+  transporter = nodemailer.createTransport(buildTransportOptions(cfg));
   return transporter;
 }
 
@@ -70,9 +78,15 @@ export async function verifySmtp() {
   const cfg = await getSmtpConfig();
   if (!isSmtpConfigured(cfg)) return { ok: false, error: 'SMTP host / user not configured. Add them in Admin Panel → Email Settings.' };
   try {
-    const t = await getTransport();
-    await t.verify();
-    return { ok: true, provider: 'smtp' };
+    // Use a fresh single-connection transport for verification — pooled transports
+    // can report verify() as ok even when credentials are wrong.
+    const { default: nodemailer } = await import('nodemailer');
+    const probe = nodemailer.createTransport(buildTransportOptions(cfg));
+    await probe.verify();
+    probe.close();
+    // Also reset the cached pooled transport so next send uses fresh cfg.
+    transporter = null;
+    return { ok: true, provider: 'smtp', host: cfg.host, port: cfg.port };
   } catch (e) {
     return { ok: false, provider: 'smtp', error: `SMTP: ${e.message}` };
   }
