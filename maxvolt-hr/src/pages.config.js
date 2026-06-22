@@ -106,6 +106,18 @@ const StatutoryRegisters = lazy(() => import('./pages/StatutoryRegisters'));
 const PulseSurveys = lazy(() => import('./pages/PulseSurveys'));
 const AnomalyDetection = lazy(() => import('./pages/AnomalyDetection'));
 const OfferLetters = lazy(() => import('./pages/OfferLetters'));
+const OvertimeManagement = lazy(() => import('./pages/OvertimeManagement'));
+const WFHTracking = lazy(() => import('./pages/WFHTracking'));
+const TallyExport = lazy(() => import('./pages/TallyExport'));
+const POSHCompliance = lazy(() => import('./pages/POSHCompliance'));
+const DIMetrics = lazy(() => import('./pages/DIMetrics'));
+const RecruitmentAnalytics = lazy(() => import('./pages/RecruitmentAnalytics'));
+const WorkforcePlanning = lazy(() => import('./pages/WorkforcePlanning'));
+const SkillMatrix = lazy(() => import('./pages/SkillMatrix'));
+const FeedbackSystem = lazy(() => import('./pages/FeedbackSystem'));
+const AttendanceNarrative = lazy(() => import('./pages/AttendanceNarrative'));
+const HRDigest = lazy(() => import('./pages/HRDigest'));
+const MinimumWages = lazy(() => import('./pages/MinimumWages'));
 import __Layout from './Layout.jsx';
 
 
@@ -168,6 +180,18 @@ export const PAGES = {
     "PulseSurveys": PulseSurveys,
     "AnomalyDetection": AnomalyDetection,
     "OfferLetters": OfferLetters,
+    "OvertimeManagement": OvertimeManagement,
+    "WFHTracking": WFHTracking,
+    "TallyExport": TallyExport,
+    "POSHCompliance": POSHCompliance,
+    "DIMetrics": DIMetrics,
+    "RecruitmentAnalytics": RecruitmentAnalytics,
+    "WorkforcePlanning": WorkforcePlanning,
+    "SkillMatrix": SkillMatrix,
+    "FeedbackSystem": FeedbackSystem,
+    "AttendanceNarrative": AttendanceNarrative,
+    "HRDigest": HRDigest,
+    "MinimumWages": MinimumWages,
 }
 
 export const pagesConfig = {

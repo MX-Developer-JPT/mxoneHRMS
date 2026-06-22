@@ -11,6 +11,7 @@ import {
   UserCog, Building2, ShieldOff, PieChart, Shield, GraduationCap,
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
+  Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
 import DashboardPage from './pages/Dashboard';
@@ -45,6 +46,8 @@ const employeeMenuGroups = [
   { label: 'Career & Learning', items: [
     { name: 'My Performance',  icon: Target,          page: 'PerformanceManagement' },
     { name: 'My Training',     icon: GraduationCap,   page: 'MyTraining' },
+    { name: 'My Skills',       icon: Zap,             page: 'SkillMatrix' },
+    { name: 'My Feedback',     icon: MessageSquare,   page: 'FeedbackSystem' },
   ]},
   { label: 'Benefits', items: [
     { name: 'My Insurance',    icon: Shield,          page: 'MyInsurance' },
@@ -86,6 +89,7 @@ const managementMenuGroups = [
   { label: 'AI Insights', items: [
     { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
     { name: 'AskMax AI',                icon: Sparkles,        page: 'AskMax' },
+    { name: 'Recruitment Analytics',    icon: BarChart3,       page: 'RecruitmentAnalytics' },
   ]},
   { label: 'Recruitment', items: [
     { name: 'Job Requisitions',         icon: Briefcase,       page: 'JobRequisitions' },
@@ -129,6 +133,8 @@ const hrMenuGroups = [
     { name: 'Attrition Risk (AI)',     icon: ShieldAlert,     page: 'AttritionRisk' },
     { name: 'Anomaly Detection (AI)',  icon: ScanSearch,      page: 'AnomalyDetection' },
     { name: 'AskMax AI',              icon: Sparkles,         page: 'AskMax' },
+    { name: 'Attendance Insights',    icon: Sparkles,         page: 'AttendanceNarrative' },
+    { name: 'HR Digest',              icon: BookOpen,         page: 'HRDigest' },
   ]},
   { label: 'Employees', items: [
     { name: 'Employees',               icon: Users,           page: 'Employees' },
@@ -141,6 +147,8 @@ const hrMenuGroups = [
     { name: 'All Attendance',          icon: Clock,           page: 'AllAttendance' },
     { name: 'Regularisation Approvals',icon: Clock,           page: 'RegularisationApproval' },
     { name: 'Attendance Reports',      icon: BarChart3,       page: 'AttendanceReports' },
+    { name: 'WFH Tracking',           icon: Home,             page: 'WFHTracking' },
+    { name: 'Overtime Management',    icon: Timer,            page: 'OvertimeManagement' },
     { name: 'Biometric Logs',          icon: Clock,           page: 'AttendanceLogDashboard' },
     { name: 'Shift Management',        icon: UserCog,         page: 'ShiftManagement' },
     { name: 'Attendance Exemption',    icon: ShieldOff,       page: 'AttendanceExemption' },
@@ -155,6 +163,7 @@ const hrMenuGroups = [
     { name: 'Salary Structure',        icon: DollarSign,      page: 'SalaryStructureManagement' },
     { name: 'Loans',                   icon: DollarSign,      page: 'LoanManagement' },
     { name: 'Off-Cycle Payments',      icon: DollarSign,      page: 'OffCyclePayments' },
+    { name: 'Tally Export',           icon: Download,         page: 'TallyExport' },
     { name: 'LOP Configuration',       icon: TrendingDown,    page: 'LOPConfiguration' },
   ]},
   { label: 'Tax & Statutory', items: [
@@ -163,6 +172,7 @@ const hrMenuGroups = [
     { name: 'PF & ESI Registers',      icon: ShieldCheck,     page: 'StatutoryRegisters' },
     { name: 'Gratuity Report',         icon: Landmark,        page: 'GratuityReport' },
     { name: 'Compliance Reports',      icon: FileText,        page: 'ComplianceReports' },
+    { name: 'Min Wages Check',        icon: AlertTriangle,    page: 'MinimumWages' },
     { name: 'Payroll Settings',        icon: Settings,        page: 'PayrollSettings' },
   ]},
   { label: 'Recruitment', items: [
@@ -170,10 +180,13 @@ const hrMenuGroups = [
     { name: 'Candidates',              icon: UserPlus,        page: 'Recruitment' },
     { name: 'Interviews',              icon: Calendar,        page: 'InterviewManagement' },
     { name: 'Offer Letters',           icon: FileSignature,   page: 'OfferLetters' },
+    { name: 'Recruitment Analytics',   icon: BarChart3,       page: 'RecruitmentAnalytics' },
   ]},
   { label: 'Performance', items: [
     { name: 'Performance',             icon: Target,          page: 'PerformanceManagement' },
     { name: 'PIP Management',          icon: AlertTriangle,   page: 'PIPManagement' },
+    { name: '360° Feedback',           icon: MessageSquare,   page: 'FeedbackSystem' },
+    { name: 'Skill Matrix',            icon: Zap,             page: 'SkillMatrix' },
     { name: 'PMS Settings',            icon: Settings,        page: 'PMSConfiguration' },
   ]},
   { label: 'Learning & Development', items: [
@@ -203,8 +216,13 @@ const hrMenuGroups = [
     { name: 'Gate Pass Management',    icon: ShieldCheck,     page: 'GatePassManagement' },
     { name: 'Team Calendar',           icon: Calendar,        page: 'TeamCalendar' },
   ]},
+  { label: 'Analytics & Planning', items: [
+    { name: 'D&I Metrics',             icon: HeartHandshake,  page: 'DIMetrics' },
+    { name: 'Workforce Planning',      icon: Users,           page: 'WorkforcePlanning' },
+  ]},
   { label: 'Compliance', items: [
     { name: 'Compliance',              icon: Shield,          page: 'ComplianceDashboard' },
+    { name: 'POSH Compliance',         icon: ShieldCheck,     page: 'POSHCompliance' },
     { name: 'Company Policies',        icon: BookOpen,        page: 'CompanyPolicies' },
   ]},
   { label: 'Administration', items: [
