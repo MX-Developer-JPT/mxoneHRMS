@@ -325,7 +325,6 @@ export default function RegularisationApproval() {
                             </Button>
                           </>
                         )}
-                        </div>
                       </div>
                     </div>
                   </div>
