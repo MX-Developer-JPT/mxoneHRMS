@@ -123,32 +123,6 @@ async function initSchema() {
     ALTER TABLE files ALTER COLUMN data DROP NOT NULL;
   `);
 
-  // Durable email send queue — drained 24/7 by the in-process worker
-  // (backend/utils/emailQueue.js). Survives restarts; retries with backoff.
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS email_jobs (
-      id              BIGSERIAL PRIMARY KEY,
-      to_addr         TEXT NOT NULL,
-      from_addr       TEXT,
-      cc              TEXT,
-      bcc             TEXT,
-      reply_to        TEXT,
-      subject         TEXT,
-      html            TEXT,
-      body_text       TEXT,
-      status          TEXT NOT NULL DEFAULT 'queued',  -- queued | sending | sent | dead
-      attempts        INTEGER NOT NULL DEFAULT 0,
-      max_attempts    INTEGER NOT NULL DEFAULT 5,
-      next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_error      TEXT,
-      message_id      TEXT,
-      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      sent_at         TIMESTAMPTZ
-    );
-    CREATE INDEX IF NOT EXISTS idx_email_jobs_due ON email_jobs(status, next_attempt_at);
-  `);
-
   // Purge expired OTPs and tokens on startup
   await pool.query("DELETE FROM otps WHERE expires_at::TIMESTAMPTZ < NOW()");
   await pool.query("DELETE FROM reset_tokens WHERE expires_at::TIMESTAMPTZ < NOW()");

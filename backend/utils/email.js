@@ -1,5 +1,8 @@
 import { one } from '../db.js';
-import { enqueueEmail, verifySmtp } from './emailQueue.js';
+
+// Brevo is the sole email provider. Key is server-side only — never exposed to frontend.
+// Set BREVO_API_KEY in Railway environment variables.
+const BREVO_KEY = process.env.BREVO_API_KEY || '';
 
 async function getSetting(key, fallback = '') {
   try {
@@ -9,51 +12,15 @@ async function getSetting(key, fallback = '') {
   return process.env[key] || fallback;
 }
 
-async function getProvider()    { return getSetting('EMAIL_PROVIDER', 'resend'); }
-async function getResendKey()   { return getSetting('RESEND_API_KEY', ''); }
-async function getBrevoKey()    { return getSetting('BREVO_API_KEY', ''); }
-async function getRelayUrl()    { return getSetting('RELAY_URL', ''); }
-async function getRelayKey()    { return getSetting('RELAY_API_KEY', ''); }
 async function getFromAddress() {
   const from = await getSetting('SMTP_FROM', '');
-  return from.includes('@') ? from : null;
+  return from.includes('@') ? from : 'Maxvolt HR <noreply@maxvoltenergy.com>';
 }
 
-// ── Office Mail Relay ──────────────────────────────────────
-// Sends via the self-hosted maxvolt-mail-relay.exe running on the office server.
-// Railway → HTTPS → relay.exe → Titan Mail SMTP (no SMTP from Railway).
-async function relayRequest(url, key, body) {
-  const res = await fetch(`${url.replace(/\/$/, '')}/send`, {
-    method:  'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      ...(key ? { Authorization: `Bearer ${key}` } : {}),
-    },
-    body:   JSON.stringify(body),
-    signal: AbortSignal.timeout(20_000),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Relay returned ${res.status}`);
-  return data;
-}
-
-// ── Resend ─────────────────────────────────────────────────
-async function resendRequest(apiKey, path, body) {
-  const res = await fetch(`https://api.resend.com${path}`, {
-    method: body ? 'POST' : 'GET',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || data.name || `Resend error ${res.status}`);
-  return data;
-}
-
-// ── Brevo ──────────────────────────────────────────────────
-async function brevoRequest(apiKey, path, body) {
+async function brevoRequest(path, body) {
   const res = await fetch(`https://api.brevo.com/v3${path}`, {
-    method: body ? 'POST' : 'GET',
-    headers: { 'api-key': apiKey, 'Content-Type': 'application/json' },
+    method:  body ? 'POST' : 'GET',
+    headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const data = await res.json().catch(() => ({}));
@@ -61,11 +28,9 @@ async function brevoRequest(apiKey, path, body) {
   return data;
 }
 
-// ── Our Mail Server (SMTP) ─────────────────────────────────
-// Provider 'smtp' sends through our own mail server via the built-in durable
-// queue + worker (utils/emailQueue.js). No external service to host.
-
-function parseFrom(fromStr, fallbackName = 'Maxvolt HR', fallbackEmail = 'noreply@maxvoltenergy.com') {
+function parseFrom(fromStr) {
+  const fallbackName  = 'Maxvolt HR';
+  const fallbackEmail = 'noreply@maxvoltenergy.com';
   if (!fromStr) return { name: fallbackName, email: fallbackEmail };
   const match = fromStr.match(/^(.*?)\s*<([^>]+)>$/);
   if (match) return { name: match[1].trim() || fallbackName, email: match[2].trim() };
@@ -76,125 +41,35 @@ function parseFrom(fromStr, fallbackName = 'Maxvolt HR', fallbackEmail = 'norepl
 // ── Public API ─────────────────────────────────────────────
 
 export async function verifyEmail() {
-  const provider = await getProvider();
-
-  if (provider === 'relay') {
-    const url = await getRelayUrl();
-    const key = await getRelayKey();
-    if (!url) return { ok: false, error: 'Relay URL not configured. Add it in Admin Panel → Email Settings.' };
-    try {
-      const res = await fetch(`${url.replace(/\/$/, '')}/verify`, {
-        headers: key ? { Authorization: `Bearer ${key}` } : {},
-        signal: AbortSignal.timeout(20_000),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Relay returned ${res.status}`);
-      return { ok: true, provider: 'relay', host: data.host, port: data.port };
-    } catch (e) {
-      return { ok: false, provider: 'relay', error: `Relay: ${e.message}` };
-    }
-  }
-
-  if (provider === 'smtp') {
-    // Verifies our own mail server connection (see utils/emailQueue.js).
-    return verifySmtp();
-  }
-
-  if (provider === 'brevo') {
-    const key = await getBrevoKey();
-    if (!key) return { ok: false, error: 'Brevo API key not configured. Add it in Admin Panel → Email Settings.' };
-    try {
-      await brevoRequest(key, '/account');
-      return { ok: true, provider: 'brevo' };
-    } catch (e) {
-      return { ok: false, provider: 'brevo', error: `Brevo: ${e.message}` };
-    }
-  }
-
-  const key = await getResendKey();
-  if (!key) return { ok: false, error: 'Resend API key not configured. Add it in Admin Panel → Email Settings.' };
   try {
-    await resendRequest(key, '/domains');
-    return { ok: true, provider: 'resend' };
+    await brevoRequest('/account');
+    return { ok: true, provider: 'brevo' };
   } catch (e) {
-    return { ok: false, provider: 'resend', error: `Resend: ${e.message}` };
+    return { ok: false, provider: 'brevo', error: `Brevo: ${e.message}` };
   }
 }
 
 export async function sendEmail({ to, subject, html, text }) {
-  const provider = await getProvider();
-  const fromStr  = await getFromAddress();
-
-  if (provider === 'relay') {
-    const url = await getRelayUrl();
-    const key = await getRelayKey();
-    if (!url) { console.warn('[email] Relay URL not configured — skipped:', subject); return { skipped: true }; }
-    const data = await relayRequest(url, key, { to, from: fromStr || undefined, subject, html, text });
-    return { success: true, messageId: data.messageId, provider: 'relay' };
-  }
-
-  if (provider === 'smtp') {
-    // Queue into our own mail server; the worker sends + retries asynchronously.
-    const id = await enqueueEmail({ to, from: fromStr || undefined, subject, html, text });
-    return { success: true, messageId: String(id), provider: 'smtp' };
-  }
-
-  if (provider === 'brevo') {
-    const key = await getBrevoKey();
-    if (!key) { console.warn('[email] Brevo not configured — skipped:', subject); return { skipped: true }; }
-    const { name, email } = parseFrom(fromStr);
-    const toArr = Array.isArray(to) ? to.map(e => ({ email: e })) : [{ email: to }];
-    const data = await brevoRequest(key, '/smtp/email', {
-      sender: { name, email },
-      to: toArr,
-      subject,
-      htmlContent: html,
-      textContent: text,
-    });
-    return { success: true, messageId: data.messageId, provider: 'brevo' };
-  }
-
-  const key = await getResendKey();
-  if (!key) { console.warn('[email] Resend not configured — skipped:', subject); return { skipped: true }; }
-  const from = fromStr || 'Maxvolt HR <onboarding@resend.dev>';
-  const data = await resendRequest(key, '/emails', { from, to, subject, html, text });
-  return { success: true, messageId: data.id, provider: 'resend' };
+  const fromStr     = await getFromAddress();
+  const { name, email } = parseFrom(fromStr);
+  const toArr = Array.isArray(to) ? to.map(e => ({ email: e })) : [{ email: to }];
+  const data = await brevoRequest('/smtp/email', {
+    sender:      { name, email },
+    to:          toArr,
+    subject,
+    htmlContent: html,
+    textContent: text,
+  });
+  return { success: true, messageId: data.messageId, provider: 'brevo' };
 }
 
-export async function getSmtpPublicConfig() {
-  const provider    = await getProvider();
-  const resendKey   = await getResendKey();
-  const brevoKey    = await getBrevoKey();
-  const relayUrl    = await getRelayUrl();
-  const relayKey    = await getRelayKey();
-  const smtpHost    = await getSetting('SMTP_HOST', '');
-  const smtpPort    = await getSetting('SMTP_PORT', '');
-  const smtpUser    = await getSetting('SMTP_USER', '');
-  const smtpPass    = await getSetting('SMTP_PASS', '');
-  const smtpSecure  = await getSetting('SMTP_SECURE', '');
-  const from        = await getSetting('SMTP_FROM', '');
-  return {
-    provider,
-    from,
-    hasResendKey:   !!resendKey,
-    hasBrevoKey:    !!brevoKey,
-    relayUrl,
-    hasRelayKey:    !!relayKey,
-    smtpHost,
-    smtpPort,
-    smtpUser,
-    smtpSecure: smtpSecure === 'true' || smtpSecure === '1',
-    hasSmtpPass:    !!smtpPass,
-    activeProvider: provider === 'relay'  && relayUrl  ? 'relay'
-                  : provider === 'smtp'   && smtpHost && smtpUser ? 'smtp'
-                  : provider === 'brevo'  && brevoKey  ? 'brevo'
-                  : provider === 'resend' && resendKey ? 'resend'
-                  : 'none',
-  };
+export async function getEmailConfig() {
+  const from = await getSetting('SMTP_FROM', '');
+  return { provider: 'brevo', from };
 }
 
 // ── Shared email chrome ────────────────────────────────────
-const APP_URL  = process.env.APP_URL || 'https://your-app.railway.app';
+const APP_URL  = process.env.APP_URL || 'https://hr.maxvolt-one.co.in';
 const LOGO_URL = `${APP_URL}/maxvolt-logo.jpg`;
 
 function emailHeader(title, accentColor = '#344055') {

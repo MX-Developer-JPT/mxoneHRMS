@@ -4,8 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { one, all, run } from '../db.js';
 import { JWT_SECRET } from './auth.js';
-import { sendEmail, verifyEmail, emailTemplates, getSmtpPublicConfig } from '../utils/email.js';
-import { resetEmailTransport, sendSmtpDirect } from '../utils/emailQueue.js';
+import { sendEmail, verifyEmail, emailTemplates, getEmailConfig } from '../utils/email.js';
 
 const router = Router();
 
@@ -205,40 +204,20 @@ router.delete('/users/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-// ── SMTP settings: get (password masked) ──────────────────
+// ── Email settings: from address only (API key is server-side) ────────────
 router.get('/smtp-settings', async (_req, res) => {
-  res.json(await getSmtpPublicConfig());
+  res.json(await getEmailConfig());
 });
 
-// ── Email settings: save to DB ────────────────────────────
 router.post('/smtp-settings', async (req, res) => {
-  const {
-    provider, resend_api_key, brevo_api_key, from,
-    smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure,
-    relay_url, relay_api_key,
-  } = req.body;
-  const set = (key, val) => run(
-    `INSERT INTO settings(key,value,updated_at) VALUES($1,$2,NOW()::TEXT)
-     ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT`,
-    [key, String(val)]
-  );
-  const del = (key) => run('DELETE FROM settings WHERE key=$1', [key]);
-
-  if (provider !== undefined)        await set('EMAIL_PROVIDER', provider);
-  if (resend_api_key !== undefined)  await (resend_api_key ? set('RESEND_API_KEY', resend_api_key) : del('RESEND_API_KEY'));
-  if (brevo_api_key  !== undefined)  await (brevo_api_key  ? set('BREVO_API_KEY',  brevo_api_key)  : del('BREVO_API_KEY'));
-  if (relay_url      !== undefined)  await (relay_url      ? set('RELAY_URL',       relay_url)      : del('RELAY_URL'));
-  if (relay_api_key  !== undefined)  await (relay_api_key  ? set('RELAY_API_KEY',   relay_api_key)  : del('RELAY_API_KEY'));
-  if (smtp_host !== undefined)       await (smtp_host ? set('SMTP_HOST', smtp_host) : del('SMTP_HOST'));
-  if (smtp_port !== undefined)       await set('SMTP_PORT', smtp_port || '587');
-  if (smtp_user !== undefined)       await (smtp_user ? set('SMTP_USER', smtp_user) : del('SMTP_USER'));
-  if (smtp_pass !== undefined)       await (smtp_pass ? set('SMTP_PASS', smtp_pass) : del('SMTP_PASS'));
-  if (smtp_secure !== undefined)     await set('SMTP_SECURE', smtp_secure ? 'true' : 'false');
-  if (from !== undefined)            await set('SMTP_FROM', from);
-
-  // SMTP config may have changed — drop the cached transporter so the next
-  // send rebuilds it with fresh credentials.
-  resetEmailTransport();
+  const { from } = req.body;
+  if (from !== undefined) {
+    await run(
+      `INSERT INTO settings(key,value,updated_at) VALUES('SMTP_FROM',$1,NOW()::TEXT)
+       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT`,
+      [String(from)]
+    );
+  }
   res.json({ success: true });
 });
 
@@ -248,28 +227,21 @@ router.get('/email-status', async (_req, res) => {
   res.json(result);
 });
 
+// ── Email: verify Brevo connection ────────────────────────
+router.get('/email-status', async (_req, res) => {
+  res.json(await verifyEmail());
+});
+
 // ── Email: send test email ─────────────────────────────────
-// Sends synchronously (bypasses the queue for SMTP) so the caller sees the
-// real SMTP error immediately rather than getting a silent queue job ID.
 router.post('/test-email', async (req, res) => {
   const to = req.body?.to || req.currentUser.email;
   if (!to) return res.status(400).json({ error: 'No recipient email address found' });
-
   try {
-    const tmpl = emailTemplates.testEmail({ to });
-    const cfg = await getSmtpPublicConfig();
-
-    let result;
-    if (cfg.provider === 'smtp') {
-      // Send direct (not via queue) so any SMTP error surfaces immediately.
-      result = await sendSmtpDirect({ to, ...tmpl });
-    } else {
-      // relay / brevo / resend all send synchronously — verify first then send
-      const verify = await verifyEmail();
-      if (!verify.ok) return res.status(500).json({ error: verify.error });
-      result = await sendEmail({ to, ...tmpl });
-    }
-    res.json({ success: true, sentTo: to, messageId: result.messageId, provider: result.provider });
+    const verify = await verifyEmail();
+    if (!verify.ok) return res.status(500).json({ error: verify.error });
+    const tmpl   = emailTemplates.testEmail({ to });
+    const result = await sendEmail({ to, ...tmpl });
+    res.json({ success: true, sentTo: to, messageId: result.messageId, provider: 'brevo' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -180,7 +180,3 @@ app.listen(PORT, () => {
   console.log(`\n✓ Maxvolt HR Backend  http://localhost:${PORT}  [${process.env.NODE_ENV || 'development'}]`);
 });
 
-// Start the in-process email queue worker (drains email_jobs 24/7, with retries).
-import('./utils/emailQueue.js')
-  .then(({ startEmailWorker }) => startEmailWorker())
-  .catch(err => console.error('[emailQueue] failed to start worker:', err.message));

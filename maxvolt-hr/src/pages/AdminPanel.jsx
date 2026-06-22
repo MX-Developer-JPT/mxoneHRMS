@@ -498,91 +498,24 @@ function EntitiesTab({ typeCounts }) {
 }
 
 // ── Email settings tab ─────────────────────────────────────
-const PROVIDERS = {
-  relay: {
-    label: 'Office Relay',
-    hint: 'Self-hosted relay.exe on your office server → Titan Mail. No third-party, no monthly cap.',
-  },
-  resend: {
-    label: 'Resend',
-    keyPlaceholder: 're_xxxxxxxxxxxxxxxxxxxx',
-    hint: 'resend.com → API Keys → Create Key. Free: 3,000 emails/month.',
-  },
-  brevo: {
-    label: 'Brevo',
-    keyPlaceholder: 'xsmtpsib-xxxxxxxx…',
-    hint: 'brevo.com → SMTP & API → API Keys → Generate. Free: 300 emails/day.',
-  },
-  smtp: {
-    label: 'Direct SMTP',
-    keyPlaceholder: '',
-    hint: 'Direct SMTP — only works if your host allows outbound port 465/587.',
-  },
-};
-const KEY_MASK = '••••••••••••••••••••••••••••••••';
-
 function EmailTab() {
-  const [provider, setProvider]       = useState('relay');
-  const [relayUrl, setRelayUrl]       = useState('');
-  const [relayKey, setRelayKey]       = useState('');
-  const [relayKeyEditing, setRelayKeyEditing] = useState(false);
-  const [resendKey, setResendKey]     = useState('');
-  const [resendEditing, setResendEditing] = useState(false);
-  const [brevoKey, setBrevoKey]       = useState('');
-  const [brevoEditing, setBrevoEditing]   = useState(false);
-  const [smtpHost, setSmtpHost]       = useState('');
-  const [smtpPort, setSmtpPort]       = useState('587');
-  const [smtpUser, setSmtpUser]       = useState('');
-  const [smtpPass, setSmtpPass]       = useState('');
-  const [smtpPassEditing, setSmtpPassEditing] = useState(false);
-  const [smtpSecure, setSmtpSecure]   = useState(false);
-  const [from, setFrom]               = useState('');
-  const [activeProvider, setActiveProvider] = useState('none');
-  const [status, setStatus]           = useState(null);
-  const [checking, setChecking]       = useState(false);
-  const [saving, setSaving]           = useState(false);
-  const [sending, setSending]         = useState(false);
-  const [testTo, setTestTo]           = useState('');
+  const [from, setFrom]     = useState('');
+  const [saving, setSaving] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [testTo, setTestTo] = useState('');
+  const [status, setStatus] = useState(null);
 
   useEffect(() => {
-    adminFetch('/smtp-settings').then(r => {
-      setProvider(r.provider || 'relay');
-      setActiveProvider(r.activeProvider || 'none');
-      setRelayUrl(r.relayUrl || '');
-      setRelayKey(r.hasRelayKey ? KEY_MASK : '');
-      setResendKey(r.hasResendKey ? KEY_MASK : '');
-      setBrevoKey(r.hasBrevoKey  ? KEY_MASK : '');
-      setSmtpHost(r.smtpHost || '');
-      setSmtpPort(r.smtpPort || '587');
-      setSmtpUser(r.smtpUser || '');
-      setSmtpPass(r.hasSmtpPass ? KEY_MASK : '');
-      setSmtpSecure(!!r.smtpSecure);
-      setFrom(r.from || '');
-    }).catch(() => {});
+    adminFetch('/smtp-settings').then(r => setFrom(r.from || '')).catch(() => {});
   }, []);
 
   const save = async () => {
     setSaving(true);
     try {
-      const payload = { provider, from };
-      if (resendEditing)   payload.resend_api_key = resendKey;
-      if (brevoEditing)    payload.brevo_api_key  = brevoKey;
-      if (provider === 'relay') {
-        payload.relay_url = relayUrl;
-        if (relayKeyEditing) payload.relay_api_key = relayKey;
-      }
-      if (provider === 'smtp') {
-        payload.smtp_host = smtpHost;
-        payload.smtp_port = smtpPort;
-        payload.smtp_user = smtpUser;
-        payload.smtp_secure = smtpSecure;
-        if (smtpPassEditing) payload.smtp_pass = smtpPass;
-      }
-      await adminFetch('/smtp-settings', { method: 'POST', body: JSON.stringify(payload) });
-      toast.success('Settings saved');
-      setResendEditing(false); setBrevoEditing(false); setSmtpPassEditing(false);
-      setActiveProvider(provider);
-    } catch (e) { toast.error('Save failed: ' + e.message); }
+      await adminFetch('/smtp-settings', { method: 'POST', body: JSON.stringify({ from }) });
+      toast.success('From address saved');
+    } catch (e) { toast.error(e.message); }
     finally { setSaving(false); }
   };
 
@@ -594,150 +527,28 @@ function EmailTab() {
   };
 
   const sendTest = async () => {
-    if (!testTo) return toast.error('Enter a recipient email address');
+    if (!testTo) return toast.error('Enter a recipient email');
     setSending(true);
     try {
       const r = await adminFetch('/test-email', { method: 'POST', body: JSON.stringify({ to: testTo }) });
       toast.success(`Test email sent to ${r.sentTo}`);
-      setStatus({ ok: true, provider: r.provider });
-    } catch (e) { toast.error('Send failed: ' + e.message); }
+      setStatus({ ok: true });
+    } catch (e) { toast.error('Send failed: ' + e.message); setStatus({ ok: false, error: e.message }); }
     finally { setSending(false); }
   };
 
-  const p = PROVIDERS[provider];
-
   return (
     <div className="max-w-xl space-y-5">
-
-      {/* ── Provider toggle ── */}
       <div className="border rounded-xl p-5 space-y-4">
         <div className="flex items-center gap-2">
           <Mail className="w-5 h-5 text-primary" />
-          <h3 className="font-semibold">Email Provider</h3>
-          {activeProvider !== 'none' && (
-            <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 font-medium flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3" /> {PROVIDERS[activeProvider]?.label || activeProvider} active
-            </span>
-          )}
+          <h3 className="font-semibold">Email Settings</h3>
+          <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 font-medium flex items-center gap-1">
+            <CheckCircle2 className="w-3 h-3" /> Brevo
+          </span>
         </div>
+        <p className="text-xs text-muted-foreground">Emails are sent via Brevo. Configure the sender address below.</p>
 
-        {/* Toggle */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {Object.entries(PROVIDERS).map(([key, info]) => (
-            <button
-              key={key}
-              onClick={() => { setProvider(key); setStatus(null); }}
-              className={`rounded-lg border p-3 text-left transition-all ${provider === key ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'}`}
-            >
-              <p className="text-sm font-semibold">{info.label}</p>
-              <p className="text-[11px] text-muted-foreground mt-0.5 leading-tight">{info.hint}</p>
-            </button>
-          ))}
-        </div>
-
-        {/* Credentials for selected provider */}
-        {provider === 'relay' ? (
-          <>
-            <div className="space-y-1">
-              <Label className="text-xs">Relay URL <span className="text-red-500">*</span></Label>
-              <Input
-                value={relayUrl}
-                placeholder="http://YOUR-OFFICE-IP:2525"
-                onChange={e => setRelayUrl(e.target.value)}
-                className="h-9 text-sm font-mono"
-              />
-              <p className="text-xs text-muted-foreground">Public IP or domain of your office server + the port the relay exe is listening on.</p>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">API Key (optional but recommended)</Label>
-              <Input
-                type={relayKeyEditing ? 'text' : 'password'}
-                value={relayKey}
-                placeholder="secret key set in relay config.json"
-                onFocus={() => { if (relayKey === KEY_MASK) { setRelayKey(''); setRelayKeyEditing(true); } }}
-                onChange={e => { setRelayKey(e.target.value); setRelayKeyEditing(true); }}
-                className="h-9 text-sm font-mono"
-              />
-            </div>
-          </>
-        ) : provider === 'smtp' ? (
-          <>
-            <div className="grid grid-cols-3 gap-2">
-              <div className="col-span-2 space-y-1">
-                <Label className="text-xs">SMTP Host</Label>
-                <Input
-                  value={smtpHost}
-                  placeholder="smtp.maxvolt-one.co.in"
-                  onChange={e => setSmtpHost(e.target.value)}
-                  className="h-9 text-sm font-mono"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Port</Label>
-                <Input
-                  value={smtpPort}
-                  placeholder="587"
-                  onChange={e => setSmtpPort(e.target.value)}
-                  className="h-9 text-sm font-mono"
-                />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Username</Label>
-              <Input
-                value={smtpUser}
-                placeholder="noreply@maxvolt-one.co.in"
-                onChange={e => setSmtpUser(e.target.value)}
-                className="h-9 text-sm font-mono"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Password</Label>
-              <Input
-                type={smtpPassEditing ? 'text' : 'password'}
-                value={smtpPass}
-                placeholder="SMTP password"
-                onFocus={() => { if (smtpPass === KEY_MASK) { setSmtpPass(''); setSmtpPassEditing(true); } }}
-                onChange={e => { setSmtpPass(e.target.value); setSmtpPassEditing(true); }}
-                className="h-9 text-sm font-mono"
-              />
-            </div>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                checked={smtpSecure}
-                onChange={e => setSmtpSecure(e.target.checked)}
-                className="rounded border-border"
-              />
-              Use implicit TLS (port 465). Leave unchecked for STARTTLS (587/25).
-            </label>
-          </>
-        ) : (
-          <div className="space-y-1">
-            <Label className="text-xs">{p.label} API Key</Label>
-            {provider === 'resend' ? (
-              <Input
-                type={resendEditing ? 'text' : 'password'}
-                value={resendKey}
-                placeholder={p.keyPlaceholder}
-                onFocus={() => { if (resendKey === KEY_MASK) { setResendKey(''); setResendEditing(true); } }}
-                onChange={e => { setResendKey(e.target.value); setResendEditing(true); }}
-                className="h-9 text-sm font-mono"
-              />
-            ) : (
-              <Input
-                type={brevoEditing ? 'text' : 'password'}
-                value={brevoKey}
-                placeholder={p.keyPlaceholder}
-                onFocus={() => { if (brevoKey === KEY_MASK) { setBrevoKey(''); setBrevoEditing(true); } }}
-                onChange={e => { setBrevoKey(e.target.value); setBrevoEditing(true); }}
-                className="h-9 text-sm font-mono"
-              />
-            )}
-          </div>
-        )}
-
-        {/* From address */}
         <div className="space-y-1">
           <Label className="text-xs">From Address</Label>
           <Input
@@ -747,50 +558,45 @@ function EmailTab() {
             className="h-9 text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Format: <code>Name &lt;email@domain.com&gt;</code>. Domain must be verified in your provider's dashboard.
+            Format: <code>Name &lt;email@domain.com&gt;</code>. The sender domain must be verified in Brevo.
           </p>
         </div>
 
         <Button size="sm" onClick={save} disabled={saving}>
           {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
-          Save Settings
+          Save
         </Button>
       </div>
 
-      {/* ── Test card ── */}
       <div className="border rounded-xl p-5 space-y-3">
         <div className="flex items-center gap-2">
           <Send className="w-4 h-4 text-primary" />
-          <h3 className="font-semibold">Test</h3>
+          <h3 className="font-semibold">Test Email</h3>
         </div>
 
         {status?.ok && (
           <div className="rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 p-3 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <p className="text-sm text-emerald-800 dark:text-emerald-300 font-medium">
-              {PROVIDERS[status.provider]?.label || status.provider} API key is valid
-            </p>
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <p className="text-sm text-emerald-800 dark:text-emerald-300 font-medium">Email delivered successfully</p>
           </div>
         )}
         {status && !status.ok && (
-          <div className="rounded-lg bg-destructive/5 dark:bg-destructive/10 border border-destructive/30 p-3 flex items-start gap-2">
+          <div className="rounded-lg bg-destructive/5 border border-destructive/30 p-3 flex items-start gap-2">
             <XCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
             <p className="text-sm text-muted-foreground">{status.error}</p>
           </div>
         )}
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button size="sm" variant="outline" onClick={checkStatus} disabled={checking}>
-            {checking ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+            {checking ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
             Check Connection
           </Button>
-          <div className="flex gap-2">
-            <Input placeholder="email@example.com" value={testTo} onChange={e => setTestTo(e.target.value)} className="h-9 text-sm w-56" />
-            <Button size="sm" onClick={sendTest} disabled={sending || !testTo}>
-              {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-              Send Test
-            </Button>
-          </div>
+          <Input placeholder="recipient@email.com" value={testTo} onChange={e => setTestTo(e.target.value)} className="h-9 text-sm w-52" />
+          <Button size="sm" onClick={sendTest} disabled={sending || !testTo}>
+            {sending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Send className="w-4 h-4 mr-1" />}
+            Send Test
+          </Button>
         </div>
       </div>
     </div>
