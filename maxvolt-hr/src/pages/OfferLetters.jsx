@@ -12,7 +12,7 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import {
   FileCheck, Mail, Phone, Loader2, Send, CalendarCheck, Copy, RefreshCw,
-  Search, Users, CheckCircle2, Clock, XCircle, FileText, Building2, MapPin, User,
+  Search, Users, CheckCircle2, Clock, XCircle, FileText, Building2, MapPin, User, Printer,
 } from 'lucide-react';
 import { openLetterheadPrintWindow } from '@/utils/letterhead';
 
@@ -228,6 +228,127 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
     </div>
   );
 }
+
+const printConsentForm = (offer, emp) => {
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Joining Consent Form</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Arial', sans-serif; color: #1a1a1a; background: white; padding: 40px; }
+  .header { text-align: center; border-bottom: 3px solid #1e3a5f; padding-bottom: 20px; margin-bottom: 30px; }
+  .company-name { font-size: 22px; font-weight: 700; color: #1e3a5f; letter-spacing: 1px; }
+  .doc-title { font-size: 16px; font-weight: 600; color: #2563eb; margin-top: 6px; letter-spacing: 2px; text-transform: uppercase; }
+  .ref-line { font-size: 12px; color: #666; margin-top: 6px; }
+  .section { margin-bottom: 24px; }
+  .section-title { font-size: 13px; font-weight: 700; color: #1e3a5f; text-transform: uppercase; letter-spacing: 1px; border-left: 3px solid #2563eb; padding-left: 10px; margin-bottom: 14px; }
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .field { border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  .field-label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .field-value { font-size: 13px; font-weight: 500; color: #1a1a1a; min-height: 20px; margin-top: 2px; }
+  .declaration { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 16px; font-size: 12px; line-height: 1.7; color: #374151; }
+  .checklist { margin-top: 16px; }
+  .check-item { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; font-size: 12px; color: #374151; }
+  .checkbox { width: 14px; height: 14px; border: 1.5px solid #374151; flex-shrink: 0; margin-top: 1px; }
+  .signature-section { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 40px; }
+  .sig-box { border-top: 1.5px solid #1a1a1a; padding-top: 8px; }
+  .sig-label { font-size: 11px; color: #666; }
+  .sig-name { font-size: 12px; font-weight: 600; margin-top: 4px; }
+  .sig-date { font-size: 11px; color: #666; margin-top: 2px; }
+  .footer { margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 16px; text-align: center; font-size: 10px; color: #9ca3af; }
+  @media print {
+    body { padding: 20px; }
+    @page { margin: 15mm; size: A4; }
+  }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="company-name">MAXVOLT ENERGY INDUSTRIES LIMITED</div>
+  <div class="doc-title">Candidate Joining Consent Form</div>
+  <div class="ref-line">Ref: ${offer.id?.slice(0,8).toUpperCase()} | Date: ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</div>
+</div>
+
+<div class="section">
+  <div class="section-title">Personal Information</div>
+  <div class="field-grid">
+    <div class="field"><div class="field-label">Full Name</div><div class="field-value">${offer.full_name || offer.candidate_name || emp?.display_name || ''}</div></div>
+    <div class="field"><div class="field-label">Email Address</div><div class="field-value">${offer.email || offer.candidate_email || ''}</div></div>
+    <div class="field"><div class="field-label">Mobile Number</div><div class="field-value">${offer.phone || emp?.mobile || offer.candidate_phone || ''}</div></div>
+    <div class="field"><div class="field-label">Date of Birth</div><div class="field-value">${emp?.date_of_birth || '_______________'}</div></div>
+    <div class="field"><div class="field-label">Father's / Spouse Name</div><div class="field-value"></div></div>
+    <div class="field"><div class="field-label">Aadhaar / PAN Number</div><div class="field-value"></div></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Appointment Details</div>
+  <div class="field-grid">
+    <div class="field"><div class="field-label">Designation</div><div class="field-value">${offer.designation || offer.position_applied || ''}</div></div>
+    <div class="field"><div class="field-label">Department</div><div class="field-value">${offer.department || ''}</div></div>
+    <div class="field"><div class="field-label">Date of Joining</div><div class="field-value">${offer.joining_date ? new Date(offer.joining_date).toLocaleDateString('en-IN') : '_______________'}</div></div>
+    <div class="field"><div class="field-label">CTC / Salary</div><div class="field-value">&#8377;${Number(offer.offer_ctc_annual || offer.expected_ctc || 0).toLocaleString('en-IN')} per annum</div></div>
+    <div class="field"><div class="field-label">Work Location</div><div class="field-value">${offer.location || offer.work_location || ''}</div></div>
+    <div class="field"><div class="field-label">Reporting Manager</div><div class="field-value">${offer.reporting_to || offer.reporting_manager || ''}</div></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Documents to be Submitted on Joining</div>
+  <div class="checklist">
+    ${['10th & 12th Marksheets / Certificates', 'Graduation & Post-Graduation Certificates (if applicable)', 'Previous Employment Experience Letter(s)', 'Last 3 Months Salary Slips', 'Aadhaar Card (front & back)', 'PAN Card', 'Passport-size Photographs (3 copies)', 'Bank Account Details / Cancelled Cheque', 'Address Proof (Voter ID / Passport / Driving Licence)', 'Resignation Acceptance Letter from Previous Employer (if applicable)'].map(doc => `
+    <div class="check-item">
+      <div class="checkbox"></div>
+      <span>${doc}</span>
+    </div>`).join('')}
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Declaration</div>
+  <div class="declaration">
+    I, <strong>${offer.full_name || offer.candidate_name || ''}</strong>, hereby accept the offer of employment extended by Maxvolt Energy Industries Limited for the position of <strong>${offer.designation || offer.position_applied || ''}</strong> and confirm my intent to join on <strong>${offer.joining_date ? new Date(offer.joining_date).toLocaleDateString('en-IN') : '_______________'}</strong>.
+    <br><br>
+    I declare that:
+    <ul style="margin-top: 8px; padding-left: 20px; list-style: disc;">
+      <li style="margin-bottom: 6px;">All information provided in my application/resume is true and accurate to the best of my knowledge.</li>
+      <li style="margin-bottom: 6px;">I have no outstanding commitments that would prevent me from joining on the agreed date.</li>
+      <li style="margin-bottom: 6px;">I have disclosed all material facts including any non-compete obligations or IP agreements from prior employment.</li>
+      <li style="margin-bottom: 6px;">I agree to abide by the company's policies, code of conduct, and terms of employment.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="signature-section">
+  <div class="sig-box">
+    <div style="height: 50px;"></div>
+    <div class="sig-label">Candidate Signature</div>
+    <div class="sig-name">${offer.full_name || offer.candidate_name || ''}</div>
+    <div class="sig-date">Date: _______________</div>
+  </div>
+  <div class="sig-box">
+    <div style="height: 50px;"></div>
+    <div class="sig-label">Authorised Signatory — HR</div>
+    <div class="sig-name">Maxvolt Energy Industries Limited</div>
+    <div class="sig-date">Date: ${new Date().toLocaleDateString('en-IN')}</div>
+  </div>
+</div>
+
+<div class="footer">
+  Maxvolt Energy Industries Limited | This document is generated from the HR Management System<br>
+  Please submit the signed copy to HR on or before your date of joining.
+</div>
+</body>
+</html>`;
+
+  const w = window.open('', '_blank', 'width=900,height=700');
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 500);
+};
 
 export default function OfferLetters() {
   const [candidates, setCandidates] = useState([]);
@@ -472,6 +593,19 @@ export default function OfferLetters() {
                                 : <CalendarCheck className="w-3 h-3 mr-1" />
                               }
                               Invite to App
+                            </Button>
+                          )}
+
+                          {/* Print consent form for accepted/joined candidates */}
+                          {(c.status === 'offer_accepted' || c.status === 'joined') && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => printConsentForm(c, null)}
+                              className="border-blue-300 text-blue-700 hover:bg-blue-50"
+                            >
+                              <Printer className="w-3 h-3 mr-1" />
+                              Print Consent Form
                             </Button>
                           )}
                         </div>

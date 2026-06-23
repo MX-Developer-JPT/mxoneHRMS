@@ -14,6 +14,8 @@ export default function MarkAttendance() {
   const [todayAttendance, setTodayAttendance] = useState(null);
   const [location, setLocation] = useState(null);
   const [locationDetails, setLocationDetails] = useState(null);
+  const [locationAddress, setLocationAddress] = useState('');
+  const [locationError, setLocationError] = useState('');
   const [loading, setLoading] = useState(true);
   const [shift, setShift] = useState(null);
   const [showCamera, setShowCamera] = useState(false);
@@ -68,49 +70,79 @@ export default function MarkAttendance() {
     }
   };
 
-  const getCurrentLocationWithDetails = () => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const coords = {
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-            accuracy: position.coords.accuracy
-          };
-          setLocation(coords);
-
-          // Get location details using reverse geocoding
-          try {
-            const response = await fetch(
-              `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.latitude}&lon=${coords.longitude}&zoom=18&addressdetails=1`
-            );
-            const data = await response.json();
-            
-            setLocationDetails({
-              city: data.address?.city || data.address?.town || data.address?.village || 'Unknown',
-              locality: data.address?.suburb || data.address?.neighbourhood || data.address?.road || 'Unknown',
-              landmark: data.address?.building || data.address?.amenity || 'N/A',
-              pincode: data.address?.postcode || 'Unknown',
-              fullAddress: data.display_name || 'Address unavailable'
-            });
-          } catch (error) {
-            console.error('Error fetching location details:', error);
-            setLocationDetails({
-              city: 'Unknown',
-              locality: 'Unknown',
-              landmark: 'N/A',
-              pincode: 'Unknown',
-              fullAddress: `${coords.latitude}, ${coords.longitude}`
-            });
-          }
-        },
-        (error) => {
-          console.error('Error getting location:', error);
-          toast.error('Unable to get your location. Please enable location services.');
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  const reverseGeocode = async (lat, lng) => {
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+        { headers: { 'Accept-Language': 'en', 'User-Agent': 'MaxvoltHRMS/1.0' } }
       );
+      const data = await res.json();
+      // Build a human-readable address with landmark
+      const a = data.address || {};
+      const parts = [
+        a.amenity || a.building || a.shop || a.tourism || a.leisure,
+        a.road || a.pedestrian,
+        a.neighbourhood || a.suburb || a.quarter,
+        a.city || a.town || a.village || a.county,
+        a.state,
+      ].filter(Boolean);
+      return {
+        summary: parts.slice(0, 4).join(', ') || data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        city: a.city || a.town || a.village || 'Unknown',
+        locality: a.suburb || a.neighbourhood || a.road || 'Unknown',
+        landmark: a.amenity || a.building || a.shop || a.tourism || 'N/A',
+        pincode: a.postcode || 'Unknown',
+        fullAddress: data.display_name || `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+      };
+    } catch {
+      return {
+        summary: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        city: 'Unknown', locality: 'Unknown', landmark: 'N/A', pincode: 'Unknown',
+        fullAddress: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+      };
     }
+  };
+
+  const getCurrentLocationWithDetails = () => {
+    if (!navigator.geolocation) {
+      setLocationError('Geolocation is not supported by your browser.');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const coords = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy
+        };
+        setLocation(coords);
+        setLocationError('');
+
+        const geo = await reverseGeocode(coords.latitude, coords.longitude);
+        setLocationAddress(geo.summary);
+        setLocationDetails({
+          city: geo.city,
+          locality: geo.locality,
+          landmark: geo.landmark,
+          pincode: geo.pincode,
+          fullAddress: geo.fullAddress,
+        });
+      },
+      (error) => {
+        console.error('Error getting location:', error);
+        if (error.code === error.PERMISSION_DENIED) {
+          setLocationError('Please enable location access in your device Settings to mark attendance.');
+          toast.error('Location access denied. Enable it in Settings to mark attendance.');
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          setLocationError('Location unavailable. Move to an open area and try again.');
+          toast.error('Location unavailable. Move to an open area and try again.');
+        } else {
+          setLocationError('Unable to get your location. Please try again.');
+          toast.error('Unable to get your location. Please try again.');
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
   };
 
   const handleCameraCapture = (photoBlob) => {
@@ -184,7 +216,8 @@ export default function MarkAttendance() {
           locality: locationDetails?.locality,
           landmark: locationDetails?.landmark,
           pincode: locationDetails?.pincode,
-          address: locationDetails?.fullAddress
+          address: locationDetails?.fullAddress,
+          location_address: locationAddress,
         },
         check_in_selfie_url: selfieUrl,
         status: 'present',
@@ -241,7 +274,8 @@ export default function MarkAttendance() {
           locality: locationDetails?.locality,
           landmark: locationDetails?.landmark,
           pincode: locationDetails?.pincode,
-          address: locationDetails?.fullAddress
+          address: locationDetails?.fullAddress,
+          location_address: locationAddress,
         },
         check_out_selfie_url: selfieUrl,
         working_hours: parseFloat(workingHours.toFixed(2)),
@@ -314,6 +348,9 @@ export default function MarkAttendance() {
                   <MapPin className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-sm md:text-base">Your Location</p>
+                    {locationAddress && (
+                      <p className="mt-1 text-xs md:text-sm text-blue-700 font-medium break-words">{locationAddress}</p>
+                    )}
                     <div className="mt-2 space-y-1 text-xs md:text-sm text-gray-600">
                       <p><strong>City:</strong> {locationDetails.city}</p>
                       <p><strong>Area:</strong> {locationDetails.locality}</p>
@@ -450,10 +487,19 @@ export default function MarkAttendance() {
               )}
             </div>
 
-            {!location && (
+            {!location && !locationError && (
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 md:p-4">
                 <p className="text-xs md:text-sm text-yellow-800">
                   <strong>Note:</strong> Fetching your location for attendance verification...
+                </p>
+              </div>
+            )}
+
+            {locationError && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 md:p-4">
+                <p className="text-xs md:text-sm text-red-800 font-medium">{locationError}</p>
+                <p className="text-xs text-red-600 mt-1">
+                  On iPhone: Settings → Privacy & Security → Location Services → Safari / Chrome → While Using the App
                 </p>
               </div>
             )}

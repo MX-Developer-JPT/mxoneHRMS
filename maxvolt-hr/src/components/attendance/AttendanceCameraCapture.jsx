@@ -1,16 +1,18 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Camera, X } from 'lucide-react';
+import { Camera, X, AlertCircle } from 'lucide-react';
 
 export default function AttendanceCameraCapture({ open, onClose, onCapture }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [stream, setStream] = useState(null);
   const [photoTaken, setPhotoTaken] = useState(false);
+  const [cameraError, setCameraError] = useState('');
 
   useEffect(() => {
     if (open) {
+      setCameraError('');
       startCamera();
     } else {
       stopCamera();
@@ -27,12 +29,19 @@ export default function AttendanceCameraCapture({ open, onClose, onCapture }) {
         video: { facingMode: 'user', width: 640, height: 480 }
       });
       setStream(mediaStream);
+      setCameraError('');
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
       }
     } catch (error) {
       console.error('Camera error:', error);
-      alert('Unable to access camera. Please allow camera permissions.');
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        setCameraError('Please enable camera access in your device Settings to take a selfie.');
+      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+        setCameraError('No camera found on this device. Please use a device with a camera.');
+      } else {
+        setCameraError('Unable to start camera. Please try again or refresh the page.');
+      }
     }
   };
 
@@ -89,22 +98,39 @@ export default function AttendanceCameraCapture({ open, onClose, onCapture }) {
         </DialogHeader>
         
         <div className="space-y-4">
-          <div className="relative bg-black rounded-lg overflow-hidden" style={{ aspectRatio: '4/3' }}>
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full object-cover ${photoTaken ? 'hidden' : 'block'}`}
-            />
-            <canvas
-              ref={canvasRef}
-              className={`w-full h-full object-cover ${photoTaken ? 'block' : 'hidden'}`}
-            />
-          </div>
+          {cameraError ? (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-800">{cameraError}</p>
+                <p className="text-xs text-red-600 mt-1">
+                  On iPhone: Settings → Privacy & Security → Camera → Enable for this browser
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="relative bg-black rounded-lg overflow-hidden" style={{ aspectRatio: '4/3' }}>
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover ${photoTaken ? 'hidden' : 'block'}`}
+              />
+              <canvas
+                ref={canvasRef}
+                className={`w-full h-full object-cover ${photoTaken ? 'block' : 'hidden'}`}
+              />
+            </div>
+          )}
 
           <div className="flex gap-3 justify-center">
-            {!photoTaken ? (
+            {cameraError ? (
+              <Button variant="outline" onClick={onClose}>
+                <X className="w-4 h-4 mr-2" />
+                Close
+              </Button>
+            ) : !photoTaken ? (
               <>
                 <Button variant="outline" onClick={onClose}>
                   <X className="w-4 h-4 mr-2" />

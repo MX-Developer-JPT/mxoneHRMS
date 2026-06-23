@@ -47,14 +47,37 @@ export default function StatutoryRegisters() {
   };
 
   const downloadCSV = (kind) => {
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const monLabel = `${MONTHS[month - 1]} ${year}`;
     if (kind === 'pf') {
       const headers = ['UAN', 'Name', 'Gross Wages', 'EPF Wages', 'EPS Wages', 'EDLI Wages', 'EE EPF (12%)', 'ER EPS (8.33%)', 'ER EPF (3.67%)', 'NCP Days'];
-      const lines = data.pf.rows.map(r => [r.uan, r.name, r.gross_wages, r.epf_wages, r.eps_wages, r.edli_wages, r.ee_epf, r.er_eps, r.er_epf, r.ncp_days].map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','));
-      download(`PF_register_${year}_${month}.csv`, [headers.join(','), ...lines].join('\n'), 'text/csv');
+      const rows = data.pf.rows;
+      const lines = rows.map(r => [r.uan, r.name, r.gross_wages, r.epf_wages, r.eps_wages, r.edli_wages, r.ee_epf, r.er_eps, r.er_epf, r.ncp_days].map(esc).join(','));
+      const totals = rows.reduce((acc, r) => {
+        acc.gross += r.gross_wages || 0; acc.epf_wages += r.epf_wages || 0;
+        acc.ee_epf += r.ee_epf || 0; acc.er_eps += r.er_eps || 0; acc.er_epf += r.er_epf || 0;
+        return acc;
+      }, { gross: 0, epf_wages: 0, ee_epf: 0, er_eps: 0, er_epf: 0 });
+      const totRow = ['', 'TOTAL', totals.gross, totals.epf_wages, '', '', totals.ee_epf, totals.er_eps, totals.er_epf, ''].map(esc).join(',');
+      const csv = [
+        esc('MAXVOLT ENERGY INDUSTRIES LIMITED'), esc(`PF Register — ${monLabel}`), esc(`Generated: ${new Date().toLocaleDateString('en-IN')}`), '',
+        headers.map(esc).join(','), ...lines, '', totRow,
+      ].join('\n');
+      download(`PF_register_${year}_${month}.csv`, csv, 'text/csv');
     } else {
       const headers = ['ESI Number', 'Name', 'Gross Wages', 'EE ESI (0.75%)', 'ER ESI (3.25%)', 'Total'];
-      const lines = data.esi.rows.map(r => [r.esi_number, r.name, r.gross_wages, r.ee_esi, r.er_esi, r.total].map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','));
-      download(`ESI_register_${year}_${month}.csv`, [headers.join(','), ...lines].join('\n'), 'text/csv');
+      const rows = data.esi.rows;
+      const lines = rows.map(r => [r.esi_number, r.name, r.gross_wages, r.ee_esi, r.er_esi, r.total].map(esc).join(','));
+      const totals = rows.reduce((acc, r) => {
+        acc.gross += r.gross_wages || 0; acc.ee_esi += r.ee_esi || 0; acc.er_esi += r.er_esi || 0; acc.total += r.total || 0;
+        return acc;
+      }, { gross: 0, ee_esi: 0, er_esi: 0, total: 0 });
+      const totRow = ['', 'TOTAL', totals.gross, totals.ee_esi, totals.er_esi, totals.total].map(esc).join(',');
+      const csv = [
+        esc('MAXVOLT ENERGY INDUSTRIES LIMITED'), esc(`ESI Register — ${monLabel}`), esc(`Generated: ${new Date().toLocaleDateString('en-IN')}`), '',
+        headers.map(esc).join(','), ...lines, '', totRow,
+      ].join('\n');
+      download(`ESI_register_${year}_${month}.csv`, csv, 'text/csv');
     }
   };
 

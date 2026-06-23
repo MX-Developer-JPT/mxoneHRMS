@@ -2074,7 +2074,15 @@ EMPLOYMENT TYPE: ${emp.employment_type || '[____]'}
 ANNUAL CTC: ${annualCTC ? '₹' + annualCTC.toLocaleString('en-IN') : '[____]'}
 ${extraLines ? 'ADDITIONAL DETAILS:\n' + extraLines : ''}
 
-Format the output in clean Markdown. Include the reference and date at the top, a proper salutation, well-structured body paragraphs, and a closing signature block reading "For Maxvolt Energy Industries Limited" with "Authorised Signatory, Human Resources". Keep it concise and legally appropriate for India. Output ONLY the letter, no preamble or explanation.`;
+OUTPUT FORMAT: Produce clean Markdown suitable for a professional Indian corporate HR letter.
+- Start with the letter title in ALL CAPS (e.g. "**APPOINTMENT LETTER**"), centred using surrounding blank lines.
+- Include "**Ref:** ${ref}" and "**Date:** ${todayDate}" on separate lines below the title.
+- Write a proper salutation: "Dear **[Name]**,"
+- Body: well-structured paragraphs with <strong> on key terms and figures (salary amounts, dates, designations).
+- For appointment/offer letters: include a salary table in Markdown format with columns for Component, Monthly (₹), and Annual (₹), listing Basic, HRA, Conveyance, Gross, PF deduction, and Net Pay.
+- For warning letters: state the violation clearly, consequences, and expected corrective action.
+- Closing paragraph: "Yours sincerely," followed by two blank lines, then "**For Maxvolt Energy Industries Limited**", then "**Authorised Signatory**" and "**Human Resources Department**".
+- Keep it concise, formal, and legally appropriate for India. Output ONLY the letter content, no preamble or explanation.`;
 
       let letter;
       try { letter = await callAI(prompt); }
@@ -4541,15 +4549,31 @@ Return ONLY valid JSON (no markdown):
   </BODY>
 </ENVELOPE>`;
 
-      // Also return CSV rows
-      const csvLines = ['Employee,Code,Gross,Basic,HRA,Conveyance,Special,PF,PT,ESI,LOP,Net'];
+      // Build improved CSV with title, company name, headers, data rows, and totals
+      const csvLines = [
+        `"MAXVOLT ENERGY INDUSTRIES LIMITED"`,
+        `"Salary Register — ${monLabel}"`,
+        `"Generated: ${new Date().toLocaleDateString('en-IN')}"`,
+        `""`,
+        `"#","Employee Name","Emp Code","Gross Salary","Basic","HRA","Conveyance","Special Allowance","PF","PT","ESI","LOP","Net Salary"`,
+      ];
+      let idx = 1;
+      let totGross=0, totBasic=0, totHRA=0, totConv=0, totSpecial=0, totPF=0, totPT=0, totESI=0, totLOP=0, totNet=0;
       for (const pr of payrolls) {
         const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pr.user_id]);
         const emp = empRow ? JSON.parse(empRow.data) : {};
-        csvLines.push(`"${emp.display_name}","${emp.employee_code}",${pr.gross_salary||0},${pr.basic_salary||0},${pr.hra||0},${pr.conveyance||0},${pr.special_allowance||0},${pr.deductions?.pf||0},${pr.deductions?.pt||0},${pr.deductions?.esi||0},${pr.loss_of_pay_amount||0},${pr.net_salary||0}`);
+        const gross=pr.gross_salary||0, basic=pr.basic_salary||0, hra=pr.hra||0, conv=pr.conveyance||0,
+          special=pr.special_allowance||0, pf=pr.deductions?.pf||0, pt=pr.deductions?.pt||0,
+          esi=pr.deductions?.esi||0, lop=pr.loss_of_pay_amount||0, net=pr.net_salary||0;
+        totGross+=gross; totBasic+=basic; totHRA+=hra; totConv+=conv; totSpecial+=special;
+        totPF+=pf; totPT+=pt; totESI+=esi; totLOP+=lop; totNet+=net;
+        csvLines.push(`"${idx++}","${emp.display_name||''}","${emp.employee_code||''}",${gross},${basic},${hra},${conv},${special},${pf},${pt},${esi},${lop},${net}`);
       }
+      csvLines.push(`""`);
+      csvLines.push(`"","TOTAL","",${totGross},${totBasic},${totHRA},${totConv},${totSpecial},${totPF},${totPT},${totESI},${totLOP},${totNet}`);
+      const csv = csvLines.join('\n');
 
-      return res.json({ success: true, month, year, employee_count: payrolls.length, totals: { gross: totalGross, pf: totalPF, pt: totalPT, esi: totalESI, lop: totalLOP, net: totalNet }, tally_xml: xml, csv: csvLines.join('\n') });
+      return res.json({ success: true, month, year, employee_count: payrolls.length, totals: { gross: totalGross, pf: totalPF, pt: totalPT, esi: totalESI, lop: totalLOP, net: totalNet }, tally_xml: xml, csv });
     }
 
     case 'getAttendanceNarrative': {
