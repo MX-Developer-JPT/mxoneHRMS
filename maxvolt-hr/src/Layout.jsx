@@ -201,7 +201,6 @@ const hrMenuGroups = [
     { name: 'Recognition',             icon: Award,           page: 'Recognition' },
     { name: 'Pulse Surveys & eNPS',    icon: ClipboardList,   page: 'PulseSurveys' },
     { name: 'Employee Portal',         icon: Users,           page: 'EmployeeEngagementPortal' },
-    { name: 'Business Cards',          icon: QrCode,          page: 'BusinessCardAdmin' },
   ]},
   { label: 'Benefits & Exit', items: [
     { name: 'Insurance Management',    icon: Shield,          page: 'InsuranceManagement' },
@@ -223,12 +222,9 @@ const hrMenuGroups = [
   { label: 'Compliance', items: [
     { name: 'Compliance',              icon: Shield,          page: 'ComplianceDashboard' },
     { name: 'POSH Compliance',         icon: ShieldCheck,     page: 'POSHCompliance' },
-    { name: 'Company Policies',        icon: BookOpen,        page: 'CompanyPolicies' },
   ]},
-  { label: 'Administration', items: [
-    { name: 'User Roles',              icon: UserCog,         page: 'UserRoleManagement' },
+  { label: 'HR Settings', items: [
     { name: 'App Settings',            icon: SlidersHorizontal, page: 'AppSettings' },
-    { name: 'Admin Panel',             icon: Shield,          page: 'AdminPanel' },
   ]},
 ];
 
@@ -388,12 +384,22 @@ export default function Layout({ children, currentPageName }) {
   const isGateAdmin  = userRole === 'gate_admin'  || user.role === 'gate_admin';
   const isITDept     = employeeDepartment?.toLowerCase() === 'it';
 
+  const isAdmin = user.role === 'admin';
+
   let menuGroups = employeeMenuGroups;
   if (isHR)              menuGroups = hrMenuGroups;
   else if (isManagement) menuGroups = managementMenuGroups;
   else if (isGateAdmin)  menuGroups = gateAdminMenuGroups;
   if (isITDept && !isHR) {
     menuGroups = [...menuGroups, { label: 'IT', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
+  }
+  if (isAdmin) {
+    menuGroups = [...menuGroups, { label: 'Administration', items: [
+      { name: 'User Roles',        icon: UserCog,           page: 'UserRoleManagement' },
+      { name: 'Admin Panel',       icon: Shield,            page: 'AdminPanel' },
+      { name: 'Company Policies',  icon: BookOpen,          page: 'CompanyPolicies' },
+      { name: 'Business Cards',    icon: QrCode,            page: 'BusinessCardAdmin' },
+    ]}];
   }
   const menuItems = menuGroups.flatMap(g => g.items);
 
@@ -521,7 +527,7 @@ export default function Layout({ children, currentPageName }) {
           style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.5rem)' }}
         >
           <div className="px-1 flex justify-end mb-1">
-            <NotificationBell />
+            <NotificationBell placement="sidebar" />
           </div>
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}

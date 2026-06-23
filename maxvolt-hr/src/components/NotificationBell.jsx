@@ -28,7 +28,7 @@ const TYPE_COLORS = {
   info: 'text-blue-500',
 };
 
-export default function NotificationBell() {
+export default function NotificationBell({ placement = 'header' }) {
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [unread, setUnread] = useState(0);
@@ -82,7 +82,11 @@ export default function NotificationBell() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-white/10 z-50 overflow-hidden">
+        <div className={`absolute w-80 max-w-[calc(100vw-2rem)] bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-white/10 z-50 overflow-hidden ${
+          placement === 'sidebar'
+            ? 'left-full bottom-0 ml-3'
+            : 'right-0 top-full mt-2'
+        }`}>
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-white/8">
             <span className="font-semibold text-sm text-slate-900 dark:text-white">Notifications</span>
             {unread > 0 && (

@@ -32,9 +32,10 @@ export default function AttendanceNarrative() {
         user_id: selectedUser || undefined,
         month, year,
       });
+      if (r.data?.error) throw new Error(r.data.error);
       setResult(r.data);
     } catch (e) {
-      toast.error('Failed to generate: ' + e.message);
+      toast.error('Failed to generate: ' + (e.message || 'Unknown error'));
     }
     setLoading(false);
   };
@@ -111,10 +112,10 @@ export default function AttendanceNarrative() {
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
             {[
-              { label: 'Present', value: result.stats.present, color: 'bg-green-50 text-green-700' },
-              { label: 'Absent', value: result.stats.absent, color: 'bg-red-50 text-red-700' },
-              { label: 'Late', value: result.stats.late, color: 'bg-amber-50 text-amber-700' },
-              { label: 'WFH', value: result.stats.wfh, color: 'bg-blue-50 text-blue-700' },
+              { label: 'Present', value: result.stats?.present ?? 0, color: 'bg-green-50 text-green-700' },
+              { label: 'Absent', value: result.stats?.absent ?? 0, color: 'bg-red-50 text-red-700' },
+              { label: 'Late', value: result.stats?.late ?? 0, color: 'bg-amber-50 text-amber-700' },
+              { label: 'WFH', value: result.stats?.wfh ?? 0, color: 'bg-blue-50 text-blue-700' },
             ].map(s => (
               <div key={s.label} className={`${s.color} rounded-lg p-4 text-center`}>
                 <p className="text-2xl font-bold">{s.value}</p>
