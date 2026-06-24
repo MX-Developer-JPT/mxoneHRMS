@@ -426,22 +426,14 @@ function EntitiesTab({ typeCounts }) {
         <div className="bg-muted/50 px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Entity Types</div>
         <div className="overflow-y-auto max-h-[calc(100vh-300px)]">
           {typeCounts.map(({ type, count }) => (
-            <div
+            <button
               key={type}
-              className={`group w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 transition-colors ${selectedType === type ? 'bg-primary/10 text-primary font-medium' : ''}`}
+              onClick={() => selectType(type)}
+              className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 transition-colors ${selectedType === type ? 'bg-primary/10 text-primary font-medium' : ''}`}
             >
-              <button className="flex-1 flex items-center justify-between min-w-0 text-left" onClick={() => selectType(type)}>
-                <span className="truncate">{type}</span>
-                <span className="text-xs text-muted-foreground ml-2 flex-shrink-0">{count}</span>
-              </button>
-              <button
-                title={`Delete all ${type} records`}
-                onClick={e => { e.stopPropagation(); setDeleteAllTarget(type); }}
-                className="ml-2 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-destructive"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
+              <span className="truncate">{type}</span>
+              <span className="text-xs text-muted-foreground ml-2 flex-shrink-0">{count}</span>
+            </button>
           ))}
         </div>
       </div>
@@ -467,6 +459,9 @@ function EntitiesTab({ typeCounts }) {
                   <Trash2 className="w-3.5 h-3.5 mr-1" /> Delete {selected.size}
                 </Button>
               )}
+              <Button size="sm" variant="destructive" onClick={() => setDeleteAllTarget(selectedType)}>
+                <Trash2 className="w-3.5 h-3.5 mr-1" /> Delete All
+              </Button>
               <Button size="sm" onClick={() => setNewRecord({})}>
                 <Plus className="w-4 h-4 mr-1" /> New
               </Button>
