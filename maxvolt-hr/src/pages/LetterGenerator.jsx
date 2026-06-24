@@ -155,6 +155,7 @@ export default function LetterGenerator() {
   const [extra, setExtra] = useState({});
   const [generating, setGenerating] = useState(false);
   const [letter, setLetter] = useState('');
+  const [isHtml, setIsHtml] = useState(false);
   const [ref, setRef] = useState('');
   const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -190,6 +191,7 @@ export default function LetterGenerator() {
       const d = res.data || res;
       if (d.success) {
         setLetter(d.letter);
+        setIsHtml(!!d.isHtml);
         setRef(d.ref || '');
         setEditMode(false);
         setSaved(false);
@@ -200,7 +202,7 @@ export default function LetterGenerator() {
 
   const printLetter = () => {
     if (!letter) return;
-    const html = `<div style="font-size:12px;line-height:1.7;color:#1a1a1a;white-space:pre-wrap;">${
+    const html = isHtml ? letter : `<div style="font-size:11px;line-height:1.8;color:#1a1a1a;white-space:pre-wrap;">${
       letter.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br/>')
     }</div>`;
     openLetterheadPrintWindow(`${meta?.label || 'Letter'} - ${selectedEmp?.display_name || ''}`, html, '', false);
@@ -351,12 +353,15 @@ export default function LetterGenerator() {
                   {editMode ? (
                     <Textarea value={letter} onChange={e => setLetter(e.target.value)} className="font-mono text-xs h-[55vh]" />
                   ) : (
-                    <div className="prose prose-sm max-w-none border rounded-lg p-6 bg-white max-h-[60vh] overflow-y-auto">
-                      <ReactMarkdown>{letter}</ReactMarkdown>
+                    <div className="border rounded-lg p-6 bg-white max-h-[60vh] overflow-y-auto">
+                      {isHtml
+                        ? <div dangerouslySetInnerHTML={{ __html: letter }} />
+                        : <div className="prose prose-sm max-w-none"><ReactMarkdown>{letter}</ReactMarkdown></div>
+                      }
                     </div>
                   )}
                   <p className="text-xs text-amber-600 mt-3 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3" /> AI-drafted — review all details, especially any [____] placeholders, before issuing.
+                    <Sparkles className="w-3 h-3" /> Review all details and fill any [____] placeholders before issuing.
                   </p>
                 </>
               )}

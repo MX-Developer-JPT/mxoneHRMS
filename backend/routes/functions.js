@@ -2035,7 +2035,6 @@ Return ONLY a valid JSON object (no markdown):
       const emp = JSON.parse(empRow.data);
       const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [letterUid]);
 
-      // Latest salary structure → CTC
       const ssRow = await one("SELECT data,created_at FROM entities WHERE type='SalaryStructure' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [letterUid]);
       const ss = ssRow ? JSON.parse(ssRow.data) : {};
       const annualCTC = ss.annualCTC || (ss.grossMonthly ? Math.round(ss.grossMonthly * 12) : 0);
@@ -2044,52 +2043,203 @@ Return ONLY a valid JSON object (no markdown):
       const refPrefix = { confirmation: 'CONF', experience: 'EXP', relieving: 'REL', appointment: 'APPT', salary_revision: 'SAL', address_proof: 'ADDR', warning: 'WARN', promotion: 'PROMO' }[letterType] || 'LTR';
       const ref = `MEIL/HR/${refPrefix}/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
 
-      const typeInstructions = {
-        confirmation: 'a confirmation letter confirming the employee in permanent service after successful completion of probation.',
-        experience: 'an experience / service certificate stating designation, period of service and a positive remark on conduct and performance.',
-        relieving: 'a relieving letter confirming acceptance of resignation and release from duties, with a goodwill closing.',
-        appointment: 'a formal appointment letter with terms of employment.',
-        salary_revision: 'a salary revision letter communicating the revised compensation, effective date.',
-        address_proof: 'an employment / address verification letter suitable for bank or visa purposes.',
-        warning: 'a formal written warning letter regarding the stated issue, professional and firm in tone.',
-        promotion: 'a promotion letter communicating the new designation, effective date and congratulations.',
+      const empName    = emp.display_name || uRow?.full_name || '[Employee Name]';
+      const designation = emp.designation || '[Designation]';
+      const department  = emp.department || '[Department]';
+      const location    = emp.work_location || 'Ghaziabad, Uttar Pradesh';
+      const doj         = emp.date_of_joining || '[Date of Joining]';
+      const empCode     = emp.employee_code || '[Employee Code]';
+      const isFemale    = (emp.gender || '').toLowerCase() === 'female';
+      const sal         = isFemale ? 'Ms.' : 'Mr.';
+      const pronoun     = isFemale ? 'her' : 'him';
+      const pronoun2    = isFemale ? 'she' : 'he';
+
+      const fmtMoney = n => n ? '₹ ' + Number(n).toLocaleString('en-IN') : '-';
+      const basic   = ss.basic || 0;
+      const hra     = ss.hra || 0;
+      const conv    = ss.conveyance || 0;
+      const special = ss.special_allowance || 0;
+      const gross   = ss.grossMonthly || (basic + hra + conv + special);
+      const pfEmp   = ss.pf_employee || (basic ? Math.round(basic * 0.12) : 0);
+      const net     = ss.netPay || (gross && pfEmp ? gross - pfEmp : 0);
+
+      const tdm = n => `<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #f0f0f0;">${fmtMoney(n)}</td>`;
+      const tda = n => `<td style="padding:5px 10px;text-align:right;border-bottom:1px solid #f0f0f0;">${fmtMoney(n * 12)}</td>`;
+      const salaryTable = `
+<h3 style="text-align:center;margin:24px 0 4px;font-size:12px;">Annexure – A &nbsp;&nbsp; Salary Structure</h3>
+<table style="width:100%;border-collapse:collapse;font-size:10.5px;margin-bottom:6px;">
+  <thead><tr style="background:#e87722;color:#fff;">
+    <th style="padding:6px 10px;text-align:left;">Component</th>
+    <th style="padding:6px 10px;text-align:right;">Monthly (₹)</th>
+    <th style="padding:6px 10px;text-align:right;">Annual (₹)</th>
+  </tr></thead>
+  <tbody>
+    ${basic   ? `<tr><td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;">Basic Pay</td>${tdm(basic)}${tda(basic)}</tr>` : ''}
+    ${hra     ? `<tr><td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;">House Rent Allowance (HRA)</td>${tdm(hra)}${tda(hra)}</tr>` : ''}
+    ${conv    ? `<tr><td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;">Conveyance Allowance</td>${tdm(conv)}${tda(conv)}</tr>` : ''}
+    ${special ? `<tr><td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;">Special Allowance</td>${tdm(special)}${tda(special)}</tr>` : ''}
+    ${gross   ? `<tr style="background:#fff8f3;font-weight:bold;"><td style="padding:5px 10px;border-bottom:1px solid #e87722;">Gross Monthly</td>${tdm(gross)}${tda(gross)}</tr>` : ''}
+    ${pfEmp   ? `<tr style="color:#b00;"><td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;">Less: PF – Employee (12%)</td>${tdm(pfEmp)}${tda(pfEmp)}</tr>` : ''}
+    ${net     ? `<tr style="background:#f0fdf4;font-weight:bold;"><td style="padding:5px 10px;">Net Monthly Take-Home</td>${tdm(net)}${tda(net)}</tr>` : ''}
+  </tbody>
+</table>
+<p style="font-size:9px;color:#555;margin:2px 0;">* Annual CTC: <strong>${annualCTC ? fmtMoney(annualCTC) + '/-' : '[____]'}</strong></p>
+<p style="font-size:9px;color:#555;margin:2px 0;">* TDS will be deducted as per applicable provisions. Gross salary is subject to TDS.</p>
+<p style="font-size:9px;color:#555;margin:2px 0;">* Statutory benefits (PF, ESI, Gratuity, Bonus) as per applicable labour laws.</p>`;
+
+      const S   = `font-family:Arial,sans-serif;font-size:11px;line-height:1.8;color:#1a1a1a;`;
+      const par = `margin-bottom:10px;text-align:justify;`;
+      const hd  = `font-weight:bold;margin:14px 0 3px;`;
+      const li  = `<ul style="margin:6px 0 12px 22px;line-height:1.9;">
+    <li>Proof of address &amp; ID (Local &amp; Permanent).</li>
+    <li>Five colour recent passport-size photographs (not older than three months).</li>
+    <li>Photocopies of 10th, 12th certificate &amp; highest degree certificates.</li>
+    <li>Offer, Appointment &amp; Increment Letters (Past 3).</li>
+    <li>Proof of work experience – Experience / Relieving letters (Past 3).</li>
+    <li>Last 3 months salary slips &amp; 6 months bank statement.</li>
+  </ul>`;
+
+      const sig = (close, name, title) => `
+<p style="margin-top:30px;">${close}</p>
+<br><br>
+<p><strong>${name}</strong></p>
+<p>${title}</p>`;
+
+      const docList = li;
+
+      const templateLetters = {
+
+        appointment: () => `<div style="${S}">
+<p style="font-weight:bold;font-size:10px;letter-spacing:0.5px;">PRIVATE &amp; STRICTLY CONFIDENTIAL</p>
+<p style="${par}margin-top:10px;"><strong>Ref:</strong> ${ref}</p>
+<p style="${par}">${todayDate}</p>
+<p style="${par}">To ${sal} ${empName},</p>
+<h2 style="text-align:center;font-size:14px;font-weight:bold;letter-spacing:2px;margin:14px 0 16px;text-decoration:underline;">APPOINTMENT LETTER</h2>
+<p style="${par}">Dear ${sal} ${empName},</p>
+<p style="${par}">With reference to your application and subsequent interview with us, we are pleased to appoint you as <strong>${designation}</strong> – <strong>${department}</strong> in Our Company <strong>Maxvolt Energy Industries Limited</strong>, on the following terms and conditions:</p>
+<p style="${par}"><strong>Date of Joining:</strong> <strong>${extra.joining_date || doj}</strong></p>
+<p style="${par}">Your employment with Our Company shall be effective from <strong>${extra.joining_date || doj}</strong>. This offer shall automatically stand revoked in the event of your not joining the Company on or before the date mentioned under this letter.</p>
+<p style="${hd}">Employment:</p>
+<p style="${par}">Your position is a full-time employment with Our Company and you shall devote yourself exclusively to the business and vision of Our Company. You will not take up any other work for remuneration (part time or otherwise) or work in an advisory capacity, or be interested directly or indirectly, in any other trade or business during your employment with Our Company, without permission in writing of Our Company.</p>
+<p style="${par}">Your employment with Our Company is subject to you being medically fit. You shall be entitled to such Leaves in accordance with the Leave policy of the Company.</p>
+<p style="${par}">This letter of appointment is based on the information furnished in your application and during the interviews. If, at any time in future, it comes to light that any information is incorrect or any relevant information has been withheld, then your employment is liable to be terminated without notice.</p>
+<p style="${hd}">Place of Posting and Transfer:</p>
+<p style="${par}">Your initial posting will be at <strong>${location}</strong>. However, your employment may be transferred, at the sole discretion of Our Company, to any department / section, location, associate, sister concern or subsidiary, at any place in India or abroad, whether existing today or which may come up in future. Your remuneration will depend on the place of posting and may vary based on the decision of the Management.</p>
+<p style="${hd}">Probation:</p>
+<p style="${par}">You will be on probation for a period of <strong>Six (6) months</strong> from the date of your joining. Subject to your efficiency, punctuality, conduct, maintenance of discipline and performance being found satisfactory, your confirmation will be communicated to you in writing, or it can be extended at the discretion of the Management.</p>
+<p style="${par}">During the probation period, you are entitled to avail <strong>03 Casual Leave</strong> on a pro rata basis. Approval for Casual Leave must be sought from your reporting manager in advance.</p>
+<p style="${hd}">Compensation:</p>
+<p style="${par}">Your annual CTC will be as detailed in <strong>Annexure – A</strong> as annexed to this letter: <strong>INR ${annualCTC ? Number(annualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The salary shall be payable on a monthly basis and arrears within the 7th day of each calendar month.</p>
+<p style="${par}">Statutory benefits such as Provident Fund, Employees’ State Insurance (ESI), Gratuity, Bonus and any other benefits as may be applicable shall be governed by and provided in accordance with applicable provisions of the prevailing labour laws in force in India.</p>
+<p style="${hd}">Performance of Duties:</p>
+<p style="${par}">You shall, at all times, carry out the duties and responsibilities assigned to you faithfully and diligently. The Company practices a minimum of <strong>48-hour workweek</strong> for all staff and management employees. You shall strictly refrain from using any of Our Company resources for personal use.</p>
+<p style="${hd}">Confidentiality:</p>
+<p style="${par}">During the course of your employment with Our Company, you may have access to confidential/proprietary information. You will not, during the course of your employment or at any time thereafter, divulge or disclose to any person, or make use of, any information or knowledge obtained by you about the business or affairs of Our Company.</p>
+<p style="${hd}">Intellectual Property:</p>
+<p style="${par}">You agree to assign to the Company all rights, title and interest, including copyrights, trade secrets and proprietary rights to the inventions, materials, software and deliverables developed during your employment with Our Company.</p>
+<p style="${hd}">Termination:</p>
+<p style="${par}">During the period of probation, either party may terminate employment by giving <strong>15 days’ written notice</strong>. Upon confirmation, either party may terminate employment by giving <strong>30 days’ written notice</strong>. The full and final settlement of the employee’s salary account is done after <strong>45 days</strong> of the employee’s last working day of services.</p>
+<p style="${hd}">Non-Solicitation:</p>
+<p style="${par}">During your employment and for <strong>3 months</strong> thereafter, you shall not induce any employee to leave the employment of Our Company, nor engage in a business competitive to that of Our Company.</p>
+<p style="${par}">You are required to sign and return a copy of this letter as a token of your acceptance, failing which this letter will be treated as withdrawn. Please submit the following documents on your joining date:</p>
+${docList}
+<p style="${par}">We welcome you to our organization and look forward to your contribution to the growth of the organization and yourself.</p>
+${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory – Human Resources Department')}
+<br>
+<p style="margin-top:18px;">Employee Signature: _______________________________&nbsp;&nbsp; Date: _______________</p>
+<p>Name: _______________________________</p>
+${salaryTable}
+</div>`,
+
+        confirmation: () => `<div style="${S}">
+<h2 style="text-align:center;font-size:14px;font-weight:bold;margin:0 0 16px;text-decoration:underline;">Letter of Confirmation</h2>
+<p style="${par}"><strong>Ref:</strong> ${ref}</p>
+<p style="${par}">${todayDate}</p>
+<p style="${par}">Dear ${sal} ${empName},</p>
+<p style="${hd}">Congratulation!!</p>
+<p style="${par}"><strong>Subject: Service Confirmation Letter to the Designation of ‘${designation}’</strong></p>
+<p style="${par}">Following completion of your six months’ probation period at Maxvolt Energy Industries Limited, we have reviewed your performance and found the same to be satisfactory.</p>
+<p style="${par}">In view of the above, we are pleased to inform you that you have been confirmed to the position of <strong>‘${designation}’</strong> at Maxvolt Energy Industries Limited with effect from <strong>${extra.effective_date || '[Effective Date]'}</strong>.</p>
+<p style="${par}">Your salary will be reviewed every 12 months from the date of joining or as decided by company and increases will be based upon satisfactory performance in the position.</p>
+<p style="${par}">All other terms and conditions of your appointment will remain the same except the following:</p>
+<p style="${hd}">Notice Period –</p>
+<p style="${par}">Either party may at any time terminate the employment, without cause, by giving in writing to the other party a notice period of <strong>30 Days</strong>. You may alternatively exercise the option of buying out your notice period per the terms and conditions of this employment letter. The payment of salary during such notice period would be on the basis of cost to Our Company.</p>
+<p style="${hd}">Leave Credit –</p>
+<p style="${par}">As a gesture of appreciation for your hard work and dedication, we are pleased to inform you that you are now eligible to earn and take advantage of annual leave benefits. Starting <strong>${extra.effective_date || '[Effective Date]'}</strong>, you will be entitled to accrue and utilize earned leave days as per our company’s leave policy.</p>
+<p style="${hd}">Salary Settlement (Full &amp; Final) –</p>
+<p style="${par}">The full and final settlement of the employee’s salary account is done after <strong>45 days</strong> of the employee’s last working day of services. The company will provide full and final settlement only in the condition that the employee has served Maxvolt Energy Industries Limited with the notice period mentioned in the appointment letter and has facilitated a smooth transition. Employee’s last salary and other benefits will be provided once the employee has been issued a clearance letter from HR, IT, Accounts &amp; Administration department.</p>
+<p style="${par}">Please signify your acceptance to the terms and conditions, mentioned above &amp; in the company’s policy handbook, by signing this letter and returning it to HR at the earliest convenient time.</p>
+<p style="${par}">In case you have any queries, do not hesitate to reach your manager / supervisor / HR Department.</p>
+<p style="${par}">Maxvolt Energy Industries Limited congratulates you on your confirmation and wishes you well in your position.</p>
+${sig('Sincerely,', 'HR Head', 'Maxvolt Energy Industries Limited')}
+</div>`,
+
+        relieving: () => `<div style="${S}">
+<h2 style="text-align:center;font-size:14px;font-weight:bold;letter-spacing:1px;margin:0 0 20px;text-decoration:underline;">RELIEVING CUM EXPERIENCE LETTER</h2>
+<p style="${par}"><strong>Ref:</strong> ${ref}</p>
+<p style="${par}">${todayDate}</p>
+<p style="${par}"><strong>Subject: Relieving Cum Experience Letter</strong></p>
+<p style="${par}">Dear ${sal} ${empName},</p>
+<p style="${par}">This is to inform you that you hereby stand relieved from the services of MaxVolt Energy Industries Limited, in the closing hours of <strong>${extra.last_working_day || '[Last Working Date]'}</strong>. Your full and final account has been processed and settled.</p>
+<p style="${par}">Please note your Basic Information as maintained in the HR records at the time of your separation is as follows:</p>
+<table style="margin:10px 0 18px;font-size:11px;border-collapse:collapse;">
+  <tr><td style="padding:5px 18px 5px 0;font-weight:bold;color:#444;">Name:</td><td style="padding:5px 0;">${empName}</td></tr>
+  <tr><td style="padding:5px 18px 5px 0;font-weight:bold;color:#444;">Employee Code:</td><td style="padding:5px 0;">${empCode}</td></tr>
+  <tr><td style="padding:5px 18px 5px 0;font-weight:bold;color:#444;">Period Served:</td><td style="padding:5px 0;">From <strong>${doj}</strong> To <strong>${extra.last_working_day || '[Last Working Date]'}</strong></td></tr>
+  <tr><td style="padding:5px 18px 5px 0;font-weight:bold;color:#444;">Last Designation Held:</td><td style="padding:5px 0;">${designation}</td></tr>
+  <tr><td style="padding:5px 18px 5px 0;font-weight:bold;color:#444;">Department:</td><td style="padding:5px 0;">${department}</td></tr>
+</table>
+<p style="${par}">${empName} has during ${pronoun} tenure with us demonstrated good performance, dedication and professional conduct. We wish ${pronoun} all the best in all future endeavors.</p>
+<p style="${par}">We wish you all the best in all your future endeavors.</p>
+${sig('Warm Regards,', 'MaxVolt Energy Industries Limited', '(Authorized Signatory)')}
+</div>`,
+
+        experience: () => `<div style="${S}">
+<h2 style="text-align:center;font-size:14px;font-weight:bold;margin:0 0 20px;text-decoration:underline;">EXPERIENCE / SERVICE CERTIFICATE</h2>
+<p style="${par}"><strong>Ref:</strong> ${ref}</p>
+<p style="${par}">${todayDate}</p>
+<p style="${par}"><strong>To Whomsoever It May Concern</strong></p>
+<p style="${par}">This is to certify that <strong>${empName}</strong> (Employee Code: <strong>${empCode}</strong>) was associated with <strong>Maxvolt Energy Industries Limited</strong> as <strong>${designation}</strong> in the <strong>${department}</strong> Department.</p>
+<p style="${par}"><strong>Period of Service:</strong> From <strong>${doj}</strong> To <strong>${extra.last_working_day || '[Last Working Date]'}</strong></p>
+<p style="${par}">During ${pronoun} tenure, ${pronoun2} demonstrated commendable work ethic, professional integrity and dedication. ${pronoun2.charAt(0).toUpperCase() + pronoun2.slice(1)} maintained a satisfactory record of performance and conduct throughout ${pronoun} association with our organization.</p>
+<p style="${par}">This certificate is issued at ${pronoun} request and for whatever purpose it may serve.</p>
+${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory – Human Resources Department')}
+</div>`,
+
       };
 
-      const extraLines = Object.entries(extra).filter(([, v]) => v !== '' && v != null)
-        .map(([k, v]) => `- ${k.replace(/_/g, ' ')}: ${v}`).join('\n');
+      let letter, isHtml = false;
 
-      const prompt = `You are the HR department of Maxvolt Energy Industries Limited (India). Write ${typeInstructions[letterType] || 'a professional HR letter.'}
+      if (templateLetters[letterType]) {
+        letter = templateLetters[letterType]();
+        isHtml = true;
+      } else {
+        // AI for salary_revision, address_proof, warning, promotion
+        const aiTypeInstructions = {
+          salary_revision: 'a salary revision letter communicating the revised compensation and effective date.',
+          address_proof: 'an employment / address verification letter suitable for bank or visa purposes.',
+          warning: 'a formal written warning letter regarding the stated issue, professional and firm in tone.',
+          promotion: 'a promotion letter communicating the new designation, effective date and congratulations.',
+        };
+        const extraLines = Object.entries(extra).filter(([, v]) => v !== '' && v != null)
+          .map(([k, v]) => `- ${k.replace(/_/g, ' ')}: ${v}`).join('\n');
 
-Use the following details. Do NOT invent facts not provided; if a needed detail is missing, use a clearly bracketed placeholder like [____].
+        const aiPrompt = `You are the HR department of Maxvolt Energy Industries Limited (India). Write ${aiTypeInstructions[letterType] || 'a professional HR letter.'} Return ONLY clean HTML (no markdown, no preamble). Use inline styles only. Match this exact structure:
 
-LETTER REFERENCE: ${ref}
+LETTER REF: ${ref}
 DATE: ${todayDate}
-EMPLOYEE NAME: ${emp.display_name || uRow?.full_name || 'Employee'}
-EMPLOYEE CODE: ${emp.employee_code || '[____]'}
-DESIGNATION: ${emp.designation || '[____]'}
-DEPARTMENT: ${emp.department || '[____]'}
-DATE OF JOINING: ${emp.date_of_joining || '[____]'}
-WORK LOCATION: ${emp.work_location || 'Ghaziabad, Uttar Pradesh'}
-EMPLOYMENT TYPE: ${emp.employment_type || '[____]'}
-ANNUAL CTC: ${annualCTC ? '₹' + annualCTC.toLocaleString('en-IN') : '[____]'}
-${extraLines ? 'ADDITIONAL DETAILS:\n' + extraLines : ''}
+EMPLOYEE: ${empName} | CODE: ${empCode} | DESIGNATION: ${designation} | DEPT: ${department}
+LOCATION: ${location} | ANNUAL CTC: ${annualCTC ? fmtMoney(annualCTC) : '[____]'}
+${extraLines ? 'ADDITIONAL:\n' + extraLines : ''}
 
-OUTPUT FORMAT: Produce clean Markdown suitable for a professional Indian corporate HR letter.
-- Start with the letter title in ALL CAPS (e.g. "**APPOINTMENT LETTER**"), centred using surrounding blank lines.
-- Include "**Ref:** ${ref}" and "**Date:** ${todayDate}" on separate lines below the title.
-- Write a proper salutation: "Dear **[Name]**,"
-- Body: well-structured paragraphs with <strong> on key terms and figures (salary amounts, dates, designations).
-- For appointment/offer letters: include a salary table in Markdown format with columns for Component, Monthly (₹), and Annual (₹), listing Basic, HRA, Conveyance, Gross, PF deduction, and Net Pay.
-- For warning letters: state the violation clearly, consequences, and expected corrective action.
-- Closing paragraph: "Yours sincerely," followed by two blank lines, then "**For Maxvolt Energy Industries Limited**", then "**Authorised Signatory**" and "**Human Resources Department**".
-- Keep it concise, formal, and legally appropriate for India. Output ONLY the letter content, no preamble or explanation.`;
+Structure the HTML as: title (centered, bold, underlined), ref/date, salutation, body paragraphs, closing "Sincerely," + "For Maxvolt Energy Industries Limited" + "Authorised Signatory – Human Resources Department". All text font-family:Arial,sans-serif;font-size:11px;line-height:1.8;color:#1a1a1a;`;
 
-      let letter;
-      try { letter = await callAI(prompt); }
-      catch (e) { return res.json({ success: false, error: `AI failed: ${e.message}` }); }
-      if (!letter) return res.json({ success: false, error: 'AI returned an empty letter' });
+        try { letter = await callAI(aiPrompt); isHtml = true; }
+        catch (e) { return res.json({ success: false, error: `AI failed: ${e.message}` }); }
+        if (!letter) return res.json({ success: false, error: 'AI returned an empty letter' });
+      }
 
-      return res.json({ success: true, letter, ref, letter_type: letterType });
+      return res.json({ success: true, letter, ref, letter_type: letterType, isHtml });
     }
 
     /* ── AI: HR Assistant ────────────────────────────── */
