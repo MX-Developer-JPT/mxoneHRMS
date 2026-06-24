@@ -127,6 +127,12 @@ router.post('/entities/:type/bulk-delete', async (req, res) => {
   res.json({ success: true, deleted });
 });
 
+// ── Delete ALL entities of a type ──────────────────────────
+router.delete('/entities/:type/all', async (req, res) => {
+  const r = await run('DELETE FROM entities WHERE type=$1', [req.params.type]);
+  res.json({ success: true, deleted: r.rowCount });
+});
+
 // ── List users ─────────────────────────────────────────────
 router.get('/users', async (_req, res) => {
   const users = await all(

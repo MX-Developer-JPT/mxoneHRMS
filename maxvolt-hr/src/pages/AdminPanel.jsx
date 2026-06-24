@@ -346,6 +346,7 @@ function EntitiesTab({ typeCounts }) {
   const [viewRecord, setViewRecord]       = useState(null);
   const [confirm, setConfirm]             = useState(null);
   const [selected, setSelected]           = useState(new Set());
+  const [deleteAllTarget, setDeleteAllTarget] = useState(null); // type string to confirm delete-all
 
   const loadRecords = useCallback(async (type = selectedType, pg = page, q = search) => {
     if (!type) return;
@@ -399,6 +400,16 @@ function EntitiesTab({ typeCounts }) {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
 
+  const handleDeleteAll = async () => {
+    if (!deleteAllTarget) return;
+    try {
+      const r = await adminFetch(`/entities/${deleteAllTarget}/all`, { method: 'DELETE' });
+      toast.success(`Deleted all ${r.deleted} ${deleteAllTarget} records`);
+      setDeleteAllTarget(null);
+      if (selectedType === deleteAllTarget) loadRecords();
+    } catch(e) { toast.error(e.message); }
+  };
+
   // Derive display columns from first record
   const SKIP = ['_created_at','_updated_at'];
   const getPreviewCols = (recs) => {
@@ -415,14 +426,22 @@ function EntitiesTab({ typeCounts }) {
         <div className="bg-muted/50 px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Entity Types</div>
         <div className="overflow-y-auto max-h-[calc(100vh-300px)]">
           {typeCounts.map(({ type, count }) => (
-            <button
+            <div
               key={type}
-              onClick={() => selectType(type)}
-              className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 transition-colors ${selectedType === type ? 'bg-primary/10 text-primary font-medium' : ''}`}
+              className={`group w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 transition-colors ${selectedType === type ? 'bg-primary/10 text-primary font-medium' : ''}`}
             >
-              <span className="truncate">{type}</span>
-              <span className="text-xs text-muted-foreground ml-2 flex-shrink-0">{count}</span>
-            </button>
+              <button className="flex-1 flex items-center justify-between min-w-0 text-left" onClick={() => selectType(type)}>
+                <span className="truncate">{type}</span>
+                <span className="text-xs text-muted-foreground ml-2 flex-shrink-0">{count}</span>
+              </button>
+              <button
+                title={`Delete all ${type} records`}
+                onClick={e => { e.stopPropagation(); setDeleteAllTarget(type); }}
+                className="ml-2 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-destructive"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
           ))}
         </div>
       </div>
@@ -515,6 +534,19 @@ function EntitiesTab({ typeCounts }) {
       {editRecord && <JsonEditorModal title={`Edit — ${selectedType}`} data={editRecord} onSave={handleSaveEdit} onClose={() => setEditRecord(null)} />}
       {newRecord  && <JsonEditorModal title={`New ${selectedType}`} data={newRecord} onSave={handleCreate} onClose={() => setNewRecord(null)} isNew />}
       {confirm && <ConfirmDialog message={`Delete record "${confirm.id}"?`} onConfirm={() => handleDelete(confirm.id)} onCancel={() => setConfirm(null)} />}
+      {deleteAllTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-background rounded-xl shadow-2xl p-6 max-w-sm mx-4 text-center">
+            <Trash2 className="w-10 h-10 text-destructive mx-auto mb-3" />
+            <p className="font-semibold mb-1">Delete ALL {deleteAllTarget} records?</p>
+            <p className="text-sm text-muted-foreground mb-6">This will permanently delete every record of this type. This cannot be undone.</p>
+            <div className="flex gap-3 justify-center">
+              <Button variant="outline" size="sm" onClick={() => setDeleteAllTarget(null)}>Cancel</Button>
+              <Button variant="destructive" size="sm" onClick={handleDeleteAll}>Delete All</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
