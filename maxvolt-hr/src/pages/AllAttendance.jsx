@@ -44,6 +44,11 @@ export default function AllAttendance() {
   const [collapsedDepts, setCollapsedDepts] = useState({});
   const [markingAbsent, setMarkingAbsent] = useState(false);
 
+  const safeFormatTime = (ts) => {
+    if (!ts) return '—';
+    try { const d = new Date(String(ts).replace(' ', 'T')); return isNaN(d.getTime()) ? '—' : format(d, 'hh:mm a'); } catch { return '—'; }
+  };
+
   useEffect(() => { loadData(); }, [date]);
 
   useEffect(() => {
@@ -394,8 +399,8 @@ export default function AllAttendance() {
                             {(record.punch_sessions?.length > 0 ? record.punch_sessions : (record.check_in_time ? [{ punch_in: record.check_in_time, punch_out: record.check_out_time }] : [])).map((session, idx) => (
                               <span key={idx} className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded border border-gray-100">
                                 {record.punch_sessions?.length > 1 && <span className="text-gray-400 mr-1">S{idx + 1}</span>}
-                                <span className="text-green-600 font-medium">In</span> {format(new Date(session.punch_in), 'hh:mm a')}
-                                {session.punch_out && <> · <span className="text-red-500 font-medium">Out</span> {format(new Date(session.punch_out), 'hh:mm a')}</>}
+                                <span className="text-green-600 font-medium">In</span> {safeFormatTime(session.punch_in)}
+                                {session.punch_out && <> · <span className="text-red-500 font-medium">Out</span> {safeFormatTime(session.punch_out)}</>}
                                 {!session.punch_out && <span className="text-green-500 ml-1">●</span>}
                               </span>
                             ))}

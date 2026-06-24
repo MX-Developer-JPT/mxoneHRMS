@@ -102,6 +102,10 @@ export default function EmployeeDashboard({ user }) {
   const att = data.todayAtt;
   const checkedIn  = att?.check_in_time;
   const checkedOut = att?.check_out_time;
+  const safeFormatTime = (ts) => {
+    if (!ts) return '—';
+    try { const d = new Date(String(ts).replace(' ', 'T')); return isNaN(d.getTime()) ? '—' : format(d, 'hh:mm a'); } catch { return '—'; }
+  };
 
   const leaveStatusColor = {
     pending:   'bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300',
@@ -160,8 +164,8 @@ export default function EmployeeDashboard({ user }) {
                 <p className="text-sm text-muted-foreground font-medium">Today's Attendance</p>
                 <p className="text-xl font-bold text-foreground">{attStatus}</p>
                 <div className="flex gap-4 mt-1 text-sm text-muted-foreground">
-                  {checkedIn && <span>In: <strong className="text-foreground">{format(new Date(att.check_in_time), 'hh:mm a')}</strong></span>}
-                  {checkedOut && <span>Out: <strong className="text-foreground">{format(new Date(att.check_out_time), 'hh:mm a')}</strong></span>}
+                  {checkedIn && <span>In: <strong className="text-foreground">{safeFormatTime(att.check_in_time)}</strong></span>}
+                  {checkedOut && <span>Out: <strong className="text-foreground">{safeFormatTime(att.check_out_time)}</strong></span>}
                   {att?.working_hours > 0 && <span>Hours: <strong className="text-foreground">{att.working_hours.toFixed(1)}h</strong></span>}
                 </div>
               </div>

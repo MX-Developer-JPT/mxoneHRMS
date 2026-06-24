@@ -1,4 +1,5 @@
 import { Suspense, useState } from 'react'
+import ErrorBoundary from '@/components/ErrorBoundary'
 import { Toaster } from "@/components/ui/toaster"
 import { Toaster as SonnerToaster } from 'sonner'
 import AiStatusBanner from '@/components/AiStatusBanner'
@@ -114,9 +115,11 @@ const AnimatedPage = ({ children, pageName }) => {
 
 const LayoutWrapper = ({ children, currentPageName }) => {
   const content = (
-    <Suspense fallback={<PageLoader />}>
-      <AnimatedPage pageName={currentPageName}>{children}</AnimatedPage>
-    </Suspense>
+    <ErrorBoundary key={currentPageName}>
+      <Suspense fallback={<PageLoader />}>
+        <AnimatedPage pageName={currentPageName}>{children}</AnimatedPage>
+      </Suspense>
+    </ErrorBoundary>
   );
   return Layout ? <Layout currentPageName={currentPageName}>{content}</Layout> : content;
 };

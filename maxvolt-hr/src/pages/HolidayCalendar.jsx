@@ -51,8 +51,9 @@ function MonthCalendar({ year, month, holidays, workingDayOverrides, onDayClick,
             const dayOfWeek = getDay(day);
             const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
             const dateKey = format(day, 'yyyy-MM-dd');
-            const isWorkingOverride = workingDayOverrides[dateKey] === true;
-            const isOffOverride = workingDayOverrides[dateKey] === false;
+            const rawOverride = workingDayOverrides[dateKey];
+            const isWorkingOverride = rawOverride === true || rawOverride?.working === true;
+            const isOffOverride = rawOverride === false || rawOverride?.working === false;
             const isWorkingDay = isWeekend ? isWorkingOverride : !isOffOverride;
 
             return (

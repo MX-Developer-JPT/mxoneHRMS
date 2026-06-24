@@ -18,6 +18,18 @@ export default function ManagementDashboard({ user }) {
 
   useEffect(() => { loadData().catch(e => { console.error('ManagementDashboard:', e.message); setLoading(false); }); }, []);
 
+  const safeFormatTime = (ts) => {
+    if (!ts) return '—';
+    try {
+      const d = new Date(String(ts).replace(' ', 'T'));
+      return isNaN(d.getTime()) ? '—' : format(d, 'hh:mm a');
+    } catch { return '—'; }
+  };
+  const safeFormatDate = (ds, fmt = 'MMM d, yyyy') => {
+    if (!ds) return '—';
+    try { const d = new Date(ds + 'T00:00:00'); return isNaN(d.getTime()) ? ds : format(d, fmt); } catch { return ds; }
+  };
+
   const loadData = async () => {
     const today = format(new Date(), 'yyyy-MM-dd');
 
@@ -67,7 +79,7 @@ export default function ManagementDashboard({ user }) {
         name: e.display_name || userMap[e.user_id]?.full_name || '—',
         dept: e.department || '—',
         designation: e.designation || '—',
-        checkIn: att?.check_in_time ? format(new Date(att.check_in_time), 'hh:mm a') : '—',
+        checkIn: safeFormatTime(att?.check_in_time),
         workingHours: att?.working_hours ? `${att.working_hours.toFixed(1)}h` : '—',
         status: att?.status || 'present'
       };
@@ -391,7 +403,7 @@ export default function ManagementDashboard({ user }) {
                   {data.teamLeaves.slice(0, 5).map(lv => (
                     <div key={lv.id} className="flex items-start justify-between p-3 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-100 dark:border-amber-900/50">
                       <div>
-                        <p className="text-sm font-medium text-foreground">{format(new Date(lv.start_date), 'MMM d')} – {format(new Date(lv.end_date), 'MMM d')}</p>
+                        <p className="text-sm font-medium text-foreground">{safeFormatDate(lv.start_date, 'MMM d')} – {safeFormatDate(lv.end_date, 'MMM d')}</p>
                         <p className="text-xs text-muted-foreground line-clamp-1">{lv.reason}</p>
                         <p className="text-xs text-muted-foreground">{lv.total_days} day(s)</p>
                       </div>

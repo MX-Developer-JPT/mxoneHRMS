@@ -20,7 +20,19 @@ export default function HRDashboard({ user }) {
   const [upcomingEvents, setUpcomingEvents] = useState([]);
   const [complianceInsights, setComplianceInsights] = useState([]);
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData().catch(e => { console.error('HRDashboard:', e.message); setLoading(false); }); }, []);
+
+  const safeFormatTime = (ts) => {
+    if (!ts) return '—';
+    try {
+      const d = new Date(String(ts).replace(' ', 'T'));
+      return isNaN(d.getTime()) ? '—' : format(d, 'hh:mm a');
+    } catch { return '—'; }
+  };
+  const safeFormatDate = (ds, fmt = 'MMM d, yyyy') => {
+    if (!ds) return '—';
+    try { const d = new Date(ds + 'T00:00:00'); return isNaN(d.getTime()) ? ds : format(d, fmt); } catch { return ds; }
+  };
 
   const loadData = async () => {
     const today = format(new Date(), 'yyyy-MM-dd');
@@ -75,7 +87,7 @@ export default function HRDashboard({ user }) {
       return {
         name: emp?.display_name || u?.full_name || a.user_id,
         dept: emp?.department || '—',
-        checkIn: a.check_in_time ? format(new Date(a.check_in_time), 'hh:mm a') : '—',
+        checkIn: safeFormatTime(a.check_in_time),
         status: a.status || 'present'
       };
     });
@@ -135,6 +147,7 @@ export default function HRDashboard({ user }) {
       <div className="w-8 h-8 border-[3px] border-indigo-200 dark:border-indigo-900 border-t-indigo-600 rounded-full animate-spin" />
     </div>
   );
+  if (!data) return <div className="p-8 text-center text-gray-400">Could not load dashboard. Please refresh the page.</div>;
 
   const totalPending = data.pendingLeaves + data.pendingReimbursements + data.pendingRegularisations + data.openTickets;
   const openModal = (title, content) => setDetailModal({ title, content });
@@ -305,7 +318,7 @@ export default function HRDashboard({ user }) {
                   : data.recentLeaves.map((lv, i) => (
                     <div key={i} className="flex justify-between items-center p-3 bg-amber-50 dark:bg-amber-950/40 rounded-lg">
                       <div>
-                        <p className="text-sm font-medium text-foreground">{format(new Date(lv.start_date), 'MMM d')} – {format(new Date(lv.end_date), 'MMM d')}</p>
+                        <p className="text-sm font-medium text-foreground">{safeFormatDate(lv.start_date, 'MMM d')} – {safeFormatDate(lv.end_date, 'MMM d')}</p>
                         <p className="text-xs text-muted-foreground">{lv.total_days} day(s)</p>
                       </div>
                       <Badge className="bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 text-xs border-0">Pending</Badge>
@@ -629,7 +642,7 @@ export default function HRDashboard({ user }) {
                   {data.recentLeaves.map(lv => (
                     <div key={lv.id} className="flex items-center justify-between p-2 rounded-lg bg-amber-50 dark:bg-amber-950/40">
                       <div>
-                        <p className="text-sm font-medium text-foreground">{format(new Date(lv.start_date), 'MMM d')} – {format(new Date(lv.end_date), 'MMM d')}</p>
+                        <p className="text-sm font-medium text-foreground">{safeFormatDate(lv.start_date, 'MMM d')} – {safeFormatDate(lv.end_date, 'MMM d')}</p>
                         <p className="text-xs text-muted-foreground">{lv.total_days} day(s)</p>
                       </div>
                       <Badge className="bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 text-xs border-0">Pending</Badge>
