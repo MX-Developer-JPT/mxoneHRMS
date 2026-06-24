@@ -12,40 +12,38 @@ import BiometricCodeMapping from '@/components/attendance/BiometricCodeMapping';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-// Display a UTC ISO string in IST
-// All LogDate values stored in DB are UTC ISO strings (with or without trailing Z).
-// Force parse as UTC by ensuring a Z suffix before converting to IST.
-function formatIST(utcStr) {
-  if (!utcStr) return '-';
+// Biometric devices send local IST time without any timezone offset.
+// The backend stores the value as-is (Node on Railway/UTC just preserves the digits).
+// So the stored string "2024-01-15T09:30:00.000Z" actually MEANS 09:30 IST —
+// the Z suffix is misleading; treat the clock digits as IST directly.
+// Strategy: strip any tz suffix, parse as UTC (to avoid browser local-tz interference),
+// then read the UTC fields — those digits ARE the IST time.
+function formatIST(raw) {
+  if (!raw) return '-';
   try {
-    const s = String(utcStr).trim();
-    // Ensure we parse as UTC: append Z if no timezone marker present
-    const forceUTC = /Z$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(' ', 'T') + 'Z';
-    const utc = new Date(forceUTC);
-    if (isNaN(utc.getTime())) return utcStr;
-    const ist = new Date(utc.getTime() + IST_OFFSET_MS);
-    const dd = String(ist.getUTCDate()).padStart(2, '0');
-    const yyyy = ist.getUTCFullYear();
-    let h = ist.getUTCHours();
-    const min = String(ist.getUTCMinutes()).padStart(2, '0');
+    const s = String(raw).trim().replace(' ', 'T');
+    // Strip timezone marker so we read the raw clock digits
+    const naive = s.replace(/Z$|[+-]\d{2}:?\d{2}$/, '');
+    const d = new Date(naive + 'Z'); // parse as UTC to lock digits
+    if (isNaN(d.getTime())) return raw;
+    const dd   = String(d.getUTCDate()).padStart(2, '0');
+    const yyyy = d.getUTCFullYear();
+    let h      = d.getUTCHours();
+    const min  = String(d.getUTCMinutes()).padStart(2, '0');
     const ampm = h >= 12 ? 'PM' : 'AM';
     h = h % 12 || 12;
-    return `${dd} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][ist.getUTCMonth()]} ${yyyy}, ${h}:${min} ${ampm} IST`;
-  } catch { return utcStr; }
+    return `${dd} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()]} ${yyyy}, ${h}:${min} ${ampm} IST`;
+  } catch { return raw; }
 }
 
-// Check if a date string falls on today in IST
+// Check if a date string falls on today in IST.
+// Extract the date portion directly from the stored clock digits (which are IST).
 function isTodayIST(dateStr) {
   try {
     if (!dateStr) return false;
-    const hasTimezone = /Z$|[+-]\d{2}:?\d{2}$/.test(String(dateStr).trim());
-    const todayIST = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
-    if (hasTimezone) {
-      const ist = new Date(new Date(dateStr).getTime() + IST_OFFSET_MS);
-      return ist.toISOString().slice(0, 10) === todayIST;
-    } else {
-      return String(dateStr).trim().slice(0, 10) === todayIST;
-    }
+    const storedDate = String(dateStr).trim().replace(' ', 'T').slice(0, 10);
+    const todayIST   = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+    return storedDate === todayIST;
   } catch { return false; }
 }
 
@@ -183,12 +181,8 @@ export default function AttendanceLogDashboard() {
   const getLogISTDate = (logDate) => {
     if (!logDate) return '';
     try {
-      const s = String(logDate).trim();
-      // All stored LogDates are UTC — force UTC parse then convert to IST
-      const forceUTC = /Z$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(' ', 'T') + 'Z';
-      const d = new Date(forceUTC);
-      if (isNaN(d.getTime())) return '';
-      return new Date(d.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+      // Stored clock digits are IST — just extract the date portion directly
+      return String(logDate).trim().replace(' ', 'T').slice(0, 10);
     } catch { return ''; }
   };
 

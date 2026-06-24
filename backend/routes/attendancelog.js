@@ -57,23 +57,20 @@ async function processRecord(record) {
 
   if (!punch_time) return { ok: false, reason: 'punch_time is required' };
 
-  // Biometric devices send local IST time without any timezone suffix (e.g. "2024-01-15 09:30:00").
-  // Node.js / Railway runs in UTC, so new Date("2024-01-15 09:30:00") treats it as UTC, storing
-  // a timestamp that is 5h 30m ahead of the actual punch. The frontend then adds another +5:30,
-  // making the displayed time 5h 30m wrong.
-  // Fix: if no timezone marker is present, subtract IST offset (5h 30m) so the stored UTC is correct.
-  const IST_MS = 5.5 * 60 * 60 * 1000;
-  function deviceTimeToUTC(raw) {
-    const s = String(raw).trim().replace(' ', 'T');
-    if (/Z$|[+-]\d{2}:?\d{2}$/.test(s)) {
-      // Has explicit timezone — trust it, convert normally
-      return new Date(s).toISOString();
+  // "Store IST, display IST" — biometric devices send local IST time without timezone info.
+  // We store the IST clock digits with a Z suffix. The display layer reads them back as IST
+  // directly (no offset arithmetic needed). For the rare case where a tz-aware timestamp
+  // arrives, we convert to IST wall-clock so storage stays consistent.
+  const punchIso = (() => {
+    const clean = String(punch_time).trim().replace(' ', 'T');
+    if (!/Z$|[+-]\d{2}:?\d{2}$/.test(clean)) {
+      // No timezone — IST clock digits, store with Z
+      return clean.replace(/(\.\d+)?$/, '.000Z');
     }
-    // No timezone info — assume device sends IST, subtract 5:30 to get UTC
-    return new Date(new Date(s).getTime() - IST_MS).toISOString();
-  }
-
-  const punchIso  = deviceTimeToUTC(punch_time);
+    // Has timezone — convert to IST wall-clock then store with Z
+    const IST_MS = 5.5 * 60 * 60 * 1000;
+    return new Date(new Date(clean).getTime() + IST_MS).toISOString();
+  })();
   const punchDate = punchIso.slice(0, 10);
 
   // 1. Always store the raw punch as AttendanceLog (shown in Biometric Attendance Log page)
