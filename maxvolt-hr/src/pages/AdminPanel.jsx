@@ -31,7 +31,7 @@ async function adminFetch(path, opts = {}) {
 }
 
 // ── JSON editor modal ──────────────────────────────────────
-function JsonEditorModal({ title, data, onSave, onClose, isNew = false }) {
+function JsonEditorModal({ title, data, onSave, onClose, isNew = false, readOnly = false }) {
   const [text, setText] = useState(JSON.stringify(data || {}, null, 2));
   const [error, setError] = useState('');
 
@@ -61,10 +61,12 @@ function JsonEditorModal({ title, data, onSave, onClose, isNew = false }) {
           />
         </div>
         <div className="flex justify-end gap-2 p-4 border-t">
-          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
-          <Button size="sm" onClick={handleSave}>
-            <Check className="w-4 h-4 mr-1" /> {isNew ? 'Create' : 'Save'}
-          </Button>
+          <Button variant="outline" size="sm" onClick={onClose}>{readOnly ? 'Close' : 'Cancel'}</Button>
+          {!readOnly && (
+            <Button size="sm" onClick={handleSave}>
+              <Check className="w-4 h-4 mr-1" /> {isNew ? 'Create' : 'Save'}
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -525,7 +527,7 @@ function EntitiesTab({ typeCounts }) {
         )}
       </div>
 
-      {viewRecord && <JsonEditorModal title={`View — ${selectedType}`} data={viewRecord} onSave={() => {}} onClose={() => setViewRecord(null)} />}
+      {viewRecord && <JsonEditorModal title={`View — ${selectedType}`} data={viewRecord} onSave={() => {}} onClose={() => setViewRecord(null)} readOnly />}
       {editRecord && <JsonEditorModal title={`Edit — ${selectedType}`} data={editRecord} onSave={handleSaveEdit} onClose={() => setEditRecord(null)} />}
       {newRecord  && <JsonEditorModal title={`New ${selectedType}`} data={newRecord} onSave={handleCreate} onClose={() => setNewRecord(null)} isNew />}
       {confirm && <ConfirmDialog message={`Delete record "${confirm.id}"?`} onConfirm={() => handleDelete(confirm.id)} onCancel={() => setConfirm(null)} />}

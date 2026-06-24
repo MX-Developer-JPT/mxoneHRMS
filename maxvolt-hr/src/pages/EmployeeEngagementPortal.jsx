@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Search, Users, Sparkles, Building2, Briefcase, Calendar } from 'lucide-react';
-import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 function EmployeeCard({ employee, user }) {
   const displayName = employee.display_name || user?.full_name || '?';
@@ -32,7 +32,7 @@ function EmployeeCard({ employee, user }) {
         </div>
         {employee.date_of_joining && (
           <p className="text-xs text-gray-400 flex items-center gap-1">
-            <Calendar className="w-3 h-3" /> Joined {format(new Date(employee.date_of_joining), 'MMM yyyy')}
+            <Calendar className="w-3 h-3" /> Joined {safeDate(employee.date_of_joining, 'MMM yyyy')}
           </p>
         )}
       </CardContent>
@@ -40,38 +40,30 @@ function EmployeeCard({ employee, user }) {
   );
 }
 
-function NewJoinerCard({ announcement }) {
+function NewJoinerCard({ employee }) {
+  const displayName = employee.display_name || '?';
+  const initials = displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
   return (
     <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-4 flex gap-4 items-start">
       <div className="flex-shrink-0">
-        {announcement.profile_picture_url ? (
-          <img
-            src={announcement.profile_picture_url}
-            alt={announcement.employee_full_name}
-            className="w-14 h-14 rounded-full object-cover border-2 border-blue-200"
-          />
+        {employee.profile_picture_url ? (
+          <img src={employee.profile_picture_url} alt={displayName} className="w-14 h-14 rounded-full object-cover border-2 border-blue-200" />
         ) : (
           <div className="w-14 h-14 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
-            <span className="text-white text-xl font-bold">
-              {(announcement.employee_full_name || '?').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
-            </span>
+            <span className="text-white text-xl font-bold">{initials}</span>
           </div>
         )}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="font-semibold text-gray-900">{announcement.employee_full_name}</p>
+          <p className="font-semibold text-gray-900">{displayName}</p>
           <Badge className="bg-green-100 text-green-700 text-xs">New Joiner</Badge>
         </div>
-        <p className="text-sm text-gray-500">
-          {announcement.employee_designation} · {announcement.employee_department}
-        </p>
-        {announcement.date_of_joining && (
-          <p className="text-xs text-gray-400 mt-0.5">
-            Joined {format(new Date(announcement.date_of_joining), 'MMM d, yyyy')}
-          </p>
+        <p className="text-sm text-gray-500">{employee.designation} · {employee.department}</p>
+        {employee.date_of_joining && (
+          <p className="text-xs text-gray-400 mt-0.5">Joined {safeDate(employee.date_of_joining, 'MMM d, yyyy')}</p>
         )}
-        <p className="text-sm text-gray-700 mt-2 italic">"{announcement.greeting_message}"</p>
+        <p className="text-sm text-gray-700 mt-2 italic">Welcome {displayName} to the team! 🎉</p>
       </div>
     </div>
   );
@@ -87,19 +79,22 @@ export default function EmployeeEngagementPortal() {
 
   const loadData = async () => {
     try {
-      const [emps, anns] = await Promise.all([
-        base44.entities.Employee.list('-date_of_joining', 500),
-        base44.entities.NewJoinerAnnouncement.list('-created_date', 20)
-      ]);
-      // Only show employees who: completed onboarding AND HR has assigned dept, designation, shift, reporting manager
+      const emps = await base44.entities.Employee.list('-date_of_joining', 500);
       const activeEmps = emps.filter(e =>
         e.onboarding_submitted === true &&
         (!e.status || e.status === 'active' || e.status === 'on_leave') &&
         e.department && e.department !== 'unassigned' && e.department !== 'pending' &&
         e.designation && e.designation !== 'Pending Assignment'
       );
+      // New joiners = employees who joined in the last 30 days
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const newJoiners = activeEmps
+        .filter(e => e.date_of_joining && new Date(e.date_of_joining + 'T00:00:00') >= thirtyDaysAgo)
+        .sort((a, b) => b.date_of_joining.localeCompare(a.date_of_joining))
+        .slice(0, 10);
       setEmployees(activeEmps);
-      setAnnouncements(anns);
+      setAnnouncements(newJoiners);
     } catch (e) {
       console.error(e);
     }
@@ -135,8 +130,8 @@ export default function EmployeeEngagementPortal() {
               <Sparkles className="w-5 h-5 text-yellow-500" /> New Joiners Activity
             </h2>
             <div className="space-y-3">
-              {announcements.map(ann => (
-                <NewJoinerCard key={ann.id} announcement={ann} />
+              {announcements.map(emp => (
+                <NewJoinerCard key={emp.id} employee={emp} />
               ))}
             </div>
           </div>

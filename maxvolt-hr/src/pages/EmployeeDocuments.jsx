@@ -11,6 +11,7 @@ import { FileText, Upload, Eye, Plus, Search, User, ChevronDown, ChevronRight } 
 import DocViewerModal from '@/components/DocViewerModal';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const documentTypes = [
   { value: 'aadhar', label: 'Aadhar Card' },
@@ -193,7 +194,7 @@ export default function EmployeeDocuments() {
                                 </span>
                               </div>
                               <p className="text-xs text-gray-400">
-                                {format(new Date(doc.created_date), 'MMM d, yyyy')}
+                                {safeDate(doc.created_date, 'MMM d, yyyy')}
                               </p>
                               <div className="flex gap-2">
                                 <Button size="sm" variant="outline" className="flex-1" onClick={() => setViewerDoc({ url: doc.document_url, title: doc.document_name || 'Document' })}>

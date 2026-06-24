@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { toast } from 'sonner';
 import { Briefcase, MapPin, Clock, Users, Search, ChevronRight, Calendar, CheckCircle2, Upload, Loader2, ArrowLeft } from 'lucide-react';
 import { format, isPast } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const EMPTY_FORM = {
   full_name: '', email: '', phone: '', current_city: '',
@@ -117,7 +118,7 @@ function JobListPage({ jobs, loading, onSelect }) {
                     )}
                     {job.application_deadline && (
                       <p className="text-xs text-red-500 mt-2 flex items-center gap-1">
-                        <Calendar className="w-3 h-3" /> Apply by: {format(new Date(job.application_deadline), 'dd MMM yyyy')}
+                        <Calendar className="w-3 h-3" /> Apply by: {safeDate(job.application_deadline, 'dd MMM yyyy')}
                       </p>
                     )}
                   </div>
@@ -252,7 +253,7 @@ function JobDetailPage({ jobId, onBack }) {
           )}
           {job.application_deadline && (
             <p className="text-sm text-red-500 flex items-center gap-1">
-              <Calendar className="w-3.5 h-3.5" /> Apply by {format(new Date(job.application_deadline), 'dd MMMM yyyy')}
+              <Calendar className="w-3.5 h-3.5" /> Apply by {safeDate(job.application_deadline, 'dd MMMM yyyy')}
             </p>
           )}
         </CardContent>

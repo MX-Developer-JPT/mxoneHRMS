@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import { Plus, Megaphone, Trash2, Eye, Edit, Archive, Paperclip, X, FileText, Image, Upload } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 
@@ -338,7 +339,7 @@ export default function AnnouncementManagement() {
                       </Badge>
                     </div>
                     <p className="text-xs text-gray-500">
-                      {ann.publish_date ? `Published ${format(new Date(ann.publish_date), 'MMM d, yyyy')}` : `Created ${format(new Date(ann.created_date), 'MMM d, yyyy')}`}
+                      {ann.publish_date ? `Published ${safeDate(ann.publish_date, 'MMM d, yyyy')}` : `Created ${safeDate(ann.created_date, 'MMM d, yyyy')}`}
                       {' · '}
                       {ann.target_audience === 'all' ? 'All employees' : `Depts: ${ann.target_departments?.join(', ') || 'None selected'}`}
                     </p>

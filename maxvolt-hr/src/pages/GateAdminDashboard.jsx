@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { format, isToday } from 'date-fns';
+import { safeDate, safeTime } from '@/lib/dateUtils';
 import {
   LogOut, LogIn, User, Clock, CheckCircle2, ShieldCheck,
   Search, Calendar, ArrowRightLeft, History
@@ -72,17 +73,22 @@ export default function GateAdminDashboard() {
 
   const loadData = async () => {
     setLoading(true);
-    const [currentUser, allPasses, allEmployees] = await Promise.all([
-      base44.auth.me(),
-      base44.entities.GatePass.list('-created_date', 500),
-      base44.entities.Employee.list(),
-    ]);
-    const empMap = {};
-    allEmployees.forEach(e => { empMap[e.user_id] = e; });
-    setUser(currentUser);
-    setEmployees(empMap);
-    setPasses(allPasses.filter(p => p.status !== 'pending_approval'));
-    setLoading(false);
+    try {
+      const [currentUser, allPasses, allEmployees] = await Promise.all([
+        base44.auth.me(),
+        base44.entities.GatePass.list('-created_date', 500),
+        base44.entities.Employee.list(),
+      ]);
+      const empMap = {};
+      allEmployees.forEach(e => { empMap[e.user_id] = e; });
+      setUser(currentUser);
+      setEmployees(empMap);
+      setPasses(allPasses.filter(p => p.status !== 'pending_approval'));
+    } catch (e) {
+      console.error('GateAdminDashboard loadData:', e.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const markDeparture = async () => {
@@ -244,9 +250,9 @@ export default function GateAdminDashboard() {
                     </div>
                     <div className="flex items-center gap-3 flex-wrap">
                       <div className="text-right text-xs text-gray-500">
-                        <p>Req: {format(new Date(pass.created_date), 'hh:mm a')}</p>
-                        {pass.expected_return_time && <p>Exp: {format(new Date(pass.expected_return_time), 'hh:mm a')}</p>}
-                        {pass.departure_time && <p className="text-orange-600 font-medium">Out: {format(new Date(pass.departure_time), 'hh:mm a')}</p>}
+                        <p>Req: {safeTime(pass.created_date)}</p>
+                        {pass.expected_return_time && <p>Exp: {safeTime(pass.expected_return_time)}</p>}
+                        {pass.departure_time && <p className="text-orange-600 font-medium">Out: {safeTime(pass.departure_time)}</p>}
                       </div>
                       <Badge className={STATUS_COLORS[pass.status]}>{STATUS_LABELS[pass.status]}</Badge>
                       {pass.status === 'approved' && (
@@ -292,8 +298,8 @@ export default function GateAdminDashboard() {
                     </div>
                     <div className="flex items-center gap-4 flex-wrap">
                       <div className="text-xs text-gray-500 space-y-0.5">
-                        {pass.departure_time && <p className="text-orange-600 flex items-center gap-1"><LogOut className="w-3 h-3" /> Out: {format(new Date(pass.departure_time), 'hh:mm a')}</p>}
-                        {pass.return_time && <p className="text-green-600 flex items-center gap-1"><LogIn className="w-3 h-3" /> In: {format(new Date(pass.return_time), 'hh:mm a')}</p>}
+                        {pass.departure_time && <p className="text-orange-600 flex items-center gap-1"><LogOut className="w-3 h-3" /> Out: {safeTime(pass.departure_time)}</p>}
+                        {pass.return_time && <p className="text-green-600 flex items-center gap-1"><LogIn className="w-3 h-3" /> In: {safeTime(pass.return_time)}</p>}
                         {pass.departure_time && pass.return_time && (
                           <p className="text-gray-500 flex items-center gap-1"><Clock className="w-3 h-3" /> Duration: {Math.round((new Date(pass.return_time) - new Date(pass.departure_time)) / 60000)} min</p>
                         )}
@@ -328,10 +334,10 @@ export default function GateAdminDashboard() {
                 </div>
                 {selected.outing_type && <p><span className="font-medium text-gray-600">Type:</span> <Badge variant="outline">{OUTING_LABELS[selected.outing_type] || selected.outing_type}</Badge></p>}
                 <p><span className="font-medium text-gray-600">Reason:</span> {selected.reason || '—'}</p>
-                <p><span className="font-medium text-gray-600">Requested:</span> {format(new Date(selected.created_date), 'dd MMM yyyy, hh:mm a')}</p>
-                {selected.expected_return_time && <p><span className="font-medium text-gray-600">Expected Return:</span> {format(new Date(selected.expected_return_time), 'dd MMM yyyy, hh:mm a')}</p>}
-                {selected.departure_time && <p className="text-orange-700 font-medium"><LogOut className="w-3.5 h-3.5 inline mr-1" /> Departed At: {format(new Date(selected.departure_time), 'hh:mm a')}</p>}
-                {selected.return_time && <p className="text-green-700 font-medium"><LogIn className="w-3.5 h-3.5 inline mr-1" /> Returned At: {format(new Date(selected.return_time), 'hh:mm a')}</p>}
+                <p><span className="font-medium text-gray-600">Requested:</span> {safeDate(selected.created_date, 'dd MMM yyyy, h:mm a')}</p>
+                {selected.expected_return_time && <p><span className="font-medium text-gray-600">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, h:mm a')}</p>}
+                {selected.departure_time && <p className="text-orange-700 font-medium"><LogOut className="w-3.5 h-3.5 inline mr-1" /> Departed At: {safeTime(selected.departure_time)}</p>}
+                {selected.return_time && <p className="text-green-700 font-medium"><LogIn className="w-3.5 h-3.5 inline mr-1" /> Returned At: {safeTime(selected.return_time)}</p>}
                 {selected.lop_deduction_days > 0 && <p className="text-red-700 font-medium">LOP Deduction: {selected.lop_deduction_days} day(s)</p>}
               </div>
 

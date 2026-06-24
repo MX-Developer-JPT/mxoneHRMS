@@ -11,6 +11,7 @@ import DocViewerModal from '@/components/DocViewerModal';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 export default function Documents() {
   const [user, setUser] = useState(null);
@@ -210,9 +211,9 @@ export default function Documents() {
                   <p className="font-medium">{doc.document_name}</p>
                   
                   <div className="text-xs text-gray-600 space-y-1">
-                    <p>Uploaded: {format(new Date(doc.created_date), 'MMM d, yyyy')}</p>
+                    <p>Uploaded: {safeDate(doc.created_date, 'MMM d, yyyy')}</p>
                     {doc.expiry_date && (
-                      <p>Expires: {format(new Date(doc.expiry_date), 'MMM d, yyyy')}</p>
+                      <p>Expires: {safeDate(doc.expiry_date, 'MMM d, yyyy')}</p>
                     )}
                   </div>
 

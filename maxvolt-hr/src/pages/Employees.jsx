@@ -9,6 +9,7 @@ import EmployeeDetailDialog from '../components/employees/EmployeeDetailDialog';
 import HREmployeeEditPanel from '../components/employees/HREmployeeEditPanel';
 import { Badge } from "@/components/ui/badge";
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 export default function Employees() {
   const [employees, setEmployees] = useState([]);
@@ -375,7 +376,7 @@ export default function Employees() {
                               )}
                               {emp.date_of_joining && (
                                 <div className="pt-2 border-t text-xs text-gray-500">
-                                  <p>Joined: {format(new Date(emp.date_of_joining), 'MMM yyyy')}</p>
+                                  <p>Joined: {safeDate(emp.date_of_joining, 'MMM yyyy')}</p>
                                 </div>
                               )}
                               {emp.is_esi_applicable !== undefined && (
@@ -465,7 +466,7 @@ export default function Employees() {
                       {emp.employee_confirmation_date && (
                         <div className="flex items-center gap-2 text-gray-600">
                           <Calendar className="w-4 h-4" />
-                          <span>Confirmation: {format(new Date(emp.employee_confirmation_date), 'MMM dd, yyyy')}</span>
+                          <span>Confirmation: {safeDate(emp.employee_confirmation_date, 'MMM dd, yyyy')}</span>
                         </div>
                       )}
                     </div>

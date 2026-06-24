@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import AttendanceCalendar from '../components/attendance/AttendanceCalendar';
 import AttendanceDetailsDialog from '../components/attendance/AttendanceDetailsDialog';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter, getDay } from 'date-fns';
+import { safeDate, safeTime } from '@/lib/dateUtils';
 import { ClipboardList } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -180,10 +181,10 @@ export default function AttendanceHistory() {
                 .map(a => (
                 <div key={a.id} className="flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50">
                   <div>
-                    <p className="font-medium text-sm">{format(new Date(a.date), 'EEE, MMM d, yyyy')}</p>
+                    <p className="font-medium text-sm">{safeDate(a.date, 'EEE, MMM d, yyyy')}</p>
                     <div className="flex gap-3 text-xs text-gray-500 mt-1">
-                      {a.check_in_time && <span>In: {format(new Date(a.check_in_time), 'h:mm a')}</span>}
-                      {a.check_out_time && <span>Out: {format(new Date(a.check_out_time), 'h:mm a')}</span>}
+                      {a.check_in_time && <span>In: {safeTime(a.check_in_time)}</span>}
+                      {a.check_out_time && <span>Out: {safeTime(a.check_out_time)}</span>}
                     </div>
                   </div>
                   <div className="text-right">

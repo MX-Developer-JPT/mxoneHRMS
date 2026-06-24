@@ -68,26 +68,33 @@ export default function BusinessCardAdmin() {
   const isAdmin = user?.role === 'admin';
   const [printing, setPrinting] = useState(false);
 
-  const handlePrintCards = async () => {
+  const handlePrintCards = () => {
     setPrinting(true);
-    try {
-      const response = await base44.functions.invoke('generatePrintableCards', { 
-        cards: filtered 
-      });
-      
-      const blob = new Blob([response.data], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `visiting-cards-${Date.now()}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Error generating cards:', error);
-      alert('Failed to generate printable cards');
-    } finally {
-      setPrinting(false);
-    }
+    const cardsHtml = filtered.map(c => `
+      <div class="card">
+        <div class="card-name">${c.name || ''}</div>
+        <div class="card-title">${c.job_title || ''}</div>
+        <div class="card-company">${c.company || ''}</div>
+        ${c.phone_number ? `<div class="card-detail">📞 ${c.phone_number}</div>` : ''}
+        ${c.email ? `<div class="card-detail">✉ ${c.email}</div>` : ''}
+        ${c.website ? `<div class="card-detail">🌐 ${c.website}</div>` : ''}
+      </div>
+    `).join('');
+    const win = window.open('', '_blank');
+    win.document.write(`<!DOCTYPE html><html><head><title>Business Cards</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 16px; background: #fff; }
+        .grid { display: flex; flex-wrap: wrap; gap: 12px; }
+        .card { border: 1px solid #333; border-radius: 8px; padding: 14px 16px; width: 240px; background: linear-gradient(135deg,#1e3a5f,#2d5a8e); color:#fff; page-break-inside: avoid; }
+        .card-name { font-size: 15px; font-weight: bold; margin-bottom: 2px; }
+        .card-title { font-size: 11px; opacity: 0.8; margin-bottom: 6px; }
+        .card-company { font-size: 12px; font-weight: 600; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.3); padding-bottom: 6px; }
+        .card-detail { font-size: 10px; opacity: 0.85; margin-top: 3px; }
+        @media print { @page { margin: 10mm; } }
+      </style></head>
+      <body><div class="grid">${cardsHtml}</div></body></html>`);
+    win.document.close();
+    win.onload = () => { win.print(); setPrinting(false); };
   };
 
   if (!isAdmin) {

@@ -8,6 +8,7 @@ import { FileText, DollarSign, Check, X, Download, LogOut, RotateCcw, ChevronDow
 import DocViewerModal from '@/components/DocViewerModal';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate, safeTime } from '@/lib/dateUtils';
 
 export default function Approvals() {
   const [user, setUser] = useState(null);
@@ -154,11 +155,11 @@ export default function Approvals() {
         emp?.department || '',
         emp?.designation || '',
         r.expense_type?.replace(/_/g, ' ') || '',
-        r.expense_date ? format(new Date(r.expense_date), 'dd/MM/yyyy') : '',
+        r.expense_date ? safeDate(r.expense_date, 'dd/MM/yyyy') : '',
         r.amount || 0,
         (r.description || '').replace(/,/g, ';'),
         r.status || '',
-        r.created_date ? format(new Date(r.created_date), 'dd/MM/yyyy') : ''
+        r.created_date ? safeDate(r.created_date, 'dd/MM/yyyy') : ''
       ].join(',');
     });
     const csv = [headers.join(','), ...rows].join('\n');
@@ -250,10 +251,10 @@ export default function Approvals() {
                             <p className="text-sm text-muted-foreground">{emp?.designation} · {emp?.department}</p>
                             <p className="text-sm mt-2">
                               <span className="font-medium">{outingLabels[gp.outing_type] || gp.outing_type}</span>
-                              {gp.expected_return_time && <> · Back by {format(new Date(gp.expected_return_time), 'h:mm a')}</>}
+                              {gp.expected_return_time && <> · Back by {safeTime(gp.expected_return_time)}</>}
                             </p>
                             {gp.reason && <p className="text-sm text-muted-foreground mt-1">{gp.reason}</p>}
-                            <p className="text-xs text-muted-foreground mt-1">{gp.created_date ? format(new Date(gp.created_date), 'dd MMM yyyy h:mm a') : ''}</p>
+                            <p className="text-xs text-muted-foreground mt-1">{gp.created_date ? safeDate(gp.created_date, 'dd MMM yyyy h:mm a') : ''}</p>
                           </div>
                           <div className="flex gap-2">
                             <Button onClick={() => handleGatePassAction(gp.id, 'approve')} size="sm" className="bg-green-600 hover:bg-green-700" disabled={processing[gp.id]}>
@@ -341,7 +342,7 @@ export default function Approvals() {
                               <p className="font-semibold">{emp?.display_name || '—'}</p>
                               <p className="text-sm text-muted-foreground">{emp?.designation} · {emp?.department}</p>
                               <p className="text-sm mt-2">
-                                {format(new Date(leave.start_date), 'MMM d')} - {format(new Date(leave.end_date), 'MMM d, yyyy')}
+                                {safeDate(leave.start_date, 'MMM d')} - {safeDate(leave.end_date, 'MMM d, yyyy')}
                               </p>
                               <p className="text-sm text-muted-foreground">{leave.total_days} day(s)</p>
                               <p className="text-sm mt-2">{leave.reason}</p>
@@ -397,7 +398,7 @@ export default function Approvals() {
                                 <p className="text-2xl font-bold text-blue-600">₹{reimb.amount?.toLocaleString()}</p>
                               </div>
                               <p className="text-sm capitalize font-medium">{reimb.expense_type?.replace(/_/g, ' ')}</p>
-                              <p className="text-sm text-muted-foreground">{reimb.expense_date ? format(new Date(reimb.expense_date), 'MMM d, yyyy') : ''}</p>
+                              <p className="text-sm text-muted-foreground">{reimb.expense_date ? safeDate(reimb.expense_date, 'MMM d, yyyy') : ''}</p>
                               <p className="text-sm mt-2">{reimb.description}</p>
                               {reimb.status && (
                                 <Badge className={`mt-1 ${statusColors[reimb.status]}`}>{reimb.status.replace(/_/g, ' ').toUpperCase()}</Badge>

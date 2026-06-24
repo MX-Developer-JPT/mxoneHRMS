@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Bell, Megaphone, AlertCircle, Calendar, Search, Paperclip, Star } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
-import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const categoryConfig = {
   general: { color: 'bg-blue-100 text-blue-800', border: 'border-blue-200', icon: Bell, label: 'General' },
@@ -79,7 +79,7 @@ export default function Announcements() {
                 <div>
                   <p className="font-bold text-lg">{a.title}</p>
                   <p className="text-red-100 text-sm mt-1">{a.content}</p>
-                  <p className="text-red-200 text-xs mt-2">{format(new Date(a.publish_date || a.created_date), 'MMMM d, yyyy')}</p>
+                  <p className="text-red-200 text-xs mt-2">{safeDate(a.publish_date || a.created_date, 'MMMM d, yyyy')}</p>
                 </div>
               </div>
             ))}
@@ -128,7 +128,7 @@ export default function Announcements() {
                         <div className="flex items-center gap-3 mt-1.5 text-sm text-gray-500">
                           <span className="flex items-center gap-1">
                             <Calendar className="w-3.5 h-3.5" />
-                            {format(new Date(announcement.publish_date || announcement.created_date), 'MMMM d, yyyy')}
+                            {safeDate(announcement.publish_date || announcement.created_date, 'MMMM d, yyyy')}
                           </span>
                           {announcement.target_audience !== 'all' && (
                             <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">

@@ -2707,7 +2707,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'active',$3)", [empId, uid, JSON.stringify(d)]);
       }
 
-      // Send approval email
+      // Send approval email + create new-joiner announcement
       try {
         const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [uid]);
         if (uRow?.email) {
@@ -2720,7 +2720,31 @@ ${contextBlock || 'No employee context available — answer from general policy 
             console.error('[email] Onboarding approval email failed:', e.message)
           );
         }
-      } catch(e) { console.error('[email] Onboarding email error:', e.message); }
+        // Create new-joiner announcement visible to all employees
+        if (uid) {
+          const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
+          const empData = empRow ? JSON.parse(empRow.data) : {};
+          const njAnnId = uuidv4();
+          const empName = empData.display_name || uRow?.full_name || employeeData.display_name || 'New Team Member';
+          await run(
+            "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Announcement',$2,'active',$3)",
+            [njAnnId, uid, JSON.stringify({
+              id: njAnnId,
+              title: `Welcome ${empName}!`,
+              content: `Please join us in welcoming ${empName} to the ${empData.department || employeeData.department || 'team'} as ${empData.designation || employeeData.designation || 'a new team member'}. We look forward to working together!`,
+              category: 'new_joiner',
+              status: 'published',
+              target_audience: 'all',
+              display_name: empName,
+              department: empData.department || employeeData.department,
+              designation: empData.designation || employeeData.designation,
+              date_of_joining: empData.date_of_joining || employeeData.date_of_joining,
+              profile_picture_url: empData.profile_picture_url || null,
+              created_date: new Date().toISOString(),
+            })]
+          );
+        }
+      } catch(e) { console.error('[email/ann] Onboarding approval error:', e.message); }
 
       return res.json({ success:true });
     }
@@ -3118,11 +3142,24 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
     /* ── Lifecycle events ────────────────────────────── */
     case 'onNewEmployeeJoined': {
-      const { user_id: njUserId, employee_name, department: njDept, designation: njDesig } = p;
+      const { user_id: njUserId, employee_name, department: njDept, designation: njDesig, date_of_joining: njDoj, profile_picture_url: njPic } = p;
       if (njUserId) {
         const annId = uuidv4();
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Announcement',$2,'active',$3)", [annId, njUserId,
-          JSON.stringify({ id: annId, title: `Welcome ${employee_name || 'New Team Member'}!`, content: `Please join us in welcoming ${employee_name || 'our new colleague'} to the ${njDept||'team'} as ${njDesig||'a new team member'}. We look forward to working together!`, category: 'new_joiner', is_published: true, created_at: new Date().toISOString() })]);
+          JSON.stringify({
+            id: annId,
+            title: `Welcome ${employee_name || 'New Team Member'}!`,
+            content: `Please join us in welcoming ${employee_name || 'our new colleague'} to the ${njDept||'team'} as ${njDesig||'a new team member'}. We look forward to working together!`,
+            category: 'new_joiner',
+            status: 'published',
+            target_audience: 'all',
+            display_name: employee_name,
+            department: njDept,
+            designation: njDesig,
+            date_of_joining: njDoj,
+            profile_picture_url: njPic || null,
+            created_date: new Date().toISOString(),
+          })]);
       }
       return res.json({ success: true });
     }
