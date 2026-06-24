@@ -814,13 +814,17 @@ router.post('/:name', async (req, res) => {
       mappingRows.forEach(r => { const m = JSON.parse(r.data); if (m.biometric_code && m.user_id) codeMap[String(m.biometric_code).toLowerCase()] = m.user_id; });
       emps.forEach(e => { if (e.employee_code) codeMap[String(e.employee_code).toLowerCase()] = e.user_id; });
 
-      const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-      const toIST = (raw) => {
+      // Read IST clock digits from stored timestamp — stored values are "IST digits + Z"
+      // Do NOT add any IST offset; the digits already represent IST time.
+      const readIST = (raw) => {
         if (!raw) return null;
-        const s = String(raw).trim();
-        const forceUTC = /Z$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(' ', 'T') + 'Z';
-        const d = new Date(forceUTC);
-        return isNaN(d.getTime()) ? null : new Date(d.getTime() + IST_OFFSET_MS);
+        const s = String(raw).trim().replace(' ', 'T');
+        const naive = s.replace(/Z$|[+-]\d{2}:?\d{2}$/, '');
+        const d = new Date(naive + 'Z');
+        if (isNaN(d.getTime())) return null;
+        const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+        const timeStr = `${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
+        return { dateStr, timeStr, iso: naive + '.000Z' };
       };
 
       let stored = 0, processed = 0, skipped = 0, unmatched = 0;
@@ -835,12 +839,11 @@ router.post('/:name', async (req, res) => {
 
         if (!empCodeRaw || !logDateRaw) { skipped++; continue; }
 
-        const istDate = toIST(logDateRaw);
-        if (!istDate) { skipped++; continue; }
+        const ist = readIST(logDateRaw);
+        if (!ist) { skipped++; continue; }
 
         const punchType = (direction === 'IN' || direction === 'in') ? 'in' : 'out';
-        const punchIso  = istDate.toISOString();
-        const dateStr   = punchIso.slice(0, 10);
+        const { dateStr, timeStr, iso: punchIso } = ist;
         const userId    = codeMap[empCode] || null;
 
         // Always store the raw log so it's visible on the Biometric Logs page,
@@ -916,14 +919,18 @@ router.post('/:name', async (req, res) => {
         if (e.employee_code) codeMap[String(e.employee_code).toLowerCase()] = e.user_id;
       });
 
-      const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-      const toIST = (utcStr) => {
-        if (!utcStr) return null;
-        const s = String(utcStr).trim();
-        const forceUTC = /Z$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(' ', 'T') + 'Z';
-        const d = new Date(forceUTC);
+      // Stored LogDate values are IST clock digits with a Z suffix (Store IST, Display IST).
+      // Read the raw digit values directly — do NOT add any IST offset on top.
+      const readISTComponents = (raw) => {
+        if (!raw) return null;
+        const s = String(raw).trim().replace(' ', 'T');
+        // Strip tz suffix and re-parse as UTC so getUTC* methods give us the IST clock digits
+        const naive = s.replace(/Z$|[+-]\d{2}:?\d{2}$/, '');
+        const d = new Date(naive + 'Z');
         if (isNaN(d.getTime())) return null;
-        return new Date(d.getTime() + IST_OFFSET_MS);
+        const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+        const timeStr = `${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
+        return { dateStr, timeStr };
       };
 
       // Store logs in AttendanceLog entities + group by (user_id, date)
@@ -938,11 +945,9 @@ router.post('/:name', async (req, res) => {
         const userId = codeMap[empCode];
         if (!userId) continue; // unknown employee code
 
-        const istDate = toIST(logDateRaw);
-        if (!istDate) continue;
-
-        const dateStr = istDate.toISOString().slice(0, 10);
-        const timeStr = `${String(istDate.getUTCHours()).padStart(2,'0')}:${String(istDate.getUTCMinutes()).padStart(2,'0')}`;
+        const ist = readISTComponents(logDateRaw);
+        if (!ist) continue;
+        const { dateStr, timeStr } = ist;
 
         // Persist log in AttendanceLog entity (avoid duplicates)
         const existingLog = await one(
@@ -965,20 +970,20 @@ router.post('/:name', async (req, res) => {
 
       // Also process date range from existing AttendanceLogs in DB if date_from provided
       if (date_from && raw_records.length === 0) {
-        const logRows = await all(
-          "SELECT data FROM entities WHERE type='AttendanceLog'"
-        );
+        const logRows = await all("SELECT data FROM entities WHERE type='AttendanceLog'");
         logRows.forEach(row => {
           const log = JSON.parse(row.data);
-          if (!log.user_id || !log.LogDate) return;
-          const istDate = toIST(log.LogDate);
-          if (!istDate) return;
-          const dateStr = istDate.toISOString().slice(0, 10);
+          if (!log.LogDate) return;
+          // Re-resolve user_id via codeMap in case the log was stored before mapping was set up
+          const userId = log.user_id || codeMap[String(log.EmployeeCode || '').toLowerCase()];
+          if (!userId) return;
+          const ist = readISTComponents(log.LogDate);
+          if (!ist) return;
+          const { dateStr, timeStr } = ist;
           if (date_from && dateStr < date_from) return;
           if (date_to && dateStr > date_to) return;
-          const timeStr = `${String(istDate.getUTCHours()).padStart(2,'0')}:${String(istDate.getUTCMinutes()).padStart(2,'0')}`;
-          const key = `${log.user_id}_${dateStr}`;
-          if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId: log.user_id, date: dateStr, times: [] };
+          const key = `${userId}_${dateStr}`;
+          if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId, date: dateStr, times: [] };
           byEmployeeDate[key].times.push(timeStr);
         });
       }
@@ -999,7 +1004,8 @@ router.post('/:name', async (req, res) => {
         const empRow   = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
         const emp      = empRow ? JSON.parse(empRow.data) : {};
         const shiftRow = emp.shift_id
-          ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]): await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'=1");
+          ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id])
+          : await one("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'='true' OR data::jsonb->>'is_default'='1') LIMIT 1");
         const shift = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
 
         // Compute status
