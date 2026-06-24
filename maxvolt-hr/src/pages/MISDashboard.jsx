@@ -42,10 +42,15 @@ export default function MISDashboard() {
 
   const fetchData = async () => {
     setLoading(true);
-    const res = await base44.functions.invoke('getMISData', {});
-    setData(res.data);
-    setLastUpdated(new Date());
-    setLoading(false);
+    try {
+      const res = await base44.functions.invoke('getMISData', {});
+      setData(res.data);
+      setLastUpdated(new Date());
+    } catch (e) {
+      console.error('MIS fetch failed:', e.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { fetchData(); }, []);

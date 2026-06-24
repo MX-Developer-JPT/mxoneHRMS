@@ -53,43 +53,46 @@ export default function AllAttendance() {
 
   const loadData = async () => {
     setLoading(true);
-    const currentUser = await base44.auth.me();
-    const userRole = currentUser.custom_role || currentUser.role;
+    try {
+      const currentUser = await base44.auth.me();
+      const userRole = currentUser.custom_role || currentUser.role;
 
-    const [empRecords, usersResp, attendanceResp, deptRecords] = await Promise.all([
-      base44.entities.Employee.filter({ status: 'active' }, '-created_date', 500),
-      base44.functions.invoke('getAllUsers', {}),
-      base44.functions.invoke('getAllAttendance', { date }),
-      base44.entities.Department.list(),
-    ]);
+      const [empRecords, usersResp, attendanceResp, deptRecords] = await Promise.all([
+        base44.entities.Employee.filter({ status: 'active' }, '-created_date', 500),
+        base44.functions.invoke('getAllUsers', {}),
+        base44.functions.invoke('getAllAttendance', { date }),
+        base44.entities.Department.list(),
+      ]);
 
-    const users = usersResp.data?.users || [];
-    const dayRecords = attendanceResp.data?.records || [];
-    let emps = empRecords.map(e => ({ ...e, _user: users.find(u => u.id === e.user_id) }));
+      const users = usersResp.data?.users || [];
+      const dayRecords = attendanceResp.data?.records || [];
+      let emps = empRecords.map(e => ({ ...e, _user: users.find(u => u.id === e.user_id) }));
 
-    if (userRole === 'manager') {
-      // Manager sees only their direct reports (employees whose reporting_manager_id = this user)
-      emps = emps.filter(e => e.reporting_manager_id === currentUser.id);
-    } else if (userRole === 'management') {
-      // Management sees their department
-      try {
-        const depts = await base44.entities.Department.filter({ head_user_id: currentUser.id });
-        if (depts.length > 0) {
-          const codes = new Set(depts.map(d => d.code));
-          emps = emps.filter(e => codes.has(e.department));
+      if (userRole === 'manager') {
+        emps = emps.filter(e => e.reporting_manager_id === currentUser.id);
+      } else if (userRole === 'management') {
+        try {
+          const depts = await base44.entities.Department.filter({ head_user_id: currentUser.id });
+          if (depts.length > 0) {
+            const codes = new Set(depts.map(d => d.code));
+            emps = emps.filter(e => codes.has(e.department));
+          }
+        } catch (e) {
+          console.warn('Could not filter by department:', e.message);
         }
-      } catch (e) {
-        console.warn('Could not filter by department:', e.message);
       }
+
+      const map = {};
+      dayRecords.forEach(r => { map[r.user_id] = r; });
+
+      setEmployees(emps);
+      setAttendanceMap(map);
+      setDepartments(deptRecords.map(d => ({ value: d.name, label: d.name })));
+    } catch (e) {
+      toast.error('Failed to load attendance: ' + e.message);
+    } finally {
+      setLoading(false);
     }
-
-    const map = {};
-    dayRecords.forEach(r => { map[r.user_id] = r; });
-
-    setEmployees(emps);
-    setAttendanceMap(map);
-    setDepartments(deptRecords.map(d => ({ value: d.name, label: d.name })));
-    setLoading(false);
   };
 
   const rows = useMemo(() => {

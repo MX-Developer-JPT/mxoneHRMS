@@ -829,7 +829,7 @@ function EmployeeAttrsTab() {
       shift:             emp.shift || '',
       department:        emp.department || '',
       location:          emp.location || '',
-      reporting_manager: emp.reporting_manager || '',
+      reporting_manager: emp.reporting_manager || '__none__',
       designation:       emp.designation || '',
     });
   };
@@ -837,8 +837,9 @@ function EmployeeAttrsTab() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await base44.entities.Employee.update(editEmp.id, form);
-      setEmployees(prev => prev.map(e => e.id === editEmp.id ? { ...e, ...form } : e));
+      const payload = { ...form, reporting_manager: form.reporting_manager === '__none__' ? '' : form.reporting_manager };
+      await base44.entities.Employee.update(editEmp.id, payload);
+      setEmployees(prev => prev.map(e => e.id === editEmp.id ? { ...e, ...payload } : e));
       toast.success('Employee attributes updated');
       setEditEmp(null);
     } catch (e) { toast.error(e.message); }
@@ -900,10 +901,10 @@ function EmployeeAttrsTab() {
               ))}
               <div>
                 <Label className="text-xs mb-1 block">Reporting Manager</Label>
-                <Select value={form.reporting_manager} onValueChange={v => setForm(f => ({ ...f, reporting_manager: v }))}>
+                <Select value={form.reporting_manager || '__none__'} onValueChange={v => setForm(f => ({ ...f, reporting_manager: v }))}>
                   <SelectTrigger><SelectValue placeholder="Select manager" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">None</SelectItem>
+                    <SelectItem value="__none__">None</SelectItem>
                     {employees.filter(e => e.id !== editEmp.id && e.user_id).map(e => (
                       <SelectItem key={e.id} value={e.user_id}>{getName(e.user_id)}</SelectItem>
                     ))}

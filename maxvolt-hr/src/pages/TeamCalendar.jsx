@@ -286,11 +286,23 @@ export default function TeamCalendar() {
             {(() => {
               const upcomingLeaves = [];
               const today = format(new Date(), 'yyyy-MM-dd');
-              Object.entries(calendarData.leaves).forEach(([userId, leaves]) => {
-                leaves.filter(l => l.start_date >= today).forEach(l => {
-                  const emp = calendarData.employees.find(e => e.user_id === userId);
-                  upcomingLeaves.push({ ...l, employee: emp, userId });
-                });
+              // leaves[userId] is a date-map: { 'yyyy-MM-dd': 'leave' }
+              Object.entries(calendarData.leaves).forEach(([userId, datemap]) => {
+                const emp = calendarData.employees.find(e => e.user_id === userId);
+                // Group consecutive leave dates into ranges
+                const dates = Object.keys(datemap).filter(d => d >= today).sort();
+                if (!dates.length) return;
+                let start = dates[0], prev = dates[0];
+                for (let i = 1; i <= dates.length; i++) {
+                  const cur = dates[i];
+                  const prevDay = new Date(prev);
+                  const curDay = cur ? new Date(cur) : null;
+                  const isConsec = curDay && (curDay - prevDay) <= 86400000;
+                  if (!isConsec) {
+                    upcomingLeaves.push({ start_date: start, end_date: prev, employee: emp, userId });
+                    start = cur; prev = cur;
+                  } else { prev = cur; }
+                }
               });
               upcomingLeaves.sort((a, b) => a.start_date.localeCompare(b.start_date));
               if (upcomingLeaves.length === 0) return <p className="text-center text-muted-foreground py-4 text-sm">No upcoming leaves</p>;

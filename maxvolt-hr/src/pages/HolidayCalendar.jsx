@@ -89,6 +89,9 @@ function MonthCalendar({ year, month, holidays, workingDayOverrides, onDayClick,
   );
 }
 
+// Known office locations — extend as needed
+const LOCATIONS = ['Ghaziabad', 'Delhi', 'All'];
+
 export default function HolidayCalendar() {
   const [holidays, setHolidays] = useState([]);
   const [showForm, setShowForm] = useState(false);
@@ -98,7 +101,10 @@ export default function HolidayCalendar() {
   const [viewMode, setViewMode] = useState('calendar');
   const [allDepartments, setAllDepartments] = useState([]);
   const [selectedDayHolidays, setSelectedDayHolidays] = useState(null);
-  // workingDayOverrides: { 'yyyy-MM-dd': true (working) | false (off) }
+  const [showSaturdayPanel, setShowSaturdayPanel] = useState(false);
+  const [satLocation, setSatLocation] = useState('All');
+  const [satTogglingOn, setSatTogglingOn] = useState(false);
+  // workingDayOverrides: { 'yyyy-MM-dd': { working: bool, location: str } }
   const [workingDayOverrides, setWorkingDayOverrides] = useState(() => {
     try { return JSON.parse(localStorage.getItem('workingDayOverrides') || '{}'); } catch { return {}; }
   });
@@ -134,13 +140,48 @@ export default function HolidayCalendar() {
   const handleToggleWorkingDay = (dateKey, makeWorking) => {
     const updated = { ...workingDayOverrides };
     if (makeWorking) {
-      updated[dateKey] = true;
+      updated[dateKey] = { working: true, location: 'All' };
     } else {
       delete updated[dateKey];
     }
     setWorkingDayOverrides(updated);
     localStorage.setItem('workingDayOverrides', JSON.stringify(updated));
-    toast.success(makeWorking ? `${dateKey} marked as working day` : `${dateKey} reset to off day`);
+    toast.success(makeWorking ? `${dateKey} marked as working Saturday` : `${dateKey} reset to off`);
+  };
+
+  // Bulk toggle all Saturdays of the selected year ON or OFF for a location
+  const handleBulkSaturdays = async (makeWorking) => {
+    setSatTogglingOn(true);
+    const updated = { ...workingDayOverrides };
+    const jan1 = new Date(selectedYear, 0, 1);
+    const dec31 = new Date(selectedYear, 11, 31);
+    for (let d = new Date(jan1); d <= dec31; d.setDate(d.getDate() + 1)) {
+      if (d.getDay() !== 6) continue; // only Saturdays
+      const key = format(d, 'yyyy-MM-dd');
+      if (makeWorking) {
+        updated[key] = { working: true, location: satLocation };
+      } else {
+        // Only clear if location matches
+        if (!updated[key] || satLocation === 'All' || updated[key]?.location === satLocation) {
+          delete updated[key];
+        }
+      }
+    }
+    setWorkingDayOverrides(updated);
+    localStorage.setItem('workingDayOverrides', JSON.stringify(updated));
+    // Persist to DB as WorkingDaySetting entities
+    try {
+      await base44.functions.invoke('saveSaturdaySettings', {
+        year: selectedYear,
+        location: satLocation,
+        saturdays_working: makeWorking,
+      });
+    } catch (e) {
+      // Non-critical — local state already updated
+      console.warn('Could not persist Saturday settings to server:', e.message);
+    }
+    toast.success(`All Saturdays of ${selectedYear} ${makeWorking ? 'marked as working' : 'marked as off'} for ${satLocation}`);
+    setSatTogglingOn(false);
   };
 
   const handleSubmit = async (e) => {
@@ -219,6 +260,9 @@ export default function HolidayCalendar() {
                 ))}
               </SelectContent>
             </Select>
+            <Button variant="outline" size="sm" onClick={() => setShowSaturdayPanel(p => !p)}>
+              <ToggleLeft className="w-4 h-4 mr-1" /> Saturday Settings
+            </Button>
             <div className="flex border rounded-md overflow-hidden">
               <Button
                 variant={viewMode === 'calendar' ? 'default' : 'ghost'}
@@ -328,6 +372,36 @@ export default function HolidayCalendar() {
             </Dialog>
           </div>
         </div>
+
+        {/* Saturday Settings Panel */}
+        {showSaturdayPanel && (
+          <Card className="border-amber-200 bg-amber-50">
+            <CardContent className="p-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="font-medium text-amber-900">Bulk Saturday Toggle for {selectedYear}</span>
+                <div className="flex items-center gap-2">
+                  <Label className="text-amber-800 text-sm">Location:</Label>
+                  <Select value={satLocation} onValueChange={setSatLocation}>
+                    <SelectTrigger className="w-36 h-8 text-sm bg-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LOCATIONS.map(l => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button size="sm" disabled={satTogglingOn} className="bg-green-600 hover:bg-green-700"
+                  onClick={() => handleBulkSaturdays(true)}>
+                  <ToggleRight className="w-4 h-4 mr-1" /> Mark All Saturdays Working
+                </Button>
+                <Button size="sm" variant="outline" disabled={satTogglingOn} className="border-red-300 text-red-700 hover:bg-red-50"
+                  onClick={() => handleBulkSaturdays(false)}>
+                  <ToggleLeft className="w-4 h-4 mr-1" /> Mark All Saturdays Off
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-3">

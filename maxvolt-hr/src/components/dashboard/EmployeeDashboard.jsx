@@ -16,7 +16,7 @@ export default function EmployeeDashboard({ user }) {
   const [loading, setLoading] = useState(true);
   const [detailModal, setDetailModal] = useState(null);
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData().catch(e => { console.error('EmployeeDashboard:', e.message); setLoading(false); }); }, []);
 
   const loadData = async () => {
     const today = format(new Date(), 'yyyy-MM-dd');
@@ -97,6 +97,7 @@ export default function EmployeeDashboard({ user }) {
       <div className="w-8 h-8 border-[3px] border-indigo-200 dark:border-indigo-900 border-t-indigo-600 rounded-full animate-spin" />
     </div>
   );
+  if (!data) return <div className="p-8 text-center text-gray-400">Could not load dashboard data. Please refresh.</div>;
 
   const att = data.todayAtt;
   const checkedIn  = att?.check_in_time;

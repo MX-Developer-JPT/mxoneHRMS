@@ -160,6 +160,8 @@ export default function LetterGenerator() {
   const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [approveSending, setApproveSending] = useState(false);
+  const [approveSent, setApproveSent] = useState(false);
 
   useEffect(() => { load(); }, []);
   const load = async () => {
@@ -195,6 +197,7 @@ export default function LetterGenerator() {
         setRef(d.ref || '');
         setEditMode(false);
         setSaved(false);
+        setApproveSent(false);
       } else toast.error(d.error || 'Generation failed');
     } catch (e) { toast.error('Error: ' + e.message); }
     setGenerating(false);
@@ -227,6 +230,32 @@ export default function LetterGenerator() {
       toast.error('Failed to save: ' + e.message);
     }
     setSaving(false);
+  };
+
+  const approveAndSend = async () => {
+    if (!letter || !selectedEmp) return;
+    setApproveSending(true);
+    try {
+      const res = await base44.functions.invoke('approveAndSendLetter', {
+        user_id: selectedEmp.user_id,
+        letter_type: letterType,
+        letter_content: letter,
+        ref,
+        employee_name: selectedEmp.display_name,
+      });
+      if (res.data?.success) {
+        setApproveSent(true);
+        setSaved(true);
+        if (res.data.email_error) {
+          toast.warning(`Saved to Documents, but email failed: ${res.data.email_error}`);
+        } else {
+          toast.success(`Letter approved, saved to Documents, and emailed to ${selectedEmp.display_name}`);
+        }
+      } else {
+        toast.error(res.data?.error || 'Failed');
+      }
+    } catch (e) { toast.error(e.message); }
+    setApproveSending(false);
   };
 
   return (
@@ -344,6 +373,11 @@ export default function LetterGenerator() {
                         className={saved ? 'bg-green-600 hover:bg-green-600 text-white' : 'bg-emerald-600 hover:bg-emerald-700 text-white'}>
                         {saving ? <RefreshCw className="w-3.5 h-3.5 mr-1 animate-spin" /> : saved ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Save className="w-3.5 h-3.5 mr-1" />}
                         {saved ? 'Saved' : 'Save to Docs'}
+                      </Button>
+                      <Button size="sm" onClick={approveAndSend} disabled={approveSending || approveSent}
+                        className={approveSent ? 'bg-green-700 hover:bg-green-700 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}>
+                        {approveSending ? <RefreshCw className="w-3.5 h-3.5 mr-1 animate-spin" /> : approveSent ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Send className="w-3.5 h-3.5 mr-1" />}
+                        {approveSent ? 'Sent' : 'Approve & Send'}
                       </Button>
                       <Button size="sm" onClick={printLetter} className="bg-indigo-600 hover:bg-indigo-700 text-white">
                         <Printer className="w-3.5 h-3.5 mr-1" /> Print / PDF

@@ -271,9 +271,13 @@ router.post('/:name', async (req, res) => {
         const lopAmount = lopDays > 0 ? Math.round((gross / workingDays) * lopDays) : 0;
         const grossAfterLop = Math.max(0, gross - lopAmount);
 
-        const pf  = Math.round(basic * 0.12);
-        const pt  = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
-        const esi = grossAfterLop <= 21000 ? Math.round(grossAfterLop * 0.0075) : 0;
+        // PF: 12% of basic, capped at ₹15,000 basic ceiling
+        const pfBase = Math.min(basic, 15000);
+        const pf     = Math.round(pfBase * 0.12);
+        const pt     = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
+        // ESI: 0.75% of basic (capped at ₹15,000) for employees with gross ≤ ₹21,000
+        const esiBase = Math.min(basic, 15000);
+        const esi     = gross <= 21000 ? Math.round(esiBase * 0.0075) : 0;
         // Statutory Bonus (Payment of Bonus Act 1965) — for employees with basic ≤ ₹21000
         const bonusWageCeil = 7000; // minimum wages notified
         const bonusCalcWage = Math.min(basic, bonusWageCeil);
@@ -2517,6 +2521,18 @@ ${contextBlock || 'No employee context available — answer from general policy 
       return res.json(row ? { job: JSON.parse(row.data) } : { job: null });
     }
 
+    case 'saveSaturdaySettings': {
+      const { year, location, saturdays_working } = body;
+      if (!year || !location) return res.status(400).json({ error: 'year and location required' });
+      const key = `saturday_settings_${year}_${location}`;
+      await run(
+        `INSERT INTO settings(key,value,updated_at) VALUES($1,$2,NOW()::TEXT)
+         ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT`,
+        [key, JSON.stringify({ year, location, saturdays_working })]
+      );
+      return res.json({ success: true });
+    }
+
     /* ── MIS & Reporting ─────────────────────────────── */
     case 'getMISData': {
       const today      = new Date().toISOString().slice(0, 10);
@@ -4352,6 +4368,61 @@ Return ONLY valid JSON (no markdown):
     }
 
     /* ── Save generated letter to employee Documents ─── */
+    case 'approveAndSendLetter': {
+      const { user_id, letter_type, letter_content, ref, employee_name } = p;
+      if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
+
+      const LETTER_LABELS = {
+        appointment: 'Appointment Letter', confirmation: 'Confirmation Letter',
+        promotion: 'Promotion Letter', salary_revision: 'Salary Revision Letter',
+        experience: 'Experience Certificate', relieving: 'Relieving Letter',
+        address_proof: 'Employment / Address Proof', warning: 'Warning Letter',
+      };
+      const label   = LETTER_LABELS[letter_type] || 'HR Letter';
+      const today   = new Date().toISOString().slice(0, 10);
+      const docId   = uuidv4();
+      const docData = {
+        id: docId, user_id,
+        document_type: 'hr_letter',
+        document_name: `${label}${ref ? ` (${ref})` : ''} — ${today}`,
+        letter_type, letter_content, ref: ref || '',
+        employee_name: employee_name || '',
+        status: 'verified',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, user_id, JSON.stringify(docData)]);
+
+      // Email to employee
+      let email_error = null;
+      try {
+        const empUser = await one("SELECT email, full_name FROM users WHERE id=$1", [user_id]);
+        if (!empUser?.email) throw new Error('Employee has no email address on record');
+        const { sendEmail } = await import('../utils/email.js');
+        const plainText = letter_content.replace(/<[^>]*>/g, '');
+        const htmlBody  = letter_content.includes('<') ? letter_content
+          : `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.8;color:#1a1a1a;white-space:pre-wrap;">${
+              letter_content.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+            }</div>`;
+        await sendEmail({
+          to: empUser.email,
+          subject: `${label} — Maxvolt Energy`,
+          html: `<p>Dear ${empUser.full_name || employee_name || 'Employee'},</p>
+                 <p>Please find your ${label} below. This document has also been saved in your HR Documents section.</p>
+                 <hr style="margin:16px 0"/>
+                 ${htmlBody}
+                 <hr style="margin:16px 0"/>
+                 <p style="color:#666;font-size:12px;">This is a system-generated letter from Maxvolt HR. Please contact HR for any queries.</p>`,
+          text: `Dear ${empUser.full_name || employee_name},\n\n${plainText}`,
+        });
+      } catch (e) {
+        email_error = e.message;
+      }
+
+      return res.json({ success: true, document_id: docId, email_error });
+    }
+
     case 'saveLetterAsDocument': {
       const { user_id, letter_type, letter_content, ref, employee_name } = p;
       if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
