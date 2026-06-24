@@ -109,6 +109,12 @@ router.put('/entities/:type/:id', async (req, res) => {
   res.json(data);
 });
 
+// ── Delete ALL entities of a type (must be before /:type/:id) ─
+router.delete('/entities/:type/all', async (req, res) => {
+  const r = await run('DELETE FROM entities WHERE type=$1', [req.params.type]);
+  res.json({ success: true, deleted: r.rowCount });
+});
+
 // ── Delete entity ──────────────────────────────────────────
 router.delete('/entities/:type/:id', async (req, res) => {
   const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [req.params.type, req.params.id]);
@@ -125,12 +131,6 @@ router.post('/entities/:type/bulk-delete', async (req, res) => {
     deleted += r.rowCount;
   }
   res.json({ success: true, deleted });
-});
-
-// ── Delete ALL entities of a type ──────────────────────────
-router.delete('/entities/:type/all', async (req, res) => {
-  const r = await run('DELETE FROM entities WHERE type=$1', [req.params.type]);
-  res.json({ success: true, deleted: r.rowCount });
 });
 
 // ── List users ─────────────────────────────────────────────
