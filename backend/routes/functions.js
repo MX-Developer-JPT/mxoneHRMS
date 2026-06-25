@@ -164,14 +164,49 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'updateUserDetails': {
-      const uid = p.user_id || cu?.id;
-      if (!uid) return res.status(400).json({ error:'user_id required' });
-      const fields = []; const vals = []; let pi = 0;
-      if (p.full_name)    { fields.push(`full_name=$${++pi}`);    vals.push(p.full_name); }
-      if (p.display_name) { fields.push(`display_name=$${++pi}`); vals.push(p.display_name); }
-      if (p.role)         { fields.push(`role=$${++pi}`);         vals.push(p.role); }
-      if (p.custom_role)  { fields.push(`custom_role=$${++pi}`);  vals.push(p.custom_role); }
-      if (fields.length) { vals.push(uid); await run(`UPDATE users SET ${fields.join(',')} WHERE id=$${++pi}`, vals); }
+      // Called from UserRoleManagement.jsx with { userId, userUpdates, employeeUpdates }
+      // Also supports legacy flat params for backward compat
+      const uid = p.userId || p.user_id || cu?.id;
+      if (!uid) return res.status(400).json({ error: 'userId required' });
+
+      // Update users table
+      const uFields = []; const uVals = []; let upi = 0;
+      const uUp = p.userUpdates || {};
+      const flatFullName  = p.full_name    || uUp.full_name;
+      const flatRole      = p.role         || uUp.role;
+      const flatCustom    = p.custom_role  || uUp.custom_role || uUp.role;
+      const flatDisplay   = p.display_name || uUp.display_name;
+      if (flatFullName)  { uFields.push(`full_name=$${++upi}`);    uVals.push(flatFullName); }
+      if (flatDisplay)   { uFields.push(`display_name=$${++upi}`); uVals.push(flatDisplay); }
+      if (flatRole)      { uFields.push(`role=$${++upi}`);         uVals.push(flatRole); }
+      if (flatCustom)    { uFields.push(`custom_role=$${++upi}`);  uVals.push(flatCustom); }
+      if (uFields.length) { uVals.push(uid); await run(`UPDATE users SET ${uFields.join(',')} WHERE id=$${++upi}`, uVals); }
+
+      // Update Employee entity
+      const empUp = p.employeeUpdates || {};
+      const empFields = ['display_name','employee_code','department','designation','designation_tier','phone','personal_email','work_location','reporting_manager_id'];
+      const hasEmpUpdate = empFields.some(f => empUp[f] !== undefined && empUp[f] !== null);
+      if (hasEmpUpdate || flatDisplay) {
+        const empRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1 LIMIT 1", [uid]);
+        if (empRow) {
+          const empData = JSON.parse(empRow.data);
+          const updated = { ...empData };
+          for (const f of empFields) {
+            if (empUp[f] !== undefined) {
+              // treat sentinel _none as empty string (Select "None" option)
+              updated[f] = empUp[f] === '_none' ? '' : empUp[f];
+            }
+          }
+          // Sync display_name from user update if provided
+          if (flatDisplay && !empUp.display_name) updated.display_name = flatDisplay;
+          // Sync display_name to user table if updated via employee fields
+          if (empUp.display_name) {
+            await run("UPDATE users SET display_name=$1 WHERE id=$2", [empUp.display_name === '_none' ? '' : empUp.display_name, uid]);
+          }
+          await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(updated), empRow.id]);
+        }
+      }
+
       return res.json({ success: true });
     }
 
@@ -4320,88 +4355,101 @@ Return ONLY valid JSON (no markdown):
 
     /* ── Auto-grant 1 EL per 40 present days ────────── */
     case 'grantEarnedLeaveFor40Days': {
-      // Counts attendance records (present/half_day) + Sundays + official holidays.
-      // Every time an employee crosses a new 40-day threshold, credit 1 EL (no duplicates).
+      // Counts attendance (present/half_day/on_duty) + Sundays + official holidays.
+      // Every 40 eligible days → credit 1 EL to the employee's EL LeaveBalance (no duplicates).
       const now        = new Date();
       const empRows    = await all("SELECT id,user_id,data FROM entities WHERE type='Employee' AND status='active'");
       const employees  = empRows.map(r => ({ id: r.id, user_id: r.user_id, ...JSON.parse(r.data) }));
+
       const holidayRows = await all("SELECT data FROM entities WHERE type='Holiday'");
       const holidayDates = new Set(
         holidayRows.map(r => { try { return JSON.parse(r.data).date?.slice(0,10); } catch { return null; } }).filter(Boolean)
       );
 
-      function isSunday(dateStr) { return new Date(dateStr).getDay() === 0; }
+      // Resolve EL leave policy (code='EL' or name contains 'Earned')
+      const elPolicyRow = await one(
+        "SELECT id FROM entities WHERE type='LeavePolicy' AND (data::jsonb->>'code'='EL' OR data::jsonb->>'name' ILIKE '%earned%') LIMIT 1"
+      );
+      const elPolicyId = elPolicyRow?.id || null;
+      const currentYear = now.getFullYear();
+
+      function isSunday(ds) { return new Date(ds + 'T00:00:00').getDay() === 0; }
 
       let granted = 0;
       const results = [];
+
       for (const emp of employees) {
         const startDate = emp.date_of_joining || emp.joining_date || '2020-01-01';
         const attRows = await all(
           "SELECT data->>'date' as d, data->>'status' as s FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date' >= $2",
           [emp.user_id, startDate]
         );
-
-        // Count all dates from joining to today where employee was present/half_day, on Sunday, or official holiday
-        let presentCount = 0;
-        const joinDate = new Date(startDate);
-        const todayDate = new Date(now.toISOString().slice(0,10));
         const attMap = {};
-        for (const r of attRows) {
-          attMap[r.d] = r.s;
-        }
+        for (const r of attRows) { if (r.d) attMap[r.d] = r.s; }
 
-        let d = new Date(joinDate);
-        while (d <= todayDate) {
-          const ds = d.toISOString().slice(0,10);
-          const status = attMap[ds];
-          if (status === 'present' || status === 'half_day' || isSunday(ds) || holidayDates.has(ds)) {
+        // Count eligible days from joining date to today
+        let presentCount = 0;
+        const joinDate  = new Date(startDate + 'T00:00:00');
+        const todayDate = new Date(now.toISOString().slice(0, 10) + 'T00:00:00');
+        for (let d = new Date(joinDate); d <= todayDate; d.setDate(d.getDate() + 1)) {
+          const ds = d.toISOString().slice(0, 10);
+          const st = attMap[ds];
+          if (['present', 'half_day', 'on_duty'].includes(st) || isSunday(ds) || holidayDates.has(ds)) {
             presentCount++;
           }
-          d.setDate(d.getDate() + 1);
         }
 
         const elEntitledCount = Math.floor(presentCount / 40);
         if (elEntitledCount <= 0) continue;
 
-        // Check how many EL grants we've already credited
-        const existingGrants = await all(
-          "SELECT COUNT(*) as c FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data->>'leave_type'='el_auto_40day'",
+        // How many EL grants have already been credited (tracked in ELAutoGrant entities)
+        const grantCountRow = await one(
+          "SELECT COUNT(*) as c FROM entities WHERE type='ELAutoGrant' AND user_id=$1",
           [emp.user_id]
         );
-        const alreadyGranted = parseInt(existingGrants[0]?.c || 0);
+        const alreadyGranted = parseInt(grantCountRow?.c || 0);
         const toGrant = elEntitledCount - alreadyGranted;
         if (toGrant <= 0) continue;
 
-        // Credit the EL balance
-        const lbRow = await one(
-          "SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data->>'leave_type'='earned_leave'",
-          [emp.user_id]
-        );
-        if (lbRow) {
-          const lb = JSON.parse(lbRow.data);
-          const newBalance = (parseFloat(lb.balance) || 0) + toGrant;
-          await run(
-            "UPDATE entities SET data=$1 WHERE id=$2",
-            [JSON.stringify({ ...lb, balance: newBalance, updated_at: new Date().toISOString() }), lbRow.id]
+        // Credit EL balance (look up by leave_policy_id + year; fall back to creating a new record)
+        if (elPolicyId) {
+          const lbRow = await one(
+            "SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data::jsonb->>'leave_policy_id'=$2 AND data::jsonb->>'year'=$3 LIMIT 1",
+            [emp.user_id, elPolicyId, String(currentYear)]
           );
-        } else {
-          // Create EL balance entry
-          const newId = uuidv4();
-          const newLb = { id: newId, user_id: emp.user_id, leave_type: 'earned_leave', balance: toGrant, used: 0, created_at: now.toISOString(), updated_at: now.toISOString() };
-          await run("INSERT INTO entities(id,type,user_id,data) VALUES($1,'LeaveBalance',$2,$3)", [newId, emp.user_id, JSON.stringify(newLb)]);
+          if (lbRow) {
+            const lb = JSON.parse(lbRow.data);
+            await run("UPDATE entities SET data=$1 WHERE id=$2", [
+              JSON.stringify({
+                ...lb,
+                available:       (parseFloat(lb.available)       || 0) + toGrant,
+                total_allocated: (parseFloat(lb.total_allocated) || 0) + toGrant,
+                updated_at: now.toISOString(),
+              }),
+              lbRow.id,
+            ]);
+          } else {
+            const newId = uuidv4();
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [
+              newId, emp.user_id,
+              JSON.stringify({ id: newId, user_id: emp.user_id, leave_policy_id: elPolicyId, year: currentYear, total_allocated: toGrant, available: toGrant, used: 0, pending_approval: 0, created_at: now.toISOString(), updated_at: now.toISOString() }),
+            ]);
+          }
         }
 
-        // Record each grant so we don't double-credit
+        // Record each grant so we never double-credit
         for (let i = 0; i < toGrant; i++) {
           const grantId = uuidv4();
-          const grantData = { id: grantId, user_id: emp.user_id, leave_type: 'el_auto_40day', days: 1, present_count_at_grant: presentCount, granted_at: now.toISOString() };
-          await run("INSERT INTO entities(id,type,user_id,data) VALUES($1,'LeaveBalance',$2,$3)", [grantId, emp.user_id, JSON.stringify(grantData)]);
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ELAutoGrant',$2,'active',$3)", [
+            grantId, emp.user_id,
+            JSON.stringify({ id: grantId, user_id: emp.user_id, days: 1, present_count_at_grant: presentCount, el_policy_id: elPolicyId, granted_at: now.toISOString() }),
+          ]);
         }
 
         granted += toGrant;
-        results.push({ employee: emp.display_name || emp.user_id, granted: toGrant, presentCount });
+        results.push({ employee: emp.display_name || emp.user_id, granted: toGrant, presentCount, elEntitledCount, alreadyGranted });
       }
-      return res.json({ success: true, total_granted: granted, results });
+      return res.json({ success: true, total_granted: granted, results, el_policy_found: !!elPolicyId });
     }
 
     /* ── Save generated letter to employee Documents ─── */

@@ -24,13 +24,13 @@ export default function ImportEmployees() {
 
   if (!user) return <div className="flex items-center justify-center h-64"><Loader2 className="w-6 h-6 animate-spin text-gray-400" /></div>;
 
-  const isAdmin = user.role === 'admin' || user.role === 'hr' || user.custom_role === 'hr';
+  const isAdmin = user.role === 'admin' || user.custom_role === 'admin';
   if (!isAdmin) {
     return (
       <div className="flex items-center justify-center h-64 text-center">
         <div>
           <p className="text-gray-500 text-lg">Access Denied</p>
-          <p className="text-gray-400 text-sm mt-1">Only HR and Admin users can access this page.</p>
+          <p className="text-gray-400 text-sm mt-1">Only Admin users can access this page.</p>
         </div>
       </div>
     );

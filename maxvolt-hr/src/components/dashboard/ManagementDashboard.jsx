@@ -80,7 +80,7 @@ export default function ManagementDashboard({ user }) {
         dept: e.department || '—',
         designation: e.designation || '—',
         checkIn: safeFormatTime(att?.check_in_time),
-        workingHours: att?.working_hours ? `${att.working_hours.toFixed(1)}h` : '—',
+        workingHours: att?.working_hours ? `${parseFloat(att.working_hours).toFixed(1)}h` : '—',
         status: att?.status || 'present'
       };
     });

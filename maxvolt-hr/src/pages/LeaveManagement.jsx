@@ -8,9 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Zap, Loader2 } from 'lucide-react';
+import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Zap, Loader2, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import LeavePolicyManager from '../components/leave/LeavePolicyManager';
 import LeaveAllocationPanel from '../components/leave/LeaveAllocationPanel';
 import HRApplyOnBehalf from '../components/leave/HRApplyOnBehalf';
@@ -35,7 +36,8 @@ function ELGrantButton() {
     setRunning(true);
     try {
       const res = await base44.functions.invoke('grantEarnedLeaveFor40Days', {});
-      toast.success(`Granted ${res.total_granted} Earned Leave(s) across ${res.results?.length || 0} employee(s)`);
+      const r = res.data;
+      toast.success(`Granted ${r.total_granted} Earned Leave(s) across ${r.results?.length || 0} employee(s)`);
     } catch (e) {
       toast.error('EL grant failed: ' + e.message);
     }
@@ -63,6 +65,7 @@ export default function LeaveManagement() {
   const [filterPolicy, setFilterPolicy] = useState('all');
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [leaveBalances, setLeaveBalances] = useState({}); // { userId_policyId: LeaveBalance }
 
   useEffect(() => { loadData(); }, []);
 
@@ -71,9 +74,10 @@ export default function LeaveManagement() {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
 
-      const [empRecords, policies] = await Promise.all([
+      const [empRecords, policies, allBalances] = await Promise.all([
         base44.entities.Employee.list(),
-        base44.entities.LeavePolicy.list()
+        base44.entities.LeavePolicy.list(),
+        base44.entities.LeaveBalance.list('-created_date', 2000).catch(() => []),
       ]);
 
       const empUserRec = empRecords.find(e => e.user_id === currentUser.id);
@@ -81,6 +85,15 @@ export default function LeaveManagement() {
 
       // Use display_name directly from Employee — no User.list() needed
       setEmployees(empRecords);
+
+      // Build a map: userId_policyId → balance for quick lookup
+      const currentYear = new Date().getFullYear();
+      const balMap = {};
+      allBalances.filter(b => b.year === currentYear || !b.year).forEach(b => {
+        const key = `${b.user_id}_${b.leave_policy_id}`;
+        balMap[key] = b;
+      });
+      setLeaveBalances(balMap);
 
       let requests = await base44.entities.Leave.list('-created_date', 500);
 
@@ -276,10 +289,75 @@ export default function LeaveManagement() {
         <Tabs defaultValue="requests" className="space-y-6">
           <TabsList>
             <TabsTrigger value="requests">Leave Requests</TabsTrigger>
+            {isHR && <TabsTrigger value="balances">Employee Balances</TabsTrigger>}
             <TabsTrigger value="allocate">Allocate Leaves</TabsTrigger>
             <TabsTrigger value="policies">Leave Policies</TabsTrigger>
             {isHR && <TabsTrigger value="onBehalf">Apply on Behalf</TabsTrigger>}
           </TabsList>
+
+          {isHR && (
+            <TabsContent value="balances">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Users className="w-4 h-4" /> Employee Leave Balances — {new Date().getFullYear()}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-left">
+                          <th className="pb-2 font-semibold text-gray-700 pr-4">Employee</th>
+                          <th className="pb-2 font-semibold text-gray-700 pr-4">Dept</th>
+                          {leavePolicies.map(p => (
+                            <th key={p.id} className="pb-2 font-semibold text-gray-700 pr-4 text-center whitespace-nowrap">
+                              {p.code}
+                              <span className="block text-xs font-normal text-gray-500">{p.name}</span>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {employees.filter(e => e.status !== 'resigned' && e.status !== 'terminated').map(emp => (
+                          <tr key={emp.id} className="border-b hover:bg-gray-50 transition-colors">
+                            <td className="py-2 pr-4">
+                              <div className="font-medium text-gray-900">{emp.display_name}</div>
+                              <div className="text-xs text-gray-500">{emp.employee_code}</div>
+                            </td>
+                            <td className="py-2 pr-4 text-gray-600 text-xs">{emp.department}</td>
+                            {leavePolicies.map(p => {
+                              const bal = leaveBalances[`${emp.user_id}_${p.id}`];
+                              const avail = bal?.available ?? '—';
+                              const total = bal?.total_allocated ?? '—';
+                              const used  = bal?.used ?? 0;
+                              const low   = typeof avail === 'number' && avail <= 1;
+                              return (
+                                <td key={p.id} className="py-2 pr-4 text-center">
+                                  {bal ? (
+                                    <div>
+                                      <span className={`font-semibold ${low ? 'text-red-600' : 'text-green-700'}`}>{avail}</span>
+                                      <span className="text-gray-400">/{total}</span>
+                                      {used > 0 && <div className="text-xs text-gray-400">Used: {used}</div>}
+                                    </div>
+                                  ) : (
+                                    <span className="text-gray-300 text-xs">Not set</span>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {employees.length === 0 && (
+                      <p className="text-center text-gray-400 py-8">No employees found</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
 
           <TabsContent value="policies">
             <LeavePolicyManager onUpdate={loadData} />
@@ -395,7 +473,7 @@ export default function LeaveManagement() {
                             </div>
 
                             <div className="ml-12 space-y-1">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${POLICY_COLORS[policy?.code] || 'bg-gray-100'}`}>{policy?.code}</span>
                                 <span className="font-medium text-sm">{policy?.name}</span>
                                 <Badge className={STATUS_COLORS[leave.status]}>{leave.status.toUpperCase()}</Badge>
@@ -405,9 +483,22 @@ export default function LeaveManagement() {
                                     {leave.current_approval_level === 1 ? 'Awaiting Manager' : 'Awaiting HR/HOD'}
                                   </Badge>
                                 )}
+                                {/* Leave balance for this policy */}
+                                {(() => {
+                                  const bal = leaveBalances[`${leave.user_id}_${leave.leave_policy_id}`];
+                                  if (!bal) return null;
+                                  const avail = bal.available ?? 0;
+                                  const total = bal.total_allocated ?? 0;
+                                  const color = avail < leave.total_days ? 'text-red-600' : 'text-green-700';
+                                  return (
+                                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 ${color}`}>
+                                      Balance: {avail}/{total} days
+                                    </span>
+                                  );
+                                })()}
                               </div>
                               <p className="text-sm text-gray-600">
-                                {format(new Date(leave.start_date), 'MMM d')} – {format(new Date(leave.end_date), 'MMM d, yyyy')}
+                                {safeDate(leave.start_date, 'MMM d')} – {safeDate(leave.end_date, 'MMM d, yyyy')}
                                 <span className="ml-2 font-medium">{leave.total_days} day(s)</span>
                                 {leave.half_day && <span className="ml-2 text-xs bg-orange-100 text-orange-700 px-1.5 rounded">Half Day</span>}
                               </p>
@@ -472,7 +563,7 @@ export default function LeaveManagement() {
               <div className="bg-gray-50 rounded-lg p-3 text-sm">
                 <p><strong>Employee:</strong> {employees.find(e => e.user_id === selectedLeave.user_id)?.display_name}</p>
                 <p><strong>Leave Type:</strong> {leavePolicies.find(p => p.id === selectedLeave.leave_policy_id)?.name}</p>
-                <p><strong>Duration:</strong> {selectedLeave.total_days} day(s) — {format(new Date(selectedLeave.start_date), 'MMM d')} to {format(new Date(selectedLeave.end_date), 'MMM d, yyyy')}</p>
+                <p><strong>Duration:</strong> {selectedLeave.total_days} day(s) — {safeDate(selectedLeave.start_date, 'MMM d')} to {safeDate(selectedLeave.end_date, 'MMM d, yyyy')}</p>
                 {actionType === 'approve' && selectedLeave.current_approval_level === 1 && (
                   <p className="mt-2 text-blue-600 text-xs">This will move the request to Level 2 (HR/HOD) for final approval.</p>
                 )}

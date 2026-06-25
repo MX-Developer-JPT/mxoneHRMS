@@ -10,6 +10,7 @@ import {
   AlertCircle, ChevronRight, Briefcase, GraduationCap, Shield
 } from 'lucide-react';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 export default function EmployeeDashboard({ user }) {
   const [data, setData] = useState(null);
@@ -339,7 +340,7 @@ export default function EmployeeDashboard({ user }) {
                   {data.recentLeaves.map(lv => (
                     <div key={lv.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/50">
                       <div>
-                        <p className="text-sm font-medium text-foreground">{format(new Date(lv.start_date), 'MMM d')} – {format(new Date(lv.end_date), 'MMM d, yyyy')}</p>
+                        <p className="text-sm font-medium text-foreground">{safeDate(lv.start_date, 'MMM d')} – {safeDate(lv.end_date, 'MMM d, yyyy')}</p>
                         <p className="text-xs text-muted-foreground line-clamp-1">{lv.reason}</p>
                       </div>
                       <Badge className={`text-xs border-0 ${leaveStatusColor[lv.status] || 'bg-muted text-muted-foreground'}`}>{lv.status}</Badge>
