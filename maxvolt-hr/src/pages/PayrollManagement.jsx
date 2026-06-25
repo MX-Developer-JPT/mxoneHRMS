@@ -40,15 +40,16 @@ export default function PayrollManagement() {
 
   const loadData = async () => {
     try {
-      const payrollRecords = await base44.entities.Payroll.list('-year', 500);
-      const empRecords = await base44.entities.Employee.list();
-      const users = await base44.entities.User.list();
-
+      const [payrollRecords, empRecords, usersResp] = await Promise.all([
+        base44.entities.Payroll.list('-year', 500),
+        base44.entities.Employee.filter({ status: 'active' }, '-created_date', 500),
+        base44.functions.invoke('getAllUsers', {}),
+      ]);
+      const users = usersResp.data?.users || [];
       const enrichedEmps = empRecords.map(emp => ({
         ...emp,
-        user: users.find(u => u.id === emp.user_id)
+        _user: users.find(u => u.id === emp.user_id),
       }));
-
       setPayrolls(payrollRecords);
       setEmployees(enrichedEmps);
       setLoading(false);
@@ -499,23 +500,32 @@ export default function PayrollManagement() {
                 filteredPayrolls.map(payroll => {
                   const emp = employees.find(e => e.user_id === payroll.user_id);
                   const deductions = payroll.deductions || {};
-                  const totalDeductions = Object.values(deductions).reduce((sum, val) => sum + val, 0);
+                  const totalDeductions = payroll.total_deductions
+                    ?? Object.values(deductions).reduce((sum, val) => sum + (typeof val === 'number' ? val : 0), 0);
                   
+                  const empName = emp?.display_name || emp?._user?.full_name || '—';
                   return (
                     <div key={payroll.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
                       <div className="flex justify-between items-start">
                         <div className="flex items-center gap-3">
                           <input type="checkbox" className="w-4 h-4 rounded accent-blue-600 cursor-pointer mt-1" checked={bulkSelected.has(payroll.id)} onChange={() => toggleBulkSelect(payroll.id)} />
-                          <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+                          <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                             <span className="text-blue-600 font-semibold">
-                              {emp?.user?.full_name?.charAt(0).toUpperCase()}
+                              {empName.charAt(0).toUpperCase()}
                             </span>
                           </div>
                           <div>
-                            <p className="font-semibold">{emp?.user?.full_name}</p>
-                            <p className="text-sm text-gray-600">{emp?.designation}</p>
+                            <p className="font-semibold">{empName}</p>
+                            <p className="text-sm text-gray-600">
+                              {emp?.designation || '—'}
+                              {emp?.department ? ` · ${emp.department}` : ''}
+                            </p>
                             <p className="text-xs text-gray-500">
-                              Days: {payroll.present_days}/{payroll.working_days} | OT: {payroll.overtime_hours}h
+                              {emp?.employee_code ? `Code: ${emp.employee_code}` : ''}
+                              {emp?.date_of_joining ? ` · DOJ: ${new Date(emp.date_of_joining).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })}` : ''}
+                            </p>
+                            <p className="text-xs text-gray-400">
+                              Days: {payroll.present_days}/{payroll.working_days}{payroll.overtime_hours > 0 ? ` · OT: ${payroll.overtime_hours}h` : ''}
                             </p>
                           </div>
                         </div>

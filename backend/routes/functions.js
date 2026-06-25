@@ -307,18 +307,32 @@ router.post('/:name', async (req, res) => {
         const lopAmount = lopDays > 0 ? Math.round((gross / workingDays) * lopDays) : 0;
         const grossAfterLop = Math.max(0, gross - lopAmount);
 
-        // PF: 12% of basic, capped at ₹15,000 basic ceiling
-        const pfBase = Math.min(basic, 15000);
-        const pf     = Math.round(pfBase * 0.12);
-        const pt     = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
-        // ESI: 0.75% of basic (capped at ₹15,000) for employees with gross ≤ ₹21,000
-        const esiBase = Math.min(basic, 15000);
-        const esi     = gross <= 21000 ? Math.round(esiBase * 0.0075) : 0;
-        // Statutory Bonus (Payment of Bonus Act 1965) — for employees with basic ≤ ₹21000
-        const bonusWageCeil = 7000; // minimum wages notified
-        const bonusCalcWage = Math.min(basic, bonusWageCeil);
-        const isEligibleBonus = basic <= 21000; // eligible if basic ≤ ₹21000/month
-        const bonusMonthly = isEligibleBonus ? Math.round(bonusCalcWage * 0.0833) : 0; // 8.33% minimum
+        // PF employee: 12% on basic, capped at ₹15,000 wage ceiling
+        const pfBase    = Math.min(basic, 15000);
+        const pf        = Math.round(pfBase * 0.12);
+        // Employer PF: 13% on same capped basis
+        const empPF     = Math.round(pfBase * 0.13);
+        // ESI employee: 0.75% on basic, eligible only if basic ≤ ₹21,000
+        const esi       = basic <= 21000 ? Math.round(basic * 0.0075) : 0;
+        // Employer ESI: 3.25% on basic (same eligibility)
+        const empESI    = basic <= 21000 ? Math.round(basic * 0.0325) : 0;
+        const pt        = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
+        // Bonus / VPP based on annual CTC
+        const annualCTC = ss?.ctc || (gross * 12);
+        let bonusMonthly = 0;
+        if (annualCTC <= 1000000) {
+          // CTC ≤ ₹10L: 8.33% of monthly basic
+          bonusMonthly = Math.round(basic * 0.0833);
+        } else {
+          // VPP allocated from CTC above ₹10L
+          let vppRate = 0;
+          if (annualCTC <= 1500000)      vppRate = 0.05;
+          else if (annualCTC <= 2000000) vppRate = 0.08;
+          else if (annualCTC <= 2500000) vppRate = 0.12;
+          else if (annualCTC <= 3000000) vppRate = 0.15;
+          else                           vppRate = 0.15;
+          bonusMonthly = Math.round((annualCTC * vppRate) / 12);
+        }
         const totalDed = pf + pt + esi + lopAmount;
         const net = Math.max(0, gross - totalDed);
 
@@ -328,8 +342,9 @@ router.post('/:name', async (req, res) => {
           basic_salary: basic, hra, conveyance: conv, special_allowance: spec,
           gross_salary: gross,
           deductions: { pf, pt, esi, lop: lopAmount },
+          employer_contributions: { pf: empPF, esi: empESI },
           total_deductions: totalDed, net_salary: net,
-          statutory_bonus: bonusMonthly,
+          statutory_bonus: bonusMonthly, vpp: annualCTC > 1000000 ? bonusMonthly : 0,
           working_days: workingDays, present_days: Math.round(effectivePresentDays),
           loss_of_pay_days: lopDays, loss_of_pay_amount: lopAmount,
           status: 'processed', processed_by: cu?.id,
@@ -383,10 +398,24 @@ router.post('/:name', async (req, res) => {
       const pRow = await one("SELECT data FROM entities WHERE type='Payroll' AND id=$1", [payroll_id]);
       if (!pRow) return res.json({ success:false, error:'Payroll record not found' });
       const payroll = JSON.parse(pRow.data);
+
       const eRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [payroll.user_id]);
-      const emp  = eRow ? JSON.parse(eRow.data) : {};
-      const html = buildPayslipHtml(payroll, emp);
-      return res.json({ success:true, html, data:payroll });
+      const employee = eRow ? JSON.parse(eRow.data) : {};
+
+      const uRow = await one("SELECT id,email,full_name,display_name FROM users WHERE id=$1", [payroll.user_id]);
+      const empUser = uRow || { full_name: employee.display_name || '' };
+
+      const ssRows = await all("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1", [payroll.user_id]);
+      const salaryStructure = ssRows.length ? JSON.parse(ssRows[0].data) : {};
+
+      const bonusRows = await all(
+        "SELECT data FROM entities WHERE type='Bonus' AND user_id=$1 AND data::jsonb->>'month'=$2 AND data::jsonb->>'year'=$3",
+        [payroll.user_id, String(payroll.month), String(payroll.year)]
+      );
+      const bonuses = bonusRows.map(r => JSON.parse(r.data));
+
+      const html = buildPayslipHtml(payroll, employee);
+      return res.json({ success:true, html, payroll, employee, empUser, salaryStructure, bonuses, data:payroll });
     }
 
     case 'generateBankTransferFile': {
@@ -621,12 +650,15 @@ router.post('/:name', async (req, res) => {
         const special  = pr?.special_allowance || Math.round((ss.special_allowance||0) / workingDays * effectiveDays);
         const grossCalc = basic + hra + conv + special;
 
-        const pfEmp  = pr?.pf_employee  ?? Math.round(basic * 0.12);
-        const pfEmpr = pr?.pf_employer  ?? Math.round(basic * 0.12);
-        const esiEmp = pr?.esi_employee ?? (grossCalc <= 21000 ? Math.round(grossCalc * 0.0075) : 0);
-        const esiEmpr= pr?.esi_employer ?? (grossCalc <= 21000 ? Math.round(grossCalc * 0.0325) : 0);
-        const pt     = pr?.professional_tax ?? (grossCalc > 15000 ? 200 : grossCalc > 10000 ? 150 : 0);
-        const lop    = pr?.lop_amount ?? Math.round((gross / workingDays) * daysLOP);
+        // PF: 12% employee / 13% employer, capped at ₹15,000 basic wage ceiling
+        const pfBase = Math.min(basic, 15000);
+        const pfEmp  = pr?.deductions?.pf   ?? Math.round(pfBase * 0.12);
+        const pfEmpr = pr?.employer_contributions?.pf ?? Math.round(pfBase * 0.13);
+        // ESI: 0.75% employee / 3.25% employer on basic; eligible only if basic ≤ ₹21,000
+        const esiEmp = pr?.deductions?.esi  ?? (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
+        const esiEmpr= pr?.employer_contributions?.esi ?? (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
+        const pt     = pr?.deductions?.pt   ?? (grossCalc > 15000 ? 200 : grossCalc > 10000 ? 150 : 0);
+        const lop    = pr?.loss_of_pay_amount ?? Math.round((gross / workingDays) * daysLOP);
         const totalDed = pfEmp + esiEmp + pt + lop;
         const netSalary = Math.max(0, grossCalc - totalDed);
 
