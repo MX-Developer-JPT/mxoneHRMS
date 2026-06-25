@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet } from 'lucide-react';
+import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, Activity } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import MobileSelect from '@/components/MobileSelect';
@@ -395,17 +395,48 @@ export default function AllAttendance() {
                           </div>
 
                           <div className="flex flex-wrap items-center gap-2">
-                            {/* Show all punch sessions if available, else fall back to check_in/check_out */}
-                            {(record.punch_sessions?.length > 0 ? record.punch_sessions : (record.check_in_time ? [{ punch_in: record.check_in_time, punch_out: record.check_out_time }] : [])).map((session, idx) => (
-                              <span key={idx} className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded border border-gray-100">
-                                {record.punch_sessions?.length > 1 && <span className="text-gray-400 mr-1">S{idx + 1}</span>}
-                                <span className="text-green-600 font-medium">In</span> {safeFormatTime(session.punch_in)}
-                                {session.punch_out && <> · <span className="text-red-500 font-medium">Out</span> {safeFormatTime(session.punch_out)}</>}
-                                {!session.punch_out && <span className="text-green-500 ml-1">●</span>}
+                            {/* Session pills — support new sessions[] and legacy punch_sessions[] */}
+                            {(() => {
+                              const richSess = record.sessions || [];
+                              const legacySess = (record.punch_sessions || []).filter(s => s.punch_in || s.session_number);
+                              const displayList = richSess.length > 0
+                                ? richSess.map(s => ({ pin: s.check_in, pout: s.check_out }))
+                                : legacySess.length > 0
+                                  ? legacySess.map(s => ({ pin: s.punch_in, pout: s.punch_out }))
+                                  : record.check_in_time
+                                    ? [{ pin: record.check_in_time, pout: record.check_out_time }]
+                                    : [];
+                              return displayList.map((s, idx) => (
+                                <span key={idx} className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded border border-gray-100">
+                                  {displayList.length > 1 && <span className="text-gray-400 mr-1">S{idx + 1}</span>}
+                                  <span className="text-green-600 font-medium">In</span> {safeFormatTime(s.pin)}
+                                  {s.pout && <> · <span className="text-red-500 font-medium">Out</span> {safeFormatTime(s.pout)}</>}
+                                  {!s.pout && <span className="text-green-500 ml-1">●</span>}
+                                </span>
+                              ));
+                            })()}
+                            {/* Working time */}
+                            {(record.total_working_minutes > 0 || record.working_hours > 0) && (
+                              <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-1 rounded">
+                                {record.total_working_minutes
+                                  ? `${Math.floor(record.total_working_minutes/60)}h${record.total_working_minutes%60>0?`${record.total_working_minutes%60}m`:''}`
+                                  : `${record.working_hours.toFixed(1)}h`}
                               </span>
-                            ))}
-                            {record.working_hours > 0 && (
-                              <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-1 rounded">{record.working_hours.toFixed(1)}h</span>
+                            )}
+                            {/* Break time */}
+                            {(record.total_break_minutes > 0 || record.break_hours > 0) && (
+                              <span className="inline-flex items-center gap-0.5 text-xs text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                                <Coffee className="w-3 h-3" />
+                                {record.total_break_minutes
+                                  ? `${Math.floor(record.total_break_minutes/60)}h${record.total_break_minutes%60>0?`${record.total_break_minutes%60}m`:''}`
+                                  : `${record.break_hours.toFixed(1)}h`} break
+                              </span>
+                            )}
+                            {/* Currently working indicator */}
+                            {(record.is_in_progress || record.status === 'in_progress') && (
+                              <span className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-300">
+                                <Activity className="w-3 h-3" /> Working
+                              </span>
                             )}
                             {record.biometric_synced && (
                               <span className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-200">
@@ -417,9 +448,9 @@ export default function AllAttendance() {
                                 <Camera className="w-3 h-3" /> Selfie
                               </span>
                             )}
-                            {record.late_arrival && record.late_arrival_minutes > 0 && (
+                            {(record.late_arrival || record.late_minutes > 0) && (record.late_arrival_minutes || record.late_minutes) > 0 && (
                               <span className="inline-flex items-center gap-0.5 text-xs text-orange-600">
-                                <AlertTriangle className="w-3 h-3" /> {record.late_arrival_minutes}m late
+                                <AlertTriangle className="w-3 h-3" /> {record.late_arrival_minutes || record.late_minutes}m late
                               </span>
                             )}
                             {emp?.overtime_eligible && record.overtime_minutes > 0 && (

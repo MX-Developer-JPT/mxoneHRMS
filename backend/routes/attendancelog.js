@@ -17,10 +17,12 @@
  */
 
 import express from 'express';
-import { one, run } from '../db.js';
+import { one, all, run } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
+
+const DEDUP_THRESHOLD_MS = 60 * 1000; // 60 seconds — ignore duplicate punches within this window
 
 async function getApiKey() {
   if (process.env.ATTENDANCE_API_KEY) return process.env.ATTENDANCE_API_KEY;
@@ -33,7 +35,6 @@ async function getApiKey() {
 async function authMiddleware(req, res, next) {
   const apiKey = await getApiKey();
   if (!apiKey) {
-    // No key configured — reject to prevent unguarded access
     return res.status(401).json({ error: 'Attendance API key not configured. Generate one in HRMS Settings.' });
   }
   const header = req.headers['authorization'] || req.headers['x-api-key'] || '';
@@ -56,42 +57,139 @@ async function getShift(empData) {
   return row ? JSON.parse(row.data) : { start_time: '09:00', end_time: '18:00', working_hours: 9, grace_period_minutes: 15 };
 }
 
-// Compute attendance status from all sessions + shift
-function computeStatus(sessions, shift) {
-  const toMins = (t) => {
-    const [h, m] = String(t || '00:00').split(':').map(Number);
-    return h * 60 + m;
+/**
+ * Build sessions, breaks, and working-time summary from raw punches.
+ *
+ * Alternating-position model:
+ *   1st punch → Check In (Session 1)
+ *   2nd punch → Check Out (Session 1)
+ *   3rd punch → Check In (Session 2)  …
+ *
+ * rawPunches: [{ time: ISO, device_direction: 'IN'|'OUT' }]
+ */
+export function buildSessions(rawPunches) {
+  if (!rawPunches || rawPunches.length === 0) {
+    return {
+      raw_punches: [], sessions: [], breaks: [], punch_sessions: [],
+      total_working_minutes: 0, total_break_minutes: 0,
+      session_count: 0, punch_count: 0, is_in_progress: false,
+      check_in_time: null, check_out_time: null,
+      working_hours: 0, break_hours: 0,
+    };
+  }
+
+  // Sort chronologically
+  const sorted = [...rawPunches].sort((a, b) => a.time.localeCompare(b.time));
+
+  // Deduplicate: skip punches within DEDUP_THRESHOLD_MS of the previous accepted punch
+  const deduped = [];
+  for (const p of sorted) {
+    const last = deduped[deduped.length - 1];
+    if (last && new Date(p.time).getTime() - new Date(last.time).getTime() < DEDUP_THRESHOLD_MS) continue;
+    deduped.push(p);
+  }
+
+  // Build in/out pairs (alternating position, not device direction)
+  const sessions = [];
+  for (let i = 0; i < deduped.length; i += 2) {
+    const inP  = deduped[i];
+    const outP = deduped[i + 1] || null;
+    const duration_minutes = outP
+      ? Math.round((new Date(outP.time) - new Date(inP.time)) / 60000)
+      : null;
+    sessions.push({
+      session_number: Math.floor(i / 2) + 1,
+      check_in:  inP.time,
+      check_out: outP?.time || null,
+      duration_minutes,
+      is_complete: !!outP,
+    });
+  }
+
+  // Build breaks between consecutive sessions
+  const breaks = [];
+  for (let i = 0; i < sessions.length - 1; i++) {
+    const prev = sessions[i];
+    const next = sessions[i + 1];
+    if (prev.check_out && next.check_in) {
+      breaks.push({
+        break_number: i + 1,
+        start: prev.check_out,
+        end:   next.check_in,
+        duration_minutes: Math.round((new Date(next.check_in) - new Date(prev.check_out)) / 60000),
+      });
+    }
+  }
+
+  const total_working_minutes = sessions.reduce((s, sess) => s + (sess.duration_minutes || 0), 0);
+  const total_break_minutes   = breaks.reduce((s, b) => s + b.duration_minutes, 0);
+  const is_in_progress        = deduped.length % 2 === 1; // odd punches → last is an open check-in
+
+  const check_in_time  = sessions[0]?.check_in || null;
+  const completeSess   = sessions.filter(s => s.is_complete);
+  const check_out_time = completeSess.length ? completeSess[completeSess.length - 1].check_out : null;
+
+  // punch_sessions: rich format consumed by AttendanceDetailsDialog
+  const punch_sessions = sessions.map((sess, i) => ({
+    session_number:    sess.session_number,
+    punch_in:          sess.check_in,
+    punch_out:         sess.check_out,
+    duration_hours:    sess.duration_minutes != null ? Math.round(sess.duration_minutes * 100 / 60) / 100 : null,
+    break_before_hours: i > 0 && breaks[i - 1] ? Math.round(breaks[i - 1].duration_minutes * 100 / 60) / 100 : 0,
+  }));
+
+  return {
+    raw_punches: deduped,
+    sessions,
+    breaks,
+    punch_sessions,
+    total_working_minutes,
+    total_break_minutes,
+    session_count:  sessions.length,
+    punch_count:    deduped.length,
+    is_in_progress,
+    check_in_time,
+    check_out_time,
+    working_hours: Math.round(total_working_minutes / 60 * 100) / 100,
+    break_hours:   Math.round(total_break_minutes   / 60 * 100) / 100,
   };
-  // Extract HH:MM from ISO string (stored as "IST digits Z")
+}
+
+/**
+ * Derive attendance status from session summary + shift config.
+ */
+export function computeStatusFromSessions(sessionData, shift) {
+  const toMins    = (t) => { const [h, m] = String(t || '00:00').split(':').map(Number); return h * 60 + m; };
   const isoToMins = (iso) => toMins(iso ? iso.slice(11, 16) : null);
 
-  const inTimes  = sessions.filter(s => s.type === 'in').map(s => isoToMins(s.time)).sort((a, b) => a - b);
-  const outTimes = sessions.filter(s => s.type === 'out').map(s => isoToMins(s.time)).sort((a, b) => b - a);
+  const { total_working_minutes, is_in_progress, check_in_time } = sessionData;
+  const shiftStart = toMins(shift.start_time || '09:00');
+  const grace      = Number(shift.grace_period_minutes || 15);
+  const shiftHours = Number(shift.working_hours || 9);
 
-  const firstInMins  = inTimes[0]  ?? null;
-  const lastOutMins  = outTimes[0] ?? null;
+  let status = 'present', late_minutes = 0;
 
-  const shiftStart   = toMins(shift.start_time  || '09:00');
-  const grace        = Number(shift.grace_period_minutes || 15);
-  const shiftHours   = Number(shift.working_hours || 9);
-
-  let status = 'present', working_hours = 0, late_minutes = 0;
-
-  if (firstInMins !== null && lastOutMins !== null && lastOutMins > firstInMins) {
-    working_hours = (lastOutMins - firstInMins) / 60;
-    if (working_hours < shiftHours / 2) status = 'short_attendance';
-    else if (working_hours < shiftHours * 0.9) status = 'half_day';
+  if (is_in_progress && total_working_minutes === 0) {
+    status = 'in_progress';
+  } else if (is_in_progress) {
+    // Still working — don't finalise status yet
+    status = 'in_progress';
+  } else if (total_working_minutes > 0) {
+    const wh = total_working_minutes / 60;
+    if (wh < shiftHours / 2)    status = 'short_attendance';
+    else if (wh < shiftHours * 0.9) status = 'half_day';
     else status = 'present';
-  } else if (firstInMins !== null) {
-    status = 'in_progress'; // checked in, not yet checked out
   }
 
-  if (firstInMins !== null && firstInMins > shiftStart + grace) {
-    late_minutes = firstInMins - shiftStart - grace;
-    if (status === 'present') status = 'late';
+  if (check_in_time) {
+    const firstInMins = isoToMins(check_in_time);
+    if (firstInMins !== null && firstInMins > shiftStart + grace) {
+      late_minutes = firstInMins - shiftStart - grace;
+      if (status === 'present') status = 'late';
+    }
   }
 
-  return { status, working_hours: Math.round(working_hours * 100) / 100, late_minutes };
+  return { status, late_minutes };
 }
 
 async function processRecord(record) {
@@ -117,13 +215,11 @@ async function processRecord(record) {
     return new Date(new Date(clean).getTime() + IST_MS).toISOString();
   })();
   const punchDate = punchIso.slice(0, 10);
-  const punchType = direction === 'OUT' ? 'out' : 'in';
 
-  // 1. Resolve employee early so we can set user_id on the AttendanceLog
+  // 1. Resolve employee
   let userId = directUid || null;
   let empData = null;
   if (!userId && codeStr) {
-    // Try BiometricCodeMapping first, then employee_code, then biometric_id
     const mappingRow = await one(
       "SELECT data FROM entities WHERE type='BiometricCodeMapping' AND data::jsonb->>'biometric_code'=$1 LIMIT 1",
       [codeStr]
@@ -171,12 +267,9 @@ async function processRecord(record) {
     logStored = true;
   }
 
-  // No employee match — log stored, attendance deferred until employee is mapped
   if (!userId) {
     return {
-      ok: true,
-      log_stored: logStored,
-      attendance_updated: false,
+      ok: true, log_stored: logStored, attendance_updated: false,
       note: `employee_code=${codeStr} not yet mapped — set the Biometric ID on the employee record`,
     };
   }
@@ -187,30 +280,25 @@ async function processRecord(record) {
     [userId, punchDate]
   );
 
-  // Load shift for status computation
   const shift = await getShift(empData);
+  const newPunch = { time: punchIso, device_direction: direction };
 
   if (!row) {
     // First punch of the day — create new Attendance record
-    const sessions = [{ time: punchIso, type: punchType }];
-    const computed = computeStatus(sessions, shift);
+    const sd = buildSessions([newPunch]);
+    const { status, late_minutes } = computeStatusFromSessions(sd, shift);
     const id = uuidv4();
     const attData = {
       id, user_id: userId, date: punchDate,
-      check_in_time:  punchType === 'in'  ? punchIso : null,
-      check_out_time: punchType === 'out' ? punchIso : null,
-      source: 'biometric', biometric_synced: true,
-      device_id: deviceName,
-      punch_sessions: sessions,
-      punch_count: 1,
+      source: 'biometric', biometric_synced: true, device_id: deviceName,
       employee_code: empData?.employee_code || codeStr,
-      ...computed,
+      ...sd, status, late_minutes,
     };
     await run(
       "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)",
-      [id, userId, computed.status, JSON.stringify(attData)]
+      [id, userId, status, JSON.stringify(attData)]
     );
-    return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: id, action: 'created', status: computed.status };
+    return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: id, action: 'created', status };
   }
 
   // 4. Update existing — never overwrite a regularised record
@@ -219,37 +307,44 @@ async function processRecord(record) {
     return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
   }
 
-  // Add punch to sessions (deduplicate)
-  const sessions = data.punch_sessions || [];
-  const alreadyStored = sessions.some(s => s.time === punchIso);
-  if (!alreadyStored) sessions.push({ time: punchIso, type: punchType });
+  // Merge new punch into the existing raw_punches list and rebuild sessions
+  const existingPunches = data.raw_punches || [];
+  // Also migrate old punch_sessions format (time/type) if raw_punches not yet present
+  if (!existingPunches.length && Array.isArray(data.punch_sessions)) {
+    const oldFmt = data.punch_sessions.filter(s => s.time); // old format has .time
+    if (oldFmt.length) {
+      const inTimes  = data.check_in_time  ? [data.check_in_time]  : [];
+      const outTimes = data.check_out_time ? [data.check_out_time] : [];
+      // Collect unique times from old sessions
+      oldFmt.forEach(s => {
+        if (s.type === 'in' && !existingPunches.find(p => p.time === s.time))
+          existingPunches.push({ time: s.time, device_direction: 'IN' });
+        if (s.type === 'out' && !existingPunches.find(p => p.time === s.time))
+          existingPunches.push({ time: s.time, device_direction: 'OUT' });
+      });
+    }
+  }
 
-  // Recompute check_in / check_out from all sessions
-  const inSessions  = sessions.filter(s => s.type === 'in').map(s => s.time).sort();
-  const outSessions = sessions.filter(s => s.type === 'out').map(s => s.time).sort();
-  const firstIn     = inSessions[0]   || data.check_in_time  || null;
-  const lastOut     = outSessions.length ? outSessions[outSessions.length - 1] : (data.check_out_time || null);
+  // Add new punch if not already present
+  const alreadyPresent = existingPunches.some(p => p.time === punchIso);
+  const mergedPunches  = alreadyPresent ? existingPunches : [...existingPunches, newPunch];
 
-  // Recompute status from all punches
-  const computed = computeStatus(sessions, shift);
+  const sd = buildSessions(mergedPunches);
+  const { status, late_minutes } = computeStatusFromSessions(sd, shift);
 
   const updated = {
     ...data,
-    check_in_time:   firstIn,
-    check_out_time:  lastOut,
-    punch_sessions:  sessions,
-    punch_count:     sessions.length,
     biometric_synced: true,
     device_id: deviceName || data.device_id,
     employee_code: empData?.employee_code || data.employee_code || codeStr,
-    ...computed,
+    ...sd, status, late_minutes,
   };
 
   await run(
     "UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
-    [computed.status, JSON.stringify(updated), row.id]
+    [status, JSON.stringify(updated), row.id]
   );
-  return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: row.id, action: 'updated', status: computed.status };
+  return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: row.id, action: 'updated', status };
 }
 
 // Single / batch punch
@@ -283,14 +378,12 @@ router.post('/', authMiddleware, async (req, res) => {
 });
 
 // Reprocess existing AttendanceLogs for a date range into Attendance records
-// POST /api/attendance-log/reprocess  { date_from: 'yyyy-MM-dd', date_to: 'yyyy-MM-dd' }
 router.post('/reprocess', authMiddleware, async (req, res) => {
   try {
     const { date_from, date_to } = req.body;
     if (!date_from) return res.status(400).json({ error: 'date_from is required (yyyy-MM-dd)' });
     const toDate = date_to || date_from;
 
-    // Pull all AttendanceLogs; the stored LogDate has IST digits with a Z suffix so slice(0,10) gives the date
     const logRows = await all("SELECT data FROM entities WHERE type='AttendanceLog'");
     const logsInRange = logRows
       .map(r => JSON.parse(r.data))
@@ -302,7 +395,6 @@ router.post('/reprocess', authMiddleware, async (req, res) => {
     if (logsInRange.length === 0)
       return res.json({ success: true, total_logs: 0, attendance_updated: 0, message: 'No logs found in date range' });
 
-    // Re-use processRecord so shift lookup + status computation is identical to live punch flow
     const results = await Promise.all(logsInRange.map(log => {
       const record = {
         employee_code: log.EmployeeCode || log.employee_code || '',
@@ -328,15 +420,16 @@ router.post('/reprocess', authMiddleware, async (req, res) => {
 router.get('/', (_req, res) => {
   res.json({
     description: 'Maxvolt HR — External Attendance Log API',
-    version: '2.0',
+    version: '3.0',
     auth: 'Authorization: Bearer <ATTENDANCE_API_KEY>',
-    note: 'All punches stored as AttendanceLog. Attendance record updated only if employee Biometric ID matches.',
+    note: 'Punches interpreted by alternating position (1st=In, 2nd=Out, 3rd=In…). Sessions and break times calculated automatically.',
     endpoints: {
       'POST /api/attendance-log': {
-        eBio: { EmployeeCode: 'string', LogDate: 'ISO8601', Direction: 'IN|OUT', DeviceName: 'optional' },
+        eBio:   { EmployeeCode: 'string', LogDate: 'ISO8601', Direction: 'IN|OUT', DeviceName: 'optional' },
         direct: { employee_code: 'string', punch_time: 'ISO8601', type: '"in"|"out"' },
-        batch: { records: '[{ EmployeeCode, LogDate, Direction }]' },
+        batch:  { records: '[{ EmployeeCode, LogDate, Direction }]' },
       },
+      'POST /api/attendance-log/reprocess': { date_from: 'yyyy-MM-dd', date_to: 'yyyy-MM-dd (optional)' },
     },
   });
 });

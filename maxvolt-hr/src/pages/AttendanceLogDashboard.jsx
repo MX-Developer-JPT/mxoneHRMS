@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { Users, ArrowDownCircle, ArrowUpCircle, RefreshCw, Search, Zap, CheckCircle, AlertCircle, Upload, ChevronDown, ChevronUp } from 'lucide-react';
+import { Users, ArrowDownCircle, ArrowUpCircle, RefreshCw, Search, Zap, CheckCircle, AlertCircle, Upload, ChevronDown, ChevronUp, AlarmClock } from 'lucide-react';
 import { isToday } from 'date-fns';
 import { toast } from 'sonner';
 import BiometricCodeMapping from '@/components/attendance/BiometricCodeMapping';
@@ -100,6 +100,27 @@ export default function AttendanceLogDashboard() {
       }
     } catch (err) {
       const msg = err?.response?.data?.message || err?.message || 'Processing failed due to a server error. Please try again.';
+      toast.error(msg);
+      setProcessResult({ success: false, message: msg });
+    }
+    setProcessing(false);
+  };
+
+  const handleCloseOpenSessions = async () => {
+    setProcessing(true);
+    setProcessResult(null);
+    try {
+      const yesterday = new Date(Date.now() + IST_OFFSET_MS - 86400000).toISOString().slice(0, 10);
+      const res = await base44.functions.invoke('closeOpenSessions', { date: yesterday });
+      const result = res.data;
+      setProcessResult(result);
+      if (result?.success) {
+        toast.success(`Auto-absent applied: ${result.closed || 0} open session(s) closed for ${result.date}`);
+      } else {
+        toast.error('Close open sessions failed');
+      }
+    } catch (err) {
+      const msg = err?.message || 'Failed to close open sessions';
       toast.error(msg);
       setProcessResult({ success: false, message: msg });
     }
@@ -304,7 +325,7 @@ export default function AttendanceLogDashboard() {
             Process Biometric Logs → Attendance Records
           </CardTitle>
           <p className="text-sm text-blue-600">
-            Sequential IN/OUT cycle · <strong>&lt;3h = Absent</strong> · <strong>3–9h = Half Day</strong> · <strong>≥9h = Present</strong> · First punch = Check-In (immediate Present) · Late &gt;20 min = warning · 3 late days/month → all late days → Half Day
+            Alternating punch model · 1st=In, 2nd=Out, 3rd=In… · Multiple sessions per day · Break time calculated · Dedup within 60s · No check-out by 5:30AM next day → <strong>Absent</strong>
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -322,6 +343,9 @@ export default function AttendanceLogDashboard() {
             </Button>
             <Button onClick={handleReprocessLogs} disabled={processing} variant="outline" className="border-blue-400 text-blue-700 hover:bg-blue-100">
               {processing ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Reprocessing...</> : <><CheckCircle className="w-4 h-4 mr-2" />Re-sync from Stored Logs</>}
+            </Button>
+            <Button onClick={handleCloseOpenSessions} disabled={processing} variant="outline" className="border-red-300 text-red-600 hover:bg-red-50" title="Mark employees who checked in yesterday but never checked out as Absent">
+              {processing ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Processing...</> : <><AlarmClock className="w-4 h-4 mr-2" />Auto-Absent (5:30AM Rule)</>}
             </Button>
           </div>
 

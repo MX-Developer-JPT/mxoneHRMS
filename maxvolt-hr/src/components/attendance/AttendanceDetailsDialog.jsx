@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import {
   Dialog,
   DialogContent,
@@ -6,20 +6,22 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { MapPin, Camera, Clock, Coffee, ArrowDownCircle, ArrowUpCircle, Timer, Fingerprint } from 'lucide-react';
-import { format } from 'date-fns';
+import { MapPin, Camera, Clock, Coffee, ArrowDownCircle, ArrowUpCircle, Timer, Fingerprint, Activity } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
 
 export default function AttendanceDetailsDialog({ record, employee, open, onClose }) {
   if (!record) return null;
 
   const statusColors = {
-    present: 'bg-green-100 text-green-800',
-    absent: 'bg-red-100 text-red-800',
-    half_day: 'bg-yellow-100 text-yellow-800',
-    leave: 'bg-blue-100 text-blue-800',
-    holiday: 'bg-purple-100 text-purple-800',
-    week_off: 'bg-gray-100 text-gray-800'
+    present:          'bg-green-100 text-green-800',
+    absent:           'bg-red-100 text-red-800',
+    half_day:         'bg-yellow-100 text-yellow-800',
+    leave:            'bg-blue-100 text-blue-800',
+    holiday:          'bg-purple-100 text-purple-800',
+    week_off:         'bg-gray-100 text-gray-800',
+    late:             'bg-orange-100 text-orange-800',
+    short_attendance: 'bg-red-100 text-red-700',
+    in_progress:      'bg-green-100 text-green-700',
   };
 
   const formatTime = (iso) => {
@@ -27,17 +29,51 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
     try { return safeDate(iso, 'hh:mm:ss a'); } catch { return iso; }
   };
 
-  const formatHours = (h) => {
-    if (h === null || h === undefined) return '-';
-    const hrs = Math.floor(h);
-    const mins = Math.round((h - hrs) * 60);
-    return `${hrs}h ${mins}m`;
+  const formatMins = (mins) => {
+    if (mins == null || mins <= 0) return '-';
+    const h = Math.floor(mins / 60);
+    const m = Math.round(mins % 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
   };
 
-  const sessions = record.punch_sessions || [];
-  const hasBiometricSessions = sessions.length > 0;
+  const formatHours = (h) => {
+    if (h == null || h <= 0) return '-';
+    return formatMins(Math.round(h * 60));
+  };
+
+  // Support both new (sessions/breaks) and legacy (punch_sessions) schema
+  const richSessions = record.sessions || [];
+  const legacySessions = (record.punch_sessions || []).filter(s => s.punch_in || s.session_number);
+  const hasSessions = richSessions.length > 0 || legacySessions.length > 0;
+
+  const totalBreakMins = record.total_break_minutes ?? (record.break_hours ? Math.round(record.break_hours * 60) : 0);
+  const totalWorkMins  = record.total_working_minutes ?? (record.working_hours ? Math.round(record.working_hours * 60) : 0);
+
   const hasSelfie = record.check_in_selfie_url || record.check_out_selfie_url;
   const attendanceMethod = record.biometric_synced ? 'biometric' : hasSelfie ? 'selfie' : 'manual';
+  const isWorking = record.is_in_progress || record.status === 'in_progress';
+
+  // Unified display sessions list
+  const displaySessions = richSessions.length > 0
+    ? richSessions.map((s, i) => {
+        const breakRecord = (record.breaks || [])[i - 1];
+        return {
+          session_number:     s.session_number || i + 1,
+          punch_in:           s.check_in,
+          punch_out:          s.check_out,
+          duration_hours:     s.duration_minutes != null ? s.duration_minutes / 60 : null,
+          break_before_mins:  breakRecord ? breakRecord.duration_minutes : 0,
+          is_complete:        s.is_complete,
+        };
+      })
+    : legacySessions.map((s, i) => ({
+        session_number:    s.session_number || i + 1,
+        punch_in:          s.punch_in,
+        punch_out:         s.punch_out,
+        duration_hours:    s.duration_hours,
+        break_before_mins: s.break_before_hours ? Math.round(s.break_before_hours * 60) : 0,
+        is_complete:       !!s.punch_out,
+      }));
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -58,9 +94,19 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
               <p className="text-xl font-bold">{employee?.display_name || employee?.user?.display_name || employee?.user?.full_name}</p>
               <p className="text-gray-600">{employee?.designation}</p>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
-                <Badge className={statusColors[record.status]}>
-                  {record.status.replace('_', ' ').toUpperCase()}
+                <Badge className={statusColors[record.status] || 'bg-gray-100 text-gray-700'}>
+                  {(record.status || '').replace(/_/g, ' ').toUpperCase()}
                 </Badge>
+                {isWorking && (
+                  <Badge className="bg-green-50 text-green-700 border border-green-300 flex items-center gap-1">
+                    <Activity className="w-3 h-3" /> Currently Working
+                  </Badge>
+                )}
+                {!isWorking && record.check_out_time && (
+                  <Badge className="bg-gray-50 text-gray-600 border border-gray-200">
+                    Checked Out
+                  </Badge>
+                )}
                 {attendanceMethod === 'biometric' && (
                   <Badge className="bg-green-100 text-green-700 flex items-center gap-1">
                     <Fingerprint className="w-3 h-3" /> Biometric
@@ -87,41 +133,58 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
             </div>
             <div className="bg-orange-50 p-3 rounded-lg text-center">
               <p className="text-xs text-gray-500 mb-1">Last Out</p>
-              <p className="font-semibold text-sm text-orange-700">{formatTime(record.check_out_time)}</p>
+              <p className="font-semibold text-sm text-orange-700">
+                {isWorking && !record.check_out_time
+                  ? <span className="text-green-600 text-xs font-medium">Still Working</span>
+                  : formatTime(record.check_out_time)}
+              </p>
             </div>
             <div className="bg-blue-50 p-3 rounded-lg text-center">
               <p className="text-xs text-gray-500 mb-1">Total Work</p>
-              <p className="font-semibold text-sm text-blue-700">{formatHours(record.working_hours)}</p>
+              <p className="font-semibold text-sm text-blue-700">
+                {totalWorkMins > 0
+                  ? formatMins(totalWorkMins)
+                  : (isWorking ? <span className="text-green-600 text-xs">In Progress</span> : '-')}
+              </p>
             </div>
           </div>
 
-          {record.break_hours > 0 && (
-            <div className="flex items-center gap-2 bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2">
-              <Coffee className="w-4 h-4 text-yellow-600" />
-              <span className="text-sm text-yellow-800 font-medium">Total Break Time: {formatHours(record.break_hours)}</span>
-              {record.total_punches && (
-                <span className="ml-auto text-xs text-yellow-600">{record.total_punches} punches recorded</span>
-              )}
+          {/* Break / sessions bar */}
+          {(totalBreakMins > 0 || displaySessions.length > 1) && (
+            <div className="flex flex-wrap items-center gap-3 bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2.5">
+              <Coffee className="w-4 h-4 text-yellow-600 flex-shrink-0" />
+              <div className="flex flex-wrap gap-4 text-sm">
+                {totalBreakMins > 0 && (
+                  <span className="text-yellow-800 font-medium">Total Break: {formatMins(totalBreakMins)}</span>
+                )}
+                {displaySessions.length > 1 && (
+                  <span className="text-yellow-700">{displaySessions.length} work sessions</span>
+                )}
+                {record.punch_count > 0 && (
+                  <span className="text-yellow-600 text-xs">{record.punch_count} punches recorded</span>
+                )}
+              </div>
             </div>
           )}
 
-          {/* Biometric session timeline */}
-          {hasBiometricSessions && (
+          {/* Work session timeline */}
+          {hasSessions && (
             <div className="border rounded-lg p-4">
               <div className="flex items-center gap-2 mb-4">
                 <Timer className="w-5 h-5 text-blue-600" />
                 <h3 className="font-semibold text-base">Work Sessions</h3>
-                <Badge variant="outline" className="ml-auto text-xs">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</Badge>
+                <Badge variant="outline" className="ml-auto text-xs">
+                  {displaySessions.length} session{displaySessions.length !== 1 ? 's' : ''}
+                </Badge>
               </div>
 
-              <div className="space-y-3">
-                {sessions.map((session, idx) => (
+              <div className="space-y-2">
+                {displaySessions.map((session, idx) => (
                   <div key={idx}>
-                    {/* Break before this session */}
-                    {idx > 0 && session.break_before_hours > 0 && (
-                      <div className="flex items-center gap-2 ml-4 my-1 text-xs text-amber-600">
+                    {idx > 0 && session.break_before_mins > 0 && (
+                      <div className="flex items-center gap-2 ml-4 my-2 text-xs text-amber-600">
                         <Coffee className="w-3 h-3" />
-                        <span>Break: {formatHours(session.break_before_hours)}</span>
+                        <span className="font-medium">Break {idx}: {formatMins(session.break_before_mins)}</span>
                       </div>
                     )}
                     <div className="flex items-start gap-3 bg-gray-50 rounded-lg p-3">
@@ -135,7 +198,7 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                             <span className="text-sm font-medium text-green-700">{formatTime(session.punch_in)}</span>
                             <span className="text-xs text-gray-400">IN</span>
                           </div>
-                          {session.punch_out && (
+                          {session.punch_out ? (
                             <>
                               <span className="text-gray-300">→</span>
                               <div className="flex items-center gap-1.5">
@@ -143,14 +206,17 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                                 <span className="text-sm font-medium text-red-600">{formatTime(session.punch_out)}</span>
                                 <span className="text-xs text-gray-400">OUT</span>
                               </div>
-                              <Badge variant="outline" className="text-xs ml-auto">
-                                <Clock className="w-3 h-3 mr-1" />
-                                {formatHours(session.duration_hours)}
-                              </Badge>
+                              {session.duration_hours != null && (
+                                <Badge variant="outline" className="text-xs ml-auto">
+                                  <Clock className="w-3 h-3 mr-1" />
+                                  {formatHours(session.duration_hours)}
+                                </Badge>
+                              )}
                             </>
-                          )}
-                          {!session.punch_out && (
-                            <Badge className="text-xs ml-auto bg-green-100 text-green-700">Currently In</Badge>
+                          ) : (
+                            <Badge className="text-xs ml-auto bg-green-100 text-green-700 flex items-center gap-1">
+                              <Activity className="w-3 h-3" /> Currently In
+                            </Badge>
                           )}
                         </div>
                       </div>
@@ -161,15 +227,14 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
             </div>
           )}
 
-          {/* Selfie / manual check-in/out (non-biometric records) */}
-          {!hasBiometricSessions && (record.check_in_time || record.check_out_time) && (
+          {/* Selfie / manual records */}
+          {!hasSessions && (record.check_in_time || record.check_out_time) && (
             <div className="border rounded-lg p-4">
               <div className="flex items-center gap-2 mb-4">
                 <Camera className="w-5 h-5 text-blue-600" />
                 <h3 className="font-semibold text-base">Attendance Session</h3>
                 <Badge variant="outline" className="ml-auto text-xs">1 session</Badge>
               </div>
-              {/* Session timeline row */}
               <div className="bg-gray-50 rounded-lg p-3 mb-4">
                 <div className="flex items-center gap-4 flex-wrap">
                   {record.check_in_time && (
@@ -179,7 +244,7 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                       <span className="text-xs text-gray-400">IN</span>
                     </div>
                   )}
-                  {record.check_out_time && (
+                  {record.check_out_time ? (
                     <>
                       <span className="text-gray-300">→</span>
                       <div className="flex items-center gap-1.5">
@@ -193,13 +258,11 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                         </Badge>
                       )}
                     </>
-                  )}
-                  {!record.check_out_time && record.check_in_time && (
+                  ) : record.check_in_time && (
                     <Badge className="text-xs ml-auto bg-green-100 text-green-700">Currently In</Badge>
                   )}
                 </div>
               </div>
-              {/* Selfie photos + location */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {record.check_in_time && (
                   <div>
@@ -240,6 +303,18 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {record.late_minutes > 0 && (
+            <div className="bg-orange-50 border border-orange-200 rounded-lg px-4 py-2.5 text-sm text-orange-800">
+              Late arrival by <strong>{formatMins(record.late_minutes)}</strong>
+            </div>
+          )}
+
+          {record.auto_closed_reason && (
+            <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2.5 text-sm text-red-700">
+              <strong>Auto-closed:</strong> {record.auto_closed_reason}
             </div>
           )}
 
