@@ -44,6 +44,56 @@ async function authMiddleware(req, res, next) {
   next();
 }
 
+// Resolve shift for an employee (by shift_id or default shift)
+async function getShift(empData) {
+  if (empData?.shift_id) {
+    const row = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [empData.shift_id]);
+    if (row) return JSON.parse(row.data);
+  }
+  const row = await one(
+    "SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'='true' OR data::jsonb->>'is_default'='1') LIMIT 1"
+  );
+  return row ? JSON.parse(row.data) : { start_time: '09:00', end_time: '18:00', working_hours: 9, grace_period_minutes: 15 };
+}
+
+// Compute attendance status from all sessions + shift
+function computeStatus(sessions, shift) {
+  const toMins = (t) => {
+    const [h, m] = String(t || '00:00').split(':').map(Number);
+    return h * 60 + m;
+  };
+  // Extract HH:MM from ISO string (stored as "IST digits Z")
+  const isoToMins = (iso) => toMins(iso ? iso.slice(11, 16) : null);
+
+  const inTimes  = sessions.filter(s => s.type === 'in').map(s => isoToMins(s.time)).sort((a, b) => a - b);
+  const outTimes = sessions.filter(s => s.type === 'out').map(s => isoToMins(s.time)).sort((a, b) => b - a);
+
+  const firstInMins  = inTimes[0]  ?? null;
+  const lastOutMins  = outTimes[0] ?? null;
+
+  const shiftStart   = toMins(shift.start_time  || '09:00');
+  const grace        = Number(shift.grace_period_minutes || 15);
+  const shiftHours   = Number(shift.working_hours || 9);
+
+  let status = 'present', working_hours = 0, late_minutes = 0;
+
+  if (firstInMins !== null && lastOutMins !== null && lastOutMins > firstInMins) {
+    working_hours = (lastOutMins - firstInMins) / 60;
+    if (working_hours < shiftHours / 2) status = 'short_attendance';
+    else if (working_hours < shiftHours * 0.9) status = 'half_day';
+    else status = 'present';
+  } else if (firstInMins !== null) {
+    status = 'in_progress'; // checked in, not yet checked out
+  }
+
+  if (firstInMins !== null && firstInMins > shiftStart + grace) {
+    late_minutes = firstInMins - shiftStart - grace;
+    if (status === 'present') status = 'late';
+  }
+
+  return { status, working_hours: Math.round(working_hours * 100) / 100, late_minutes };
+}
+
 async function processRecord(record) {
   // Normalise field names — accept eBio Pascal-case and snake_case formats
   const codeStr    = String(record.employee_code || record.EmployeeCode || '');
@@ -58,23 +108,44 @@ async function processRecord(record) {
   if (!punch_time) return { ok: false, reason: 'punch_time is required' };
 
   // "Store IST, display IST" — biometric devices send local IST time without timezone info.
-  // We store the IST clock digits with a Z suffix. The display layer reads them back as IST
-  // directly (no offset arithmetic needed). For the rare case where a tz-aware timestamp
-  // arrives, we convert to IST wall-clock so storage stays consistent.
   const punchIso = (() => {
     const clean = String(punch_time).trim().replace(' ', 'T');
     if (!/Z$|[+-]\d{2}:?\d{2}$/.test(clean)) {
-      // No timezone — IST clock digits, store with Z
       return clean.replace(/(\.\d+)?$/, '.000Z');
     }
-    // Has timezone — convert to IST wall-clock then store with Z
     const IST_MS = 5.5 * 60 * 60 * 1000;
     return new Date(new Date(clean).getTime() + IST_MS).toISOString();
   })();
   const punchDate = punchIso.slice(0, 10);
+  const punchType = direction === 'OUT' ? 'out' : 'in';
 
-  // 1. Always store the raw punch as AttendanceLog (shown in Biometric Attendance Log page)
-  //    Deduplicate by EmployeeCode + exact punch timestamp
+  // 1. Resolve employee early so we can set user_id on the AttendanceLog
+  let userId = directUid || null;
+  let empData = null;
+  if (!userId && codeStr) {
+    // Try BiometricCodeMapping first, then employee_code, then biometric_id
+    const mappingRow = await one(
+      "SELECT data FROM entities WHERE type='BiometricCodeMapping' AND data::jsonb->>'biometric_code'=$1 LIMIT 1",
+      [codeStr]
+    );
+    if (mappingRow) {
+      const m = JSON.parse(mappingRow.data);
+      userId = m.user_id || null;
+    }
+    if (!userId) {
+      const empRow = await one(
+        "SELECT user_id, data FROM entities WHERE type='Employee' AND (data::jsonb->>'employee_code'=$1 OR data::jsonb->>'biometric_id'=$1) LIMIT 1",
+        [codeStr]
+      );
+      if (empRow) { userId = empRow.user_id; empData = JSON.parse(empRow.data); }
+    }
+  }
+  if (userId && !empData) {
+    const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1 LIMIT 1", [userId]);
+    if (empRow) empData = JSON.parse(empRow.data);
+  }
+
+  // 2. Store raw punch as AttendanceLog (deduplicate by code + exact timestamp)
   let logStored = false;
   const existingLog = await one(
     "SELECT id FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'EmployeeCode'=$1 AND data::jsonb->>'LogDate'=$2",
@@ -83,8 +154,8 @@ async function processRecord(record) {
   if (!existingLog) {
     const logId = uuidv4();
     await run(
-      "INSERT INTO entities(id,type,status,data) VALUES($1,'AttendanceLog','active',$2)",
-      [logId, JSON.stringify({
+      "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AttendanceLog',$2,'active',$3)",
+      [logId, userId || null, JSON.stringify({
         id: logId,
         EmployeeCode: codeStr,
         LogDate: punchIso,
@@ -92,6 +163,7 @@ async function processRecord(record) {
         DeviceName: deviceName,
         SerialNumber: serial,
         VerificationType: verType,
+        user_id: userId || null,
         ProcessedAt: new Date().toISOString(),
         source: 'webhook',
       })]
@@ -99,23 +171,7 @@ async function processRecord(record) {
     logStored = true;
   }
 
-  // 2. Try to resolve to an HRMS employee (employee_code first, then biometric_id)
-  let userId = directUid;
-  if (!userId && codeStr) {
-    let emp = await one(
-      "SELECT user_id FROM entities WHERE type='Employee' AND data::jsonb->>'employee_code'=$1 LIMIT 1",
-      [codeStr]
-    );
-    if (!emp?.user_id) {
-      emp = await one(
-        "SELECT user_id FROM entities WHERE type='Employee' AND data::jsonb->>'biometric_id'=$1 LIMIT 1",
-        [codeStr]
-      );
-    }
-    userId = emp?.user_id;
-  }
-
-  // No employee match — log is stored, attendance will be mapped once Biometric ID is set
+  // No employee match — log stored, attendance deferred until employee is mapped
   if (!userId) {
     return {
       ok: true,
@@ -126,46 +182,74 @@ async function processRecord(record) {
   }
 
   // 3. Find or create today's Attendance record
-  const type = direction === 'OUT' ? 'out' : 'in';
   const row = await one(
     "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1",
     [userId, punchDate]
   );
 
+  // Load shift for status computation
+  const shift = await getShift(empData);
+
   if (!row) {
+    // First punch of the day — create new Attendance record
+    const sessions = [{ time: punchIso, type: punchType }];
+    const computed = computeStatus(sessions, shift);
     const id = uuidv4();
-    const data = {
+    const attData = {
       id, user_id: userId, date: punchDate,
-      check_in_time:  type === 'in'  ? punchIso : null,
-      check_out_time: type === 'out' ? punchIso : null,
-      status: 'present', source: 'biometric', device_id: deviceName,
-      punch_sessions: [{ time: punchIso, type }],
+      check_in_time:  punchType === 'in'  ? punchIso : null,
+      check_out_time: punchType === 'out' ? punchIso : null,
+      source: 'biometric', biometric_synced: true,
+      device_id: deviceName,
+      punch_sessions: sessions,
+      punch_count: 1,
+      employee_code: empData?.employee_code || codeStr,
+      ...computed,
     };
     await run(
-      "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)",
-      [id, userId, JSON.stringify(data)]
+      "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)",
+      [id, userId, computed.status, JSON.stringify(attData)]
     );
-    return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: id, action: 'created' };
+    return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: id, action: 'created', status: computed.status };
   }
 
-  // Update existing attendance record
+  // 4. Update existing — never overwrite a regularised record
   const data = JSON.parse(row.data);
-  const sessions = data.punch_sessions || [];
-  sessions.push({ time: punchIso, type });
-  data.punch_sessions = sessions;
-  data.device_id = deviceName || data.device_id;
-
-  if (type === 'in') {
-    if (!data.check_in_time || punchIso < data.check_in_time) data.check_in_time = punchIso;
-  } else {
-    if (!data.check_out_time || punchIso > data.check_out_time) data.check_out_time = punchIso;
+  if (data.status === 'regularised') {
+    return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
   }
+
+  // Add punch to sessions (deduplicate)
+  const sessions = data.punch_sessions || [];
+  const alreadyStored = sessions.some(s => s.time === punchIso);
+  if (!alreadyStored) sessions.push({ time: punchIso, type: punchType });
+
+  // Recompute check_in / check_out from all sessions
+  const inSessions  = sessions.filter(s => s.type === 'in').map(s => s.time).sort();
+  const outSessions = sessions.filter(s => s.type === 'out').map(s => s.time).sort();
+  const firstIn     = inSessions[0]   || data.check_in_time  || null;
+  const lastOut     = outSessions.length ? outSessions[outSessions.length - 1] : (data.check_out_time || null);
+
+  // Recompute status from all punches
+  const computed = computeStatus(sessions, shift);
+
+  const updated = {
+    ...data,
+    check_in_time:   firstIn,
+    check_out_time:  lastOut,
+    punch_sessions:  sessions,
+    punch_count:     sessions.length,
+    biometric_synced: true,
+    device_id: deviceName || data.device_id,
+    employee_code: empData?.employee_code || data.employee_code || codeStr,
+    ...computed,
+  };
 
   await run(
-    "UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2",
-    [JSON.stringify(data), row.id]
+    "UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
+    [computed.status, JSON.stringify(updated), row.id]
   );
-  return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: row.id, action: 'updated' };
+  return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: row.id, action: 'updated', status: computed.status };
 }
 
 // Single / batch punch
