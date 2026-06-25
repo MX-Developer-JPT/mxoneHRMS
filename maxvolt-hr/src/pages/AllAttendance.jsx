@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, Activity, CalendarDays, List } from 'lucide-react';
 import { format } from 'date-fns';
+import { safeTime } from '@/lib/dateUtils';
 import { toast } from 'sonner';
 import MobileSelect from '@/components/MobileSelect';
 import AttendanceDetailsDialog from '@/components/attendance/AttendanceDetailsDialog';
@@ -470,59 +471,64 @@ export default function AllAttendance() {
                       const emp = record._emp;
                       const name = emp?.display_name || emp?._user?.full_name || record.user_id;
                       const displayStatus = getDisplayStatus(record);
+
+                      // Resolve first-in / last-out from all possible sources
+                      const richSess = record.sessions || [];
+                      const legacySess = (record.punch_sessions || []).filter(s => s.punch_in);
+                      const firstIn = record.check_in_time
+                        || richSess[0]?.check_in
+                        || legacySess[0]?.punch_in
+                        || null;
+                      const completeSess = richSess.filter(s => s.check_out || s.is_complete);
+                      const lastOut = record.check_out_time
+                        || (completeSess.length ? completeSess[completeSess.length - 1].check_out : null)
+                        || (legacySess.length > 1 ? legacySess[legacySess.length - 1].punch_out : null)
+                        || null;
+
                       return (
                         <div
                           key={record.id}
-                          className={`flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg border bg-white hover:shadow-sm transition-shadow ${!record._virtual ? 'cursor-pointer' : ''}`}
+                          className={`flex flex-wrap items-center justify-between gap-x-4 gap-y-2 p-3 rounded-lg border bg-white hover:shadow-sm transition-shadow ${!record._virtual ? 'cursor-pointer' : ''}`}
                           onClick={() => !record._virtual && setSelectedRecord(record)}
                         >
-                          <div className="flex items-center gap-3 min-w-0">
+                          {/* Left: avatar + name */}
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
                             <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                               <span className="text-blue-600 font-semibold text-sm">{name.charAt(0).toUpperCase()}</span>
                             </div>
                             <div className="min-w-0">
                               <p className="font-medium text-sm text-gray-900 truncate">{name}</p>
-                              <p className="text-xs text-gray-500 truncate">{emp?.designation || emp?.employee_code}</p>
-                              {/* First In / Last Out — always visible */}
-                              {(record.check_in_time || record.check_out_time) && (
-                                <div className="flex flex-wrap gap-2 mt-0.5">
-                                  {record.check_in_time && (
-                                    <span className="text-xs text-green-700 font-medium">
-                                      ↓ {safeFormatTime(record.check_in_time)}
-                                    </span>
-                                  )}
-                                  {record.check_out_time && (
-                                    <span className="text-xs text-red-500 font-medium">
-                                      ↑ {safeFormatTime(record.check_out_time)}
-                                    </span>
-                                  )}
-                                  {record.is_in_progress && !record.check_out_time && (
-                                    <span className="text-xs text-green-500 font-medium">● Working</span>
-                                  )}
-                                </div>
-                              )}
+                              <p className="text-xs text-gray-400 truncate">{emp?.designation || emp?.employee_code}</p>
                             </div>
                           </div>
 
+                          {/* Center: First In / Last Out — always shown as dedicated block */}
+                          <div className="flex items-center gap-4 shrink-0">
+                            <div className="text-center min-w-[64px]">
+                              <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none mb-0.5">First In</p>
+                              <p className={`text-sm font-semibold ${firstIn ? 'text-green-700' : 'text-gray-300'}`}>
+                                {firstIn ? safeTime(firstIn) : '—'}
+                              </p>
+                            </div>
+                            <div className="text-center min-w-[64px]">
+                              <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none mb-0.5">Last Out</p>
+                              <p className={`text-sm font-semibold ${lastOut ? 'text-red-600' : (record.is_in_progress || record.status === 'in_progress') ? 'text-green-500' : 'text-gray-300'}`}>
+                                {lastOut ? safeTime(lastOut) : (record.is_in_progress || record.status === 'in_progress') ? '● In' : '—'}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Right: chips */}
                           <div className="flex flex-wrap items-center gap-2">
-                            {/* Multi-session pills — only shown when there are 2+ sessions */}
-                            {(() => {
-                              const richSess = record.sessions || [];
-                              const legacySess = (record.punch_sessions || []).filter(s => s.punch_in || s.session_number);
-                              const displayList = richSess.length > 1
-                                ? richSess.map(s => ({ pin: s.check_in, pout: s.check_out }))
-                                : legacySess.length > 1
-                                  ? legacySess.map(s => ({ pin: s.punch_in, pout: s.punch_out }))
-                                  : [];
-                              return displayList.map((s, idx) => (
-                                <span key={idx} className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded border border-gray-100">
-                                  <span className="text-gray-400 mr-1">S{idx + 1}</span>
-                                  <span className="text-green-600 font-medium">↓</span> {safeFormatTime(s.pin)}
-                                  {s.pout && <><span className="text-gray-300 mx-1">·</span><span className="text-red-500 font-medium">↑</span> {safeFormatTime(s.pout)}</>}
-                                  {!s.pout && <span className="text-green-500 ml-1">●</span>}
-                                </span>
-                              ));
-                            })()}
+                            {/* Multi-session pills — only when 2+ sessions */}
+                            {richSess.length > 1 && richSess.map((s, idx) => (
+                              <span key={idx} className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded border border-gray-100">
+                                <span className="text-gray-400 mr-1">S{idx + 1}</span>
+                                <span className="text-green-600 font-medium">↓</span> {safeTime(s.check_in)}
+                                {s.check_out && <><span className="text-gray-300 mx-1">·</span><span className="text-red-500 font-medium">↑</span> {safeTime(s.check_out)}</>}
+                                {!s.check_out && <span className="text-green-500 ml-1">●</span>}
+                              </span>
+                            ))}
                             {/* Working time */}
                             {(record.total_working_minutes > 0 || record.working_hours > 0) && (
                               <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-1 rounded">
@@ -538,12 +544,6 @@ export default function AllAttendance() {
                                 {record.total_break_minutes
                                   ? `${Math.floor(record.total_break_minutes/60)}h${record.total_break_minutes%60>0?`${record.total_break_minutes%60}m`:''}`
                                   : `${record.break_hours.toFixed(1)}h`} break
-                              </span>
-                            )}
-                            {/* Working indicator — only when no check_in_time (already shown inline below name) */}
-                            {(record.is_in_progress || record.status === 'in_progress') && !record.check_in_time && (
-                              <span className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-300">
-                                <Activity className="w-3 h-3" /> Working
                               </span>
                             )}
                             {record.biometric_synced && (
