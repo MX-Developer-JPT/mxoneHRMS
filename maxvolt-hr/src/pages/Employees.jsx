@@ -52,15 +52,9 @@ export default function Employees() {
       let updatedEmpRecords = await base44.entities.Employee.list('-created_date', 500);
 
       const userRole = currentUser.custom_role || currentUser.role;
-      if (userRole === 'manager') {
-        // Manager sees only their direct reports
+      if (userRole === 'manager' || userRole === 'management') {
+        // Show employees where this user is set as reporting manager
         updatedEmpRecords = updatedEmpRecords.filter(e => e.reporting_manager_id === currentUser.id);
-      } else if (userRole === 'management') {
-        const departments = await base44.entities.Department.filter({ head_user_id: currentUser.id });
-        if (departments.length > 0) {
-          const deptCodes = departments.map(d => d.code);
-          updatedEmpRecords = updatedEmpRecords.filter(e => deptCodes.includes(e.department));
-        }
       }
 
       const enrichedEmps = updatedEmpRecords

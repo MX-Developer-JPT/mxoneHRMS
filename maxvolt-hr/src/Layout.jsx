@@ -11,7 +11,7 @@ import {
   UserCog, Building2, ShieldOff, PieChart, Shield, GraduationCap,
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
-  Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare,
+  Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
 import DashboardPage from './pages/Dashboard';
@@ -299,6 +299,8 @@ export default function Layout({ children, currentPageName }) {
   const [moreSheetOpen,       setMoreSheetOpen]      = useState(false);
   const [pullDistance,        setPullDistance]       = useState(0);
   const [isRefreshing,        setIsRefreshing]       = useState(false);
+  const [menuSearch,          setMenuSearch]         = useState('');
+  const [sheetSearch,         setSheetSearch]        = useState('');
 
   const touchStartY = useRef(0);
   const contentRef  = useRef(null);
@@ -403,6 +405,15 @@ export default function Layout({ children, currentPageName }) {
   }
   const menuItems = menuGroups.flatMap(g => g.items);
 
+  // Filter menu groups based on search
+  const filteredMenuGroups = (query) => {
+    if (!query.trim()) return menuGroups;
+    const q = query.toLowerCase();
+    return menuGroups
+      .map(g => ({ ...g, items: g.items.filter(i => i.name.toLowerCase().includes(q)) }))
+      .filter(g => g.items.length > 0);
+  };
+
   const displayName = employeeDisplayName || user.display_name || user.full_name || user.email;
 
   // Role-aware primary bottom tabs (max 4, plus "More")
@@ -502,9 +513,23 @@ export default function Layout({ children, currentPageName }) {
           </div>
         </div>
 
+        {/* Search */}
+        <div className="px-3 py-2 border-b border-[#E0E0E5] dark:border-[#38383A]">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#8E8E93]" />
+            <input
+              type="text"
+              value={menuSearch}
+              onChange={e => setMenuSearch(e.target.value)}
+              placeholder="Search menu…"
+              className="w-full pl-7 pr-3 py-1.5 text-[12.5px] rounded-lg bg-[#F2F2F7] dark:bg-white/6 border-none outline-none text-[#1D1D1F] dark:text-white placeholder-[#8E8E93] focus:ring-1 focus:ring-[#007AFF]/30"
+            />
+          </div>
+        </div>
+
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto px-2 py-2">
-          {menuGroups.map((group, gi) => (
+          {filteredMenuGroups(menuSearch).map((group, gi) => (
             <div key={gi}>
               <NavSectionLabel label={group.label} />
               <div className="space-y-0.5">
@@ -513,12 +538,15 @@ export default function Layout({ children, currentPageName }) {
                     key={`${item.page}-${idx}`}
                     item={item}
                     isActive={currentPageName === item.page}
-                    onClick={() => {}}
+                    onClick={() => { if (menuSearch) setMenuSearch(''); }}
                   />
                 ))}
               </div>
             </div>
           ))}
+          {menuSearch && filteredMenuGroups(menuSearch).length === 0 && (
+            <p className="px-3 py-4 text-xs text-[#8E8E93] text-center">No results for "{menuSearch}"</p>
+          )}
         </nav>
 
         {/* Footer */}
@@ -592,7 +620,7 @@ export default function Layout({ children, currentPageName }) {
           <div
             className="lg:hidden fixed inset-0 z-50 bg-black/40"
             style={{ backdropFilter: 'blur(2px)', WebkitBackdropFilter: 'blur(2px)' }}
-            onClick={() => setMoreSheetOpen(false)}
+            onClick={() => { setMoreSheetOpen(false); setSheetSearch(''); }}
           />
           {/* Sheet */}
           <div
@@ -631,7 +659,7 @@ export default function Layout({ children, currentPageName }) {
                   }
                 </button>
                 <button
-                  onClick={() => setMoreSheetOpen(false)}
+                  onClick={() => { setMoreSheetOpen(false); setSheetSearch(''); }}
                   className="w-9 h-9 rounded-full bg-[#E5E5EA] flex items-center justify-center"
                   aria-label="Close"
                 >
@@ -640,9 +668,23 @@ export default function Layout({ children, currentPageName }) {
               </div>
             </div>
 
+            {/* Sheet search */}
+            <div className="px-4 py-2 border-b border-[#E0E0E5]/80">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8E8E93]" />
+                <input
+                  type="text"
+                  value={sheetSearch}
+                  onChange={e => setSheetSearch(e.target.value)}
+                  placeholder="Search menu…"
+                  className="w-full pl-9 pr-3 py-2 text-[14px] rounded-xl bg-[#E5E5EA]/60 border-none outline-none text-[#1D1D1F] placeholder-[#8E8E93] focus:ring-1 focus:ring-[#007AFF]/30"
+                />
+              </div>
+            </div>
+
             {/* Menu list */}
             <nav className="overflow-y-auto px-3 py-2" style={{ maxHeight: 'calc(78dvh - 10rem)' }}>
-              {menuGroups.map((group, gi) => (
+              {filteredMenuGroups(sheetSearch).map((group, gi) => (
                 <div key={gi}>
                   {group.label ? (
                     <p className="px-3 pt-4 pb-1 text-[11px] font-semibold tracking-widest uppercase text-[#8E8E93] select-none">
@@ -657,7 +699,7 @@ export default function Layout({ children, currentPageName }) {
                         <Link
                           key={`sheet-${item.page}-${idx}`}
                           to={createPageUrl(item.page)}
-                          onClick={() => setMoreSheetOpen(false)}
+                          onClick={() => { setMoreSheetOpen(false); setSheetSearch(''); }}
                           className={`
                             flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-medium select-none
                             transition-colors duration-150
@@ -679,6 +721,9 @@ export default function Layout({ children, currentPageName }) {
                   </div>
                 </div>
               ))}
+              {sheetSearch && filteredMenuGroups(sheetSearch).length === 0 && (
+                <p className="py-6 text-sm text-[#8E8E93] text-center">No results for "{sheetSearch}"</p>
+              )}
             </nav>
 
             {/* Sheet footer */}

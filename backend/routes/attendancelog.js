@@ -282,6 +282,48 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
+// Reprocess existing AttendanceLogs for a date range into Attendance records
+// POST /api/attendance-log/reprocess  { date_from: 'yyyy-MM-dd', date_to: 'yyyy-MM-dd' }
+router.post('/reprocess', authMiddleware, async (req, res) => {
+  try {
+    const { date_from, date_to } = req.body;
+    if (!date_from) return res.status(400).json({ error: 'date_from is required (yyyy-MM-dd)' });
+    const toDate = date_to || date_from;
+
+    // Pull all AttendanceLogs; the stored LogDate has IST digits with a Z suffix so slice(0,10) gives the date
+    const logRows = await all("SELECT data FROM entities WHERE type='AttendanceLog'");
+    const logsInRange = logRows
+      .map(r => JSON.parse(r.data))
+      .filter(log => {
+        const d = log.LogDate ? String(log.LogDate).slice(0, 10) : null;
+        return d && d >= date_from && d <= toDate;
+      });
+
+    if (logsInRange.length === 0)
+      return res.json({ success: true, total_logs: 0, attendance_updated: 0, message: 'No logs found in date range' });
+
+    // Re-use processRecord so shift lookup + status computation is identical to live punch flow
+    const results = await Promise.all(logsInRange.map(log => {
+      const record = {
+        employee_code: log.EmployeeCode || log.employee_code || '',
+        user_id: log.user_id || null,
+        punch_time: log.LogDate,
+        type: (log.Direction || log.type || 'IN').toUpperCase() === 'OUT' ? 'out' : 'in',
+        device_id: log.DeviceName || log.device_id || null,
+      };
+      return processRecord(record).catch(e => ({ ok: false, reason: e.message }));
+    }));
+
+    const updated = results.filter(r => r.ok && r.attendance_updated).length;
+    const skipped = results.filter(r => r.ok && !r.attendance_updated).length;
+    const errors  = results.filter(r => !r.ok).length;
+
+    return res.json({ success: true, total_logs: logsInRange.length, attendance_updated: updated, skipped, errors });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // Docs endpoint
 router.get('/', (_req, res) => {
   res.json({

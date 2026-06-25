@@ -5,18 +5,26 @@ import { Badge } from "@/components/ui/badge";
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from '@/components/ui/button';
 import {
   Users, Clock, FileText, CheckCircle2, AlertCircle,
-  Calendar, BarChart3, ChevronRight, GraduationCap, Laptop
+  Calendar, BarChart3, ChevronRight, GraduationCap, Laptop, RefreshCw
 } from 'lucide-react';
 import { format } from 'date-fns';
 
 export default function ManagementDashboard({ user }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
 
   useEffect(() => { loadData().catch(e => { console.error('ManagementDashboard:', e.message); setLoading(false); }); }, []);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try { await loadData(); } catch (e) { console.error('ManagementDashboard refresh:', e.message); }
+    setRefreshing(false);
+  };
 
   const safeFormatTime = (ts) => {
     if (!ts) return '—';
@@ -148,9 +156,14 @@ export default function ManagementDashboard({ user }) {
       <div className="max-w-6xl mx-auto space-y-6">
 
         {/* Header */}
-        <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-foreground">Management Dashboard</h1>
-          <p className="text-muted-foreground mt-1">Welcome, {user.display_name || user.full_name} · {format(new Date(), 'EEEE, MMMM d, yyyy')}</p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl md:text-3xl font-bold text-foreground">Management Dashboard</h1>
+            <p className="text-muted-foreground mt-1">Welcome, {user.display_name || user.full_name} · {format(new Date(), 'EEEE, MMMM d, yyyy')}</p>
+          </div>
+          <Button variant="ghost" size="icon" onClick={handleRefresh} disabled={refreshing} title="Refresh dashboard" className="flex-shrink-0 mt-1">
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+          </Button>
         </div>
 
         {/* Alerts */}

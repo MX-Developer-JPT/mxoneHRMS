@@ -73,7 +73,11 @@ export default function AttendanceLogDashboard() {
     setLoading(false);
   };
 
-  useEffect(() => { loadLogs(); }, []);
+  useEffect(() => {
+    loadLogs();
+    const interval = setInterval(loadLogs, 60000); // auto-refresh every 60s
+    return () => clearInterval(interval);
+  }, []);
 
   const handleProcessToAttendance = async (extraPayload = {}) => {
     setProcessing(true);
@@ -96,6 +100,31 @@ export default function AttendanceLogDashboard() {
       }
     } catch (err) {
       const msg = err?.response?.data?.message || err?.message || 'Processing failed due to a server error. Please try again.';
+      toast.error(msg);
+      setProcessResult({ success: false, message: msg });
+    }
+    setProcessing(false);
+  };
+
+  const handleReprocessLogs = async () => {
+    setProcessing(true);
+    setProcessResult(null);
+    try {
+      const res = await base44.functions.invoke('reprocessAttendanceLogs', {
+        date_from: processFrom,
+        date_to: processTo,
+      });
+      const result = res.data;
+      setProcessResult(result);
+      if (result?.success) {
+        const msg = `Re-synced: ${result.attendance_updated || 0} updated, ${result.attendance_created || 0} created`;
+        toast.success(msg);
+        loadLogs();
+      } else {
+        toast.error(result?.error || 'Reprocess failed.');
+      }
+    } catch (err) {
+      const msg = err?.message || 'Reprocess failed';
       toast.error(msg);
       setProcessResult({ success: false, message: msg });
     }
@@ -290,6 +319,9 @@ export default function AttendanceLogDashboard() {
             </div>
             <Button onClick={() => handleProcessToAttendance()} disabled={processing} className="bg-blue-600 hover:bg-blue-700 text-white">
               {processing ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Processing...</> : <><Zap className="w-4 h-4 mr-2" />Process to Attendance</>}
+            </Button>
+            <Button onClick={handleReprocessLogs} disabled={processing} variant="outline" className="border-blue-400 text-blue-700 hover:bg-blue-100">
+              {processing ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Reprocessing...</> : <><CheckCircle className="w-4 h-4 mr-2" />Re-sync from Stored Logs</>}
             </Button>
           </div>
 

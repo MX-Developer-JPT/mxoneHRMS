@@ -199,15 +199,19 @@ router.patch('/users/:id/password', async (req, res) => {
   res.json({ success: true });
 });
 
-// ── Delete user ────────────────────────────────────────────
+// ── Delete user (cascade: removes all linked entities) ────
 router.delete('/users/:id', async (req, res) => {
   if (!req.isAdmin)
     return res.status(403).json({ error: 'Only admins can delete users' });
   if (req.currentUser.id === req.params.id)
     return res.status(400).json({ error: 'Cannot delete your own account' });
-  const result = await run('DELETE FROM users WHERE id=$1', [req.params.id]);
-  if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
-  res.json({ success: true });
+  const userId = req.params.id;
+  // Remove all entities owned by this user (Employee, Attendance, Leave, etc.)
+  const entityResult = await run('DELETE FROM entities WHERE user_id=$1', [userId]);
+  // Remove the user account
+  const result = await run('DELETE FROM users WHERE id=$1', [userId]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'User not found' });
+  res.json({ success: true, entities_deleted: entityResult.rowCount });
 });
 
 // ── Email settings: from address only (API key is server-side) ────────────
