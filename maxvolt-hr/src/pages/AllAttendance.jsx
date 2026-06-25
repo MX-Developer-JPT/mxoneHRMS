@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, Activity } from 'lucide-react';
+import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, Activity, CalendarDays, List } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import MobileSelect from '@/components/MobileSelect';
@@ -43,6 +43,8 @@ export default function AllAttendance() {
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [collapsedDepts, setCollapsedDepts] = useState({});
   const [markingAbsent, setMarkingAbsent] = useState(false);
+  const [viewMode, setViewMode] = useState('list'); // 'list' | 'calendar'
+  const [calMonthRecords, setCalMonthRecords] = useState([]); // all records for the month (calendar view)
 
   const safeFormatTime = (ts) => {
     if (!ts) return '—';
@@ -295,6 +297,25 @@ export default function AllAttendance() {
               <FileSpreadsheet className="w-4 h-4 mr-1" /> Report
             </Button>
             <Button variant="outline" size="sm" onClick={loadData}><RefreshCw className="w-4 h-4" /></Button>
+            <div className="flex border rounded-lg overflow-hidden">
+              <button onClick={() => setViewMode('list')} className={`px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 transition-colors ${viewMode === 'list' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                <List className="w-3.5 h-3.5" /> List
+              </button>
+              <button onClick={async () => {
+                setViewMode('calendar');
+                // Load full month records for calendar
+                const [yr, mo] = date.split('-').map(Number);
+                const monthStart = `${yr}-${String(mo).padStart(2,'0')}-01`;
+                const daysInMonth = new Date(yr, mo, 0).getDate();
+                const monthEnd = `${yr}-${String(mo).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
+                try {
+                  const res = await base44.functions.invoke('getAllAttendance', { date_from: monthStart, date_to: monthEnd });
+                  setCalMonthRecords(res.data?.records || []);
+                } catch {}
+              }} className={`px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 transition-colors ${viewMode === 'calendar' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                <CalendarDays className="w-3.5 h-3.5" /> Calendar
+              </button>
+            </div>
           </div>
         </div>
 
@@ -353,8 +374,79 @@ export default function AllAttendance() {
           </CardContent>
         </Card>
 
+        {/* Calendar View */}
+        {viewMode === 'calendar' && (() => {
+          const [yr, mo] = date.split('-').map(Number);
+          const daysInMonth = new Date(yr, mo, 0).getDate();
+          const firstDow = new Date(yr, mo - 1, 1).getDay(); // 0=Sun
+          // Build map: date → { present, absent, leave, half_day, total }
+          const dayMap = {};
+          for (let d = 1; d <= daysInMonth; d++) {
+            const ds = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+            const dayRecs = calMonthRecords.filter(r => r.date?.slice(0,10) === ds);
+            const present = dayRecs.filter(r => r.check_in_time || ['present','late','on_duty','work_from_home'].includes(r.status)).length;
+            const leave = dayRecs.filter(r => r.status === 'leave').length;
+            const halfDay = dayRecs.filter(r => r.status === 'half_day').length;
+            const absent = employees.length - present - leave - halfDay;
+            dayMap[ds] = { present, absent: Math.max(absent, 0), leave, halfDay, total: employees.length };
+          }
+          const weeks = [];
+          let week = Array(firstDow).fill(null);
+          for (let d = 1; d <= daysInMonth; d++) {
+            week.push(d);
+            if (week.length === 7) { weeks.push(week); week = []; }
+          }
+          if (week.length) { while (week.length < 7) week.push(null); weeks.push(week); }
+          const today = format(new Date(), 'yyyy-MM-dd');
+          return (
+            <Card>
+              <CardContent className="p-4">
+                <div className="grid grid-cols-7 mb-2">
+                  {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => (
+                    <div key={d} className="text-center text-xs font-semibold text-gray-400 py-1">{d}</div>
+                  ))}
+                </div>
+                <div className="space-y-1">
+                  {weeks.map((wk, wi) => (
+                    <div key={wi} className="grid grid-cols-7 gap-1">
+                      {wk.map((d, di) => {
+                        if (!d) return <div key={di} />;
+                        const ds = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                        const info = dayMap[ds];
+                        const isToday = ds === today;
+                        const isSelected = ds === date;
+                        const isSun = di === 0;
+                        return (
+                          <button
+                            key={di}
+                            onClick={() => { setDate(ds); setViewMode('list'); }}
+                            className={`rounded-lg p-1.5 text-left transition-all hover:ring-2 hover:ring-blue-400 ${isSelected ? 'ring-2 ring-blue-500' : ''} ${isToday ? 'bg-blue-50' : 'bg-white'} border ${isSun ? 'border-gray-100' : 'border-gray-100'}`}
+                          >
+                            <div className={`text-xs font-bold mb-1 ${isToday ? 'text-blue-600' : isSun ? 'text-red-400' : 'text-gray-700'}`}>{d}</div>
+                            {info && employees.length > 0 ? (
+                              <div className="space-y-0.5">
+                                {info.present > 0 && <div className="text-[10px] leading-tight text-green-700 font-medium">{info.present} In</div>}
+                                {info.absent > 0 && <div className="text-[10px] leading-tight text-red-500">{info.absent} Ab</div>}
+                                {info.leave > 0 && <div className="text-[10px] leading-tight text-blue-500">{info.leave} Lv</div>}
+                                {info.halfDay > 0 && <div className="text-[10px] leading-tight text-yellow-600">{info.halfDay} HD</div>}
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-gray-300">{isSun ? 'Off' : ''}</div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mt-3 text-center">Click a day to view that day's attendance in list view</p>
+              </CardContent>
+            </Card>
+          );
+        })()}
+
         {/* Department Groups */}
-        <div className="space-y-4">
+        {viewMode === 'list' && <div className="space-y-4">
           {Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b)).map(([dept, records]) => (
             <Card key={dept}>
               <CardHeader className="p-4 pb-2 cursor-pointer" onClick={() => toggleDept(dept)}>
@@ -478,7 +570,7 @@ export default function AllAttendance() {
               <p className="text-sm mt-1">Try changing the date or filters</p>
             </div>
           )}
-        </div>
+        </div>}
       </div>
 
       <AttendanceDetailsDialog

@@ -206,12 +206,16 @@ router.delete('/users/:id', async (req, res) => {
   if (req.currentUser.id === req.params.id)
     return res.status(400).json({ error: 'Cannot delete your own account' });
   const userId = req.params.id;
-  // Remove all entities owned by this user (Employee, Attendance, Leave, etc.)
-  const entityResult = await run('DELETE FROM entities WHERE user_id=$1', [userId]);
+  // Remove all entities linked to this user — both via the user_id column and inside the JSON data.
+  // Some entities (Leave, Reimbursement, Document, etc.) are created by other users (HR/admin)
+  // so their user_id column may differ; they reference the employee through data::jsonb->>'user_id'.
+  const byColumn = await run('DELETE FROM entities WHERE user_id=$1', [userId]);
+  const byJson   = await run("DELETE FROM entities WHERE user_id IS DISTINCT FROM $1 AND data::jsonb->>'user_id'=$1", [userId]);
+  const totalDeleted = (byColumn.rowCount || 0) + (byJson.rowCount || 0);
   // Remove the user account
   const result = await run('DELETE FROM users WHERE id=$1', [userId]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'User not found' });
-  res.json({ success: true, entities_deleted: entityResult.rowCount });
+  res.json({ success: true, entities_deleted: totalDeleted, by_column: byColumn.rowCount, by_json: byJson.rowCount });
 });
 
 // ── Email settings: from address only (API key is server-side) ────────────

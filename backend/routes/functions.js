@@ -4477,16 +4477,12 @@ Return ONLY valid JSON (no markdown):
 
     /* ── Auto-grant 1 EL per 40 present days ────────── */
     case 'grantEarnedLeaveFor40Days': {
-      // Counts attendance (present/half_day/on_duty) + Sundays + official holidays.
-      // Every 40 eligible days → credit 1 EL to the employee's EL LeaveBalance (no duplicates).
+      // Every 40 actual present days (non-consecutive) → credit 1 EL.
+      // "Present" = attendance status in (present, late, on_duty, work_from_home, half_day).
+      // Sundays and holidays are NOT counted — only actual attendance records.
       const now        = new Date();
       const empRows    = await all("SELECT id,user_id,data FROM entities WHERE type='Employee' AND status='active'");
       const employees  = empRows.map(r => ({ id: r.id, user_id: r.user_id, ...JSON.parse(r.data) }));
-
-      const holidayRows = await all("SELECT data FROM entities WHERE type='Holiday'");
-      const holidayDates = new Set(
-        holidayRows.map(r => { try { return JSON.parse(r.data).date?.slice(0,10); } catch { return null; } }).filter(Boolean)
-      );
 
       // Resolve EL leave policy (code='EL' or name contains 'Earned')
       const elPolicyRow = await one(
@@ -4495,28 +4491,22 @@ Return ONLY valid JSON (no markdown):
       const elPolicyId = elPolicyRow?.id || null;
       const currentYear = now.getFullYear();
 
-      function isSunday(ds) { return new Date(ds + 'T00:00:00').getDay() === 0; }
-
       let granted = 0;
       const results = [];
 
       for (const emp of employees) {
         const startDate = emp.date_of_joining || emp.joining_date || '2020-01-01';
+        // Use data::jsonb cast — entities.data is TEXT, not JSONB
         const attRows = await all(
-          "SELECT data->>'date' as d, data->>'status' as s FROM entities WHERE type='Attendance' AND user_id=$1 AND data->>'date' >= $2",
+          "SELECT data::jsonb->>'date' as d, data::jsonb->>'status' as s FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' >= $2",
           [emp.user_id, startDate]
         );
-        const attMap = {};
-        for (const r of attRows) { if (r.d) attMap[r.d] = r.s; }
 
-        // Count eligible days from joining date to today
+        // Count only actual present-like attendance records (no Sundays/holidays)
         let presentCount = 0;
-        const joinDate  = new Date(startDate + 'T00:00:00');
-        const todayDate = new Date(now.toISOString().slice(0, 10) + 'T00:00:00');
-        for (let d = new Date(joinDate); d <= todayDate; d.setDate(d.getDate() + 1)) {
-          const ds = d.toISOString().slice(0, 10);
-          const st = attMap[ds];
-          if (['present', 'half_day', 'on_duty'].includes(st) || isSunday(ds) || holidayDates.has(ds)) {
+        for (const r of attRows) {
+          if (!r.d || !r.s) continue;
+          if (['present', 'late', 'on_duty', 'work_from_home', 'half_day'].includes(r.s)) {
             presentCount++;
           }
         }

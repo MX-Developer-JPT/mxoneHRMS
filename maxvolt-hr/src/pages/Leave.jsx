@@ -86,6 +86,10 @@ export default function Leave() {
     return (balance.available || 0) > 0;
   });
 
+  // Sentinel ID for WFH "leave" — not a real policy, no balance deduction
+  const WFH_ID = '__WFH__';
+  const isWFH = formData.leave_policy_id === WFH_ID;
+
   const handleValidate = async () => {
     if (!formData.leave_policy_id || !formData.start_date || !formData.end_date) return;
     setValidating(true);
@@ -106,7 +110,7 @@ export default function Leave() {
 
   // Auto-validate when dates/policy change
   useEffect(() => {
-    if (formData.leave_policy_id && formData.start_date && formData.end_date) {
+    if (formData.leave_policy_id && formData.leave_policy_id !== WFH_ID && formData.start_date && formData.end_date) {
       handleValidate();
     } else {
       setValidation(null);
@@ -115,20 +119,29 @@ export default function Leave() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!validation?.valid) {
+    // WFH doesn't need policy validation
+    if (!isWFH && !validation?.valid) {
       toast.error('Please fix validation errors before submitting.');
+      return;
+    }
+    if (!formData.start_date || (!isWFH && !formData.end_date)) {
+      toast.error('Please fill in all required fields.');
       return;
     }
     setSubmitting(true);
 
-    const totalDays = validation.adjusted_days;
-    // Optimistic update — close form and show pending entry immediately
+    const totalDays = isWFH ? 1 : validation.adjusted_days;
+    const endDate = isWFH ? formData.start_date : formData.end_date;
+
+    // Optimistic update
     const optimisticLeave = {
       id: 'optimistic-' + Date.now(),
       user_id: user.id,
-      leave_policy_id: formData.leave_policy_id,
+      leave_policy_id: isWFH ? null : formData.leave_policy_id,
+      leave_type: isWFH ? 'work_from_home' : undefined,
+      is_wfh: isWFH || undefined,
       start_date: formData.start_date,
-      end_date: formData.end_date,
+      end_date: endDate,
       half_day: formData.half_day,
       total_days: totalDays,
       reason: formData.reason,
@@ -149,9 +162,11 @@ export default function Leave() {
 
       await base44.entities.Leave.create({
         user_id: user.id,
-        leave_policy_id: formData.leave_policy_id,
+        leave_policy_id: isWFH ? null : formData.leave_policy_id,
+        leave_type: isWFH ? 'work_from_home' : undefined,
+        is_wfh: isWFH || undefined,
         start_date: formData.start_date,
-        end_date: formData.end_date,
+        end_date: endDate,
         half_day: formData.half_day,
         total_days: totalDays,
         reason: formData.reason,
@@ -164,26 +179,27 @@ export default function Leave() {
         approval_history: []
       });
 
-      // Deduct from pending balance
-      const currentYear = new Date().getFullYear();
-      const balRecs = await base44.entities.LeaveBalance.filter({
-        user_id: user.id, leave_policy_id: formData.leave_policy_id, year: currentYear
-      });
-      if (balRecs.length > 0) {
-        const lb = balRecs[0];
-        await base44.entities.LeaveBalance.update(lb.id, {
-          pending_approval: (lb.pending_approval || 0) + totalDays,
-          available: Math.max((lb.available || 0) - totalDays, 0)
+      // Deduct from pending balance (skip for WFH — no leave balance used)
+      if (!isWFH) {
+        const currentYear = new Date().getFullYear();
+        const balRecs = await base44.entities.LeaveBalance.filter({
+          user_id: user.id, leave_policy_id: formData.leave_policy_id, year: currentYear
         });
+        if (balRecs.length > 0) {
+          const lb = balRecs[0];
+          await base44.entities.LeaveBalance.update(lb.id, {
+            pending_approval: (lb.pending_approval || 0) + totalDays,
+            available: Math.max((lb.available || 0) - totalDays, 0)
+          });
+        }
       }
 
-      toast.success('Leave request submitted successfully!');
+      toast.success(isWFH ? 'WFH request submitted for approval!' : 'Leave request submitted successfully!');
       loadData();
     } catch (error) {
-      // Revert optimistic update
       setLeaveRequests(prev => prev.filter(l => l.id !== optimisticLeave.id));
       setShowForm(true);
-      toast.error('Failed to submit leave request: ' + error.message);
+      toast.error('Failed to submit request: ' + error.message);
     } finally {
       setSubmitting(false);
     }
@@ -319,8 +335,11 @@ export default function Leave() {
                     <div className="flex flex-wrap justify-between items-start gap-3">
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${POLICY_COLORS[policy?.code] || 'bg-gray-100'}`}>{policy?.code}</span>
-                          <p className="font-semibold text-sm">{policy?.name}</p>
+                          {leave.is_wfh || leave.leave_type === 'work_from_home'
+                            ? <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">WFH</span>
+                            : <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${POLICY_COLORS[policy?.code] || 'bg-gray-100'}`}>{policy?.code}</span>
+                          }
+                          <p className="font-semibold text-sm">{leave.is_wfh || leave.leave_type === 'work_from_home' ? 'Work From Home' : policy?.name}</p>
                           <Badge className={STATUS_COLORS[leave.status]}>{leave.status.toUpperCase()}</Badge>
                           {leave.current_approval_level === 2 && leave.status === 'pending' && (
                             <Badge className="bg-blue-100 text-blue-700">Level 2 Review</Badge>
@@ -383,15 +402,20 @@ export default function Leave() {
                 onValueChange={(v) => setFormData({ ...formData, leave_policy_id: v })}
                 placeholder="Select leave type"
                 label="Select Leave Type"
-                options={availablePolicies.length === 0
-                  ? [{ value: '_none', label: 'No leave balance available' }]
-                  : availablePolicies.map(p => {
-                      const balance = leaveBalances.find(b => b.leave_policy_id === p.id);
-                      return { value: p.id, label: `${p.name} (${p.code}) — ${balance?.available?.toFixed(1) || '0'} days left` };
-                    })
-                }
+                options={[
+                  ...(employee?.wfh_eligible ? [{ value: WFH_ID, label: '🏠 Work From Home (WFH) — No balance deduction' }] : []),
+                  ...(availablePolicies.length === 0
+                    ? [{ value: '_none', label: 'No leave balance available' }]
+                    : availablePolicies.map(p => {
+                        const balance = leaveBalances.find(b => b.leave_policy_id === p.id);
+                        return { value: p.id, label: `${p.name} (${p.code}) — ${balance?.available?.toFixed(1) || '0'} days left` };
+                      }))
+                ]}
               />
-              {selectedPolicy && (
+              {isWFH && (
+                <p className="text-xs text-blue-600 mt-1">WFH request — no leave balance deducted. Subject to manager approval.</p>
+              )}
+              {!isWFH && selectedPolicy && (
                 <div className="mt-1 space-y-0.5">
                   {selectedPolicy.code === 'CL' && <p className="text-xs text-gray-500">Max 3 consecutive days • No carry forward • Cannot be clubbed</p>}
                   {selectedPolicy.code === 'EL' && <p className="text-xs text-gray-500">Must apply in advance • Post-confirmation only • Fully carry forward</p>}
@@ -401,7 +425,7 @@ export default function Leave() {
             </div>
 
             {/* Half Day Option */}
-            {selectedPolicy?.code === 'CL' && (
+            {!isWFH && selectedPolicy?.code === 'CL' && (
               <div className="flex items-center gap-2">
                 <input type="checkbox" id="half_day" checked={formData.half_day}
                   onChange={(e) => setFormData({ ...formData, half_day: e.target.checked })}

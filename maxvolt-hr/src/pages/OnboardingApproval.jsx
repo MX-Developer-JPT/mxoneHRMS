@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { UserPlus, CheckCircle, XCircle, FileText, Eye, Clock } from 'lucide-react';
+import { UserPlus, CheckCircle, XCircle, FileText, Eye, Clock, Home } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
@@ -39,6 +39,7 @@ export default function OnboardingApproval() {
     phone: '',
     employment_type: 'full_time',
     overtime_eligible: false,
+    wfh_eligible: false,
   });
 
   useEffect(() => {
@@ -153,6 +154,7 @@ export default function OnboardingApproval() {
         phone: formData.phone,
         reporting_manager_id: formData.reporting_manager_id || null,
         overtime_eligible: formData.overtime_eligible,
+        wfh_eligible: formData.wfh_eligible,
       };
 
       await base44.functions.invoke('approveUserOnboarding', {
@@ -408,7 +410,7 @@ export default function OnboardingApproval() {
                   </Select>
                 </div>
 
-                <div className="md:col-span-2">
+                <div>
                   <Label className="mb-2 block">Overtime Eligibility</Label>
                   <button
                     type="button"
@@ -421,7 +423,25 @@ export default function OnboardingApproval() {
                     <Clock className="w-4 h-4" />
                     <div className="text-left">
                       <p className="font-medium text-sm">{formData.overtime_eligible ? 'Overtime Eligible' : 'Not Eligible for Overtime'}</p>
-                      <p className="text-xs opacity-70">{formData.overtime_eligible ? 'Overtime hours will appear in attendance reports and exports' : 'Toggle to enable overtime tracking and export for this employee'}</p>
+                      <p className="text-xs opacity-70">{formData.overtime_eligible ? 'Overtime hours in attendance reports and exports' : 'Toggle to enable overtime tracking'}</p>
+                    </div>
+                  </button>
+                </div>
+
+                <div>
+                  <Label className="mb-2 block">Work From Home Eligibility</Label>
+                  <button
+                    type="button"
+                    onClick={() => setFormData(f => ({ ...f, wfh_eligible: !f.wfh_eligible }))}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-lg border-2 w-full transition-all ${formData.wfh_eligible ? 'border-blue-500 bg-blue-50 text-blue-800' : 'border-gray-200 bg-gray-50 text-gray-500'}`}
+                  >
+                    <div className={`relative w-11 h-6 rounded-full transition-colors ${formData.wfh_eligible ? 'bg-blue-500' : 'bg-gray-300'}`}>
+                      <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${formData.wfh_eligible ? 'translate-x-5' : ''}`} />
+                    </div>
+                    <Home className="w-4 h-4" />
+                    <div className="text-left">
+                      <p className="font-medium text-sm">{formData.wfh_eligible ? 'WFH Eligible' : 'Not Eligible for WFH'}</p>
+                      <p className="text-xs opacity-70">{formData.wfh_eligible ? 'Can apply Work From Home in the Leave module' : 'Toggle to allow WFH requests'}</p>
                     </div>
                   </button>
                 </div>

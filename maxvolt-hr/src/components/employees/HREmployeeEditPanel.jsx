@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { base44 } from '@/api/base44Client';
 import { toast } from 'sonner';
-import { Save, Clock } from 'lucide-react';
+import { Save, Clock, Home } from 'lucide-react';
 
 export default function HREmployeeEditPanel({ employee, onClose, onSave }) {
   const [saving, setSaving] = useState(false);
@@ -13,6 +13,7 @@ export default function HREmployeeEditPanel({ employee, onClose, onSave }) {
     uan_number: employee?.uan_number || '',
     pf_account_number: employee?.pf_account_number || '',
     overtime_eligible: !!employee?.overtime_eligible,
+    wfh_eligible: !!employee?.wfh_eligible,
     pf_nominee: {
       name: employee?.pf_nominee?.name || '',
       relationship: employee?.pf_nominee?.relationship || '',
@@ -27,6 +28,7 @@ export default function HREmployeeEditPanel({ employee, onClose, onSave }) {
       uan_number: data.uan_number,
       pf_account_number: data.pf_account_number,
       overtime_eligible: data.overtime_eligible,
+      wfh_eligible: data.wfh_eligible,
       pf_nominee: data.pf_nominee,
     });
     toast.success('UAN & PF details updated');
@@ -55,8 +57,8 @@ export default function HREmployeeEditPanel({ employee, onClose, onSave }) {
             </div>
           </div>
 
-          <div className="border-t pt-4">
-            <h3 className="font-semibold text-sm mb-3 text-gray-700 flex items-center gap-1.5"><Clock className="w-4 h-4 text-purple-500" /> Overtime Settings</h3>
+          <div className="border-t pt-4 space-y-3">
+            <h3 className="font-semibold text-sm mb-3 text-gray-700 flex items-center gap-1.5"><Clock className="w-4 h-4 text-purple-500" /> Work Settings</h3>
             <button
               type="button"
               onClick={() => setData(p => ({ ...p, overtime_eligible: !p.overtime_eligible }))}
@@ -65,7 +67,19 @@ export default function HREmployeeEditPanel({ employee, onClose, onSave }) {
               <div className={`relative w-10 h-5 rounded-full transition-colors ${data.overtime_eligible ? 'bg-purple-500' : 'bg-gray-300'}`}>
                 <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${data.overtime_eligible ? 'translate-x-5' : ''}`} />
               </div>
+              <Clock className="w-4 h-4" />
               <span className="font-medium text-sm">{data.overtime_eligible ? 'Overtime Eligible — OT hours tracked in attendance reports' : 'Not Eligible for Overtime'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setData(p => ({ ...p, wfh_eligible: !p.wfh_eligible }))}
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg border-2 w-full transition-all ${data.wfh_eligible ? 'border-blue-500 bg-blue-50 text-blue-800' : 'border-gray-200 bg-gray-50 text-gray-500'}`}
+            >
+              <div className={`relative w-10 h-5 rounded-full transition-colors ${data.wfh_eligible ? 'bg-blue-500' : 'bg-gray-300'}`}>
+                <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${data.wfh_eligible ? 'translate-x-5' : ''}`} />
+              </div>
+              <Home className="w-4 h-4" />
+              <span className="font-medium text-sm">{data.wfh_eligible ? 'WFH Eligible — can apply Work From Home via Leave module' : 'Not Eligible for Work From Home'}</span>
             </button>
           </div>
 
