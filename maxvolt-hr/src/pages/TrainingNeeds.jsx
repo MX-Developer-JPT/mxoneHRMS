@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,7 @@ import { Plus, ArrowLeft, Search, Filter } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const priorityColor = { low: 'bg-gray-100 text-gray-600', medium: 'bg-yellow-100 text-yellow-700', high: 'bg-red-100 text-red-700' };
 const statusColor = { open: 'bg-blue-100 text-blue-700', in_review: 'bg-yellow-100 text-yellow-700', addressed: 'bg-green-100 text-green-700', closed: 'bg-gray-100 text-gray-500' };
@@ -162,7 +163,7 @@ export default function TrainingNeeds() {
                     {need.department && <span>Dept: <strong>{need.department}</strong></span>}
                     {need.employee_id && <span>Employee: <strong>{getUserName(need.employee_id)}</strong></span>}
                     <span>By: {getUserName(need.requested_by)}</span>
-                    <span>{format(new Date(need.created_date), 'MMM d, yyyy')}</span>
+                    <span>{safeDate(need.created_date, 'MMM d, yyyy')}</span>
                   </div>
                   {need.notes && <p className="text-xs text-gray-400 mt-1 italic">{need.notes}</p>}
                 </div>

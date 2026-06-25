@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import { CheckCircle2, XCircle, Clock, User, History, LogOut, LogIn } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 
@@ -167,21 +168,21 @@ export default function GatePassApproval() {
                           {pass.reason && <p className="text-gray-700 dark:text-gray-300">{pass.reason}</p>}
                         </div>
                         <p className="text-sm text-gray-400 mt-1">
-                          Requested: {format(new Date(pass.created_date), 'dd MMM yyyy, hh:mm a')}
+                          Requested: {safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}
                         </p>
                         {pass.expected_return_time && (
                           <p className="text-sm text-gray-500">
-                            Expected return: {format(new Date(pass.expected_return_time), 'dd MMM yyyy, hh:mm a')}
+                            Expected return: {safeDate(pass.expected_return_time, 'dd MMM yyyy, hh:mm a')}
                           </p>
                         )}
                         {pass.departure_time && (
                           <p className="text-sm text-orange-600 mt-1 flex items-center gap-1">
-                            <LogOut className="w-3 h-3" /> Out: {format(new Date(pass.departure_time), 'hh:mm a')}
+                            <LogOut className="w-3 h-3" /> Out: {safeDate(pass.departure_time, 'hh:mm a')}
                           </p>
                         )}
                         {pass.return_time && (
                           <p className="text-sm text-green-600 mt-1 flex items-center gap-1">
-                            <LogIn className="w-3 h-3" /> In: {format(new Date(pass.return_time), 'hh:mm a')}
+                            <LogIn className="w-3 h-3" /> In: {safeDate(pass.return_time, 'hh:mm a')}
                           </p>
                         )}
                       </div>
@@ -210,9 +211,9 @@ export default function GatePassApproval() {
                 <p><span className="font-medium">Employee:</span> {employees[selected.employee_user_id]?.display_name || 'Unknown'}</p>
                 <p><span className="font-medium">Outing Type:</span> <Badge variant="outline">{selected.outing_type?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'N/A'}</Badge></p>
                 <p><span className="font-medium">Reason:</span> {selected.reason || '—'}</p>
-                <p><span className="font-medium">Requested:</span> {format(new Date(selected.created_date), 'dd MMM yyyy, hh:mm a')}</p>
+                <p><span className="font-medium">Requested:</span> {safeDate(selected.created_date, 'dd MMM yyyy, hh:mm a')}</p>
                 {selected.expected_return_time && (
-                  <p><span className="font-medium">Expected Return:</span> {format(new Date(selected.expected_return_time), 'dd MMM yyyy, hh:mm a')}</p>
+                  <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
                 )}
                 <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
               </div>

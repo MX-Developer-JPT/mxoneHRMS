@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import ExitDetailPanel from '../components/exit/ExitDetailPanel';
 import ExitReportsPanel from '../components/exit/ExitReportsPanel';
 import UnderDevelopmentBanner from '@/components/UnderDevelopmentBanner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const STATUS_CONFIG = {
   submitted: { label: 'Submitted', color: 'bg-blue-100 text-blue-800' },
@@ -211,8 +212,8 @@ export default function ExitManagement() {
                           <p className="font-semibold">{ex.user?.full_name}</p>
                           <p className="text-sm text-gray-500">{ex.employee?.designation} · {ex.employee?.department} · {ex.employee?.employee_code}</p>
                           <div className="flex items-center gap-3 mt-1 text-xs text-gray-500 flex-wrap">
-                            <span>Resigned: {ex.resignation_date ? format(new Date(ex.resignation_date), 'MMM d, yyyy') : '—'}</span>
-                            <span>LWD: {ex.last_working_date ? format(new Date(ex.last_working_date), 'MMM d, yyyy') : '—'}</span>
+                            <span>Resigned: {ex.resignation_date ? safeDate(ex.resignation_date, 'MMM d, yyyy') : '—'}</span>
+                            <span>LWD: {ex.last_working_date ? safeDate(ex.last_working_date, 'MMM d, yyyy') : '—'}</span>
                             <span className="capitalize">{ex.reason_category?.replace(/_/g, ' ')}</span>
                           </div>
                         </div>

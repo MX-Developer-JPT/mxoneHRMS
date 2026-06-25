@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { base44 } from '@/api/base44Client';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import { User, Mail, Phone, Briefcase, Calendar, MapPin, Shield, Users, CreditCard, Building2, Heart, ShieldCheck } from 'lucide-react';
 
 const Field = ({ label, value, colSpan }) => (
@@ -104,7 +105,7 @@ export default function EmployeeDetailDialog({ employee, onClose }) {
           <Section title="Personal Information" icon={User}>
             <Field label="Full Name" value={displayName} />
             <Field label="Employee ID" value={emp.employee_code} />
-            <Field label="Date of Birth" value={emp.date_of_birth ? format(new Date(emp.date_of_birth), 'dd MMM yyyy') : null} />
+            <Field label="Date of Birth" value={emp.date_of_birth ? safeDate(emp.date_of_birth, 'dd MMM yyyy') : null} />
             <Field label="Gender" value={emp.gender ? emp.gender.charAt(0).toUpperCase() + emp.gender.slice(1) : null} />
             <Field label="Father / Spouse Name" value={emp.father_spouse_name} />
             <Field label="Aadhaar Number" value={emp.aadhar_number} />
@@ -120,7 +121,7 @@ export default function EmployeeDetailDialog({ employee, onClose }) {
           <Section title="Employment Details" icon={Briefcase}>
             <Field label="Designation" value={emp.designation} />
             <Field label="Department" value={emp.department} />
-            <Field label="Date of Joining" value={emp.date_of_joining ? format(new Date(emp.date_of_joining), 'dd MMM yyyy') : null} />
+            <Field label="Date of Joining" value={emp.date_of_joining ? safeDate(emp.date_of_joining, 'dd MMM yyyy') : null} />
             <Field label="Status" value={emp.employee_status ? emp.employee_status.charAt(0).toUpperCase() + emp.employee_status.slice(1) : null} />
             <Field label="Work Location" value={emp.work_location} />
             <Field label="Shift" value={shiftName} />
@@ -172,7 +173,7 @@ export default function EmployeeDetailDialog({ employee, onClose }) {
                     <Field label="Insurer" value={pol.insurer_name} />
                     <Field label="Policy No." value={pol.policy_number} />
                     <Field label="Sum Insured" value={pol.sum_insured ? `₹${Number(pol.sum_insured).toLocaleString('en-IN')}` : null} />
-                    <Field label="Valid Until" value={pol.validity_date ? format(new Date(pol.validity_date), 'dd MMM yyyy') : null} />
+                    <Field label="Valid Until" value={pol.validity_date ? safeDate(pol.validity_date, 'dd MMM yyyy') : null} />
                     <Field label="Nominee" value={pol.nominee_name ? `${pol.nominee_name} (${pol.nominee_relationship || ''})` : null} />
                     {pol.card_url && (
                       <div className="col-span-2">
@@ -193,7 +194,7 @@ export default function EmployeeDetailDialog({ employee, onClose }) {
               <Field label="Insurer" value={emp.insurance.insurer_name} />
               <Field label="Policy No." value={emp.insurance.policy_number} />
               <Field label="Sum Insured" value={emp.insurance.sum_insured ? `₹${Number(emp.insurance.sum_insured).toLocaleString('en-IN')}` : null} />
-              <Field label="Valid Until" value={emp.insurance.validity_date ? format(new Date(emp.insurance.validity_date), 'dd MMM yyyy') : null} />
+              <Field label="Valid Until" value={emp.insurance.validity_date ? safeDate(emp.insurance.validity_date, 'dd MMM yyyy') : null} />
               <Field label="Nominee" value={emp.insurance.nominee_name ? `${emp.insurance.nominee_name} (${emp.insurance.nominee_relationship || ''})` : null} />
             </Section>
           )}

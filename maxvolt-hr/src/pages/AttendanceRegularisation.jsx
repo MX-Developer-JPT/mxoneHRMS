@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { Plus, Clock, FileText, AlertCircle, CheckCircle2, XCircle, RotateCcw, U
 import MultiDateCalendarPicker from '@/components/attendance/MultiDateCalendarPicker';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const REASON_OPTIONS = [
   { value: 'missed_punch', label: 'Missed Punch' },
@@ -75,8 +76,8 @@ export default function AttendanceRegularisation() {
       if (records[0]) {
         setFormData(prev => ({
           ...prev,
-          requested_check_in: records[0].check_in_time ? format(new Date(records[0].check_in_time), 'HH:mm') : '',
-          requested_check_out: records[0].check_out_time ? format(new Date(records[0].check_out_time), 'HH:mm') : ''
+          requested_check_in: records[0].check_in_time ? safeDate(records[0].check_in_time, 'HH:mm') : '',
+          requested_check_out: records[0].check_out_time ? safeDate(records[0].check_out_time, 'HH:mm') : ''
         }));
       }
     } catch (e) { console.error(e); }
@@ -259,7 +260,7 @@ export default function AttendanceRegularisation() {
                           <Calendar className="w-5 h-5 text-blue-600" />
                         </div>
                         <div>
-                          <p className="font-semibold">{format(new Date(req.attendance_date), 'EEE, MMM d, yyyy')}</p>
+                          <p className="font-semibold">{safeDate(req.attendance_date, 'EEE, MMM d, yyyy')}</p>
                           <p className="text-sm text-gray-500 capitalize">{REASON_OPTIONS.find(r => r.value === req.reason_category)?.label || req.reason_category}</p>
                           <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">{req.reason}</p>
                           <div className="flex gap-3 mt-1 text-xs text-gray-500">
@@ -350,8 +351,8 @@ export default function AttendanceRegularisation() {
                   <p className="font-medium text-amber-800 mb-1">Current Attendance Record</p>
                   <div className="grid grid-cols-3 gap-2 text-xs text-amber-700">
                     <div><span className="font-medium">Status:</span> {existingAttendance.status}</div>
-                    <div><span className="font-medium">In:</span> {existingAttendance.check_in_time ? format(new Date(existingAttendance.check_in_time), 'HH:mm') : 'N/A'}</div>
-                    <div><span className="font-medium">Out:</span> {existingAttendance.check_out_time ? format(new Date(existingAttendance.check_out_time), 'HH:mm') : 'N/A'}</div>
+                    <div><span className="font-medium">In:</span> {existingAttendance.check_in_time ? safeDate(existingAttendance.check_in_time, 'HH:mm') : 'N/A'}</div>
+                    <div><span className="font-medium">Out:</span> {existingAttendance.check_out_time ? safeDate(existingAttendance.check_out_time, 'HH:mm') : 'N/A'}</div>
                   </div>
                 </div>
               )}

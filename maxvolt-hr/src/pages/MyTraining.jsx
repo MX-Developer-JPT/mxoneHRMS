@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +11,7 @@ import { BookOpen, Calendar, Star, FileText, Link2, CheckCircle, Clock, Award, P
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const enrollStatusColor = {
   pending: 'bg-yellow-100 text-yellow-700',
@@ -168,7 +169,7 @@ export default function MyTraining() {
                           <p className="font-semibold text-sm">{prog?.title}</p>
                           <Badge className={`text-xs ${enrollStatusColor[enr.status]}`}>{enr.status}</Badge>
                         </div>
-                        <p className="text-xs text-gray-500">{sess?.batch_name} · {sess?.start_date ? format(new Date(sess.start_date), 'MMM d, yyyy') : 'TBD'}</p>
+                        <p className="text-xs text-gray-500">{sess?.batch_name} · {sess?.start_date ? safeDate(sess.start_date, 'MMM d, yyyy') : 'TBD'}</p>
                         <p className="text-xs text-gray-400 mt-0.5">{prog?.mode} · {prog?.trainer_name}</p>
                         {mats.length > 0 && (
                           <div className="flex gap-2 mt-2 flex-wrap">
@@ -259,7 +260,7 @@ export default function MyTraining() {
                       <div className="flex-1">
                         <p className="font-semibold text-sm">{prog?.title}</p>
                         <div className="flex gap-3 text-xs text-gray-500 mt-0.5">
-                          <span>Completed: {enr.completion_date ? format(new Date(enr.completion_date), 'MMM d, yyyy') : '—'}</span>
+                          <span>Completed: {enr.completion_date ? safeDate(enr.completion_date, 'MMM d, yyyy') : '—'}</span>
                           {enr.pre_assessment_score != null && <span>Pre: {enr.pre_assessment_score}%</span>}
                           {enr.post_assessment_score != null && <span>Post: {enr.post_assessment_score}%</span>}
                           {enr.feedback_rating && <span>⭐ {enr.feedback_rating}/5</span>}
@@ -303,7 +304,7 @@ export default function MyTraining() {
                 <SelectContent>
                   {sessions.filter(s => s.status === 'scheduled').map(s => {
                     const prog = getProgram(s.training_program_id);
-                    return <SelectItem key={s.id} value={s.id}>{prog?.title} – {s.batch_name} ({s.start_date ? format(new Date(s.start_date), 'MMM d') : 'TBD'})</SelectItem>;
+                    return <SelectItem key={s.id} value={s.id}>{prog?.title} – {s.batch_name} ({s.start_date ? safeDate(s.start_date, 'MMM d') : 'TBD'})</SelectItem>;
                   })}
                 </SelectContent>
               </Select>

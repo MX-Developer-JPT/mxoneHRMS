@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,6 +12,7 @@ import DocViewerModal from '@/components/DocViewerModal';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 export default function TrainingDetail() {
   const params = new URLSearchParams(window.location.search);
@@ -222,7 +223,7 @@ export default function TrainingDetail() {
                         <Badge className={`text-xs ${statusColor[sess.status]}`}>{sess.status}</Badge>
                       </div>
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-gray-500">
-                        <span>📅 {sess.start_date ? format(new Date(sess.start_date), 'MMM d, yyyy h:mm a') : 'TBD'}</span>
+                        <span>📅 {sess.start_date ? safeDate(sess.start_date, 'MMM d, yyyy h:mm a') : 'TBD'}</span>
                         <span>⏱ {sess.duration_hours}h</span>
                         <span>👥 {enrollments.filter(e => e.training_session_id === sess.id).length} / {sess.capacity}</span>
                         <span>📍 {sess.location || sess.meeting_link || '—'}</span>
@@ -439,7 +440,7 @@ export default function TrainingDetail() {
               <Select value={enrollSessionId} onValueChange={setEnrollSessionId}>
                 <SelectTrigger className="mt-1"><SelectValue placeholder="Select session" /></SelectTrigger>
                 <SelectContent>
-                  {sessions.map(s => <SelectItem key={s.id} value={s.id}>{s.batch_name || 'Batch'} – {s.start_date ? format(new Date(s.start_date), 'MMM d') : 'TBD'}</SelectItem>)}
+                  {sessions.map(s => <SelectItem key={s.id} value={s.id}>{s.batch_name || 'Batch'} – {s.start_date ? safeDate(s.start_date, 'MMM d') : 'TBD'}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

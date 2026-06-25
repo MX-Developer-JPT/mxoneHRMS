@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -6,6 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import { Search, LogOut, LogIn, User, Clock, History } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 
@@ -183,17 +184,17 @@ export default function GatePassManagement() {
                       </div>
                       <div className="flex-1 px-4 hidden md:block">
                         <p className="text-sm text-gray-700 truncate max-w-xs">{pass.reason}</p>
-                        <p className="text-xs text-gray-400">{format(new Date(pass.created_date), 'dd MMM yyyy, hh:mm a')}</p>
+                        <p className="text-xs text-gray-400">{safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}</p>
                       </div>
                       <div className="flex items-center gap-4 flex-wrap">
                         {pass.departure_time && (
                           <span className="text-xs text-orange-600 flex items-center gap-1">
-                            <LogOut className="w-3 h-3" /> {format(new Date(pass.departure_time), 'hh:mm a')}
+                            <LogOut className="w-3 h-3" /> {safeDate(pass.departure_time, 'hh:mm a')}
                           </span>
                         )}
                         {pass.return_time && (
                           <span className="text-xs text-green-600 flex items-center gap-1">
-                            <LogIn className="w-3 h-3" /> {format(new Date(pass.return_time), 'hh:mm a')}
+                            <LogIn className="w-3 h-3" /> {safeDate(pass.return_time, 'hh:mm a')}
                           </span>
                         )}
                         {pass.departure_time && pass.return_time && (
@@ -230,9 +231,9 @@ export default function GatePassManagement() {
                 <p><span className="font-medium">Department:</span> {employees[selected.employee_user_id]?.department}</p>
                 <p><span className="font-medium">Designation:</span> {employees[selected.employee_user_id]?.designation}</p>
                 <p><span className="font-medium">Reason:</span> {selected.reason}</p>
-                <p><span className="font-medium">Requested On:</span> {format(new Date(selected.created_date), 'dd MMM yyyy, hh:mm a')}</p>
+                <p><span className="font-medium">Requested On:</span> {safeDate(selected.created_date, 'dd MMM yyyy, hh:mm a')}</p>
                 {selected.expected_return_time && (
-                  <p><span className="font-medium">Expected Return:</span> {format(new Date(selected.expected_return_time), 'dd MMM yyyy, hh:mm a')}</p>
+                  <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
                 )}
                 <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
               </div>
@@ -241,7 +242,7 @@ export default function GatePassManagement() {
                 <p className="font-semibold text-gray-700">Manager Action</p>
                 <p><span className="font-medium">Approval:</span> <span className="capitalize">{selected.manager_approval_status}</span></p>
                 {selected.manager_approval_date && (
-                  <p><span className="font-medium">Approved At:</span> {format(new Date(selected.manager_approval_date), 'dd MMM yyyy, hh:mm a')}</p>
+                  <p><span className="font-medium">Approved At:</span> {safeDate(selected.manager_approval_date, 'dd MMM yyyy, hh:mm a')}</p>
                 )}
                 {selected.manager_comment && (
                   <p><span className="font-medium">Comment:</span> {selected.manager_comment}</p>
@@ -254,13 +255,13 @@ export default function GatePassManagement() {
                   {selected.departure_time && (
                     <p className="text-orange-700 flex items-center gap-1">
                       <LogOut className="w-3.5 h-3.5" />
-                      <span className="font-medium">Departed:</span> {format(new Date(selected.departure_time), 'dd MMM yyyy, hh:mm a')}
+                      <span className="font-medium">Departed:</span> {safeDate(selected.departure_time, 'dd MMM yyyy, hh:mm a')}
                     </p>
                   )}
                   {selected.return_time && (
                     <p className="text-green-700 flex items-center gap-1">
                       <LogIn className="w-3.5 h-3.5" />
-                      <span className="font-medium">Returned:</span> {format(new Date(selected.return_time), 'dd MMM yyyy, hh:mm a')}
+                      <span className="font-medium">Returned:</span> {safeDate(selected.return_time, 'dd MMM yyyy, hh:mm a')}
                     </p>
                   )}
                   {selected.departure_time && selected.return_time && (

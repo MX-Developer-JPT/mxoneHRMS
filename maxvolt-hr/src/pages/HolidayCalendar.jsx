@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Plus, Calendar as CalendarIcon, Trash2, List, Grid, ToggleLeft, ToggleRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isSameDay } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -471,7 +472,7 @@ export default function HolidayCalendar() {
                               <p className="font-semibold text-sm">{holiday.name}</p>
                               <Badge className={typeColors[holiday.type]} style={{ fontSize: '10px' }}>{holiday.type.toUpperCase()}</Badge>
                             </div>
-                            <p className="text-xs text-gray-600">{format(new Date(holiday.date), 'EEEE, MMMM d, yyyy')}</p>
+                            <p className="text-xs text-gray-600">{safeDate(holiday.date, 'EEEE, MMMM d, yyyy')}</p>
                             {holiday.description && <p className="text-xs text-gray-500 mt-1">{holiday.description}</p>}
                           </div>
                           <div className="flex gap-2">
@@ -503,7 +504,7 @@ export default function HolidayCalendar() {
           <Dialog open={!!selectedDayHolidays} onOpenChange={() => setSelectedDayHolidays(null)}>
             <DialogContent className="max-w-sm">
               <DialogHeader>
-                <DialogTitle>{format(new Date(selectedDayHolidays[0].date), 'MMMM d, yyyy')}</DialogTitle>
+                <DialogTitle>{safeDate(selectedDayHolidays[0].date, 'MMMM d, yyyy')}</DialogTitle>
               </DialogHeader>
               <div className="space-y-3">
                 {selectedDayHolidays.map(holiday => (

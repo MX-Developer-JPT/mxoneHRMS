@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import MobileSelect from '@/components/MobileSelect';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 
 
@@ -84,7 +85,7 @@ function TicketDetailDialog({ ticket, user, allUsers, departments, helpdeskCateg
         <p className="text-sm text-gray-700">{ticket.description}</p>
         <div className="text-xs text-gray-500 flex flex-wrap gap-4">
           <span>Raised by: <strong>{raisedBy?.full_name || 'Unknown'}</strong></span>
-          <span>Date: <strong>{format(new Date(ticket.created_date), 'MMM d, yyyy')}</strong></span>
+          <span>Date: <strong>{safeDate(ticket.created_date, 'MMM d, yyyy')}</strong></span>
           {assignee && <span>Assigned: <strong>{assignee.full_name}</strong></span>}
           {ticket.assigned_department && <span>Dept: <strong>{ticket.assigned_department}</strong></span>}
         </div>
@@ -165,7 +166,7 @@ function TicketDetailDialog({ ticket, user, allUsers, departments, helpdeskCateg
             <div key={i} className={`p-3 rounded-lg text-sm ${c.author_id === user.id ? 'bg-blue-50 ml-4' : 'bg-gray-50 mr-4'}`}>
               <div className="flex justify-between items-center mb-1">
                 <span className="font-medium text-xs">{c.author_name} <span className="text-gray-400 font-normal capitalize">({c.author_role})</span></span>
-                <span className="text-xs text-gray-400">{format(new Date(c.timestamp), 'MMM d, h:mm a')}</span>
+                <span className="text-xs text-gray-400">{safeDate(c.timestamp, 'MMM d, h:mm a')}</span>
               </div>
               <p className="text-gray-700">{c.text}</p>
             </div>
@@ -460,8 +461,8 @@ export default function Helpdesk() {
                         </div>
                       </div>
                       <div className="text-xs text-gray-400 text-right">
-                        <p>{format(new Date(ticket.created_date), 'MMM d, yyyy')}</p>
-                        {ticket.resolved_date && <p className="text-green-600">Resolved {format(new Date(ticket.resolved_date), 'MMM d')}</p>}
+                        <p>{safeDate(ticket.created_date, 'MMM d, yyyy')}</p>
+                        {ticket.resolved_date && <p className="text-green-600">Resolved {safeDate(ticket.resolved_date, 'MMM d')}</p>}
                       </div>
                     </div>
                   </div>

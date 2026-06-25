@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, addMonths, subMonths, isSameDay } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const DAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
@@ -79,7 +80,7 @@ export default function MultiDateCalendarPicker({ selectedDates = [], onChange, 
         <div className="flex flex-wrap gap-1.5">
           {selectedDates.map(d => (
             <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full">
-              {format(new Date(d + 'T00:00:00'), 'MMM d')}
+              {safeDate(d + 'T00:00:00', 'MMM d')}
               <button type="button" onClick={() => removeDate(d)} className="hover:text-red-600">
                 <X className="w-3 h-3" />
               </button>

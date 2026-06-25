@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -8,6 +8,7 @@ import { ChevronLeft, ChevronRight, Calendar, Clock, MapPin, Users, ArrowLeft } 
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isToday, addMonths, subMonths, parseISO } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const modeColor = { online: 'bg-blue-100 text-blue-700', offline: 'bg-green-100 text-green-700', hybrid: 'bg-purple-100 text-purple-700' };
 const statusColor = { scheduled: 'bg-blue-100 text-blue-700', ongoing: 'bg-green-100 text-green-700', completed: 'bg-gray-100 text-gray-600', cancelled: 'bg-red-100 text-red-600' };
@@ -138,7 +139,7 @@ export default function TrainingCalendar() {
                           </div>
                           <div className="flex-1">
                             <p className="font-semibold text-sm">{prog?.title || 'Training'}</p>
-                            <p className="text-xs text-gray-500">{s.batch_name} · {s.start_date ? format(new Date(s.start_date), 'h:mm a') : ''}</p>
+                            <p className="text-xs text-gray-500">{s.batch_name} · {s.start_date ? safeDate(s.start_date, 'h:mm a') : ''}</p>
                             <div className="flex gap-2 mt-1">
                               <Badge className={`text-xs ${statusColor[s.status]}`}>{s.status}</Badge>
                               {prog && <Badge className={`text-xs ${modeColor[prog.mode]}`}>{prog.mode}</Badge>}
@@ -168,7 +169,7 @@ export default function TrainingCalendar() {
                   <div key={s.id} className="p-3 rounded-lg border hover:bg-gray-50 cursor-pointer" onClick={() => setSelectedSession({ ...s, program: prog })}>
                     <p className="font-semibold text-sm line-clamp-1">{prog?.title}</p>
                     <div className="flex items-center gap-1 text-xs text-gray-500 mt-1">
-                      <Clock className="w-3 h-3" />{format(new Date(s.start_date), 'MMM d, h:mm a')}
+                      <Clock className="w-3 h-3" />{safeDate(s.start_date, 'MMM d, h:mm a')}
                     </div>
                     {s.location && <div className="flex items-center gap-1 text-xs text-gray-400 mt-0.5"><MapPin className="w-3 h-3" />{s.location}</div>}
                     <div className="flex items-center justify-between mt-2">
@@ -194,7 +195,7 @@ export default function TrainingCalendar() {
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-2 bg-gray-50 rounded"><p className="text-xs text-gray-500">Batch</p><p className="font-medium">{selectedSession.batch_name}</p></div>
                 <div className="p-2 bg-gray-50 rounded"><p className="text-xs text-gray-500">Status</p><Badge className={`text-xs ${statusColor[selectedSession.status]}`}>{selectedSession.status}</Badge></div>
-                <div className="p-2 bg-gray-50 rounded"><p className="text-xs text-gray-500">Start</p><p className="font-medium">{selectedSession.start_date ? format(new Date(selectedSession.start_date), 'MMM d, h:mm a') : 'TBD'}</p></div>
+                <div className="p-2 bg-gray-50 rounded"><p className="text-xs text-gray-500">Start</p><p className="font-medium">{selectedSession.start_date ? safeDate(selectedSession.start_date, 'MMM d, h:mm a') : 'TBD'}</p></div>
                 <div className="p-2 bg-gray-50 rounded"><p className="text-xs text-gray-500">Duration</p><p className="font-medium">{selectedSession.duration_hours}h</p></div>
                 <div className="p-2 bg-gray-50 rounded"><p className="text-xs text-gray-500">Capacity</p><p className="font-medium">{selectedSession.enrolled_count || 0} / {selectedSession.capacity}</p></div>
                 <div className="p-2 bg-gray-50 rounded"><p className="text-xs text-gray-500">Trainer</p><p className="font-medium">{selectedSession.trainer_name || selectedSession.program?.trainer_name || '—'}</p></div>

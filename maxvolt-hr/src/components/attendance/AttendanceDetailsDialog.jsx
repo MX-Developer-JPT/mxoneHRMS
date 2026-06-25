@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { MapPin, Camera, Clock, Coffee, ArrowDownCircle, ArrowUpCircle, Timer, Fingerprint } from 'lucide-react';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 export default function AttendanceDetailsDialog({ record, employee, open, onClose }) {
   if (!record) return null;
@@ -23,7 +24,7 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
 
   const formatTime = (iso) => {
     if (!iso) return '-';
-    try { return format(new Date(iso), 'hh:mm:ss a'); } catch { return iso; }
+    try { return safeDate(iso, 'hh:mm:ss a'); } catch { return iso; }
   };
 
   const formatHours = (h) => {
@@ -78,7 +79,7 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="bg-gray-50 p-3 rounded-lg text-center">
               <p className="text-xs text-gray-500 mb-1">Date</p>
-              <p className="font-semibold text-sm">{format(new Date(record.date), 'dd MMM yyyy')}</p>
+              <p className="font-semibold text-sm">{safeDate(record.date, 'dd MMM yyyy')}</p>
             </div>
             <div className="bg-green-50 p-3 rounded-lg text-center">
               <p className="text-xs text-gray-500 mb-1">First In</p>

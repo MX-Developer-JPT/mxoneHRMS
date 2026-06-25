@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import { LogOut, LogIn, Clock, History, Search, Filter } from 'lucide-react';
 
 const STATUS_COLORS = {
@@ -148,7 +149,7 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                         )}
                         <p className="text-xs text-gray-500 truncate">{pass.reason}</p>
                         <p className="text-xs text-gray-400 mt-0.5">
-                          {format(new Date(pass.created_date), 'dd MMM yyyy, hh:mm a')}
+                          {safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}
                           {emp && showEmployeeName && ` · ${emp.department}`}
                         </p>
                       </div>
@@ -157,12 +158,12 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                       <div className="text-xs space-y-0.5 text-right">
                         {pass.departure_time && (
                           <p className="text-orange-600 flex items-center gap-1 justify-end">
-                            <LogOut className="w-3 h-3" /> Out: {format(new Date(pass.departure_time), 'hh:mm a')}
+                            <LogOut className="w-3 h-3" /> Out: {safeDate(pass.departure_time, 'hh:mm a')}
                           </p>
                         )}
                         {pass.return_time && (
                           <p className="text-green-600 flex items-center gap-1 justify-end">
-                            <LogIn className="w-3 h-3" /> In: {format(new Date(pass.return_time), 'hh:mm a')}
+                            <LogIn className="w-3 h-3" /> In: {safeDate(pass.return_time, 'hh:mm a')}
                           </p>
                         )}
                         {pass.departure_time && pass.return_time && (
@@ -196,9 +197,9 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                   <p><span className="font-medium">Department:</span> {employees[selected.employee_user_id].department}</p>
                 )}
                 <p><span className="font-medium">Reason:</span> {selected.reason}</p>
-                <p><span className="font-medium">Requested On:</span> {format(new Date(selected.created_date), 'dd MMM yyyy, hh:mm a')}</p>
+                <p><span className="font-medium">Requested On:</span> {safeDate(selected.created_date, 'dd MMM yyyy, hh:mm a')}</p>
                 {selected.expected_return_time && (
-                  <p><span className="font-medium">Expected Return:</span> {format(new Date(selected.expected_return_time), 'dd MMM yyyy, hh:mm a')}</p>
+                  <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
                 )}
                 <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
               </div>
@@ -207,7 +208,7 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                 <p className="font-semibold text-gray-700">Manager Action</p>
                 <p><span className="font-medium">Decision:</span> <span className="capitalize">{selected.manager_approval_status || 'pending'}</span></p>
                 {selected.manager_approval_date && (
-                  <p><span className="font-medium">At:</span> {format(new Date(selected.manager_approval_date), 'dd MMM yyyy, hh:mm a')}</p>
+                  <p><span className="font-medium">At:</span> {safeDate(selected.manager_approval_date, 'dd MMM yyyy, hh:mm a')}</p>
                 )}
                 {selected.manager_comment && (
                   <p><span className="font-medium">Comment:</span> {selected.manager_comment}</p>
@@ -220,13 +221,13 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                   {selected.departure_time && (
                     <p className="text-orange-700 flex items-center gap-1">
                       <LogOut className="w-3.5 h-3.5" />
-                      <span className="font-medium">Departed:</span> {format(new Date(selected.departure_time), 'dd MMM yyyy, hh:mm a')}
+                      <span className="font-medium">Departed:</span> {safeDate(selected.departure_time, 'dd MMM yyyy, hh:mm a')}
                     </p>
                   )}
                   {selected.return_time && (
                     <p className="text-green-700 flex items-center gap-1">
                       <LogIn className="w-3.5 h-3.5" />
-                      <span className="font-medium">Returned:</span> {format(new Date(selected.return_time), 'dd MMM yyyy, hh:mm a')}
+                      <span className="font-medium">Returned:</span> {safeDate(selected.return_time, 'dd MMM yyyy, hh:mm a')}
                     </p>
                   )}
                   {selected.departure_time && selected.return_time && (

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Briefcase, MapPin, Clock, Users, Search, ChevronRight, Calendar } from 'lucide-react';
 import { format, isPast } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 export default function PublicJobBoard() {
   const [jobs, setJobs] = useState([]);
@@ -131,7 +132,7 @@ export default function PublicJobBoard() {
                       {job.application_deadline && (
                         <p className="text-xs text-red-500 mt-2 flex items-center gap-1">
                           <Calendar className="w-3 h-3" />
-                          Apply by: {format(new Date(job.application_deadline), 'dd MMM yyyy')}
+                          Apply by: {safeDate(job.application_deadline, 'dd MMM yyyy')}
                         </p>
                       )}
                     </div>

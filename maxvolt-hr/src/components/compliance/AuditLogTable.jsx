@@ -1,5 +1,6 @@
-import React from 'react';
+﻿import React from 'react';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import { Badge } from '@/components/ui/badge';
 
 export default function AuditLogTable({ logs }) {
@@ -23,7 +24,7 @@ export default function AuditLogTable({ logs }) {
                 {log.action?.replace(/_/g, ' ')}
               </span>
               <span className="text-xs text-gray-400">
-                {log.created_date ? format(new Date(log.created_date), 'dd MMM yy, HH:mm') : '—'}
+                {log.created_date ? safeDate(log.created_date, 'dd MMM yy, HH:mm') : '—'}
               </span>
             </div>
             <div className="text-xs text-gray-600">
@@ -69,7 +70,7 @@ export default function AuditLogTable({ logs }) {
                   {log.remarks && <span className="ml-1 text-gray-400">— {log.remarks}</span>}
                 </td>
                 <td className="px-3 py-2 text-gray-400 text-xs whitespace-nowrap">
-                  {log.created_date ? format(new Date(log.created_date), 'dd MMM yyyy, HH:mm') : '—'}
+                  {log.created_date ? safeDate(log.created_date, 'dd MMM yyyy, HH:mm') : '—'}
                 </td>
               </tr>
             ))}

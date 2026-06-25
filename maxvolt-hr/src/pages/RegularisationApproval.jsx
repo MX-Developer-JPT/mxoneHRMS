@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, XCircle, RotateCcw, Clock, Filter, Users, Eye, FileText, Calendar, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const REASON_LABELS = {
   missed_punch: 'Missed Punch', biometric_failure: 'Biometric Failure',
@@ -296,7 +297,7 @@ export default function RegularisationApproval() {
                                 <div>
                                   <div className="flex items-center gap-2 mt-1 text-sm text-gray-600">
                                     <Calendar className="w-3.5 h-3.5" />
-                                    <span>{format(new Date(req.attendance_date), 'EEE, MMM d, yyyy')}</span>
+                                    <span>{safeDate(req.attendance_date, 'EEE, MMM d, yyyy')}</span>
                                   </div>
                                   <p className="text-xs text-gray-500 mt-0.5">{REASON_LABELS[req.reason_category] || req.reason_category}</p>
                                   <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">{req.reason}</p>
@@ -359,7 +360,7 @@ export default function RegularisationApproval() {
             <div className="space-y-4">
               <div className="bg-gray-50 rounded-lg p-3 text-sm space-y-1">
                 <p><strong>Employee:</strong> {getEmployeeName(actionDialog.request.user_id)}</p>
-                <p><strong>Date:</strong> {format(new Date(actionDialog.request.attendance_date), 'MMM d, yyyy')}</p>
+                <p><strong>Date:</strong> {safeDate(actionDialog.request.attendance_date, 'MMM d, yyyy')}</p>
                 <p><strong>Reason:</strong> {actionDialog.request.reason}</p>
               </div>
               <div>
@@ -399,7 +400,7 @@ export default function RegularisationApproval() {
             <div className="space-y-4 text-sm">
               <div className="grid grid-cols-2 gap-3">
                 <div><p className="text-xs text-gray-500">Employee</p><p className="font-medium">{getEmployeeName(selectedRequest.user_id)}</p></div>
-                <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{format(new Date(selectedRequest.attendance_date), 'MMM d, yyyy')}</p></div>
+                <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{safeDate(selectedRequest.attendance_date, 'MMM d, yyyy')}</p></div>
                 <div><p className="text-xs text-gray-500">Status</p><Badge className={statusConfig[selectedRequest.status]?.color}>{statusConfig[selectedRequest.status]?.label}</Badge></div>
                 <div><p className="text-xs text-gray-500">Reason Category</p><p className="font-medium">{REASON_LABELS[selectedRequest.reason_category]}</p></div>
               </div>
@@ -409,8 +410,8 @@ export default function RegularisationApproval() {
                   <p className="text-xs text-gray-500 mb-1">Original</p>
                   <div className="bg-red-50 rounded p-2 text-xs space-y-1">
                     <p>Status: {selectedRequest.existing_status || 'N/A'}</p>
-                    <p>In: {selectedRequest.existing_check_in ? format(new Date(selectedRequest.existing_check_in), 'HH:mm') : 'N/A'}</p>
-                    <p>Out: {selectedRequest.existing_check_out ? format(new Date(selectedRequest.existing_check_out), 'HH:mm') : 'N/A'}</p>
+                    <p>In: {selectedRequest.existing_check_in ? safeDate(selectedRequest.existing_check_in, 'HH:mm') : 'N/A'}</p>
+                    <p>Out: {selectedRequest.existing_check_out ? safeDate(selectedRequest.existing_check_out, 'HH:mm') : 'N/A'}</p>
                   </div>
                 </div>
                 <div>
@@ -433,7 +434,7 @@ export default function RegularisationApproval() {
                       <div key={idx} className="border-l-2 border-blue-300 pl-3 py-1">
                         <p className="text-xs font-medium">{log.actor_name} — <span className="text-gray-500 capitalize">{log.action.replace('_', ' ')}</span></p>
                         {log.comment && <p className="text-xs text-gray-600">{log.comment}</p>}
-                        <p className="text-xs text-gray-400">{log.timestamp ? format(new Date(log.timestamp), 'MMM d, yyyy HH:mm') : ''}</p>
+                        <p className="text-xs text-gray-400">{log.timestamp ? safeDate(log.timestamp, 'MMM d, yyyy HH:mm') : ''}</p>
                       </div>
                     ))}
                   </div>

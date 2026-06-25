@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { CheckCircle2, XCircle, AlertCircle, ClipboardList, DollarSign, FileText
 import ClearanceStatus from './ClearanceStatus';
 import FnFSummary from './FnFSummary';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const STATUS_CONFIG = {
   submitted: { label: 'Submitted', color: 'bg-blue-100 text-blue-800' },
@@ -186,8 +187,8 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
             <div className="space-y-4">
               <div className="grid md:grid-cols-2 gap-4 text-sm">
                 {[
-                  ['Resignation Date', exitRecord.resignation_date ? format(new Date(exitRecord.resignation_date), 'MMM d, yyyy') : '—'],
-                  ['Last Working Day', exitRecord.last_working_date ? format(new Date(exitRecord.last_working_date), 'MMM d, yyyy') : '—'],
+                  ['Resignation Date', exitRecord.resignation_date ? safeDate(exitRecord.resignation_date, 'MMM d, yyyy') : '—'],
+                  ['Last Working Day', exitRecord.last_working_date ? safeDate(exitRecord.last_working_date, 'MMM d, yyyy') : '—'],
                   ['Exit Type', exitRecord.exit_type?.replace('_', ' ')],
                   ['Notice Period', `${exitRecord.notice_period_days || 0} days`],
                   ['Reason Category', exitRecord.reason_category?.replace(/_/g, ' ')],

@@ -1,8 +1,9 @@
-import React from 'react';
+﻿import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, Circle, XCircle, Clock, User, Calendar, AlertCircle } from 'lucide-react';
 import { format, differenceInDays } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const STEPS = [
   { key: 'submitted', label: 'Resignation Submitted', desc: 'Your resignation has been received' },
@@ -120,7 +121,7 @@ export default function ExitStatusTracker({ exitRecord, employee, onRefresh }) {
                     <span className="font-medium">{log.actor_name}</span>
                     <span className="text-gray-500"> — {log.action}</span>
                     {log.comment && <p className="text-xs text-gray-400 italic">"{log.comment}"</p>}
-                    <p className="text-xs text-gray-400">{log.timestamp ? format(new Date(log.timestamp), 'MMM d, yyyy h:mm a') : ''}</p>
+                    <p className="text-xs text-gray-400">{log.timestamp ? safeDate(log.timestamp, 'MMM d, yyyy h:mm a') : ''}</p>
                   </div>
                 </div>
               ))}

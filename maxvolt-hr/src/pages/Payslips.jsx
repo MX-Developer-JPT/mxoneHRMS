@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileText, DollarSign, Printer, TrendingUp, TrendingDown } from 'lucide-react';
 import { openPayslipPrintWindow } from '../utils/payslipPrint';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import { Badge } from "@/components/ui/badge";
 
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -124,7 +125,7 @@ export default function Payslips() {
                       </div>
                     </div>
                     {payroll.payment_date && (
-                      <p className="text-xs text-gray-400">Paid on {format(new Date(payroll.payment_date), 'MMM d, yyyy')}</p>
+                      <p className="text-xs text-gray-400">Paid on {safeDate(payroll.payment_date, 'MMM d, yyyy')}</p>
                     )}
                     <Button
                       onClick={() => handlePrint(payroll.id)}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Plus, Calendar, Video, Star, Mail, Loader2, User, CheckCircle, XCircle,
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 export default function InterviewManagement() {
   const [user, setUser] = useState(null);
@@ -449,7 +450,7 @@ export default function InterviewManagement() {
                         </div>
                         <div className="text-sm text-gray-600 space-y-1">
                           <p>Round {interview.round_number} | {interview.interview_mode} | {interview.duration_minutes} mins</p>
-                          <p>Scheduled: {format(new Date(interview.scheduled_date), 'PPP p')}</p>
+                          <p>Scheduled: {safeDate(interview.scheduled_date, 'PPP p')}</p>
                           {interview.meeting_link && (
                             <p>
                               Link: <a href={interview.meeting_link} target="_blank" rel="noreferrer" className="text-blue-600 underline">{interview.meeting_link}</a>

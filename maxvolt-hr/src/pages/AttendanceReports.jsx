@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+﻿import React, { useState, useEffect, useMemo } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import {
   LineChart, Line, PieChart, Pie, Cell, Tooltip as ReTooltip
 } from 'recharts';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6'];
 
@@ -75,7 +76,7 @@ export default function AttendanceReports() {
     });
     return Object.values(map).sort((a, b) => a.date.localeCompare(b.date)).map(d => ({
       ...d,
-      label: format(new Date(d.date + 'T12:00:00'), 'd'),
+      label: safeDate(d.date + 'T12:00:00', 'd'),
     }));
   }, [attendance]);
 

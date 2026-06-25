@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import DocViewerModal from '@/components/DocViewerModal';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 export default function Reimbursements() {
   const [user, setUser] = useState(null);
@@ -248,7 +249,7 @@ export default function Reimbursements() {
                           </Badge>
                         </div>
                         <p className="text-sm text-gray-600 mb-1">
-                          {format(new Date(claim.expense_date), 'MMM d, yyyy')}
+                          {safeDate(claim.expense_date, 'MMM d, yyyy')}
                         </p>
                         <p className="text-sm">{claim.description}</p>
                         {claim.rejection_reason && (
@@ -273,7 +274,7 @@ export default function Reimbursements() {
                         <p className="text-2xl font-bold text-blue-600">₹{claim.amount.toLocaleString()}</p>
                         {claim.payment_date && (
                           <p className="text-xs text-gray-500">
-                            Paid on {format(new Date(claim.payment_date), 'MMM d, yyyy')}
+                            Paid on {safeDate(claim.payment_date, 'MMM d, yyyy')}
                           </p>
                         )}
                       </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import { LogOut, LogIn, Clock, CheckCircle2, XCircle, AlertCircle, Plus, History } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 
@@ -194,11 +195,11 @@ export default function GatePassRequest() {
                     </div>
                     {pass.reason && <p className="font-medium text-gray-900 dark:text-gray-100">{pass.reason}</p>}
                     <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                      Requested: {format(new Date(pass.created_date), 'dd MMM yyyy, hh:mm a')}
+                      Requested: {safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}
                     </p>
                     {pass.expected_return_time && (
                       <p className="text-sm text-gray-500 dark:text-gray-400">
-                        Expected return: {format(new Date(pass.expected_return_time), 'dd MMM yyyy, hh:mm a')}
+                        Expected return: {safeDate(pass.expected_return_time, 'dd MMM yyyy, hh:mm a')}
                       </p>
                     )}
                     {pass.manager_comment && (
@@ -206,12 +207,12 @@ export default function GatePassRequest() {
                     )}
                     {pass.departure_time && (
                       <p className="text-sm text-orange-600 mt-1 flex items-center gap-1">
-                        <LogOut className="w-3.5 h-3.5" /> Departed: {format(new Date(pass.departure_time), 'hh:mm a')}
+                        <LogOut className="w-3.5 h-3.5" /> Departed: {safeDate(pass.departure_time, 'hh:mm a')}
                       </p>
                     )}
                     {pass.return_time && (
                       <p className="text-sm text-green-600 mt-1 flex items-center gap-1">
-                        <LogIn className="w-3.5 h-3.5" /> Returned: {format(new Date(pass.return_time), 'hh:mm a')}
+                        <LogIn className="w-3.5 h-3.5" /> Returned: {safeDate(pass.return_time, 'hh:mm a')}
                       </p>
                     )}
                   </div>

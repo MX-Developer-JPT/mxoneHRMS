@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { toast } from 'sonner';
 import SalaryBreakdownCard from '../components/salary/SalaryBreakdownCard';
 import { format, differenceInMonths, differenceInYears } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 
 const roleLabels = {
   admin: { label: 'Administrator', color: 'bg-red-100 text-red-800', access: 'Full system access' },
@@ -230,14 +231,14 @@ export default function Profile() {
                 <InfoRow
                   icon={Calendar}
                   label="Date of Joining"
-                  value={`${format(new Date(employee.date_of_joining), 'MMM d, yyyy')}${tenure ? ` · ${tenure} tenure` : ''}`}
+                  value={`${safeDate(employee.date_of_joining, 'MMM d, yyyy')}${tenure ? ` · ${tenure} tenure` : ''}`}
                 />
               )}
               {employee?.employee_confirmation_date && (
                 <InfoRow
                   icon={Calendar}
                   label="Confirmation Date"
-                  value={format(new Date(employee.employee_confirmation_date), 'MMM d, yyyy')}
+                  value={safeDate(employee.employee_confirmation_date, 'MMM d, yyyy')}
                 />
               )}
             </CardContent>
@@ -324,7 +325,7 @@ export default function Profile() {
                 <>
                   <InfoRow icon={Phone} label="Phone" value={employee?.phone || 'Not provided'} />
                   {employee?.date_of_birth && (
-                    <InfoRow icon={Calendar} label="Date of Birth" value={format(new Date(employee.date_of_birth), 'MMM d, yyyy')} />
+                    <InfoRow icon={Calendar} label="Date of Birth" value={safeDate(employee.date_of_birth, 'MMM d, yyyy')} />
                   )}
                   <InfoRow icon={MapPin} label="Address" value={employee?.address || 'Not provided'} />
                   {employee?.emergency_contact?.name && (
@@ -442,7 +443,7 @@ export default function Profile() {
                     <InfoRow icon={CreditCard} label="Sum Insured" value={`₹${Number(employee.insurance.sum_insured).toLocaleString('en-IN')}`} />
                   )}
                   {employee.insurance.validity_date && (
-                    <InfoRow icon={Calendar} label="Valid Until" value={format(new Date(employee.insurance.validity_date), 'MMM d, yyyy')} />
+                    <InfoRow icon={Calendar} label="Valid Until" value={safeDate(employee.insurance.validity_date, 'MMM d, yyyy')} />
                   )}
                   {employee.insurance.nominee_name && (
                     <InfoRow

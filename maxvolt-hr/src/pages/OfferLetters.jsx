@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import {
   FileCheck, Mail, Phone, Loader2, Send, CalendarCheck, Copy, RefreshCw,
   Search, Users, CheckCircle2, Clock, XCircle, FileText, Building2, MapPin, User, Printer,
@@ -478,7 +479,7 @@ export default function OfferLetters() {
                             </div>
                             <div className="flex items-center gap-1.5">
                               <CalendarCheck className="w-3 h-3 text-gray-400" />
-                              <span>Joining: <strong>{c.joining_date ? format(new Date(c.joining_date), 'dd MMM yyyy') : '—'}</strong></span>
+                              <span>Joining: <strong>{c.joining_date ? safeDate(c.joining_date, 'dd MMM yyyy') : '—'}</strong></span>
                             </div>
                             <div className="flex items-center gap-1.5">
                               <FileText className="w-3 h-3 text-gray-400" />
@@ -488,15 +489,15 @@ export default function OfferLetters() {
 
                           {c.offer_accepted_at && (
                             <p className="text-xs text-emerald-600">
-                              Accepted on {format(new Date(c.offer_accepted_at), 'dd MMM yyyy, hh:mm a')}
+                              Accepted on {safeDate(c.offer_accepted_at, 'dd MMM yyyy, hh:mm a')}
                               {c.offer_parent_name && ` · S/D of ${c.offer_parent_name}`}
                               {c.offer_contact && ` · ${c.offer_contact}`}
                             </p>
                           )}
                           {c.offer_letter_date && c.status === 'offered' && (
                             <p className="text-xs text-teal-600">
-                              Offer sent on {format(new Date(c.offer_letter_date), 'dd MMM yyyy')}
-                              {c.offer_valid_till && ` · Valid till ${format(new Date(c.offer_valid_till), 'dd MMM yyyy')}`}
+                              Offer sent on {safeDate(c.offer_letter_date, 'dd MMM yyyy')}
+                              {c.offer_valid_till && ` · Valid till ${safeDate(c.offer_valid_till, 'dd MMM yyyy')}`}
                             </p>
                           )}
                           {c.offer_ref && (

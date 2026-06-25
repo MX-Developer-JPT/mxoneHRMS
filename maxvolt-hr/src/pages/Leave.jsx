@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Plus, Calendar, FileText, AlertCircle, CheckCircle, Info } from 'lucide-react';
 import MobileSelect from '@/components/MobileSelect';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import { toast } from 'sonner';
 
 const STATUS_COLORS = {
@@ -326,7 +327,7 @@ export default function Leave() {
                           )}
                         </div>
                         <p className="text-sm text-gray-600">
-                          {format(new Date(leave.start_date), 'MMM d')} – {format(new Date(leave.end_date), 'MMM d, yyyy')}
+                          {safeDate(leave.start_date, 'MMM d')} – {safeDate(leave.end_date, 'MMM d, yyyy')}
                           <span className="ml-2 font-medium">({leave.total_days} day{leave.total_days !== 1 ? 's' : ''})</span>
                           {leave.half_day && <span className="ml-2 text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">Half Day</span>}
                         </p>
@@ -340,7 +341,7 @@ export default function Leave() {
                           <div className="mt-2 space-y-1">
                             {leave.approval_history.map((h, i) => (
                               <p key={i} className="text-xs text-gray-500">
-                                ✓ {h.approver_name} ({h.level === 1 ? 'Manager' : 'HOD/HR'}) — {h.status} on {format(new Date(h.timestamp), 'MMM d, yyyy')}
+                                ✓ {h.approver_name} ({h.level === 1 ? 'Manager' : 'HOD/HR'}) — {h.status} on {safeDate(h.timestamp, 'MMM d, yyyy')}
                                 {h.comments && ` — "${h.comments}"`}
                               </p>
                             ))}
@@ -348,7 +349,7 @@ export default function Leave() {
                         )}
                       </div>
                       <div className="flex flex-col items-end gap-2">
-                        <p className="text-xs text-gray-400">Applied {format(new Date(leave.created_date), 'MMM d, yyyy')}</p>
+                        <p className="text-xs text-gray-400">Applied {safeDate(leave.created_date, 'MMM d, yyyy')}</p>
                         {leave.status === 'pending' && (
                           <Button size="sm" variant="outline" className="text-red-600 border-red-200 hover:bg-red-50"
                             onClick={() => handleCancel(leave)}>

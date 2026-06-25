@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,7 @@ import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn } from 'lucide-react'
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { safeDate } from '@/lib/dateUtils';
 import AttendanceCameraCapture from '@/components/attendance/AttendanceCameraCapture';
 
 export default function MarkAttendance() {
@@ -386,7 +387,7 @@ export default function MarkAttendance() {
                       <div>
                         <p className="text-sm text-gray-600">Check In</p>
                         <p className="font-semibold text-sm md:text-base">
-                          {format(new Date(todayAttendance.check_in_time), 'h:mm a')}
+                          {safeDate(todayAttendance.check_in_time, 'h:mm a')}
                         </p>
                         </div>
                         </div>
@@ -402,7 +403,7 @@ export default function MarkAttendance() {
                         {!todayAttendance.check_out_time && todayAttendance.check_in_time && (
                         <div className="bg-blue-50 p-3 rounded-lg text-sm text-blue-800">
                         <p>
-                        <strong>Checked in at: {format(new Date(todayAttendance.check_in_time), 'h:mm a')}</strong>
+                        <strong>Checked in at: {safeDate(todayAttendance.check_in_time, 'h:mm a')}</strong>
                         </p>
                         <p className="text-xs mt-1">Status: Working</p>
                         </div>
@@ -415,7 +416,7 @@ export default function MarkAttendance() {
                         <div>
                           <p className="text-sm text-gray-600">Check Out</p>
                           <p className="font-semibold text-sm md:text-base">
-                            {format(new Date(todayAttendance.check_out_time), 'h:mm a')}
+                            {safeDate(todayAttendance.check_out_time, 'h:mm a')}
                           </p>
                         </div>
                       </div>
