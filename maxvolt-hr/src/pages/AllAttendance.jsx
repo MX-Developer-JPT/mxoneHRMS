@@ -482,27 +482,43 @@ export default function AllAttendance() {
                             </div>
                             <div className="min-w-0">
                               <p className="font-medium text-sm text-gray-900 truncate">{name}</p>
-                              <p className="text-xs text-gray-500">{emp?.designation || emp?.employee_code}</p>
+                              <p className="text-xs text-gray-500 truncate">{emp?.designation || emp?.employee_code}</p>
+                              {/* First In / Last Out — always visible */}
+                              {(record.check_in_time || record.check_out_time) && (
+                                <div className="flex flex-wrap gap-2 mt-0.5">
+                                  {record.check_in_time && (
+                                    <span className="text-xs text-green-700 font-medium">
+                                      ↓ {safeFormatTime(record.check_in_time)}
+                                    </span>
+                                  )}
+                                  {record.check_out_time && (
+                                    <span className="text-xs text-red-500 font-medium">
+                                      ↑ {safeFormatTime(record.check_out_time)}
+                                    </span>
+                                  )}
+                                  {record.is_in_progress && !record.check_out_time && (
+                                    <span className="text-xs text-green-500 font-medium">● Working</span>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </div>
 
                           <div className="flex flex-wrap items-center gap-2">
-                            {/* Session pills — support new sessions[] and legacy punch_sessions[] */}
+                            {/* Multi-session pills — only shown when there are 2+ sessions */}
                             {(() => {
                               const richSess = record.sessions || [];
                               const legacySess = (record.punch_sessions || []).filter(s => s.punch_in || s.session_number);
-                              const displayList = richSess.length > 0
+                              const displayList = richSess.length > 1
                                 ? richSess.map(s => ({ pin: s.check_in, pout: s.check_out }))
-                                : legacySess.length > 0
+                                : legacySess.length > 1
                                   ? legacySess.map(s => ({ pin: s.punch_in, pout: s.punch_out }))
-                                  : record.check_in_time
-                                    ? [{ pin: record.check_in_time, pout: record.check_out_time }]
-                                    : [];
+                                  : [];
                               return displayList.map((s, idx) => (
                                 <span key={idx} className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded border border-gray-100">
-                                  {displayList.length > 1 && <span className="text-gray-400 mr-1">S{idx + 1}</span>}
-                                  <span className="text-green-600 font-medium">In</span> {safeFormatTime(s.pin)}
-                                  {s.pout && <> · <span className="text-red-500 font-medium">Out</span> {safeFormatTime(s.pout)}</>}
+                                  <span className="text-gray-400 mr-1">S{idx + 1}</span>
+                                  <span className="text-green-600 font-medium">↓</span> {safeFormatTime(s.pin)}
+                                  {s.pout && <><span className="text-gray-300 mx-1">·</span><span className="text-red-500 font-medium">↑</span> {safeFormatTime(s.pout)}</>}
                                   {!s.pout && <span className="text-green-500 ml-1">●</span>}
                                 </span>
                               ));
@@ -524,8 +540,8 @@ export default function AllAttendance() {
                                   : `${record.break_hours.toFixed(1)}h`} break
                               </span>
                             )}
-                            {/* Currently working indicator */}
-                            {(record.is_in_progress || record.status === 'in_progress') && (
+                            {/* Working indicator — only when no check_in_time (already shown inline below name) */}
+                            {(record.is_in_progress || record.status === 'in_progress') && !record.check_in_time && (
                               <span className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-300">
                                 <Activity className="w-3 h-3" /> Working
                               </span>
