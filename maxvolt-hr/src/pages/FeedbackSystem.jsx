@@ -169,7 +169,7 @@ export default function FeedbackSystem() {
                       ) : (
                         colleagues.map(emp => (
                           <SelectItem key={emp.id} value={emp.user_id || emp.id}>
-                            {emp.first_name} {emp.last_name}
+                            {emp.display_name || emp.full_name || emp.email || emp.user_id}
                           </SelectItem>
                         ))
                       )}

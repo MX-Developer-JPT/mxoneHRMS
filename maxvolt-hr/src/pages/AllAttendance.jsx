@@ -51,10 +51,6 @@ export default function AllAttendance() {
   const [viewMode, setViewMode] = useState('list'); // 'list' | 'calendar'
   const [calMonthRecords, setCalMonthRecords] = useState([]); // all records for the month (calendar view)
 
-  const safeFormatTime = (ts) => {
-    if (!ts) return '—';
-    try { const d = new Date(String(ts).replace(' ', 'T')); return isNaN(d.getTime()) ? '—' : format(d, 'hh:mm a'); } catch { return '—'; }
-  };
 
   useEffect(() => { loadData(); }, [date]);
 
@@ -517,7 +513,7 @@ export default function AllAttendance() {
                             <div className="text-center min-w-[64px]">
                               <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none mb-0.5">Last Out</p>
                               <p className={`text-sm font-semibold ${lastOut ? 'text-red-600' : (record.is_in_progress || record.status === 'in_progress') ? 'text-green-500' : 'text-gray-300'}`}>
-                                {lastOut ? safeTime(lastOut) : (record.is_in_progress || record.status === 'in_progress') ? '● In' : '—'}
+                                {lastOut ? safeTime(lastOut) : (record.is_in_progress || record.status === 'in_progress') ? '● Active' : '—'}
                               </p>
                             </div>
                           </div>
@@ -528,8 +524,8 @@ export default function AllAttendance() {
                             {richSess.length > 1 && richSess.map((s, idx) => (
                               <span key={idx} className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded border border-gray-100">
                                 <span className="text-gray-400 mr-1">S{idx + 1}</span>
-                                <span className="text-green-600 font-medium">↓</span> {safeTime(s.check_in)}
-                                {s.check_out && <><span className="text-gray-300 mx-1">·</span><span className="text-red-500 font-medium">↑</span> {safeTime(s.check_out)}</>}
+                                <span className="text-green-600 font-medium">In</span> {safeTime(s.check_in)}
+                                {s.check_out && <><span className="text-gray-300 mx-1">·</span><span className="text-red-500 font-medium">Out</span> {safeTime(s.check_out)}</>}
                                 {!s.check_out && <span className="text-green-500 ml-1">●</span>}
                               </span>
                             ))}

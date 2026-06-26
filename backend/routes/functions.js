@@ -169,7 +169,7 @@ const getUser = (req) => {
 // (the two are usually kept in sync, but custom_role can differ).
 async function hasRole(cu, roles) {
   if (!cu) return false;
-  if (roles.includes(cu.role)) return true;
+  if (roles.includes(cu.role) || roles.includes(cu.custom_role)) return true;
   try {
     const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
     return !!u && (roles.includes(u.role) || roles.includes(u.custom_role));
@@ -2536,7 +2536,7 @@ Return ONLY a valid JSON object (no markdown):
 
     /* ── AI: HR Letter Generation ────────────────────── */
     case 'generateEmployeeLetter': {
-      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const letterUid = p.user_id;
       const letterType = p.letter_type;
       const extra = p.extra || {};

@@ -11,6 +11,7 @@ import {
   Calendar, BarChart3, ChevronRight, GraduationCap, Laptop, RefreshCw
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { safeTime } from '@/lib/dateUtils';
 
 export default function ManagementDashboard({ user }) {
   const [data, setData] = useState(null);
@@ -26,13 +27,6 @@ export default function ManagementDashboard({ user }) {
     setRefreshing(false);
   };
 
-  const safeFormatTime = (ts) => {
-    if (!ts) return '—';
-    try {
-      const d = new Date(String(ts).replace(' ', 'T'));
-      return isNaN(d.getTime()) ? '—' : format(d, 'hh:mm a');
-    } catch { return '—'; }
-  };
   const safeFormatDate = (ds, fmt = 'MMM d, yyyy') => {
     if (!ds) return '—';
     try { const d = new Date(ds + 'T00:00:00'); return isNaN(d.getTime()) ? ds : format(d, fmt); } catch { return ds; }
@@ -42,12 +36,12 @@ export default function ManagementDashboard({ user }) {
     const today = format(new Date(), 'yyyy-MM-dd');
 
     const [employees, usersResp, leaves, reimbursements, regularisations, announcements, teamAssets, teamTrainings] = await Promise.all([
-      base44.entities.Employee.filter({ reporting_manager_id: user.id }),
-      base44.functions.invoke('getAllUsers', {}),
-      base44.entities.Leave.filter({ status: 'pending' }),
-      base44.entities.Reimbursement.filter({ status: 'pending' }),
-      base44.entities.AttendanceRegularisation.filter({ manager_id: user.id, status: 'pending' }),
-      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 4),
+      base44.entities.Employee.filter({ reporting_manager_email: user.email }).catch(() => []),
+      base44.functions.invoke('getAllUsers', {}).catch(() => ({ data: { users: [] } })),
+      base44.entities.Leave.filter({ status: 'pending' }).catch(() => []),
+      base44.entities.Reimbursement.filter({ status: 'pending' }).catch(() => []),
+      base44.entities.AttendanceRegularisation.filter({ manager_id: user.id, status: 'pending' }).catch(() => []),
+      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 4).catch(() => []),
       base44.entities.Asset.filter({ status: 'assigned' }).catch(() => []),
       base44.entities.EmployeeTraining.filter({ status: 'in_progress' }).catch(() => []),
     ]);
@@ -87,7 +81,7 @@ export default function ManagementDashboard({ user }) {
         name: e.display_name || userMap[e.user_id]?.full_name || '—',
         dept: e.department || '—',
         designation: e.designation || '—',
-        checkIn: safeFormatTime(att?.check_in_time),
+        checkIn: safeTime(att?.check_in_time),
         workingHours: att?.working_hours ? `${parseFloat(att.working_hours).toFixed(1)}h` : '—',
         status: att?.status || 'present'
       };

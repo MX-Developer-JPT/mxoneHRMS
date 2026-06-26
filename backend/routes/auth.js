@@ -9,7 +9,7 @@ const router = Router();
 export const JWT_SECRET = process.env.JWT_SECRET || 'maxvolt-hr-jwt-secret-2024';
 
 export const signToken = (user) =>
-  jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+  jwt.sign({ id: user.id, email: user.email, role: user.role, custom_role: user.custom_role || user.role }, JWT_SECRET, { expiresIn: '30d' });
 
 const formatUser = (u) => u ? {
   id: u.id, email: u.email,

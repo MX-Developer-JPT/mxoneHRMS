@@ -11,7 +11,7 @@ import {
   AlertCircle, ChevronRight, Briefcase, GraduationCap, Shield, RefreshCw
 } from 'lucide-react';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
-import { safeDate } from '@/lib/dateUtils';
+import { safeDate, safeTime } from '@/lib/dateUtils';
 
 export default function EmployeeDashboard({ user }) {
   const [data, setData] = useState(null);
@@ -34,16 +34,16 @@ export default function EmployeeDashboard({ user }) {
     const currentYear = new Date().getFullYear();
 
     const [todayAtt, monthlyAtt, leaveBalances, leavePolicies, myLeaves, myReimbursements, myTickets, announcements, regularisations, trainingNotifs, myAssets, myEmp] = await Promise.all([
-      base44.entities.Attendance.filter({ user_id: user.id, date: today }),
-      base44.entities.Attendance.filter({ user_id: user.id, date: { $gte: monthStart, $lte: monthEnd } }),
-      base44.entities.LeaveBalance.filter({ user_id: user.id, year: currentYear }),
-      base44.entities.LeavePolicy.filter({ is_active: true }),
-      base44.entities.Leave.filter({ user_id: user.id }, '-created_date', 5),
-      base44.entities.Reimbursement.filter({ user_id: user.id, status: 'pending' }),
-      base44.entities.Ticket.filter({ user_id: user.id, status: { $in: ['open', 'in_progress'] } }),
-      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 5),
-      base44.entities.AttendanceRegularisation.filter({ user_id: user.id, status: 'pending' }),
-      base44.entities.TrainingNotification.filter({ user_id: user.id, is_read: false }, '-created_date', 10),
+      base44.entities.Attendance.filter({ user_id: user.id, date: today }).catch(() => []),
+      base44.entities.Attendance.filter({ user_id: user.id, date: { $gte: monthStart, $lte: monthEnd } }).catch(() => []),
+      base44.entities.LeaveBalance.filter({ user_id: user.id, year: currentYear }).catch(() => []),
+      base44.entities.LeavePolicy.filter({ is_active: true }).catch(() => []),
+      base44.entities.Leave.filter({ user_id: user.id }, '-created_date', 5).catch(() => []),
+      base44.entities.Reimbursement.filter({ user_id: user.id, status: 'pending' }).catch(() => []),
+      base44.entities.Ticket.filter({ user_id: user.id, status: { $in: ['open', 'in_progress'] } }).catch(() => []),
+      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 5).catch(() => []),
+      base44.entities.AttendanceRegularisation.filter({ user_id: user.id, status: 'pending' }).catch(() => []),
+      base44.entities.TrainingNotification.filter({ user_id: user.id, is_read: false }, '-created_date', 10).catch(() => []),
       base44.entities.Asset.filter({ assigned_to_user_id: user.id, status: 'assigned' }).catch(() => []),
       base44.entities.Employee.filter({ user_id: user.id }).catch(() => []),
     ]);
@@ -111,10 +111,6 @@ export default function EmployeeDashboard({ user }) {
   const att = data.todayAtt;
   const checkedIn  = att?.check_in_time;
   const checkedOut = att?.check_out_time;
-  const safeFormatTime = (ts) => {
-    if (!ts) return '—';
-    try { const d = new Date(String(ts).replace(' ', 'T')); return isNaN(d.getTime()) ? '—' : format(d, 'hh:mm a'); } catch { return '—'; }
-  };
 
   const leaveStatusColor = {
     pending:   'bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300',
@@ -178,8 +174,8 @@ export default function EmployeeDashboard({ user }) {
                 <p className="text-sm text-muted-foreground font-medium">Today's Attendance</p>
                 <p className="text-xl font-bold text-foreground">{attStatus}</p>
                 <div className="flex gap-4 mt-1 text-sm text-muted-foreground">
-                  {checkedIn && <span>In: <strong className="text-foreground">{safeFormatTime(att.check_in_time)}</strong></span>}
-                  {checkedOut && <span>Out: <strong className="text-foreground">{safeFormatTime(att.check_out_time)}</strong></span>}
+                  {checkedIn && <span>In: <strong className="text-foreground">{safeTime(att.check_in_time)}</strong></span>}
+                  {checkedOut && <span>Out: <strong className="text-foreground">{safeTime(att.check_out_time)}</strong></span>}
                   {att?.working_hours > 0 && <span>Hours: <strong className="text-foreground">{att.working_hours.toFixed(1)}h</strong></span>}
                 </div>
               </div>

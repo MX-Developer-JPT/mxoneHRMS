@@ -13,6 +13,7 @@ import {
   Gift, Star, Timer, LogIn, RefreshCw
 } from 'lucide-react';
 import { format, startOfMonth, endOfMonth, isBefore, parseISO } from 'date-fns';
+import { safeTime } from '@/lib/dateUtils';
 
 export default function HRDashboard({ user }) {
   const [data, setData] = useState(null);
@@ -30,13 +31,6 @@ export default function HRDashboard({ user }) {
     setRefreshing(false);
   };
 
-  const safeFormatTime = (ts) => {
-    if (!ts) return '—';
-    try {
-      const d = new Date(String(ts).replace(' ', 'T'));
-      return isNaN(d.getTime()) ? '—' : format(d, 'hh:mm a');
-    } catch { return '—'; }
-  };
   const safeFormatDate = (ds, fmt = 'MMM d, yyyy') => {
     if (!ds) return '—';
     try { const d = new Date(ds + 'T00:00:00'); return isNaN(d.getTime()) ? ds : format(d, fmt); } catch { return ds; }
@@ -95,7 +89,7 @@ export default function HRDashboard({ user }) {
       return {
         name: emp?.display_name || u?.full_name || a.user_id,
         dept: emp?.department || '—',
-        checkIn: safeFormatTime(a.check_in_time),
+        checkIn: safeTime(a.check_in_time),
         status: a.status || 'present'
       };
     });
