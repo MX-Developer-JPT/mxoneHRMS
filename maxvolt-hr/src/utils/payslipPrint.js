@@ -59,9 +59,11 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
   const bonusBreakdown = bonuses.filter(b => b.amount > 0);
   const otherEarnings = payroll.bonuses || 0;
 
-  // PF: always compute from basic if not stored (applicable to ESI employees as well)
+  // PF: 12% on basic capped at ₹15,000 wage ceiling — applies to ALL employees incl. ESI
   const pfBase = Math.min(basicEarned, 15000);
-  const pfDeduction = deductions.pf != null ? deductions.pf : (salaryStructure.pf_contribution || Math.round(pfBase * 0.12));
+  const pfComputed = Math.round(pfBase * 0.12);
+  // Use stored value only if non-zero; otherwise recompute (stored 0 means old record, not exempt)
+  const pfDeduction = deductions.pf || pfComputed;
   // ESI: only if basic <= ₹21,000; use payroll record if available
   const esiDeduction = deductions.esi != null ? deductions.esi : (basicEarned <= 21000 ? (salaryStructure.esi_contribution || Math.round(basicEarned * 0.0075)) : 0);
   const profTax = deductions.professional_tax || 0;
@@ -182,7 +184,7 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
           <div style="background:#fff5f5;padding:5px 12px;font-size:9.5px;font-weight:bold;text-transform:uppercase;color:#dc2626;border-bottom:1px solid #e5e7eb;">Deductions</div>
           <table style="width:100%;border-collapse:collapse;">
             <tbody>
-              ${dedRow('Provident Fund (Employee 12%)', pfDeduction, true)}
+              ${dedRow(`Provident Fund (12% on Basic, max ₹15,000 wage)`, pfDeduction, true)}
               ${esiDeduction > 0 ? dedRow('ESI (Employee 0.75%)', esiDeduction) : ''}
               ${profTax ? dedRow('Professional Tax', profTax) : ''}
               ${tdsDeduction ? dedRow('Income Tax (TDS)', tdsDeduction) : ''}
