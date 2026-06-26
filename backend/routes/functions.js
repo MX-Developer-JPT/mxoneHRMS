@@ -641,7 +641,7 @@ router.post('/:name', async (req, res) => {
       }
       const getShift = (shiftId) => shiftId ? (shiftCache[shiftId] || null) : null;
 
-      const defaultShift = parseEntities(await all("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'=1 OR data::jsonb->>'name' LIKE '%General%') LIMIT 1"))[0] || null;
+      const defaultShift = parseEntities(await all("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'='true' OR data::jsonb->>'name' LIKE '%General%') LIMIT 1"))[0] || null;
 
       const toMinutes = (t) => {
         if (!t) return 0;
@@ -3375,8 +3375,14 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const normKey = (k) => String(k).trim().replace(/\*$/, '').replace(/[\s.]+/g, '_').toLowerCase();
 
       // Parse sheet → array of objects with normalised keys; all values as trimmed strings
+      // Matches sheet names case-insensitively and ignores spaces/underscores/parentheses for flexibility
       const parseSheet = (sheetName) => {
-        const ws = wb.Sheets[sheetName];
+        let ws = wb.Sheets[sheetName];
+        if (!ws) {
+          const normTarget = sheetName.replace(/[\s_()\-]+/g, '').toLowerCase();
+          const match = wb.SheetNames.find(n => n.replace(/[\s_()\-]+/g, '').toLowerCase() === normTarget);
+          if (match) ws = wb.Sheets[match];
+        }
         if (!ws) return [];
         return XLSX.utils.sheet_to_json(ws, { defval: '', raw: false }).map(row => {
           const out = {};
@@ -3415,8 +3421,8 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const salByCode = {};
       const salByName = {};
       for (const r of salaries) {
-        const code = String(r['employee_id'] || '').trim().toUpperCase();
-        const name = String(r['employee_name'] || '').trim().toLowerCase();
+        const code = String(r['employee_id'] || r['employee_code'] || r['emp_id'] || r['emp_code'] || '').trim().toUpperCase();
+        const name = String(r['employee_name'] || r['full_name'] || r['name'] || '').trim().toLowerCase();
         if (code) salByCode[code] = r;
         if (name) salByName[name] = r;
       }

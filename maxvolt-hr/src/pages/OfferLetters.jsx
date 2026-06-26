@@ -241,6 +241,7 @@ const printConsentForm = (offer, emp) => {
   const today = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
   const joiningDate = offer.joining_date ? new Date(offer.joining_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }) : '_______________';
   const candidateName = offer.full_name || offer.candidate_name || emp?.display_name || '_______________';
+  const fatherName    = offer.father_spouse_name || offer.father_name || emp?.father_spouse_name || '';
   const designation   = offer.designation || offer.position_applied || '_______________';
   const department    = offer.department || '_______________';
   const ctc           = Number(offer.offer_ctc_annual || offer.expected_ctc || 0);
@@ -256,7 +257,7 @@ const printConsentForm = (offer, emp) => {
 
   const content = `<div style="${S}">
 <h2 style="text-align:center;font-size:14px;font-weight:bold;text-decoration:underline;margin-bottom:6px;">CONSENT FORM FOR BACKGROUND VERIFICATION SERVICES</h2>
-<p style="${par}margin-top:12px;">I, <strong>${candidateName}</strong>, Son / Daughter of ________________________ hereby authorize MaxVolt Energy Industries Limited and its associates to conduct a comprehensive background verification based on the documentation and information provided by me.</p>
+<p style="${par}margin-top:12px;">I, <strong>${candidateName}</strong>, Son / Daughter of <strong>${fatherName || '________________________'}</strong> hereby authorize MaxVolt Energy Industries Limited and its associates to conduct a comprehensive background verification based on the documentation and information provided by me.</p>
 <p style="${par}">I understand that the scope of the background verification check may include, but is not limited to: authentication of government documents, address verification, education qualification, past employment checks, reference checks, criminal records check, credit history and reference checks.</p>
 <p style="${par}">Further, I authorize any individual, company, firm, corporation, or public agency to divulge any and all information, verbal or written, pertaining to me as is required to complete the background verification report. I confirm that I will not hold MaxVolt Energy Industries Limited and its associates liable for any direct or indirect loss / damage, whether financial or non-financial, incurred by me due to the verifications conducted.</p>
 
@@ -268,7 +269,7 @@ const printConsentForm = (offer, emp) => {
   ${field('Full Name', candidateName)}
   ${field('Email', offer.email || offer.candidate_email || '')}
   ${field('Mobile', offer.phone || emp?.mobile || offer.candidate_phone || '')}
-  ${field('Father\'s / Spouse Name', '')}
+  ${field('Father\'s / Spouse Name', fatherName)}
   ${field('Aadhaar / PAN No.', '')}
 </table>
 

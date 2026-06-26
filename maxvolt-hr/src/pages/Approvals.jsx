@@ -35,8 +35,9 @@ export default function Approvals() {
       const empRecords = await base44.entities.Employee.list();
       setEmployees(empRecords);
 
+      // Employees store reporting_manager_email (not reporting_manager_id), so match by email
       const directReportUserIds = empRecords
-        .filter(e => e.reporting_manager_id === currentUser.id)
+        .filter(e => e.reporting_manager_email && e.reporting_manager_email.toLowerCase() === (currentUser.email || '').toLowerCase())
         .map(e => e.user_id);
 
       let leaves = await base44.entities.Leave.filter({ status: 'pending' }, '-created_date');
@@ -46,7 +47,9 @@ export default function Approvals() {
       if (hrRole) {
         reimburse = await base44.entities.Reimbursement.filter({ status: 'manager_approved' }, '-created_date');
       } else {
-        reimburse = await base44.entities.Reimbursement.filter({ manager_id: currentUser.id, status: 'pending' }, '-created_date');
+        // Filter all pending by user_id membership (manager_id field may not be set reliably)
+        const allPendingReimb = await base44.entities.Reimbursement.filter({ status: 'pending' }, '-created_date');
+        reimburse = allPendingReimb.filter(r => directReportUserIds.includes(r.user_id));
       }
 
       // Gate passes pending manager approval
