@@ -149,6 +149,10 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
 
 const router = Router();
 
+// In-memory store for long-running background jobs (biometric processing, bulk imports).
+// Auto-cleaned after 15 minutes so memory doesn't grow unbounded.
+const jobStore = new Map(); // jobId → { status, result?, error?, progress? }
+
 // Short-lived cache for getAllUsers — called on every page load across the app.
 // Invalidated automatically on any user create/update (auth routes clear it via clearUsersCache).
 let _usersCache = null;
@@ -1316,184 +1320,208 @@ router.post('/:name', async (req, res) => {
 
     case 'receiveBiometricAttendance':
     case 'processEbioLogs': {
-      const { date_from, date_to, raw_records = [] } = p;
+      const { date_from, date_to, raw_records = [], job_id: pollJobId } = p;
+
+      // ── Poll existing background job ──
+      if (pollJobId) {
+        const job = jobStore.get(pollJobId);
+        if (!job) return res.json({ status: 'not_found', success: false, error: 'Job not found or expired' });
+        return res.json(job);
+      }
 
       if (raw_records.length === 0 && !date_from) {
         return res.json({ success:false, error:'Provide raw_records or date_from/date_to' });
       }
 
-      // ── Bulk pre-load all reference data (avoids N+1 per-record queries) ──
+      // ── Start background job — respond immediately so proxy doesn't time out ──
+      const jobId = uuidv4();
+      jobStore.set(jobId, { status: 'processing', progress: 'Loading reference data…', startedAt: new Date().toISOString() });
+      setTimeout(() => jobStore.delete(jobId), 15 * 60 * 1000); // auto-clean after 15 min
 
-      // Employee code → user_id  +  user_id → employee data
-      const empRows = await all("SELECT data FROM entities WHERE type='Employee'");
-      const employees = empRows.map(r => JSON.parse(r.data));
-      const codeMap = {};      // biometric/employee code (lower) → user_id
-      const empByUserId = {};  // user_id → employee JSON
-      employees.forEach(e => {
-        if (e.employee_code) codeMap[String(e.employee_code).toLowerCase()] = e.user_id;
-        if (e.user_id) empByUserId[e.user_id] = e;
-      });
-      const mappingRows = await all("SELECT data FROM entities WHERE type='BiometricCodeMapping'");
-      mappingRows.forEach(r => {
-        const m = JSON.parse(r.data);
-        if (m.biometric_code && m.user_id) codeMap[String(m.biometric_code).toLowerCase()] = m.user_id;
-      });
+      // Fire-and-forget — must not be awaited
+      (async () => {
+        try {
 
-      // All shifts keyed by id; find default
-      const shiftRows = await all("SELECT data FROM entities WHERE type='Shift'");
-      const allShifts = shiftRows.map(r => JSON.parse(r.data));
-      const shiftById = Object.fromEntries(allShifts.map(s => [s.id, s]));
-      const defaultShift = allShifts.find(s => s.is_default === true || s.is_default === 'true')
-        || { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
+          // ── Bulk pre-load all reference data (avoids N+1 per-record queries) ──
+          const empRows = await all("SELECT data FROM entities WHERE type='Employee'");
+          const employees = empRows.map(r => JSON.parse(r.data));
+          const codeMap = {};
+          const empByUserId = {};
+          employees.forEach(e => {
+            if (e.employee_code) codeMap[String(e.employee_code).toLowerCase()] = e.user_id;
+            if (e.user_id) empByUserId[e.user_id] = e;
+          });
+          const mappingRows = await all("SELECT data FROM entities WHERE type='BiometricCodeMapping'");
+          mappingRows.forEach(r => {
+            const m = JSON.parse(r.data);
+            if (m.biometric_code && m.user_id) codeMap[String(m.biometric_code).toLowerCase()] = m.user_id;
+          });
 
-      // Existing AttendanceLog keys for dedup (EmployeeCode|LogDate) — in-memory Set
-      const existingLogKeys = new Set(
-        (await all("SELECT data::jsonb->>'EmployeeCode' AS code, data::jsonb->>'LogDate' AS logdate FROM entities WHERE type='AttendanceLog'"))
-          .map(r => `${r.code}|${r.logdate}`)
-      );
+          const shiftRows = await all("SELECT data FROM entities WHERE type='Shift'");
+          const allShifts = shiftRows.map(r => JSON.parse(r.data));
+          const shiftById = Object.fromEntries(allShifts.map(s => [s.id, s]));
+          const defaultShift = allShifts.find(s => s.is_default === true || s.is_default === 'true')
+            || { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
 
-      // Existing Attendance records for the affected date range — keyed `userId_date`
-      const attQuery = date_from
-        ? "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'>=$1 AND data::jsonb->>'date'<=$2"
-        : "SELECT id, data FROM entities WHERE type='Attendance'";
-      const attParams = date_from ? [date_from, date_to || '9999-12-31'] : [];
-      const existingAttRows = await all(attQuery, attParams);
-      const existingAttMap = {}; // `userId_date` → { id, data }
-      existingAttRows.forEach(r => {
-        const d = JSON.parse(r.data);
-        if (d.user_id && d.date) existingAttMap[`${d.user_id}_${d.date}`] = { id: r.id, data: d };
-      });
+          jobStore.get(jobId) && jobStore.set(jobId, { ...jobStore.get(jobId), progress: 'Loading punch logs…' });
 
-      // ── Helper: strip tz and return IST date string + canonical ISO ──
-      const readIST = (raw) => {
-        if (!raw) return null;
-        const s = String(raw).trim().replace(' ', 'T');
-        const naive = s.replace(/Z$|[+-]\d{2}:?\d{2}$/, '');
-        const d = new Date(naive + 'Z');
-        if (isNaN(d.getTime())) return null;
-        const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
-        return { dateStr, iso: naive + '.000Z' };
-      };
+          const existingLogKeys = new Set(
+            (await all("SELECT data::jsonb->>'EmployeeCode' AS code, data::jsonb->>'LogDate' AS logdate FROM entities WHERE type='AttendanceLog'"))
+              .map(r => `${r.code}|${r.logdate}`)
+          );
 
-      const byEmployeeDate = {}; // `userId_date` → { userId, date, punches: [{time, device_direction}] }
-      const addPunch = (userId, logDateRaw, directionRaw) => {
-        const ist = readIST(logDateRaw);
-        if (!ist) return;
-        const dir = (String(directionRaw || 'IN').toUpperCase() === 'OUT' || String(directionRaw || 'IN').toUpperCase() === 'EXIT') ? 'OUT' : 'IN';
-        const key = `${userId}_${ist.dateStr}`;
-        if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId, date: ist.dateStr, punches: [] };
-        byEmployeeDate[key].punches.push({ time: ist.iso, device_direction: dir });
-      };
+          const attQuery = date_from
+            ? "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'>=$1 AND data::jsonb->>'date'<=$2"
+            : "SELECT id, data FROM entities WHERE type='Attendance'";
+          const attParams = date_from ? [date_from, date_to || '9999-12-31'] : [];
+          const existingAttRows = await all(attQuery, attParams);
+          const existingAttMap = {};
+          existingAttRows.forEach(r => {
+            const d = JSON.parse(r.data);
+            if (d.user_id && d.date) existingAttMap[`${d.user_id}_${d.date}`] = { id: r.id, data: d };
+          });
 
-      // ── Process incoming raw_records ──
-      const newLogs = [];
-      let storedCount = 0;
+          // ── Helper ──
+          const readIST = (raw) => {
+            if (!raw) return null;
+            const s = String(raw).trim().replace(' ', 'T');
+            const naive = s.replace(/Z$|[+-]\d{2}:?\d{2}$/, '');
+            const d = new Date(naive + 'Z');
+            if (isNaN(d.getTime())) return null;
+            const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+            return { dateStr, iso: naive + '.000Z' };
+          };
 
-      for (const record of raw_records) {
-        const empCode = String(record.EmployeeCode || record.emp_code || record.employee_code || record.EnrollNo || record.pin || '').toLowerCase();
-        const logDateRaw = record.LogDate || record.log_date || record.punch_time || record.datetime || '';
-        if (!empCode || !logDateRaw) continue;
-        const userId = codeMap[empCode];
-        if (!userId) continue;
+          const byEmployeeDate = {};
+          const addPunch = (userId, logDateRaw, directionRaw) => {
+            const ist = readIST(logDateRaw);
+            if (!ist) return;
+            const dir = (String(directionRaw || 'IN').toUpperCase() === 'OUT' || String(directionRaw || 'IN').toUpperCase() === 'EXIT') ? 'OUT' : 'IN';
+            const key = `${userId}_${ist.dateStr}`;
+            if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId, date: ist.dateStr, punches: [] };
+            byEmployeeDate[key].punches.push({ time: ist.iso, device_direction: dir });
+          };
 
-        // Dedup check in memory (no DB query per record)
-        const dedupeKey = `${record.EmployeeCode || empCode}|${logDateRaw}`;
-        if (!existingLogKeys.has(dedupeKey)) {
-          existingLogKeys.add(dedupeKey);
-          const logId = uuidv4();
-          newLogs.push([logId, userId, JSON.stringify({ ...record, id: logId,
-            EmployeeCode: record.EmployeeCode || empCode, LogDate: logDateRaw,
-            user_id: userId, imported_at: new Date().toISOString() })]);
-          storedCount++;
+          // ── Process incoming raw_records ──
+          const newLogs = [];
+          let storedCount = 0;
+
+          for (const record of raw_records) {
+            const empCode = String(record.EmployeeCode || record.emp_code || record.employee_code || record.EnrollNo || record.pin || '').toLowerCase();
+            const logDateRaw = record.LogDate || record.log_date || record.punch_time || record.datetime || '';
+            if (!empCode || !logDateRaw) continue;
+            const userId = codeMap[empCode];
+            if (!userId) continue;
+            const dedupeKey = `${record.EmployeeCode || empCode}|${logDateRaw}`;
+            if (!existingLogKeys.has(dedupeKey)) {
+              existingLogKeys.add(dedupeKey);
+              const logId = uuidv4();
+              newLogs.push([logId, userId, JSON.stringify({ ...record, id: logId,
+                EmployeeCode: record.EmployeeCode || empCode, LogDate: logDateRaw,
+                user_id: userId, imported_at: new Date().toISOString() })]);
+              storedCount++;
+            }
+            addPunch(userId, logDateRaw, record.Direction || record.direction || record.type);
+          }
+
+          if (newLogs.length > 0) {
+            jobStore.get(jobId) && jobStore.set(jobId, { ...jobStore.get(jobId), progress: `Storing ${newLogs.length} punch log(s)…` });
+            const BATCH = 50;
+            for (let i = 0; i < newLogs.length; i += BATCH) {
+              await Promise.all(
+                newLogs.slice(i, i + BATCH).map(([id, uid, data]) =>
+                  run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AttendanceLog',$2,'active',$3)", [id, uid, data]).catch(() => {})
+                )
+              );
+            }
+          }
+
+          // Reprocess stored logs for date range (no raw upload)
+          if (date_from && raw_records.length === 0) {
+            jobStore.get(jobId) && jobStore.set(jobId, { ...jobStore.get(jobId), progress: 'Reading stored punch logs for date range…' });
+            const logRows = await all("SELECT data FROM entities WHERE type='AttendanceLog'");
+            for (const row of logRows) {
+              const log = JSON.parse(row.data);
+              if (!log.LogDate) continue;
+              const userId = log.user_id || codeMap[String(log.EmployeeCode || '').toLowerCase()];
+              if (!userId) continue;
+              const ist = readIST(log.LogDate);
+              if (!ist) continue;
+              if (date_from && ist.dateStr < date_from) continue;
+              if (date_to   && ist.dateStr > date_to)   continue;
+              addPunch(userId, log.LogDate, log.Direction || log.direction || log.type);
+            }
+          }
+
+          // ── Build / update Attendance records ──
+          const totalEntries = Object.keys(byEmployeeDate).length;
+          jobStore.get(jobId) && jobStore.set(jobId, { ...jobStore.get(jobId), progress: `Building attendance for ${totalEntries} employee-day(s)…` });
+          let records_synced = 0;
+
+          for (const entry of Object.values(byEmployeeDate)) {
+            const { userId, date, punches } = entry;
+            if (!punches.length) continue;
+
+            const uniquePunches = punches.filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
+            uniquePunches.sort((a, b) => a.time.localeCompare(b.time));
+
+            const emp   = empByUserId[userId] || {};
+            const shift = (emp.shift_id && shiftById[emp.shift_id]) || defaultShift;
+
+            const sd = buildSessions(uniquePunches);
+            const { status, late_minutes } = computeStatusFromSessions(sd, shift);
+
+            const attData = {
+              user_id: userId, date, employee_code: emp.employee_code || '',
+              check_in_time: sd.check_in_time, check_out_time: sd.check_out_time,
+              sessions: sd.sessions, raw_punches: uniquePunches,
+              working_hours: sd.working_hours, is_in_progress: sd.is_in_progress,
+              late_minutes, status, punch_count: uniquePunches.length,
+              source: 'biometric', updated_at: new Date().toISOString(),
+            };
+
+            const attKey   = `${userId}_${date}`;
+            const existAtt = existingAttMap[attKey];
+
+            if (existAtt) {
+              if (existAtt.data.status === 'regularised') continue;
+              const prevPunches = existAtt.data.raw_punches || [];
+              const merged = [...prevPunches, ...uniquePunches]
+                .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
+              merged.sort((a, b) => a.time.localeCompare(b.time));
+              const sdM = buildSessions(merged);
+              const { status: mStatus, late_minutes: mLate } = computeStatusFromSessions(sdM, shift);
+              await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
+                [mStatus, JSON.stringify({ ...existAtt.data, ...attData,
+                  raw_punches: merged, sessions: sdM.sessions,
+                  check_in_time: sdM.check_in_time, check_out_time: sdM.check_out_time,
+                  working_hours: sdM.working_hours, is_in_progress: sdM.is_in_progress,
+                  late_minutes: mLate, status: mStatus, id: existAtt.id }), existAtt.id]);
+              records_synced++;
+            } else {
+              const attId = uuidv4();
+              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)",
+                [attId, userId, status, JSON.stringify({ ...attData, id: attId, created_at: new Date().toISOString() })]);
+              existingAttMap[attKey] = { id: attId, data: { ...attData, id: attId } };
+              records_synced++;
+            }
+          }
+
+          jobStore.set(jobId, {
+            status: 'done', success: true,
+            records_synced, logs_stored: storedCount,
+            employees_processed: totalEntries,
+            message: `Processed ${raw_records.length || totalEntries + ' employee-day(s) from stored logs'} → ${records_synced} attendance records updated`,
+          });
+        } catch (err) {
+          console.error('[processEbioLogs background]', err);
+          jobStore.set(jobId, { status: 'error', success: false, error: err.message,
+            message: `Processing failed: ${err.message}` });
         }
+      })();
 
-        addPunch(userId, logDateRaw, record.Direction || record.direction || record.type);
-      }
-
-      // Batch insert new AttendanceLogs in parallel groups of 50
-      const BATCH = 50;
-      for (let i = 0; i < newLogs.length; i += BATCH) {
-        await Promise.all(
-          newLogs.slice(i, i + BATCH).map(([id, uid, data]) =>
-            run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AttendanceLog',$2,'active',$3)", [id, uid, data]).catch(() => {})
-          )
-        );
-      }
-
-      // Reprocess stored logs when only a date range is given (no raw upload)
-      if (date_from && raw_records.length === 0) {
-        const logRows = await all("SELECT data FROM entities WHERE type='AttendanceLog'");
-        for (const row of logRows) {
-          const log = JSON.parse(row.data);
-          if (!log.LogDate) continue;
-          const userId = log.user_id || codeMap[String(log.EmployeeCode || '').toLowerCase()];
-          if (!userId) continue;
-          const ist = readIST(log.LogDate);
-          if (!ist) continue;
-          if (date_from && ist.dateStr < date_from) continue;
-          if (date_to   && ist.dateStr > date_to)   continue;
-          addPunch(userId, log.LogDate, log.Direction || log.direction || log.type);
-        }
-      }
-
-      // ── Build / update Attendance records ──
-      let records_synced = 0;
-
-      for (const entry of Object.values(byEmployeeDate)) {
-        const { userId, date, punches } = entry;
-        if (!punches.length) continue;
-
-        const uniquePunches = punches.filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
-        uniquePunches.sort((a, b) => a.time.localeCompare(b.time));
-
-        // Resolve shift from pre-loaded maps (no DB query)
-        const emp   = empByUserId[userId] || {};
-        const shift = (emp.shift_id && shiftById[emp.shift_id]) || defaultShift;
-
-        const sd = buildSessions(uniquePunches);
-        const { status, late_minutes } = computeStatusFromSessions(sd, shift);
-
-        const attData = {
-          user_id: userId, date, employee_code: emp.employee_code || '',
-          check_in_time: sd.check_in_time, check_out_time: sd.check_out_time,
-          sessions: sd.sessions, raw_punches: uniquePunches,
-          working_hours: sd.working_hours, is_in_progress: sd.is_in_progress,
-          late_minutes, status, punch_count: uniquePunches.length,
-          source: 'biometric', updated_at: new Date().toISOString(),
-        };
-
-        const attKey   = `${userId}_${date}`;
-        const existAtt = existingAttMap[attKey];
-
-        if (existAtt) {
-          if (existAtt.data.status === 'regularised') continue;
-
-          const prevPunches = existAtt.data.raw_punches || [];
-          const merged = [...prevPunches, ...uniquePunches]
-            .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
-          merged.sort((a, b) => a.time.localeCompare(b.time));
-          const sdM = buildSessions(merged);
-          const { status: mStatus, late_minutes: mLate } = computeStatusFromSessions(sdM, shift);
-
-          await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
-            [mStatus, JSON.stringify({ ...existAtt.data, ...attData,
-              raw_punches: merged, sessions: sdM.sessions,
-              check_in_time: sdM.check_in_time, check_out_time: sdM.check_out_time,
-              working_hours: sdM.working_hours, is_in_progress: sdM.is_in_progress,
-              late_minutes: mLate, status: mStatus, id: existAtt.id }), existAtt.id]);
-          records_synced++;
-        } else {
-          const attId = uuidv4();
-          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)",
-            [attId, userId, status, JSON.stringify({ ...attData, id: attId, created_at: new Date().toISOString() })]);
-          existingAttMap[attKey] = { id: attId, data: { ...attData, id: attId } };
-          records_synced++;
-        }
-      }
-
-      return res.json({ success:true, records_synced, logs_stored: storedCount,
-        employees_processed: Object.keys(byEmployeeDate).length,
-        message: `Processed ${raw_records.length || 'stored'} biometric punches → ${records_synced} attendance records` });
+      return res.json({ status: 'processing', job_id: jobId,
+        message: 'Processing started in background. Poll with job_id to check completion.' });
     }
 
     case 'processRegularisation': {

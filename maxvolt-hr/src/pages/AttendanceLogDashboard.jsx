@@ -98,7 +98,7 @@ export default function AttendanceLogDashboard() {
 
   const handleProcessToAttendance = async (extraPayload = {}) => {
     setProcessing(true);
-    setProcessResult(null);
+    setProcessResult({ success: true, message: 'Starting…', in_progress: true });
     try {
       const res = await base44.functions.invoke('processEbioLogs', {
         date_from: processFrom,
@@ -106,19 +106,54 @@ export default function AttendanceLogDashboard() {
         ...extraPayload,
       });
       const result = res.data;
-      setProcessResult(result);
-      if (result?.success && result.records_synced > 0) {
-        toast.success(`Synced ${result.records_synced} attendance record(s) successfully.`);
-        loadLogs();
-      } else if (result?.success) {
-        toast.info(result.message);
+
+      if (result?.status === 'processing' && result?.job_id) {
+        // Server responded immediately — poll for completion
+        await pollJob(result.job_id);
       } else {
-        toast.error('Processing failed.');
+        // Synchronous result (shouldn't happen after this deploy, but handle gracefully)
+        applyProcessResult(result);
       }
     } catch (err) {
-      const msg = err?.response?.data?.message || err?.message || 'Processing failed due to a server error. Please try again.';
+      const msg = err?.response?.data?.message || err?.message || 'Failed to connect to server. Please try again.';
       toast.error(msg);
       setProcessResult({ success: false, message: msg });
+      setProcessing(false);
+    }
+  };
+
+  const pollJob = async (jobId) => {
+    const MAX_POLLS = 150; // 5 minutes at 2s intervals
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const res = await base44.functions.invoke('processEbioLogs', { job_id: jobId });
+        const job = res.data;
+        if (job?.status === 'done' || job?.status === 'error') {
+          applyProcessResult(job.status === 'done' ? job : { success: false, message: job.error || 'Processing failed' });
+          return;
+        }
+        // Still running — show live progress
+        if (job?.progress) {
+          setProcessResult({ success: true, message: job.progress, in_progress: true });
+        }
+      } catch (_e) {
+        // Network hiccup — keep polling
+      }
+    }
+    setProcessResult({ success: false, message: 'Processing is taking longer than expected. Check attendance records — data may have been saved partially.' });
+    setProcessing(false);
+  };
+
+  const applyProcessResult = (result) => {
+    setProcessResult(result);
+    if (result?.success && result.records_synced > 0) {
+      toast.success(`Synced ${result.records_synced} attendance record(s) successfully.`);
+      loadLogs();
+    } else if (result?.success) {
+      toast.info(result.message || 'Done.');
+    } else {
+      toast.error(result?.message || 'Processing failed.');
     }
     setProcessing(false);
   };
@@ -238,11 +273,9 @@ export default function AttendanceLogDashboard() {
       toast.error('No records found in pasted data.');
       return;
     }
-    setImporting(true);
-    await handleProcessToAttendance({ raw_records: rawRecords });
-    setImporting(false);
     setImportJson('');
     setShowImport(false);
+    await handleProcessToAttendance({ raw_records: rawRecords });
   };
 
   const getLogISTDate = (logDate) => {
@@ -398,19 +431,34 @@ export default function AttendanceLogDashboard() {
           </div>
 
           {processResult && (
-            <div className={`rounded-lg p-4 flex items-start gap-3 ${processResult.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
-              {processResult.success
-                ? <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-                : <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+            <div className={`rounded-lg p-4 flex items-start gap-3 ${
+              processResult.in_progress ? 'bg-blue-50 border border-blue-200'
+              : processResult.success ? 'bg-green-50 border border-green-200'
+              : 'bg-red-50 border border-red-200'
+            }`}>
+              {processResult.in_progress
+                ? <RefreshCw className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5 animate-spin" />
+                : processResult.success
+                  ? <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                  : <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
               }
               <div className="text-sm">
-                <p className={`font-semibold ${processResult.success ? 'text-green-800' : 'text-red-800'}`}>{processResult.message}</p>
+                <p className={`font-semibold ${
+                  processResult.in_progress ? 'text-blue-800'
+                  : processResult.success ? 'text-green-800'
+                  : 'text-red-800'
+                }`}>{processResult.message}</p>
+                {processResult.records_synced != null && (
+                  <p className="text-green-700 text-xs mt-1">
+                    {processResult.records_synced} attendance record(s) updated · {processResult.logs_stored || 0} new punch log(s) stored
+                  </p>
+                )}
                 {processResult.warnings?.length > 0 && (
                   <div className="mt-2">
                     <p className="text-orange-700 font-medium text-xs">Warnings ({processResult.warnings.length}):</p>
                     <ul className="list-disc list-inside text-orange-600 text-xs mt-1 space-y-0.5">
                       {processResult.warnings.slice(0, 15).map((w, i) => <li key={i}>{w}</li>)}
-                      {processResult.warnings.length > 15 && <li>...and {processResult.warnings.length - 15} more</li>}
+                      {processResult.warnings.length > 15 && <li>…and {processResult.warnings.length - 15} more</li>}
                     </ul>
                   </div>
                 )}
