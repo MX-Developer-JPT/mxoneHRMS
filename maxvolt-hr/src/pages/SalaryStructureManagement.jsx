@@ -38,36 +38,31 @@ function calcBonus(annualCTC, basicAnnual) {
 // Salary structure:
 // Earnings: Basic (50% of CTC), HRA (40% of Basic), Conveyance (balance to complete gross)
 // Gross = CTC - employer contributions
-// PF: employee 12% on basic capped at ₹15,000 — applicable when basic > ₹21,000
-// ESI: employee 0.75% on gross — applicable when basic ≤ ₹21,000
-// Employer: PF 13%, ESI 3.25%, Medical (variable), Bonus/VPP
-function calcStructure(annualCTC, medicalContribution = 330) {
+// PF: employee 12% on min(basic, ₹15,000) — ALL employees including ESI
+// ESI: employee 0.75% on basic — only when basic ≤ ₹21,000
+// Employer: PF 13%, ESI 3.25%, Medical (0 if not configured), Bonus/VPP
+function calcStructure(annualCTC, medicalContribution = 0) {
   if (!annualCTC || annualCTC <= 0) return null;
 
-  const basicAnnual = annualCTC * 0.5;        // 50% of CTC
-  const hraAnnual = basicAnnual * 0.4;         // 40% of Basic
+  const basicAnnual = annualCTC * 0.5;
+  const hraAnnual = basicAnnual * 0.4;
   const basicM = basicAnnual / 12;
 
   const bonus = calcBonus(annualCTC, basicAnnual);
   const bonusAnnual = bonus.amount * 12;
 
-  const isPFApplicable = basicM > ESI_CEILING_MONTHLY;
-  const isESIApplicable = basicM <= ESI_CEILING_MONTHLY;
-
-  const pfBase = isPFApplicable ? Math.min(basicM, PF_CEILING) : 0;
+  // PF: 12% on min(basic, ₹15,000) — applicable to ALL employees
+  const pfBase = Math.min(basicM, PF_CEILING);
   const employeePF = Math.round(pfBase * 0.12);
   const employerPF = Math.round(pfBase * 0.13);
+
+  // ESI: on basic salary, only when basic ≤ ESI ceiling
+  const isESIApplicable = basicM <= ESI_CEILING_MONTHLY;
+  const employeeESI = isESIApplicable ? Math.round(basicM * 0.0075) : 0;
+  const employerESI = isESIApplicable ? Math.round(basicM * 0.0325) : 0;
+
   const medContribM = medicalContribution;
-
-  // First estimate gross without ESI to compute ESI
-  const totalContribNoESI = (employerPF * 12) + bonusAnnual + (medContribM * 12);
-  const grossEstAnnual = annualCTC - totalContribNoESI;
-  const grossEstM = grossEstAnnual / 12;
-
-  const employeeESI = isESIApplicable ? Math.round(grossEstM * 0.0075) : 0;
-  const employerESI = isESIApplicable ? Math.round(grossEstM * 0.0325) : 0;
-
-  const totalContribAnnual = totalContribNoESI + (employerESI * 12);
+  const totalContribAnnual = (employerPF * 12) + (employerESI * 12) + bonusAnnual + (medContribM * 12);
   const grossAnnual = annualCTC - totalContribAnnual;
   const grossM = grossAnnual / 12;
 
@@ -96,7 +91,6 @@ function calcStructure(annualCTC, medicalContribution = 330) {
     totalDeductions,
     netMonthly,
     annualCTC,
-    isPFApplicable,
     isESIApplicable,
   };
 }
@@ -179,8 +173,8 @@ function printSalaryStructure(structure, emp) {
             <td style="padding:6px 10px;text-align:right;font-size:11px;border:1px solid #ccc;">${L(grossM)}</td>
           </tr>
           <tr><td colspan="3" style="padding:5px 10px;font-size:11px;font-weight:bold;text-decoration:underline;border:1px solid #ccc;">Deduction</td></tr>
-          ${pfM > 0 ? row('PF Employee Contribution (12%)', pfM, pfM * 12) : '<tr><td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:11px;">PF Employee Contribution</td><td style="padding:6px 10px;text-align:right;font-size:11px;">-</td><td style="padding:6px 10px;text-align:right;font-size:11px;">-</td></tr>'}
-          ${esiM > 0 ? row('ESI Employee Contribution (0.75%)', esiM, esiM * 12) : '<tr><td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:11px;">ESI Employee Contribution</td><td style="padding:6px 10px;text-align:right;font-size:11px;">-</td><td style="padding:6px 10px;text-align:right;font-size:11px;">-</td></tr>'}
+          ${row('PF Employee Contribution (12% on Basic, max ₹15,000)', pfM, pfM * 12)}
+          ${esiM > 0 ? row('ESI Employee Contribution (0.75% on Basic)', esiM, esiM * 12) : ''}
           <tr style="background:#d9d9d9;font-weight:bold;">
             <td style="padding:6px 10px;font-size:11px;border:1px solid #ccc;">Total Deduction (B)</td>
             <td style="padding:6px 10px;text-align:right;font-size:11px;border:1px solid #ccc;">${L(totalDed * 12)}</td>
@@ -193,13 +187,13 @@ function printSalaryStructure(structure, emp) {
           </tr>
           <tr><td colspan="3" style="padding:5px 10px;font-size:11px;font-weight:bold;text-decoration:underline;border:1px solid #ccc;">Contribution</td></tr>
           ${row('PF Employer Contribution', structure.employer_pf_contribution || 0, (structure.employer_pf_contribution || 0) * 12)}
-          ${(structure.employer_esi_contribution || 0) > 0 ? row('ESI Employer Contribution', structure.employer_esi_contribution, structure.employer_esi_contribution * 12) : '<tr><td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:11px;">ESI Employer Contribution</td><td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;font-size:11px;">-</td><td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;font-size:11px;">-</td></tr>'}
-          ${row('Medical', structure.medical_contribution || 330, (structure.medical_contribution || 330) * 12)}
-          ${row('Bonus', structure.performance_bonus || 0, (structure.performance_bonus || 0) * 12)}
+          ${(structure.employer_esi_contribution || 0) > 0 ? row('ESI Employer Contribution (3.25% on Basic)', structure.employer_esi_contribution, structure.employer_esi_contribution * 12) : ''}
+          ${(structure.medical_contribution || 0) > 0 ? row('Medical Contribution', structure.medical_contribution, structure.medical_contribution * 12) : ''}
+          ${row('Bonus / VPP', structure.performance_bonus || 0, (structure.performance_bonus || 0) * 12)}
           <tr style="background:#d9d9d9;font-weight:bold;">
             <td style="padding:6px 10px;font-size:11px;border:1px solid #ccc;">Total Contribution (C)</td>
-            <td style="padding:6px 10px;text-align:right;font-size:11px;border:1px solid #ccc;">${L(((structure.employer_pf_contribution||0)+(structure.employer_esi_contribution||0)+(structure.medical_contribution||330)+(structure.performance_bonus||0))*12)}</td>
-            <td style="padding:6px 10px;text-align:right;font-size:11px;border:1px solid #ccc;">${L((structure.employer_pf_contribution||0)+(structure.employer_esi_contribution||0)+(structure.medical_contribution||330)+(structure.performance_bonus||0))}</td>
+            <td style="padding:6px 10px;text-align:right;font-size:11px;border:1px solid #ccc;">${L(((structure.employer_pf_contribution||0)+(structure.employer_esi_contribution||0)+(structure.medical_contribution||0)+(structure.performance_bonus||0))*12)}</td>
+            <td style="padding:6px 10px;text-align:right;font-size:11px;border:1px solid #ccc;">${L((structure.employer_pf_contribution||0)+(structure.employer_esi_contribution||0)+(structure.medical_contribution||0)+(structure.performance_bonus||0))}</td>
           </tr>
           <tr style="background:#d9d9d9;font-weight:bold;">
             <td style="padding:6px 10px;font-size:12px;border:1px solid #ccc;">Annually CTC (A+C)</td>
@@ -247,7 +241,7 @@ export default function SalaryStructureManagement() {
   const [reimbursements, setReimbursements] = useState({});
   const [computed, setComputed] = useState(null);
 
-  const [medicalContrib, setMedicalContrib] = useState(330);
+  const [medicalContrib, setMedicalContrib] = useState(0);
 
   // Manual overrides (monthly values)
   const [overrides, setOverrides] = useState({
@@ -301,17 +295,17 @@ export default function SalaryStructureManagement() {
       const hra = ovr('hra');
       const conveyance = ovr('conveyance');
       const grossM = basic + hra + conveyance;
-      const isPFApplicable = basic > ESI_CEILING_MONTHLY;
+      // PF: all employees; ESI: only when basic ≤ ESI ceiling, calculated on basic
+      const pfBase = Math.min(basic, PF_CEILING);
       const isESIApplicable = basic <= ESI_CEILING_MONTHLY;
-      const pfBase = isPFApplicable ? Math.min(basic, PF_CEILING) : 0;
       return {
         basic_salary: basic,
         hra, conveyance, lta: 0, special_allowance: 0,
         performance_bonus: ovr('performance_bonus'),
         pf_contribution: ovr('pf_contribution') || Math.round(pfBase * 0.12),
         employer_pf_contribution: ovr('employer_pf_contribution') || Math.round(pfBase * 0.13),
-        esi_contribution: ovr('esi_contribution') || (isESIApplicable ? Math.round(grossM * 0.0075) : 0),
-        employer_esi_contribution: ovr('employer_esi_contribution') || (isESIApplicable ? Math.round(grossM * 0.0325) : 0),
+        esi_contribution: ovr('esi_contribution') || (isESIApplicable ? Math.round(basic * 0.0075) : 0),
+        employer_esi_contribution: ovr('employer_esi_contribution') || (isESIApplicable ? Math.round(basic * 0.0325) : 0),
         gratuity: ovr('gratuity') || Math.round(basic * 0.0481),
         medical_contribution: medicalContrib,
         grossMonthly: grossM,
@@ -333,7 +327,7 @@ export default function SalaryStructureManagement() {
     setComputed(null);
     setUseOverrides(false);
     setGratuityEligible(true);
-    setMedicalContrib(330);
+    setMedicalContrib(0);
     setOverrides({ basic_salary: '', hra: '', conveyance: '', performance_bonus: '', pf_contribution: '', esi_contribution: '', employer_pf_contribution: '', employer_esi_contribution: '', gratuity: '' });
     setShowDialog(true);
   };
@@ -347,7 +341,7 @@ export default function SalaryStructureManagement() {
     setCtc(structure.ctc?.toString() || '');
     setReimbursements(structure.other_allowances || {});
     setGratuityEligible(structure.gratuity_eligible !== false);
-    setMedicalContrib(structure.medical_contribution || 330);
+    setMedicalContrib(structure.medical_contribution ?? 0);
     setUseOverrides(true);
     setOverrides({
       basic_salary: structure.basic_salary || '',
@@ -398,7 +392,7 @@ export default function SalaryStructureManagement() {
         employer_esi_contribution: vals.employer_esi_contribution,
         gratuity: gratuityEligible ? vals.gratuity : 0,
         gratuity_eligible: gratuityEligible,
-        medical_contribution: vals.medical_contribution || 330,
+        medical_contribution: vals.medical_contribution ?? 0,
         status: 'active',
         approved_by: user.id,
         revision_reason: revisionReason || (editingStructure ? 'Salary revision' : 'Initial setup')
@@ -720,7 +714,7 @@ export default function SalaryStructureManagement() {
                       <p className="text-xs text-gray-500">Variable employer medical contribution</p>
                     </div>
                     <div className="w-36">
-                      <ComponentField label="" value={medicalContrib} onChange={v => setMedicalContrib(v || 330)} />
+                      <ComponentField label="" value={medicalContrib} onChange={v => setMedicalContrib(v || 0)} />
                     </div>
                   </div>
                   {useOverrides ? (
