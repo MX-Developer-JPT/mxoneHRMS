@@ -6,6 +6,145 @@ import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, computeStatusFromSessions } from './attendancelog.js';
+import { createRequire } from 'module';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const _require  = createRequire(import.meta.url);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/* ── PDF generation helper (salary structure) ──────────────
+   Uses pdfmake with bundled Roboto fonts (supports ₹ symbol).
+   Returns a Promise<Buffer> of the generated PDF bytes.        */
+function buildSalaryStructurePdf({ candidateName, employeeCode, designation, department, dateOfJoining, effectiveFrom, annualCTC, sal }) {
+  return new Promise((resolve, reject) => {
+    try {
+      const PdfPrinter = _require('pdfmake/src/printer');
+      const pdfmakePkg = join(dirname(_require.resolve('pdfmake/package.json')), 'fonts');
+      const printer = new PdfPrinter({
+        Roboto: {
+          normal:      join(pdfmakePkg, 'Roboto-Regular.ttf'),
+          bold:        join(pdfmakePkg, 'Roboto-Medium.ttf'),
+          italics:     join(pdfmakePkg, 'Roboto-Italic.ttf'),
+          bolditalics: join(pdfmakePkg, 'Roboto-MediumItalic.ttf'),
+        },
+      });
+
+      const L  = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const GRAY = '#d9d9d9', BLUE = '#1d4ed8';
+
+      const cell   = (text, opts = {}) => ({ text: String(text ?? ''), fontSize: 10, margin: [4, 3, 4, 3], ...opts });
+      const hCell  = (text) => cell(text, { bold: true, fillColor: GRAY, alignment: 'right' });
+      const hLCell = (text) => cell(text, { bold: true, fillColor: GRAY });
+      const dRow   = (label, annual, monthly) => [cell(label), cell(L(annual), { alignment:'right' }), cell(L(monthly), { alignment:'right' })];
+      const sRow   = (label) => [{ text: label, bold: true, decoration: 'underline', colSpan: 3, fontSize: 10, margin: [4, 5, 4, 3] }, {}, {}];
+      const tRow   = (label, annual, monthly, color) => [
+        cell(label, { bold:true, fillColor:GRAY, ...(color ? { color } : {}) }),
+        cell(L(annual),  { bold:true, fillColor:GRAY, alignment:'right', ...(color ? { color } : {}) }),
+        cell(L(monthly), { bold:true, fillColor:GRAY, alignment:'right', ...(color ? { color } : {}) }),
+      ];
+
+      const dedRows = [
+        dRow('PF Employee Contribution (12% on Basic, max ₹15,000)', sal.pf_emp_annual, sal.pf_emp_monthly),
+        ...(sal.isESI ? [dRow('ESI Employee Contribution (0.75% on Basic)', sal.esi_emp_annual, sal.esi_emp_monthly)] : []),
+      ];
+      const totalDedAnnual  = (sal.pf_emp_monthly + sal.esi_emp_monthly) * 12;
+      const totalDedMonthly = sal.pf_emp_monthly + sal.esi_emp_monthly;
+
+      const contRows = [
+        dRow('PF Employer Contribution', sal.pf_employer_annual, sal.pf_employer_monthly),
+        ...(sal.isESI ? [dRow('ESI Employer Contribution (3.25% on Basic)', sal.esi_employer_annual, sal.esi_employer_monthly)] : []),
+        ...(sal.medical_monthly > 0 ? [dRow('Medical Contribution', sal.medical_annual, sal.medical_monthly)] : []),
+        dRow(sal.bonusType || 'Bonus / VPP', sal.bonus_annual, sal.bonus_monthly),
+      ];
+
+      const docDef = {
+        pageSize:    'A4',
+        pageMargins: [40, 50, 40, 80],
+        defaultStyle:{ font:'Roboto', fontSize:10 },
+
+        content: [
+          { text:'SALARY STRUCTURE', bold:true, fontSize:15, decoration:'underline', alignment:'center', margin:[0,0,0,14] },
+
+          // Employee info
+          {
+            table: {
+              widths: ['28%','30%','22%','20%'],
+              body: [
+                [cell('Employee Name:', {bold:true}), cell(candidateName||''), cell('Employee Code:', {bold:true}), cell(employeeCode||'')],
+                [cell('Designation:',   {bold:true}), cell(designation||''),   cell('Department:',    {bold:true}), cell(department||'')],
+                [cell('Date of Joining:',{bold:true}),cell(dateOfJoining||''), cell('Effective From:',{bold:true}), cell(effectiveFrom||'')],
+                [cell('Annual CTC:',    {bold:true}), { text:`₹${Number(annualCTC||0).toLocaleString('en-IN')}`, bold:true, color:'#e87722', fontSize:13, colSpan:3 }, {}, {}],
+              ],
+            },
+            layout:'noBorders',
+            margin:[0,0,0,12],
+          },
+
+          // Salary table
+          {
+            table: {
+              headerRows: 1,
+              widths:    ['*', 90, 90],
+              body: [
+                [hLCell('Salary Head'), hCell('Annually'), hCell('Monthly')],
+                sRow('Earnings'),
+                dRow('Basic (50% of CTC)', sal.basic_annual, sal.basic_monthly),
+                dRow('HRA (40% of Basic)', sal.hra_annual, sal.hra_monthly),
+                dRow('Conveyance Allowance (Balance)', sal.conveyance_annual, sal.conveyance_monthly),
+                tRow('Total Gross Salary (A)', sal.gross_annual, sal.gross_monthly),
+                sRow('Deduction'),
+                ...dedRows,
+                tRow('Total Deduction (B)', totalDedAnnual, totalDedMonthly),
+                tRow('Total Net Salary (A-B)', sal.net_annual, sal.net_monthly),
+                sRow('Contribution'),
+                ...contRows,
+                tRow('Total Contribution (C)', sal.contribution_annual, sal.contribution_monthly),
+                tRow('Annually CTC (A+C)', annualCTC, annualCTC / 12, BLUE),
+              ],
+            },
+            layout: {
+              hLineWidth: () => 0.5,
+              vLineWidth: () => 0.5,
+              hLineColor: () => '#cccccc',
+              vLineColor: () => '#cccccc',
+            },
+          },
+
+          { text:'Note: This salary structure is subject to statutory deductions and applicable tax regulations.', fontSize:9, color:'#888', margin:[0,10,0,36], italics:true },
+
+          {
+            columns: [
+              { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'HR Manager', bold:true, fontSize:10 },{ text:'Maxvolt Energy Industries Limited', fontSize:9 }] },
+              { width:'*', text:'' },
+              { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'Employee Signature', bold:true, fontSize:10 },{ text:candidateName||'', fontSize:9 }] },
+            ],
+          },
+        ],
+
+        footer: (page, pages) => ({
+          margin: [40, 8, 40, 0],
+          table: {
+            widths: ['*','*','*'],
+            body: [[
+              { stack:[{ text:'Head Office', bold:true, fontSize:8 },{ text:'E-82 Bulandshahr Road Industrial Area,\nGhaziabad, Uttar Pradesh – 201009\nCIN No. L40106DL2019PLC349854', fontSize:7.5 }], border:[false,true,false,false] },
+              { stack:[{ text:'Registered Office', bold:true, fontSize:8 },{ text:'F-108, Plot No. 1 F/F United Plaza,\nCommunity Centre, Karkardooma,\nNew Delhi – 110092', fontSize:7.5 }], border:[false,true,false,false] },
+              { stack:[{ text:'Contact Details', bold:true, fontSize:8 },{ text:'Phone +91 120 4291595\nEmail: info@maxvoltenergy.com\nWeb: www.maxvoltenergy.com', fontSize:7.5 }], border:[false,true,false,false] },
+            ]],
+          },
+          layout:'noBorders',
+        }),
+      };
+
+      const doc     = printer.createPdfKitDocument(docDef);
+      const chunks  = [];
+      doc.on('data',  c => chunks.push(c));
+      doc.on('end',   () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+      doc.end();
+    } catch (err) { reject(err); }
+  });
+}
 
 const router = Router();
 
@@ -1928,7 +2067,7 @@ Return ONLY a valid JSON object (no markdown):
 
     /* ── Send Offer Letter (email to candidate) ─────── */
     case 'sendOfferLetter': {
-      const { candidate_id, joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, notes } = p;
+      const { candidate_id, joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, notes, medical_contribution = 0 } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
 
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -1942,48 +2081,46 @@ Return ONLY a valid JSON object (no markdown):
       const dept       = department || cand.department || 'Department';
       const loc        = location || 'Ghaziabad, Uttar Pradesh';
       const ctc        = annual_ctc || cand.expected_ctc || 0;
-      const monthlyCTC = Math.round(ctc / 12);
+      const monthlyCTC = ctc / 12; // keep float for accuracy
       const jDate      = joining_date || '';
       const probation  = probation_months;
       const validTill  = new Date(Date.now() + (offer_valid_days || 7) * 24 * 60 * 60 * 1000);
 
-      // Salary breakdown — consistent with SalaryStructureManagement formula
+      // Salary breakdown — PF for ALL employees; ESI when basic ≤ ₹21,000 on basic salary
       const PF_CEIL = 15000, ESI_CEIL = 21000;
-      const basicM      = Math.round(monthlyCTC * 0.5);
-      const hraM        = Math.round(basicM * 0.4);
-      const isPF        = basicM > ESI_CEIL;
-      const isESI       = basicM <= ESI_CEIL;
+      const basicM       = Math.round(monthlyCTC * 0.5);
+      const hraM         = Math.round(basicM * 0.4);
+      const pfBase       = Math.min(basicM, PF_CEIL);
+      const pfEmpM       = Math.round(pfBase * 0.12);
+      const pfEmployerM  = Math.round(pfBase * 0.13);
+      const isESI        = basicM <= ESI_CEIL;
+      const esiEmpM      = isESI ? Math.round(basicM * 0.0075) : 0;
+      const esiEmployerM = isESI ? Math.round(basicM * 0.0325) : 0;
+      const medicalM     = Number(medical_contribution) || 0;
       let bonusM, bonusType;
       if (ctc <= 1000000) { bonusM = Math.round(basicM * 0.0833); bonusType = 'Bonus (8.33% of Basic)'; }
       else { const vp = ctc <= 1500000 ? 0.05 : ctc <= 2000000 ? 0.08 : ctc <= 2500000 ? 0.12 : 0.15; bonusM = Math.round(ctc * vp / 12); bonusType = `VPP (${Math.round(vp*100)}% of CTC)`; }
-      const medicalM    = 330;
-      const pfBase      = isPF ? Math.min(basicM, PF_CEIL) : 0;
-      const pfEmpM      = Math.round(pfBase * 0.12);
-      const pfEmployerM = Math.round(pfBase * 0.13);
-      const contribNoESI = pfEmployerM + medicalM + bonusM;
-      const grossEst    = monthlyCTC - contribNoESI;
-      const esiEmpM     = isESI ? Math.round(grossEst * 0.0075) : 0;
-      const esiEmployerM = isESI ? Math.round(grossEst * 0.0325) : 0;
-      const contribM    = contribNoESI + esiEmployerM;
-      const grossM      = monthlyCTC - contribM;
-      const convM       = Math.max(grossM - basicM - hraM, 0);
-      const netM        = grossM - pfEmpM - esiEmpM;
+      const contribM     = pfEmployerM + esiEmployerM + bonusM + medicalM;
+      const grossM       = Math.round(monthlyCTC - contribM);
+      const convM        = Math.max(grossM - basicM - hraM, 0);
+      const totalDedM    = pfEmpM + esiEmpM;
+      const netM         = grossM - totalDedM;
 
       const sal = {
-        monthly_ctc: monthlyCTC, annual_ctc: ctc,
-        basic_monthly: basicM, basic_annual: basicM * 12,
-        hra_monthly: hraM, hra_annual: hraM * 12,
-        conveyance_monthly: convM, conveyance_annual: convM * 12,
-        gross_monthly: grossM, gross_annual: grossM * 12,
-        pf_emp_monthly: pfEmpM, pf_emp_annual: pfEmpM * 12,
-        esi_emp_monthly: esiEmpM, esi_emp_annual: esiEmpM * 12,
-        pf_employer_monthly: pfEmployerM, pf_employer_annual: pfEmployerM * 12,
+        monthly_ctc: Math.round(monthlyCTC), annual_ctc: ctc,
+        basic_monthly: basicM,        basic_annual: basicM * 12,
+        hra_monthly: hraM,            hra_annual: hraM * 12,
+        conveyance_monthly: convM,    conveyance_annual: convM * 12,
+        gross_monthly: grossM,        gross_annual: grossM * 12,
+        pf_emp_monthly: pfEmpM,       pf_emp_annual: pfEmpM * 12,
+        esi_emp_monthly: esiEmpM,     esi_emp_annual: esiEmpM * 12,
+        pf_employer_monthly: pfEmployerM,   pf_employer_annual: pfEmployerM * 12,
         esi_employer_monthly: esiEmployerM, esi_employer_annual: esiEmployerM * 12,
-        medical_monthly: medicalM, medical_annual: medicalM * 12,
-        bonus_monthly: bonusM, bonus_annual: bonusM * 12, bonusType,
+        medical_monthly: medicalM,    medical_annual: medicalM * 12,
+        bonus_monthly: bonusM,        bonus_annual: bonusM * 12, bonusType,
         contribution_monthly: contribM, contribution_annual: contribM * 12,
-        net_monthly: netM, net_annual: netM * 12,
-        isPF, isESI,
+        net_monthly: netM,            net_annual: netM * 12,
+        isESI,
       };
 
       const offerRef    = `MEIL/HR/OL/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
@@ -1996,38 +2133,43 @@ Return ONLY a valid JSON object (no markdown):
       const appBase = process.env.APP_URL || 'https://hr.maxvolt-one.co.in';
       const acceptLink = `${appBase}/offer-accept/${acceptToken}`;
 
-      const dedRow = isPF
-        ? `<tr><td style="padding:6px 8px;border:1px solid #ddd;">PF Employee (12% on ≤₹15,000)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_emp_monthly)}</td></tr>`
-        : `<tr><td style="padding:6px 8px;border:1px solid #ddd;">ESI Employee (0.75% of Gross)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.esi_emp_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.esi_emp_monthly)}</td></tr>`;
-      const empRow = isPF
-        ? `<tr><td style="padding:6px 8px;border:1px solid #ddd;">PF Employer (13% on ≤₹15,000)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_employer_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.pf_employer_monthly)}</td></tr>`
-        : `<tr><td style="padding:6px 8px;border:1px solid #ddd;">ESI Employer (3.25% of Gross)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.esi_employer_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.esi_employer_monthly)}</td></tr>`;
-      const totalDed = isPF ? sal.pf_emp_annual : sal.esi_emp_annual;
-      const totalDedM = isPF ? sal.pf_emp_monthly : sal.esi_emp_monthly;
+      // PF deduction row always shown (all employees); ESI shown when applicable
+      const td   = (v) => `<td style="padding:6px 8px;border:1px solid #ddd;">${v}</td>`;
+      const tdr  = (v) => `<td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${v}</td>`;
+      const trow = (cells) => `<tr>${cells.join('')}</tr>`;
+      const totalDedAnnual  = sal.pf_emp_annual  + sal.esi_emp_annual;
+      const totalDedMonthly = sal.pf_emp_monthly + sal.esi_emp_monthly;
+      const dedRows = [
+        trow([td('PF Employee Contribution (12% on Basic, max ₹15,000)'), tdr(fmtIN(sal.pf_emp_annual)), tdr(fmtIN(sal.pf_emp_monthly))]),
+        isESI ? trow([td('ESI Employee Contribution (0.75% on Basic)'), tdr(fmtIN(sal.esi_emp_annual)), tdr(fmtIN(sal.esi_emp_monthly))]) : '',
+      ].join('');
+      const empRows = [
+        trow([td('PF Employer Contribution'), tdr(fmtIN(sal.pf_employer_annual)), tdr(fmtIN(sal.pf_employer_monthly))]),
+        isESI ? trow([td('ESI Employer Contribution (3.25% on Basic)'), tdr(fmtIN(sal.esi_employer_annual)), tdr(fmtIN(sal.esi_employer_monthly))]) : '',
+        medicalM > 0 ? trow([td('Medical Contribution'), tdr(fmtIN(sal.medical_annual)), tdr(fmtIN(sal.medical_monthly))]) : '',
+        trow([td(bonusType), tdr(fmtIN(sal.bonus_annual)), tdr(fmtIN(sal.bonus_monthly))]),
+      ].join('');
 
+      const th  = (t, right) => `<th style="padding:8px;border:1px solid #ccc;${right?'text-align:right;':''}">${t}</th>`;
+      const sub = (label, annual, monthly) => `<tr style="background:#d9d9d9;font-weight:700;"><td style="padding:6px 10px;border:1px solid #ccc;">${label}</td><td style="padding:6px 10px;border:1px solid #ccc;text-align:right;">${fmtIN(annual)}</td><td style="padding:6px 10px;border:1px solid #ccc;text-align:right;">${fmtIN(monthly)}</td></tr>`;
+      const sec = (label) => `<tr><td colspan="3" style="padding:5px 10px;border:1px solid #ccc;font-weight:bold;text-decoration:underline;font-size:11px;">${label}</td></tr>`;
       const salaryTableHtml = `
-<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:12px;">
+<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:11px;border:1px solid #ccc;">
   <thead>
-    <tr style="background:#f3f4f6;">
-      <th style="padding:8px;border:1px solid #ddd;text-align:left;">Salary Head</th>
-      <th style="padding:8px;border:1px solid #ddd;text-align:right;">Annually (₹)</th>
-      <th style="padding:8px;border:1px solid #ddd;text-align:right;">Monthly (₹)</th>
-    </tr>
+    <tr style="background:#d9d9d9;">${th('Salary Head')}${th('Annually (₹)',true)}${th('Monthly (₹)',true)}</tr>
   </thead>
   <tbody>
-    <tr><td colspan="3" style="padding:5px 8px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;font-size:11px;color:#555;text-transform:uppercase;">Earnings</td></tr>
-    ${[['Basic (50% of CTC)', sal.basic_annual, sal.basic_monthly],['HRA (40% of Basic)', sal.hra_annual, sal.hra_monthly],['Conveyance (Balance)', sal.conveyance_annual, sal.conveyance_monthly]].map(([l,a,m])=>`<tr><td style="padding:6px 8px;border:1px solid #ddd;">${l}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(a)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(m)}</td></tr>`).join('')}
-    <tr style="background:#eff6ff;font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Gross (A)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.gross_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.gross_monthly)}</td></tr>
-    <tr><td colspan="3" style="padding:5px 8px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;font-size:11px;color:#555;text-transform:uppercase;">Deductions</td></tr>
-    ${dedRow}
-    <tr style="font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Deduction (B)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(totalDed)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(totalDedM)}</td></tr>
-    <tr style="background:#f0fdf4;font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Net Salary (A-B)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.net_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.net_monthly)}</td></tr>
-    <tr><td colspan="3" style="padding:5px 8px;border:1px solid #ddd;background:#f9f9f9;font-weight:600;font-size:11px;color:#555;text-transform:uppercase;">Employer Contributions</td></tr>
-    ${empRow}
-    <tr><td style="padding:6px 8px;border:1px solid #ddd;">Medical Allowance</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.medical_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.medical_monthly)}</td></tr>
-    <tr><td style="padding:6px 8px;border:1px solid #ddd;">${sal.bonusType}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.bonus_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.bonus_monthly)}</td></tr>
-    <tr style="font-weight:700;"><td style="padding:6px 8px;border:1px solid #ddd;">Total Contribution (C)</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.contribution_annual)}</td><td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${fmtIN(sal.contribution_monthly)}</td></tr>
-    <tr style="background:#fff7ed;font-weight:700;font-size:13px;"><td style="padding:8px;border:1px solid #ddd;">Annual CTC (A+C)</td><td style="padding:8px;border:1px solid #ddd;text-align:right;">${fmtIN(ctc)}</td><td style="padding:8px;border:1px solid #ddd;text-align:right;">${fmtIN(monthlyCTC)}</td></tr>
+    ${sec('Earnings')}
+    ${[['Basic (50% of CTC)',sal.basic_annual,sal.basic_monthly],['HRA (40% of Basic)',sal.hra_annual,sal.hra_monthly],['Conveyance Allowance (Balance)',sal.conveyance_annual,sal.conveyance_monthly]].map(([l,a,m])=>trow([td(l),tdr(fmtIN(a)),tdr(fmtIN(m))])).join('')}
+    ${sub('Total Gross Salary (A)', sal.gross_annual, sal.gross_monthly)}
+    ${sec('Deduction')}
+    ${dedRows}
+    ${sub('Total Deduction (B)', totalDedAnnual, totalDedMonthly)}
+    ${sub('Total Net Salary (A-B)', sal.net_annual, sal.net_monthly)}
+    ${sec('Contribution')}
+    ${empRows}
+    ${sub('Total Contribution (C)', sal.contribution_annual, sal.contribution_monthly)}
+    <tr style="background:#d9d9d9;font-weight:700;font-size:12px;"><td style="padding:8px 10px;border:1px solid #ccc;">Annually CTC (A+C)</td><td style="padding:8px 10px;border:1px solid #ccc;text-align:right;color:#1d4ed8;">${fmtIN(ctc)}</td><td style="padding:8px 10px;border:1px solid #ccc;text-align:right;color:#1d4ed8;">${fmtIN(sal.monthly_ctc)}</td></tr>
   </tbody>
 </table>`;
 
@@ -2102,12 +2244,34 @@ Return ONLY a valid JSON object (no markdown):
       };
       await run("UPDATE entities SET status='offered', data=$1 WHERE id=$2", [JSON.stringify(offerData), candidate_id]);
 
+      // Generate salary structure PDF attachment
+      let pdfBuffer = null;
+      try {
+        const jDateFmt = jDate ? new Date(jDate).toLocaleDateString('en-IN', { day:'2-digit', month:'2-digit', year:'numeric' }) : '';
+        pdfBuffer = await buildSalaryStructurePdf({
+          candidateName: name,
+          employeeCode:  cand.employee_code || '',
+          designation:   pos,
+          department:    dept,
+          dateOfJoining: jDateFmt,
+          effectiveFrom: todayStr,
+          annualCTC:     ctc,
+          sal,
+        });
+      } catch (pdfErr) {
+        console.error('[pdf] salary structure generation failed:', pdfErr.message);
+      }
+
       let emailError = null;
       try {
         await sendEmail({
-          to: cand.email,
+          to:      cand.email,
           subject: `Offer Letter – ${pos} at Maxvolt Energy Industries Limited`,
-          html: emailHtml,
+          html:    emailHtml,
+          attachments: pdfBuffer ? [{
+            filename: `Salary_Structure_${name.replace(/\s+/g, '_')}.pdf`,
+            content:  pdfBuffer,
+          }] : [],
         });
       } catch (emailErr) {
         console.error('sendOfferLetter email failed:', emailErr.message);

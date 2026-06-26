@@ -21,43 +21,45 @@ const TODAY = new Date().toISOString().slice(0, 10);
 
 function fmt(n) { return Number(n || 0).toLocaleString('en-IN'); }
 
-function calcSalary(annualCTC) {
+// PF applies to ALL employees (capped at ₹15,000 wage).
+// ESI applies when basic ≤ ₹21,000, calculated on basic salary.
+function calcSalary(annualCTC, medicalContrib = 0) {
   if (!annualCTC || annualCTC <= 0) return null;
   const PF_CEIL = 15000, ESI_CEIL = 21000;
-  const m = Math.round(annualCTC / 12);
-  const basic = Math.round(m * 0.5);
-  const hra = Math.round(basic * 0.4);
-  const isPF = basic > ESI_CEIL, isESI = basic <= ESI_CEIL;
+  const monthlyTotal = annualCTC / 12;
+  const basic  = Math.round(monthlyTotal * 0.5);
+  const hra    = Math.round(basic * 0.4);
+  const pfBase = Math.min(basic, PF_CEIL);
+  const pfEmp  = Math.round(pfBase * 0.12);
+  const pfEmpr = Math.round(pfBase * 0.13);
+  const isESI  = basic <= ESI_CEIL;
+  const esiEmp  = isESI ? Math.round(basic * 0.0075) : 0;
+  const esiEmpr = isESI ? Math.round(basic * 0.0325) : 0;
   let bonus, bonusType;
-  if (annualCTC <= 1000000) { bonus = Math.round(basic * 12 * 0.0833 / 12); bonusType = 'Bonus (8.33% of Basic)'; }
+  if (annualCTC <= 1000000) { bonus = Math.round(basic * 0.0833); bonusType = 'Bonus (8.33% of Basic)'; }
   else { const vp = annualCTC <= 1500000 ? 0.05 : annualCTC <= 2000000 ? 0.08 : annualCTC <= 2500000 ? 0.12 : 0.15; bonus = Math.round(annualCTC * vp / 12); bonusType = `VPP (${Math.round(vp * 100)}% of CTC)`; }
-  const medical = 330;
-  const pfBase = isPF ? Math.min(basic, PF_CEIL) : 0;
-  const pfEmp = Math.round(pfBase * 0.12);
-  const pfEmployer = Math.round(pfBase * 0.13);
-  const contribNoESI = pfEmployer + medical + bonus;
-  const grossEst = m - contribNoESI;
-  const esiEmp = isESI ? Math.round(grossEst * 0.0075) : 0;
-  const esiEmployer = isESI ? Math.round(grossEst * 0.0325) : 0;
-  const contrib = contribNoESI + esiEmployer;
-  const gross = m - contrib;
-  const conv = Math.max(gross - basic - hra, 0);
-  const net = gross - pfEmp - esiEmp;
+  const contrib = pfEmpr + esiEmpr + bonus + medicalContrib;
+  const gross   = Math.round(monthlyTotal - contrib);
+  const conv    = Math.max(gross - basic - hra, 0);
+  const totalDed = pfEmp + esiEmp;
+  const net     = gross - totalDed;
+  const m       = Math.round(monthlyTotal);
   return {
     monthly_ctc: m, annual_ctc: annualCTC,
-    basic_monthly: basic, basic_annual: basic * 12,
-    hra_monthly: hra, hra_annual: hra * 12,
+    basic_monthly: basic,  basic_annual: basic * 12,
+    hra_monthly: hra,      hra_annual: hra * 12,
     conveyance_monthly: conv, conveyance_annual: conv * 12,
-    gross_monthly: gross, gross_annual: gross * 12,
-    pf_emp_monthly: pfEmp, pf_emp_annual: pfEmp * 12,
+    gross_monthly: gross,  gross_annual: gross * 12,
+    pf_emp_monthly: pfEmp,  pf_emp_annual: pfEmp * 12,
     esi_emp_monthly: esiEmp, esi_emp_annual: esiEmp * 12,
-    pf_employer_monthly: pfEmployer, pf_employer_annual: pfEmployer * 12,
-    esi_employer_monthly: esiEmployer, esi_employer_annual: esiEmployer * 12,
-    medical_monthly: medical, medical_annual: medical * 12,
-    bonus_monthly: bonus, bonus_annual: bonus * 12, bonusType,
+    net_deduction_monthly: totalDed, net_deduction_annual: totalDed * 12,
+    net_monthly: net,      net_annual: net * 12,
+    pf_employer_monthly: pfEmpr,  pf_employer_annual: pfEmpr * 12,
+    esi_employer_monthly: esiEmpr, esi_employer_annual: esiEmpr * 12,
+    medical_monthly: medicalContrib, medical_annual: medicalContrib * 12,
+    bonus_monthly: bonus,  bonus_annual: bonus * 12, bonusType,
     contribution_monthly: contrib, contribution_annual: contrib * 12,
-    net_monthly: net, net_annual: net * 12,
-    isPF, isESI,
+    isESI,
   };
 }
 
@@ -79,6 +81,7 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
     annual_ctc: candidate?.offer_ctc_annual || candidate?.expected_ctc || 0,
     probation_months: candidate?.probation_months || 6,
     offer_valid_days: 7,
+    medical_contribution: 0,
     notes: '',
   });
   const [sending, setSending] = useState(false);
@@ -86,7 +89,7 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
   const [acceptLink, setAcceptLink] = useState('');
   const [previewing, setPreviewing] = useState(false);
 
-  const sal = calcSalary(Number(form.annual_ctc) || 0);
+  const sal = calcSalary(Number(form.annual_ctc) || 0, Number(form.medical_contribution) || 0);
   const setF = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
   const handlePreview = async () => {
@@ -122,6 +125,7 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
         annual_ctc: Number(form.annual_ctc),
         probation_months: Number(form.probation_months),
         offer_valid_days: Number(form.offer_valid_days),
+        medical_contribution: Number(form.medical_contribution) || 0,
         notes: form.notes,
       });
       if (res.data?.success) {
@@ -174,11 +178,12 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
           ['Reporting To', 'reporting_to', 'text'],
           ['Annual CTC (₹)', 'annual_ctc', 'number'],
           ['Offer Valid (days)', 'offer_valid_days', 'number'],
+          ['Medical Contribution (₹/month)', 'medical_contribution', 'number'],
         ].map(([label, key, type]) => (
           <div key={key}>
             <Label className="text-xs">{label}</Label>
             <Input type={type} value={form[key]} onChange={e => setF(key, e.target.value)}
-              placeholder={key === 'reporting_to' ? 'Manager name' : ''} />
+              placeholder={key === 'reporting_to' ? 'Manager name' : key === 'medical_contribution' ? '0' : ''} />
           </div>
         ))}
         <div className="md:col-span-2">
@@ -204,8 +209,8 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
                 <tr key={l} className="border-b"><td className="px-3 py-1">{l}</td><td className="px-3 py-1 text-right">{fmt(a)}</td><td className="px-3 py-1 text-right">{fmt(m)}</td></tr>
               ))}
               <tr className="bg-blue-50 font-semibold border-b"><td className="px-3 py-1.5">Total Gross (A)</td><td className="px-3 py-1.5 text-right">{fmt(sal.gross_annual)}</td><td className="px-3 py-1.5 text-right">{fmt(sal.gross_monthly)}</td></tr>
-              {sal.isPF && <tr className="border-b text-gray-500"><td className="px-3 py-1">PF Employee 12% (deduction)</td><td className="px-3 py-1 text-right">-{fmt(sal.pf_emp_annual)}</td><td className="px-3 py-1 text-right">-{fmt(sal.pf_emp_monthly)}</td></tr>}
-              {sal.isESI && <tr className="border-b text-gray-500"><td className="px-3 py-1">ESI Employee 0.75% (deduction)</td><td className="px-3 py-1 text-right">-{fmt(sal.esi_emp_annual)}</td><td className="px-3 py-1 text-right">-{fmt(sal.esi_emp_monthly)}</td></tr>}
+              <tr className="border-b text-gray-500"><td className="px-3 py-1">PF Employee 12% (deduction)</td><td className="px-3 py-1 text-right">-{fmt(sal.pf_emp_annual)}</td><td className="px-3 py-1 text-right">-{fmt(sal.pf_emp_monthly)}</td></tr>
+              {sal.isESI && <tr className="border-b text-gray-500"><td className="px-3 py-1">ESI Employee 0.75% on Basic (deduction)</td><td className="px-3 py-1 text-right">-{fmt(sal.esi_emp_annual)}</td><td className="px-3 py-1 text-right">-{fmt(sal.esi_emp_monthly)}</td></tr>}
               <tr className="bg-green-50 font-semibold border-b"><td className="px-3 py-1.5">Net Take-Home</td><td className="px-3 py-1.5 text-right">{fmt(sal.net_annual)}</td><td className="px-3 py-1.5 text-right">{fmt(sal.net_monthly)}</td></tr>
               <tr className="bg-orange-50 font-bold"><td className="px-3 py-1.5">Annual CTC</td><td className="px-3 py-1.5 text-right">{fmt(sal.annual_ctc)}</td><td className="px-3 py-1.5 text-right">{fmt(sal.monthly_ctc)}</td></tr>
             </tbody>

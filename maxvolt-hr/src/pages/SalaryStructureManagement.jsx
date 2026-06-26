@@ -126,7 +126,7 @@ function printSalaryStructure(structure, emp) {
   const L = (v) => v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const row = (label, monthly, annual) =>
-    `<tr><td style="padding:6px 10px;border-bottom:1px solid #f0e0d0;font-size:11px;">${label}</td><td style="padding:6px 10px;border-bottom:1px solid #f0e0d0;text-align:right;font-size:11px;">${L(monthly)}</td><td style="padding:6px 10px;border-bottom:1px solid #f0e0d0;text-align:right;font-size:11px;">${L(annual)}</td></tr>`;
+    `<tr><td style="padding:6px 10px;border-bottom:1px solid #f0e0d0;font-size:11px;">${label}</td><td style="padding:6px 10px;border-bottom:1px solid #f0e0d0;text-align:right;font-size:11px;">${L(annual)}</td><td style="padding:6px 10px;border-bottom:1px solid #f0e0d0;text-align:right;font-size:11px;">${L(monthly)}</td></tr>`;
 
   const sectionRow = (label, color) =>
     `<tr><td colspan="3" style="background:${color};color:white;padding:5px 10px;font-size:10px;font-weight:bold;text-transform:uppercase;letter-spacing:0.5px;">${label}</td></tr>`;

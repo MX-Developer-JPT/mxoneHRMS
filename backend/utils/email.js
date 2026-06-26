@@ -49,17 +49,25 @@ export async function verifyEmail() {
   }
 }
 
-export async function sendEmail({ to, subject, html, text }) {
+// attachments: [{ filename: 'file.pdf', content: Buffer }]
+export async function sendEmail({ to, subject, html, text, attachments }) {
   const fromStr     = await getFromAddress();
   const { name, email } = parseFrom(fromStr);
   const toArr = Array.isArray(to) ? to.map(e => ({ email: e })) : [{ email: to }];
-  const data = await brevoRequest('/smtp/email', {
+  const body = {
     sender:      { name, email },
     to:          toArr,
     subject,
     htmlContent: html,
     textContent: text,
-  });
+  };
+  if (attachments?.length) {
+    body.attachment = attachments.map(a => ({
+      name:    a.filename,
+      content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : a.content,
+    }));
+  }
+  const data = await brevoRequest('/smtp/email', body);
   return { success: true, messageId: data.messageId, provider: 'brevo' };
 }
 
