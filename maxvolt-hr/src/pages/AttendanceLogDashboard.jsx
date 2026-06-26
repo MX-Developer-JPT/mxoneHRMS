@@ -36,6 +36,23 @@ function formatIST(raw) {
   } catch { return raw; }
 }
 
+// Format a real UTC timestamp → IST display (for server-generated timestamps like ProcessedAt)
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function formatUTCtoIST(raw) {
+  if (!raw) return '-';
+  try {
+    const d = new Date(raw); // real UTC parse
+    if (isNaN(d.getTime())) return raw;
+    const ist = new Date(d.getTime() + IST_OFFSET_MS);
+    const dd   = String(ist.getUTCDate()).padStart(2, '0');
+    let h      = ist.getUTCHours();
+    const min  = String(ist.getUTCMinutes()).padStart(2, '0');
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return `${dd} ${MONTHS[ist.getUTCMonth()]} ${ist.getUTCFullYear()}, ${h}:${min} ${ampm} IST`;
+  } catch { return raw; }
+}
+
 // Check if a date string falls on today in IST.
 // Extract the date portion directly from the stored clock digits (which are IST).
 function isTodayIST(dateStr) {
@@ -458,7 +475,7 @@ export default function AttendanceLogDashboard() {
                 </td>
                 <td className="px-4 py-3 text-gray-600">{log.DeviceName || '-'}</td>
                 <td className="px-4 py-3 text-gray-600">{log.VerificationType || '-'}</td>
-                <td className="px-4 py-3 text-gray-500 text-xs">{formatIST(log.ProcessedAt)}</td>
+                <td className="px-4 py-3 text-gray-500 text-xs">{formatUTCtoIST(log.ProcessedAt)}</td>
               </tr>
             ))}
           </tbody>

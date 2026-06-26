@@ -59,8 +59,11 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
   const bonusBreakdown = bonuses.filter(b => b.amount > 0);
   const otherEarnings = payroll.bonuses || 0;
 
-  const pfDeduction = deductions.pf || salaryStructure.pf_contribution || 0;
-  const esiDeduction = deductions.esi || salaryStructure.esi_contribution || 0;
+  // PF: always compute from basic if not stored (applicable to ESI employees as well)
+  const pfBase = Math.min(basicEarned, 15000);
+  const pfDeduction = deductions.pf != null ? deductions.pf : (salaryStructure.pf_contribution || Math.round(pfBase * 0.12));
+  // ESI: only if basic <= ₹21,000; use payroll record if available
+  const esiDeduction = deductions.esi != null ? deductions.esi : (basicEarned <= 21000 ? (salaryStructure.esi_contribution || Math.round(basicEarned * 0.0075)) : 0);
   const profTax = deductions.professional_tax || 0;
   const tdsDeduction = deductions.tds || 0;
   const loanEmi = deductions.loan_emi || 0;
@@ -68,8 +71,8 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
   const netSalary = payroll.net_salary || (grossSalary - totalDeductions);
 
   const empPFBase = Math.min(basicEarned, 15000);
-  const employerPF = salaryStructure.employer_pf_contribution || Math.round(empPFBase * 0.13);
-  const employerESI = salaryStructure.employer_esi_contribution || 0;
+  const employerPF = payroll.employer_contributions?.pf ?? salaryStructure.employer_pf_contribution ?? Math.round(empPFBase * 0.13);
+  const employerESI = payroll.employer_contributions?.esi ?? (basicEarned <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(basicEarned * 0.0325)) : 0);
   const gratuity = salaryStructure.gratuity || Math.round(basicEarned * 0.0481);
 
   const month = monthNames[(payroll.month || 1) - 1];
@@ -91,8 +94,8 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
     </tr>`;
   }
 
-  function dedRow(label, amount) {
-    if (!amount) return '';
+  function dedRow(label, amount, alwaysShow = false) {
+    if (!alwaysShow && !amount) return '';
     return `<tr><td class="td">${label}</td><td class="td amt" colspan="4">${fmt(amount)}</td></tr>`;
   }
 
@@ -179,8 +182,8 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
           <div style="background:#fff5f5;padding:5px 12px;font-size:9.5px;font-weight:bold;text-transform:uppercase;color:#dc2626;border-bottom:1px solid #e5e7eb;">Deductions</div>
           <table style="width:100%;border-collapse:collapse;">
             <tbody>
-              ${dedRow('Provident Fund (Employee 12%)', pfDeduction)}
-              ${esiDeduction ? dedRow('ESI (Employee 0.75%)', esiDeduction) : ''}
+              ${dedRow('Provident Fund (Employee 12%)', pfDeduction, true)}
+              ${esiDeduction > 0 ? dedRow('ESI (Employee 0.75%)', esiDeduction) : ''}
               ${profTax ? dedRow('Professional Tax', profTax) : ''}
               ${tdsDeduction ? dedRow('Income Tax (TDS)', tdsDeduction) : ''}
               ${loanEmi ? dedRow('Loan EMI', loanEmi) : ''}
@@ -202,7 +205,7 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
           <div><div style="font-size:8px;color:#6b7280;text-transform:uppercase;">Employer PF (13%)</div><div style="font-size:11px;font-weight:600;color:#15803d;">₹${fmt(employerPF)}</div></div>
           ${employerESI > 0 ? `<div><div style="font-size:8px;color:#6b7280;text-transform:uppercase;">Employer ESI (3.25%)</div><div style="font-size:11px;font-weight:600;color:#15803d;">₹${fmt(employerESI)}</div></div>` : ''}
           <div><div style="font-size:8px;color:#6b7280;text-transform:uppercase;">Gratuity (4.81% of Basic)</div><div style="font-size:11px;font-weight:600;color:#15803d;">₹${fmt(gratuity)}</div></div>
-          <div><div style="font-size:8px;color:#6b7280;text-transform:uppercase;">Medical Contribution</div><div style="font-size:11px;font-weight:600;color:#15803d;">₹${fmt(salaryStructure.medical_contribution || 330)}</div></div>
+          ${(salaryStructure.medical_contribution || 0) > 0 ? `<div><div style="font-size:8px;color:#6b7280;text-transform:uppercase;">Medical Contribution</div><div style="font-size:11px;font-weight:600;color:#15803d;">₹${fmt(salaryStructure.medical_contribution)}</div></div>` : ''}
         </div>
       </div>
 
