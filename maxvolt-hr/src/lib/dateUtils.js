@@ -19,6 +19,8 @@ const parseTs = (s) => {
   return new Date(naked);
 };
 
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
 export const safeDate = (dateStr, fmt = 'MMM d, yyyy') => {
   if (!dateStr) return '—';
   try { const d = parseTs(dateStr); return isValid(d) ? format(d, fmt) : '—'; } catch { return '—'; }
@@ -26,5 +28,19 @@ export const safeDate = (dateStr, fmt = 'MMM d, yyyy') => {
 
 export const safeTime = (ts) => {
   if (!ts) return '—';
-  try { const d = parseTs(ts); return isValid(d) ? format(d, 'h:mm a') : '—'; } catch { return '—'; }
+  try {
+    const d = parseTs(ts);
+    if (!isValid(d)) return '—';
+    // Legacy records created before the IST-digit fix were stored in real UTC.
+    // When parseTs strips the Z and parses as local (IST), a UTC 03:30 becomes
+    // "3:30 AM IST" — 5:30 h too early. Heuristic: if the resulting local hour
+    // is < 5 and the original string had a Z suffix (full ISO datetime), it's
+    // almost certainly a pre-fix UTC-stored timestamp → add IST offset to display.
+    const str = String(ts).trim();
+    const isFullIsoWithZ = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str) && str.includes('Z');
+    if (isFullIsoWithZ && d.getHours() < 5) {
+      return format(new Date(d.getTime() + IST_OFFSET_MS), 'h:mm a');
+    }
+    return format(d, 'h:mm a');
+  } catch { return '—'; }
 };

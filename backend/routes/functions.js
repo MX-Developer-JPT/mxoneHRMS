@@ -1003,6 +1003,66 @@ router.post('/:name', async (req, res) => {
       return res.json({ records: rows.map(r => JSON.parse(r.data)) });
     }
 
+    case 'fixAttendanceTimestamps': {
+      // One-time migration: attendance records created before the IST-digit fix stored
+      // check_in_time/check_out_time as real UTC (new Date().toISOString()).
+      // The display layer strips Z and treats digits as IST, so "03:30Z" (= 9 AM IST in UTC)
+      // shows as "3:30 AM". Detection: UTC hour < 6 for check_in (office 8-11 AM IST = 2:30-5:30 UTC).
+      // If check_in is UTC-stored, check_out is too — fix both on the same record.
+      const { dry_run = true } = p;
+      const IST_MS = 5.5 * 60 * 60 * 1000;
+
+      const rows = await all("SELECT id, data FROM entities WHERE type='Attendance'");
+      const toFix = [];
+
+      for (const row of rows) {
+        const data = JSON.parse(row.data);
+        if (data.biometric_synced) continue;
+        if (!data.check_in_time) continue;
+
+        const cin = new Date(data.check_in_time);
+        if (isNaN(cin.getTime())) continue;
+        if (cin.getUTCHours() >= 6) continue; // already IST-digit or no fix needed
+
+        const newCin = new Date(cin.getTime() + IST_MS).toISOString();
+        let newCout = null;
+        if (data.check_out_time) {
+          const cout = new Date(data.check_out_time);
+          newCout = isNaN(cout.getTime()) ? data.check_out_time : new Date(cout.getTime() + IST_MS).toISOString();
+        }
+
+        toFix.push({ id: row.id, data, newCin, newCout });
+      }
+
+      if (!dry_run) {
+        for (const item of toFix) {
+          const updated = {
+            ...item.data,
+            check_in_time: item.newCin,
+            ...(item.newCout !== null ? { check_out_time: item.newCout } : {}),
+          };
+          await run('UPDATE entities SET data=$1 WHERE id=$2', [JSON.stringify(updated), item.id]);
+        }
+      }
+
+      return res.json({
+        success: true,
+        dry_run,
+        count: toFix.length,
+        preview: dry_run ? toFix.slice(0, 20).map(f => ({
+          id: f.id,
+          date: f.data.date,
+          old_check_in: f.data.check_in_time,
+          new_check_in: f.newCin,
+          old_check_out: f.data.check_out_time || null,
+          new_check_out: f.newCout,
+        })) : [],
+        message: dry_run
+          ? `Found ${toFix.length} records with UTC-stored timestamps. Call with dry_run=false to fix.`
+          : `Successfully fixed ${toFix.length} attendance records.`,
+      });
+    }
+
     case 'reprocessAttendanceLogs': {
       // Re-reads stored AttendanceLogs for a date range and upserts Attendance records.
       // Uses alternating-position punch model (buildSessions) — same as live punch endpoint.

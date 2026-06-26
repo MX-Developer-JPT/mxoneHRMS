@@ -1081,6 +1081,72 @@ Authorization: Bearer ${apiKey || '<YOUR_API_KEY>'}
   );
 }
 
+// ── Maintenance Tab ────────────────────────────────────────
+function MaintenanceTab() {
+  const [result, setResult]   = useState(null);
+  const [running, setRunning] = useState(false);
+
+  const run = async (dryRun) => {
+    setRunning(true);
+    setResult(null);
+    try {
+      const r = await base44.functions.invoke('fixAttendanceTimestamps', { dry_run: dryRun });
+      setResult(r?.data || r);
+    } catch (e) {
+      setResult({ success: false, message: e.message });
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div className="max-w-2xl space-y-5">
+      <div className="border rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Clock className="w-5 h-5 text-primary" />
+          <h3 className="font-semibold">Fix Attendance Timestamps</h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Attendance records created before the timezone fix may have check-in/out times stored in UTC instead of IST,
+          causing times to appear 5:30 hours early (e.g., 9:00 AM IST shows as 3:30 AM).
+          This tool detects and corrects those records.
+        </p>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => run(true)} disabled={running}>
+            {running ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
+            Preview (Dry Run)
+          </Button>
+          <Button size="sm" onClick={() => run(false)} disabled={running}>
+            {running ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
+            Apply Fix
+          </Button>
+        </div>
+
+        {result && (
+          <div className={`rounded-lg p-3 text-sm space-y-2 ${result.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+            <p className={result.success ? 'text-emerald-800 font-medium' : 'text-red-800'}>{result.message}</p>
+            {result.preview?.length > 0 && (
+              <div className="mt-2 space-y-1">
+                <p className="text-xs font-medium text-gray-600">Sample records to be fixed:</p>
+                {result.preview.map((r, i) => (
+                  <div key={i} className="text-xs bg-white border rounded p-2 font-mono">
+                    <span className="text-gray-500">{r.date}</span>
+                    {' · '}
+                    <span className="text-red-500">{r.old_check_in?.slice(11,16)}</span>
+                    {' → '}
+                    <span className="text-green-600">{r.new_check_in?.slice(11,16)}</span>
+                    {r.old_check_out && <> · out <span className="text-red-500">{r.old_check_out?.slice(11,16)}</span>{' → '}<span className="text-green-600">{r.new_check_out?.slice(11,16)}</span></>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main AdminPanel page ───────────────────────────────────
 export default function AdminPanel() {
   const { user } = useAuth();
@@ -1113,6 +1179,7 @@ export default function AdminPanel() {
     { id: 'ai',       label: 'AI Settings',       icon: Bot },
     { id: 'api',      label: 'API Integration',   icon: Fingerprint },
     { id: 'audit',    label: 'Audit Log',         icon: ScrollText },
+    { id: 'maintenance', label: 'Maintenance',    icon: RotateCcw },
   ];
 
   return (
@@ -1146,7 +1213,8 @@ export default function AdminPanel() {
       {tab === 'email'    && <EmailTab />}
       {tab === 'ai'       && <AITab />}
       {tab === 'api'      && <ApiIntegrationTab />}
-      {tab === 'audit'    && <AuditLogTab />}
+      {tab === 'audit'       && <AuditLogTab />}
+      {tab === 'maintenance' && <MaintenanceTab />}
       {tab === 'stats'    && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           {typeCounts.map(({ type, count }) => (
