@@ -50,17 +50,19 @@ export default function AllAttendance() {
   const [markingAbsent, setMarkingAbsent] = useState(false);
   const [viewMode, setViewMode] = useState('list'); // 'list' | 'calendar'
   const [calMonthRecords, setCalMonthRecords] = useState([]); // all records for the month (calendar view)
+  const [silentRefreshing, setSilentRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
-
-  useEffect(() => { loadData(); }, [date]);
+  useEffect(() => { loadData(false); }, [date]);
 
   useEffect(() => {
-    const interval = setInterval(() => loadData(), 30000);
+    const interval = setInterval(() => loadData(true), 30000);
     return () => clearInterval(interval);
   }, [date]);
 
-  const loadData = async () => {
-    setLoading(true);
+  const loadData = async (silent = false) => {
+    if (!silent) setLoading(true);
+    else setSilentRefreshing(true);
     try {
       const currentUser = await base44.auth.me();
       const userRole = currentUser.custom_role || currentUser.role;
@@ -97,9 +99,11 @@ export default function AllAttendance() {
       setAttendanceMap(map);
       setDepartments(deptRecords.map(d => ({ value: d.name, label: d.name })));
     } catch (e) {
-      toast.error('Failed to load attendance: ' + e.message);
+      if (!silent) toast.error('Failed to load attendance: ' + e.message);
     } finally {
       setLoading(false);
+      setSilentRefreshing(false);
+      setLastRefreshed(new Date());
     }
   };
 
@@ -297,7 +301,15 @@ export default function AllAttendance() {
             <Button variant="outline" size="sm" onClick={exportDetailedReport} title="Export detailed report with session hours and overtime">
               <FileSpreadsheet className="w-4 h-4 mr-1" /> Report
             </Button>
-            <Button variant="outline" size="sm" onClick={loadData}><RefreshCw className="w-4 h-4" /></Button>
+            <div className="flex items-center gap-1.5">
+              {silentRefreshing && <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" title="Refreshing…" />}
+              {!silentRefreshing && lastRefreshed && (
+                <span className="text-[10px] text-gray-400 hidden sm:block" title={`Last refreshed ${lastRefreshed.toLocaleTimeString()}`}>
+                  {format(lastRefreshed, 'h:mm a')}
+                </span>
+              )}
+              <Button variant="outline" size="sm" onClick={() => loadData(false)} title="Refresh now"><RefreshCw className="w-4 h-4" /></Button>
+            </div>
             <div className="flex border rounded-lg overflow-hidden">
               <button onClick={() => setViewMode('list')} className={`px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 transition-colors ${viewMode === 'list' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
                 <List className="w-3.5 h-3.5" /> List
