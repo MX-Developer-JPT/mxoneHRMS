@@ -28,8 +28,12 @@ function toDateStr(val) {
 }
 
 function getDisplayStatus(record) {
+  const s = record.status;
+  // Preserve meaningful statuses that have check_in_time set
+  if (s && s !== 'absent' && s !== 'in_progress') return s;
+  // Fall back to 'present' when check_in_time exists but status is stale/missing
   if (record.check_in_time) return 'present';
-  return record.status;
+  return s || 'absent';
 }
 
 export default function AllAttendance() {
@@ -146,11 +150,11 @@ export default function AllAttendance() {
 
   const stats = useMemo(() => ({
     total: rows.length,
-    present: rows.filter(r => getDisplayStatus(r) === 'present' || r.status === 'on_duty').length,
-    absent: rows.filter(r => !r.check_in_time && r.status === 'absent').length,
-    halfDay: rows.filter(r => !r.check_in_time && r.status === 'half_day').length,
+    present: rows.filter(r => ['present','late','on_duty','work_from_home','short_attendance'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off'].includes(r.status))).length,
+    absent: rows.filter(r => r.status === 'absent' || (!r.check_in_time && !r.status)).length,
+    halfDay: rows.filter(r => r.status === 'half_day').length,
     leave: rows.filter(r => r.status === 'leave').length,
-    late: rows.filter(r => r.late_arrival).length,
+    late: rows.filter(r => r.late_minutes > 0 || r.late_arrival_minutes > 0).length,
     totalHours: rows.reduce((s, r) => s + (r.working_hours || 0), 0),
   }), [rows]);
 
@@ -456,9 +460,9 @@ export default function AllAttendance() {
                     <Building2 className="w-4 h-4 text-blue-500" />
                     {dept}
                     <span className="text-sm font-normal text-gray-500">({records.length})</span>
-                    <span className="text-xs text-green-600 font-medium">{records.filter(r => getDisplayStatus(r) === 'present' || r.status === 'on_duty').length} present</span>
-                    {records.filter(r => !r.check_in_time && r.status === 'absent').length > 0 && (
-                      <span className="text-xs text-red-500 font-medium">{records.filter(r => !r.check_in_time && r.status === 'absent').length} absent</span>
+                    <span className="text-xs text-green-600 font-medium">{records.filter(r => ['present','late','on_duty','work_from_home','short_attendance'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off'].includes(r.status))).length} present</span>
+                    {records.filter(r => r.status === 'absent' || (!r.check_in_time && !r.status)).length > 0 && (
+                      <span className="text-xs text-red-500 font-medium">{records.filter(r => r.status === 'absent' || (!r.check_in_time && !r.status)).length} absent</span>
                     )}
                   </div>
                   {collapsedDepts[dept] ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronUp className="w-4 h-4 text-gray-400" />}

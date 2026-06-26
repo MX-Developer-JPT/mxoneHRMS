@@ -1079,7 +1079,8 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'closeOpenSessions': {
-      // Runs after 5:30 AM IST — marks employees still "Working" (no check-out) as Absent.
+      // Runs after 5:30 AM IST — closes any session still "in_progress" from the target date.
+      // Employees who worked meaningful hours are NOT marked absent — we pick present/half_day/short_attendance.
       const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
       const nowIST = new Date(Date.now() + IST_OFFSET_MS);
       const todayIST = nowIST.toISOString().slice(0, 10);
@@ -1095,20 +1096,47 @@ router.post('/:name', async (req, res) => {
       for (const row of rows) {
         const d = JSON.parse(row.data);
         if (d.status === 'regularised') continue;
-        // Only close records that are still in-progress
         if (!d.is_in_progress && d.status !== 'in_progress') continue;
+
+        // Load shift to determine thresholds
+        const empRow   = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
+        const emp      = empRow ? JSON.parse(empRow.data) : {};
+        const shiftRow = emp.shift_id
+          ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id])
+          : await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'='true' LIMIT 1");
+        const shift = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
+        const shiftHours = shift.working_hours || 9;
+
+        // If raw_punches are stored, rebuild sessions; otherwise use stored session data
+        let working_hours = d.working_hours || 0;
+        let updatedSessions = d.sessions || [];
+        if (d.raw_punches && d.raw_punches.length > 0) {
+          const sd = buildSessions(d.raw_punches);
+          working_hours = sd.working_hours || 0;
+          updatedSessions = sd.sessions || [];
+        } else {
+          const completeMins = (d.sessions || []).filter(s => s.is_complete)
+            .reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
+          if (completeMins > 0) working_hours = Math.round(completeMins / 60 * 100) / 100;
+        }
+
+        // Determine status from hours worked — never retroactively mark absent if they worked
+        let status;
+        if (working_hours >= shiftHours * 0.9)   status = 'present';
+        else if (working_hours >= shiftHours / 2) status = 'half_day';
+        else if (working_hours > 0)               status = 'short_attendance';
+        else                                      status = 'absent';
+
         const updated = {
           ...d,
-          status: 'absent',
+          status,
           is_in_progress: false,
+          working_hours: Math.round(working_hours * 100) / 100,
           auto_closed_at: new Date().toISOString(),
-          auto_closed_reason: 'No check-out recorded by 5:30 AM next day',
-          working_hours: 0,
-          total_working_minutes: 0,
-          sessions: (d.sessions || []).map(s => s.is_complete ? s : { ...s, check_out: null, duration_minutes: null, auto_closed: true }),
-          punch_sessions: [],
+          auto_closed_reason: 'Auto-closed at 5:30 AM — no check-out punch received',
+          sessions: updatedSessions.map(s => s.is_complete ? s : { ...s, auto_closed: true }),
         };
-        await run("UPDATE entities SET status='absent', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(updated), row.id]);
+        await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [status, JSON.stringify(updated), row.id]);
         closed++;
       }
 
@@ -1221,28 +1249,64 @@ router.post('/:name', async (req, res) => {
         processed++;
       }
 
-      // Upsert Attendance records
+      // Upsert Attendance records — build sessions for proper status computation
       for (const { userId, date, punches } of Object.values(byDate)) {
         if (punches.length === 0) continue;
-        punches.sort((a, b) => a.iso.localeCompare(b.iso));
-        const firstIn  = punches.find(p2 => p2.type === 'in')?.iso  || punches[0].iso;
-        const lastOut  = [...punches].reverse().find(p2 => p2.type === 'out')?.iso || null;
+
+        // Load shift for this employee
+        const empRowS  = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
+        const empS     = empRowS ? JSON.parse(empRowS.data) : {};
+        const shiftRowS = empS.shift_id
+          ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [empS.shift_id])
+          : await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'='true' LIMIT 1");
+        const shiftS = shiftRowS ? JSON.parse(shiftRowS.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
+
+        // Build sessions from ISO punch list
+        const rawPunches = punches.map(p2 => ({ time: p2.iso, device_direction: p2.type === 'in' ? 'IN' : 'OUT' }));
+        const sd = buildSessions(rawPunches);
+        const { status, late_minutes } = computeStatusFromSessions(sd, shiftS);
 
         const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [userId, date]);
         if (existing) {
           const d = JSON.parse(existing.data);
-          if (d.status === 'regularised') continue; // never overwrite a regularised record
+          if (d.status === 'regularised') continue;
+
+          // Merge raw_punches: combine existing + new, then rebuild
+          const prevPunches = d.raw_punches || [];
+          const mergedPunches = [...prevPunches, ...rawPunches]
+            .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
+          mergedPunches.sort((a, b) => a.time.localeCompare(b.time));
+          const sdMerged = buildSessions(mergedPunches);
+          const { status: mergedStatus, late_minutes: mergedLate } = computeStatusFromSessions(sdMerged, shiftS);
+
           const updated = {
             ...d,
-            check_in_time:  !d.check_in_time  || firstIn  < d.check_in_time  ? firstIn  : d.check_in_time,
-            check_out_time: !d.check_out_time || (lastOut && lastOut > d.check_out_time) ? lastOut : d.check_out_time,
-            biometric_synced: true, status: d.status || 'present',
+            check_in_time:  sdMerged.check_in_time,
+            check_out_time: sdMerged.check_out_time,
+            sessions:       sdMerged.sessions,
+            raw_punches:    mergedPunches,
+            working_hours:  sdMerged.working_hours,
+            is_in_progress: sdMerged.is_in_progress,
+            late_minutes:   mergedLate,
+            status:         mergedStatus,
+            biometric_synced: true,
           };
-          await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(updated), existing.id]);
+          await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [mergedStatus, JSON.stringify(updated), existing.id]);
         } else {
           const attId = uuidv4();
-          const attData = { id: attId, user_id: userId, date, check_in_time: firstIn, check_out_time: lastOut, status: 'present', source: 'biometric', biometric_synced: true };
-          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [attId, userId, JSON.stringify(attData)]);
+          const attData = {
+            id: attId, user_id: userId, date,
+            check_in_time:  sd.check_in_time,
+            check_out_time: sd.check_out_time,
+            sessions:       sd.sessions,
+            raw_punches:    rawPunches,
+            working_hours:  sd.working_hours,
+            is_in_progress: sd.is_in_progress,
+            late_minutes,
+            status,
+            source: 'biometric', biometric_synced: true,
+          };
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [attId, userId, status, JSON.stringify(attData)]);
         }
       }
 
@@ -1277,30 +1341,32 @@ router.post('/:name', async (req, res) => {
       const readISTComponents = (raw) => {
         if (!raw) return null;
         const s = String(raw).trim().replace(' ', 'T');
-        // Strip tz suffix and re-parse as UTC so getUTC* methods give us the IST clock digits
         const naive = s.replace(/Z$|[+-]\d{2}:?\d{2}$/, '');
         const d = new Date(naive + 'Z');
         if (isNaN(d.getTime())) return null;
         const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
         const timeStr = `${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
-        return { dateStr, timeStr };
+        return { dateStr, timeStr, iso: naive + '.000Z' };
       };
 
       // Store logs in AttendanceLog entities + group by (user_id, date)
-      const byEmployeeDate = {}; // key: `userId_date`
+      // Punches stored as {iso, direction} so buildSessions can reconstruct sessions correctly
+      const byEmployeeDate = {}; // key: `userId_date` → { userId, date, punches: [{iso, direction}] }
 
       let storedCount = 0;
       for (const record of raw_records) {
         const empCode = String(record.EmployeeCode || record.emp_code || record.employee_code || record.EnrollNo || record.pin || '').toLowerCase();
         const logDateRaw = record.LogDate || record.log_date || record.punch_time || record.datetime || '';
+        const directionRaw = String(record.Direction || record.direction || record.type || 'in').toUpperCase();
+        const punchDirection = (directionRaw === 'OUT' || directionRaw === 'EXIT') ? 'OUT' : 'IN';
         if (!empCode || !logDateRaw) continue;
 
         const userId = codeMap[empCode];
-        if (!userId) continue; // unknown employee code
+        if (!userId) continue;
 
         const ist = readISTComponents(logDateRaw);
         if (!ist) continue;
-        const { dateStr, timeStr } = ist;
+        const { dateStr, iso: punchIso } = ist;
 
         // Persist log in AttendanceLog entity (avoid duplicates)
         const existingLog = await one(
@@ -1317,95 +1383,94 @@ router.post('/:name', async (req, res) => {
         }
 
         const key = `${userId}_${dateStr}`;
-        if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId, date: dateStr, times: [] };
-        byEmployeeDate[key].times.push(timeStr);
+        if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId, date: dateStr, punches: [] };
+        byEmployeeDate[key].punches.push({ time: punchIso, device_direction: punchDirection });
       }
 
-      // Also process date range from existing AttendanceLogs in DB if date_from provided
+      // Also reprocess existing AttendanceLogs in DB when a date range is provided
       if (date_from && raw_records.length === 0) {
         const logRows = await all("SELECT data FROM entities WHERE type='AttendanceLog'");
         logRows.forEach(row => {
           const log = JSON.parse(row.data);
           if (!log.LogDate) return;
-          // Re-resolve user_id via codeMap in case the log was stored before mapping was set up
           const userId = log.user_id || codeMap[String(log.EmployeeCode || '').toLowerCase()];
           if (!userId) return;
           const ist = readISTComponents(log.LogDate);
           if (!ist) return;
-          const { dateStr, timeStr } = ist;
+          const { dateStr, iso: punchIso } = ist;
           if (date_from && dateStr < date_from) return;
           if (date_to && dateStr > date_to) return;
+          const dirRaw = String(log.Direction || log.direction || log.type || 'in').toUpperCase();
+          const punchDir = (dirRaw === 'OUT' || dirRaw === 'EXIT') ? 'OUT' : 'IN';
           const key = `${userId}_${dateStr}`;
-          if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId, date: dateStr, times: [] };
-          byEmployeeDate[key].times.push(timeStr);
+          if (!byEmployeeDate[key]) byEmployeeDate[key] = { userId, date: dateStr, punches: [] };
+          byEmployeeDate[key].punches.push({ time: punchIso, device_direction: punchDir });
         });
       }
 
-      // Create/update Attendance records
+      // Create/update Attendance records using canonical buildSessions logic
       let records_synced = 0;
-      const toMins = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 
       for (const entry of Object.values(byEmployeeDate)) {
-        const { userId, date, times } = entry;
-        if (!times.length) continue;
+        const { userId, date, punches } = entry;
+        if (!punches.length) continue;
 
-        times.sort();
-        const checkIn  = times[0];
-        const checkOut = times.length > 1 ? times[times.length - 1] : null;
+        // Deduplicate and sort punches
+        const uniquePunches = punches.filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
+        uniquePunches.sort((a, b) => a.time.localeCompare(b.time));
 
         // Get employee's shift
         const empRow   = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
         const emp      = empRow ? JSON.parse(empRow.data) : {};
         const shiftRow = emp.shift_id
           ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id])
-          : await one("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'='true' OR data::jsonb->>'is_default'='1') LIMIT 1");
+          : await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'='true' LIMIT 1");
         const shift = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
 
-        // Compute status
-        const inMins  = toMins(checkIn);
-        const outMins = checkOut ? toMins(checkOut) : null;
-        const shiftStart = toMins(shift.start_time || '09:00');
-        const grace = shift.grace_period_minutes || 15;
-        const shiftHours = shift.working_hours || 9;
-
-        let status = 'present', working_hours = 0, late_minutes = 0;
-        if (outMins !== null) {
-          working_hours = (outMins - inMins) / 60;
-          if (working_hours < shiftHours / 2) status = 'short_attendance';
-          else if (working_hours < shiftHours * 0.9) status = 'half_day';
-          else status = 'present';
-        } else {
-          status = 'in_progress';
-        }
-
-        if (inMins > shiftStart + grace) {
-          late_minutes = inMins - shiftStart - grace;
-          if (status === 'present') status = 'late';
-        }
+        // Build sessions and compute status
+        const sd = buildSessions(uniquePunches);
+        const { status, late_minutes } = computeStatusFromSessions(sd, shift);
 
         const attData = {
           user_id: userId, date, employee_code: emp.employee_code || '',
-          check_in_time: checkIn, check_out_time: checkOut,
-          status, working_hours: Math.round(working_hours * 100) / 100, late_minutes,
-          punch_count: times.length, source: 'biometric',
+          check_in_time:  sd.check_in_time,
+          check_out_time: sd.check_out_time,
+          sessions:       sd.sessions,
+          raw_punches:    uniquePunches,
+          working_hours:  sd.working_hours,
+          is_in_progress: sd.is_in_progress,
+          late_minutes,
+          status,
+          punch_count: uniquePunches.length, source: 'biometric',
           updated_at: new Date().toISOString(),
         };
 
-        // Upsert attendance record
         const existAtt = await one(
           "SELECT id FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
         , [userId, date]);
 
         if (existAtt) {
           const existing = JSON.parse((await one("SELECT data FROM entities WHERE id=$1", [existAtt.id])).data);
-          // Don't overwrite regularised records
-          if (!existing.regularised) {
-            await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [status, JSON.stringify({ ...existing, ...attData, id: existAtt.id }), existAtt.id]);
-            records_synced++;
-          }
+          if (existing.status === 'regularised') continue;
+
+          // Merge with any existing raw_punches (e.g. from a previous partial sync)
+          const prevPunches = existing.raw_punches || [];
+          const mergedPunches = [...prevPunches, ...uniquePunches]
+            .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
+          mergedPunches.sort((a, b) => a.time.localeCompare(b.time));
+          const sdM = buildSessions(mergedPunches);
+          const { status: mStatus, late_minutes: mLate } = computeStatusFromSessions(sdM, shift);
+
+          await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
+            [mStatus, JSON.stringify({ ...existing, ...attData, raw_punches: mergedPunches, sessions: sdM.sessions,
+              check_in_time: sdM.check_in_time, check_out_time: sdM.check_out_time,
+              working_hours: sdM.working_hours, is_in_progress: sdM.is_in_progress,
+              late_minutes: mLate, status: mStatus, id: existAtt.id }), existAtt.id]);
+          records_synced++;
         } else {
           const attId = uuidv4();
-          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'active',$3)", [attId, userId, JSON.stringify({ ...attData, id: attId, created_at: new Date().toISOString() })]);
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)",
+            [attId, userId, status, JSON.stringify({ ...attData, id: attId, created_at: new Date().toISOString() })]);
           records_synced++;
         }
       }
@@ -1552,50 +1617,68 @@ router.post('/:name', async (req, res) => {
         return res.json({ success:false, error:'Provide attendance_id OR (employee_id + date)' });
       }
 
-      // Get shift
+      // Get shift — fixed: use ='true' (text comparison) not =1 (integer, always false in Postgres)
       const empRow   = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [attData.user_id]);
       const emp      = empRow ? JSON.parse(empRow.data) : {};
       const shiftRow = emp.shift_id
-        ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]): await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'=1");
-      const shift    = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
+        ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id])
+        : await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'='true' LIMIT 1");
+      const shift = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
 
-      const toMins = (timeStr) => {
-        if (!timeStr) return null;
-        const [h, m] = timeStr.split(':').map(Number);
+      const grace = shift.grace_period_minutes || 15;
+
+      // toMins handles both HH:MM and ISO strings (IST digits stored as .000Z)
+      const isoToMins = (ts) => {
+        if (!ts) return null;
+        const s = String(ts);
+        // ISO format: extract HH:MM from position 11
+        const hhmm = s.length > 5 ? s.slice(11, 16) : s;
+        const [h, m] = hhmm.split(':').map(Number);
+        if (isNaN(h) || isNaN(m)) return null;
         return h * 60 + m;
       };
 
-      const checkInMins  = toMins(attData.check_in_time);
-      const checkOutMins = toMins(attData.check_out_time);
-      const shiftStartMins = toMins(shift.start_time);
-      const shiftEndMins   = toMins(shift.end_time);
-      const grace          = shift.grace_period_minutes || 15;
-
       let status = 'absent', working_hours = 0, late_minutes = 0, overtime_minutes = 0;
 
-      if (checkInMins !== null) {
-        if (checkOutMins !== null && checkOutMins > checkInMins) {
-          working_hours = (checkOutMins - checkInMins) / 60;
-          const halfDay = (shift.working_hours || 9) / 2;
-          if (working_hours >= (shift.working_hours || 9) * 0.9) {
-            status = 'present';
-          } else if (working_hours >= halfDay) {
-            status = 'half_day';
+      // Prefer raw_punches path (canonical sessions) when available
+      if (attData.raw_punches && attData.raw_punches.length > 0) {
+        const sd = buildSessions(attData.raw_punches);
+        const result = computeStatusFromSessions(sd, shift);
+        status = result.status;
+        late_minutes = result.late_minutes || 0;
+        working_hours = sd.working_hours || 0;
+        // Overtime: minutes worked beyond shift end
+        const checkOutMinsR = isoToMins(sd.check_out_time);
+        const shiftEndMinsR = isoToMins(shift.end_time);
+        if (checkOutMinsR !== null && shiftEndMinsR !== null && checkOutMinsR > shiftEndMinsR + grace) {
+          overtime_minutes = checkOutMinsR - shiftEndMinsR - grace;
+        }
+      } else {
+        // Fall back to stored check_in/check_out (manually entered or legacy records)
+        const checkInMins    = isoToMins(attData.check_in_time);
+        const checkOutMins   = isoToMins(attData.check_out_time);
+        const shiftStartMins = isoToMins(shift.start_time);
+        const shiftEndMins   = isoToMins(shift.end_time);
+
+        if (checkInMins !== null) {
+          if (checkOutMins !== null && checkOutMins > checkInMins) {
+            working_hours = (checkOutMins - checkInMins) / 60;
+            const halfDay = (shift.working_hours || 9) / 2;
+            if      (working_hours >= (shift.working_hours || 9) * 0.9) status = 'present';
+            else if (working_hours >= halfDay)                           status = 'half_day';
+            else                                                         status = 'short_attendance';
           } else {
-            status = 'short_attendance';
+            status = 'in_progress';
           }
-        } else {
-          // Checked in but not out yet — mark as in progress
-          status = 'in_progress';
-        }
 
-        if (shiftStartMins !== null && checkInMins > shiftStartMins + grace) {
-          late_minutes = checkInMins - shiftStartMins - grace;
-          if (status === 'present') status = 'late';
-        }
+          if (shiftStartMins !== null && checkInMins > shiftStartMins + grace) {
+            late_minutes = checkInMins - shiftStartMins - grace;
+            if (status === 'present') status = 'late';
+          }
 
-        if (checkOutMins !== null && shiftEndMins !== null && checkOutMins > shiftEndMins + 15) {
-          overtime_minutes = checkOutMins - shiftEndMins - 15;
+          if (checkOutMins !== null && shiftEndMins !== null && checkOutMins > shiftEndMins + grace) {
+            overtime_minutes = checkOutMins - shiftEndMins - grace;
+          }
         }
       }
 
@@ -1608,7 +1691,6 @@ router.post('/:name', async (req, res) => {
         computed_at: new Date().toISOString(),
       };
 
-      // Persist the computed values
       const idToUpdate = attData.id || attendance_id;
       if (idToUpdate) {
         await run("UPDATE entities SET status=$1, data=$2 WHERE type='Attendance' AND id=$3", [status, JSON.stringify(updated), idToUpdate]);

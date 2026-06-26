@@ -64,7 +64,8 @@ export default function AttendanceHistory() {
       if (isAfter(day, today)) return; // skip future days
       const att = attendanceData.find(a => isSameDay(new Date(a.date), day));
       if (att) {
-        if (att.status === 'present' || att.status === 'half_day' || att.status === 'on_duty') present++;
+        if (['present','late','on_duty','work_from_home','short_attendance'].includes(att.status)) present++;
+        else if (att.status === 'half_day') present += 0.5;
         else if (att.status === 'absent') absent++;
         else if (att.status === 'leave') leave++;
         totalHours += att.working_hours || 0;
