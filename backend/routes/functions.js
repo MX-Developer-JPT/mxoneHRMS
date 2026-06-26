@@ -3499,13 +3499,16 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
           // 3. Salary structure
           if (row.sal) {
-            const existingSal = await one("SELECT id FROM entities WHERE type='SalaryStructure' AND user_id=$1", [userId]);
+            const existingSal = await one("SELECT id FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [userId]);
             if (!existingSal) {
               const s = row.sal;
               const toNum = (v) => parseFloat(String(v).replace(/,/g,'')) || 0;
+              const salId = uuidv4();
+              const effectiveFrom = row.date_of_joining || new Date().toISOString().split('T')[0];
               const salData = {
-                id: uuidv4(), user_id: userId, employee_id: empId, employee_code: row.code,
-                employee_name: row.name, effective_date: row.date_of_joining || new Date().toISOString().split('T')[0],
+                id: salId, user_id: userId, employee_id: empId, employee_code: row.code,
+                employee_name: row.name,
+                effective_from: effectiveFrom, effective_date: effectiveFrom,
                 basic_monthly: toNum(s['basic_salary']), hra_monthly: toNum(s['hra']),
                 conveyance_monthly: toNum(s['conveyance']),
                 car_fuel_maintenance: toNum(s['car_fuel_maintenance']),
@@ -3517,7 +3520,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
                 car_lease: toNum(s['car_lease']), total_ctc: toNum(s['totalctc']),
                 status: 'active', created_at: new Date().toISOString(),
               };
-              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SalaryStructure',$2,'active',$3)", [uuidv4(), userId, JSON.stringify(salData)]);
+              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SalaryStructure',$2,'active',$3)", [salId, userId, JSON.stringify(salData)]);
             }
           }
 
@@ -3526,28 +3529,30 @@ ${contextBlock || 'No employee context available — answer from general policy 
             const existingBank = await one("SELECT id FROM entities WHERE type='BankDetails' AND user_id=$1", [userId]);
             if (!existingBank) {
               const b = row.bank;
+              const bankId = uuidv4();
               const bankData = {
-                id: uuidv4(), user_id: userId, employee_id: empId,
+                id: bankId, user_id: userId, employee_id: empId,
                 account_number: b.account_number || '', ifsc_code: b.ifsc_code || '',
                 bank_name: b.bank_name || '', branch: b.branch || '',
                 account_type: 'savings', is_primary: true,
                 created_at: new Date().toISOString(),
               };
-              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'BankDetails',$2,'active',$3)", [uuidv4(), userId, JSON.stringify(bankData)]);
+              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'BankDetails',$2,'active',$3)", [bankId, userId, JSON.stringify(bankData)]);
             }
           }
 
-          // 5. Leave balances
+          // 5. Leave balances — use ::jsonb cast since data column is TEXT
           for (const lb of row.leave) {
             const policy = lb.leave_policy_code || '';
             const year   = lb.year || new Date().getFullYear();
             const exists = await one(
-              "SELECT id FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data->>'leave_policy_code'=$2 AND data->>'year'=$3",
+              "SELECT id FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data::jsonb->>'leave_policy_code'=$2 AND data::jsonb->>'year'=$3",
               [userId, policy, String(year)]
             );
             if (!exists) {
+              const lbId = uuidv4();
               const lbData = {
-                id: uuidv4(), user_id: userId, employee_id: empId,
+                id: lbId, user_id: userId, employee_id: empId,
                 leave_policy_code: policy, year: String(year),
                 total_allocated: parseFloat(lb.total_allocated) || 0,
                 accrued_this_year: parseFloat(lb.accrued_this_year) || 0,
@@ -3557,7 +3562,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
                 last_accrual_year: lb.last_accrual_year || '',
                 created_at: new Date().toISOString(),
               };
-              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [uuidv4(), userId, JSON.stringify(lbData)]);
+              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [lbId, userId, JSON.stringify(lbData)]);
             }
           }
 
