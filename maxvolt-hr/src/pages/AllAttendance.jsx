@@ -469,7 +469,7 @@ export default function AllAttendance() {
                   <div className="space-y-2">
                     {records.map(record => {
                       const emp = record._emp;
-                      const name = emp?.display_name || emp?._user?.full_name || record.user_id;
+                      const name = emp?.display_name || emp?._user?.full_name || record.user_id || '?';
                       const displayStatus = getDisplayStatus(record);
 
                       // Resolve first-in / last-out from all possible sources

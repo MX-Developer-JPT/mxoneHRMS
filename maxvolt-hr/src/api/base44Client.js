@@ -118,8 +118,27 @@ function makeEntityClient(type) {
 }
 
 // Proxy: base44.entities.AnyEntityName returns an entity client automatically
+// Special case: User is stored in the users table, not entities — route to getAllUsers
+const userClient = {
+  list: async () => {
+    const r = await functions.invoke('getAllUsers', {});
+    return r.data?.users || [];
+  },
+  filter: async (query = {}) => {
+    const r = await functions.invoke('getAllUsers', {});
+    const users = r.data?.users || [];
+    if (!Object.keys(query).length) return users;
+    return users.filter(u => Object.entries(query).every(([k, v]) => u[k] === v));
+  },
+  get: async (id) => {
+    const r = await functions.invoke('getAllUsers', {});
+    return (r.data?.users || []).find(u => u.id === id) || null;
+  },
+};
+
 const entities = new Proxy({}, {
   get(_target, type) {
+    if (String(type) === 'User') return userClient;
     return makeEntityClient(String(type));
   },
 });
