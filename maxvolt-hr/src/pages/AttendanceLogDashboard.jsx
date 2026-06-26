@@ -85,7 +85,7 @@ export default function AttendanceLogDashboard() {
 
   const loadLogs = async () => {
     setLoading(true);
-    const data = await base44.entities.AttendanceLog.list('-LogDate', 1000);
+    const data = await base44.entities.AttendanceLog.list('-LogDate');
     setLogs(data);
     setLoading(false);
   };

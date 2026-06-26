@@ -141,7 +141,7 @@ async function autoSeed() {
 bootstrapFromEnv().then(() => autoSeed()).catch(() => {});
 
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '50mb' }));
 const UPLOADS_DIR = process.env.NODE_ENV === 'production'
   ? '/app/uploads'
   : path.join(__dirname, 'uploads');
@@ -176,7 +176,10 @@ if (process.env.NODE_ENV === 'production') {
   app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 }
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n✓ Maxvolt HR Backend  http://localhost:${PORT}  [${process.env.NODE_ENV || 'development'}]`);
 });
+// No hard timeout — long-running ops like bulk biometric processing must complete fully
+server.setTimeout(0);
+server.keepAliveTimeout = 65000;
 
