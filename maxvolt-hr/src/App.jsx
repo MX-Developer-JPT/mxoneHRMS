@@ -138,7 +138,7 @@ const ForceChangePassword = ({ onDone }) => {
     setLoading(true);
     setError('');
     try {
-      const token = localStorage.getItem('token');
+      const token = localStorage.getItem('base44_access_token');
       const res = await fetch('/api/auth/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
