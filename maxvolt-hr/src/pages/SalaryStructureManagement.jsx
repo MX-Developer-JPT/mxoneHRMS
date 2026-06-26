@@ -309,7 +309,6 @@ export default function SalaryStructureManagement() {
         gratuity: ovr('gratuity') || Math.round(basic * 0.0481),
         medical_contribution: medicalContrib,
         grossMonthly: grossM,
-        isPFApplicable,
         isESIApplicable,
         annualCTC: parseFloat(ctc) || grossM * 12
       };
@@ -668,7 +667,7 @@ export default function SalaryStructureManagement() {
                       <div className="md:col-span-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
                         <p className="text-sm font-semibold text-gray-700 mb-1">Gross Monthly: <span className="text-blue-700">₹{fmt(computed.grossMonthly)}</span></p>
                         <p className="text-xs text-gray-500">
-                          {computed.isPFApplicable ? '✓ PF Applicable (Basic > ₹21,000)' : '✓ ESI Applicable (Basic ≤ ₹21,000)'}
+                          ✓ PF Applicable (All employees){computed.isESIApplicable ? ' · ✓ ESI Applicable (Basic ≤ ₹21,000)' : ''}
                         </p>
                       </div>
                     </div>
@@ -725,7 +724,7 @@ export default function SalaryStructureManagement() {
                     </div>
                   ) : computed ? (
                     <div className="grid md:grid-cols-3 gap-3">
-                      {computed.isPFApplicable && (
+                      {computed.employer_pf_contribution > 0 && (
                         <div className="p-3 bg-green-50 rounded-lg border border-green-100">
                           <p className="text-xs text-gray-500">Employer PF (13%)</p>
                           <p className="text-lg font-bold text-green-600">₹{fmt(computed.employer_pf_contribution)}/mo</p>
