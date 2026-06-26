@@ -9,6 +9,11 @@ import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import AttendanceCameraCapture from '@/components/attendance/AttendanceCameraCapture';
 
+// Returns a Date object with its ms representing IST clock digits as if they were UTC.
+// This matches the "Store IST, display IST" convention used throughout the app.
+// e.g. 9:00 AM IST → Date with getTime() = 2026-06-26T09:00:00Z (not actual UTC 03:30)
+const toISTTime = () => new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+
 export default function MarkAttendance() {
   const [user, setUser] = useState(null);
   const [employee, setEmployee] = useState(null);
@@ -182,8 +187,8 @@ export default function MarkAttendance() {
   }, [capturedPhoto, showCamera]);
 
   const processCheckIn = async () => {
-    const checkInTime = new Date();
-    const today = checkInTime.toISOString().split('T')[0];
+    const checkInTime = toISTTime();
+    const today = checkInTime.toISOString().split('T')[0]; // IST date since checkInTime uses IST digits
     // Optimistic update — show result immediately
     setTodayAttendance({
       user_id: user.id,
@@ -236,8 +241,8 @@ export default function MarkAttendance() {
   };
 
   const processCheckOut = async () => {
-    const checkOutTime = new Date();
-    const checkInTime = new Date(todayAttendance.check_in_time);
+    const checkOutTime = toISTTime();
+    const checkInTime = new Date(todayAttendance.check_in_time); // IST-digit stored, same offset → diff is correct
     const diffMs = checkOutTime - checkInTime;
     const workingHours = diffMs / (1000 * 60 * 60);
     const expectedHours = shift?.working_hours || 8;
