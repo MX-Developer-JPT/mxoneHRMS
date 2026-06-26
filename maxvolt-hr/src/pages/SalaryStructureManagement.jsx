@@ -379,6 +379,7 @@ export default function SalaryStructureManagement() {
         user_id: selectedEmployee,
         effective_from: effectiveFrom,
         ctc: parseFloat(ctc),
+        is_manual_override: useOverrides,
         basic_salary: vals.basic_salary,
         hra: vals.hra,
         conveyance: vals.conveyance,

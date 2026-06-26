@@ -564,7 +564,17 @@ router.post('/:name', async (req, res) => {
       );
       const bonuses = bonusRows.map(r => JSON.parse(r.data));
 
-      const html = buildPayslipHtml(payroll, employee);
+      // Resolve department code → full name
+      let deptName = employee.department || 'N/A';
+      if (employee.department) {
+        const deptRow = await one(
+          "SELECT data FROM entities WHERE type='Department' AND (data::jsonb->>'code'=$1 OR data::jsonb->>'name'=$1) LIMIT 1",
+          [employee.department]
+        );
+        if (deptRow) deptName = JSON.parse(deptRow.data).name || deptName;
+      }
+
+      const html = buildPayslipHtml(payroll, employee, deptName);
       return res.json({ success:true, html, payroll, employee, empUser, salaryStructure, bonuses, data:payroll });
     }
 
@@ -5608,25 +5618,90 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
 });
 
 /* ── payslip HTML ──────────────────────────────────────── */
-function buildPayslipHtml(payroll, emp) {
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const mon  = months[(payroll.month||1)-1];
-  const earn = [['Basic Salary',payroll.basic_salary||0],['HRA',payroll.hra||0],['Conveyance',payroll.conveyance||0],['Special Allowance',payroll.special_allowance||0],['Other Allowances',payroll.other_allowances||0]].filter(([,v])=>v>0);
-  const ded  = [['PF Deduction',payroll.deductions?.pf||0],['Professional Tax',payroll.deductions?.pt||0],['TDS',payroll.deductions?.tds||0],['LOP Deduction',payroll.loss_of_pay_amount||0]].filter(([,v])=>v>0);
+function buildPayslipHtml(payroll, emp, deptName) {
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const mon   = months[(payroll.month||1)-1];
+  const dept  = deptName || emp.department || 'N/A';
+
+  const earn = [
+    ['Basic Salary',        payroll.basic_salary        || 0],
+    ['HRA',                 payroll.hra                 || 0],
+    ['Conveyance Allowance',payroll.conveyance           || 0],
+    ['Performance Bonus',   payroll.performance_bonus    || 0],
+    ['Special Allowance',   payroll.special_allowance    || 0],
+    ['Other Allowances',    payroll.other_allowances     || 0],
+  ].filter(([,v]) => v > 0);
+
+  const ded = [
+    ['PF Deduction (12%)',  payroll.deductions?.pf       || payroll.pf_contribution  || 0],
+    ['ESI Deduction (0.75%)',payroll.deductions?.esi     || payroll.esi_contribution || 0],
+    ['Professional Tax',    payroll.deductions?.pt       || payroll.deductions?.professional_tax || 0],
+    ['TDS',                 payroll.deductions?.tds      || 0],
+    ['Loan Deduction',      payroll.deductions?.loan     || 0],
+    ['LOP Deduction',       payroll.loss_of_pay_amount   || 0],
+  ].filter(([,v]) => v > 0);
+
+  const gross    = payroll.gross_salary   || 0;
+  const totalDed = payroll.total_deductions || (payroll.deductions ? Object.values(payroll.deductions).reduce((s,v)=>s+(v||0),0) : 0);
+  const net      = payroll.net_salary     || 0;
+
+  const rows = Array.from({ length: Math.max(earn.length, ded.length) }, (_, i) => `
+    <tr>
+      <td style="padding:8px;border:1px solid #ddd">${earn[i]?.[0] || ''}</td>
+      <td style="padding:8px;text-align:right;border:1px solid #ddd">${earn[i] ? earn[i][1].toLocaleString('en-IN') : ''}</td>
+      <td style="padding:8px;border:1px solid #ddd">${ded[i]?.[0] || ''}</td>
+      <td style="padding:8px;text-align:right;border:1px solid #ddd">${ded[i] ? ded[i][1].toLocaleString('en-IN') : ''}</td>
+    </tr>`).join('');
+
   return `<div style="font-family:Arial,sans-serif;max-width:820px;margin:0 auto;padding:20px;border:1px solid #ddd;border-radius:8px">
-  <div style="background:#2563eb;color:#fff;padding:20px;border-radius:6px;margin-bottom:20px"><h2 style="margin:0">MaxVolt Energy Industries Limited</h2><p style="margin:4px 0 0;opacity:.85">Pay Slip — ${mon} ${payroll.year||''}</p></div>
-  <table style="width:100%;border-collapse:collapse;margin-bottom:20px;font-size:13px">
-    <tr><td style="padding:6px;width:50%"><b>Employee:</b> ${emp.display_name||'N/A'}</td><td style="padding:6px"><b>Emp. Code:</b> ${emp.employee_code||'N/A'}</td></tr>
-    <tr><td style="padding:6px"><b>Department:</b> ${emp.department||'N/A'}</td><td style="padding:6px"><b>Designation:</b> ${emp.designation||'N/A'}</td></tr>
-    <tr><td style="padding:6px"><b>Working Days:</b> ${payroll.working_days||26}</td><td style="padding:6px"><b>Present Days:</b> ${payroll.present_days||26}</td></tr>
+  <div style="background:#1e3a5f;color:#fff;padding:20px;border-radius:6px 6px 0 0;margin-bottom:0;display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <h2 style="margin:0;font-size:18px">Maxvolt Energy Industries Limited</h2>
+      <p style="margin:4px 0 0;opacity:.75;font-size:12px">E-82 Bulandshahr Road Industrial Area, Ghaziabad, UP – 201009</p>
+    </div>
+    <div style="text-align:right">
+      <p style="margin:0;font-size:15px;font-weight:700">Pay Slip</p>
+      <p style="margin:2px 0 0;opacity:.85;font-size:13px">${mon} ${payroll.year||''}</p>
+    </div>
+  </div>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:13px;border:1px solid #ddd;border-top:3px solid #f97316">
+    <tr style="background:#f8fafc">
+      <td style="padding:8px 10px;width:50%;border-right:1px solid #ddd"><b>Employee Name:</b> ${emp.display_name || 'N/A'}</td>
+      <td style="padding:8px 10px"><b>Employee Code:</b> ${emp.employee_code || 'N/A'}</td>
+    </tr>
+    <tr>
+      <td style="padding:8px 10px;border-right:1px solid #ddd"><b>Designation:</b> ${emp.designation || 'N/A'}</td>
+      <td style="padding:8px 10px"><b>Department:</b> ${dept}</td>
+    </tr>
+    <tr style="background:#f8fafc">
+      <td style="padding:8px 10px;border-right:1px solid #ddd"><b>Working Days:</b> ${payroll.working_days || 26}</td>
+      <td style="padding:8px 10px"><b>Present Days:</b> ${payroll.present_days || 26}</td>
+    </tr>
   </table>
   <table style="width:100%;border-collapse:collapse;font-size:13px">
-    <thead><tr style="background:#f1f5f9"><th style="padding:8px;text-align:left;border:1px solid #ddd">Earnings</th><th style="padding:8px;text-align:right;border:1px solid #ddd">Amount (₹)</th><th style="padding:8px;text-align:left;border:1px solid #ddd">Deductions</th><th style="padding:8px;text-align:right;border:1px solid #ddd">Amount (₹)</th></tr></thead>
-    <tbody>${Array.from({length:Math.max(earn.length,ded.length)},(_,i)=>`<tr><td style="padding:8px;border:1px solid #ddd">${earn[i]?.[0]||''}</td><td style="padding:8px;text-align:right;border:1px solid #ddd">${earn[i]?earn[i][1].toLocaleString('en-IN'):''}</td><td style="padding:8px;border:1px solid #ddd">${ded[i]?.[0]||''}</td><td style="padding:8px;text-align:right;border:1px solid #ddd">${ded[i]?ded[i][1].toLocaleString('en-IN'):''}</td></tr>`).join('')}
-    <tr style="font-weight:bold;background:#f8fafc"><td style="padding:8px;border:1px solid #ddd">Gross Salary</td><td style="padding:8px;text-align:right;border:1px solid #ddd">${(payroll.gross_salary||0).toLocaleString('en-IN')}</td><td style="padding:8px;border:1px solid #ddd">Total Deductions</td><td style="padding:8px;text-align:right;border:1px solid #ddd">${(payroll.total_deductions||0).toLocaleString('en-IN')}</td></tr>
-    </tbody></table>
-  <div style="margin-top:16px;padding:14px;background:#eff6ff;border-radius:6px;text-align:right"><span style="font-size:18px;font-weight:bold;color:#2563eb">Net Pay: ₹${(payroll.net_salary||0).toLocaleString('en-IN')}</span></div>
-  <p style="color:#999;font-size:11px;margin-top:16px;text-align:center">This is a computer-generated document and does not require a signature.</p>
+    <thead>
+      <tr style="background:#1e3a5f;color:#fff">
+        <th style="padding:8px 10px;text-align:left;width:35%">Earnings</th>
+        <th style="padding:8px 10px;text-align:right;width:15%">Amount (₹)</th>
+        <th style="padding:8px 10px;text-align:left;width:35%">Deductions</th>
+        <th style="padding:8px 10px;text-align:right;width:15%">Amount (₹)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows}
+      <tr style="font-weight:bold;background:#f1f5f9">
+        <td style="padding:9px 10px;border-top:2px solid #ddd">Gross Salary</td>
+        <td style="padding:9px 10px;text-align:right;border-top:2px solid #ddd">${gross.toLocaleString('en-IN')}</td>
+        <td style="padding:9px 10px;border-top:2px solid #ddd">Total Deductions</td>
+        <td style="padding:9px 10px;text-align:right;border-top:2px solid #ddd">${totalDed.toLocaleString('en-IN')}</td>
+      </tr>
+    </tbody>
+  </table>
+  <div style="margin-top:12px;padding:14px 18px;background:#eff6ff;border-radius:6px;display:flex;justify-content:space-between;align-items:center">
+    <span style="font-size:13px;color:#64748b">Net Pay = Gross Salary − Total Deductions</span>
+    <span style="font-size:19px;font-weight:bold;color:#1e40af">Net Pay: ₹${net.toLocaleString('en-IN')}</span>
+  </div>
+  <p style="color:#aaa;font-size:11px;margin-top:14px;text-align:center">This is a computer-generated document and does not require a signature.</p>
 </div>`;
 }
 
