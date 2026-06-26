@@ -51,14 +51,68 @@ const sortRows = (arr, sortField) => {
   });
 };
 
+/* ── In-memory cache for slow-changing entity types ───────── */
+// Caches list/filter results for 45 seconds; invalidated on write.
+const _cache = new Map();
+const CACHE_TTL = 45_000;
+const CACHEABLE = new Set([
+  'Employee', 'Department', 'LeavePolicy', 'Shift', 'AppLocation',
+  'PayrollConfiguration', 'Holiday', 'HelpdeskCategory', 'ShiftPolicy'
+]);
+
+function cacheGet(key) {
+  const e = _cache.get(key);
+  if (e && Date.now() < e.exp) return e.data;
+  _cache.delete(key);
+  return null;
+}
+function cacheSet(key, data) {
+  _cache.set(key, { data, exp: Date.now() + CACHE_TTL });
+}
+function cacheInvalidate(type) {
+  for (const k of _cache.keys()) {
+    if (k.startsWith(type + ':')) _cache.delete(k);
+  }
+}
+
+/* ── SQL ORDER BY + LIMIT builder ─────────────────────────── */
+// Pushes sorting and limiting into the database query so the server
+// never loads thousands of rows just to slice them in JavaScript.
+function buildOrderLimit(sort, limit) {
+  let order = '';
+  if (sort) {
+    const desc = sort.startsWith('-');
+    const field = desc ? sort.slice(1) : sort;
+    const dir = desc ? 'DESC' : 'ASC';
+    if (field === 'created_date' || field === 'created_at') {
+      order = ` ORDER BY created_at ${dir}`;
+    } else if (field === 'updated_date' || field === 'updated_at') {
+      order = ` ORDER BY updated_at ${dir}`;
+    } else if (/^[A-Za-z0-9_]+$/.test(field)) {
+      // JSON field — safe because we validated it's alphanumeric+underscore
+      order = ` ORDER BY data::jsonb->>'${field}' ${dir} NULLS LAST`;
+    }
+  }
+  const lim = limit ? ` LIMIT ${Math.min(parseInt(limit, 10), 50000)}` : '';
+  return order + lim;
+}
+
 /* ── LIST  GET /api/entities/:type ───────────────────── */
 router.get('/:type', async (req, res) => {
   const { type } = req.params;
   const { sort, limit } = req.query;
-  const rows = await all('SELECT * FROM entities WHERE type = $1', [type]);
-  let data = rows.map(parseRow);
-  if (sort)  data = sortRows(data, sort);
-  if (limit) data = data.slice(0, parseInt(limit, 10));
+
+  const cacheKey = `${type}:list:${sort || ''}:${limit || ''}`;
+  if (CACHEABLE.has(type)) {
+    const hit = cacheGet(cacheKey);
+    if (hit) return res.json(hit);
+  }
+
+  const sql = `SELECT * FROM entities WHERE type = $1${buildOrderLimit(sort, limit)}`;
+  const rows = await all(sql, [type]);
+  const data = rows.map(parseRow);
+
+  if (CACHEABLE.has(type)) cacheSet(cacheKey, data);
   res.json(data);
 });
 
@@ -70,22 +124,30 @@ router.post('/:type/filter', async (req, res) => {
   const simpleUserId = isPrimitive(query.user_id) ? query.user_id : undefined;
   const simpleStatus = isPrimitive(query.status)  ? query.status  : undefined;
 
+  // Only push LIMIT/ORDER to SQL when the entire filter is handled by SQL columns
+  // (pushing LIMIT before JS filtering would cut off valid matching records)
+  const isSimpleFilter = !!(simpleUserId || simpleStatus ||
+    (query.is_active !== undefined && isPrimitive(query.is_active) && Object.keys(query).length === 1));
+  const sqlSuffix = isSimpleFilter ? buildOrderLimit(sort, limit) : '';
+
   let rows;
   if (simpleUserId && simpleStatus) {
-    rows = await all('SELECT * FROM entities WHERE type=$1 AND user_id=$2 AND status=$3', [type, simpleUserId, simpleStatus]);
+    rows = await all(`SELECT * FROM entities WHERE type=$1 AND user_id=$2 AND status=$3${sqlSuffix}`, [type, simpleUserId, simpleStatus]);
   } else if (simpleUserId) {
-    rows = await all('SELECT * FROM entities WHERE type=$1 AND user_id=$2', [type, simpleUserId]);
+    rows = await all(`SELECT * FROM entities WHERE type=$1 AND user_id=$2${sqlSuffix}`, [type, simpleUserId]);
   } else if (simpleStatus) {
-    rows = await all('SELECT * FROM entities WHERE type=$1 AND status=$2', [type, simpleStatus]);
+    rows = await all(`SELECT * FROM entities WHERE type=$1 AND status=$2${sqlSuffix}`, [type, simpleStatus]);
   } else if (query.is_active !== undefined && isPrimitive(query.is_active)) {
-    rows = await all('SELECT * FROM entities WHERE type=$1 AND is_active=$2', [type, query.is_active ? 1 : 0]);
+    rows = await all(`SELECT * FROM entities WHERE type=$1 AND is_active=$2${sqlSuffix}`, [type, query.is_active ? 1 : 0]);
   } else {
     rows = await all('SELECT * FROM entities WHERE type=$1', [type]);
   }
 
   let data = rows.map(parseRow).filter(d => matchesFilter(d, query));
-  if (sort)  data = sortRows(data, sort);
-  if (limit) data = data.slice(0, parseInt(limit, 10));
+  if (!isSimpleFilter) {
+    if (sort)  data = sortRows(data, sort);
+    if (limit) data = data.slice(0, parseInt(limit, 10));
+  }
   res.json(data);
 });
 
@@ -153,6 +215,7 @@ router.post('/:type', async (req, res) => {
     } catch(ne) { console.error('[notif] post-create hook error:', ne.message); }
   })();
 
+  cacheInvalidate(type);
   res.status(201).json(parseRow(row));
 });
 
@@ -220,6 +283,7 @@ router.patch('/:type/:id', async (req, res) => {
     })();
   }
 
+  cacheInvalidate(type);
   res.json(parseRow(newRow));
 });
 
@@ -228,6 +292,7 @@ router.delete('/:type/:id', async (req, res) => {
   const { type, id } = req.params;
   const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
+  cacheInvalidate(type);
   res.json({ success: true });
 });
 

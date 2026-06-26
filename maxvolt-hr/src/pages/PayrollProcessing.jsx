@@ -54,13 +54,11 @@ export default function PayrollProcessing() {
       });
       setBonuses(allBonuses);
 
-      const firstDay = new Date(selectedYear, selectedMonth - 1, 1);
-      const lastDay = new Date(selectedYear, selectedMonth, 0);
-      const attendanceRecords = await base44.entities.Attendance.list();
-      setAttendance(attendanceRecords.filter(a => {
-        const date = new Date(a.date);
-        return date >= firstDay && date <= lastDay;
-      }));
+      const pad = (n) => String(n).padStart(2, '0');
+      const dateFrom = `${selectedYear}-${pad(selectedMonth)}-01`;
+      const dateTo = `${selectedYear}-${pad(selectedMonth)}-${pad(new Date(selectedYear, selectedMonth, 0).getDate())}`;
+      const attResult = await base44.functions.invoke('getAllAttendance', { date_from: dateFrom, date_to: dateTo });
+      setAttendance(attResult.data?.records || []);
     } catch (error) {
       console.error('Error loading payroll:', error);
     }

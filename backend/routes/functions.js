@@ -9,6 +9,12 @@ import { buildSessions, computeStatusFromSessions } from './attendancelog.js';
 
 const router = Router();
 
+// Short-lived cache for getAllUsers — called on every page load across the app.
+// Invalidated automatically on any user create/update (auth routes clear it via clearUsersCache).
+let _usersCache = null;
+let _usersCacheExp = 0;
+export function clearUsersCache() { _usersCache = null; }
+
 const getUser = (req) => {
   const t = req.headers.authorization?.replace('Bearer ', '');
   if (!t) return null;
@@ -137,9 +143,14 @@ router.post('/:name', async (req, res) => {
 
     /* ── User management ──────────────────────────────── */
     case 'getAllUsers': {
+      if (_usersCache && Date.now() < _usersCacheExp) {
+        return res.json({ users: _usersCache });
+      }
       const users = await all(
         'SELECT id,email,full_name,first_name,last_name,role,custom_role,display_name FROM users'
       );
+      _usersCache = users;
+      _usersCacheExp = Date.now() + 60_000; // 60-second cache
       return res.json({ users });
     }
 

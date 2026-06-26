@@ -85,14 +85,14 @@ export default function AttendanceLogDashboard() {
 
   const loadLogs = async () => {
     setLoading(true);
-    const data = await base44.entities.AttendanceLog.list('-LogDate', 10000);
+    const data = await base44.entities.AttendanceLog.list('-LogDate', 1000);
     setLogs(data);
     setLoading(false);
   };
 
   useEffect(() => {
     loadLogs();
-    const interval = setInterval(loadLogs, 60000); // auto-refresh every 60s
+    const interval = setInterval(loadLogs, 300000); // auto-refresh every 5 min
     return () => clearInterval(interval);
   }, []);
 

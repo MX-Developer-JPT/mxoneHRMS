@@ -18,7 +18,7 @@ export default function BiometricCodeMapping() {
   const load = async () => {
     setLoading(true);
     const [logData, empData] = await Promise.all([
-      base44.entities.AttendanceLog.list('-LogDate', 5000),
+      base44.entities.AttendanceLog.list('-LogDate', 1000),
       base44.entities.Employee.list(),
     ]);
     setLogs(logData);
