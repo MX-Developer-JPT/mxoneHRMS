@@ -511,6 +511,124 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, processed, message:`Processed payroll for ${processed} employees` });
     }
 
+    case 'importSalaryStructures': {
+      // Bulk import salary structures from the Salary Structure Excel file.
+      // Expects: { rows: [...], effective_from: 'yyyy-MM-dd', approved_by: userId }
+      // Each row contains Excel columns mapped to salary fields (all values are MONTHLY).
+      const { rows = [], effective_from, approved_by } = p;
+      if (!rows.length) return res.json({ success: false, error: 'No rows provided' });
+
+      const effDate = effective_from || new Date().toISOString().slice(0, 10);
+
+      // Load all active employees keyed by employee_code (case-insensitive)
+      const empRows = await all("SELECT id, data FROM entities WHERE type='Employee' AND status='active'");
+      const empByCode = {};
+      for (const r of empRows) {
+        const d = JSON.parse(r.data);
+        if (d.employee_code) empByCode[d.employee_code.trim().toUpperCase()] = { id: r.id, ...d };
+      }
+
+      const results = { created: 0, skipped: 0, errors: [] };
+
+      for (const row of rows) {
+        const code = (row.employee_id || '').trim().toUpperCase();
+        const emp = empByCode[code];
+        if (!emp) {
+          results.skipped++;
+          results.errors.push(`${code}: employee not found`);
+          continue;
+        }
+
+        // All salary values from Excel are monthly
+        const n = (v) => parseFloat(v) || 0;
+        const basicM        = n(row.basic_salary);
+        const hraM          = n(row.hra);
+        const conveyanceM   = n(row.conveyance);
+        const carFuelM      = n(row.car_fuel_maintenance);
+        const healthM       = n(row.health_and_wellness);
+        const hardFurnishM  = n(row.hard_furnishing);
+        const pfEmpM        = n(row.provident_fund);      // employee PF (12% of capped basic)
+        const medicalInsM   = n(row.medical_insurance);   // medical insurance (employer)
+        const adminChargeM  = n(row.admin_charge);
+        const vppM          = n(row.vpp_deduction);       // VPP deduction
+        const ctcBonusM     = n(row.ctc_bonus);           // monthly bonus in CTC
+        const esiEmpM       = n(row.esi_employer);        // employer ESI
+        const npsEmpM       = n(row.nps_employee);        // NPS employee contribution
+        const carLeaseM     = n(row.car_lease);
+        const totalCTCM     = n(row.total_ctc);           // monthly total CTC
+        const annualCTC     = totalCTCM * 12;
+
+        // Derive employer PF (13% on capped basic) and employee ESI (0.75% on basic ≤21000)
+        const pfBase          = Math.min(basicM, 15000);
+        const employerPFM     = Math.round(pfBase * 0.13);
+        const employeeESIM    = basicM <= 21000 ? Math.round(basicM * 0.0075) : 0;
+        const performanceBonus = ctcBonusM || vppM; // prefer CTC_BONUS, fallback to VPP
+
+        // Deactivate any existing active salary structure for this employee
+        const existing = await all(
+          "SELECT id FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'",
+          [emp.user_id]
+        );
+        for (const ex of existing) {
+          const exData = JSON.parse((await one('SELECT data FROM entities WHERE id=$1', [ex.id])).data);
+          await run('UPDATE entities SET data=$1, status=$2 WHERE id=$3', [
+            JSON.stringify({ ...exData, status: 'inactive', effective_to: effDate }),
+            'inactive', ex.id
+          ]);
+        }
+
+        // Create new salary structure
+        const id = uuidv4();
+        const structure = {
+          id,
+          user_id: emp.user_id,
+          effective_from: effDate,
+          ctc: annualCTC,
+          is_manual_override: true,
+          basic_salary: basicM,
+          hra: hraM,
+          conveyance: conveyanceM,
+          car_fuel_maintenance: carFuelM,
+          health_and_wellness: healthM,
+          hard_furnishing: hardFurnishM,
+          lta: 0,
+          special_allowance: 0,
+          performance_bonus: performanceBonus,
+          pf_contribution: pfEmpM,
+          employer_pf_contribution: employerPFM,
+          esi_contribution: employeeESIM,
+          employer_esi_contribution: esiEmpM,
+          medical_contribution: medicalInsM,
+          admin_charge: adminChargeM,
+          vpp_deduction: vppM,
+          ctc_bonus: ctcBonusM,
+          nps_employee: npsEmpM,
+          car_lease: carLeaseM,
+          gratuity: Math.round(basicM * 0.0481),
+          gratuity_eligible: true,
+          status: 'active',
+          approved_by: approved_by || null,
+          revision_reason: 'Imported from Salary Structure Excel',
+          source: 'excel_import',
+        };
+
+        await run(
+          `INSERT INTO entities (id, type, user_id, status, is_active, data)
+           VALUES ($1,'SalaryStructure',$2,'active',1,$3)`,
+          [id, emp.user_id, JSON.stringify(structure)]
+        );
+        results.created++;
+      }
+
+      return res.json({
+        success: true,
+        created: results.created,
+        skipped: results.skipped,
+        errors: results.errors,
+        message: `Imported ${results.created} salary structures. ${results.skipped} skipped (employee not found).`,
+      });
+    }
+
     case 'markAbsentEmployees': {
       const { date } = p;
       const targetDate = date || new Date().toISOString().slice(0, 10);

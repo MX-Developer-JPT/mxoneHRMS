@@ -9,8 +9,9 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DollarSign, Users, Plus, Edit, Printer, Search, TrendingUp, Building, ChevronDown, ChevronUp } from 'lucide-react';
+import { DollarSign, Users, Plus, Edit, Printer, Search, TrendingUp, Building, ChevronDown, ChevronUp, Upload, FileSpreadsheet, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
+import * as XLSX from 'xlsx';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
 import SalaryBreakdownCard from '../components/salary/SalaryBreakdownCard';
 
@@ -255,6 +256,13 @@ export default function SalaryStructureManagement() {
   // Expanded view
   const [expandedId, setExpandedId] = useState(null);
 
+  // Import state
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [importRows, setImportRows] = useState([]);
+  const [importEffectiveFrom, setImportEffectiveFrom] = useState(new Date().toISOString().split('T')[0]);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+
   useEffect(() => { loadData(); }, []);
 
   useEffect(() => {
@@ -357,6 +365,85 @@ export default function SalaryStructureManagement() {
     setShowDialog(true);
   };
 
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        // Find the header row — look for the row that contains 'EMPLOYEE ID'
+        const rawData = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        let headerRowIdx = rawData.findIndex(row =>
+          row.some(cell => String(cell).toUpperCase().includes('EMPLOYEE ID'))
+        );
+        if (headerRowIdx === -1) { toast.error('Could not find header row with "EMPLOYEE ID" column'); return; }
+
+        const headers = rawData[headerRowIdx].map(h => String(h).trim().toUpperCase());
+        const dataRows = rawData.slice(headerRowIdx + 1).filter(row =>
+          row.some(c => c !== '' && c !== null && c !== undefined) &&
+          String(row[headers.indexOf('EMPLOYEE ID')] || '').trim().startsWith('MVE')
+        );
+
+        const idx = (name) => headers.indexOf(name);
+        const parsed = dataRows.map(row => ({
+          employee_id:           String(row[idx('EMPLOYEE ID')] || '').trim(),
+          employee_name:         String(row[idx('EMPLOYEE NAME')] || '').trim(),
+          employee_status:       String(row[idx('EMPLOYEE STATUS')] || '').trim(),
+          basic_salary:          row[idx('BASIC SALARY')],
+          hra:                   row[idx('HRA')],
+          conveyance:            row[idx('CONVEYANCE')],
+          car_fuel_maintenance:  row[idx('CAR FUEL MAINTENANCE')],
+          health_and_wellness:   row[idx('HEALTH AND WELLNESS')],
+          hard_furnishing:       row[idx('HARD FURNISHING')],
+          provident_fund:        row[idx('PROVIDENT FUND')],
+          medical_insurance:     row[idx('MEDICAL INSURANCE')],
+          admin_charge:          row[idx('ADMIN_CHARGE')],
+          vpp_deduction:         row[idx('VPP DEDUCTION')],
+          ctc_bonus:             row[idx('CTC_BONUS')],
+          esi_employer:          row[idx('ESI_EMPLOYER')],
+          nps_employee:          row[idx('NPS EMPLOYEE')],
+          car_lease:             row[idx('CAR_LEASE')],
+          total_ctc:             row[idx('TOTALCTC')],
+        })).filter(r => r.employee_id);
+
+        setImportRows(parsed);
+        setImportResult(null);
+        toast.success(`Parsed ${parsed.length} rows from Excel`);
+      } catch (err) {
+        toast.error('Failed to parse Excel: ' + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  const handleImport = async () => {
+    if (!importRows.length) return;
+    setImporting(true);
+    try {
+      const user = await base44.auth.me();
+      const res = await base44.functions.invoke('importSalaryStructures', {
+        rows: importRows,
+        effective_from: importEffectiveFrom,
+        approved_by: user.id,
+      });
+      const data = res?.data || res;
+      setImportResult(data);
+      if (data.created > 0) {
+        toast.success(data.message);
+        loadData();
+      } else {
+        toast.error(data.message || 'No records imported');
+      }
+    } catch (err) {
+      toast.error('Import failed: ' + err.message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!selectedEmployee || !ctc) { toast.error('Please select an employee and enter CTC'); return; }
     const vals = getEffectiveValues();
@@ -432,9 +519,14 @@ export default function SalaryStructureManagement() {
             <h1 className="text-3xl font-bold">Salary Structure Management</h1>
             <p className="text-gray-600 mt-1">CTC-based salary structures with auto-calculated components</p>
           </div>
-          <Button className="bg-blue-600 hover:bg-blue-700" onClick={handleOpenCreate}>
-            <Plus className="w-4 h-4 mr-2" /> Create Salary Structure
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => { setShowImportDialog(true); setImportRows([]); setImportResult(null); }}>
+              <Upload className="w-4 h-4 mr-2" /> Import from Excel
+            </Button>
+            <Button className="bg-blue-600 hover:bg-blue-700" onClick={handleOpenCreate}>
+              <Plus className="w-4 h-4 mr-2" /> Create Salary Structure
+            </Button>
+          </div>
         </div>
 
         {/* Stats */}
@@ -784,6 +876,110 @@ export default function SalaryStructureManagement() {
               <Button className="bg-green-600 hover:bg-green-700 px-8" onClick={handleSave}>
                 {editingStructure ? 'Save Revision' : 'Create Structure'}
               </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Import from Excel Dialog ── */}
+      <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="w-5 h-5 text-green-600" /> Import Salary Structures from Excel
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
+              <p className="font-medium mb-1">Expected Excel format:</p>
+              <p>The file must have a header row containing <strong>EMPLOYEE ID</strong>, <strong>BASIC SALARY</strong>, <strong>HRA</strong>, <strong>CONVEYANCE</strong>, <strong>TOTALCTC</strong> and other columns. All salary values should be <strong>monthly</strong> amounts (the sheet titled "Monthly CTC" works directly).</p>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <Label className="text-sm font-medium">Effective From Date</Label>
+                <Input type="date" value={importEffectiveFrom} onChange={e => setImportEffectiveFrom(e.target.value)} className="mt-1" />
+              </div>
+              <div>
+                <Label className="text-sm font-medium">Select Excel File (.xlsx)</Label>
+                <Input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} className="mt-1 cursor-pointer" />
+              </div>
+            </div>
+
+            {importRows.length > 0 && !importResult && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-700">{importRows.length} employees parsed — preview (first 10):</p>
+                </div>
+                <div className="overflow-x-auto border rounded-lg">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        {['Emp ID', 'Name', 'Basic', 'HRA', 'Conveyance', 'PF (Emp)', 'Bonus/VPP', 'ESI (Er)', 'Monthly CTC'].map(h => (
+                          <th key={h} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importRows.slice(0, 10).map((r, i) => (
+                        <tr key={i} className="border-t hover:bg-gray-50">
+                          <td className="px-3 py-1.5 font-mono font-medium">{r.employee_id}</td>
+                          <td className="px-3 py-1.5 truncate max-w-[120px]">{r.employee_name}</td>
+                          <td className="px-3 py-1.5 text-right">₹{Number(r.basic_salary||0).toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-1.5 text-right">₹{Number(r.hra||0).toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-1.5 text-right">₹{Number(r.conveyance||0).toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-1.5 text-right">₹{Number(r.provident_fund||0).toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-1.5 text-right">₹{Number((r.ctc_bonus||0) || (r.vpp_deduction||0)).toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-1.5 text-right">₹{Number(r.esi_employer||0).toLocaleString('en-IN')}</td>
+                          <td className="px-3 py-1.5 text-right font-semibold text-blue-700">₹{Number(r.total_ctc||0).toLocaleString('en-IN')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {importRows.length > 10 && (
+                  <p className="text-xs text-gray-500 text-center">... and {importRows.length - 10} more rows</p>
+                )}
+              </div>
+            )}
+
+            {importResult && (
+              <div className={`rounded-lg p-4 border space-y-2 ${importResult.success && importResult.created > 0 ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
+                <div className="flex items-center gap-2">
+                  {importResult.created > 0
+                    ? <CheckCircle2 className="w-5 h-5 text-green-600" />
+                    : <AlertCircle className="w-5 h-5 text-amber-600" />}
+                  <p className="font-medium text-sm">{importResult.message}</p>
+                </div>
+                {importResult.errors?.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-xs font-medium text-gray-600 mb-1">Skipped ({importResult.errors.length}):</p>
+                    <div className="max-h-32 overflow-y-auto space-y-0.5">
+                      {importResult.errors.map((e, i) => (
+                        <p key={i} className="text-xs text-amber-700 font-mono">{e}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex gap-3 justify-end pt-2 border-t">
+              <Button variant="outline" onClick={() => setShowImportDialog(false)}>Close</Button>
+              {importRows.length > 0 && !importResult && (
+                <Button
+                  className="bg-green-600 hover:bg-green-700"
+                  onClick={handleImport}
+                  disabled={importing}
+                >
+                  {importing ? 'Importing…' : `Import ${importRows.length} Records`}
+                </Button>
+              )}
+              {importResult && (
+                <Button variant="outline" onClick={() => { setImportRows([]); setImportResult(null); }}>
+                  Import Another File
+                </Button>
+              )}
             </div>
           </div>
         </DialogContent>
