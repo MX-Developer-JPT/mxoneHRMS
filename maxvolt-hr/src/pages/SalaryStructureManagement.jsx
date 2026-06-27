@@ -375,41 +375,50 @@ export default function SalaryStructureManagement() {
 
         // Normalise headers: uppercase + collapse underscores→spaces for flexible matching
         const headers = rawData[headerRowIdx].map(h => String(h).trim().toUpperCase().replace(/_/g, ' '));
-        // Flexible column lookup: try exact match then partial match across name variants
-        const col = (...names) => {
+        // Returns the cell VALUE (not an index) — defaults to undefined on miss so numeric
+        // fields safely become 0 via the backend's parseFloat fallback.
+        const get = (row, ...names) => {
           for (const n of names) {
             const norm = n.replace(/_/g, ' ').toUpperCase();
+            let ki = headers.findIndex(h => h === norm);
+            if (ki === -1) ki = headers.findIndex(h => h.includes(norm));
+            if (ki !== -1) return row[ki];
+          }
+          return undefined;
+        };
+        const empIdCol = (() => {
+          for (const n of ['EMPLOYEE ID', 'EMP ID', 'EMPLOYEE CODE', 'EMP CODE']) {
+            const norm = n.toUpperCase();
             let ki = headers.findIndex(h => h === norm);
             if (ki === -1) ki = headers.findIndex(h => h.includes(norm));
             if (ki !== -1) return ki;
           }
           return -1;
-        };
-        const empIdCol = col('EMPLOYEE ID', 'EMP ID', 'EMPLOYEE CODE', 'EMP CODE');
+        })();
         const dataRows = rawData.slice(headerRowIdx + 1).filter(row =>
           row.some(c => c !== '' && c !== null && c !== undefined) &&
           String(row[empIdCol] || '').trim() !== ''
         );
 
         const parsed = dataRows.map(row => ({
-          employee_id:           String(row[col('EMPLOYEE ID', 'EMP ID', 'EMPLOYEE CODE', 'EMP CODE')] || '').trim(),
-          employee_name:         String(row[col('EMPLOYEE NAME', 'EMP NAME', 'NAME')] || '').trim(),
-          employee_status:       String(row[col('EMPLOYEE STATUS', 'EMP STATUS', 'STATUS')] || '').trim(),
-          basic_salary:          row[col('BASIC SALARY', 'BASIC')],
-          hra:                   row[col('HRA', 'HOUSE RENT ALLOWANCE', 'HOUSE RENT')],
-          conveyance:            row[col('CONVEYANCE', 'CONVEYANCE ALLOWANCE')],
-          car_fuel_maintenance:  row[col('CAR FUEL MAINTENANCE', 'CAR FUEL', 'FUEL MAINTENANCE')],
-          health_and_wellness:   row[col('HEALTH AND WELLNESS', 'HEALTH WELLNESS', 'HEALTH')],
-          hard_furnishing:       row[col('HARD FURNISHING', 'FURNISHING')],
-          provident_fund:        row[col('PROVIDENT FUND', 'PF EMPLOYEE', 'EPF', 'PF')],
-          medical_insurance:     row[col('MEDICAL INSURANCE', 'MEDICAL', 'INSURANCE')],
-          admin_charge:          row[col('ADMIN CHARGE', 'ADMIN CHARGES', 'ADMIN CHRG')],
-          vpp_deduction:         row[col('VPP DEDUCTION', 'VPP DED', 'VPP')],
-          ctc_bonus:             row[col('CTC BONUS', 'CTC BONUS MONTHLY', 'BONUS')],
-          esi_employer:          row[col('ESI EMPLOYER', 'ESI EMP', 'ESI CONTRIBUTION')],
-          nps_employee:          row[col('NPS EMPLOYEE', 'NPS EMP', 'NPS')],
-          car_lease:             row[col('CAR LEASE', 'LEASE')],
-          total_ctc:             row[col('TOTAL CTC', 'TOTALCTC', 'TOTAL CTC MONTHLY', 'MONTHLY CTC', 'CTC MONTHLY')],
+          employee_id:           String(get(row, 'EMPLOYEE ID', 'EMP ID', 'EMPLOYEE CODE', 'EMP CODE') || '').trim(),
+          employee_name:         String(get(row, 'EMPLOYEE NAME', 'EMP NAME', 'NAME') || '').trim(),
+          employee_status:       String(get(row, 'EMPLOYEE STATUS', 'EMP STATUS', 'STATUS') || '').trim(),
+          basic_salary:          get(row, 'BASIC SALARY', 'BASIC'),
+          hra:                   get(row, 'HRA', 'HOUSE RENT ALLOWANCE', 'HOUSE RENT'),
+          conveyance:            get(row, 'CONVEYANCE', 'CONVEYANCE ALLOWANCE'),
+          car_fuel_maintenance:  get(row, 'CAR FUEL MAINTENANCE', 'CAR FUEL', 'FUEL MAINTENANCE'),
+          health_and_wellness:   get(row, 'HEALTH AND WELLNESS', 'HEALTH WELLNESS', 'HEALTH'),
+          hard_furnishing:       get(row, 'HARD FURNISHING', 'FURNISHING'),
+          provident_fund:        get(row, 'PROVIDENT FUND', 'PF EMPLOYEE', 'EPF', 'PF'),
+          medical_insurance:     get(row, 'MEDICAL INSURANCE', 'MEDICAL', 'INSURANCE'),
+          admin_charge:          get(row, 'ADMIN CHARGE', 'ADMIN CHARGES', 'ADMIN CHRG'),
+          vpp_deduction:         get(row, 'VPP DEDUCTION', 'VPP DED', 'VPP'),
+          ctc_bonus:             get(row, 'CTC BONUS', 'CTC BONUS MONTHLY', 'BONUS'),
+          esi_employer:          get(row, 'ESI EMPLOYER', 'ESI EMP', 'ESI CONTRIBUTION'),
+          nps_employee:          get(row, 'NPS EMPLOYEE', 'NPS EMP', 'NPS'),
+          car_lease:             get(row, 'CAR LEASE', 'LEASE'),
+          total_ctc:             get(row, 'TOTAL CTC', 'TOTALCTC', 'TOTAL CTC MONTHLY', 'MONTHLY CTC', 'CTC MONTHLY'),
         })).filter(r => r.employee_id);
 
         setImportRows(parsed);

@@ -9,9 +9,9 @@ import { Users, ArrowDownCircle, ArrowUpCircle, RefreshCw, Search, Zap, CheckCir
 import { toast } from 'sonner';
 import BiometricCodeMapping from '@/components/attendance/BiometricCodeMapping';
 
-const getISTDate = () => new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
-
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+const getISTDate = () => new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
 
 // Biometric devices send local IST time without any timezone offset.
 // The backend stores the value as-is (Node on Railway/UTC just preserves the digits).
@@ -54,16 +54,6 @@ function formatUTCtoIST(raw) {
   } catch { return raw; }
 }
 
-// Check if a date string falls on today in IST.
-// Extract the date portion directly from the stored clock digits (which are IST).
-function isTodayIST(dateStr) {
-  try {
-    if (!dateStr) return false;
-    const storedDate = String(dateStr).trim().replace(' ', 'T').slice(0, 10);
-    const todayIST   = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
-    return storedDate === todayIST;
-  } catch { return false; }
-}
 
 const PAGE_SIZE = 200;
 
@@ -252,7 +242,7 @@ export default function AttendanceLogDashboard() {
       if (result?.success) {
         const msg = `Re-synced: ${result.attendance_updated || 0} updated, ${result.attendance_created || 0} created`;
         toast.success(msg);
-        loadLogs();
+        loadLogs(1, filtersRef.current);
       } else {
         toast.error(result?.error || 'Reprocess failed.');
       }

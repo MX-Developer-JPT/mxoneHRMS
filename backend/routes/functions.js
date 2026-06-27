@@ -538,11 +538,12 @@ router.post('/:name', async (req, res) => {
       const effDate = effective_from || new Date().toISOString().slice(0, 10);
 
       // Load all active employees keyed by employee_code (case-insensitive)
-      const empRows = await all("SELECT id, data FROM entities WHERE type='Employee' AND status='active'");
+      // Select user_id column explicitly — don't rely on it being inside the JSON blob
+      const empRows = await all("SELECT id, user_id, data FROM entities WHERE type='Employee' AND status='active'");
       const empByCode = {};
       for (const r of empRows) {
         const d = JSON.parse(r.data);
-        if (d.employee_code) empByCode[d.employee_code.trim().toUpperCase()] = { id: r.id, ...d };
+        if (d.employee_code) empByCode[d.employee_code.trim().toUpperCase()] = { _entityId: r.id, _userId: r.user_id, ...d };
       }
 
       const results = { created: 0, skipped: 0, errors: [] };
@@ -581,19 +582,11 @@ router.post('/:name', async (req, res) => {
         const employeeESIM    = basicM <= 21000 ? Math.round(basicM * 0.0075) : 0;
         const performanceBonus = ctcBonusM || vppM; // prefer CTC_BONUS, fallback to VPP
 
-        // Deactivate any existing active salary structure for this employee (single query)
-        await run(
-          `UPDATE entities SET status='inactive', updated_at=NOW()::TEXT,
-            data = (data::jsonb || $2::jsonb)::text
-           WHERE type='SalaryStructure' AND user_id=$1 AND status='active'`,
-          [emp.user_id, JSON.stringify({ status: 'inactive', effective_to: effDate })]
-        );
-
-        // Create new salary structure
+        // Create new salary structure FIRST — if anything fails, employee still has their old one
         const id = uuidv4();
         const structure = {
           id,
-          user_id: emp.user_id,
+          user_id: emp._userId,
           effective_from: effDate,
           ctc: annualCTC,
           is_manual_override: true,
@@ -625,9 +618,17 @@ router.post('/:name', async (req, res) => {
         await run(
           `INSERT INTO entities (id, type, user_id, status, is_active, data)
            VALUES ($1,'SalaryStructure',$2,'active',1,$3)`,
-          [id, emp.user_id, JSON.stringify(structure)]
+          [id, emp._userId, JSON.stringify(structure)]
         );
         results.created++;
+        // Deactivate old structures AFTER the insert — if this fails, two actives exist
+        // (detectable/fixable) rather than zero actives (silent data loss).
+        // Avoid data::jsonb cast on TEXT column which throws if any row has malformed JSON.
+        await run(
+          `UPDATE entities SET status='inactive', updated_at=NOW()::TEXT
+           WHERE type='SalaryStructure' AND user_id=$1 AND status='active' AND id != $2`,
+          [emp._userId, id]
+        );
       }
 
       return res.json({
@@ -4640,9 +4641,10 @@ ${contextBlock || 'No employee context available — answer from general policy 
             "SELECT e.id, e.data, LOWER(u.email) AS email FROM entities e JOIN users u ON u.id=e.user_id WHERE e.type='Employee' AND LOWER(u.email) = ANY($1)",
             [wireEmails]
           );
+          const needsWiringByEmail = new Map(needsWiring.map(v => [v.email.toLowerCase(), v]));
           const wireUpdates = [];
           for (const empRow of wireEmpRows) {
-            const vRow = needsWiring.find(v => v.email.toLowerCase() === empRow.email);
+            const vRow = needsWiringByEmail.get(empRow.email);
             if (!vRow) continue;
             const mgrId = mgrUserMap[(vRow.reporting_manager_email || '').toLowerCase().trim()];
             if (!mgrId) continue;
