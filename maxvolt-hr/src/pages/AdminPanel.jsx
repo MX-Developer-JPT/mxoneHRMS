@@ -204,13 +204,16 @@ function UsersTab() {
   const [users, setUsers]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch]   = useState('');
+  const [selected, setSelected] = useState(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [editUser, setEditUser]     = useState(null);
   const [newUserForm, setNewUserForm] = useState(false);
   const [pwdModal, setPwdModal]       = useState(null);
   const [confirm, setConfirm]         = useState(null);
+  const [bulkConfirm, setBulkConfirm] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    setLoading(true); setSelected(new Set());
     try { setUsers(await adminFetch('/users')); }
     catch(e) { toast.error(e.message); }
     finally { setLoading(false); }
@@ -221,6 +224,13 @@ function UsersTab() {
   const filtered = users.filter(u =>
     search ? (u.email + u.full_name + u.role).toLowerCase().includes(search.toLowerCase()) : true
   );
+
+  const allSelected = filtered.length > 0 && filtered.every(u => selected.has(u.id));
+  const toggleAll = () => {
+    if (allSelected) setSelected(new Set());
+    else setSelected(new Set(filtered.map(u => u.id)));
+  };
+  const toggleOne = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const handleSaveEdit = async (data) => {
     try {
@@ -243,6 +253,16 @@ function UsersTab() {
     } catch(e) { toast.error(e.message); }
   };
 
+  const handleBulkDelete = async () => {
+    setBulkDeleting(true); setBulkConfirm(false);
+    try {
+      const res = await adminFetch('/users/bulk-delete', { method: 'POST', body: JSON.stringify({ ids: [...selected] }) });
+      toast.success(`Deleted ${res.deleted} user(s) and ${res.entities_deleted} related records`);
+      load();
+    } catch(e) { toast.error(e.message); }
+    finally { setBulkDeleting(false); }
+  };
+
   const handlePasswordReset = async ({ id, password }) => {
     try {
       await adminFetch(`/users/${id}/password`, { method: 'PATCH', body: JSON.stringify({ password }) });
@@ -257,7 +277,13 @@ function UsersTab() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input className="pl-9 h-9" placeholder="Search users…" value={search} onChange={e=>setSearch(e.target.value)} />
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {selected.size > 0 && (
+            <Button size="sm" variant="destructive" onClick={() => setBulkConfirm(true)} disabled={bulkDeleting}>
+              <Trash2 className="w-4 h-4 mr-1" />
+              {bulkDeleting ? 'Deleting…' : `Delete Selected (${selected.size})`}
+            </Button>
+          )}
           <Button size="sm" variant="outline" onClick={() => exportUsersCSV(users)}>
             <Download className="w-4 h-4 mr-1" /> Export CSV
           </Button>
@@ -271,11 +297,19 @@ function UsersTab() {
         <div className="overflow-x-auto rounded-xl border">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr>{['Name','Email','Role','Joined','Actions'].map(h=><th key={h} className="text-left px-4 py-2.5 font-medium text-muted-foreground">{h}</th>)}</tr>
+              <tr>
+                <th className="w-10 px-3 py-2.5">
+                  <input type="checkbox" checked={allSelected} onChange={toggleAll} className="rounded border-gray-300" />
+                </th>
+                {['Name','Email','Role','Joined','Actions'].map(h=><th key={h} className="text-left px-4 py-2.5 font-medium text-muted-foreground">{h}</th>)}
+              </tr>
             </thead>
             <tbody className="divide-y">
               {filtered.map(u => (
-                <tr key={u.id} className="hover:bg-muted/30">
+                <tr key={u.id} className={`hover:bg-muted/30 ${selected.has(u.id) ? 'bg-blue-50/60' : ''}`}>
+                  <td className="w-10 px-3 py-2.5">
+                    <input type="checkbox" checked={selected.has(u.id)} onChange={() => toggleOne(u.id)} className="rounded border-gray-300" />
+                  </td>
                   <td className="px-4 py-2.5 font-medium">{u.full_name || '—'}</td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">{u.email}</td>
                   <td className="px-4 py-2.5">
@@ -284,35 +318,41 @@ function UsersTab() {
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">{u.created_at ? new Date(u.created_at).toLocaleDateString('en-IN') : '—'}</td>
                   <td className="px-4 py-2.5">
                     <div className="flex gap-1">
-                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditUser(u)} title="Edit user">
-                        <Edit className="w-3.5 h-3.5" />
-                      </Button>
-                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setPwdModal(u)} title="Reset password">
-                        <Key className="w-3.5 h-3.5" />
-                      </Button>
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setConfirm(u)} title="Delete user">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
+                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditUser(u)} title="Edit user"><Edit className="w-3.5 h-3.5" /></Button>
+                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setPwdModal(u)} title="Reset password"><Key className="w-3.5 h-3.5" /></Button>
+                      <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setConfirm(u)} title="Delete user"><Trash2 className="w-3.5 h-3.5" /></Button>
                     </div>
                   </td>
                 </tr>
               ))}
               {!filtered.length && (
-                <tr><td colSpan={5} className="text-center py-8 text-muted-foreground text-sm">No users found</td></tr>
+                <tr><td colSpan={6} className="text-center py-8 text-muted-foreground text-sm">No users found</td></tr>
               )}
             </tbody>
           </table>
         </div>
       )}
+      {selected.size > 0 && (
+        <p className="text-xs text-muted-foreground mt-2">{selected.size} user(s) selected</p>
+      )}
 
-      {editUser && (
-        <UserFormModal title={`Edit User — ${editUser.email}`} initial={editUser} onSave={handleSaveEdit} onClose={() => setEditUser(null)} />
-      )}
-      {newUserForm && (
-        <UserFormModal title="Create New User" isNew onSave={handleCreate} onClose={() => setNewUserForm(false)} />
-      )}
+      {editUser && <UserFormModal title={`Edit User — ${editUser.email}`} initial={editUser} onSave={handleSaveEdit} onClose={() => setEditUser(null)} />}
+      {newUserForm && <UserFormModal title="Create New User" isNew onSave={handleCreate} onClose={() => setNewUserForm(false)} />}
       {pwdModal && <PasswordModal user={pwdModal} onSave={handlePasswordReset} onClose={() => setPwdModal(null)} />}
       {confirm && <ConfirmDialog message={`Delete user "${confirm.email}"? This cannot be undone.`} onConfirm={() => handleDelete(confirm.id)} onCancel={() => setConfirm(null)} />}
+      {bulkConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-background rounded-xl shadow-2xl p-6 max-w-sm mx-4 text-center space-y-4">
+            <AlertTriangle className="w-10 h-10 text-destructive mx-auto" />
+            <p className="text-sm font-medium">Delete <strong>{selected.size}</strong> selected users?</p>
+            <p className="text-xs text-muted-foreground">All employee records, attendance, payroll, and linked data will be permanently removed. This cannot be undone.</p>
+            <div className="flex gap-3 justify-center">
+              <Button variant="outline" size="sm" onClick={() => setBulkConfirm(false)}>Cancel</Button>
+              <Button variant="destructive" size="sm" onClick={handleBulkDelete}>Delete All</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1082,13 +1122,21 @@ Authorization: Bearer ${apiKey || '<YOUR_API_KEY>'}
 }
 
 // ── Maintenance Tab ────────────────────────────────────────
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const prevMonth = () => { const now = new Date(); return now.getMonth() === 0 ? 12 : now.getMonth(); };
+const prevYear  = () => { const now = new Date(); return now.getMonth() === 0 ? now.getFullYear()-1 : now.getFullYear(); };
+
 function MaintenanceTab() {
   const [tsResult, setTsResult] = useState(null);
   const [tsRunning, setTsRunning] = useState(false);
-  const [procMonth, setProcMonth] = useState(new Date().getMonth() === 0 ? 12 : new Date().getMonth());
-  const [procYear, setProcYear]   = useState(new Date().getMonth() === 0 ? new Date().getFullYear() - 1 : new Date().getFullYear());
+  const [fromMonth, setFromMonth] = useState(prevMonth());
+  const [fromYear,  setFromYear]  = useState(prevYear());
+  const [toMonth,   setToMonth]   = useState(prevMonth());
+  const [toYear,    setToYear]    = useState(prevYear());
   const [procResult, setProcResult] = useState(null);
   const [procRunning, setProcRunning] = useState(false);
+  const [mgrResult, setMgrResult] = useState(null);
+  const [mgrRunning, setMgrRunning] = useState(false);
 
   const runTsFix = async (dryRun) => {
     setTsRunning(true); setTsResult(null);
@@ -1103,11 +1151,25 @@ function MaintenanceTab() {
   const runProcessMonth = async (dryRun) => {
     setProcRunning(true); setProcResult(null);
     try {
-      const r = await base44.functions.invoke('processMonthAttendance', { month: procMonth, year: procYear, dry_run: dryRun });
+      const r = await base44.functions.invoke('processMonthAttendance', {
+        month_from: fromMonth, year_from: fromYear,
+        month_to: toMonth,   year_to: toYear,
+        dry_run: dryRun,
+      });
       setProcResult(r?.data || r);
     } catch (e) {
       setProcResult({ success: false, message: e.message });
     } finally { setProcRunning(false); }
+  };
+
+  const runSyncManagers = async () => {
+    setMgrRunning(true); setMgrResult(null);
+    try {
+      const r = await base44.functions.invoke('syncManagerRoles', {});
+      setMgrResult(r?.data || r);
+    } catch (e) {
+      setMgrResult({ success: false, message: e.message });
+    } finally { setMgrRunning(false); }
   };
 
   return (
@@ -1116,7 +1178,7 @@ function MaintenanceTab() {
         Data maintenance tools — use Preview / Dry Run before applying changes to production data.
       </p>
 
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
 
         {/* ── Reprocess month attendance ── */}
         <div className="border rounded-xl p-5 space-y-4 bg-card">
@@ -1130,21 +1192,37 @@ function MaintenanceTab() {
             </div>
           </div>
 
-          <div className="flex gap-2 items-center flex-wrap">
-            <select className="border rounded-lg px-2.5 py-1.5 text-sm bg-white" value={procMonth} onChange={e => setProcMonth(Number(e.target.value))}>
-              {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m,i) => (
-                <option key={i} value={i+1}>{m}</option>
-              ))}
-            </select>
-            <select className="border rounded-lg px-2.5 py-1.5 text-sm bg-white" value={procYear} onChange={e => setProcYear(Number(e.target.value))}>
-              {[0,1,2].map(d => { const y = new Date().getFullYear() - d; return <option key={y} value={y}>{y}</option>; })}
-            </select>
-            <div className="flex gap-1.5 ml-auto">
-              <Button variant="outline" size="sm" onClick={() => runProcessMonth(true)} disabled={procRunning}>
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <p className="text-muted-foreground mb-1 font-medium">From</p>
+                <div className="flex gap-1">
+                  <select className="border rounded px-1.5 py-1 text-xs bg-white flex-1" value={fromMonth} onChange={e => setFromMonth(Number(e.target.value))}>
+                    {MONTHS.map((m,i) => <option key={i} value={i+1}>{m}</option>)}
+                  </select>
+                  <select className="border rounded px-1.5 py-1 text-xs bg-white" value={fromYear} onChange={e => setFromYear(Number(e.target.value))}>
+                    {[0,1,2].map(d => { const y = new Date().getFullYear()-d; return <option key={y} value={y}>{y}</option>; })}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <p className="text-muted-foreground mb-1 font-medium">To</p>
+                <div className="flex gap-1">
+                  <select className="border rounded px-1.5 py-1 text-xs bg-white flex-1" value={toMonth} onChange={e => setToMonth(Number(e.target.value))}>
+                    {MONTHS.map((m,i) => <option key={i} value={i+1}>{m}</option>)}
+                  </select>
+                  <select className="border rounded px-1.5 py-1 text-xs bg-white" value={toYear} onChange={e => setToYear(Number(e.target.value))}>
+                    {[0,1,2].map(d => { const y = new Date().getFullYear()-d; return <option key={y} value={y}>{y}</option>; })}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-1.5">
+              <Button variant="outline" size="sm" onClick={() => runProcessMonth(true)} disabled={procRunning} className="flex-1">
                 {procRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Preview
               </Button>
-              <Button size="sm" onClick={() => runProcessMonth(false)} disabled={procRunning} className="bg-blue-600 hover:bg-blue-700 text-white">
-                {procRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Process
+              <Button size="sm" onClick={() => runProcessMonth(false)} disabled={procRunning} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white">
+                {procRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Process Range
               </Button>
             </div>
           </div>
@@ -1162,10 +1240,10 @@ function MaintenanceTab() {
               {procResult.success && (
                 <div className="grid grid-cols-2 gap-1.5">
                   {[
+                    { label:'Months', value: procResult.months_processed ?? 1, color:'text-blue-700' },
                     { label:'Total Records', value: procResult.total_records ?? '—', color:'text-gray-700' },
                     { label:'Processed', value: procResult.processed, color:'text-emerald-700' },
-                    { label:'Regularised (skipped)', value: procResult.skipped_regularised ?? 0, color:'text-amber-700' },
-                    { label:'No Punch Data', value: procResult.skipped_no_punch_data ?? 0, color:'text-gray-500' },
+                    { label:'Skipped', value: procResult.skipped ?? 0, color:'text-amber-700' },
                   ].map(s => (
                     <div key={s.label} className="bg-white rounded border px-2.5 py-1.5">
                       <p className={`text-sm font-bold ${s.color}`}>{s.value}</p>
@@ -1190,6 +1268,28 @@ function MaintenanceTab() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Sync manager roles ── */}
+        <div className="border rounded-xl p-5 space-y-4 bg-card">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-purple-50 rounded-lg"><UserCog className="w-4 h-4 text-purple-600" /></div>
+            <div>
+              <h3 className="font-semibold text-sm">Sync Manager Roles</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Auto-promotes all employees who are a reporting manager for someone to the <strong>management</strong> role.
+              </p>
+            </div>
+          </div>
+          <Button size="sm" onClick={runSyncManagers} disabled={mgrRunning} className="w-full bg-purple-600 hover:bg-purple-700 text-white">
+            {mgrRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <UserCog className="w-3.5 h-3.5 mr-1" />}
+            Sync Now
+          </Button>
+          {mgrResult && (
+            <div className={`rounded-lg p-3 text-xs ${mgrResult.success ? 'bg-purple-50 border border-purple-200' : 'bg-red-50 border border-red-200'}`}>
+              <p className={`font-medium ${mgrResult.success ? 'text-purple-800' : 'text-red-800'}`}>{mgrResult.message}</p>
             </div>
           )}
         </div>

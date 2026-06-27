@@ -1527,6 +1527,30 @@ router.post('/:name', async (req, res) => {
       return res.json({ records: rows.map(r => JSON.parse(r.data)) });
     }
 
+    case 'syncManagerRoles': {
+      // Finds all employees who are listed as a reporting manager for someone else,
+      // and upgrades their user role from 'employee'/'onboarding_pending' to 'management'.
+      const empRows = await all("SELECT data FROM entities WHERE type='Employee'");
+      const mgrEmails = new Set();
+      for (const r of empRows) {
+        const d = JSON.parse(r.data);
+        if (d.reporting_manager_email) mgrEmails.add(d.reporting_manager_email.toLowerCase().trim());
+      }
+      let promoted = 0, already = 0, notFound = 0;
+      for (const email of mgrEmails) {
+        const u = await one("SELECT id, role FROM users WHERE LOWER(email)=$1", [email]);
+        if (!u) { notFound++; continue; }
+        if (['admin','hr','manager','management'].includes(u.role)) { already++; continue; }
+        await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [u.id]);
+        promoted++;
+      }
+      return res.json({
+        success: true,
+        message: `${promoted} manager(s) promoted to management role. ${already} already at management/higher. ${notFound} not found in users.`,
+        promoted, already, not_found: notFound, total_managers: mgrEmails.size,
+      });
+    }
+
     case 'fixAttendanceTimestamps': {
       // One-time migration: attendance records created before the IST-digit fix stored
       // check_in_time/check_out_time as real UTC (new Date().toISOString()).
@@ -1751,15 +1775,27 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'processMonthAttendance': {
-      // Reprocess a past month's attendance from raw_punches.
-      // Alternating-position model: 1st punch=IN, 2nd=OUT, 3rd=IN...
-      // Records missing raw_punches are skipped; regularised records are never touched.
-      const { month, year, dry_run = false } = p;
-      if (!month || !year) return res.json({ success: false, error: 'month and year required' });
+      // Reprocess attendance from raw_punches for a month range.
+      // Supports single month (month/year) or range (month_from/year_from to month_to/year_to).
+      const { month, year, month_from, year_from, month_to, year_to, dry_run = false } = p;
+      const mFrom = parseInt(month_from || month), yFrom = parseInt(year_from || year);
+      const mTo   = parseInt(month_to   || month), yTo   = parseInt(year_to   || year);
+      if (!mFrom || !yFrom) return res.json({ success: false, error: 'month and year required' });
 
-      const mp = parseInt(month), yp = parseInt(year);
-      const monthStart = `${yp}-${String(mp).padStart(2,'0')}-01`;
-      const monthEnd   = new Date(yp, mp, 0).toISOString().slice(0, 10);
+      // Build list of months to process
+      const monthsToProcess = [];
+      let cm = mFrom, cy = yFrom;
+      while (cy < yTo || (cy === yTo && cm <= mTo)) {
+        monthsToProcess.push({ m: cm, y: cy });
+        cm++; if (cm > 12) { cm = 1; cy++; }
+        if (monthsToProcess.length > 24) break; // safety cap: max 24 months
+      }
+
+      // Use first month's values for compat (full range built above)
+      const mp = mFrom, yp = yFrom;
+      const monthStart = `${monthsToProcess[0].y}-${String(monthsToProcess[0].m).padStart(2,'0')}-01`;
+      const lastM = monthsToProcess[monthsToProcess.length - 1];
+      const monthEnd   = new Date(lastM.y, lastM.m, 0).toISOString().slice(0, 10);
 
       // Pre-load shifts
       const shiftMap = {};
@@ -1822,7 +1858,9 @@ router.post('/:name', async (req, res) => {
         ));
       }
 
-      const monthLabel = new Date(yp, mp-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+      const rangeLabel = monthsToProcess.length === 1
+        ? new Date(monthsToProcess[0].y, monthsToProcess[0].m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' })
+        : `${new Date(monthsToProcess[0].y, monthsToProcess[0].m-1, 1).toLocaleString('en-IN', { month: 'short', year: 'numeric' })} – ${new Date(lastM.y, lastM.m-1, 1).toLocaleString('en-IN', { month: 'short', year: 'numeric' })}`;
       const skipped = skippedRegularised + skippedNoPunches;
       return res.json({
         success: true, dry_run,
@@ -1831,10 +1869,11 @@ router.post('/:name', async (req, res) => {
         skipped,
         skipped_regularised: skippedRegularised,
         skipped_no_punch_data: skippedNoPunches,
+        months_processed: monthsToProcess.length,
         preview: dry_run ? preview.slice(0, 50) : undefined,
         message: dry_run
-          ? `Preview: ${processedCount} of ${attRows.length} records would be reprocessed for ${monthLabel} (${skippedRegularised} regularised, ${skippedNoPunches} no punch data)`
-          : `Reprocessed ${processedCount} of ${attRows.length} attendance records for ${monthLabel}`,
+          ? `Preview: ${processedCount} of ${attRows.length} records would be reprocessed for ${rangeLabel} (${skippedRegularised} regularised, ${skippedNoPunches} no punch data)`
+          : `Reprocessed ${processedCount} of ${attRows.length} attendance records for ${rangeLabel}`,
       });
     }
 
@@ -4150,8 +4189,9 @@ ${contextBlock || 'No employee context available — answer from general policy 
       // Normalise header key: remove trailing *, replace spaces/dots with _, lowercase
       const normKey = (k) => String(k).trim().replace(/\*$/, '').replace(/[\s.]+/g, '_').toLowerCase();
 
-      // Parse sheet → array of objects with normalised keys; all values as trimmed strings
-      // Matches sheet names case-insensitively and ignores spaces/underscores/parentheses for flexibility
+      // Parse sheet → array of objects with normalised keys.
+      // Uses raw:true so Date objects come through intact (cellDates:true was set on workbook load).
+      // Matches sheet names case-insensitively and ignores spaces/underscores/parentheses for flexibility.
       const parseSheet = (sheetName) => {
         let ws = wb.Sheets[sheetName];
         if (!ws) {
@@ -4160,10 +4200,16 @@ ${contextBlock || 'No employee context available — answer from general policy 
           if (match) ws = wb.Sheets[match];
         }
         if (!ws) return [];
-        return XLSX.utils.sheet_to_json(ws, { defval: '', raw: false }).map(row => {
+        return XLSX.utils.sheet_to_json(ws, { defval: '', raw: true }).map(row => {
           const out = {};
-          for (const [k, v] of Object.entries(row))
-            out[normKey(k)] = (v === null || v === undefined) ? '' : String(v).trim();
+          for (const [k, v] of Object.entries(row)) {
+            if (v instanceof Date) {
+              // Date object from cellDates:true — convert to YYYY-MM-DD immediately
+              out[normKey(k)] = isNaN(v.getTime()) ? '' : v.toISOString().slice(0, 10);
+            } else {
+              out[normKey(k)] = (v === null || v === undefined) ? '' : String(v).trim();
+            }
+          }
           return out;
         });
       };
@@ -4174,13 +4220,33 @@ ${contextBlock || 'No employee context available — answer from general policy 
       // Parse multiple date formats → YYYY-MM-DD
       const parseDate = (v) => {
         if (!v || v === '') return '';
+        if (v instanceof Date) return isNaN(v.getTime()) ? '' : v.toISOString().slice(0, 10);
         const s = String(v).trim();
-        if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);           // ISO-like
-        if (/^\d{2}-[A-Za-z]+-\d{4}/.test(s)) {                            // "09-May-2019"
-          const d = new Date(s); return isNaN(d) ? s : d.toISOString().slice(0,10);
+        if (!s || s === 'Invalid Date') return '';
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);           // ISO YYYY-MM-DD
+        if (/^\d{1,2}-[A-Za-z]+-\d{4}/.test(s)) {                          // "09-May-2019"
+          const d = new Date(s); return isNaN(d) ? '' : d.toISOString().slice(0,10);
         }
-        const d = new Date(s.replace(' ', 'T'));
-        return isNaN(d.getTime()) ? s : d.toISOString().slice(0,10);
+        const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);     // DD/MM/YYYY or MM/DD/YYYY
+        if (slashMatch) {
+          const [, a, b, yr] = slashMatch;
+          // Prefer DD/MM/YYYY (Indian standard); if day > 12 it must be day first
+          const day = parseInt(a) > 12 ? a : a;  // treat first number as day
+          const mon = parseInt(a) > 12 ? b : b;
+          const iso = `${yr}-${mon.padStart(2,'0')}-${day.padStart(2,'0')}`;
+          const d = new Date(iso); return isNaN(d) ? '' : iso;
+        }
+        // Excel numeric serial number (days since 1899-12-30)
+        if (/^\d+(\.\d+)?$/.test(s)) {
+          const n = parseFloat(s);
+          if (n > 10000 && n < 100000) {
+            const epoch = new Date(Date.UTC(1899, 11, 30));
+            epoch.setUTCDate(epoch.getUTCDate() + Math.floor(n));
+            return epoch.toISOString().slice(0, 10);
+          }
+        }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? '' : d.toISOString().slice(0,10);
       };
 
       const profiles  = parseSheet('Employee_Profile');
@@ -4465,12 +4531,34 @@ ${contextBlock || 'No employee context available — answer from general policy 
         }
       }
 
+      // Post-import: auto-promote reporting managers to 'management' role
+      let managersPromoted = 0;
+      const mgrEmails = [...new Set(validated.map(v => (v.reporting_manager_email || '').toLowerCase().trim()).filter(Boolean))];
+      for (const mgrEmail of mgrEmails) {
+        const r = await run("UPDATE users SET role='management', custom_role='management' WHERE LOWER(email)=$1 AND role IN ('employee','onboarding_pending')", [mgrEmail]);
+        if (r.rowCount > 0) managersPromoted++;
+      }
+
+      // Post-import: wire reporting_manager_id in employee records (second pass after all users exist)
+      for (const row of validated.filter(v => v.reporting_manager_email)) {
+        try {
+          const mgrUser = await one("SELECT id FROM users WHERE LOWER(email)=$1", [row.reporting_manager_email.toLowerCase().trim()]);
+          if (!mgrUser) continue;
+          const empRow = await one("SELECT id, data FROM entities WHERE type='Employee' AND user_id=(SELECT id FROM users WHERE LOWER(email)=$1)", [row.email.toLowerCase()]);
+          if (!empRow) continue;
+          const ed = JSON.parse(empRow.data);
+          if (ed.reporting_manager_id === mgrUser.id) continue; // already set
+          await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...ed, reporting_manager_id: mgrUser.id }), empRow.id]);
+        } catch { /* skip individual wiring errors */ }
+      }
+
       const created  = results.filter(r => r.status === 'created').length;
       const existing = results.filter(r => r.status === 'existing_user').length;
       const failed   = results.filter(r => r.status === 'error').length;
       return res.json({ success: true, created, existing, failed, total: validated.length, results,
+        managers_promoted: managersPromoted,
         default_password: DEFAULT_PASSWORD,
-        message: `Imported ${created} new employees (${existing} already existed, ${failed} errors). Default password: ${DEFAULT_PASSWORD}` });
+        message: `Imported ${created} new employees (${existing} already existed, ${failed} errors). ${managersPromoted} managers auto-promoted to management role. Default password: ${DEFAULT_PASSWORD}` });
     }
 
     case 'updateEmployeeConfirmation': {

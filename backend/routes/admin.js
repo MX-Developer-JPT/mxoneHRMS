@@ -199,6 +199,23 @@ router.patch('/users/:id/password', async (req, res) => {
   res.json({ success: true });
 });
 
+// ── Bulk delete users ──────────────────────────────────────
+router.post('/users/bulk-delete', async (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: 'Only admins can delete users' });
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids array required' });
+  const safeIds = ids.filter(id => id !== req.currentUser.id);
+  if (!safeIds.length) return res.status(400).json({ error: 'Cannot delete your own account' });
+  let deleted = 0, entitiesDeleted = 0;
+  for (const userId of safeIds) {
+    const r1 = await run('DELETE FROM entities WHERE user_id=$1', [userId]);
+    const r2 = await run("DELETE FROM entities WHERE user_id IS DISTINCT FROM $1 AND data::jsonb->>'user_id'=$1", [userId]);
+    const r3 = await run('DELETE FROM users WHERE id=$1', [userId]);
+    if (r3.rowCount > 0) { deleted++; entitiesDeleted += (r1.rowCount || 0) + (r2.rowCount || 0); }
+  }
+  res.json({ success: true, deleted, entities_deleted: entitiesDeleted, skipped: ids.length - deleted });
+});
+
 // ── Delete user (cascade: removes all linked entities) ────
 router.delete('/users/:id', async (req, res) => {
   if (!req.isAdmin)
