@@ -1611,6 +1611,44 @@ router.post('/:name', async (req, res) => {
       });
     }
 
+    case 'getAttendanceLogs': {
+      // Server-side paginated query for biometric punch logs (supports 50k+ records)
+      const { date_from, date_to, emp_code, page = 1, limit = 200 } = p;
+      const pageNum  = Math.max(1, parseInt(page, 10));
+      const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10)));
+      const offset   = (pageNum - 1) * limitNum;
+
+      const whereParts = [];
+      const qp = [];
+      let idx = 1;
+      // LogDate stored as "2026-01-15T09:30:00.000Z" — first 10 chars are the IST date
+      if (date_from) { whereParts.push(`SUBSTRING(data::jsonb->>'LogDate', 1, 10) >= $${idx++}`); qp.push(date_from); }
+      if (date_to)   { whereParts.push(`SUBSTRING(data::jsonb->>'LogDate', 1, 10) <= $${idx++}`); qp.push(date_to); }
+      if (emp_code)  { whereParts.push(`UPPER(data::jsonb->>'EmployeeCode') LIKE UPPER($${idx++})`); qp.push(`%${emp_code.trim()}%`); }
+
+      const baseWhere = `type='AttendanceLog'${whereParts.length ? ' AND ' + whereParts.join(' AND ') : ''}`;
+      const todayIST  = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+
+      const [countRow, logRows, todayCount, todayUnique] = await Promise.all([
+        one(`SELECT COUNT(*) as c FROM entities WHERE ${baseWhere}`, qp),
+        all(`SELECT data FROM entities WHERE ${baseWhere} ORDER BY data::jsonb->>'LogDate' DESC NULLS LAST LIMIT $${idx} OFFSET $${idx+1}`, [...qp, limitNum, offset]),
+        one(`SELECT COUNT(*) as c FROM entities WHERE type='AttendanceLog' AND SUBSTRING(data::jsonb->>'LogDate',1,10)=$1`, [todayIST]),
+        one(`SELECT COUNT(DISTINCT data::jsonb->>'EmployeeCode') as c FROM entities WHERE type='AttendanceLog' AND SUBSTRING(data::jsonb->>'LogDate',1,10)=$1`, [todayIST]),
+      ]);
+
+      const total = parseInt(countRow.c);
+      return res.json({
+        success: true,
+        logs: logRows.map(r => JSON.parse(r.data)),
+        total,
+        page: pageNum,
+        limit: limitNum,
+        pages: Math.ceil(total / limitNum),
+        today_punches:   parseInt(todayCount.c),
+        today_employees: parseInt(todayUnique.c),
+      });
+    }
+
     case 'reprocessAttendanceLogs': {
       // Re-reads stored AttendanceLogs for a date range and upserts Attendance records.
       // Uses alternating-position punch model (buildSessions) — same as live punch endpoint.

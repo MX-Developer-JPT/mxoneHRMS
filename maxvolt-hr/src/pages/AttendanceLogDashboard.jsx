@@ -1,14 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { Users, ArrowDownCircle, ArrowUpCircle, RefreshCw, Search, Zap, CheckCircle, AlertCircle, Upload, ChevronDown, ChevronUp, AlarmClock } from 'lucide-react';
-import { isToday } from 'date-fns';
+import { Users, ArrowDownCircle, ArrowUpCircle, RefreshCw, Search, Zap, CheckCircle, AlertCircle, Upload, ChevronDown, ChevronUp, AlarmClock, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import BiometricCodeMapping from '@/components/attendance/BiometricCodeMapping';
+
+const getISTDate = () => new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
@@ -64,15 +65,24 @@ function isTodayIST(dateStr) {
   } catch { return false; }
 }
 
+const PAGE_SIZE = 200;
+
 export default function AttendanceLogDashboard() {
   const [activeTab, setActiveTab] = useState('logs');
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [empFilter, setEmpFilter] = useState('');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [dateFrom, setDateFrom] = useState(getISTDate);
+  const [dateTo, setDateTo] = useState(getISTDate);
+  // Pagination
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalRecords, setTotalRecords] = useState(0);
+  // Today's summary stats (always from server, regardless of current filter)
+  const [todayPunches, setTodayPunches] = useState(0);
+  const [todayEmployees, setTodayEmployees] = useState(0);
 
-  const todayIST = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+  const todayIST = getISTDate();
   const [processFrom, setProcessFrom] = useState(todayIST);
   const [processTo, setProcessTo] = useState(todayIST);
   const [processing, setProcessing] = useState(false);
@@ -83,16 +93,44 @@ export default function AttendanceLogDashboard() {
   const [importJson, setImportJson] = useState('');
   const [importing, setImporting] = useState(false);
 
-  const loadLogs = async () => {
+  // Refs so auto-refresh closure always sees current state
+  const filtersRef = useRef({ empFilter: '', dateFrom: getISTDate(), dateTo: getISTDate(), page: 1 });
+  useEffect(() => { filtersRef.current = { empFilter, dateFrom, dateTo, page }; }, [empFilter, dateFrom, dateTo, page]);
+
+  const loadLogs = useCallback(async (pg, filters) => {
+    const f = filters || filtersRef.current;
+    const p = pg ?? f.page;
     setLoading(true);
-    const data = await base44.entities.AttendanceLog.list('-LogDate');
-    setLogs(data);
+    try {
+      const res = await base44.functions.invoke('getAttendanceLogs', {
+        ...(f.dateFrom ? { date_from: f.dateFrom } : {}),
+        ...(f.dateTo   ? { date_to:   f.dateTo   } : {}),
+        ...(f.empFilter ? { emp_code: f.empFilter } : {}),
+        page: p,
+        limit: PAGE_SIZE,
+      });
+      const d = res.data;
+      setLogs(d.logs || []);
+      setPage(d.page);
+      setTotalPages(d.pages || 1);
+      setTotalRecords(d.total || 0);
+      setTodayPunches(d.today_punches || 0);
+      setTodayEmployees(d.today_employees || 0);
+    } catch (err) {
+      toast.error('Failed to load logs: ' + (err?.message || 'Unknown error'));
+    }
     setLoading(false);
-  };
+  }, []);
+
+  // Debounce ref for emp filter text input
+  const empDebounceRef = useRef(null);
 
   useEffect(() => {
-    loadLogs();
-    const interval = setInterval(loadLogs, 300000); // auto-refresh every 5 min
+    loadLogs(1, { empFilter, dateFrom, dateTo, page: 1 });
+    const interval = setInterval(() => {
+      const { empFilter: ef, dateFrom: df, dateTo: dt, page: pg } = filtersRef.current;
+      loadLogs(pg, { empFilter: ef, dateFrom: df, dateTo: dt });
+    }, 300000);
     return () => clearInterval(interval);
   }, []);
 
@@ -149,7 +187,7 @@ export default function AttendanceLogDashboard() {
     setProcessResult(result);
     if (result?.success && result.records_synced > 0) {
       toast.success(`Synced ${result.records_synced} attendance record(s) successfully.`);
-      loadLogs();
+      loadLogs(1, { empFilter, dateFrom, dateTo });
     } else if (result?.success) {
       toast.info(result.message || 'Done.');
     } else {
@@ -157,6 +195,28 @@ export default function AttendanceLogDashboard() {
     }
     setProcessing(false);
   };
+
+  const handleEmpFilterChange = (v) => {
+    setEmpFilter(v);
+    clearTimeout(empDebounceRef.current);
+    empDebounceRef.current = setTimeout(() => loadLogs(1, { empFilter: v, dateFrom, dateTo }), 400);
+  };
+
+  const handleDateChange = (field, value) => {
+    const newF = { empFilter, dateFrom, dateTo, [field]: value };
+    if (field === 'dateFrom') setDateFrom(value);
+    if (field === 'dateTo')   setDateTo(value);
+    setPage(1);
+    loadLogs(1, newF);
+  };
+
+  const handleClearFilters = () => {
+    const today = getISTDate();
+    setEmpFilter(''); setDateFrom(today); setDateTo(today); setPage(1);
+    loadLogs(1, { empFilter: '', dateFrom: today, dateTo: today });
+  };
+
+  const goToPage = (pg) => { setPage(pg); loadLogs(pg, { empFilter, dateFrom, dateTo }); };
 
   const handleCloseOpenSessions = async () => {
     setProcessing(true);
@@ -278,34 +338,14 @@ export default function AttendanceLogDashboard() {
     await handleProcessToAttendance({ raw_records: rawRecords });
   };
 
-  const getLogISTDate = (logDate) => {
-    if (!logDate) return '';
-    try {
-      // Stored clock digits are IST — just extract the date portion directly
-      return String(logDate).trim().replace(' ', 'T').slice(0, 10);
-    } catch { return ''; }
-  };
-
-  const filtered = logs.filter(log => {
-    if (empFilter && !log.EmployeeCode?.toLowerCase().includes(empFilter.toLowerCase())) return false;
-    if (dateFrom || dateTo) {
-      const logISTDate = getLogISTDate(log.LogDate);
-      if (!logISTDate) return true; // don't filter out logs with unparseable dates
-      if (dateFrom && logISTDate < dateFrom) return false;
-      if (dateTo && logISTDate > dateTo) return false;
-    }
-    return true;
-  });
-
-  const todayLogs = logs.filter(log => isTodayIST(log.LogDate));
-  const todayPresentEmployees = new Set(todayLogs.map(l => l.EmployeeCode)).size;
-  const todayTotalCount = todayLogs.length;
+  const showingFrom = Math.min((page - 1) * PAGE_SIZE + 1, totalRecords);
+  const showingTo   = Math.min(page * PAGE_SIZE, totalRecords);
 
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-800">Biometric Attendance Log</h1>
-        <Button variant="outline" size="sm" onClick={loadLogs} disabled={loading}>
+        <Button variant="outline" size="sm" onClick={() => loadLogs(page, { empFilter, dateFrom, dateTo })} disabled={loading}>
           <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
@@ -341,7 +381,7 @@ export default function AttendanceLogDashboard() {
             <div className="bg-blue-100 p-3 rounded-full"><Users className="w-6 h-6 text-blue-600" /></div>
             <div>
               <p className="text-sm text-gray-500">Today's Total Punches</p>
-              <p className="text-2xl font-bold text-gray-800">{todayTotalCount}</p>
+              <p className="text-2xl font-bold text-gray-800">{todayPunches.toLocaleString()}</p>
             </div>
           </CardContent>
         </Card>
@@ -350,7 +390,7 @@ export default function AttendanceLogDashboard() {
             <div className="bg-green-100 p-3 rounded-full"><ArrowDownCircle className="w-6 h-6 text-green-600" /></div>
             <div>
               <p className="text-sm text-gray-500">Employees Present Today</p>
-              <p className="text-2xl font-bold text-green-700">{todayPresentEmployees}</p>
+              <p className="text-2xl font-bold text-green-700">{todayEmployees.toLocaleString()}</p>
             </div>
           </CardContent>
         </Card>
@@ -360,7 +400,7 @@ export default function AttendanceLogDashboard() {
             <div>
               <p className="text-sm text-gray-500">Avg Punches / Employee</p>
               <p className="text-2xl font-bold text-purple-700">
-                {todayPresentEmployees > 0 ? (todayTotalCount / todayPresentEmployees).toFixed(1) : '0'}
+                {todayEmployees > 0 ? (todayPunches / todayEmployees).toFixed(1) : '0'}
               </p>
             </div>
           </CardContent>
@@ -472,20 +512,26 @@ export default function AttendanceLogDashboard() {
       <div className="flex flex-wrap gap-3 items-end">
         <div className="flex items-center gap-2">
           <Search className="w-4 h-4 text-gray-400" />
-          <Input placeholder="Filter by Employee Code" value={empFilter} onChange={e => setEmpFilter(e.target.value)} className="w-52" />
+          <Input placeholder="Filter by Employee Code" value={empFilter} onChange={e => handleEmpFilterChange(e.target.value)} className="w-52" />
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600 whitespace-nowrap">From:</label>
-          <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-40" />
+          <Input type="date" value={dateFrom} onChange={e => handleDateChange('dateFrom', e.target.value)} className="w-40" />
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600 whitespace-nowrap">To:</label>
-          <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-40" />
+          <Input type="date" value={dateTo} onChange={e => handleDateChange('dateTo', e.target.value)} className="w-40" />
         </div>
-        {(empFilter || dateFrom || dateTo) && (
-          <Button variant="ghost" size="sm" onClick={() => { setEmpFilter(''); setDateFrom(''); setDateTo(''); }}>Clear</Button>
-        )}
-        <span className="text-sm text-gray-500 ml-auto">{filtered.length} records</span>
+        <Button variant="ghost" size="sm" onClick={handleClearFilters}>Today</Button>
+        <div className="ml-auto flex items-center gap-3">
+          {totalRecords > 0 && (
+            <span className="text-sm text-gray-500">
+              {totalRecords > PAGE_SIZE
+                ? `${showingFrom.toLocaleString()}–${showingTo.toLocaleString()} of ${totalRecords.toLocaleString()}`
+                : `${totalRecords.toLocaleString()} records`}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Table */}
@@ -504,9 +550,9 @@ export default function AttendanceLogDashboard() {
           <tbody>
             {loading ? (
               <tr><td colSpan={6} className="text-center py-10 text-gray-400">Loading...</td></tr>
-            ) : filtered.length === 0 ? (
+            ) : logs.length === 0 ? (
               <tr><td colSpan={6} className="text-center py-10 text-gray-400">No records found</td></tr>
-            ) : filtered.map(log => (
+            ) : logs.map(log => (
               <tr key={log.id} className="border-t hover:bg-gray-50 transition-colors">
                 <td className="px-4 py-3 font-medium text-gray-800">{log.EmployeeCode}</td>
                 <td className="px-4 py-3 text-gray-700">{formatIST(log.LogDate)}</td>
@@ -529,6 +575,45 @@ export default function AttendanceLogDashboard() {
           </tbody>
         </table>
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between pt-1">
+          <span className="text-sm text-gray-500">
+            Page {page} of {totalPages} · {totalRecords.toLocaleString()} total records
+          </span>
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" disabled={page <= 1 || loading} onClick={() => goToPage(1)}>
+              «
+            </Button>
+            <Button variant="outline" size="sm" disabled={page <= 1 || loading} onClick={() => goToPage(page - 1)}>
+              <ChevronLeft className="w-4 h-4" />
+            </Button>
+            {/* Page number pills — show up to 5 around current page */}
+            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+              const start = Math.max(1, Math.min(page - 2, totalPages - 4));
+              return start + i;
+            }).map(pg => (
+              <Button
+                key={pg}
+                variant={pg === page ? 'default' : 'outline'}
+                size="sm"
+                className="w-9"
+                disabled={loading}
+                onClick={() => goToPage(pg)}
+              >
+                {pg}
+              </Button>
+            ))}
+            <Button variant="outline" size="sm" disabled={page >= totalPages || loading} onClick={() => goToPage(page + 1)}>
+              <ChevronRight className="w-4 h-4" />
+            </Button>
+            <Button variant="outline" size="sm" disabled={page >= totalPages || loading} onClick={() => goToPage(totalPages)}>
+              »
+            </Button>
+          </div>
+        </div>
+      )}
     </>}
     </div>
   );
