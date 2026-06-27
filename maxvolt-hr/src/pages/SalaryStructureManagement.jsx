@@ -373,32 +373,43 @@ export default function SalaryStructureManagement() {
         );
         if (headerRowIdx === -1) { toast.error('Could not find header row with "EMPLOYEE ID" column'); return; }
 
-        const headers = rawData[headerRowIdx].map(h => String(h).trim().toUpperCase());
+        // Normalise headers: uppercase + collapse underscores→spaces for flexible matching
+        const headers = rawData[headerRowIdx].map(h => String(h).trim().toUpperCase().replace(/_/g, ' '));
+        // Flexible column lookup: try exact match then partial match across name variants
+        const col = (...names) => {
+          for (const n of names) {
+            const norm = n.replace(/_/g, ' ').toUpperCase();
+            let ki = headers.findIndex(h => h === norm);
+            if (ki === -1) ki = headers.findIndex(h => h.includes(norm));
+            if (ki !== -1) return ki;
+          }
+          return -1;
+        };
+        const empIdCol = col('EMPLOYEE ID', 'EMP ID', 'EMPLOYEE CODE', 'EMP CODE');
         const dataRows = rawData.slice(headerRowIdx + 1).filter(row =>
           row.some(c => c !== '' && c !== null && c !== undefined) &&
-          String(row[headers.indexOf('EMPLOYEE ID')] || '').trim().startsWith('MVE')
+          String(row[empIdCol] || '').trim() !== ''
         );
 
-        const idx = (name) => headers.indexOf(name);
         const parsed = dataRows.map(row => ({
-          employee_id:           String(row[idx('EMPLOYEE ID')] || '').trim(),
-          employee_name:         String(row[idx('EMPLOYEE NAME')] || '').trim(),
-          employee_status:       String(row[idx('EMPLOYEE STATUS')] || '').trim(),
-          basic_salary:          row[idx('BASIC SALARY')],
-          hra:                   row[idx('HRA')],
-          conveyance:            row[idx('CONVEYANCE')],
-          car_fuel_maintenance:  row[idx('CAR FUEL MAINTENANCE')],
-          health_and_wellness:   row[idx('HEALTH AND WELLNESS')],
-          hard_furnishing:       row[idx('HARD FURNISHING')],
-          provident_fund:        row[idx('PROVIDENT FUND')],
-          medical_insurance:     row[idx('MEDICAL INSURANCE')],
-          admin_charge:          row[idx('ADMIN_CHARGE')],
-          vpp_deduction:         row[idx('VPP DEDUCTION')],
-          ctc_bonus:             row[idx('CTC_BONUS')],
-          esi_employer:          row[idx('ESI_EMPLOYER')],
-          nps_employee:          row[idx('NPS EMPLOYEE')],
-          car_lease:             row[idx('CAR_LEASE')],
-          total_ctc:             row[idx('TOTALCTC')],
+          employee_id:           String(row[col('EMPLOYEE ID', 'EMP ID', 'EMPLOYEE CODE', 'EMP CODE')] || '').trim(),
+          employee_name:         String(row[col('EMPLOYEE NAME', 'EMP NAME', 'NAME')] || '').trim(),
+          employee_status:       String(row[col('EMPLOYEE STATUS', 'EMP STATUS', 'STATUS')] || '').trim(),
+          basic_salary:          row[col('BASIC SALARY', 'BASIC')],
+          hra:                   row[col('HRA', 'HOUSE RENT ALLOWANCE', 'HOUSE RENT')],
+          conveyance:            row[col('CONVEYANCE', 'CONVEYANCE ALLOWANCE')],
+          car_fuel_maintenance:  row[col('CAR FUEL MAINTENANCE', 'CAR FUEL', 'FUEL MAINTENANCE')],
+          health_and_wellness:   row[col('HEALTH AND WELLNESS', 'HEALTH WELLNESS', 'HEALTH')],
+          hard_furnishing:       row[col('HARD FURNISHING', 'FURNISHING')],
+          provident_fund:        row[col('PROVIDENT FUND', 'PF EMPLOYEE', 'EPF', 'PF')],
+          medical_insurance:     row[col('MEDICAL INSURANCE', 'MEDICAL', 'INSURANCE')],
+          admin_charge:          row[col('ADMIN CHARGE', 'ADMIN CHARGES', 'ADMIN CHRG')],
+          vpp_deduction:         row[col('VPP DEDUCTION', 'VPP DED', 'VPP')],
+          ctc_bonus:             row[col('CTC BONUS', 'CTC BONUS MONTHLY', 'BONUS')],
+          esi_employer:          row[col('ESI EMPLOYER', 'ESI EMP', 'ESI CONTRIBUTION')],
+          nps_employee:          row[col('NPS EMPLOYEE', 'NPS EMP', 'NPS')],
+          car_lease:             row[col('CAR LEASE', 'LEASE')],
+          total_ctc:             row[col('TOTAL CTC', 'TOTALCTC', 'TOTAL CTC MONTHLY', 'MONTHLY CTC', 'CTC MONTHLY')],
         })).filter(r => r.employee_id);
 
         setImportRows(parsed);

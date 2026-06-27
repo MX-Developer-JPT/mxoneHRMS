@@ -581,18 +581,13 @@ router.post('/:name', async (req, res) => {
         const employeeESIM    = basicM <= 21000 ? Math.round(basicM * 0.0075) : 0;
         const performanceBonus = ctcBonusM || vppM; // prefer CTC_BONUS, fallback to VPP
 
-        // Deactivate any existing active salary structure for this employee
-        const existing = await all(
-          "SELECT id FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'",
-          [emp.user_id]
+        // Deactivate any existing active salary structure for this employee (single query)
+        await run(
+          `UPDATE entities SET status='inactive', updated_at=NOW()::TEXT,
+            data = (data::jsonb || $2::jsonb)::text
+           WHERE type='SalaryStructure' AND user_id=$1 AND status='active'`,
+          [emp.user_id, JSON.stringify({ status: 'inactive', effective_to: effDate })]
         );
-        for (const ex of existing) {
-          const exData = JSON.parse((await one('SELECT data FROM entities WHERE id=$1', [ex.id])).data);
-          await run('UPDATE entities SET data=$1, status=$2 WHERE id=$3', [
-            JSON.stringify({ ...exData, status: 'inactive', effective_to: effDate }),
-            'inactive', ex.id
-          ]);
-        }
 
         // Create new salary structure
         const id = uuidv4();
@@ -1962,7 +1957,9 @@ router.post('/:name', async (req, res) => {
       //   B) { department_name, employee_code }              — assign employee to existing/new dept
       const { rows: deptRows = [] } = p;
 
-      const empsForDept = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'"));
+      // Select id column explicitly so emp._rowId is the DB row id (not just JSON data's id field)
+      const empRawRows  = await all("SELECT id, data FROM entities WHERE type='Employee'");
+      const empsForDept = empRawRows.map(r => ({ _rowId: r.id, ...JSON.parse(r.data) }));
       const deptsAll    = parseEntities(await all("SELECT data FROM entities WHERE type='Department'"));
 
       const empByCode2 = {};
@@ -2000,10 +1997,12 @@ router.post('/:name', async (req, res) => {
           const emp = empByCode2[empCode];
           if (!emp) { deptErrors.push(`Employee ${empCode} not found`); skipped++; continue; }
           // Store dept.name (not raw string) so it exactly matches the Department entity's name field
-          const upd = { ...emp, department: dept.name };
-          await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2",
-            [JSON.stringify(upd), emp.id]);
-          assigned++;
+          const { _rowId, ...empData } = emp;
+          const upd = { ...empData, department: dept.name };
+          const updResult = await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2",
+            [JSON.stringify(upd), _rowId]);
+          if (updResult.rowCount > 0) assigned++;
+          else deptErrors.push(`Employee ${empCode}: update failed (entity not found)`);
         }
       }
 
