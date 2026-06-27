@@ -1141,6 +1141,14 @@ function MaintenanceTab() {
         {procResult && (
           <div className={`rounded-lg p-3 text-sm space-y-2 ${procResult.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
             <p className={procResult.success ? 'text-emerald-800 font-medium' : 'text-red-800'}>{procResult.message}</p>
+            {procResult.success && (
+              <div className="flex gap-4 text-xs text-gray-600 flex-wrap">
+                <span>Total records: <strong>{procResult.total_records ?? '—'}</strong></span>
+                <span>Processed: <strong className="text-emerald-700">{procResult.processed}</strong></span>
+                <span>Regularised (skipped): <strong>{procResult.skipped_regularised ?? 0}</strong></span>
+                <span>No punch data: <strong>{procResult.skipped_no_punch_data ?? 0}</strong></span>
+              </div>
+            )}
             {procResult.preview?.length > 0 && (
               <div className="mt-2 space-y-1 max-h-48 overflow-auto">
                 <p className="text-xs font-medium text-gray-600">Preview (up to 50 records):</p>

@@ -1,4 +1,4 @@
-import { Suspense, useState } from 'react'
+import { Suspense, useState, useEffect } from 'react'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import { Toaster } from "@/components/ui/toaster"
 import { Toaster as SonnerToaster } from 'sonner'
@@ -55,6 +55,7 @@ import GateAdminProfile from './pages/GateAdminProfile';
 import GateAdminLayout from './components/GateAdminLayout';
 import RoleBasedRedirect from './components/RoleBasedRedirect';
 import AskMax from './pages/AskMax';
+import { pushSupported, getPushState, enablePush } from '@/utils/pwa';
 import ComplianceDashboard from './pages/ComplianceDashboard';
 import PerformanceManagement from './pages/PerformanceManagement';
 import ImportEmployees from './pages/ImportEmployees';
@@ -200,6 +201,18 @@ const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, user, checkAppState } = useAuth();
   const isPublicPath = PUBLIC_PATHS.some(p => window.location.pathname.startsWith(p));
+
+  // Auto-request push notification permission after login (production only, after 4s delay)
+  useEffect(() => {
+    if (!user || isPublicPath || !pushSupported()) return;
+    const timer = setTimeout(async () => {
+      try {
+        const state = await getPushState();
+        if (state === 'default') await enablePush();
+      } catch { /* user denied or push not configured — silent */ }
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [!!user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if ((isLoadingPublicSettings || isLoadingAuth) && !isPublicPath) {
     return (

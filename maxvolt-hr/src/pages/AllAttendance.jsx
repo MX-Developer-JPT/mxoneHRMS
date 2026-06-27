@@ -264,7 +264,14 @@ export default function AllAttendance() {
       toast.info('Generating attendance report…');
       const res = await base44.functions.invoke('exportAttendanceReport', { month: mo, year: yr });
       if (!res.data?.success) { toast.error(res.data?.error || 'Export failed'); return; }
-      const blob = new Blob([res.data.csv], { type: 'text/csv;charset=utf-8;' });
+      let blob;
+      if (res.data.base64) {
+        const byteChars = atob(res.data.base64);
+        const byteNums = new Array(byteChars.length).fill(0).map((_, i) => byteChars.charCodeAt(i));
+        blob = new Blob([new Uint8Array(byteNums)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      } else {
+        blob = new Blob([res.data.csv], { type: 'text/csv;charset=utf-8;' });
+      }
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href = url;

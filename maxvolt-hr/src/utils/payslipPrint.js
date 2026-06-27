@@ -75,7 +75,7 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
   const empPFBase = Math.min(basicEarned, 15000);
   const employerPF = payroll.employer_contributions?.pf ?? salaryStructure.employer_pf_contribution ?? Math.round(empPFBase * 0.13);
   const employerESI = payroll.employer_contributions?.esi ?? (basicEarned <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(basicEarned * 0.0325)) : 0);
-  const gratuity = salaryStructure.gratuity || Math.round(basicEarned * 0.0481);
+  // gratuity removed from payslip
 
   const month = monthNames[(payroll.month || 1) - 1];
   const year = payroll.year;
@@ -206,7 +206,6 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
         <div style="display:flex;gap:28px;">
           <div><div style="font-size:8px;color:#6b7280;text-transform:uppercase;">Employer PF (13%)</div><div style="font-size:11px;font-weight:600;color:#15803d;">₹${fmt(employerPF)}</div></div>
           ${employerESI > 0 ? `<div><div style="font-size:8px;color:#6b7280;text-transform:uppercase;">Employer ESI (3.25%)</div><div style="font-size:11px;font-weight:600;color:#15803d;">₹${fmt(employerESI)}</div></div>` : ''}
-          <div><div style="font-size:8px;color:#6b7280;text-transform:uppercase;">Gratuity (4.81% of Basic)</div><div style="font-size:11px;font-weight:600;color:#15803d;">₹${fmt(gratuity)}</div></div>
           ${(salaryStructure.medical_contribution || 0) > 0 ? `<div><div style="font-size:8px;color:#6b7280;text-transform:uppercase;">Medical Contribution</div><div style="font-size:11px;font-weight:600;color:#15803d;">₹${fmt(salaryStructure.medical_contribution)}</div></div>` : ''}
         </div>
       </div>

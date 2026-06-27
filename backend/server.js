@@ -170,8 +170,22 @@ app.use('/api/push',            pushRouter);
 // Production: serve built React frontend
 if (process.env.NODE_ENV === 'production') {
   const frontendDist = path.join(__dirname, 'public');
-  app.use(express.static(frontendDist, { maxAge: '1d', etag: true }));
-  app.get('*', (_req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
+  app.use(express.static(frontendDist, {
+    maxAge: '1y',
+    etag: true,
+    setHeaders: (res, filePath) => {
+      // Never cache HTML or the service worker — always revalidate
+      if (filePath.endsWith('.html') || filePath.endsWith('sw.js')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+    },
+  }));
+  app.get('*', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
 } else {
   app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 }

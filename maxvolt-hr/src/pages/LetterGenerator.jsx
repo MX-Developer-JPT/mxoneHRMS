@@ -153,6 +153,7 @@ export default function LetterGenerator() {
   const [selectedEmp, setSelectedEmp] = useState(null);
   const [letterType, setLetterType] = useState('');
   const [extra, setExtra] = useState({});
+  const [signatory, setSignatory] = useState('');
   const [generating, setGenerating] = useState(false);
   const [letter, setLetter] = useState('');
   const [isHtml, setIsHtml] = useState(false);
@@ -162,6 +163,12 @@ export default function LetterGenerator() {
   const [saved, setSaved] = useState(false);
   const [approveSending, setApproveSending] = useState(false);
   const [approveSent, setApproveSent] = useState(false);
+
+  // HR/Manager employees for signatory selection
+  const managers = useMemo(() =>
+    employees.filter(e => ['hr', 'manager', 'admin', 'director', 'head'].some(k => (e.designation || '').toLowerCase().includes(k) || (e.department || '').toLowerCase().includes('hr'))).slice(0, 30),
+    [employees]
+  );
 
   useEffect(() => { load(); }, []);
   const load = async () => {
@@ -188,7 +195,7 @@ export default function LetterGenerator() {
     setLetter('');
     try {
       const res = await base44.functions.invoke('generateEmployeeLetter', {
-        user_id: selectedEmp.user_id, letter_type: letterType, extra,
+        user_id: selectedEmp.user_id, letter_type: letterType, extra: { ...extra, signatory },
       });
       const d = res.data || res;
       if (d.success) {
@@ -342,6 +349,25 @@ export default function LetterGenerator() {
                   ))}
                 </div>
               )}
+
+              {/* Signatory selector */}
+              <div>
+                <Label className="text-xs">Authorised Signatory</Label>
+                <select
+                  className="mt-1 w-full border rounded-md px-2 py-1.5 text-sm bg-white"
+                  value={signatory}
+                  onChange={e => setSignatory(e.target.value)}
+                >
+                  <option value="">— Default (Authorised Signatory) —</option>
+                  {managers.map(m => (
+                    <option key={m.user_id} value={m.display_name}>{m.display_name} · {m.designation || m.department}</option>
+                  ))}
+                  <option value="__custom">Enter custom name…</option>
+                </select>
+                {signatory === '__custom' && (
+                  <Input className="mt-1 text-sm" placeholder="Full name of signatory" onChange={e => setSignatory(e.target.value)} />
+                )}
+              </div>
 
               <Button onClick={generate} disabled={generating || !selectedEmp || !letterType}
                 className="w-full bg-indigo-600 hover:bg-indigo-700 text-white">

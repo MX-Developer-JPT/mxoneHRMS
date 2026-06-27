@@ -850,42 +850,146 @@ router.post('/:name', async (req, res) => {
         return { emp, shift, isOTEligible, totalPresent, totalAbsent, totalLeave, totalHoliday, totalOff, totalWorkingHrs, totalOvertimeHrs, avgDailyHrs, dayDetails };
       });
 
-      // Build CSV
+      // Build styled Excel
       const monthLabel = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
       const dayNums = Array.from({ length: daysInMonth }, (_, i) => i+1);
+      const ExcelJSAR = (await import('exceljs')).default;
+      const wbAR = new ExcelJSAR.Workbook();
+      wbAR.creator = 'Maxvolt HRMS'; wbAR.created = new Date();
+      const wsAR = wbAR.addWorksheet('Attendance Report', { views: [{ state:'frozen', xSplit:6, ySplit:3 }] });
 
-      const headers = [
-        'Emp Code', 'Employee Name', 'Department', 'Designation', 'Shift', 'OT Eligible',
-        ...dayNums.map(d => `${d} (Day)`),
-        ...dayNums.map(d => `${d} (Hours)`),
-        ...dayNums.map(d => `${d} (OT Hrs)`),
-        'Days Present', 'Days Absent', 'Days Leave', 'Days Holiday', 'Days Off',
-        'Total Working Hrs', 'Avg Daily Hrs', 'Total OT Hrs',
+      const arFill = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
+      const arFont = (bold=false, color='222222', size=9) => ({ name:'Arial', bold, color:{argb:`FF${color}`}, size });
+      const arBorder = () => ({ top:{style:'thin',color:{argb:'FFD0D0D0'}}, left:{style:'thin',color:{argb:'FFD0D0D0'}}, bottom:{style:'thin',color:{argb:'FFD0D0D0'}}, right:{style:'thin',color:{argb:'FFD0D0D0'}} });
+
+      const dayStatusColor = (cell) => {
+        if (cell === 'P') return 'C8E6C9';
+        if (cell === 'L*') return 'FFF9C4';
+        if (cell === 'A') return 'FFCDD2';
+        if (cell === 'L') return 'B3E5FC';
+        if (cell === 'H') return 'E1BEE7';
+        if (cell === 'HD') return 'FFE0B2';
+        if (cell === 'OFF') return 'ECEFF1';
+        if (cell === 'OD' || cell === 'WFH') return 'DCEDC8';
+        return 'FFFFFF';
+      };
+
+      // Row 1: Title
+      const totalInfoCols = 6 + daysInMonth * 2 + 6;
+      wsAR.mergeCells(1, 1, 1, totalInfoCols);
+      const arTitle = wsAR.getCell('A1');
+      arTitle.value = `ATTENDANCE REPORT — ${monthLabel.toUpperCase()}   |   Maxvolt Energy Industries Limited`;
+      arTitle.font = { name:'Arial', bold:true, color:{argb:'FFFFFFFF'}, size:13 };
+      arTitle.fill = arFill('1A3C5E');
+      arTitle.alignment = { horizontal:'center', vertical:'middle' };
+      wsAR.getRow(1).height = 30;
+
+      // Row 2: Meta + Legend
+      wsAR.mergeCells(2, 1, 2, 6);
+      wsAR.getCell('A2').value = `Generated: ${new Date().toLocaleString('en-IN')}   |   Employees: ${rows.length}   |   Days in Month: ${daysInMonth}`;
+      wsAR.getCell('A2').font = arFont(false, 'FFFFFF', 9);
+      wsAR.getCell('A2').fill = arFill('2D6A9F');
+      wsAR.getCell('A2').alignment = { vertical:'middle' };
+      wsAR.mergeCells(2, 7, 2, totalInfoCols);
+      wsAR.getCell(2, 7).value = 'P=Present  L*=Late  A=Absent  L=Leave  H=Holiday  HD=Half Day  OD=On Duty  WFH=Work from Home  OFF=Week Off';
+      wsAR.getCell(2, 7).font = arFont(false, 'FFFFFF', 8);
+      wsAR.getCell(2, 7).fill = arFill('2D6A9F');
+      wsAR.getCell(2, 7).alignment = { vertical:'middle' };
+      wsAR.getRow(2).height = 18;
+
+      // Row 3: Column headers
+      const arHeaders = [
+        { header:'Emp Code', width:11 }, { header:'Employee Name', width:22 },
+        { header:'Department', width:16 }, { header:'Designation', width:18 },
+        { header:'Shift', width:12 }, { header:'OT Eligible', width:9 },
+        ...dayNums.map(d => ({ header:String(d), width:4 })),
+        ...dayNums.map(d => ({ header:`${d}h`, width:6 })),
+        { header:'Present', width:8 }, { header:'Absent', width:8 },
+        { header:'Leave', width:7 }, { header:'Holiday', width:8 },
+        { header:'Off', width:6 }, { header:'Total Hrs', width:10 },
       ];
-
-      const csvRows = rows.map(r => {
-        const { emp, shift, isOTEligible, totalPresent, totalAbsent, totalLeave, totalHoliday, totalOff, totalWorkingHrs, totalOvertimeHrs, avgDailyHrs, dayDetails } = r;
-        return [
-          emp.employee_code || '',
-          emp.display_name  || '',
-          emp.department    || '',
-          emp.designation   || '',
-          shift?.name || 'General',
-          isOTEligible ? 'Yes' : 'No',
-          ...dayDetails.map(d => d.cell),
-          ...dayDetails.map(d => d.hhmm),
-          ...dayDetails.map(d => isOTEligible ? d.othhmm : '—'),
-          totalPresent, totalAbsent, totalLeave, totalHoliday, totalOff,
-          totalWorkingHrs, avgDailyHrs, isOTEligible ? totalOvertimeHrs : '—',
-        ];
+      wsAR.columns = arHeaders.map(h => ({ width: h.width }));
+      const arHdrRow = wsAR.getRow(3);
+      arHdrRow.height = 22;
+      arHeaders.forEach((h, ci) => {
+        const cell = arHdrRow.getCell(ci+1);
+        cell.value = h.header;
+        cell.font = arFont(true, 'FFFFFF', 9);
+        cell.fill = arFill('1A3C5E');
+        cell.alignment = { horizontal:'center', vertical:'middle', wrapText:true };
+        cell.border = arBorder();
       });
 
-      const esc = (v) => `"${String(v ?? '').replace(/"/g,'""')}"`;
-      const titleRow = `"Attendance Detailed Report — ${monthLabel}",,"Generated: ${new Date().toLocaleString('en-IN')}"`;
-      const legendRow = '"P=Present, A=Absent, L=Leave, H=Holiday, HD=Half Day, OD=On Duty, WFH=Work from Home, OFF=Week Off, L*=Late"';
-      const csv = [titleRow, legendRow, headers.map(esc).join(','), ...csvRows.map(r => r.map(esc).join(','))].join('\n');
+      // Data rows
+      rows.forEach((r, ri) => {
+        const { emp, shift, isOTEligible, totalPresent, totalAbsent, totalLeave, totalHoliday, totalOff, totalWorkingHrs, dayDetails } = r;
+        const rowNum = 4 + ri;
+        const isAlt = ri % 2 === 1;
+        const wsRow = wsAR.getRow(rowNum);
+        wsRow.height = 16;
 
-      return res.json({ success: true, csv, filename: `Attendance_Report_${monthLabel.replace(' ','_')}.csv`, total_employees: rows.length });
+        const cellData = [
+          emp.employee_code || '', emp.display_name || '',
+          emp.department || '', emp.designation || '',
+          shift?.name || 'General', isOTEligible ? 'Yes' : 'No',
+          ...dayDetails.map(d => d.cell),
+          ...dayDetails.map(d => d.hhmm),
+          totalPresent, totalAbsent, totalLeave, totalHoliday, totalOff, totalWorkingHrs,
+        ];
+
+        cellData.forEach((val, ci) => {
+          const cell = wsRow.getCell(ci+1);
+          cell.value = val;
+          cell.border = arBorder();
+          const isDayStatus = ci >= 6 && ci < 6 + daysInMonth;
+          const isDayHours  = ci >= 6 + daysInMonth && ci < 6 + daysInMonth * 2;
+          const isSummary   = ci >= 6 + daysInMonth * 2;
+          if (isDayStatus) {
+            const statusColor = dayStatusColor(val);
+            cell.fill = arFill(statusColor);
+            cell.font = arFont(true, '222222', 8);
+            cell.alignment = { horizontal:'center', vertical:'middle' };
+          } else if (isDayHours) {
+            cell.font = arFont(false, '555555', 8);
+            cell.alignment = { horizontal:'center', vertical:'middle' };
+            if (isAlt) cell.fill = arFill('F5F9FF');
+          } else if (isSummary) {
+            cell.font = arFont(true, '1A3C5E', 9);
+            cell.fill = arFill('EFF6FF');
+            cell.alignment = { horizontal:'center', vertical:'middle' };
+          } else {
+            cell.font = arFont(false, '222222', 9);
+            if (isAlt) cell.fill = arFill('F5F9FF');
+            if (ci < 2) cell.alignment = { horizontal:'left', vertical:'middle' };
+            else cell.alignment = { horizontal:'center', vertical:'middle' };
+          }
+        });
+      });
+
+      // Totals row
+      const arTotRow = wsAR.addRow([
+        'TOTAL', '', '', '', '', '',
+        ...dayNums.map(() => ''),
+        ...dayNums.map(() => ''),
+        rows.reduce((s,r)=>s+r.totalPresent,0),
+        rows.reduce((s,r)=>s+r.totalAbsent,0),
+        rows.reduce((s,r)=>s+r.totalLeave,0),
+        rows.reduce((s,r)=>s+r.totalHoliday,0),
+        rows.reduce((s,r)=>s+r.totalOff,0),
+        '',
+      ]);
+      arTotRow.height = 20;
+      arTotRow.eachCell(cell => {
+        cell.font = arFont(true, 'FFFFFF', 9);
+        cell.fill = arFill('1A3C5E');
+        cell.alignment = { horizontal:'center', vertical:'middle' };
+        cell.border = arBorder();
+      });
+      arTotRow.getCell(1).alignment = { horizontal:'left', vertical:'middle' };
+
+      const arBuffer = await wbAR.xlsx.writeBuffer();
+      const arBase64 = Buffer.from(arBuffer).toString('base64');
+      return res.json({ success: true, base64: arBase64, filename: `Attendance_Report_${monthLabel.replace(' ','_')}.xlsx`, total_employees: rows.length, format: 'xlsx' });
     }
 
     /* ── Salary Sheet Export (styled Excel) ─────────────── */
@@ -995,7 +1099,7 @@ router.post('/:name', async (req, res) => {
         { label:'EMPLOYEE DETAILS', cols:8 },
         { label:'ATTENDANCE', cols:5 },
         { label:'EARNINGS', cols:5 },
-        { label:'DEDUCTIONS', cols:5 },
+        { label:'DEDUCTIONS', cols:7 },
         { label:'NET PAY', cols:2 },
       ];
       let secCol = 1;
@@ -1515,17 +1619,24 @@ router.post('/:name', async (req, res) => {
         [monthStart, monthEnd]
       );
 
-      let processedCount = 0, skipped = 0;
+      let processedCount = 0, skippedRegularised = 0, skippedNoPunches = 0;
       const preview = [];
 
       for (const row of attRows) {
         const d = JSON.parse(row.data);
-        if (d.status === 'regularised') { skipped++; continue; }
-        if (!d.raw_punches || d.raw_punches.length === 0) { skipped++; continue; }
+        if (d.status === 'regularised') { skippedRegularised++; continue; }
+
+        // Build raw punches: use stored raw_punches or synthesise from check_in/check_out
+        let punches = d.raw_punches && d.raw_punches.length > 0 ? d.raw_punches : null;
+        if (!punches && d.check_in_time) {
+          punches = [{ time: d.check_in_time, device_direction: 'IN' }];
+          if (d.check_out_time) punches.push({ time: d.check_out_time, device_direction: 'OUT' });
+        }
+        if (!punches) { skippedNoPunches++; continue; }
 
         const shiftId = empShiftMap[d.user_id];
         const shift = (shiftId && shiftMap[shiftId]) || defaultShift;
-        const sd = buildSessions(d.raw_punches);
+        const sd = buildSessions(punches);
         const { status, late_minutes } = computeStatusFromSessions(sd, shift);
 
         if (dry_run) {
@@ -1537,7 +1648,7 @@ router.post('/:name', async (req, res) => {
             punch_count: sd.punch_count,
           });
         } else {
-          const updated = { ...d, ...sd, status, late_minutes, reprocessed_at: new Date().toISOString() };
+          const updated = { ...d, ...sd, raw_punches: punches, status, late_minutes, reprocessed_at: new Date().toISOString() };
           await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
             [status, JSON.stringify(updated), row.id]);
         }
@@ -1545,12 +1656,18 @@ router.post('/:name', async (req, res) => {
       }
 
       const monthLabel = new Date(yp, mp-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+      const skipped = skippedRegularised + skippedNoPunches;
       return res.json({
-        success: true, dry_run, processed: processedCount, skipped,
+        success: true, dry_run,
+        total_records: attRows.length,
+        processed: processedCount,
+        skipped,
+        skipped_regularised: skippedRegularised,
+        skipped_no_punch_data: skippedNoPunches,
         preview: dry_run ? preview.slice(0, 50) : undefined,
         message: dry_run
-          ? `Preview: ${processedCount} records would be reprocessed for ${monthLabel}`
-          : `Reprocessed ${processedCount} attendance records for ${monthLabel}`,
+          ? `Preview: ${processedCount} of ${attRows.length} records would be reprocessed for ${monthLabel} (${skippedRegularised} regularised, ${skippedNoPunches} no punch data)`
+          : `Reprocessed ${processedCount} of ${attRows.length} attendance records for ${monthLabel}`,
       });
     }
 
@@ -3061,11 +3178,17 @@ Return ONLY a valid JSON object (no markdown):
       const pfEmp   = ss.pf_employee || (basic ? Math.round(basic * 0.12) : 0);
       const net     = ss.netPay || (gross && pfEmp ? gross - pfEmp : 0);
 
+      const chosenSignatory = extra.signatory || '';
+
       const wrap = body => `<div style="font-family:Arial,sans-serif;font-size:13.5px;line-height:1.75;color:#111;max-width:700px;">${body}</div>`;
       const P    = t   => `<p style="margin:0 0 12px;text-align:justify;">${t}</p>`;
       const H    = t   => `<p style="margin:18px 0 6px;font-weight:bold;">${t}</p>`;
-      const sig  = (close, signer, role) =>
-        `<p style="margin:36px 0 0;">${close}</p><p style="margin:54px 0 2px;font-weight:bold;">${signer}</p>${role ? `<p style="margin:0;">${role}</p>` : ''}`;
+      const sig  = (close, _defaultSigner, role) => {
+        const nameBlock = chosenSignatory
+          ? `<p style="margin:4px 0 2px;font-weight:bold;">${chosenSignatory}</p><p style="margin:0;font-size:12px;color:#555;">For Maxvolt Energy Industries Limited</p>`
+          : `<p style="margin:54px 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>${role ? `<p style="margin:0;">${role}</p>` : ''}`;
+        return `<p style="margin:36px 0 0;">${close}</p>${nameBlock}`;
+      };
 
       const docList = `<ul style="margin:6px 0 14px 24px;line-height:1.85;">
   <li>Proof of address &amp; ID (Local &amp; Permanent).</li>
@@ -5495,28 +5618,67 @@ Return ONLY valid JSON (no markdown):
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, user_id, JSON.stringify(docData)]);
 
-      // Email to employee
+      // Email to employee with PDF attachment
       let email_error = null;
       try {
         const empUser = await one("SELECT email, full_name FROM users WHERE id=$1", [user_id]);
         if (!empUser?.email) throw new Error('Employee has no email address on record');
         const { sendEmail } = await import('../utils/email.js');
-        const plainText = letter_content.replace(/<[^>]*>/g, '');
-        const htmlBody  = letter_content.includes('<') ? letter_content
-          : `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.8;color:#1a1a1a;white-space:pre-wrap;">${
-              letter_content.replace(/&/g,'&amp;').replace(/</g,'&lt;')
-                .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
-            }</div>`;
+
+        // Generate PDF from letter content using pdfmake
+        const plainText = letter_content.replace(/<[^>]*>/g, '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&nbsp;/g,' ');
+        const pdfBuffer = await new Promise((resolve, reject) => {
+          try {
+            const PdfPrinter = _require('pdfmake/src/printer');
+            const pdfmakePkg = join(dirname(_require.resolve('pdfmake/package.json')), 'fonts');
+            const printer = new PdfPrinter({
+              Roboto: {
+                normal:      join(pdfmakePkg, 'Roboto-Regular.ttf'),
+                bold:        join(pdfmakePkg, 'Roboto-Medium.ttf'),
+                italics:     join(pdfmakePkg, 'Roboto-Italic.ttf'),
+                bolditalics: join(pdfmakePkg, 'Roboto-MediumItalic.ttf'),
+              },
+            });
+            const docDef = {
+              pageSize: 'A4', pageMargins: [50, 60, 50, 60],
+              content: [
+                { text: 'Maxvolt Energy Industries Limited', style: 'company' },
+                { text: 'E-82 Bulandshahr Road Industrial Area, Ghaziabad, UP – 201009', style: 'address' },
+                { canvas: [{ type:'line', x1:0, y1:4, x2:495, y2:4, lineWidth:2, lineColor:'#1e3a5f' }], margin:[0,4,0,16] },
+                { text: label, style: 'title' },
+                ...(ref ? [{ text: `Ref: ${ref}`, style: 'ref' }] : []),
+                { text: plainText, style: 'body' },
+              ],
+              styles: {
+                company: { fontSize:14, bold:true, color:'#1e3a5f', margin:[0,0,0,2] },
+                address:  { fontSize:9, color:'#666', margin:[0,0,0,4] },
+                title:    { fontSize:15, bold:true, alignment:'center', color:'#1e3a5f', margin:[0,0,0,12], decoration:'underline' },
+                ref:      { fontSize:10, color:'#555', margin:[0,0,0,12], italics:true },
+                body:     { fontSize:11, lineHeight:1.7, color:'#111', margin:[0,0,0,0] },
+              },
+              defaultStyle: { font:'Roboto' },
+            };
+            const chunks = [];
+            const pdfDoc = printer.createPdfKitDocument(docDef);
+            pdfDoc.on('data', c => chunks.push(c));
+            pdfDoc.on('end', () => resolve(Buffer.concat(chunks)));
+            pdfDoc.on('error', reject);
+            pdfDoc.end();
+          } catch (e) { reject(e); }
+        }).catch(() => null);
+
+        const attachments = pdfBuffer ? [{ filename: `${label.replace(/[^a-z0-9]/gi,'_')}.pdf`, content: pdfBuffer }] : [];
+
         await sendEmail({
           to: empUser.email,
-          subject: `${label} — Maxvolt Energy`,
-          html: `<p>Dear ${empUser.full_name || employee_name || 'Employee'},</p>
-                 <p>Please find your ${label} below. This document has also been saved in your HR Documents section.</p>
-                 <hr style="margin:16px 0"/>
-                 ${htmlBody}
-                 <hr style="margin:16px 0"/>
-                 <p style="color:#666;font-size:12px;">This is a system-generated letter from Maxvolt HR. Please contact HR for any queries.</p>`,
-          text: `Dear ${empUser.full_name || employee_name},\n\n${plainText}`,
+          subject: `${label} — Maxvolt Energy Industries Limited`,
+          html: `<div style="font-family:Arial,sans-serif;color:#111">
+                 <p>Dear ${empUser.full_name || employee_name || 'Employee'},</p>
+                 <p>Please find your <strong>${label}</strong> attached to this email as a PDF. This document has also been saved in your HR Documents section on the HRMS portal.</p>
+                 <p style="color:#666;font-size:12px;margin-top:20px;">This is a system-generated letter from Maxvolt HR. Please contact HR for any queries.</p>
+                 </div>`,
+          text: `Dear ${empUser.full_name || employee_name},\n\nPlease find your ${label} attached to this email.\n\nThis is a system-generated letter from Maxvolt HR.`,
+          attachments,
         });
       } catch (e) {
         email_error = e.message;
