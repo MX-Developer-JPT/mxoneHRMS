@@ -105,9 +105,9 @@ export default function DepartmentManagement() {
     setShowManageEmployees(true);
   };
 
-  const assignEmployeeToDepartment = async (employeeId, departmentCode) => {
+  const assignEmployeeToDepartment = async (employeeId, departmentName) => {
     try {
-      await base44.entities.Employee.update(employeeId, { department: departmentCode });
+      await base44.entities.Employee.update(employeeId, { department: departmentName });
       toast.success('Employee moved to department successfully');
       loadData();
     } catch (error) {
@@ -127,9 +127,12 @@ export default function DepartmentManagement() {
         const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
         const rows = raw.map(r => {
           const keys = Object.keys(r);
+          // Exact match first, then partial — prevents "Department Code" matching when looking for "Department"
           const get = (...names) => {
             for (const n of names) {
-              const k = keys.find(k => k.trim().toUpperCase().includes(n.toUpperCase()));
+              const norm = n.toUpperCase();
+              let k = keys.find(k => k.trim().toUpperCase() === norm);
+              if (!k) k = keys.find(k => k.trim().toUpperCase().includes(norm));
               if (k) return String(r[k]).trim();
             }
             return '';
@@ -354,7 +357,7 @@ export default function DepartmentManagement() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
           {departments.map(dept => {
             const head = users.find(u => u.id === dept.head_user_id);
-            const deptEmployees = employees.filter(e => e.department === dept.code);
+            const deptEmployees = employees.filter(e => e.department === dept.name);
 
             return (
               <Card key={dept.id} className="hover:shadow-lg transition-shadow">
@@ -448,8 +451,8 @@ export default function DepartmentManagement() {
               <div>
                 <h3 className="font-semibold mb-3">Current Department Employees</h3>
                 <div className="space-y-2">
-                  {employees.filter(e => e.department === selectedDepartment?.code).length > 0 ? (
-                    employees.filter(e => e.department === selectedDepartment?.code).map(emp => (
+                  {employees.filter(e => e.department === selectedDepartment?.name).length > 0 ? (
+                    employees.filter(e => e.department === selectedDepartment?.name).map(emp => (
                       <div key={emp.id} className="flex items-center justify-between p-3 border rounded-lg bg-blue-50">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
@@ -471,7 +474,7 @@ export default function DepartmentManagement() {
                           </SelectTrigger>
                           <SelectContent>
                             {departments.map(dept => (
-                              <SelectItem key={dept.id} value={dept.code}>
+                              <SelectItem key={dept.id} value={dept.name}>
                                 {dept.name}
                               </SelectItem>
                             ))}
@@ -488,8 +491,8 @@ export default function DepartmentManagement() {
               <div className="border-t pt-4">
                 <h3 className="font-semibold mb-3">Add Employees from Other Departments</h3>
                 <div className="space-y-2">
-                  {employees.filter(e => e.department !== selectedDepartment?.code && e.status === 'active').length > 0 ? (
-                    employees.filter(e => e.department !== selectedDepartment?.code && e.status === 'active').map(emp => (
+                  {employees.filter(e => e.department !== selectedDepartment?.name && e.status === 'active').length > 0 ? (
+                    employees.filter(e => e.department !== selectedDepartment?.name && e.status === 'active').map(emp => (
                       <div key={emp.id} className="flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center">
@@ -504,7 +507,7 @@ export default function DepartmentManagement() {
                         </div>
                         <Button
                           size="sm"
-                          onClick={() => assignEmployeeToDepartment(emp.id, selectedDepartment?.code)}
+                          onClick={() => assignEmployeeToDepartment(emp.id, selectedDepartment?.name)}
                         >
                           Move Here
                         </Button>

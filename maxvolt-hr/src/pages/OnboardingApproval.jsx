@@ -308,7 +308,7 @@ export default function OnboardingApproval() {
                     </SelectTrigger>
                     <SelectContent>
                       {departments.map(dept => (
-                        <SelectItem key={dept.id} value={dept.code}>
+                        <SelectItem key={dept.id} value={dept.name}>
                           {dept.name}
                         </SelectItem>
                       ))}

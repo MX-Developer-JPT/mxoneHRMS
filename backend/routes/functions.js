@@ -1999,9 +1999,10 @@ router.post('/:name', async (req, res) => {
         if (empCode) {
           const emp = empByCode2[empCode];
           if (!emp) { deptErrors.push(`Employee ${empCode} not found`); skipped++; continue; }
-          const upd = { ...emp, department: rawName };
-          await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE type='Employee' AND user_id=$2",
-            [JSON.stringify(upd), emp.user_id]);
+          // Store dept.name (not raw string) so it exactly matches the Department entity's name field
+          const upd = { ...emp, department: dept.name };
+          await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2",
+            [JSON.stringify(upd), emp.id]);
           assigned++;
         }
       }

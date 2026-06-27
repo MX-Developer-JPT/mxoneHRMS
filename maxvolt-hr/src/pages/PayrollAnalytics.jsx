@@ -54,7 +54,7 @@ export default function PayrollAnalytics() {
 
   // Department-wise breakdown
   const deptWiseData = departments.map(dept => {
-    const deptEmployees = employees.filter(e => e.department === dept.code);
+    const deptEmployees = employees.filter(e => e.department === dept.name);
     const deptPayrolls = currentMonthPayrolls.filter(p => 
       deptEmployees.some(e => e.user_id === p.user_id)
     );
