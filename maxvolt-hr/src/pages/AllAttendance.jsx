@@ -178,84 +178,22 @@ export default function AllAttendance() {
   };
 
   const exportToExcel = async () => {
-    // Use the currently selected date's month/year for export
     const [yr, mo] = date.split('-').map(Number);
-    const daysInMonth = new Date(yr, mo, 0).getDate();
-
-    // Fetch all attendance records for the full month
-    const monthStart = `${yr}-${String(mo).padStart(2,'0')}-01`;
-    const monthEnd = `${yr}-${String(mo).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
-
-    let monthRecords = [];
     try {
-      const res = await base44.functions.invoke('getAllAttendance', { date_from: monthStart, date_to: monthEnd });
-      monthRecords = res.data?.records || [];
-    } catch { monthRecords = []; }
-
-    // Build map: user_id -> { date -> status }
-    const recordMap = {};
-    monthRecords.forEach(r => {
-      if (!recordMap[r.user_id]) recordMap[r.user_id] = {};
-      recordMap[r.user_id][r.date?.slice(0,10)] = r;
-    });
-
-    const dayHeaders = Array.from({ length: daysInMonth }, (_, i) => String(i + 1));
-    const header1 = ['Employee Name', 'Employee No', 'Designation', 'Location', ...dayHeaders, 'Present', 'Leave', 'Holiday', 'Absent', 'Off Day', 'Rest Day', 'On duty', 'Status unknown', 'Total'];
-
-    const csvRows = employees.map(emp => {
-      const empRecords = recordMap[emp.user_id] || {};
-      let present = 0, leave = 0, holiday = 0, absent = 0, offDay = 0, restDay = 0, onDuty = 0, unknown = 0;
-      const dayCells = [];
-
-      for (let d = 1; d <= daysInMonth; d++) {
-        const dateStr = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-        const rec = empRecords[dateStr];
-        const dow = new Date(dateStr).getDay(); // 0=Sun, 6=Sat
-        let cell = '';
-        if (!rec) {
-          if (dow === 0) { cell = 'OFF'; offDay++; }
-          else if (dow === 6) { cell = 'OFF'; offDay++; } // Saturday = week off by default
-          else { cell = 'A'; absent++; }
-        } else {
-          // check_in_time (or biometric_synced) = actually present
-          const hasCheckedIn = rec.check_in_time || rec.biometric_synced || rec.check_in_selfie_url;
-          const s = rec.status;
-          if (s === 'week_off') { cell = 'OFF'; offDay++; }
-          else if (s === 'holiday') { cell = 'H'; holiday++; }
-          else if (s === 'leave') { cell = 'L'; leave++; }
-          else if (s === 'on_duty') { cell = 'OD'; onDuty++; }
-          else if (s === 'half_day') { cell = 'HD'; present += 0.5; absent += 0.5; }
-          else if (hasCheckedIn || s === 'present') { cell = 'P'; present++; }
-          else { cell = 'A'; absent++; }
-        }
-        dayCells.push(cell);
-      }
-
-      const total = present + leave + holiday + absent + offDay + restDay + onDuty;
-      return [
-        emp.display_name || emp.employee_code,
-        emp.employee_code,
-        emp.designation || '',
-        emp.work_location || '',
-        ...dayCells,
-        present, leave, holiday, absent, offDay, restDay, onDuty, unknown, total
-      ];
-    });
-
-    // Build CSV
-    const monthName = new Date(yr, mo - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
-    const titleRow = [`Attendance Muster - ${monthName}`];
-    const csv = [titleRow, header1, ...csvRows]
-      .map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
-      .join('\n');
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Attendance_Muster_${monthName.replace(' ', '_')}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+      toast.info('Generating muster roll…');
+      const res = await base44.functions.invoke('exportAttendanceMuster', { month: mo, year: yr });
+      if (!res.data?.success) { toast.error(res.data?.error || 'Muster export failed'); return; }
+      const byteChars = atob(res.data.base64);
+      const byteNums = new Array(byteChars.length).fill(0).map((_, i) => byteChars.charCodeAt(i));
+      const blob = new Blob([new Uint8Array(byteNums)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.data.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Muster exported — ${res.data.total_employees} employees`);
+    } catch (e) { toast.error('Muster export error: ' + e.message); }
   };
 
   const exportDetailedReport = async () => {

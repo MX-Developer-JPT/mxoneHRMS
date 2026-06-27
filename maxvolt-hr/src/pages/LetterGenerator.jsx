@@ -154,6 +154,7 @@ export default function LetterGenerator() {
   const [letterType, setLetterType] = useState('');
   const [extra, setExtra] = useState({});
   const [signatory, setSignatory] = useState('');
+  const [cc, setCc] = useState('');
   const [generating, setGenerating] = useState(false);
   const [letter, setLetter] = useState('');
   const [isHtml, setIsHtml] = useState(false);
@@ -249,6 +250,7 @@ export default function LetterGenerator() {
         letter_content: letter,
         ref,
         employee_name: selectedEmp.display_name,
+        ...(cc.trim() ? { cc: cc.trim() } : {}),
       });
       if (res.data?.success) {
         setApproveSent(true);
@@ -367,6 +369,18 @@ export default function LetterGenerator() {
                 {signatory === '__custom' && (
                   <Input className="mt-1 text-sm" placeholder="Full name of signatory" onChange={e => setSignatory(e.target.value)} />
                 )}
+              </div>
+
+              {/* CC recipients */}
+              <div>
+                <Label className="text-xs">CC (comma-separated emails)</Label>
+                <Input
+                  className="mt-1 text-sm"
+                  placeholder="hr@company.com, manager@company.com"
+                  value={cc}
+                  onChange={e => setCc(e.target.value)}
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5">Added to email CC when sending the letter</p>
               </div>
 
               <Button onClick={generate} disabled={generating || !selectedEmp || !letterType}

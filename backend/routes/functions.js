@@ -992,6 +992,165 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, base64: arBase64, filename: `Attendance_Report_${monthLabel.replace(' ','_')}.xlsx`, total_employees: rows.length, format: 'xlsx' });
     }
 
+    /* ── Attendance Muster Export (styled Excel) ─────────── */
+    case 'exportAttendanceMuster': {
+      const { month, year } = p;
+      if (!month || !year) return res.json({ success: false, error: 'month and year required' });
+      const m = parseInt(month), y = parseInt(year);
+      const monthStart  = `${y}-${String(m).padStart(2,'0')}-01`;
+      const monthEnd    = new Date(y, m, 0).toISOString().slice(0,10);
+      const daysInMonth = new Date(y, m, 0).getDate();
+      const monthLabel  = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+
+      const mEmps   = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const mAttRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
+
+      const mAttMap = {};
+      for (const a of mAttRows) {
+        if (!mAttMap[a.user_id]) mAttMap[a.user_id] = {};
+        mAttMap[a.user_id][String(a.date).slice(0,10)] = a;
+      }
+
+      const mStatusCode = (rec, dateStr) => {
+        const dow = new Date(dateStr).getDay();
+        if (!rec) return (dow === 0 || dow === 6) ? 'WO' : 'A';
+        const s = rec.status;
+        const hasIn = rec.check_in_time || rec.biometric_synced || rec.check_in_selfie_url;
+        if (s === 'week_off')  return 'WO';
+        if (s === 'holiday')   return 'PH';
+        if (s === 'leave')     return 'L';
+        if (s === 'on_duty')   return 'OD';
+        if (s === 'half_day')  return 'HD';
+        if (s === 'short_attendance') return 'SA';
+        if (s === 'late' || rec.late_arrival) return 'P*';
+        if (hasIn || s === 'present') return 'P';
+        return 'A';
+      };
+
+      const mStatusFill = (code) => {
+        const map = { 'P':'22C55E','P*':'F97316','A':'EF4444','WO':'D1D5DB','PH':'A78BFA','L':'60A5FA','OD':'14B8A6','HD':'FBBF24','SA':'FB923C' };
+        return map[code] || 'F3F4F6';
+      };
+      const mTextDark = (code) => ['WO','HD','SA'].includes(code) ? '1F2937' : 'FFFFFF';
+
+      const ExcelJSm = await import('exceljs');
+      const wbM = new ExcelJSm.default.Workbook();
+      const wsM = wbM.addWorksheet('Muster Roll', { views: [{ state:'frozen', xSplit:5, ySplit:4 }] });
+
+      const INFO = 5; // Code,Name,Dept,Desig,Location
+      const SUMM = 8; // P,A,L,HD,WO,PH,OD,Total
+      const totCols = INFO + daysInMonth + SUMM;
+
+      const mF  = (bold=false, col='1A1A1A', sz=9) => ({ name:'Calibri', bold, color:{ argb:'FF'+col }, size:sz });
+      const mFl = (hex) => ({ type:'pattern', pattern:'solid', fgColor:{ argb:'FF'+hex } });
+      const mBd = () => ({ top:{style:'thin',color:{argb:'FFD1D5DB'}}, left:{style:'thin',color:{argb:'FFD1D5DB'}}, bottom:{style:'thin',color:{argb:'FFD1D5DB'}}, right:{style:'thin',color:{argb:'FFD1D5DB'}} });
+      const mCtr = { horizontal:'center', vertical:'middle' };
+      const mLft = { horizontal:'left',   vertical:'middle' };
+
+      wsM.getColumn(1).width = 11; wsM.getColumn(2).width = 24; wsM.getColumn(3).width = 16;
+      wsM.getColumn(4).width = 16; wsM.getColumn(5).width = 14;
+      for (let d=1; d<=daysInMonth; d++) wsM.getColumn(INFO+d).width = 4.2;
+      for (let s=1; s<=SUMM;        s++) wsM.getColumn(INFO+daysInMonth+s).width = 5.5;
+
+      // Row 1 — title
+      const r1 = wsM.addRow([`ATTENDANCE MUSTER ROLL — ${monthLabel.toUpperCase()}`]);
+      r1.height = 28; wsM.mergeCells(1,1,1,totCols);
+      Object.assign(r1.getCell(1), { font:mF(true,'FFFFFF',13), fill:mFl('1A3C5E'), alignment:mCtr });
+
+      // Row 2 — meta
+      const r2 = wsM.addRow([`Maxvolt Energy Industries Limited  |  Period: ${monthLabel}  |  Employees: ${mEmps.length}  |  Generated: ${new Date().toLocaleDateString('en-IN')}`]);
+      r2.height = 16; wsM.mergeCells(2,1,2,totCols);
+      Object.assign(r2.getCell(1), { font:mF(false,'475569',8), fill:mFl('F8FAFC'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
+
+      // Row 3 — legend
+      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   A = Absent   HD = Half Day   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   SA = Short Attendance']);
+      r3.height = 15; wsM.mergeCells(3,1,3,totCols);
+      Object.assign(r3.getCell(1), { font:mF(false,'1E40AF',8), fill:mFl('EFF6FF'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
+
+      // Row 4 — headers
+      const dayHdrs = Array.from({length:daysInMonth}, (_,i) => {
+        const dow = ['Su','Mo','Tu','We','Th','Fr','Sa'][new Date(y,m-1,i+1).getDay()];
+        return `${i+1}\n${dow}`;
+      });
+      const hRow = wsM.addRow(['Code','Employee Name','Department','Designation','Location',...dayHdrs,'P','A','L','HD','WO','PH','OD','Total']);
+      hRow.height = 34;
+      hRow.eachCell(cell => Object.assign(cell, { font:mF(true,'FFFFFF',8), fill:mFl('1E40AF'), alignment:{ horizontal:'center', vertical:'middle', wrapText:true }, border:mBd() }));
+      for (let d=1; d<=daysInMonth; d++) {
+        const dow = new Date(y,m-1,d).getDay();
+        if (dow===0||dow===6) hRow.getCell(INFO+d).fill = mFl('1E3A8A');
+      }
+      for (let s=1; s<=SUMM; s++) hRow.getCell(INFO+daysInMonth+s).fill = mFl('0F172A');
+
+      // Dept colour rotation
+      const DEPT_BG = ['F0F9FF','FFF7ED','F0FDF4','FDF4FF','FFFBEB','FFF1F2','F0FDFA','F5F3FF'];
+      const deptBgMap = {}; let dci = 0;
+
+      const sortedEmps = [...mEmps].sort((a,b) => (a.department||'').localeCompare(b.department||'') || (a.display_name||'').localeCompare(b.display_name||''));
+      for (const emp of sortedEmps) {
+        const dept = emp.department || '';
+        if (!(dept in deptBgMap)) deptBgMap[dept] = DEPT_BG[dci++ % DEPT_BG.length];
+        const bg = deptBgMap[dept];
+        const empRecs = mAttMap[emp.user_id] || {};
+        let pC=0, aC=0, lC=0, hdC=0, woC=0, phC=0, odC=0;
+        const codes = [];
+
+        for (let d=1; d<=daysInMonth; d++) {
+          const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+          const code = mStatusCode(empRecs[ds], ds);
+          codes.push(code);
+          if (code==='P'||code==='P*'||code==='SA') pC++;
+          else if (code==='A') aC++;
+          else if (code==='L') lC++;
+          else if (code==='HD') { hdC++; pC+=0.5; aC+=0.5; }
+          else if (code==='WO') woC++;
+          else if (code==='PH') phC++;
+          else if (code==='OD') odC++;
+        }
+
+        const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...codes, pC, aC, lC, hdC, woC, phC, odC, pC+aC+lC+hdC+woC+phC+odC];
+        const dr = wsM.addRow(rowVals);
+        dr.height = 15;
+
+        [1,2,3,4,5].forEach(c => Object.assign(dr.getCell(c), { font:mF(c===2,c===2?'1E3A8A':'374151',c===2?9:8), fill:mFl(bg), alignment:c<=1?mCtr:mLft, border:mBd() }));
+
+        codes.forEach((code,i) => {
+          const cell = dr.getCell(INFO+1+i);
+          cell.value = code;
+          Object.assign(cell, {
+            font:    mF(true, mTextDark(code), 7),
+            fill:    mFl(mStatusFill(code)),
+            alignment: mCtr,
+            border:  { top:{style:'thin',color:{argb:'FFFFFFFF'}}, left:{style:'thin',color:{argb:'FFFFFFFF'}}, bottom:{style:'thin',color:{argb:'FFFFFFFF'}}, right:{style:'thin',color:{argb:'FFFFFFFF'}} },
+          });
+        });
+
+        [pC,aC,lC,hdC,woC,phC,odC,pC+aC+lC+hdC+woC+phC+odC].forEach((v,i) => {
+          const cell = dr.getCell(INFO+daysInMonth+1+i);
+          const isTotal = i===SUMM-1;
+          Object.assign(cell, {
+            font:  mF(true, isTotal?'FFFFFF':'1A1A1A', 8),
+            fill:  mFl(isTotal?'1A3C5E':bg),
+            alignment: mCtr,
+            border: mBd(),
+          });
+        });
+      }
+
+      // Totals row
+      const lastR = 4 + sortedEmps.length;
+      const tRow = wsM.addRow(['TOTALS','','','','', ...Array(daysInMonth).fill(''), ...Array(SUMM).fill('')]);
+      wsM.mergeCells(lastR+1,1,lastR+1,INFO);
+      tRow.height = 20;
+      for (let s=1; s<=SUMM; s++) {
+        const colLetter = wsM.getColumn(INFO+daysInMonth+s).letter;
+        tRow.getCell(INFO+daysInMonth+s).value = { formula:`SUM(${colLetter}5:${colLetter}${lastR})` };
+      }
+      tRow.eachCell(cell => Object.assign(cell, { font:mF(true,'FFFFFF',9), fill:mFl('1A3C5E'), alignment:mCtr, border:mBd() }));
+
+      const mBuf = await wbM.xlsx.writeBuffer();
+      return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`Attendance_Muster_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
+    }
+
     /* ── Salary Sheet Export (styled Excel) ─────────────── */
     case 'exportSalarySheet': {
       const { month, year } = p;
@@ -1621,6 +1780,7 @@ router.post('/:name', async (req, res) => {
 
       let processedCount = 0, skippedRegularised = 0, skippedNoPunches = 0;
       const preview = [];
+      const updateQueue = [];
 
       for (const row of attRows) {
         const d = JSON.parse(row.data);
@@ -1649,10 +1809,17 @@ router.post('/:name', async (req, res) => {
           });
         } else {
           const updated = { ...d, ...sd, raw_punches: punches, status, late_minutes, reprocessed_at: new Date().toISOString() };
-          await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
-            [status, JSON.stringify(updated), row.id]);
+          updateQueue.push([status, JSON.stringify(updated), row.id]);
         }
         processedCount++;
+      }
+
+      // Parallel batch updates (50 at a time) to avoid sequential per-record round-trips
+      for (let i = 0; i < updateQueue.length; i += 50) {
+        const batch = updateQueue.slice(i, i + 50);
+        await Promise.all(batch.map(([s, dat, id]) =>
+          run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [s, dat, id])
+        ));
       }
 
       const monthLabel = new Date(yp, mp-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
@@ -5594,7 +5761,7 @@ Return ONLY valid JSON (no markdown):
 
     /* ── Save generated letter to employee Documents ─── */
     case 'approveAndSendLetter': {
-      const { user_id, letter_type, letter_content, ref, employee_name } = p;
+      const { user_id, letter_type, letter_content, ref, employee_name, cc } = p;
       if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
 
       const LETTER_LABELS = {
@@ -5671,6 +5838,7 @@ Return ONLY valid JSON (no markdown):
 
         await sendEmail({
           to: empUser.email,
+          ...(cc ? { cc } : {}),
           subject: `${label} — Maxvolt Energy Industries Limited`,
           html: `<div style="font-family:Arial,sans-serif;color:#111">
                  <p>Dear ${empUser.full_name || employee_name || 'Employee'},</p>

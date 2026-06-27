@@ -1111,105 +1111,130 @@ function MaintenanceTab() {
   };
 
   return (
-    <div className="max-w-2xl space-y-5">
-      {/* Reprocess month attendance */}
-      <div className="border rounded-xl p-5 space-y-4">
-        <div className="flex items-center gap-2">
-          <Clock className="w-5 h-5 text-primary" />
-          <h3 className="font-semibold">Reprocess Month Attendance</h3>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Rebuilds attendance sessions from raw punch data for a full month.
-          First punch = check-in, second = check-out, third = check-in again. Regularised records are skipped.
-        </p>
-        <div className="flex gap-3 items-center flex-wrap">
-          <select className="border rounded px-2 py-1 text-sm" value={procMonth} onChange={e => setProcMonth(Number(e.target.value))}>
-            {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m,i) => (
-              <option key={i} value={i+1}>{m}</option>
-            ))}
-          </select>
-          <select className="border rounded px-2 py-1 text-sm" value={procYear} onChange={e => setProcYear(Number(e.target.value))}>
-            {[0,1,2].map(d => { const y = new Date().getFullYear() - d; return <option key={y} value={y}>{y}</option>; })}
-          </select>
-          <Button variant="outline" size="sm" onClick={() => runProcessMonth(true)} disabled={procRunning}>
-            {procRunning ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}Preview
-          </Button>
-          <Button size="sm" onClick={() => runProcessMonth(false)} disabled={procRunning}>
-            {procRunning ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}Process Month
-          </Button>
-        </div>
-        {procResult && (
-          <div className={`rounded-lg p-3 text-sm space-y-2 ${procResult.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
-            <p className={procResult.success ? 'text-emerald-800 font-medium' : 'text-red-800'}>{procResult.message}</p>
-            {procResult.success && (
-              <div className="flex gap-4 text-xs text-gray-600 flex-wrap">
-                <span>Total records: <strong>{procResult.total_records ?? '—'}</strong></span>
-                <span>Processed: <strong className="text-emerald-700">{procResult.processed}</strong></span>
-                <span>Regularised (skipped): <strong>{procResult.skipped_regularised ?? 0}</strong></span>
-                <span>No punch data: <strong>{procResult.skipped_no_punch_data ?? 0}</strong></span>
-              </div>
-            )}
-            {procResult.preview?.length > 0 && (
-              <div className="mt-2 space-y-1 max-h-48 overflow-auto">
-                <p className="text-xs font-medium text-gray-600">Preview (up to 50 records):</p>
-                {procResult.preview.map((r, i) => (
-                  <div key={i} className="text-xs bg-white border rounded p-2 font-mono flex gap-2 flex-wrap">
-                    <span className="text-gray-500">{r.date}</span>
-                    <span className="text-gray-400">{r.employee_code}</span>
-                    <span className="text-red-500">{r.old_status}</span><span>→</span>
-                    <span className="text-green-600">{r.new_status}</span>
-                    <span className="text-gray-400">|</span>
-                    <span>in: <span className="text-green-600">{r.new_check_in?.slice(11,16)}</span></span>
-                    {r.new_check_out && <span>out: <span className="text-green-600">{r.new_check_out?.slice(11,16)}</span></span>}
-                    <span className="text-gray-400">[{r.punch_count}p]</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Data maintenance tools — use Preview / Dry Run before applying changes to production data.
+      </p>
 
-      {/* Fix UTC timestamps */}
-      <div className="border rounded-xl p-5 space-y-4">
-        <div className="flex items-center gap-2">
-          <Clock className="w-5 h-5 text-primary" />
-          <h3 className="font-semibold">Fix Attendance Timestamps (UTC→IST)</h3>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Attendance records created before the timezone fix may have check-in/out times stored in UTC instead of IST,
-          causing times to appear 5:30 hours early. This tool detects and corrects those records.
-        </p>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => runTsFix(true)} disabled={tsRunning}>
-            {tsRunning ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
-            Preview (Dry Run)
-          </Button>
-          <Button size="sm" onClick={() => runTsFix(false)} disabled={tsRunning}>
-            {tsRunning ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
-            Apply Fix
-          </Button>
-        </div>
-        {tsResult && (
-          <div className={`rounded-lg p-3 text-sm space-y-2 ${tsResult.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
-            <p className={tsResult.success ? 'text-emerald-800 font-medium' : 'text-red-800'}>{tsResult.message}</p>
-            {tsResult.preview?.length > 0 && (
-              <div className="mt-2 space-y-1">
-                <p className="text-xs font-medium text-gray-600">Sample records to be fixed:</p>
-                {tsResult.preview.map((r, i) => (
-                  <div key={i} className="text-xs bg-white border rounded p-2 font-mono">
-                    <span className="text-gray-500">{r.date}</span>
-                    {' · '}
-                    <span className="text-red-500">{r.old_check_in?.slice(11,16)}</span>
-                    {' → '}
-                    <span className="text-green-600">{r.new_check_in?.slice(11,16)}</span>
-                    {r.old_check_out && <> · out <span className="text-red-500">{r.old_check_out?.slice(11,16)}</span>{' → '}<span className="text-green-600">{r.new_check_out?.slice(11,16)}</span></>}
-                  </div>
-                ))}
-              </div>
-            )}
+      <div className="grid md:grid-cols-2 gap-4">
+
+        {/* ── Reprocess month attendance ── */}
+        <div className="border rounded-xl p-5 space-y-4 bg-card">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-blue-50 rounded-lg"><RotateCcw className="w-4 h-4 text-blue-600" /></div>
+            <div>
+              <h3 className="font-semibold text-sm">Reprocess Month Attendance</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Rebuilds sessions from raw punch data. 1st punch = In, 2nd = Out, 3rd = In again. Regularised records are skipped.
+              </p>
+            </div>
           </div>
-        )}
+
+          <div className="flex gap-2 items-center flex-wrap">
+            <select className="border rounded-lg px-2.5 py-1.5 text-sm bg-white" value={procMonth} onChange={e => setProcMonth(Number(e.target.value))}>
+              {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m,i) => (
+                <option key={i} value={i+1}>{m}</option>
+              ))}
+            </select>
+            <select className="border rounded-lg px-2.5 py-1.5 text-sm bg-white" value={procYear} onChange={e => setProcYear(Number(e.target.value))}>
+              {[0,1,2].map(d => { const y = new Date().getFullYear() - d; return <option key={y} value={y}>{y}</option>; })}
+            </select>
+            <div className="flex gap-1.5 ml-auto">
+              <Button variant="outline" size="sm" onClick={() => runProcessMonth(true)} disabled={procRunning}>
+                {procRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Preview
+              </Button>
+              <Button size="sm" onClick={() => runProcessMonth(false)} disabled={procRunning} className="bg-blue-600 hover:bg-blue-700 text-white">
+                {procRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Process
+              </Button>
+            </div>
+          </div>
+
+          {procRunning && (
+            <div className="flex items-center gap-2 text-xs text-blue-600 bg-blue-50 rounded-lg p-2.5">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              Processing attendance records — this may take up to 60 seconds for large datasets…
+            </div>
+          )}
+
+          {procResult && (
+            <div className={`rounded-lg p-3 text-sm space-y-2 ${procResult.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+              <p className={`font-medium text-xs ${procResult.success ? 'text-emerald-800' : 'text-red-800'}`}>{procResult.message}</p>
+              {procResult.success && (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[
+                    { label:'Total Records', value: procResult.total_records ?? '—', color:'text-gray-700' },
+                    { label:'Processed', value: procResult.processed, color:'text-emerald-700' },
+                    { label:'Regularised (skipped)', value: procResult.skipped_regularised ?? 0, color:'text-amber-700' },
+                    { label:'No Punch Data', value: procResult.skipped_no_punch_data ?? 0, color:'text-gray-500' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white rounded border px-2.5 py-1.5">
+                      <p className={`text-sm font-bold ${s.color}`}>{s.value}</p>
+                      <p className="text-[10px] text-gray-400">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {procResult.preview?.length > 0 && (
+                <div className="mt-2 space-y-1 max-h-48 overflow-auto">
+                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Preview (up to 50)</p>
+                  {procResult.preview.map((r, i) => (
+                    <div key={i} className="text-[10px] bg-white border rounded px-2 py-1 font-mono flex gap-2 flex-wrap">
+                      <span className="text-gray-500">{r.date}</span>
+                      <span className="font-medium">{r.employee_code}</span>
+                      <span className="text-red-500">{r.old_status}</span>→
+                      <span className="text-emerald-600 font-semibold">{r.new_status}</span>
+                      <span className="text-gray-400">in:{r.new_check_in?.slice(11,16)}</span>
+                      {r.new_check_out && <span className="text-gray-400">out:{r.new_check_out?.slice(11,16)}</span>}
+                      <span className="text-gray-300">[{r.punch_count}p]</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Fix UTC timestamps ── */}
+        <div className="border rounded-xl p-5 space-y-4 bg-card">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-amber-50 rounded-lg"><Clock className="w-4 h-4 text-amber-600" /></div>
+            <div>
+              <h3 className="font-semibold text-sm">Fix Timestamps (UTC→IST)</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Records stored in UTC (before timezone fix) show times 5:30 h early. Detects and corrects those records.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button variant="outline" size="sm" onClick={() => runTsFix(true)} disabled={tsRunning}>
+              {tsRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Dry Run
+            </Button>
+            <Button size="sm" onClick={() => runTsFix(false)} disabled={tsRunning} className="bg-amber-600 hover:bg-amber-700 text-white">
+              {tsRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Apply Fix
+            </Button>
+          </div>
+          {tsResult && (
+            <div className={`rounded-lg p-3 text-sm space-y-2 ${tsResult.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+              <p className={`text-xs font-medium ${tsResult.success ? 'text-emerald-800' : 'text-red-800'}`}>{tsResult.message}</p>
+              {tsResult.preview?.length > 0 && (
+                <div className="space-y-1 max-h-40 overflow-auto">
+                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Sample fixes</p>
+                  {tsResult.preview.map((r, i) => (
+                    <div key={i} className="text-[10px] bg-white border rounded px-2 py-1 font-mono">
+                      <span className="text-gray-500">{r.date}</span>
+                      {' · '}
+                      <span className="text-red-500">{r.old_check_in?.slice(11,16)}</span>
+                      {' → '}
+                      <span className="text-emerald-600">{r.new_check_in?.slice(11,16)}</span>
+                      {r.old_check_out && <> · out <span className="text-red-500">{r.old_check_out?.slice(11,16)}</span>{' → '}<span className="text-emerald-600">{r.new_check_out?.slice(11,16)}</span></>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
       </div>
     </div>
   );
@@ -1262,17 +1287,19 @@ export default function AdminPanel() {
 
       <StatsBar stats={stats} />
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b mb-6">
-        {TABS.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === id ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-          >
-            <Icon className="w-4 h-4" /> {label}
-          </button>
-        ))}
+      {/* Tabs — scrollable so all tabs fit on small screens */}
+      <div className="border-b mb-6 overflow-x-auto">
+        <div className="flex gap-0.5 min-w-max">
+          {TABS.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${tab === id ? 'border-primary text-primary bg-primary/5' : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/40'}`}
+            >
+              <Icon className="w-3.5 h-3.5" /> {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {tab === 'entities' && <EntitiesTab typeCounts={typeCounts} />}

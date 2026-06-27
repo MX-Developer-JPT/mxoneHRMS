@@ -50,7 +50,8 @@ export async function verifyEmail() {
 }
 
 // attachments: [{ filename: 'file.pdf', content: Buffer }]
-export async function sendEmail({ to, subject, html, text, attachments }) {
+// cc: string email or array of strings
+export async function sendEmail({ to, cc, subject, html, text, attachments }) {
   const fromStr     = await getFromAddress();
   const { name, email } = parseFrom(fromStr);
   const toArr = Array.isArray(to) ? to.map(e => ({ email: e })) : [{ email: to }];
@@ -61,6 +62,10 @@ export async function sendEmail({ to, subject, html, text, attachments }) {
     htmlContent: html,
     textContent: text,
   };
+  if (cc) {
+    const ccList = Array.isArray(cc) ? cc : cc.split(',').map(s => s.trim()).filter(Boolean);
+    if (ccList.length) body.cc = ccList.map(e => ({ email: e }));
+  }
   if (attachments?.length) {
     body.attachment = attachments.map(a => ({
       name:    a.filename,

@@ -4,10 +4,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AlertTriangle, Clock, TrendingDown, BarChart3, Users, RefreshCw, Fingerprint, Camera } from 'lucide-react';
+import { AlertTriangle, Clock, TrendingDown, BarChart3, Users, RefreshCw, Fingerprint, Camera, MapPin, Activity } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  LineChart, Line, PieChart, Pie, Cell, Tooltip as ReTooltip
+  LineChart, Line, PieChart, Pie, Cell
 } from 'recharts';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -21,6 +21,7 @@ export default function AttendanceReports() {
   const [year, setYear] = useState(new Date().getFullYear());
   const [attendance, setAttendance] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [bioLogs, setBioLogs] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => { loadData(); }, [month, year]);
@@ -31,19 +32,26 @@ export default function AttendanceReports() {
     const lastDay = new Date(year, month, 0).getDate();
     const endStr = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
 
-    const [records, emps] = await Promise.all([
+    const [records, emps, logs] = await Promise.all([
       base44.entities.Attendance.filter({ date: { $gte: startStr, $lte: endStr } }, '-date', 5000),
       base44.entities.Employee.filter({ status: 'active' }, '-created_date', 500),
+      base44.entities.AttendanceLog.filter({}, '-LogDate', 3000).catch(() => []),
     ]);
 
-    // Client-side post-filter for ISO timestamp date storage
     const filtered = records.filter(r => {
       const d = toDateStr(r.date);
       return d >= startStr && d <= endStr;
     });
 
+    // Filter biometric logs to this month
+    const filteredLogs = logs.filter(l => {
+      const ld = toDateStr(l.LogDate || l.log_date || l.date);
+      return ld >= startStr && ld <= endStr;
+    });
+
     setAttendance(filtered);
     setEmployees(emps);
+    setBioLogs(filteredLogs);
     setLoading(false);
   };
 
@@ -140,6 +148,42 @@ export default function AttendanceReports() {
     { name: 'Selfie', value: stats.selfie, color: '#3b82f6' },
     { name: 'Manual', value: stats.total - stats.biometric - stats.selfie, color: '#9ca3af' },
   ].filter(m => m.value > 0), [stats]);
+
+  // --- Biometric log stats ---
+  const bioStats = useMemo(() => {
+    const total = bioLogs.length;
+    const inPunches  = bioLogs.filter(l => (l.Direction || l.device_direction || '').toUpperCase() === 'IN').length;
+    const outPunches = bioLogs.filter(l => (l.Direction || l.device_direction || '').toUpperCase() === 'OUT').length;
+    const uniqueEmps = new Set(bioLogs.map(l => l.EmployeeCode || l.employee_code)).size;
+    const uniqueDays = new Set(bioLogs.map(l => toDateStr(l.LogDate || l.log_date))).size;
+    return { total, inPunches, outPunches, uniqueEmps, uniqueDays };
+  }, [bioLogs]);
+
+  // --- Location-wise attendance ---
+  const locationBreakdown = useMemo(() => {
+    const map = {};
+    employees.forEach(e => {
+      const loc = e.work_location || 'Unspecified';
+      if (!map[loc]) map[loc] = { location: loc, employees: 0, present: 0, absent: 0, late: 0, earlyOut: 0, totalHours: 0, records: 0 };
+      map[loc].employees++;
+    });
+    attendance.forEach(a => {
+      const emp = employees.find(e => e.user_id === a.user_id);
+      const loc = emp?.work_location || 'Unspecified';
+      if (!map[loc]) return;
+      map[loc].records++;
+      if (['present', 'on_duty', 'late', 'short_attendance'].includes(a.status)) map[loc].present++;
+      if (a.status === 'absent') map[loc].absent++;
+      if (a.late_arrival) map[loc].late++;
+      if (a.early_departure) map[loc].earlyOut++;
+      map[loc].totalHours += a.working_hours || 0;
+    });
+    return Object.values(map).map(loc => ({
+      ...loc,
+      attendanceRate: loc.records > 0 ? parseFloat(((loc.present / loc.records) * 100).toFixed(1)) : 0,
+      avgHours: loc.records > 0 ? parseFloat((loc.totalHours / loc.records).toFixed(1)) : 0,
+    })).sort((a, b) => b.employees - a.employees);
+  }, [attendance, employees]);
 
   if (loading) return (
     <div className="flex items-center justify-center h-screen">
@@ -375,6 +419,96 @@ export default function AttendanceReports() {
             </ResponsiveContainer>
           </CardContent>
         </Card>
+
+        {/* Biometric Log Summary */}
+        {bioStats.total > 0 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-500" />
+                Biometric Log Coverage
+                <span className="ml-auto text-xs font-normal text-gray-400">{bioStats.total} total punches</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: 'Total Punches', value: bioStats.total, color: 'text-gray-700', bg: 'bg-gray-50' },
+                  { label: 'IN Punches', value: bioStats.inPunches, color: 'text-green-700', bg: 'bg-green-50' },
+                  { label: 'OUT Punches', value: bioStats.outPunches, color: 'text-blue-700', bg: 'bg-blue-50' },
+                  { label: 'Unique Employees', value: bioStats.uniqueEmps, color: 'text-purple-700', bg: 'bg-purple-50' },
+                ].map(s => (
+                  <div key={s.label} className={`${s.bg} rounded-lg p-3`}>
+                    <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{s.label}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-3">
+                Biometric punches recorded across <strong>{bioStats.uniqueDays}</strong> working days this month.
+                Biometric coverage: <strong className="text-emerald-600">{employees.length > 0 ? Math.round((bioStats.uniqueEmps / employees.length) * 100) : 0}%</strong> of active employees.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Location-wise Attendance */}
+        {locationBreakdown.length > 1 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                <MapPin className="w-4 h-4 text-indigo-500" />
+                Location-wise Attendance
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid md:grid-cols-2 gap-6">
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={locationBreakdown} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis type="number" tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="location" tick={{ fontSize: 10 }} width={90} />
+                    <Tooltip />
+                    <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+                    <Bar dataKey="present" fill="#10b981" name="Present" stackId="a" />
+                    <Bar dataKey="absent" fill="#ef4444" name="Absent" stackId="a" />
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-gray-50 text-gray-600 text-left">
+                        <th className="px-3 py-2 font-medium">Location</th>
+                        <th className="px-3 py-2 text-right font-medium">Staff</th>
+                        <th className="px-3 py-2 text-right font-medium">Rate</th>
+                        <th className="px-3 py-2 text-right font-medium">Late</th>
+                        <th className="px-3 py-2 text-right font-medium">Avg Hrs</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {locationBreakdown.map(loc => (
+                        <tr key={loc.location} className="border-t hover:bg-gray-50">
+                          <td className="px-3 py-2 font-medium text-gray-800 flex items-center gap-1.5">
+                            <MapPin className="w-3 h-3 text-indigo-400 flex-shrink-0" />
+                            {loc.location}
+                          </td>
+                          <td className="px-3 py-2 text-right text-gray-600">{loc.employees}</td>
+                          <td className="px-3 py-2 text-right">
+                            <span className={`font-semibold ${loc.attendanceRate >= 80 ? 'text-green-600' : loc.attendanceRate >= 60 ? 'text-yellow-600' : 'text-red-600'}`}>
+                              {loc.attendanceRate}%
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-right text-orange-600 font-medium">{loc.late}</td>
+                          <td className="px-3 py-2 text-right text-blue-600 font-medium">{loc.avgHours}h</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
       </div>
     </div>
