@@ -14,23 +14,220 @@ import { fileURLToPath } from 'url';
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/* ── Shared: extract pdfmake VFS fonts to tmpdir on first call ── */
+let _pdfFontsDir = null;
+function getPdfmakeFontsDir() {
+  if (_pdfFontsDir) return _pdfFontsDir;
+  const { mkdirSync, writeFileSync, existsSync } = _require('fs');
+  const os = _require('os');
+  const dir = join(os.tmpdir(), 'mx-pdfmake-fonts');
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+    const vfs = _require('pdfmake/build/vfs_fonts').pdfMake?.vfs || _require('pdfmake/build/vfs_fonts').vfs || {};
+    for (const [name, b64] of Object.entries(vfs)) {
+      writeFileSync(join(dir, name), Buffer.from(b64, 'base64'));
+    }
+  }
+  _pdfFontsDir = dir;
+  return dir;
+}
+
+/* ── Shared: get pdfmake PdfPrinter with Roboto fonts ── */
+function getPdfPrinter() {
+  const PdfPrinter = _require('pdfmake/src/printer');
+  const fontsDir = getPdfmakeFontsDir();
+  return new PdfPrinter({
+    Roboto: {
+      normal:      join(fontsDir, 'Roboto-Regular.ttf'),
+      bold:        join(fontsDir, 'Roboto-Medium.ttf'),
+      italics:     join(fontsDir, 'Roboto-Italic.ttf'),
+      bolditalics: join(fontsDir, 'Roboto-MediumItalic.ttf'),
+    },
+  });
+}
+
+/* ── Shared: render a pdfmake docDef to a Buffer ── */
+function renderPdf(docDef) {
+  return new Promise((resolve, reject) => {
+    try {
+      const printer = getPdfPrinter();
+      const chunks = [];
+      const doc = printer.createPdfKitDocument(docDef);
+      doc.on('data', c => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+      doc.end();
+    } catch (e) { reject(e); }
+  });
+}
+
+/* ── Shared: parse HTML letter content into pdfmake content nodes ── */
+function htmlLetterToPdfContent(html) {
+  const decode = s => s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+
+  const stripTags = s => s.replace(/<[^>]*>/g, '');
+
+  const parseInline = (s) => {
+    const parts = [];
+    const re = /(<strong[^>]*>([\s\S]*?)<\/strong>|<b[^>]*>([\s\S]*?)<\/b>|<br\s*\/?>)/gi;
+    let last = 0, m;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) {
+        const text = decode(stripTags(s.slice(last, m.index)));
+        if (text) parts.push(text);
+      }
+      if (/^<br/i.test(m[0])) {
+        parts.push('\n');
+      } else {
+        const inner = decode(stripTags(m[2] ?? m[3] ?? ''));
+        if (inner) parts.push({ text: inner, bold: true });
+      }
+      last = m.index + m[0].length;
+    }
+    const tail = decode(stripTags(s.slice(last)));
+    if (tail) parts.push(tail);
+    if (parts.length === 0) return '';
+    if (parts.length === 1 && typeof parts[0] === 'string') return parts[0];
+    return parts;
+  };
+
+  const nodes = [];
+  let rem = html.replace(/^<div[^>]*>|<\/div>\s*$/gi, '').trim();
+
+  while (rem.length > 0) {
+    rem = rem.trimStart();
+    if (!rem) break;
+
+    // TABLE
+    const tbl = rem.match(/^<table[^>]*>([\s\S]*?)<\/table>/i);
+    if (tbl) {
+      const rows = [];
+      for (const [, rowHtml] of tbl[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+        const cells = [];
+        for (const [, cellHtml] of rowHtml.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)) {
+          cells.push({ text: parseInline(cellHtml.trim()), margin: [0, 3, 12, 3], fontSize: 10.5 });
+        }
+        if (cells.length) rows.push(cells);
+      }
+      if (rows.length) {
+        nodes.push({ table: { widths: rows[0].map((_, i) => i === 0 ? 'auto' : '*'), body: rows }, layout: 'noBorders', margin: [0, 6, 0, 10] });
+      }
+      rem = rem.slice(tbl[0].length);
+      continue;
+    }
+
+    // UL
+    const ul = rem.match(/^<ul[^>]*>([\s\S]*?)<\/ul>/i);
+    if (ul) {
+      const items = [];
+      for (const [, liHtml] of ul[1].matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
+        const parsed = parseInline(liHtml.trim());
+        if (parsed) items.push({ text: parsed, fontSize: 10.5 });
+      }
+      if (items.length) nodes.push({ ul: items, margin: [0, 4, 0, 10] });
+      rem = rem.slice(ul[0].length);
+      continue;
+    }
+
+    // P
+    const p = rem.match(/^<p([^>]*)>([\s\S]*?)<\/p>/i);
+    if (p) {
+      const attrs = p[1], inner = p[2].trim();
+      const isBold = /font-weight\s*:\s*bold/i.test(attrs) || /font-weight\s*:\s*bold/i.test(inner);
+      const align  = /text-align\s*:\s*center/i.test(attrs) ? 'center' : /text-align\s*:\s*right/i.test(attrs) ? 'right' : 'justify';
+      const parsed = parseInline(inner);
+      if (parsed !== '' && !(Array.isArray(parsed) && parsed.length === 0)) {
+        nodes.push({ text: parsed, bold: isBold || undefined, alignment: align, margin: isBold ? [0, 12, 0, 3] : [0, 0, 0, 8], fontSize: 10.5, lineHeight: 1.65 });
+      }
+      rem = rem.slice(p[0].length);
+      continue;
+    }
+
+    // Skip any other opening tag
+    const tag = rem.match(/^<[^>]+>/);
+    if (tag) { rem = rem.slice(tag[0].length); continue; }
+
+    // Raw text before next tag
+    const next = rem.indexOf('<');
+    if (next === -1) { const t = decode(rem.trim()); if (t) nodes.push({ text: t, fontSize: 10.5 }); break; }
+    const t = decode(rem.slice(0, next).trim());
+    if (t) nodes.push({ text: t, fontSize: 10.5, margin: [0, 0, 0, 6] });
+    rem = rem.slice(next);
+  }
+  return nodes;
+}
+
+/* ── Shared: build Maxvolt letterhead PDF with parsed HTML content ── */
+async function buildLetterPdf(label, ref, htmlContent) {
+  const { readFileSync, existsSync } = _require('fs');
+  const logoPath = join(__dirname, '../assets/maxvolt-logo.jpg');
+  const logoDataUrl = existsSync(logoPath)
+    ? `data:image/jpeg;base64,${readFileSync(logoPath).toString('base64')}`
+    : null;
+
+  const content = htmlLetterToPdfContent(htmlContent);
+
+  const headerFn = (currentPage, pageCount, pageSize) => {
+    const W = pageSize.width;
+    const seg1 = W * (1.6 / 6), seg2 = W * (3.6 / 6), seg3 = W * (0.8 / 6);
+    const orangeBar = { canvas: [
+      { type: 'rect', x: 0,          y: 0, w: seg1, h: 12, color: '#e87722' },
+      { type: 'rect', x: seg1,       y: 0, w: seg2, h: 12, color: '#f4a83a' },
+      { type: 'rect', x: seg1 + seg2, y: 0, w: seg3, h: 12, color: '#e87722' },
+    ]};
+    const logoRow = logoDataUrl
+      ? { image: 'logo', width: 120, margin: [36, 10, 0, 6] }
+      : { text: 'Maxvolt Energy Industries Limited', fontSize: 14, bold: true, color: '#1e3a5f', margin: [36, 10, 0, 6] };
+    return { stack: [orangeBar, logoRow] };
+  };
+
+  const footerFn = (currentPage, pageCount, pageSize) => {
+    const W = pageSize.width;
+    const seg1 = W * (1.6 / 6), seg2 = W * (3.6 / 6), seg3 = W * (0.8 / 6);
+    const orangeBar = { canvas: [
+      { type: 'rect', x: 0,          y: 0, w: seg1, h: 12, color: '#e87722' },
+      { type: 'rect', x: seg1,       y: 0, w: seg2, h: 12, color: '#f4a83a' },
+      { type: 'rect', x: seg1 + seg2, y: 0, w: seg3, h: 12, color: '#e87722' },
+    ]};
+    return {
+      stack: [
+        { text: 'Maxvolt Energy Industries Limited', alignment: 'center', fontSize: 10, bold: true, color: '#e87722', margin: [36, 6, 36, 4] },
+        {
+          columns: [
+            { text: [{ text: 'Head Office\n', bold: true, fontSize: 7.5 }, { text: 'E-82 Bulandshahr Road Industrial Area,\nGhaziabad, Uttar Pradesh – 201009\nCIN No. L40106DL2019PLC349854', fontSize: 7 }], margin: [36, 0, 10, 0], color: '#333' },
+            { text: [{ text: 'Registered Office\n', bold: true, fontSize: 7.5 }, { text: 'F-108, Plot No. 1 F/F United Plaza,\nCommunity Centre, Karkardooma,\nNew Delhi – 110092', fontSize: 7 }], margin: [10, 0, 10, 0], color: '#333' },
+            { text: [{ text: 'Contact Details\n', bold: true, fontSize: 7.5 }, { text: 'Phone +91 120 4291595\nEmail: info@maxvoltenergy.com\nWeb: www.maxvoltenergy.com', fontSize: 7 }], margin: [10, 0, 36, 0], color: '#333' },
+          ],
+          columnGap: 0,
+          margin: [0, 2, 0, 5],
+        },
+        orangeBar,
+      ],
+    };
+  };
+
+  const docDef = {
+    pageSize: 'A4',
+    pageMargins: [50, 100, 50, 110],
+    header: headerFn,
+    footer: footerFn,
+    ...(logoDataUrl ? { images: { logo: logoDataUrl } } : {}),
+    content,
+    defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.6 },
+  };
+
+  return renderPdf(docDef);
+}
+
 /* ── PDF generation helper (salary structure) ──────────────
    Uses pdfmake with bundled Roboto fonts (supports ₹ symbol).
    Returns a Promise<Buffer> of the generated PDF bytes.        */
 function buildSalaryStructurePdf({ candidateName, employeeCode, designation, department, dateOfJoining, effectiveFrom, annualCTC, sal }) {
   return new Promise((resolve, reject) => {
     try {
-      const PdfPrinter = _require('pdfmake/src/printer');
-      const pdfmakePkg = join(dirname(_require.resolve('pdfmake/package.json')), 'fonts');
-      const printer = new PdfPrinter({
-        Roboto: {
-          normal:      join(pdfmakePkg, 'Roboto-Regular.ttf'),
-          bold:        join(pdfmakePkg, 'Roboto-Medium.ttf'),
-          italics:     join(pdfmakePkg, 'Roboto-Italic.ttf'),
-          bolditalics: join(pdfmakePkg, 'Roboto-MediumItalic.ttf'),
-        },
-      });
-
+      const printer = getPdfPrinter();
       const L  = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       const GRAY = '#d9d9d9', BLUE = '#1d4ed8';
 
@@ -137,7 +334,7 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
         }),
       };
 
-      const doc     = printer.createPdfKitDocument(docDef);
+      const doc     = getPdfPrinter().createPdfKitDocument(docDef);
       const chunks  = [];
       doc.on('data',  c => chunks.push(c));
       doc.on('end',   () => resolve(Buffer.concat(chunks)));
@@ -5977,56 +6174,20 @@ Return ONLY valid JSON (no markdown):
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, user_id, JSON.stringify(docData)]);
 
-      // Email to employee with PDF attachment
+      // Email to employee with PDF attachment (proper Maxvolt letterhead)
       let email_error = null;
       try {
         const empUser = await one("SELECT email, full_name FROM users WHERE id=$1", [user_id]);
         if (!empUser?.email) throw new Error('Employee has no email address on record');
-        const { sendEmail } = await import('../utils/email.js');
 
-        // Generate PDF from letter content using pdfmake
-        const plainText = letter_content.replace(/<[^>]*>/g, '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&nbsp;/g,' ');
-        const pdfBuffer = await new Promise((resolve, reject) => {
-          try {
-            const PdfPrinter = _require('pdfmake/src/printer');
-            const pdfmakePkg = join(dirname(_require.resolve('pdfmake/package.json')), 'fonts');
-            const printer = new PdfPrinter({
-              Roboto: {
-                normal:      join(pdfmakePkg, 'Roboto-Regular.ttf'),
-                bold:        join(pdfmakePkg, 'Roboto-Medium.ttf'),
-                italics:     join(pdfmakePkg, 'Roboto-Italic.ttf'),
-                bolditalics: join(pdfmakePkg, 'Roboto-MediumItalic.ttf'),
-              },
-            });
-            const docDef = {
-              pageSize: 'A4', pageMargins: [50, 60, 50, 60],
-              content: [
-                { text: 'Maxvolt Energy Industries Limited', style: 'company' },
-                { text: 'E-82 Bulandshahr Road Industrial Area, Ghaziabad, UP – 201009', style: 'address' },
-                { canvas: [{ type:'line', x1:0, y1:4, x2:495, y2:4, lineWidth:2, lineColor:'#1e3a5f' }], margin:[0,4,0,16] },
-                { text: label, style: 'title' },
-                ...(ref ? [{ text: `Ref: ${ref}`, style: 'ref' }] : []),
-                { text: plainText, style: 'body' },
-              ],
-              styles: {
-                company: { fontSize:14, bold:true, color:'#1e3a5f', margin:[0,0,0,2] },
-                address:  { fontSize:9, color:'#666', margin:[0,0,0,4] },
-                title:    { fontSize:15, bold:true, alignment:'center', color:'#1e3a5f', margin:[0,0,0,12], decoration:'underline' },
-                ref:      { fontSize:10, color:'#555', margin:[0,0,0,12], italics:true },
-                body:     { fontSize:11, lineHeight:1.7, color:'#111', margin:[0,0,0,0] },
-              },
-              defaultStyle: { font:'Roboto' },
-            };
-            const chunks = [];
-            const pdfDoc = printer.createPdfKitDocument(docDef);
-            pdfDoc.on('data', c => chunks.push(c));
-            pdfDoc.on('end', () => resolve(Buffer.concat(chunks)));
-            pdfDoc.on('error', reject);
-            pdfDoc.end();
-          } catch (e) { reject(e); }
-        }).catch(() => null);
+        const pdfBuffer = await buildLetterPdf(label, ref || '', letter_content).catch(err => {
+          console.error('Letter PDF generation failed:', err.message);
+          return null;
+        });
 
-        const attachments = pdfBuffer ? [{ filename: `${label.replace(/[^a-z0-9]/gi,'_')}.pdf`, content: pdfBuffer }] : [];
+        const attachments = pdfBuffer
+          ? [{ filename: `${label.replace(/[^a-z0-9]/gi, '_')}.pdf`, content: pdfBuffer }]
+          : [];
 
         await sendEmail({
           to: empUser.email,
@@ -6035,6 +6196,7 @@ Return ONLY valid JSON (no markdown):
           html: `<div style="font-family:Arial,sans-serif;color:#111">
                  <p>Dear ${empUser.full_name || employee_name || 'Employee'},</p>
                  <p>Please find your <strong>${label}</strong> attached to this email as a PDF. This document has also been saved in your HR Documents section on the HRMS portal.</p>
+                 ${!pdfBuffer ? '<p style="color:#c00;font-size:12px;">Note: PDF attachment could not be generated this time. Please use Print / PDF from the portal instead.</p>' : ''}
                  <p style="color:#666;font-size:12px;margin-top:20px;">This is a system-generated letter from Maxvolt HR. Please contact HR for any queries.</p>
                  </div>`,
           text: `Dear ${empUser.full_name || employee_name},\n\nPlease find your ${label} attached to this email.\n\nThis is a system-generated letter from Maxvolt HR.`,
