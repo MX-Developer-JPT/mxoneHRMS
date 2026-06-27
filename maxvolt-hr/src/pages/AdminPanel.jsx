@@ -1083,52 +1083,112 @@ Authorization: Bearer ${apiKey || '<YOUR_API_KEY>'}
 
 // ── Maintenance Tab ────────────────────────────────────────
 function MaintenanceTab() {
-  const [result, setResult]   = useState(null);
-  const [running, setRunning] = useState(false);
+  const [tsResult, setTsResult] = useState(null);
+  const [tsRunning, setTsRunning] = useState(false);
+  const [procMonth, setProcMonth] = useState(new Date().getMonth() === 0 ? 12 : new Date().getMonth());
+  const [procYear, setProcYear]   = useState(new Date().getMonth() === 0 ? new Date().getFullYear() - 1 : new Date().getFullYear());
+  const [procResult, setProcResult] = useState(null);
+  const [procRunning, setProcRunning] = useState(false);
 
-  const run = async (dryRun) => {
-    setRunning(true);
-    setResult(null);
+  const runTsFix = async (dryRun) => {
+    setTsRunning(true); setTsResult(null);
     try {
       const r = await base44.functions.invoke('fixAttendanceTimestamps', { dry_run: dryRun });
-      setResult(r?.data || r);
+      setTsResult(r?.data || r);
     } catch (e) {
-      setResult({ success: false, message: e.message });
-    } finally {
-      setRunning(false);
-    }
+      setTsResult({ success: false, message: e.message });
+    } finally { setTsRunning(false); }
+  };
+
+  const runProcessMonth = async (dryRun) => {
+    setProcRunning(true); setProcResult(null);
+    try {
+      const r = await base44.functions.invoke('processMonthAttendance', { month: procMonth, year: procYear, dry_run: dryRun });
+      setProcResult(r?.data || r);
+    } catch (e) {
+      setProcResult({ success: false, message: e.message });
+    } finally { setProcRunning(false); }
   };
 
   return (
     <div className="max-w-2xl space-y-5">
+      {/* Reprocess month attendance */}
       <div className="border rounded-xl p-5 space-y-4">
         <div className="flex items-center gap-2">
           <Clock className="w-5 h-5 text-primary" />
-          <h3 className="font-semibold">Fix Attendance Timestamps</h3>
+          <h3 className="font-semibold">Reprocess Month Attendance</h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Rebuilds attendance sessions from raw punch data for a full month.
+          First punch = check-in, second = check-out, third = check-in again. Regularised records are skipped.
+        </p>
+        <div className="flex gap-3 items-center flex-wrap">
+          <select className="border rounded px-2 py-1 text-sm" value={procMonth} onChange={e => setProcMonth(Number(e.target.value))}>
+            {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m,i) => (
+              <option key={i} value={i+1}>{m}</option>
+            ))}
+          </select>
+          <select className="border rounded px-2 py-1 text-sm" value={procYear} onChange={e => setProcYear(Number(e.target.value))}>
+            {[0,1,2].map(d => { const y = new Date().getFullYear() - d; return <option key={y} value={y}>{y}</option>; })}
+          </select>
+          <Button variant="outline" size="sm" onClick={() => runProcessMonth(true)} disabled={procRunning}>
+            {procRunning ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}Preview
+          </Button>
+          <Button size="sm" onClick={() => runProcessMonth(false)} disabled={procRunning}>
+            {procRunning ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}Process Month
+          </Button>
+        </div>
+        {procResult && (
+          <div className={`rounded-lg p-3 text-sm space-y-2 ${procResult.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+            <p className={procResult.success ? 'text-emerald-800 font-medium' : 'text-red-800'}>{procResult.message}</p>
+            {procResult.preview?.length > 0 && (
+              <div className="mt-2 space-y-1 max-h-48 overflow-auto">
+                <p className="text-xs font-medium text-gray-600">Preview (up to 50 records):</p>
+                {procResult.preview.map((r, i) => (
+                  <div key={i} className="text-xs bg-white border rounded p-2 font-mono flex gap-2 flex-wrap">
+                    <span className="text-gray-500">{r.date}</span>
+                    <span className="text-gray-400">{r.employee_code}</span>
+                    <span className="text-red-500">{r.old_status}</span><span>→</span>
+                    <span className="text-green-600">{r.new_status}</span>
+                    <span className="text-gray-400">|</span>
+                    <span>in: <span className="text-green-600">{r.new_check_in?.slice(11,16)}</span></span>
+                    {r.new_check_out && <span>out: <span className="text-green-600">{r.new_check_out?.slice(11,16)}</span></span>}
+                    <span className="text-gray-400">[{r.punch_count}p]</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Fix UTC timestamps */}
+      <div className="border rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Clock className="w-5 h-5 text-primary" />
+          <h3 className="font-semibold">Fix Attendance Timestamps (UTC→IST)</h3>
         </div>
         <p className="text-sm text-muted-foreground">
           Attendance records created before the timezone fix may have check-in/out times stored in UTC instead of IST,
-          causing times to appear 5:30 hours early (e.g., 9:00 AM IST shows as 3:30 AM).
-          This tool detects and corrects those records.
+          causing times to appear 5:30 hours early. This tool detects and corrects those records.
         </p>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => run(true)} disabled={running}>
-            {running ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
+          <Button variant="outline" size="sm" onClick={() => runTsFix(true)} disabled={tsRunning}>
+            {tsRunning ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
             Preview (Dry Run)
           </Button>
-          <Button size="sm" onClick={() => run(false)} disabled={running}>
-            {running ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
+          <Button size="sm" onClick={() => runTsFix(false)} disabled={tsRunning}>
+            {tsRunning ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
             Apply Fix
           </Button>
         </div>
-
-        {result && (
-          <div className={`rounded-lg p-3 text-sm space-y-2 ${result.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
-            <p className={result.success ? 'text-emerald-800 font-medium' : 'text-red-800'}>{result.message}</p>
-            {result.preview?.length > 0 && (
+        {tsResult && (
+          <div className={`rounded-lg p-3 text-sm space-y-2 ${tsResult.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+            <p className={tsResult.success ? 'text-emerald-800 font-medium' : 'text-red-800'}>{tsResult.message}</p>
+            {tsResult.preview?.length > 0 && (
               <div className="mt-2 space-y-1">
                 <p className="text-xs font-medium text-gray-600">Sample records to be fixed:</p>
-                {result.preview.map((r, i) => (
+                {tsResult.preview.map((r, i) => (
                   <div key={i} className="text-xs bg-white border rounded p-2 font-mono">
                     <span className="text-gray-500">{r.date}</span>
                     {' · '}

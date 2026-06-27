@@ -70,7 +70,6 @@ function calcStructure(annualCTC, medicalContribution = 0) {
   // Conveyance = balance (Gross - Basic - HRA)
   const conveyanceM = Math.max(grossM - basicM - (hraAnnual / 12), 0);
 
-  const gratuity = Math.round(basicM * 0.0481);
   const totalDeductions = employeePF + employeeESI;
   const netMonthly = grossM - totalDeductions;
 
@@ -88,7 +87,6 @@ function calcStructure(annualCTC, medicalContribution = 0) {
     esi_contribution: employeeESI,
     employer_esi_contribution: employerESI,
     medical_contribution: medContribM,
-    gratuity,
     totalDeductions,
     netMonthly,
     annualCTC,
@@ -248,9 +246,8 @@ export default function SalaryStructureManagement() {
   const [overrides, setOverrides] = useState({
     basic_salary: '', hra: '', conveyance: '', performance_bonus: '',
     pf_contribution: '', esi_contribution: '',
-    employer_pf_contribution: '', employer_esi_contribution: '', gratuity: ''
+    employer_pf_contribution: '', employer_esi_contribution: ''
   });
-  const [gratuityEligible, setGratuityEligible] = useState(true);
   const [useOverrides, setUseOverrides] = useState(false);
 
   // Expanded view
@@ -314,7 +311,6 @@ export default function SalaryStructureManagement() {
         employer_pf_contribution: ovr('employer_pf_contribution') || Math.round(pfBase * 0.13),
         esi_contribution: ovr('esi_contribution') || (isESIApplicable ? Math.round(basic * 0.0075) : 0),
         employer_esi_contribution: ovr('employer_esi_contribution') || (isESIApplicable ? Math.round(basic * 0.0325) : 0),
-        gratuity: ovr('gratuity') || Math.round(basic * 0.0481),
         medical_contribution: medicalContrib,
         grossMonthly: grossM,
         isESIApplicable,
@@ -333,9 +329,8 @@ export default function SalaryStructureManagement() {
     setReimbursements({});
     setComputed(null);
     setUseOverrides(false);
-    setGratuityEligible(true);
     setMedicalContrib(0);
-    setOverrides({ basic_salary: '', hra: '', conveyance: '', performance_bonus: '', pf_contribution: '', esi_contribution: '', employer_pf_contribution: '', employer_esi_contribution: '', gratuity: '' });
+    setOverrides({ basic_salary: '', hra: '', conveyance: '', performance_bonus: '', pf_contribution: '', esi_contribution: '', employer_pf_contribution: '', employer_esi_contribution: '' });
     setShowDialog(true);
   };
 
@@ -347,7 +342,6 @@ export default function SalaryStructureManagement() {
     setRevisionReason('');
     setCtc(structure.ctc?.toString() || '');
     setReimbursements(structure.other_allowances || {});
-    setGratuityEligible(structure.gratuity_eligible !== false);
     setMedicalContrib(structure.medical_contribution ?? 0);
     setUseOverrides(true);
     setOverrides({
@@ -359,7 +353,6 @@ export default function SalaryStructureManagement() {
       esi_contribution: structure.esi_contribution || '',
       employer_pf_contribution: structure.employer_pf_contribution || '',
       employer_esi_contribution: structure.employer_esi_contribution || '',
-      gratuity: structure.gratuity || ''
     });
     setComputed(null);
     setShowDialog(true);
@@ -477,8 +470,6 @@ export default function SalaryStructureManagement() {
         employer_pf_contribution: vals.employer_pf_contribution,
         esi_contribution: vals.esi_contribution,
         employer_esi_contribution: vals.employer_esi_contribution,
-        gratuity: gratuityEligible ? vals.gratuity : 0,
-        gratuity_eligible: gratuityEligible,
         medical_contribution: vals.medical_contribution ?? 0,
         status: 'active',
         approved_by: user.id,
@@ -700,17 +691,6 @@ export default function SalaryStructureManagement() {
               })()}
             </div>
 
-            {/* Gratuity toggle */}
-            {ctc && (
-              <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-lg">
-                <Switch checked={gratuityEligible} onCheckedChange={setGratuityEligible} />
-                <div>
-                  <p className="text-sm font-medium">Gratuity Eligible</p>
-                  <p className="text-xs text-gray-500">Employer contributes gratuity (4.81% of Basic). Disable for contract/short-term employees.</p>
-                </div>
-              </div>
-            )}
-
             {/* Override toggle */}
             {ctc && (
               <div className="flex items-center gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
@@ -810,10 +790,9 @@ export default function SalaryStructureManagement() {
                     </div>
                   </div>
                   {useOverrides ? (
-                    <div className="grid md:grid-cols-3 gap-4">
+                    <div className="grid md:grid-cols-2 gap-4">
                       <ComponentField label="Employer PF (13%) / month" value={overrides.employer_pf_contribution} onChange={v => setOverrides(p => ({ ...p, employer_pf_contribution: v }))} />
                       <ComponentField label="Employer ESI (3.25%) / month" value={overrides.employer_esi_contribution} onChange={v => setOverrides(p => ({ ...p, employer_esi_contribution: v }))} />
-                      <ComponentField label="Gratuity (4.81% of Basic) / month" value={overrides.gratuity} onChange={v => setOverrides(p => ({ ...p, gratuity: v }))} />
                     </div>
                   ) : computed ? (
                     <div className="grid md:grid-cols-3 gap-3">
@@ -837,12 +816,6 @@ export default function SalaryStructureManagement() {
                         <p className="text-xs text-gray-500">{computed.bonusVPPType}</p>
                         <p className="text-lg font-bold text-yellow-600">₹{fmt(computed.performance_bonus)}/mo</p>
                       </div>
-                      {gratuityEligible && (
-                        <div className="p-3 bg-green-50 rounded-lg border border-green-100">
-                          <p className="text-xs text-gray-500">Gratuity (4.81% of Basic)</p>
-                          <p className="text-lg font-bold text-green-600">₹{fmt(computed.gratuity)}/mo</p>
-                        </div>
-                      )}
                     </div>
                   ) : null}
                 </TabsContent>

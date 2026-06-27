@@ -431,27 +431,44 @@ router.post('/:name', async (req, res) => {
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
 
       // Date range for the month
-      const startDate = `${year}-${String(month).padStart(2,'0')}-01`;
-      const lastDay   = new Date(year, month, 0).getDate();
-      const endDate   = `${year}-${String(month).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-      const workingDays = 26; // Standard payroll calendar
+      const m_int = parseInt(month), y_int = parseInt(year);
+      const startDate = `${y_int}-${String(m_int).padStart(2,'0')}-01`;
+      const lastDay   = new Date(y_int, m_int, 0).getDate();
+      const endDate   = `${y_int}-${String(m_int).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+      const workingDays = 26;
+
+      // Pre-batch all data to eliminate N+1 queries
+      const existingPayrollRows = await all(
+        "SELECT user_id FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2",
+        [String(m_int), String(y_int)]
+      );
+      const alreadyProcessed = new Set(existingPayrollRows.map(r => r.user_id));
+
+      const ssAllRows = await all("SELECT user_id, data FROM entities WHERE type='SalaryStructure' AND status='active'");
+      const ssMap = {};
+      for (const r of ssAllRows) ssMap[r.user_id] = JSON.parse(r.data);
+
+      const attAllRows = await all(
+        "SELECT user_id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
+        [startDate, endDate]
+      );
+      const attByUser = {};
+      for (const r of attAllRows) {
+        if (!attByUser[r.user_id]) attByUser[r.user_id] = [];
+        attByUser[r.user_id].push(JSON.parse(r.data));
+      }
 
       let processed = 0;
       for (const emp of employees) {
-        const ex = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND user_id=$1", [emp.user_id]))
-          .find(r=>r.month===month && r.year===year);
-        if (ex) continue;
+        if (alreadyProcessed.has(emp.user_id)) continue;
 
         // Salary structure
-        const ss    = parseEntities(await all("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [emp.user_id])).at(-1);
+        const ss    = ssMap[emp.user_id];
         const basic = ss?.basic_salary||0; const hra=ss?.hra||0; const conv=ss?.conveyance||0; const spec=ss?.special_allowance||0;
         const gross = basic+hra+conv+spec;
 
         // Attendance-based LOP calculation
-        const attRows = await all(
-          "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' BETWEEN $2 AND $3"
-        , [emp.user_id, startDate, endDate]);
-        const attRecords = attRows.map(r => JSON.parse(r.data));
+        const attRecords = attByUser[emp.user_id] || [];
 
         const presentDays = attRecords.filter(a => ['present', 'late', 'on_duty', 'work_from_home'].includes(a.status)).length;
         const halfDays    = attRecords.filter(a => a.status === 'half_day').length;
@@ -604,8 +621,6 @@ router.post('/:name', async (req, res) => {
           ctc_bonus: ctcBonusM,
           nps_employee: npsEmpM,
           car_lease: carLeaseM,
-          gratuity: Math.round(basicM * 0.0481),
-          gratuity_eligible: true,
           status: 'active',
           approved_by: approved_by || null,
           revision_reason: 'Imported from Salary Structure Excel',
@@ -873,7 +888,7 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, csv, filename: `Attendance_Report_${monthLabel.replace(' ','_')}.csv`, total_employees: rows.length });
     }
 
-    /* ── Salary Sheet Export ─────────────────────────────── */
+    /* ── Salary Sheet Export (styled Excel) ─────────────── */
     case 'exportSalarySheet': {
       const { month, year } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
@@ -884,102 +899,230 @@ router.post('/:name', async (req, res) => {
       const monthLabel = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
-      const payrolls  = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2", [m, y]));
+      const payrolls  = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2", [String(m), String(y)]));
       const payrollMap = Object.fromEntries(payrolls.map(pr => [pr.user_id, pr]));
 
-      const attRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
-      const attMap = {};
-      for (const a of attRows) {
-        if (!attMap[a.user_id]) attMap[a.user_id] = [];
-        attMap[a.user_id].push(a);
-      }
+      const attRows2 = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
+      const attMapSS = {};
+      for (const a of attRows2) { if (!attMapSS[a.user_id]) attMapSS[a.user_id] = []; attMapSS[a.user_id].push(a); }
 
-      const headers = [
-        'Emp Code', 'Employee Name', 'Department', 'Designation', 'Account No', 'IFSC', 'Bank',
-        'Days Present', 'Days Half Day', 'Days LOP', 'Days Absent', 'Total Working Days',
-        'Gross Salary', 'Basic', 'HRA', 'Conveyance', 'Special Allowance',
-        'PF Employee', 'PF Employer', 'ESI Employee', 'ESI Employer', 'Professional Tax',
-        'LOP Deduction', 'Total Deductions', 'Net Salary', 'Status',
-      ];
+      const ssAllRows2 = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND status='active'");
+      const ssMapSS = {};
+      for (const r of ssAllRows2) ssMapSS[r.user_id] = JSON.parse(r.data);
 
-      // Pre-fetch all salary structures
-      const ssAllRows = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND status='active'");
-      const ssMap = {};
-      for (const r of ssAllRows) ssMap[r.user_id] = JSON.parse(r.data);
-
-      const csvRows = employees.map(emp => {
-        const pr  = payrollMap[emp.user_id];
-        const recs = attMap[emp.user_id] || [];
-
+      const dataRows = employees.map((emp, idx) => {
+        const pr   = payrollMap[emp.user_id];
+        const recs = attMapSS[emp.user_id] || [];
         let daysPresent = 0, daysHalfDay = 0, daysLOP = 0;
         if (pr) {
-          daysPresent  = pr.present_days || 0;
-          daysHalfDay  = pr.half_days    || 0;
-          daysLOP      = pr.lop_days     || 0;
+          daysPresent = pr.present_days || 0; daysHalfDay = pr.half_days || 0; daysLOP = pr.lop_days || 0;
         } else {
           daysPresent  = recs.filter(a => ['present','late','on_duty','work_from_home'].includes(a.status)).length;
           daysHalfDay  = recs.filter(a => a.status === 'half_day').length;
           daysLOP      = recs.filter(a => ['absent','lop'].includes(a.status)).length;
         }
         const effectiveDays = daysPresent + (daysHalfDay * 0.5);
-
-        const ss = ssMap[emp.user_id] || {};
-        const gross = (ss.basic_salary||0) + (ss.hra||0) + (ss.conveyance||0) + (ss.special_allowance||0);
-        const earnedGross = gross > 0 ? Math.round((gross / workingDays) * effectiveDays) : 0;
-
-        const basic    = pr?.basic    || Math.round((ss.basic_salary||0)  / workingDays * effectiveDays);
-        const hra      = pr?.hra      || Math.round((ss.hra||0)           / workingDays * effectiveDays);
-        const conv     = pr?.conveyance || Math.round((ss.conveyance||0)  / workingDays * effectiveDays);
-        const special  = pr?.special_allowance || Math.round((ss.special_allowance||0) / workingDays * effectiveDays);
-        const grossCalc = basic + hra + conv + special;
-
-        // PF: 12% employee / 13% employer, capped at ₹15,000 basic wage ceiling
-        const pfBase = Math.min(basic, 15000);
-        const pfEmp  = pr?.deductions?.pf   ?? Math.round(pfBase * 0.12);
-        const pfEmpr = pr?.employer_contributions?.pf ?? Math.round(pfBase * 0.13);
-        // ESI: 0.75% employee / 3.25% employer on basic; eligible only if basic ≤ ₹21,000
-        const esiEmp = pr?.deductions?.esi  ?? (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
-        const esiEmpr= pr?.employer_contributions?.esi ?? (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
-        const pt     = pr?.deductions?.pt   ?? (grossCalc > 15000 ? 200 : grossCalc > 10000 ? 150 : 0);
-        const lop    = pr?.loss_of_pay_amount ?? Math.round((gross / workingDays) * daysLOP);
-        const totalDed = pfEmp + esiEmp + pt + lop;
-        const netSalary = Math.max(0, grossCalc - totalDed);
-
-        return [
-          emp.employee_code || '',
-          emp.display_name  || '',
-          emp.department    || '',
-          emp.designation   || '',
-          emp.bank_account_number || '',
-          emp.ifsc_code || '',
-          emp.bank_name || '',
+        const ss = ssMapSS[emp.user_id] || {};
+        const gross = (ss.basic_salary||0)+(ss.hra||0)+(ss.conveyance||0)+(ss.special_allowance||0);
+        const basic   = pr?.basic_salary  || Math.round((ss.basic_salary||0)/workingDays*effectiveDays);
+        const hra     = pr?.hra           || Math.round((ss.hra||0)/workingDays*effectiveDays);
+        const conv    = pr?.conveyance    || Math.round((ss.conveyance||0)/workingDays*effectiveDays);
+        const special = pr?.special_allowance || Math.round((ss.special_allowance||0)/workingDays*effectiveDays);
+        const grossCalc = basic+hra+conv+special;
+        const pfBase  = Math.min(basic, 15000);
+        const pfEmp   = pr?.deductions?.pf  ?? Math.round(pfBase*0.12);
+        const pfEmpr  = pr?.employer_contributions?.pf ?? Math.round(pfBase*0.13);
+        const esiEmp  = pr?.deductions?.esi ?? (basic<=21000 ? Math.round(basic*0.0075) : 0);
+        const esiEmpr = pr?.employer_contributions?.esi ?? (basic<=21000 ? Math.round(basic*0.0325) : 0);
+        const pt      = pr?.deductions?.pt  ?? (grossCalc>15000 ? 200 : grossCalc>10000 ? 150 : 0);
+        const lop     = pr?.loss_of_pay_amount ?? Math.round((gross/workingDays)*daysLOP);
+        const totalDed = pfEmp+esiEmp+pt+lop;
+        const net = Math.max(0, (pr?.net_salary ?? (grossCalc-totalDed)));
+        return {
+          sno: idx+1,
+          code: emp.employee_code||'', name: emp.display_name||'',
+          dept: emp.department||'', desig: emp.designation||'',
+          account: emp.bank_account_number||'', ifsc: emp.ifsc_code||'', bank: emp.bank_name||'',
           daysPresent, daysHalfDay, daysLOP,
-          recs.filter(a => a.status === 'absent').length,
+          daysAbsent: recs.filter(a=>a.status==='absent').length,
           effectiveDays,
-          pr?.gross_salary || grossCalc,
-          basic, hra, conv, special,
-          pfEmp, pfEmpr, esiEmp, esiEmpr, pt,
-          lop, totalDed, pr?.net_salary || netSalary,
-          pr ? 'Processed' : 'Pending',
-        ];
+          gross: pr?.gross_salary||grossCalc, basic, hra, conv, special,
+          pfEmp, pfEmpr, esiEmp, esiEmpr, pt, lop, totalDed, net,
+          status: pr ? 'Processed' : 'Pending',
+        };
       });
 
-      const esc = (v) => `"${String(v ?? '').replace(/"/g,'""')}"`;
-      const csv = [
-        `"Salary Sheet — ${monthLabel}",,"Generated: ${new Date().toLocaleString('en-IN')}"`,
-        headers.map(esc).join(','),
-        ...csvRows.map(r => r.map(esc).join(','))
-      ].join('\n');
-
-      const totals = csvRows.reduce((acc, r) => {
-        acc.gross      += parseFloat(r[12]) || 0;
-        acc.net        += parseFloat(r[23]) || 0;
-        acc.pf_emp     += parseFloat(r[14]) || 0;
-        acc.esi_emp    += parseFloat(r[16]) || 0;
+      const totals = dataRows.reduce((acc, r) => {
+        acc.gross += r.gross; acc.net += r.net; acc.pfEmp += r.pfEmp; acc.esiEmp += r.esiEmp;
         return acc;
-      }, { gross:0, net:0, pf_emp:0, esi_emp:0 });
+      }, { gross:0, net:0, pfEmp:0, esiEmp:0 });
 
-      return res.json({ success: true, csv, filename: `Salary_Sheet_${monthLabel.replace(' ','_')}.csv`, total_employees: employees.length, totals });
+      // Build styled Excel with exceljs
+      const ExcelJS = (await import('exceljs')).default;
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Maxvolt HRMS'; wb.created = new Date();
+      const ws = wb.addWorksheet('Salary Sheet', { views: [{ state:'frozen', xSplit:0, ySplit:4 }] });
+
+      // Colour palette
+      const C = { headerBg:'1A3C5E', headerFg:'FFFFFF', subBg:'2D6A9F', subFg:'FFFFFF',
+        earningBg:'E8F5E9', deductBg:'FFEBEE', sumBg:'FFF9C4', altRow:'F5F9FF',
+        processedFg:'1B5E20', pendingFg:'B71C1C', totalBg:'1A3C5E', totalFg:'FFFFFF' };
+      const font = (bold=false, color='000000', size=10) => ({ name:'Arial', bold, color:{argb:`FF${color}`}, size });
+      const fill = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
+      const border = () => ({ top:{style:'thin',color:{argb:'FFD0D0D0'}}, left:{style:'thin',color:{argb:'FFD0D0D0'}}, bottom:{style:'thin',color:{argb:'FFD0D0D0'}}, right:{style:'thin',color:{argb:'FFD0D0D0'}} });
+      const curr = (val) => ({ numFmt:'₹#,##0', alignment:{horizontal:'right'} });
+
+      // Row 1: Title
+      ws.mergeCells('A1:Z1');
+      const title = ws.getCell('A1');
+      title.value = `SALARY SHEET — ${monthLabel.toUpperCase()}   |   Maxvolt Energy Pvt. Ltd.`;
+      title.font = { name:'Arial', bold:true, color:{argb:'FFFFFFFF'}, size:14 };
+      title.fill = fill(C.headerBg);
+      title.alignment = { horizontal:'center', vertical:'middle' };
+      ws.getRow(1).height = 32;
+
+      // Row 2: Meta
+      ws.mergeCells('A2:N2');
+      const meta = ws.getCell('A2');
+      meta.value = `Generated: ${new Date().toLocaleString('en-IN')}   |   Employees: ${dataRows.length}   |   Total Gross: ₹${Math.round(totals.gross).toLocaleString('en-IN')}   |   Total Net: ₹${Math.round(totals.net).toLocaleString('en-IN')}`;
+      meta.font = { name:'Arial', color:{argb:'FFFFFFFF'}, size:9 };
+      meta.fill = fill(C.subBg);
+      meta.alignment = { horizontal:'left', vertical:'middle' };
+      ws.getRow(2).height = 20;
+
+      // Row 3: Section headers
+      const sectionHeaders = [
+        { label:'EMPLOYEE DETAILS', cols:8 },
+        { label:'ATTENDANCE', cols:5 },
+        { label:'EARNINGS', cols:5 },
+        { label:'DEDUCTIONS', cols:5 },
+        { label:'NET PAY', cols:2 },
+      ];
+      let secCol = 1;
+      for (const sec of sectionHeaders) {
+        if (sec.cols > 1) ws.mergeCells(3, secCol, 3, secCol + sec.cols - 1);
+        const cell = ws.getCell(3, secCol);
+        cell.value = sec.label;
+        cell.font = font(true, C.headerFg, 9);
+        cell.fill = fill(C.subBg);
+        cell.alignment = { horizontal:'center', vertical:'middle' };
+        secCol += sec.cols;
+      }
+      ws.getRow(3).height = 18;
+
+      // Row 4: Column headers
+      const cols = [
+        { header:'S.No', key:'sno', width:5 },
+        { header:'Emp Code', key:'code', width:10 },
+        { header:'Employee Name', key:'name', width:24 },
+        { header:'Department', key:'dept', width:16 },
+        { header:'Designation', key:'desig', width:18 },
+        { header:'Account No', key:'account', width:16 },
+        { header:'IFSC', key:'ifsc', width:12 },
+        { header:'Bank', key:'bank', width:14 },
+        { header:'Days Present', key:'daysPresent', width:10 },
+        { header:'Half Days', key:'daysHalfDay', width:9 },
+        { header:'LOP Days', key:'daysLOP', width:9 },
+        { header:'Absent', key:'daysAbsent', width:8 },
+        { header:'Eff. Days', key:'effectiveDays', width:9 },
+        { header:'Gross Salary', key:'gross', width:13 },
+        { header:'Basic', key:'basic', width:12 },
+        { header:'HRA', key:'hra', width:11 },
+        { header:'Conveyance', key:'conv', width:12 },
+        { header:'Special Allow.', key:'special', width:13 },
+        { header:'PF (Emp)', key:'pfEmp', width:11 },
+        { header:'PF (Empr)', key:'pfEmpr', width:11 },
+        { header:'ESI (Emp)', key:'esiEmp', width:11 },
+        { header:'ESI (Empr)', key:'esiEmpr', width:11 },
+        { header:'Prof. Tax', key:'pt', width:10 },
+        { header:'LOP Deduct.', key:'lop', width:12 },
+        { header:'Total Deduct.', key:'totalDed', width:13 },
+        { header:'Net Salary', key:'net', width:13 },
+        { header:'Status', key:'status', width:10 },
+      ];
+      ws.columns = cols;
+      const hdrRow = ws.getRow(4);
+      hdrRow.height = 22;
+      hdrRow.eachCell(cell => {
+        cell.font = font(true, C.headerFg, 9);
+        cell.fill = fill(C.headerBg);
+        cell.alignment = { horizontal:'center', vertical:'middle', wrapText:true };
+        cell.border = border();
+      });
+
+      // Data rows
+      dataRows.forEach((r, i) => {
+        const rowNum = 5 + i;
+        const isAlt = i % 2 === 1;
+        const rowData = [
+          r.sno, r.code, r.name, r.dept, r.desig, r.account, r.ifsc, r.bank,
+          r.daysPresent, r.daysHalfDay, r.daysLOP, r.daysAbsent, r.effectiveDays,
+          r.gross, r.basic, r.hra, r.conv, r.special,
+          r.pfEmp, r.pfEmpr, r.esiEmp, r.esiEmpr, r.pt, r.lop, r.totalDed, r.net,
+          r.status,
+        ];
+        const wsRow = ws.getRow(rowNum);
+        wsRow.height = 18;
+        rowData.forEach((val, ci) => {
+          const cell = wsRow.getCell(ci+1);
+          cell.value = val;
+          cell.font = font(false, '222222', 9);
+          cell.border = border();
+          // Alternate row background
+          if (isAlt) cell.fill = fill(C.altRow);
+          // Colour-code sections
+          const colKey = cols[ci]?.key;
+          if (['gross','basic','hra','conv','special'].includes(colKey)) {
+            cell.fill = fill(C.earningBg);
+            cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' };
+          } else if (['pfEmp','pfEmpr','esiEmp','esiEmpr','pt','lop','totalDed'].includes(colKey)) {
+            cell.fill = fill(C.deductBg);
+            cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' };
+          } else if (colKey === 'net') {
+            cell.fill = fill(C.sumBg);
+            cell.font = font(true, '1A3C5E', 10);
+            cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' };
+          } else if (colKey === 'status') {
+            cell.font = font(true, r.status==='Processed' ? C.processedFg : C.pendingFg, 9);
+            cell.alignment = { horizontal:'center' };
+          } else if (['daysPresent','daysHalfDay','daysLOP','daysAbsent','effectiveDays'].includes(colKey)) {
+            cell.alignment = { horizontal:'center' };
+          } else if (ci < 5) {
+            cell.alignment = { horizontal:'left' };
+          }
+        });
+      });
+
+      // Totals row
+      const totRow = ws.addRow([
+        '', 'TOTAL', '', '', '', '', '', '',
+        dataRows.reduce((s,r)=>s+r.daysPresent,0),
+        dataRows.reduce((s,r)=>s+r.daysHalfDay,0),
+        dataRows.reduce((s,r)=>s+r.daysLOP,0),
+        dataRows.reduce((s,r)=>s+r.daysAbsent,0),
+        '',
+        Math.round(totals.gross), '', '', '', '',
+        Math.round(dataRows.reduce((s,r)=>s+r.pfEmp,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.pfEmpr,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.esiEmp,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.esiEmpr,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.pt,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.lop,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.totalDed,0)),
+        Math.round(totals.net), '',
+      ]);
+      totRow.height = 22;
+      totRow.eachCell(cell => {
+        cell.font = font(true, C.totalFg, 10);
+        cell.fill = fill(C.totalBg);
+        cell.border = border();
+        if (typeof cell.value === 'number') { cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' }; }
+      });
+
+      const buf = await wb.xlsx.writeBuffer();
+      const base64 = Buffer.from(buf).toString('base64');
+      const filename = `Salary_Sheet_${monthLabel.replace(/\s/g,'_')}_${y}.xlsx`;
+      return res.json({ success: true, base64, filename, total_employees: employees.length, totals, format: 'xlsx' });
     }
 
     /* ── API Key Management (for external attendance push) ─ */
@@ -1342,6 +1485,171 @@ router.post('/:name', async (req, res) => {
         }
       }
       return res.json({ success:true, marked });
+    }
+
+    case 'processMonthAttendance': {
+      // Reprocess a past month's attendance from raw_punches.
+      // Alternating-position model: 1st punch=IN, 2nd=OUT, 3rd=IN...
+      // Records missing raw_punches are skipped; regularised records are never touched.
+      const { month, year, dry_run = false } = p;
+      if (!month || !year) return res.json({ success: false, error: 'month and year required' });
+
+      const mp = parseInt(month), yp = parseInt(year);
+      const monthStart = `${yp}-${String(mp).padStart(2,'0')}-01`;
+      const monthEnd   = new Date(yp, mp, 0).toISOString().slice(0, 10);
+
+      // Pre-load shifts
+      const shiftMap = {};
+      const shiftRows = await all("SELECT id, data FROM entities WHERE type='Shift'");
+      for (const r of shiftRows) { const s = JSON.parse(r.data); shiftMap[s.id] = s; }
+      const defaultShift = shiftRows.map(r => JSON.parse(r.data)).find(s => s.is_default)
+        || { start_time: '09:00', end_time: '18:00', working_hours: 9, grace_period_minutes: 15 };
+
+      // Pre-load employees for shift lookup
+      const empShiftMap = {};
+      const empAllRows = await all("SELECT user_id, data FROM entities WHERE type='Employee'");
+      for (const r of empAllRows) { const e = JSON.parse(r.data); empShiftMap[e.user_id] = e.shift_id || null; }
+
+      const attRows = await all(
+        "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
+        [monthStart, monthEnd]
+      );
+
+      let processedCount = 0, skipped = 0;
+      const preview = [];
+
+      for (const row of attRows) {
+        const d = JSON.parse(row.data);
+        if (d.status === 'regularised') { skipped++; continue; }
+        if (!d.raw_punches || d.raw_punches.length === 0) { skipped++; continue; }
+
+        const shiftId = empShiftMap[d.user_id];
+        const shift = (shiftId && shiftMap[shiftId]) || defaultShift;
+        const sd = buildSessions(d.raw_punches);
+        const { status, late_minutes } = computeStatusFromSessions(sd, shift);
+
+        if (dry_run) {
+          preview.push({
+            date: d.date, employee_code: d.employee_code,
+            old_status: d.status, new_status: status,
+            old_check_in: d.check_in_time, new_check_in: sd.check_in_time,
+            old_check_out: d.check_out_time, new_check_out: sd.check_out_time,
+            punch_count: sd.punch_count,
+          });
+        } else {
+          const updated = { ...d, ...sd, status, late_minutes, reprocessed_at: new Date().toISOString() };
+          await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
+            [status, JSON.stringify(updated), row.id]);
+        }
+        processedCount++;
+      }
+
+      const monthLabel = new Date(yp, mp-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+      return res.json({
+        success: true, dry_run, processed: processedCount, skipped,
+        preview: dry_run ? preview.slice(0, 50) : undefined,
+        message: dry_run
+          ? `Preview: ${processedCount} records would be reprocessed for ${monthLabel}`
+          : `Reprocessed ${processedCount} attendance records for ${monthLabel}`,
+      });
+    }
+
+    case 'importShiftAssignments': {
+      // Assign shifts to employees from Excel rows.
+      // Each row: { employee_code, shift_name }
+      const { rows: shiftRows = [] } = p;
+
+      const empsForShift = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'"));
+      const shiftsAll    = parseEntities(await all("SELECT data FROM entities WHERE type='Shift'"));
+
+      const empByCode = {};
+      for (const e of empsForShift) {
+        const c = String(e.employee_code || '').trim().toUpperCase();
+        if (c) empByCode[c] = e;
+      }
+      const shiftByName = {};
+      for (const s of shiftsAll) {
+        shiftByName[String(s.name || '').trim().toUpperCase()] = s;
+      }
+
+      let assigned = 0, notFoundEmp = [], notFoundShift = [];
+      for (const row of shiftRows) {
+        const code      = String(row.employee_code || '').trim().toUpperCase();
+        const shiftName = String(row.shift_name || '').trim().toUpperCase();
+        const emp   = empByCode[code];
+        const shift = shiftByName[shiftName];
+        if (!emp)   { notFoundEmp.push(code); continue; }
+        if (!shift) { notFoundShift.push(row.shift_name); continue; }
+        const upd = { ...emp, shift_id: shift.id };
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE type='Employee' AND user_id=$2",
+          [JSON.stringify(upd), emp.user_id]);
+        assigned++;
+      }
+
+      return res.json({
+        success: true, assigned,
+        not_found_employees: [...new Set(notFoundEmp)],
+        not_found_shifts:    [...new Set(notFoundShift)],
+        message: `Assigned shifts to ${assigned} employees.`,
+      });
+    }
+
+    case 'importDepartments': {
+      // Create departments and/or assign employees.
+      // Supports two row formats:
+      //   A) { name, code?, description?, employee_code? }  — create dept + optionally assign one employee
+      //   B) { department_name, employee_code }              — assign employee to existing/new dept
+      const { rows: deptRows = [] } = p;
+
+      const empsForDept = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'"));
+      const deptsAll    = parseEntities(await all("SELECT data FROM entities WHERE type='Department'"));
+
+      const empByCode2 = {};
+      for (const e of empsForDept) {
+        const c = String(e.employee_code || '').trim().toUpperCase();
+        if (c) empByCode2[c] = e;
+      }
+      const deptByName2 = {};
+      for (const d of deptsAll) deptByName2[String(d.name || '').trim().toUpperCase()] = d;
+
+      let created = 0, assigned = 0, skipped = 0, deptErrors = [];
+      for (const row of deptRows) {
+        const rawName = String(row.name || row.department_name || '').trim();
+        const rawCode = String(row.code || row.department_code || '').trim().toUpperCase();
+        const empCode = String(row.employee_code || '').trim().toUpperCase();
+        if (!rawName) { skipped++; continue; }
+
+        let dept = deptByName2[rawName.toUpperCase()];
+        if (!dept) {
+          const deptId = uuidv4();
+          dept = {
+            id: deptId, name: rawName,
+            code: rawCode || rawName.toUpperCase().replace(/[^A-Z0-9]/g, '_').slice(0, 10),
+            description: row.description || '',
+            ot_applicable: false,
+            created_at: new Date().toISOString(),
+          };
+          await run("INSERT INTO entities(id,type,status,data) VALUES($1,'Department','active',$2)",
+            [deptId, JSON.stringify(dept)]);
+          deptByName2[rawName.toUpperCase()] = dept;
+          created++;
+        }
+
+        if (empCode) {
+          const emp = empByCode2[empCode];
+          if (!emp) { deptErrors.push(`Employee ${empCode} not found`); skipped++; continue; }
+          const upd = { ...emp, department: rawName };
+          await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE type='Employee' AND user_id=$2",
+            [JSON.stringify(upd), emp.user_id]);
+          assigned++;
+        }
+      }
+
+      return res.json({
+        success: true, created, assigned, skipped,
+        errors: deptErrors.slice(0, 20),
+        message: `Created ${created} departments, assigned ${assigned} employees.`,
+      });
     }
 
     case 'receiveMxOneAttendanceSync': case 'fetchBiometricAttendance': case 'ebioWebhook': {

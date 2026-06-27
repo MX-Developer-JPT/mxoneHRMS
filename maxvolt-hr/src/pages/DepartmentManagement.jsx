@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,12 +8,17 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Building2, Users, Clock } from 'lucide-react';
+import { Plus, Building2, Users, Clock, Upload, FileSpreadsheet, CheckCircle2, AlertCircle } from 'lucide-react';
 import { Switch } from "@/components/ui/switch";
 import { toast } from 'sonner';
 
 export default function DepartmentManagement() {
   const [departments, setDepartments] = useState([]);
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [importRows, setImportRows] = useState([]);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const deptImportRef = useRef(null);
   const [users, setUsers] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [showForm, setShowForm] = useState(false);
@@ -110,6 +116,60 @@ export default function DepartmentManagement() {
     }
   };
 
+  const handleDeptImportFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        const rows = raw.map(r => {
+          const keys = Object.keys(r);
+          const get = (...names) => {
+            for (const n of names) {
+              const k = keys.find(k => k.trim().toUpperCase().includes(n.toUpperCase()));
+              if (k) return String(r[k]).trim();
+            }
+            return '';
+          };
+          return {
+            name:          get('DEPARTMENT NAME', 'DEPARTMENT', 'DEPT NAME', 'DEPT'),
+            code:          get('DEPARTMENT CODE', 'DEPT CODE', 'CODE'),
+            description:   get('DESCRIPTION', 'DESC'),
+            employee_code: get('EMPLOYEE CODE', 'EMP CODE', 'EMPLOYEE ID', 'EMP ID'),
+          };
+        }).filter(r => r.name || r.employee_code);
+        setImportRows(rows);
+        setImportResult(null);
+        toast.success(`Loaded ${rows.length} rows`);
+      } catch (err) {
+        toast.error('Failed to parse file: ' + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleImportDepts = async () => {
+    if (importRows.length === 0) return;
+    setImporting(true);
+    try {
+      const response = await base44.functions.invoke('importDepartments', { rows: importRows });
+      const d = response.data;
+      setImportResult(d);
+      if (d.success) {
+        toast.success(`Created ${d.created} departments, assigned ${d.assigned} employees`);
+        loadData();
+      } else {
+        toast.error('Import failed');
+      }
+    } catch (err) {
+      toast.error('Import error: ' + err.message);
+    }
+    setImporting(false);
+  };
+
   if (loading && departments.length === 0) {
     return <div className="flex items-center justify-center h-screen">Loading...</div>;
   }
@@ -122,19 +182,92 @@ export default function DepartmentManagement() {
             <h1 className="text-2xl md:text-3xl font-bold">Department Management</h1>
             <p className="text-gray-600 mt-1 text-sm md:text-base">Create and manage departments</p>
           </div>
-          <Dialog open={showForm} onOpenChange={(open) => {
-            setShowForm(open);
-            if (!open) {
-              setEditingDept(null);
-              setFormData({ name: '', code: '', head_user_id: '', description: '', ot_applicable: false });
-            }
-          }}>
-            <DialogTrigger asChild>
-              <Button className="bg-blue-600 hover:bg-blue-700 w-full sm:w-auto">
-                <Plus className="w-5 h-5 mr-2" />
-                New Department
-              </Button>
-            </DialogTrigger>
+          <div className="flex gap-2 w-full sm:w-auto">
+            {/* Import departments + assignments dialog */}
+            <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+              <DialogTrigger asChild>
+                <Button variant="outline" className="w-full sm:w-auto" onClick={() => { setImportRows([]); setImportResult(null); }}>
+                  <Upload className="w-4 h-4 mr-2" /> Import from Excel
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    <FileSpreadsheet className="w-5 h-5 text-blue-600" />
+                    Import Departments from Excel
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 space-y-1">
+                    <p className="font-medium">Supported column formats:</p>
+                    <p>• <strong>DEPARTMENT NAME</strong> + <strong>DEPARTMENT CODE</strong> — creates new departments</p>
+                    <p>• <strong>DEPARTMENT NAME</strong> + <strong>EMPLOYEE CODE</strong> — assigns employees to departments</p>
+                    <p>New departments are created automatically if they don't exist.</p>
+                  </div>
+                  <div>
+                    <input ref={deptImportRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleDeptImportFile} />
+                    <Button variant="outline" className="w-full" onClick={() => deptImportRef.current?.click()}>
+                      <Upload className="w-4 h-4 mr-2" /> Choose Excel File
+                    </Button>
+                  </div>
+                  {importRows.length > 0 && (
+                    <div className="space-y-3">
+                      <p className="text-sm font-medium">{importRows.length} rows loaded — Preview (first 8):</p>
+                      <div className="overflow-auto max-h-48 border rounded">
+                        <table className="w-full text-xs">
+                          <thead className="bg-gray-50 sticky top-0">
+                            <tr>
+                              <th className="px-2 py-2 text-left">Dept Name</th>
+                              <th className="px-2 py-2 text-left">Code</th>
+                              <th className="px-2 py-2 text-left">Employee Code</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importRows.slice(0, 8).map((r, i) => (
+                              <tr key={i} className={i % 2 ? 'bg-gray-50' : ''}>
+                                <td className="px-2 py-1">{r.name}</td>
+                                <td className="px-2 py-1 font-mono">{r.code}</td>
+                                <td className="px-2 py-1 font-mono">{r.employee_code}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <Button className="w-full bg-blue-600 hover:bg-blue-700" onClick={handleImportDepts} disabled={importing}>
+                        {importing ? 'Importing…' : `Import ${importRows.length} Rows`}
+                      </Button>
+                    </div>
+                  )}
+                  {importResult && (
+                    <div className={`p-3 rounded-lg border ${importResult.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                      <div className="flex items-center gap-2 font-medium text-sm mb-1">
+                        {importResult.success ? <CheckCircle2 className="w-4 h-4 text-green-600" /> : <AlertCircle className="w-4 h-4 text-red-600" />}
+                        {importResult.message}
+                      </div>
+                      {importResult.errors?.length > 0 && (
+                        <ul className="text-xs text-red-700 mt-1 space-y-0.5">
+                          {importResult.errors.map((e, i) => <li key={i}>• {e}</li>)}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={showForm} onOpenChange={(open) => {
+              setShowForm(open);
+              if (!open) {
+                setEditingDept(null);
+                setFormData({ name: '', code: '', head_user_id: '', description: '', ot_applicable: false });
+              }
+            }}>
+              <DialogTrigger asChild>
+                <Button className="bg-blue-600 hover:bg-blue-700 w-full sm:w-auto">
+                  <Plus className="w-5 h-5 mr-2" />
+                  New Department
+                </Button>
+              </DialogTrigger>
             <DialogContent className="max-w-md">
               <DialogHeader>
                 <DialogTitle>{editingDept ? 'Edit Department' : 'Create Department'}</DialogTitle>
@@ -214,8 +347,8 @@ export default function DepartmentManagement() {
                 </div>
               </form>
             </DialogContent>
-          </Dialog>
-        </div>
+            </Dialog>
+          </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
           {departments.map(dept => {

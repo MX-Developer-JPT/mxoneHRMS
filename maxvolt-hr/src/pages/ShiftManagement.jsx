@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,12 +8,17 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Clock, Users, Edit, Trash2 } from 'lucide-react';
+import { Plus, Clock, Users, Edit, Trash2, Upload, FileSpreadsheet, CheckCircle2, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function ShiftManagement() {
   const [shifts, setShifts] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [importRows, setImportRows] = useState([]);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const importFileRef = useRef(null);
   const [showDialog, setShowDialog] = useState(false);
   const [editingShift, setEditingShift] = useState(null);
   const [formData, setFormData] = useState({
@@ -119,6 +125,59 @@ export default function ShiftManagement() {
     });
   };
 
+  const handleImportFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        // Normalise column names
+        const rows = raw.map(r => {
+          const keys = Object.keys(r);
+          const get = (...names) => {
+            for (const n of names) {
+              const k = keys.find(k => k.trim().toUpperCase().includes(n.toUpperCase()));
+              if (k) return String(r[k]).trim();
+            }
+            return '';
+          };
+          return {
+            employee_code: get('EMPLOYEE CODE', 'EMP CODE', 'EMPLOYEE ID', 'EMP ID', 'CODE'),
+            shift_name:    get('SHIFT NAME', 'SHIFT', 'SHIFT TYPE'),
+          };
+        }).filter(r => r.employee_code && r.shift_name);
+        setImportRows(rows);
+        setImportResult(null);
+        toast.success(`Loaded ${rows.length} rows from Excel`);
+      } catch (err) {
+        toast.error('Failed to parse Excel: ' + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleImportShifts = async () => {
+    if (importRows.length === 0) return;
+    setImporting(true);
+    try {
+      const response = await base44.functions.invoke('importShiftAssignments', { rows: importRows });
+      const d = response.data;
+      setImportResult(d);
+      if (d.success) {
+        toast.success(`Assigned shifts to ${d.assigned} employees`);
+        loadData();
+      } else {
+        toast.error('Import failed');
+      }
+    } catch (err) {
+      toast.error('Import error: ' + err.message);
+    }
+    setImporting(false);
+  };
+
   const getEmployeeCountForShift = (shiftId) => {
     return employees.filter(e => e.shift_id === shiftId).length;
   };
@@ -131,13 +190,87 @@ export default function ShiftManagement() {
             <h1 className="text-3xl font-bold">Shift Management</h1>
             <p className="text-gray-600 mt-1">Create and manage work shifts</p>
           </div>
-          <Dialog open={showDialog} onOpenChange={setShowDialog}>
-            <DialogTrigger asChild>
-              <Button onClick={() => { setEditingShift(null); resetForm(); }}>
-                <Plus className="w-4 h-4 mr-2" />
-                Create Shift
-              </Button>
-            </DialogTrigger>
+          <div className="flex gap-2">
+            {/* Import Shift Assignments dialog */}
+            <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+              <DialogTrigger asChild>
+                <Button variant="outline" onClick={() => { setImportRows([]); setImportResult(null); }}>
+                  <Upload className="w-4 h-4 mr-2" />
+                  Import Assignments
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    <FileSpreadsheet className="w-5 h-5 text-green-600" />
+                    Import Shift Assignments from Excel
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
+                    Excel must have columns: <strong>EMPLOYEE CODE</strong> and <strong>SHIFT NAME</strong>.
+                    Shift names must match exactly what's created in this page.
+                  </div>
+                  <div>
+                    <Label>Select Excel File</Label>
+                    <input ref={importFileRef} type="file" accept=".xlsx,.xls"
+                      className="hidden" onChange={handleImportFileUpload} />
+                    <Button variant="outline" className="mt-1 w-full" onClick={() => importFileRef.current?.click()}>
+                      <Upload className="w-4 h-4 mr-2" /> Choose File
+                    </Button>
+                  </div>
+                  {importRows.length > 0 && (
+                    <div className="space-y-3">
+                      <p className="text-sm font-medium">{importRows.length} rows loaded — Preview (first 10):</p>
+                      <div className="overflow-auto max-h-48 border rounded">
+                        <table className="w-full text-xs">
+                          <thead className="bg-gray-50 sticky top-0">
+                            <tr>
+                              <th className="px-3 py-2 text-left">Employee Code</th>
+                              <th className="px-3 py-2 text-left">Shift Name</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importRows.slice(0, 10).map((r, i) => (
+                              <tr key={i} className={i % 2 ? 'bg-gray-50' : ''}>
+                                <td className="px-3 py-1 font-mono">{r.employee_code}</td>
+                                <td className="px-3 py-1">{r.shift_name}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="text-xs text-gray-500">Available shifts: {shifts.map(s => s.name).join(', ')}</div>
+                      <Button className="w-full bg-green-600 hover:bg-green-700" onClick={handleImportShifts} disabled={importing}>
+                        {importing ? 'Importing…' : `Assign Shifts for ${importRows.length} Employees`}
+                      </Button>
+                    </div>
+                  )}
+                  {importResult && (
+                    <div className={`p-3 rounded-lg border ${importResult.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                      <div className="flex items-center gap-2 font-medium text-sm mb-1">
+                        {importResult.success ? <CheckCircle2 className="w-4 h-4 text-green-600" /> : <AlertCircle className="w-4 h-4 text-red-600" />}
+                        {importResult.message}
+                      </div>
+                      {importResult.not_found_employees?.length > 0 && (
+                        <p className="text-xs text-orange-700">Employees not found: {importResult.not_found_employees.join(', ')}</p>
+                      )}
+                      {importResult.not_found_shifts?.length > 0 && (
+                        <p className="text-xs text-orange-700">Shifts not found: {importResult.not_found_shifts.join(', ')}</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={showDialog} onOpenChange={setShowDialog}>
+              <DialogTrigger asChild>
+                <Button onClick={() => { setEditingShift(null); resetForm(); }}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Create Shift
+                </Button>
+              </DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
                 <DialogTitle>{editingShift ? 'Edit Shift' : 'Create New Shift'}</DialogTitle>
@@ -199,8 +332,8 @@ export default function ShiftManagement() {
                 </div>
               </form>
             </DialogContent>
-          </Dialog>
-        </div>
+            </Dialog>
+          </div>
 
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
           {shifts.map(shift => (

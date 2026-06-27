@@ -240,15 +240,24 @@ export default function PayrollManagement() {
       toast.info('Generating salary sheet…');
       const response = await base44.functions.invoke('exportSalarySheet', { month: selectedMonth, year: selectedYear });
       if (response.data?.success) {
-        const blob = new Blob([response.data.csv], { type: 'text/csv;charset=utf-8;' });
-        const url  = window.URL.createObjectURL(blob);
-        const a    = document.createElement('a');
-        a.href = url;
-        a.download = response.data.filename;
-        a.click();
+        const d = response.data;
+        let blob;
+        if (d.base64) {
+          // Styled Excel from exceljs
+          const byteChars = atob(d.base64);
+          const byteNums  = new Array(byteChars.length).fill(0).map((_, i) => byteChars.charCodeAt(i));
+          blob = new Blob([new Uint8Array(byteNums)], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          });
+        } else {
+          blob = new Blob([d.csv], { type: 'text/csv;charset=utf-8;' });
+        }
+        const url = window.URL.createObjectURL(blob);
+        const a   = document.createElement('a');
+        a.href = url; a.download = d.filename; a.click();
         window.URL.revokeObjectURL(url);
-        const t = response.data.totals;
-        toast.success(`Salary sheet exported — ${response.data.total_employees} employees, Net ₹${(t?.net||0).toLocaleString('en-IN')}`);
+        const t = d.totals;
+        toast.success(`Salary sheet exported — ${d.total_employees} employees, Net ₹${(t?.net||0).toLocaleString('en-IN')}`);
       } else {
         toast.error(response.data?.error || 'Failed to generate salary sheet');
       }
