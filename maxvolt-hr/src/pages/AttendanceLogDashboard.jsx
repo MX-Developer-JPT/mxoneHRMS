@@ -513,15 +513,26 @@ export default function AttendanceLogDashboard() {
           <Input type="date" value={dateTo} onChange={e => handleDateChange('dateTo', e.target.value)} className="w-40" />
         </div>
         <Button variant="ghost" size="sm" onClick={handleClearFilters}>Today</Button>
-        <div className="ml-auto flex items-center gap-3">
-          {totalRecords > 0 && (
-            <span className="text-sm text-gray-500">
-              {totalRecords > PAGE_SIZE
-                ? `${showingFrom.toLocaleString()}–${showingTo.toLocaleString()} of ${totalRecords.toLocaleString()}`
-                : `${totalRecords.toLocaleString()} records`}
+        {/* Top pagination — mirrors the bottom controls, lives next to the date filter */}
+        {totalPages > 1 && (
+          <div className="ml-auto flex items-center gap-1.5">
+            <span className="text-sm text-gray-500 whitespace-nowrap mr-1">
+              {showingFrom.toLocaleString()}–{showingTo.toLocaleString()} / {totalRecords.toLocaleString()}
             </span>
-          )}
-        </div>
+            <Button variant="outline" size="sm" className="h-8 w-8 p-0" disabled={page <= 1 || loading} onClick={() => goToPage(1)}>«</Button>
+            <Button variant="outline" size="sm" className="h-8 w-8 p-0" disabled={page <= 1 || loading} onClick={() => goToPage(page - 1)}>
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </Button>
+            <span className="text-sm font-medium px-1 whitespace-nowrap">{page} / {totalPages}</span>
+            <Button variant="outline" size="sm" className="h-8 w-8 p-0" disabled={page >= totalPages || loading} onClick={() => goToPage(page + 1)}>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 w-8 p-0" disabled={page >= totalPages || loading} onClick={() => goToPage(totalPages)}>»</Button>
+          </div>
+        )}
+        {totalPages <= 1 && totalRecords > 0 && (
+          <span className="ml-auto text-sm text-gray-500">{totalRecords.toLocaleString()} records</span>
+        )}
       </div>
 
       {/* Table */}
