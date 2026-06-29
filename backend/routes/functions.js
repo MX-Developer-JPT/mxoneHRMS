@@ -4537,7 +4537,17 @@ ${contextBlock || 'No employee context available — answer from general policy 
       return res.json({
         metrics, recruitment, reimbursements, tickets, assets, exits,
         attendanceTrends, departmentBreakdown, ratingDist,
-        insights: [], leaveTrend: [], headcountGrowth: [], attritionTrend: [], payrollTrend: [], salarByDept: [],
+        insights: [], leaveTrend: [], headcountGrowth: [], attritionTrend: [], payrollTrend: [],
+        salarByDept: (() => {
+          const empDeptMap = {};
+          allEmps.forEach(e => { if (e.user_id) empDeptMap[e.user_id] = e.department || 'Unknown'; });
+          const deptSalary = {};
+          payrollRows.forEach(pr => {
+            const dept = empDeptMap[pr.user_id] || 'Unknown';
+            deptSalary[dept] = (deptSalary[dept] || 0) + (pr.net_salary || 0);
+          });
+          return Object.entries(deptSalary).map(([name, amount]) => ({ name, amount })).sort((a,b) => b.amount - a.amount);
+        })(),
       });
     }
 

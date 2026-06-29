@@ -75,6 +75,7 @@ export default function AttendanceReports() {
     const map = {};
     attendance.forEach(a => {
       const d = toDateStr(a.date);
+      if (!d) return;
       if (!map[d]) map[d] = { date: d, present: 0, absent: 0, halfDay: 0, late: 0, earlyOut: 0 };
       if (['present', 'on_duty'].includes(a.status)) map[d].present++;
       else if (a.status === 'half_day') map[d].halfDay++;

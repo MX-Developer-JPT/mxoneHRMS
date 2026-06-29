@@ -80,7 +80,7 @@ export default function FeedbackSystem() {
       setEmployees(emps || []);
       // load my feedback
       const fd = await base44.functions.invoke('get360FeedbackData', { subject_user_id: me.id });
-      setFeedbackData(fd);
+      setFeedbackData(fd?.data || fd);
     } catch (e) {
       // non-fatal; employees or feedback may be empty
     } finally {

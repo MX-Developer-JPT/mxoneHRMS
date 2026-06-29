@@ -44,7 +44,7 @@ export default function MISDashboard() {
     setLoading(true);
     try {
       const res = await base44.functions.invoke('getMISData', {});
-      setData(res.data);
+      setData(res?.data || res);
       setLastUpdated(new Date());
     } catch (e) {
       console.error('MIS fetch failed:', e.message);

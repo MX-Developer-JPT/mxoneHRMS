@@ -43,7 +43,7 @@ export default function PulseSurveys() {
   const openRespond = (s) => { setRespondSurvey(s); setAnswers({}); };
 
   const submitResponse = async () => {
-    const required = respondSurvey.questions.filter(q => q.type !== 'text');
+    const required = (respondSurvey?.questions || []).filter(q => q.type !== 'text');
     if (required.some(q => answers[q.id] === undefined)) { toast.error('Please answer all rating questions'); return; }
     setSubmitting(true);
     try {
