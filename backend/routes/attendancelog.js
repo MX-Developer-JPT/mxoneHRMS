@@ -367,8 +367,13 @@ async function processRecord(record) {
     }
   }
 
-  // Add new punch if not already present
-  const alreadyPresent = existingPunches.some(p => p.time === punchIso);
+  // Add new punch if not already present — compare by millisecond value so that
+  // "2026-06-29T10:23:40" and "2026-06-29T10:23:40.000Z" are treated as the same punch.
+  const punchMs = new Date(punchIso).getTime();
+  const alreadyPresent = existingPunches.some(p => {
+    const t = String(p?.time ?? '').trim().replace(' ', 'T');
+    return Math.abs(new Date(t).getTime() - punchMs) < 1000; // within 1 second = same tap
+  });
   const mergedPunches  = alreadyPresent ? existingPunches : [...existingPunches, newPunch];
 
   const sd = buildSessions(mergedPunches);

@@ -1878,10 +1878,19 @@ router.post('/:name', async (req, res) => {
             OR
             -- Case C: check_in is exactly midnight — biometric device daily-reset / placeholder
             -- row stored as the first punch, pushing the real arrival into check_out position.
-            -- buildSessions assigns position-0 as check_in regardless of device_direction, so
-            -- a midnight ghost before the real punch makes arrival appear as "Last Out".
             (
               data::jsonb->>'check_in_time' LIKE '%T00:00:00.000Z'
+            )
+            OR
+            -- Case D: check_in == check_out (duplicate punch created a "complete" session)
+            -- Before the dedup was added to buildSessions, two identical punches from the
+            -- same physical tap became position-0 check_in and position-1 check_out at the
+            -- same timestamp. Employee shows as having arrived and immediately left.
+            -- The current buildSessions dedup collapses them to one punch → check_out=null.
+            (
+              data::jsonb->>'check_in_time' IS NOT NULL
+              AND data::jsonb->>'check_in_time' != ''
+              AND data::jsonb->>'check_in_time' = data::jsonb->>'check_out_time'
             )
           )
       `);
