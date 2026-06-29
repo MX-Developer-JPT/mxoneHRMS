@@ -1980,6 +1980,92 @@ router.post('/:name', async (req, res) => {
       });
     }
 
+    case 'cleanupAutoAbsent': {
+      // Deletes auto-absent records for employees who actually have biometric attendance
+      // on that date.  These phantom absents were created by the old markAbsentEmployees
+      // bug where the user_id in the Employee JSON differed from the user_id stored on the
+      // biometric Attendance record (resolved via BiometricCodeMapping at punch time).
+      // Because the user_ids differed they had different dedup keys in getAllAttendance,
+      // so both records were returned and the absent one won in the frontend.
+      //
+      // Matching strategy:  absent.user_id → Employee entity → employee_code
+      //                     then check biometric Attendance for same date + employee_code
+      const { dry_run = true } = p;
+
+      // All auto-marked absent records
+      const absentRows = await all(`
+        SELECT id, data FROM entities
+        WHERE type='Attendance'
+          AND status='absent'
+          AND data::jsonb->>'source' = 'auto_marked'
+      `);
+
+      // Employee map: user_id → { name, employee_code, biometric_id }
+      const empMeta = await all("SELECT data FROM entities WHERE type='Employee'");
+      const empByUid = {};
+      for (const r of empMeta) {
+        const e = JSON.parse(r.data);
+        if (e.user_id) empByUid[e.user_id] = e;
+      }
+
+      const toDelete = [];
+      const preview  = [];
+
+      for (const row of absentRows) {
+        const absent = JSON.parse(row.data);
+        if (!absent.user_id || !absent.date) continue;
+
+        const emp     = empByUid[absent.user_id] || {};
+        const empCode = emp.employee_code || emp.biometric_id || null;
+
+        // Check for a real (non-auto-absent) attendance record for the same employee + date.
+        // Match on: same user_id  OR  same employee_code in the biometric record.
+        const biometric = await one(`
+          SELECT id, data FROM entities
+          WHERE type='Attendance'
+            AND id != $1
+            AND data::jsonb->>'date' = $2
+            AND NOT (data::jsonb->>'source' = 'auto_marked' AND status = 'absent')
+            AND (
+              user_id = $3
+              OR data::jsonb->>'user_id' = $3
+              OR ($4 <> '' AND data::jsonb->>'employee_code' = $4)
+            )
+          LIMIT 1
+        `, [row.id, absent.date, absent.user_id, empCode || '']);
+
+        if (biometric) {
+          const bio = JSON.parse(biometric.data);
+          toDelete.push(row.id);
+          preview.push({
+            date:          absent.date,
+            employee:      emp.name || absent.user_id,
+            employee_code: empCode || '—',
+            real_check_in:  bio.check_in_time  || '—',
+            real_check_out: bio.check_out_time || '—',
+          });
+        }
+      }
+
+      if (!dry_run && toDelete.length > 0) {
+        for (let i = 0; i < toDelete.length; i += 50) {
+          const batch = toDelete.slice(i, i + 50);
+          await Promise.all(batch.map(id => run("DELETE FROM entities WHERE id=$1", [id])));
+        }
+      }
+
+      return res.json({
+        success: true,
+        dry_run,
+        found:   toDelete.length,
+        deleted: dry_run ? 0 : toDelete.length,
+        preview: preview.slice(0, 50),
+        message: dry_run
+          ? `Found ${toDelete.length} phantom absent record(s) for employees who have biometric attendance. Click Apply to delete them.`
+          : `Deleted ${toDelete.length} phantom absent record(s) — attendance display should now show correct times.`,
+      });
+    }
+
     case 'getAttendanceLogs': {
       // Server-side paginated query for biometric punch logs (supports 50k+ records)
       const { date_from, date_to, emp_code, page = 1, limit = 200 } = p;

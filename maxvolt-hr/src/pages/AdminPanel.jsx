@@ -1139,6 +1139,18 @@ function MaintenanceTab() {
   const [mgrRunning, setMgrRunning] = useState(false);
   const [swapResult, setSwapResult] = useState(null);
   const [swapRunning, setSwapRunning] = useState(false);
+  const [cleanAbsentResult, setCleanAbsentResult] = useState(null);
+  const [cleanAbsentRunning, setCleanAbsentRunning] = useState(false);
+
+  const runCleanAbsent = async (dryRun) => {
+    setCleanAbsentRunning(true); setCleanAbsentResult(null);
+    try {
+      const r = await base44.functions.invoke('cleanupAutoAbsent', { dry_run: dryRun });
+      setCleanAbsentResult(r?.data || r);
+    } catch (e) {
+      setCleanAbsentResult({ success: false, message: e.message });
+    } finally { setCleanAbsentRunning(false); }
+  };
 
   const runFixSwap = async (dryRun) => {
     setSwapRunning(true); setSwapResult(null);
@@ -1403,6 +1415,69 @@ function MaintenanceTab() {
                         <span className="text-rose-500">out:{r.old_check_out?.slice(11,16)}</span>→
                         <span className="text-emerald-600 font-semibold">out:{r.new_check_out?.slice(11,16)}</span>
                       </>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Clean up phantom auto-absent records ── */}
+        <div className="border rounded-xl p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center flex-shrink-0">
+              <span className="text-orange-600 text-sm font-bold">✕A</span>
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-gray-800">Remove Phantom Absent Records</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Deletes auto-absent entries for employees who already have biometric attendance on that date.
+                These were created by a past bug in the auto-absent rule. Run this to restore correct IN/OUT times on the attendance page.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <Button variant="outline" size="sm" onClick={() => runCleanAbsent(true)} disabled={cleanAbsentRunning}>
+              {cleanAbsentRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Dry Run
+            </Button>
+            <Button size="sm" onClick={() => runCleanAbsent(false)} disabled={cleanAbsentRunning} className="bg-orange-600 hover:bg-orange-700 text-white">
+              {cleanAbsentRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Apply Fix
+            </Button>
+          </div>
+
+          {cleanAbsentRunning && (
+            <div className="flex items-center gap-2 text-xs text-orange-600 bg-orange-50 rounded-lg p-2.5">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Scanning for phantom absent records…
+            </div>
+          )}
+
+          {cleanAbsentResult && (
+            <div className={`rounded-lg p-3 text-sm space-y-2 ${cleanAbsentResult.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+              <p className={`text-xs font-medium ${cleanAbsentResult.success ? 'text-emerald-800' : 'text-red-800'}`}>{cleanAbsentResult.message}</p>
+              {cleanAbsentResult.success && (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[
+                    { label: 'Phantom Found', value: cleanAbsentResult.found ?? 0, color: 'text-orange-700' },
+                    { label: cleanAbsentResult.dry_run ? 'Would Delete' : 'Deleted', value: cleanAbsentResult.dry_run ? cleanAbsentResult.found ?? 0 : cleanAbsentResult.deleted ?? 0, color: 'text-emerald-700' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white rounded border px-2.5 py-1.5">
+                      <p className={`text-sm font-bold ${s.color}`}>{s.value}</p>
+                      <p className="text-[10px] text-gray-400">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {cleanAbsentResult.preview?.length > 0 && (
+                <div className="space-y-1 max-h-48 overflow-auto">
+                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Preview (up to 50)</p>
+                  {cleanAbsentResult.preview.map((r, i) => (
+                    <div key={i} className="text-[10px] bg-white border rounded px-2 py-1 font-mono flex gap-2 flex-wrap">
+                      <span className="text-gray-500">{r.date}</span>
+                      <span className="font-medium">{r.employee_code}</span>
+                      <span className="text-gray-700">{r.employee}</span>
+                      <span className="text-emerald-600">in:{r.real_check_in?.slice?.(11,16) || r.real_check_in}</span>
                     </div>
                   ))}
                 </div>
