@@ -1882,15 +1882,18 @@ router.post('/:name', async (req, res) => {
               data::jsonb->>'check_in_time' LIKE '%T00:00:00.000Z'
             )
             OR
-            -- Case D: check_in == check_out (duplicate punch created a "complete" session)
-            -- Before the dedup was added to buildSessions, two identical punches from the
-            -- same physical tap became position-0 check_in and position-1 check_out at the
-            -- same timestamp. Employee shows as having arrived and immediately left.
-            -- The current buildSessions dedup collapses them to one punch → check_out=null.
+            -- Case D: check_in and check_out are within 60 seconds of each other.
+            -- Before buildSessions had dedup, two punches from the same physical tap
+            -- (possibly differing only in milliseconds) became position-0 check_in and
+            -- position-1 check_out. The SUBSTRING(…,12,8) trick compares HH:MM:SS only,
+            -- ignoring sub-second differences and timezone suffix format variations.
             (
               data::jsonb->>'check_in_time' IS NOT NULL
               AND data::jsonb->>'check_in_time' != ''
-              AND data::jsonb->>'check_in_time' = data::jsonb->>'check_out_time'
+              AND data::jsonb->>'check_out_time' IS NOT NULL
+              AND data::jsonb->>'check_out_time' != ''
+              AND SUBSTRING(data::jsonb->>'check_in_time', 12, 8)
+                = SUBSTRING(data::jsonb->>'check_out_time', 12, 8)
             )
           )
       `);
