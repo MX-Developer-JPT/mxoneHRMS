@@ -846,17 +846,6 @@ router.post('/:name', async (req, res) => {
       const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
       const employees = empRows.map(r => JSON.parse(r.data));
 
-      // Get employees who have an attendance record for this date.
-      // Use COALESCE so records where the DB user_id column is NULL (e.g. biometric
-      // records whose employee code wasn't mapped at insert time but user_id IS in the
-      // JSON blob) are still counted — otherwise those employees get a duplicate absent record.
-      const attRows = await all(`
-        SELECT COALESCE(user_id, data::jsonb->>'user_id') AS user_id
-        FROM entities
-        WHERE type='Attendance' AND data::jsonb->>'date'=$1
-      `, [targetDate]);
-      const presentUserIds = new Set(attRows.map(r => r.user_id).filter(Boolean));
-
       // Check for approved leaves on this date
       const leaveRows = await all("SELECT data FROM entities WHERE type='Leave' AND status='approved'");
       const onLeaveUserIds = new Set();
@@ -869,12 +858,37 @@ router.post('/:name', async (req, res) => {
 
       let marked = 0, skipped = 0;
       for (const emp of employees) {
-        if (presentUserIds.has(emp.user_id)) { skipped++; continue; }
+        if (!emp.user_id) { skipped++; continue; }
         if (onLeaveUserIds.has(emp.user_id)) { skipped++; continue; }
 
+        // Direct per-employee check — more robust than a Set built from a separate query.
+        // Matches on user_id (DB column OR JSON blob) AND employee_code, because biometric
+        // records created via MxOneSync may have the employee_code in the JSON even when
+        // the user_id columns don't align (e.g. BiometricCodeMapping pointed to a different
+        // user than the Employee entity's own user_id).
+        const existingAtt = await one(`
+          SELECT id FROM entities
+          WHERE type='Attendance'
+            AND data::jsonb->>'date' = $1
+            AND (
+              user_id = $2
+              OR data::jsonb->>'user_id' = $2
+              OR ($3 <> '' AND data::jsonb->>'employee_code' = $3)
+            )
+          LIMIT 1
+        `, [targetDate, emp.user_id, emp.employee_code || '']);
+
+        if (existingAtt) { skipped++; continue; }
+
         const attId = uuidv4();
-        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'absent',$3)", [attId, emp.user_id,
-          JSON.stringify({ id: attId, user_id: emp.user_id, date: targetDate, status: 'absent', source: 'auto_marked', created_at: new Date().toISOString() })]);
+        await run(
+          "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'absent',$3)",
+          [attId, emp.user_id, JSON.stringify({
+            id: attId, user_id: emp.user_id, date: targetDate,
+            status: 'absent', source: 'auto_marked',
+            created_at: new Date().toISOString(),
+          })]
+        );
         marked++;
       }
       return res.json({ success:true, marked, skipped, date: targetDate, message:`Marked ${marked} employees absent for ${targetDate}` });
