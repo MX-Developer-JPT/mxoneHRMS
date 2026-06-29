@@ -218,7 +218,13 @@ async function processRecord(record) {
   // Normalise field names — accept eBio Pascal-case and snake_case formats
   const codeStr    = String(record.employee_code || record.EmployeeCode || '');
   const directUid  = record.user_id;
-  const punch_time = record.punch_time || record.LogDate || record.DownloadDate;
+  // When LogDate is explicitly "" (MxOneSync sends this when the eBioServer DB column is NULL),
+  // do NOT fall back to DownloadDate — that's the sync timestamp, not the actual punch time.
+  // Only use DownloadDate when LogDate is entirely absent (undefined / not sent).
+  const logDate    = record.LogDate;
+  const punch_time = record.punch_time ||
+    (logDate !== undefined ? (logDate || null) : null) ||
+    (logDate === undefined ? record.DownloadDate : null);
   const dirRaw     = (record.type || record.Direction || 'IN').toString().toUpperCase();
   const direction  = dirRaw === 'OUT' || dirRaw === 'EXIT' ? 'OUT' : 'IN';
   const deviceName = record.DeviceName || record.device_id || null;
