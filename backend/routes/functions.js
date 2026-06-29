@@ -21,9 +21,10 @@ function getPdfmakeFontsDir() {
   const { mkdirSync, writeFileSync, existsSync } = _require('fs');
   const os = _require('os');
   const dir = join(os.tmpdir(), 'mx-pdfmake-fonts');
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-    const vfs = _require('pdfmake/build/vfs_fonts').pdfMake?.vfs || _require('pdfmake/build/vfs_fonts').vfs || {};
+  if (!existsSync(dir) || !existsSync(join(dir, 'Roboto-Regular.ttf'))) {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const vfsModule = _require('pdfmake/build/vfs_fonts');
+    const vfs = vfsModule.pdfMake?.vfs || vfsModule.vfs || vfsModule;
     for (const [name, b64] of Object.entries(vfs)) {
       writeFileSync(join(dir, name), Buffer.from(b64, 'base64'));
     }

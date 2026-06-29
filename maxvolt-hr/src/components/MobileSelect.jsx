@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
-import { ChevronDown, Check } from 'lucide-react';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ChevronDown, Check, Search } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandInput, CommandList, CommandEmpty, CommandItem } from '@/components/ui/command';
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from '@/components/ui/drawer';
 
 /**
- * MobileSelect – uses a bottom-sheet Drawer on mobile (<768px) for ergonomic selection,
- * falls back to the standard shadcn Select on desktop.
+ * MobileSelect – searchable dropdown.
+ * Desktop: Popover + Command (cmdk) with live search.
+ * Mobile (<768px): bottom-sheet Drawer with a search input.
  *
  * Props:
  *   value          – current selected value
@@ -19,6 +21,7 @@ import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from '@/components/u
 export default function MobileSelect({ value, onValueChange, placeholder, label, options = [], className = '', disabled = false }) {
   const [isMobile, setIsMobile] = useState(false);
   const [open, setOpen] = useState(false);
+  const [mobileSearch, setMobileSearch] = useState('');
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -29,18 +32,44 @@ export default function MobileSelect({ value, onValueChange, placeholder, label,
 
   const selected = options.find(o => o.value === value);
 
+  const filteredMobile = mobileSearch
+    ? options.filter(o => o.label.toLowerCase().includes(mobileSearch.toLowerCase()))
+    : options;
+
   if (!isMobile) {
     return (
-      <Select value={value} onValueChange={onValueChange} disabled={disabled}>
-        <SelectTrigger className={className}>
-          <SelectValue placeholder={placeholder} />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map(o => (
-            <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            disabled={disabled}
+            className={`flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+          >
+            <span className={`truncate ${selected ? 'text-foreground' : 'text-muted-foreground'}`}>
+              {selected?.label || placeholder}
+            </span>
+            <ChevronDown className="h-4 w-4 opacity-50 flex-shrink-0 ml-2" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+          <Command>
+            <CommandInput placeholder="Search..." />
+            <CommandList>
+              <CommandEmpty>No options found.</CommandEmpty>
+              {options.map(o => (
+                <CommandItem
+                  key={o.value}
+                  value={o.label}
+                  onSelect={() => { onValueChange(o.value); setOpen(false); }}
+                >
+                  <Check className={`mr-2 h-4 w-4 shrink-0 ${value === o.value ? 'opacity-100' : 'opacity-0'}`} />
+                  {o.label}
+                </CommandItem>
+              ))}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
     );
   }
 
@@ -49,10 +78,10 @@ export default function MobileSelect({ value, onValueChange, placeholder, label,
       <button
         type="button"
         disabled={disabled}
-        onClick={() => !disabled && setOpen(true)}
+        onClick={() => { if (!disabled) { setMobileSearch(''); setOpen(true); } }}
         className={`w-full flex items-center justify-between border border-input rounded-md px-3 h-9 text-sm bg-background disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
       >
-        <span className={selected ? 'text-foreground' : 'text-muted-foreground truncate'}>
+        <span className={`truncate ${selected ? 'text-foreground' : 'text-muted-foreground'}`}>
           {selected?.label || placeholder}
         </span>
         <ChevronDown className="w-4 h-4 opacity-50 flex-shrink-0 ml-2" />
@@ -63,8 +92,23 @@ export default function MobileSelect({ value, onValueChange, placeholder, label,
           <DrawerHeader className="pb-2">
             <DrawerTitle>{label || placeholder || 'Select'}</DrawerTitle>
           </DrawerHeader>
-          <div className="px-4 pb-6 space-y-1 overflow-y-auto max-h-[60vh]">
-            {options.map(o => (
+          <div className="px-4 pb-2">
+            <div className="flex items-center gap-2 border rounded-md px-3 bg-background">
+              <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+              <input
+                type="text"
+                placeholder="Search..."
+                value={mobileSearch}
+                onChange={e => setMobileSearch(e.target.value)}
+                className="h-10 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              />
+            </div>
+          </div>
+          <div className="px-4 pb-6 space-y-1 overflow-y-auto max-h-[50vh]">
+            {filteredMobile.length === 0 && (
+              <p className="py-6 text-center text-sm text-muted-foreground">No options found.</p>
+            )}
+            {filteredMobile.map(o => (
               <button
                 key={o.value}
                 type="button"

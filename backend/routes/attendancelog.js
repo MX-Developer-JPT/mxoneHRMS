@@ -78,8 +78,10 @@ export function buildSessions(rawPunches) {
     };
   }
 
-  // Sort chronologically
-  const sorted = [...rawPunches].sort((a, b) => a.time.localeCompare(b.time));
+  // Sort chronologically — normalise space→T first so mixed-format logs sort correctly
+  const sorted = [...rawPunches]
+    .map(p => ({ ...p, time: String(p.time).trim().replace(' ', 'T') }))
+    .sort((a, b) => a.time.localeCompare(b.time));
 
   // Deduplicate: skip punches within DEDUP_THRESHOLD_MS of the previous accepted punch
   const deduped = [];
