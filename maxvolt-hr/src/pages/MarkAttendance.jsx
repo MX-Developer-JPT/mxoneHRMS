@@ -210,7 +210,7 @@ export default function MarkAttendance() {
         }
       }
 
-      await base44.entities.Attendance.create({
+      const created = await base44.entities.Attendance.create({
         user_id: user.id,
         date: today,
         check_in_time: checkInTime.toISOString(),
@@ -229,6 +229,8 @@ export default function MarkAttendance() {
         status: 'present',
         shift_id: shift?.id
       });
+      // Patch optimistic state with the real id so checkout can update correctly
+      if (created?.id) setTodayAttendance(prev => prev ? { ...prev, id: created.id } : prev);
 
       toast.success('Checked in successfully');
       setCapturedPhoto(null);
@@ -241,6 +243,10 @@ export default function MarkAttendance() {
   };
 
   const processCheckOut = async () => {
+    if (!todayAttendance?.check_in_time) {
+      toast.error('Check-in time missing — please refresh and try again');
+      return;
+    }
     const checkOutTime = toISTTime();
     const checkInTime = new Date(todayAttendance.check_in_time); // IST-digit stored, same offset → diff is correct
     const diffMs = checkOutTime - checkInTime;

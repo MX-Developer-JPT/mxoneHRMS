@@ -119,7 +119,7 @@ export default function PerformanceManagement() {
       manager_assessment_score: score,
       manager_assessment_comment: comment,
       manager_submitted_at: new Date().toISOString(),
-      status: review.review_cycle_id ? 'pending_hr' : 'completed'
+      status: (review.review_cycle_id && review.review_cycle_id !== 'manual') ? 'pending_hr' : 'completed'
     });
     const r = await base44.functions.invoke('pmsCalculateScore', { review_id: review.id });
     await init();

@@ -3160,7 +3160,8 @@ router.post('/:name', async (req, res) => {
         goals   = allGoals.filter(g => g.manager_user_id === target_user_id || teamUserIds.has(g.user_id));
         reviews = allReviews.filter(r => r.manager_user_id === target_user_id || teamUserIds.has(r.employee_user_id));
       } else {
-        goals   = allGoals.filter(g => g.user_id === target_user_id);
+        if (!target_user_id) return res.json({ success: false, error: 'target_user_id required' });
+        goals   = allGoals.filter(g => g.employee_user_id === target_user_id || g.user_id === target_user_id);
         reviews = allReviews.filter(r => r.employee_user_id === target_user_id);
         const myPIPs = allPIPs.filter(pip => pip.employee_user_id === target_user_id && pip.status === 'active');
         active_pip = myPIPs[0] || null;
@@ -3193,7 +3194,7 @@ router.post('/:name', async (req, res) => {
         completed_goals: goals.filter(g => g.status === 'completed').length,
         overdue_goals:   goals.filter(g => g.status !== 'completed' && g.target_date && g.target_date < now).length,
         avg_progress:    goals.length
-          ? Math.round(goals.reduce((s, g) => s + (g.progress || 0), 0) / goals.length)
+          ? Math.round(goals.reduce((s, g) => s + (g.progress_percentage || g.progress || 0), 0) / goals.length)
           : 0,
       };
 
@@ -3217,10 +3218,10 @@ router.post('/:name', async (req, res) => {
           return sum + (achieved * weight / 100);
         }, 0);
         score = Math.round(total);
-      } else if (review.self_rating || review.manager_rating) {
-        // Simple average of available ratings (0-5 scale → 0-100)
-        const selfScore    = (review.self_rating    || 0) * 20;
-        const managerScore = (review.manager_rating || 0) * 20;
+      } else if (review.self_assessment_score || review.manager_assessment_score) {
+        // Ratings are stored on 0-5 scale → convert to 0-100
+        const selfScore    = (review.self_assessment_score    || 0) * 20;
+        const managerScore = (review.manager_assessment_score || 0) * 20;
         score = selfScore && managerScore ? Math.round((selfScore + managerScore) / 2) : selfScore || managerScore;
       }
 
@@ -3249,7 +3250,7 @@ router.post('/:name', async (req, res) => {
       goals.filter(g => (g.achieved_percentage || 0) < 60).forEach(g => {
         recommendations.push({ area: g.name || 'Performance Gap', priority: 'high', description: `Achieve at least 80% on: ${g.name}` });
       });
-      return res.json(recommendations);
+      return res.json({ success: true, recommendations });
     }
 
     /* ── Compliance ────────────────────────────────────── */
@@ -7326,27 +7327,48 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
     }
 
     case 'getSkillMatrix': {
+      const { user_id } = p;
       const rows = await all("SELECT data FROM entities WHERE type='SkillEntry'");
       const entries = rows.map(r => JSON.parse(r.data));
 
-      // All unique skills across org
+      // User-scoped request (My Skills tab)
+      if (user_id) {
+        const my_skills = entries.filter(e => e.user_id === user_id);
+        return res.json({ success: true, my_skills });
+      }
+
+      // Org view — enrich with employee data
+      const empRows = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const empMap = {};
+      for (const e of empRows) empMap[e.user_id] = e;
+
       const allSkills = [...new Set(entries.map(e => e.skill_name))];
 
-      // Group by employee
+      // skill_coverage as array for frontend .map()
+      const skill_coverage = allSkills.map(skill_name => {
+        const matching = entries.filter(e => e.skill_name === skill_name);
+        return {
+          skill_name,
+          employee_count: matching.length,
+          top_level: matching.length ? Math.max(...matching.map(e => e.proficiency_level || 1)) : 1,
+        };
+      }).sort((a, b) => b.employee_count - a.employee_count);
+
+      // Group by employee with enriched data
       const byEmployee = {};
       for (const e of entries) {
-        if (!byEmployee[e.user_id]) byEmployee[e.user_id] = { user_id: e.user_id, skills: [] };
+        if (!byEmployee[e.user_id]) {
+          const emp = empMap[e.user_id] || {};
+          byEmployee[e.user_id] = { user_id: e.user_id, name: emp.display_name || emp.full_name || e.user_id, department: emp.department || '—', skills: [] };
+        }
         byEmployee[e.user_id].skills.push({ skill: e.skill_name, level: e.proficiency_level, validated: e.validated });
       }
 
-      // Skill coverage across org
-      const skillCoverage = {};
-      for (const skill of allSkills) {
-        const count = entries.filter(e => e.skill_name === skill).length;
-        skillCoverage[skill] = count;
-      }
+      const employees_list = Object.values(byEmployee)
+        .map(emp => ({ ...emp, skill_count: emp.skills.length }))
+        .sort((a, b) => b.skill_count - a.skill_count);
 
-      return res.json({ success: true, employee_count: Object.keys(byEmployee).length, all_skills: allSkills, skill_coverage: skillCoverage, matrix: Object.values(byEmployee) });
+      return res.json({ success: true, employee_count: employees_list.length, all_skills: allSkills, skill_coverage, employees: employees_list, matrix: employees_list });
     }
 
     case 'saveSkillEntry': {

@@ -119,7 +119,8 @@ export default function TaxDeclaration() {
     setSaving(true);
     try {
       const r = await base44.functions.invoke('submitTaxDeclaration', { user_id: user.id, financial_year: fy, declarations });
-      const d = r?.data;
+      const d = r?.data || r;
+      if (!d?.success) { toast.error(d?.error || 'Submission failed'); setSaving(false); return; }
       toast.success(`Declaration submitted. Total declared: ₹${(d?.total_declared||0).toLocaleString('en-IN')}`);
       setExisting({ ...existing, declarations, status: 'submitted', total_declared: d?.total_declared });
     } catch (e) { toast.error('Failed to submit: ' + e.message); }

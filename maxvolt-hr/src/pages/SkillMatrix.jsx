@@ -45,7 +45,7 @@ export default function SkillMatrix() {
       const me = await base44.auth.me();
       setUser(me);
       const result = await base44.functions.invoke('getSkillMatrix', { user_id: me.id });
-      setMySkills(result?.my_skills || []);
+      setMySkills(result?.data?.my_skills || result?.my_skills || []);
     } catch (e) {
       setMySkills([]);
     } finally {
@@ -72,7 +72,10 @@ export default function SkillMatrix() {
     }
   };
 
-  const skillCoverage = orgData?.skill_coverage || [];
+  const rawCoverage = orgData?.skill_coverage;
+  const skillCoverage = Array.isArray(rawCoverage)
+    ? rawCoverage
+    : rawCoverage ? Object.entries(rawCoverage).map(([skill_name, employee_count]) => ({ skill_name, employee_count })) : [];
   const employees = orgData?.employees || [];
 
   return (

@@ -189,8 +189,8 @@ export default function EmployeeDocuments() {
                                   <p className="font-medium text-sm">{doc.document_name}</p>
                                   <p className="text-xs text-gray-500">{docType?.label || doc.document_type}</p>
                                 </div>
-                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColors[doc.status]}`}>
-                                  {doc.status.replace('_', ' ')}
+                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColors[doc.status] || 'bg-gray-100 text-gray-800'}`}>
+                                  {(doc.status || 'unknown').replace('_', ' ')}
                                 </span>
                               </div>
                               <p className="text-xs text-gray-400">

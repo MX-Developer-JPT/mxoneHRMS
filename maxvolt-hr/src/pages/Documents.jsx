@@ -76,6 +76,7 @@ export default function Documents() {
     } catch (error) {
       console.error('Error uploading document:', error);
       toast.error('Failed to upload document');
+    } finally {
       setUploading(false);
     }
   };
@@ -198,8 +199,8 @@ export default function Documents() {
                     </div>
                     <div className="flex-1">
                       <CardTitle className="text-sm">{docType?.label}</CardTitle>
-                      <Badge className={statusColors[doc.status]}>
-                        {doc.status.replace('_', ' ').toUpperCase()}
+                      <Badge className={statusColors[doc.status] || 'bg-gray-100 text-gray-800'}>
+                        {(doc.status || 'unknown').replace('_', ' ').toUpperCase()}
                       </Badge>
                       {doc.notes && doc.status === 'rejected' && (
                         <p className="text-xs text-red-600 mt-1">Note: {doc.notes}</p>

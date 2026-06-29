@@ -19,8 +19,8 @@ export default function Performance() {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
 
-      const performanceReviews = await base44.entities.Performance.filter(
-        { user_id: currentUser.id },
+      const performanceReviews = await base44.entities.PerformanceReview.filter(
+        { employee_user_id: currentUser.id },
         '-review_date'
       );
       setReviews(performanceReviews || []);
@@ -66,8 +66,8 @@ export default function Performance() {
                   <CardTitle className="text-2xl">Latest Review</CardTitle>
                   <p className="text-gray-600">{latestReview.review_period}</p>
                 </div>
-                <Badge className={statusColors[latestReview.status]}>
-                  {latestReview.status.toUpperCase()}
+                <Badge className={statusColors[latestReview.status] || 'bg-gray-100 text-gray-800'}>
+                  {(latestReview.status || 'unknown').toUpperCase()}
                 </Badge>
               </div>
             </CardHeader>
@@ -171,8 +171,8 @@ export default function Performance() {
                     <div className="flex justify-between items-center mb-2">
                       <div>
                         <p className="font-semibold">{review.review_period}</p>
-                        <Badge className={statusColors[review.status]}>
-                          {review.status.toUpperCase()}
+                        <Badge className={statusColors[review.status] || 'bg-gray-100 text-gray-800'}>
+                          {(review.status || 'unknown').toUpperCase()}
                         </Badge>
                       </div>
                       <div className="text-right">

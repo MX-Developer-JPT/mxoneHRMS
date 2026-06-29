@@ -13,10 +13,15 @@ export default function MyInsurance() {
   }, []);
 
   const loadData = async () => {
-    const user = await base44.auth.me();
-    const emps = await base44.entities.Employee.filter({ user_id: user.id });
-    setEmployee(emps[0] || null);
-    setLoading(false);
+    try {
+      const user = await base44.auth.me();
+      const emps = await base44.entities.Employee.filter({ user_id: user.id });
+      setEmployee(emps[0] || null);
+    } catch (e) {
+      console.error('MyInsurance load error:', e);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const isExpired = (date) => date && new Date(date) < new Date();

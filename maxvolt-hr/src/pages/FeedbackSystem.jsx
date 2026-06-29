@@ -126,11 +126,11 @@ export default function FeedbackSystem() {
     </div>
   );
 
-  const scores = feedbackData?.scores || {};
-  const reviewerCount = feedbackData?.reviewer_count ?? 0;
+  const scores = feedbackData?.aggregate || {};
+  const reviewerCount = feedbackData?.total_reviewers ?? 0;
 
-  // filter out current user from colleague list
-  const colleagues = employees.filter(emp => emp.user_id !== user?.id);
+  // filter out current user and unlinked employees from colleague list
+  const colleagues = employees.filter(emp => emp.user_id && emp.user_id !== user?.id);
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
