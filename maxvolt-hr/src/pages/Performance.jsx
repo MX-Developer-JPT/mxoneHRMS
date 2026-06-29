@@ -23,7 +23,7 @@ export default function Performance() {
         { user_id: currentUser.id },
         '-review_date'
       );
-      setReviews(performanceReviews);
+      setReviews(performanceReviews || []);
       setLoading(false);
     } catch (error) {
       console.error('Error loading performance:', error);

@@ -40,8 +40,9 @@ export default function Payslips() {
     setPrinting(payrollId);
     try {
       const response = await base44.functions.invoke('generatePayslip', { payroll_id: payrollId });
-      if (response.data?.success) {
-        openPayslipPrintWindow(response.data);
+      const rd = response?.data || response;
+      if (rd?.success) {
+        openPayslipPrintWindow(rd);
       }
     } catch (error) {
       console.error('Error printing payslip:', error);

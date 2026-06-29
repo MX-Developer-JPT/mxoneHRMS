@@ -76,7 +76,7 @@ export default function PIPManagement() {
   };
 
   const handleUpdateGoalProgress = async (pip, goalIndex, progressUpdate) => {
-    const updatedGoals = pip.pip_goals.map((g, i) => i === goalIndex ? { ...g, progress_update: progressUpdate, status: 'in_progress' } : g);
+    const updatedGoals = (pip.pip_goals || []).map((g, i) => i === goalIndex ? { ...g, progress_update: progressUpdate, status: 'in_progress' } : g);
     await base44.entities.PerformanceImprovementPlan.update(pip.id, { pip_goals: updatedGoals });
     await init();
   };

@@ -30,7 +30,7 @@ export default function SkillMatrix() {
     setOrgLoading(true);
     try {
       const result = await base44.functions.invoke('getSkillMatrix', {});
-      setOrgData(result);
+      setOrgData(result?.data || result);
     } catch (e) {
       toast.error('Failed to load skill matrix');
       setOrgData({ skill_coverage: [], employees: [] });

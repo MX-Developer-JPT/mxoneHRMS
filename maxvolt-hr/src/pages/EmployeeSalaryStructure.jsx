@@ -116,8 +116,8 @@ export default function EmployeeSalaryStructure() {
     setFormData({
       ...salary,
       id: salary.id,
-      ctc: salary.ctc.toString(),
-      basic_salary: salary.basic_salary.toString(),
+      ctc: (salary.ctc || 0).toString(),
+      basic_salary: (salary.basic_salary || 0).toString(),
       hra: (salary.hra || 0).toString(),
       conveyance: (salary.conveyance || 0).toString(),
       medical: (salary.medical || 0).toString(),

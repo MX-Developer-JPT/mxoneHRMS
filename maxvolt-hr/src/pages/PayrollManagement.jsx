@@ -67,12 +67,13 @@ export default function PayrollManagement() {
         year: selectedYear
       });
 
-      if (response.data.success) {
-        toast.success(`Payroll processed for ${response.data.processed.length} employees`);
+      const pd = response?.data || response;
+      if (pd.success) {
+        toast.success(`Payroll processed for ${(pd.processed || []).length} employees`);
         loadData();
         setShowProcessDialog(false);
       } else {
-        toast.error('Failed to process payroll');
+        toast.error(pd.error || 'Failed to process payroll');
       }
     } catch (error) {
       toast.error('Error processing payroll: ' + error.message);
@@ -201,11 +202,12 @@ export default function PayrollManagement() {
   const handleDownloadPayslip = async (payrollId) => {
     try {
       const response = await base44.functions.invoke('generatePayslip', { payroll_id: payrollId });
-      if (response.data?.success) {
-        openPayslipPrintWindow(response.data);
+      const rd = response?.data || response;
+      if (rd?.success) {
+        openPayslipPrintWindow(rd);
         toast.success('Payslip opened for printing');
       } else {
-        toast.error(response.data?.error || 'Failed to generate payslip');
+        toast.error(rd?.error || 'Failed to generate payslip');
       }
     } catch (error) {
       toast.error('Error generating payslip: ' + error.message);
@@ -222,8 +224,9 @@ export default function PayrollManagement() {
     try {
       for (const payroll of eligible) {
         const response = await base44.functions.invoke('generatePayslip', { payroll_id: payroll.id });
-        if (response.data?.success) {
-          openPayslipPrintWindow(response.data);
+        const brd = response?.data || response;
+        if (brd?.success) {
+          openPayslipPrintWindow(brd);
           // Small delay between windows to avoid browser blocking
           await new Promise(r => setTimeout(r, 400));
         }
@@ -239,27 +242,26 @@ export default function PayrollManagement() {
     try {
       toast.info('Generating salary sheet…');
       const response = await base44.functions.invoke('exportSalarySheet', { month: selectedMonth, year: selectedYear });
-      if (response.data?.success) {
-        const d = response.data;
+      const esd = response?.data || response;
+      if (esd?.success) {
         let blob;
-        if (d.base64) {
-          // Styled Excel from exceljs
-          const byteChars = atob(d.base64);
+        if (esd.base64) {
+          const byteChars = atob(esd.base64);
           const byteNums  = new Array(byteChars.length).fill(0).map((_, i) => byteChars.charCodeAt(i));
           blob = new Blob([new Uint8Array(byteNums)], {
             type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           });
         } else {
-          blob = new Blob([d.csv], { type: 'text/csv;charset=utf-8;' });
+          blob = new Blob([esd.csv], { type: 'text/csv;charset=utf-8;' });
         }
         const url = window.URL.createObjectURL(blob);
         const a   = document.createElement('a');
-        a.href = url; a.download = d.filename; a.click();
+        a.href = url; a.download = esd.filename; a.click();
         window.URL.revokeObjectURL(url);
-        const t = d.totals;
-        toast.success(`Salary sheet exported — ${d.total_employees} employees, Net ₹${(t?.net||0).toLocaleString('en-IN')}`);
+        const t = esd.totals;
+        toast.success(`Salary sheet exported — ${esd.total_employees} employees, Net ₹${(t?.net||0).toLocaleString('en-IN')}`);
       } else {
-        toast.error(response.data?.error || 'Failed to generate salary sheet');
+        toast.error(esd?.error || 'Failed to generate salary sheet');
       }
     } catch (error) {
       toast.error('Error: ' + error.message);
@@ -273,17 +275,18 @@ export default function PayrollManagement() {
         year: selectedYear,
         format: bankFormat,
       });
-      if (response.data?.success) {
-        const blob = new Blob([response.data.csv], { type: 'text/csv;charset=utf-8;' });
+      const btd = response?.data || response;
+      if (btd?.success) {
+        const blob = new Blob([btd.csv], { type: 'text/csv;charset=utf-8;' });
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = response.data.filename || `bank_transfer_${selectedMonth}_${selectedYear}.csv`;
+        a.download = btd.filename || `bank_transfer_${selectedMonth}_${selectedYear}.csv`;
         a.click();
         window.URL.revokeObjectURL(url);
-        toast.success(`Bank transfer file downloaded — ${response.data.count} employees, ₹${response.data.total?.toLocaleString('en-IN')}`);
+        toast.success(`Bank transfer file downloaded — ${btd.count} employees, ₹${btd.total?.toLocaleString('en-IN')}`);
       } else {
-        toast.error(response.data?.error || 'No paid payroll records found');
+        toast.error(btd?.error || 'No paid payroll records found');
       }
     } catch (error) {
       toast.error('Error downloading file: ' + error.message);

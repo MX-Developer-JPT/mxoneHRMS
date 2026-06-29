@@ -52,7 +52,7 @@ export default function PerformanceManagement() {
 
     const mode = isHR ? 'hr' : isMgr ? 'manager' : 'employee';
     const dashRes = await base44.functions.invoke('pmsGetDashboard', { target_user_id: u.id, mode });
-    const d = dashRes?.data;
+    const d = dashRes?.data || dashRes;
     setDashData(d);
     setGoals(d?.goals || []);
     setReviews(d?.reviews || []);

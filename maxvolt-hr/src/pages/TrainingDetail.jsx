@@ -62,7 +62,7 @@ export default function TrainingDetail() {
       base44.entities.Employee.list(),
     ]);
     setUser(u);
-    setProgram(prog[0]);
+    setProgram(prog?.[0] || null);
     setSessions(sess);
     setEnrollments(enr);
     setMaterials(mats);

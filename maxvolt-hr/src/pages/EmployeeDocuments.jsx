@@ -55,7 +55,7 @@ export default function EmployeeDocuments() {
       const me = await base44.auth.me();
       setCurrentUser(me);
       const usersResponse = await base44.functions.invoke('getAllUsers', {});
-      const allUsers = usersResponse.data.users;
+      const allUsers = usersResponse?.data?.users || usersResponse?.users || [];
       const empRecords = await base44.entities.Employee.list('-created_date', 500);
       const docs = await base44.entities.Document.list('-created_date', 1000);
       setUsers(allUsers);

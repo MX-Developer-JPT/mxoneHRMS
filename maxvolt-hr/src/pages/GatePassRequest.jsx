@@ -65,7 +65,7 @@ export default function GatePassRequest() {
     e.preventDefault();
     setSubmitting(true);
     const empRecords = await base44.entities.Employee.filter({ user_id: user.id });
-    const emp = empRecords[0];
+    const emp = empRecords?.[0];
     await base44.entities.GatePass.create({
       employee_user_id: user.id,
       outing_type: form.outing_type,

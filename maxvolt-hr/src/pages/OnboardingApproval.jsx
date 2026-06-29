@@ -49,8 +49,8 @@ export default function OnboardingApproval() {
   const loadData = async () => {
     try {
       const usersResponse = await base44.functions.invoke('getAllUsers', {});
-      const allUsers = usersResponse.data.users;
-      
+      const allUsers = usersResponse?.data?.users || usersResponse?.users || [];
+
       const pending = allUsers.filter(u => {
         const userRole = u.custom_role || u.role;
         return userRole === 'onboarding_pending';

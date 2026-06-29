@@ -24,7 +24,7 @@ export default function RecruitmentAnalytics() {
     setLoading(true);
     try {
       const result = await base44.functions.invoke('getRecruitmentFunnel', { days: Number(days) });
-      setData(result);
+      setData(result?.data || result);
     } catch (e) {
       toast.error('Failed to load recruitment data');
       setData(null);
