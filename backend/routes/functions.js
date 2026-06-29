@@ -1875,12 +1875,20 @@ router.post('/:name', async (req, res) => {
               AND data::jsonb->>'check_out_time' IS NOT NULL
               AND data::jsonb->>'check_out_time' != ''
             )
+            OR
+            -- Case C: check_in is exactly midnight — biometric device daily-reset / placeholder
+            -- row stored as the first punch, pushing the real arrival into check_out position.
+            -- buildSessions assigns position-0 as check_in regardless of device_direction, so
+            -- a midnight ghost before the real punch makes arrival appear as "Last Out".
+            (
+              data::jsonb->>'check_in_time' LIKE '%T00:00:00.000Z'
+            )
           )
       `);
 
       if (badRows.length === 0) {
         return res.json({ success: true, dry_run, found: 0, fixed: 0, preview: [],
-          message: 'No records with missing or swapped IN/OUT times — nothing to fix.' });
+          message: 'No records with swapped, missing, or midnight-ghost IN/OUT times — nothing to fix.' });
       }
 
       // Pre-fetch employees + shifts to avoid N per-row queries
@@ -1892,11 +1900,14 @@ router.post('/:name', async (req, res) => {
       for (const r of shiftRows) { shiftMap[r.id] = JSON.parse(r.data); }
       const defaultShift = { start_time: '09:30', end_time: '18:30', grace_minutes: 15 };
 
-      // Returns true only for ISO-ish timestamp strings with a valid year
+      // Returns true only for ISO-ish timestamp strings with a valid, non-midnight time.
+      // Midnight (00:00:00) is rejected because it is the biometric device's daily-reset /
+      // placeholder entry — never a real punch — and is the root cause of the Case C bug.
       const isValidTs = (t) => {
         if (!t) return false;
         const s = String(t).trim();
         if (!s || s === 'null' || s === 'undefined') return false;
+        if (/[T ]00:00:00/.test(s)) return false; // midnight = device placeholder
         const ms = new Date(s.replace(' ', 'T')).getTime();
         return !isNaN(ms) && ms > 0 && new Date(ms).getFullYear() > 2000;
       };
@@ -1975,8 +1986,8 @@ router.post('/:name', async (req, res) => {
         fixed:   updates.length,
         preview: preview.slice(0, 50),
         message: dry_run
-          ? `Found ${updates.length} record(s) with missing or swapped IN/OUT times. Run without dry_run to fix.`
-          : `Fixed ${updates.length} attendance record(s) — IN/OUT times corrected.`,
+          ? `Found ${updates.length} record(s) with swapped, missing, or midnight-ghost IN/OUT times. Run without dry_run to fix.`
+          : `Fixed ${updates.length} attendance record(s) — midnight ghost punches removed, IN/OUT times corrected.`,
       });
     }
 
