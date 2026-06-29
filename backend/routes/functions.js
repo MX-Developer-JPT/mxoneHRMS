@@ -2077,6 +2077,63 @@ router.post('/:name', async (req, res) => {
       });
     }
 
+    case 'scanAttendanceDiagnostic': {
+      // Returns a raw snapshot of attendance records for a given date so we can see
+      // exactly what check_in_time / check_out_time / raw_punches look like in the DB.
+      // Use this to diagnose why fixCheckInOutSwap reports 0 — the actual field values
+      // may differ from what the SQL LIKE pattern expects.
+      const { date } = p;
+      const targetDate = date || new Date().toISOString().slice(0, 10);
+
+      const rows = await all(`
+        SELECT id, user_id, status, data
+        FROM entities
+        WHERE type='Attendance'
+          AND data::jsonb->>'date' = $1
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 200
+      `, [targetDate]);
+
+      const empMeta = await all("SELECT user_id, data FROM entities WHERE type='Employee'");
+      const empByUid = {};
+      for (const r of empMeta) {
+        const e = JSON.parse(r.data);
+        if (e.user_id) empByUid[e.user_id] = { name: e.name, code: e.employee_code };
+      }
+
+      const records = rows.map(r => {
+        const d = JSON.parse(r.data);
+        const emp = empByUid[r.user_id] || empByUid[d.user_id] || {};
+        const punches = d.raw_punches || [];
+        return {
+          id:             r.id,
+          user_id:        r.user_id,
+          employee:       emp.name || '—',
+          employee_code:  emp.code || d.employee_code || '—',
+          db_status:      r.status,
+          json_status:    d.status,
+          source:         d.source || '—',
+          check_in_raw:   d.check_in_time  ?? 'NULL',
+          check_out_raw:  d.check_out_time ?? 'NULL',
+          punch_count:    punches.length,
+          punch_times:    punches.map(p => p?.time ?? 'null').slice(0, 6),
+          sessions_count: (d.sessions || []).length,
+          biometric_synced: d.biometric_synced || false,
+        };
+      });
+
+      const summary = {
+        total: records.length,
+        absent_auto: records.filter(r => r.source === 'auto_marked').length,
+        biometric:   records.filter(r => r.biometric_synced).length,
+        midnight_checkin: records.filter(r => /T00:00:00/.test(String(r.check_in_raw))).length,
+        null_checkin:  records.filter(r => r.check_in_raw === 'NULL' || r.check_in_raw === '').length,
+        has_checkout:  records.filter(r => r.check_out_raw !== 'NULL' && r.check_out_raw !== '').length,
+      };
+
+      return res.json({ success: true, date: targetDate, summary, records });
+    }
+
     case 'getAttendanceLogs': {
       // Server-side paginated query for biometric punch logs (supports 50k+ records)
       const { date_from, date_to, emp_code, page = 1, limit = 200 } = p;

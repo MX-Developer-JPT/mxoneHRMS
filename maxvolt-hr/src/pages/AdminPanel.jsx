@@ -1141,6 +1141,19 @@ function MaintenanceTab() {
   const [swapRunning, setSwapRunning] = useState(false);
   const [cleanAbsentResult, setCleanAbsentResult] = useState(null);
   const [cleanAbsentRunning, setCleanAbsentRunning] = useState(false);
+  const [diagDate, setDiagDate] = useState(new Date().toISOString().slice(0, 10));
+  const [diagResult, setDiagResult] = useState(null);
+  const [diagRunning, setDiagRunning] = useState(false);
+
+  const runDiagnostic = async () => {
+    setDiagRunning(true); setDiagResult(null);
+    try {
+      const r = await base44.functions.invoke('scanAttendanceDiagnostic', { date: diagDate });
+      setDiagResult(r?.data || r);
+    } catch (e) {
+      setDiagResult({ success: false, message: e.message });
+    } finally { setDiagRunning(false); }
+  };
 
   const runCleanAbsent = async (dryRun) => {
     setCleanAbsentRunning(true); setCleanAbsentResult(null);
@@ -1419,6 +1432,77 @@ function MaintenanceTab() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Attendance DB Diagnostic ── */}
+        <div className="border rounded-xl p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0">
+              <span className="text-blue-600 text-sm font-bold">🔍</span>
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-gray-800">Attendance DB Diagnostic</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Shows raw check_in / check_out values and punch times exactly as stored in the database for a given date. Use this to identify what data shape is causing display issues.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2 items-center">
+            <input type="date" value={diagDate} onChange={e => setDiagDate(e.target.value)}
+              className="text-xs border rounded px-2 py-1.5 flex-1" />
+            <Button size="sm" variant="outline" onClick={runDiagnostic} disabled={diagRunning}>
+              {diagRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Scan
+            </Button>
+          </div>
+          {diagResult && (
+            <div className="space-y-2">
+              {diagResult.summary && (
+                <div className="grid grid-cols-3 gap-1.5">
+                  {[
+                    { label: 'Total Records', value: diagResult.summary.total },
+                    { label: 'Biometric', value: diagResult.summary.biometric, color: 'text-emerald-700' },
+                    { label: 'Auto-Absent', value: diagResult.summary.absent_auto, color: 'text-orange-600' },
+                    { label: 'Midnight IN', value: diagResult.summary.midnight_checkin, color: 'text-red-600' },
+                    { label: 'Null IN', value: diagResult.summary.null_checkin, color: 'text-red-600' },
+                    { label: 'Has Check-Out', value: diagResult.summary.has_checkout },
+                  ].map(s => (
+                    <div key={s.label} className="bg-gray-50 border rounded px-2 py-1">
+                      <p className={`text-sm font-bold ${s.color || 'text-gray-700'}`}>{s.value}</p>
+                      <p className="text-[10px] text-gray-400">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {diagResult.records?.length > 0 && (
+                <div className="max-h-64 overflow-auto space-y-1">
+                  {diagResult.records.map((r, i) => (
+                    <div key={i} className="text-[10px] bg-white border rounded px-2 py-1 font-mono">
+                      <div className="flex gap-2 flex-wrap items-center">
+                        <span className={`font-bold ${r.biometric_synced ? 'text-emerald-600' : r.source === 'auto_marked' ? 'text-orange-500' : 'text-gray-500'}`}>
+                          {r.biometric_synced ? '[BIO]' : r.source === 'auto_marked' ? '[ABS]' : '[???]'}
+                        </span>
+                        <span className="text-gray-700">{r.employee_code}</span>
+                        <span className="text-gray-600">{r.employee}</span>
+                        <span className={/T00:00:00/.test(String(r.check_in_raw)) ? 'text-red-600 font-bold' : 'text-blue-700'}>
+                          IN:{r.check_in_raw === 'NULL' ? '—' : r.check_in_raw?.slice(11,19)}
+                        </span>
+                        <span className="text-purple-700">
+                          OUT:{r.check_out_raw === 'NULL' ? '—' : r.check_out_raw?.slice(11,19)}
+                        </span>
+                        <span className="text-gray-400">{r.punch_count}p</span>
+                        {r.punch_times.slice(0,3).map((t,j) => (
+                          <span key={j} className={/T00:00:00/.test(String(t)) ? 'text-red-500' : 'text-gray-400'}>
+                            [{t?.slice?.(11,19) ?? t}]
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!diagResult.success && <p className="text-xs text-red-600">{diagResult.message}</p>}
             </div>
           )}
         </div>
