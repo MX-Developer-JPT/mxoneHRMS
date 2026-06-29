@@ -163,10 +163,10 @@ export default function RegularisationApproval() {
             {bulkSelected.length > 0 && (
               <>
                 <span className="text-sm text-gray-600">{bulkSelected.length} selected</span>
-                <Button size="sm" className="bg-green-600 hover:bg-green-700 h-8" onClick={() => handleBulkAction('approved')} disabled={processing}>
+                <Button size="sm" className="bg-green-600 hover:bg-green-700 h-8" onClick={() => handleBulkAction('approve')} disabled={processing}>
                   <CheckCircle2 className="w-3 h-3 mr-1" /> Bulk Approve
                 </Button>
-                <Button size="sm" variant="destructive" className="h-8" onClick={() => handleBulkAction('rejected')} disabled={processing}>
+                <Button size="sm" variant="destructive" className="h-8" onClick={() => handleBulkAction('reject')} disabled={processing}>
                   <XCircle className="w-3 h-3 mr-1" /> Bulk Reject
                 </Button>
               </>
@@ -316,17 +316,17 @@ export default function RegularisationApproval() {
                                 {canAct && (
                                   <React.Fragment>
                                     <Button size="sm" className="bg-green-600 hover:bg-green-700 h-7 text-xs"
-                                      onClick={() => { setActionDialog({ request: req, action: 'approved' }); setComment(''); }}>
+                                      onClick={() => { setActionDialog({ request: req, action: 'approve' }); setComment(''); }}>
                                       <CheckCircle2 className="w-3 h-3 mr-1" /> Approve
                                     </Button>
                                     {!isHR && (
                                       <Button size="sm" variant="outline" className="h-7 text-xs"
-                                        onClick={() => { setActionDialog({ request: req, action: 'sent_back' }); setComment(''); }}>
+                                        onClick={() => { setActionDialog({ request: req, action: 'send_back' }); setComment(''); }}>
                                         <RotateCcw className="w-3 h-3 mr-1" /> Send Back
                                       </Button>
                                     )}
                                     <Button size="sm" variant="destructive" className="h-7 text-xs"
-                                      onClick={() => { setActionDialog({ request: req, action: 'rejected' }); setComment(''); }}>
+                                      onClick={() => { setActionDialog({ request: req, action: 'reject' }); setComment(''); }}>
                                       <XCircle className="w-3 h-3 mr-1" /> Reject
                                     </Button>
                                   </React.Fragment>

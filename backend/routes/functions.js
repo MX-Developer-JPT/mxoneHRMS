@@ -3134,11 +3134,70 @@ router.post('/:name', async (req, res) => {
 
     /* ── Performance ─────────────────────────────────── */
     case 'pmsGetDashboard': {
-      const reviews   = parseEntities(await all("SELECT data FROM entities WHERE type='PerformanceReview'"));
-      const completed = reviews.filter(r=>r.status==='completed').length;
-      const pending   = reviews.filter(r=>r.status==='pending').length;
-      const avg       = reviews.length ? (reviews.reduce((s,r)=>s+(r.final_score||0),0)/reviews.length).toFixed(1) : 0;
-      return res.json({ total_reviews:reviews.length, completed, pending, average_score:avg });
+      const { target_user_id, mode = 'employee' } = p;
+
+      const [goalRows, reviewRows, pipRows, empRows] = await Promise.all([
+        all("SELECT data FROM entities WHERE type='Goal'"),
+        all("SELECT data FROM entities WHERE type='PerformanceReview'"),
+        all("SELECT data FROM entities WHERE type='PIPPlan'"),
+        all("SELECT data FROM entities WHERE type='Employee' AND status='active'"),
+      ]);
+
+      const allGoals   = parseEntities(goalRows);
+      const allReviews = parseEntities(reviewRows);
+      const allPIPs    = parseEntities(pipRows);
+      const employees  = parseEntities(empRows);
+
+      let goals, reviews, active_pip = null, team_data = null;
+
+      if (mode === 'hr') {
+        goals   = allGoals;
+        reviews = allReviews;
+      } else if (mode === 'manager') {
+        const teamUserIds = new Set(
+          employees.filter(e => e.reporting_manager_id === target_user_id).map(e => e.user_id)
+        );
+        goals   = allGoals.filter(g => g.manager_user_id === target_user_id || teamUserIds.has(g.user_id));
+        reviews = allReviews.filter(r => r.manager_user_id === target_user_id || teamUserIds.has(r.employee_user_id));
+      } else {
+        goals   = allGoals.filter(g => g.user_id === target_user_id);
+        reviews = allReviews.filter(r => r.employee_user_id === target_user_id);
+        const myPIPs = allPIPs.filter(pip => pip.employee_user_id === target_user_id && pip.status === 'active');
+        active_pip = myPIPs[0] || null;
+      }
+
+      if (mode !== 'employee') {
+        const completed = reviews.filter(r => r.status === 'completed');
+        const avg_score = completed.length
+          ? completed.reduce((s, r) => s + (r.final_score || 0), 0) / completed.length
+          : 0;
+        const ratingMap = {};
+        for (const r of completed) {
+          const rating = r.rating || 'Unrated';
+          ratingMap[rating] = (ratingMap[rating] || 0) + 1;
+        }
+        const rating_distribution = Object.entries(ratingMap).map(([rating, count]) => ({ rating, count }));
+        const sorted = [...completed].sort((a, b) => (b.final_score || 0) - (a.final_score || 0));
+        team_data = {
+          total_reviews: reviews.length,
+          avg_score,
+          rating_distribution,
+          top_performers:  sorted.slice(0, 5),
+          low_performers:  sorted.slice(-5).filter(r => (r.final_score || 0) < 45).reverse(),
+        };
+      }
+
+      const now = new Date().toISOString().split('T')[0];
+      const stats = {
+        total_goals:     goals.length,
+        completed_goals: goals.filter(g => g.status === 'completed').length,
+        overdue_goals:   goals.filter(g => g.status !== 'completed' && g.target_date && g.target_date < now).length,
+        avg_progress:    goals.length
+          ? Math.round(goals.reduce((s, g) => s + (g.progress || 0), 0) / goals.length)
+          : 0,
+      };
+
+      return res.json({ success: true, goals, reviews, active_pip, team_data, stats });
     }
 
     case 'pmsCalculateScore': {
@@ -4552,15 +4611,16 @@ ${contextBlock || 'No employee context available — answer from general policy 
     }
 
     case 'getTeamCalendar': {
-      const { month, year } = p;
+      const { month, year, manager_id } = p;
       const m = parseInt(month) || new Date().getMonth() + 1;
       const y = parseInt(year)  || new Date().getFullYear();
       const monthStart = `${y}-${String(m).padStart(2,'0')}-01`;
       const monthEnd   = new Date(y, m, 0).toISOString().slice(0, 10); // last day of month
 
-      // Employees list
-      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
-        .map(e => ({ user_id: e.user_id, display_name: e.display_name, department: e.department, employee_code: e.employee_code }));
+      // Employees list — filter to manager's team when manager_id provided
+      let allEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      if (manager_id) allEmps = allEmps.filter(e => e.reporting_manager_id === manager_id);
+      const employees = allEmps.map(e => ({ user_id: e.user_id, display_name: e.display_name, department: e.department, employee_code: e.employee_code }));
 
       // Approved leaves for the month
       const leaves = {};

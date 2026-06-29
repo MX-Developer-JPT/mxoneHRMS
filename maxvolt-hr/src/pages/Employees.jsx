@@ -47,7 +47,7 @@ export default function Employees() {
       setCurrentUser(currentUser);
       
       const usersResponse = await base44.functions.invoke('getAllUsers', {});
-      const users = usersResponse.data.users;
+      const users = usersResponse?.data?.users || usersResponse?.users || [];
       
       let updatedEmpRecords = await base44.entities.Employee.list('-created_date', 500);
 

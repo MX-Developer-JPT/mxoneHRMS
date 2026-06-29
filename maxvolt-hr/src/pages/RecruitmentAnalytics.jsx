@@ -7,8 +7,8 @@ import { Loader2, Filter, TrendingUp, Users, Briefcase, BarChart3 } from 'lucide
 
 const FUNNEL_STEPS = [
   { key: 'job_requisitions', label: 'Job Requisitions', color: 'bg-blue-500' },
-  { key: 'candidates', label: 'Candidates', color: 'bg-indigo-500' },
-  { key: 'interviews', label: 'Interviews', color: 'bg-violet-500' },
+  { key: 'total_candidates', label: 'Candidates', color: 'bg-indigo-500' },
+  { key: 'interviews_scheduled', label: 'Interviews', color: 'bg-violet-500' },
   { key: 'offers_sent', label: 'Offers Sent', color: 'bg-purple-500' },
   { key: 'offers_accepted', label: 'Offers Accepted', color: 'bg-green-500' },
 ];
@@ -41,11 +41,11 @@ export default function RecruitmentAnalytics() {
 
   const funnel = data?.funnel || {};
   const maxVal = Math.max(...FUNNEL_STEPS.map(s => funnel[s.key] || 0), 1);
-  const candidates = funnel.candidates || 0;
+  const candidates = funnel.total_candidates || 0;
   const accepted = funnel.offers_accepted || 0;
   const conversionRate = candidates > 0 ? ((accepted / candidates) * 100).toFixed(1) : '0.0';
-  const sourceSummary = data?.source_breakdown || [];
-  const statusSummary = data?.status_breakdown || [];
+  const sourceSummary = data?.by_source ? Object.entries(data.by_source).map(([source, count]) => ({ source, count })) : [];
+  const statusSummary = data?.by_status ? Object.entries(data.by_status).map(([status, count]) => ({ status, count })) : [];
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
@@ -86,7 +86,7 @@ export default function RecruitmentAnalytics() {
             </div>
             <div>
               <p className="text-sm text-gray-500">Avg Time to Fill</p>
-              <p className="text-xl font-bold text-gray-900">{data?.avg_time_to_fill ?? '—'} days</p>
+              <p className="text-xl font-bold text-gray-900">{data?.avg_time_to_fill_days ?? '—'} days</p>
             </div>
           </CardContent>
         </Card>

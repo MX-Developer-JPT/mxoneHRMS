@@ -21,6 +21,7 @@ const STATUS_CONFIG = {
 
 export default function TeamCalendar() {
   const [loading, setLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(undefined);
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [calendarData, setCalendarData] = useState({ employees: [], holidays: [], attendance: {}, leaves: {} });
   const [selectedEmployee, setSelectedEmployee] = useState('all');
@@ -28,17 +29,28 @@ export default function TeamCalendar() {
   const [departments, setDepartments] = useState([]);
   const [viewMode, setViewMode] = useState('grid'); // grid | list
 
-  useEffect(() => { loadCalendarData(); }, [currentMonth]);
-  useEffect(() => { base44.entities.Department.list().then(setDepartments).catch(() => {}); }, []);
+  useEffect(() => {
+    base44.auth.me().then(setCurrentUser).catch(() => setCurrentUser(null));
+    base44.entities.Department.list().then(setDepartments).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (currentUser !== undefined) loadCalendarData();
+  }, [currentMonth, currentUser]);
 
   const loadCalendarData = async () => {
     setLoading(true);
     try {
       const month = currentMonth.getMonth() + 1;
       const year = currentMonth.getFullYear();
-      const response = await base44.functions.invoke('getTeamCalendar', { month, year });
-      if (response.data?.success) {
-        setCalendarData(response.data.data);
+      const role = currentUser?.custom_role || currentUser?.role;
+      const isManager = role === 'management' || role === 'manager';
+      const params = { month, year };
+      if (isManager && currentUser?.id) params.manager_id = currentUser.id;
+      const response = await base44.functions.invoke('getTeamCalendar', params);
+      const d = response?.data || response;
+      if (d?.success) {
+        setCalendarData(d.data);
       }
     } catch (err) { console.error(err); }
     setLoading(false);

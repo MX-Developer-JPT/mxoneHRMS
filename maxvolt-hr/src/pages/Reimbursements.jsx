@@ -243,7 +243,7 @@ export default function Reimbursements() {
                       <div className="flex-1">
                         <div className="flex items-center gap-3 mb-2">
                           <Receipt className="w-5 h-5 text-gray-600" />
-                          <p className="font-semibold capitalize">{claim.expense_type.replace('_', ' ')}</p>
+                          <p className="font-semibold capitalize">{(claim.expense_type || '').replace('_', ' ')}</p>
                           <Badge className={statusColors[claim.status]}>
                             {claim.status.toUpperCase()}
                           </Badge>
@@ -271,7 +271,7 @@ export default function Reimbursements() {
                         )}
                       </div>
                       <div className="text-right">
-                        <p className="text-2xl font-bold text-blue-600">₹{claim.amount.toLocaleString()}</p>
+                        <p className="text-2xl font-bold text-blue-600">₹{(claim.amount || 0).toLocaleString()}</p>
                         {claim.payment_date && (
                           <p className="text-xs text-gray-500">
                             Paid on {safeDate(claim.payment_date, 'MMM d, yyyy')}

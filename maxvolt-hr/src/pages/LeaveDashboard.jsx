@@ -18,7 +18,8 @@ export default function LeaveDashboard() {
   const loadData = async () => {
     try {
       const currentYear = new Date().getFullYear();
-      const [leaves, leaveBalances, employees, users, leavePolicies] = await Promise.all([
+      const [me, leaves, leaveBalances, employees, users, leavePolicies] = await Promise.all([
+        base44.auth.me(),
         base44.entities.Leave.filter({ status: 'approved' }),
         base44.entities.LeaveBalance.filter({ year: currentYear }),
         base44.entities.Employee.list(),
@@ -26,10 +27,23 @@ export default function LeaveDashboard() {
         base44.entities.LeavePolicy.list(),
       ]);
 
-      const activeEmp = employees.filter(e => e.status === 'active');
+      const role = me?.custom_role || me?.role;
+      const isManagerRole = role === 'management' || role === 'manager';
+
+      let activeEmp = employees.filter(e => e.status === 'active');
+      let scopedLeaves = leaves;
+      let scopedBalances = leaveBalances;
+
+      if (isManagerRole && me?.id) {
+        const teamUserIds = new Set(activeEmp.filter(e => e.reporting_manager_id === me.id).map(e => e.user_id));
+        activeEmp = activeEmp.filter(e => teamUserIds.has(e.user_id));
+        scopedLeaves = leaves.filter(l => teamUserIds.has(l.user_id));
+        scopedBalances = leaveBalances.filter(b => teamUserIds.has(b.user_id));
+      }
+
       const deptMap = {};
-      
-      leaves.forEach(leave => {
+
+      scopedLeaves.forEach(leave => {
         const emp = employees.find(e => e.user_id === leave.user_id);
         const dept = emp?.department || 'Unassigned';
         if (!deptMap[dept]) deptMap[dept] = { department: dept, totalDays: 0, employees: new Set(), count: 0 };
@@ -45,7 +59,7 @@ export default function LeaveDashboard() {
 
       // Employees nearing limit (used >= 80% of allocated)
       const nearing = [];
-      leaveBalances.forEach(bal => {
+      scopedBalances.forEach(bal => {
         if (bal.used && bal.total_allocated && bal.total_allocated > 0) {
           const pct = (bal.used / bal.total_allocated) * 100;
           if (pct >= 80) {
@@ -66,8 +80,8 @@ export default function LeaveDashboard() {
       });
       nearing.sort((a, b) => b.pct - a.pct);
 
-      const totalLeaves = leaves.length;
-      const avgDays = totalLeaves > 0 ? (leaves.reduce((s, l) => s + (l.total_days || 0), 0) / totalLeaves) : 0;
+      const totalLeaves = scopedLeaves.length;
+      const avgDays = totalLeaves > 0 ? (scopedLeaves.reduce((s, l) => s + (l.total_days || 0), 0) / totalLeaves) : 0;
 
       setDeptData(deptArray);
       setNearingLimit(nearing.slice(0, 20));

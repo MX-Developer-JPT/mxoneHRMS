@@ -97,7 +97,7 @@ export default function LeaveManagement() {
 
       let requests = await base44.entities.Leave.list('-created_date', 500);
 
-      const isHR = ['hr', 'admin', 'management'].includes(currentUser.role) || ['hr', 'admin', 'management'].includes(currentUser.custom_role);
+      const isHR = ['hr', 'admin'].includes(currentUser.role) || ['hr', 'admin'].includes(currentUser.custom_role);
       const isManager = ['manager', 'management'].includes(currentUser.role) || ['manager', 'management'].includes(currentUser.custom_role);
 
       if (isManager && !isHR) {
@@ -116,7 +116,7 @@ export default function LeaveManagement() {
     }
   };
 
-  const isHR = user && (['hr', 'admin', 'management'].includes(user.role) || ['hr', 'admin', 'management'].includes(user.custom_role));
+  const isHR = user && (['hr', 'admin'].includes(user.role) || ['hr', 'admin'].includes(user.custom_role));
   const isAdmin = user && (user.role === 'admin' || user.custom_role === 'admin');
   const isManagement = user && (['management', 'manager'].includes(user.role) || ['management', 'manager'].includes(user.custom_role));
 
@@ -290,7 +290,7 @@ export default function LeaveManagement() {
           <TabsList>
             <TabsTrigger value="requests">Leave Requests</TabsTrigger>
             {isHR && <TabsTrigger value="balances">Employee Balances</TabsTrigger>}
-            <TabsTrigger value="allocate">Allocate Leaves</TabsTrigger>
+            {isHR && <TabsTrigger value="allocate">Allocate Leaves</TabsTrigger>}
             <TabsTrigger value="policies">Leave Policies</TabsTrigger>
             {isHR && <TabsTrigger value="onBehalf">Apply on Behalf</TabsTrigger>}
           </TabsList>
@@ -394,7 +394,7 @@ export default function LeaveManagement() {
             </div>
 
             {/* Bulk Actions */}
-            {isHR && selectedIds.size > 0 && (
+            {(isHR || isManagement) && selectedIds.size > 0 && (
               <div className="flex items-center gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                 <span className="text-sm font-medium text-blue-800">{selectedIds.size} selected</span>
                 <Button size="sm" className="bg-green-600 hover:bg-green-700" disabled={bulkProcessing} onClick={() => handleBulkAction('approve')}>

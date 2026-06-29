@@ -52,7 +52,7 @@ export default function Announcements() {
 
   const displayed = announcements.filter(a => {
     const matchesCategory = activeCategory === 'all' || a.category === activeCategory;
-    const matchesSearch = !search || a.title.toLowerCase().includes(search.toLowerCase()) || a.content.toLowerCase().includes(search.toLowerCase());
+    const matchesSearch = !search || a.title.toLowerCase().includes(search.toLowerCase()) || (a.content || '').toLowerCase().includes(search.toLowerCase());
     return matchesCategory && matchesSearch;
   });
 

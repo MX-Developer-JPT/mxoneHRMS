@@ -497,7 +497,7 @@ export default function Leave() {
 
             <div className="flex gap-3 justify-end pt-2">
               <Button type="button" variant="outline" onClick={() => { setShowForm(false); resetForm(); }}>Cancel</Button>
-              <Button type="submit" disabled={submitting || !validation?.valid || validating}>
+              <Button type="submit" disabled={submitting || (!isWFH && !validation?.valid) || validating}>
                 {submitting ? 'Submitting...' : 'Submit Request'}
               </Button>
             </div>
