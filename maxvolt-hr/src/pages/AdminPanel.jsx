@@ -1137,6 +1137,18 @@ function MaintenanceTab() {
   const [procRunning, setProcRunning] = useState(false);
   const [mgrResult, setMgrResult] = useState(null);
   const [mgrRunning, setMgrRunning] = useState(false);
+  const [swapResult, setSwapResult] = useState(null);
+  const [swapRunning, setSwapRunning] = useState(false);
+
+  const runFixSwap = async (dryRun) => {
+    setSwapRunning(true); setSwapResult(null);
+    try {
+      const r = await base44.functions.invoke('fixCheckInOutSwap', { dry_run: dryRun });
+      setSwapResult(r?.data || r);
+    } catch (e) {
+      setSwapResult({ success: false, message: e.message });
+    } finally { setSwapRunning(false); }
+  };
 
   const runTsFix = async (dryRun) => {
     setTsRunning(true); setTsResult(null);
@@ -1327,6 +1339,70 @@ function MaintenanceTab() {
                       {' → '}
                       <span className="text-emerald-600">{r.new_check_in?.slice(11,16)}</span>
                       {r.old_check_out && <> · out <span className="text-red-500">{r.old_check_out?.slice(11,16)}</span>{' → '}<span className="text-emerald-600">{r.new_check_out?.slice(11,16)}</span></>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Fix swapped IN/OUT times ── */}
+        <div className="border rounded-xl p-5 space-y-4 bg-card">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-rose-50 rounded-lg"><RefreshCw className="w-4 h-4 text-rose-600" /></div>
+            <div>
+              <h3 className="font-semibold text-sm">Fix Swapped IN / OUT Times</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Detects attendance records where check-in time is later than check-out time (timestamps got swapped) and corrects them by re-sorting punch data.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <Button variant="outline" size="sm" onClick={() => runFixSwap(true)} disabled={swapRunning}>
+              {swapRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Dry Run
+            </Button>
+            <Button size="sm" onClick={() => runFixSwap(false)} disabled={swapRunning} className="bg-rose-600 hover:bg-rose-700 text-white">
+              {swapRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : null}Apply Fix
+            </Button>
+          </div>
+
+          {swapRunning && (
+            <div className="flex items-center gap-2 text-xs text-rose-600 bg-rose-50 rounded-lg p-2.5">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Scanning attendance records…
+            </div>
+          )}
+
+          {swapResult && (
+            <div className={`rounded-lg p-3 text-sm space-y-2 ${swapResult.success ? 'bg-emerald-50 border border-emerald-200' : 'bg-red-50 border border-red-200'}`}>
+              <p className={`text-xs font-medium ${swapResult.success ? 'text-emerald-800' : 'text-red-800'}`}>{swapResult.message}</p>
+              {swapResult.success && (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[
+                    { label: 'Swapped Found', value: swapResult.found ?? 0, color: 'text-rose-700' },
+                    { label: swapResult.dry_run ? 'Would Fix' : 'Fixed', value: swapResult.fixed ?? 0, color: 'text-emerald-700' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white rounded border px-2.5 py-1.5">
+                      <p className={`text-sm font-bold ${s.color}`}>{s.value}</p>
+                      <p className="text-[10px] text-gray-400">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {swapResult.preview?.length > 0 && (
+                <div className="mt-2 space-y-1 max-h-48 overflow-auto">
+                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Preview (up to 50)</p>
+                  {swapResult.preview.map((r, i) => (
+                    <div key={i} className="text-[10px] bg-white border rounded px-2 py-1 font-mono flex gap-2 flex-wrap">
+                      <span className="text-gray-500">{r.date}</span>
+                      <span className="font-medium">{r.employee_code}</span>
+                      <span className="text-rose-500">in:{r.old_check_in?.slice(11,16)}</span>→
+                      <span className="text-emerald-600 font-semibold">in:{r.new_check_in?.slice(11,16)}</span>
+                      {r.old_check_out && <>
+                        <span className="text-rose-500">out:{r.old_check_out?.slice(11,16)}</span>→
+                        <span className="text-emerald-600 font-semibold">out:{r.new_check_out?.slice(11,16)}</span>
+                      </>}
                     </div>
                   ))}
                 </div>

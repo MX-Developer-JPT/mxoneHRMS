@@ -1805,6 +1805,111 @@ router.post('/:name', async (req, res) => {
       });
     }
 
+    case 'fixCheckInOutSwap': {
+      // Finds Attendance records where check_in_time > check_out_time (IN/OUT swapped)
+      // and corrects them by re-running buildSessions on their raw_punches.
+      // Safe to run multiple times (idempotent after first successful run).
+      const { dry_run = true } = p;
+
+      // Pull all non-regularised records that have both times and IN > OUT
+      const swappedRows = await all(`
+        SELECT id, data FROM entities
+        WHERE type='Attendance'
+          AND data::jsonb->>'check_in_time'  IS NOT NULL
+          AND data::jsonb->>'check_out_time' IS NOT NULL
+          AND data::jsonb->>'status'         != 'regularised'
+          AND data::jsonb->>'check_in_time'  >  data::jsonb->>'check_out_time'
+      `);
+
+      if (swappedRows.length === 0) {
+        return res.json({ success: true, dry_run, found: 0, fixed: 0, preview: [], message: 'No swapped IN/OUT records found — nothing to fix.' });
+      }
+
+      // Pre-fetch all employees + shifts so we don't do N per-row DB round-trips
+      const empRows   = await all("SELECT data FROM entities WHERE type='Employee'");
+      const shiftRows = await all("SELECT id, data FROM entities WHERE type='Shift'");
+      const empMap   = {};  // user_id → { shift_id }
+      const shiftMap = {};  // shift id → shift data
+      for (const r of empRows)   { const e = JSON.parse(r.data); if (e.user_id) empMap[e.user_id] = e; }
+      for (const r of shiftRows) { shiftMap[r.id] = JSON.parse(r.data); }
+      const defaultShift = { start_time: '09:30', end_time: '18:30', grace_minutes: 15 };
+
+      const preview  = [];
+      const updates  = [];
+
+      for (const row of swappedRows) {
+        const d = JSON.parse(row.data);
+
+        let newCin, newCout, newStatus, newLateMin, extraSd = {};
+
+        if (d.raw_punches && d.raw_punches.length >= 2) {
+          // Re-run the (now-fixed) buildSessions — it normalises timestamps before
+          // sorting, so even if the stored array is in wrong order it comes out right.
+          const sd = buildSessions(d.raw_punches);
+          newCin  = sd.check_in_time;
+          newCout = sd.check_out_time;
+          extraSd = sd;
+
+          const emp   = empMap[d.user_id] || {};
+          const shift = (emp.shift_id && shiftMap[emp.shift_id]) || defaultShift;
+          const { status, late_minutes } = computeStatusFromSessions(sd, shift);
+          newStatus  = status;
+          newLateMin = late_minutes;
+        } else {
+          // No raw_punches (e.g. manual / self-check-in record) — just swap the two fields
+          newCin     = d.check_out_time;
+          newCout    = d.check_in_time;
+          newStatus  = d.status;
+          newLateMin = d.late_minutes;
+        }
+
+        // Skip if the rebuild didn't actually flip anything
+        if (!newCin || newCin === d.check_in_time) continue;
+
+        preview.push({
+          date:           d.date,
+          employee_code:  d.employee_code || '—',
+          old_check_in:   d.check_in_time,
+          new_check_in:   newCin,
+          old_check_out:  d.check_out_time,
+          new_check_out:  newCout,
+        });
+
+        updates.push([
+          newStatus || d.status,
+          JSON.stringify({
+            ...d,
+            ...extraSd,
+            check_in_time:  newCin,
+            check_out_time: newCout,
+            status:         newStatus || d.status,
+            late_minutes:   newLateMin ?? d.late_minutes,
+          }),
+          row.id,
+        ]);
+      }
+
+      if (!dry_run && updates.length > 0) {
+        for (let i = 0; i < updates.length; i += 50) {
+          const batch = updates.slice(i, i + 50);
+          await Promise.all(batch.map(([s, dat, id]) =>
+            run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [s, dat, id])
+          ));
+        }
+      }
+
+      return res.json({
+        success: true,
+        dry_run,
+        found:   swappedRows.length,
+        fixed:   updates.length,
+        preview: preview.slice(0, 50),
+        message: dry_run
+          ? `Found ${updates.length} record(s) with swapped IN/OUT times. Run without dry_run to fix.`
+          : `Fixed ${updates.length} attendance record(s) — IN/OUT times corrected.`,
+      });
+    }
+
     case 'getAttendanceLogs': {
       // Server-side paginated query for biometric punch logs (supports 50k+ records)
       const { date_from, date_to, emp_code, page = 1, limit = 200 } = p;
