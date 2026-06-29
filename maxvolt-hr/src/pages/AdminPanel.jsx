@@ -1354,7 +1354,7 @@ function MaintenanceTab() {
             <div>
               <h3 className="font-semibold text-sm">Fix Swapped IN / OUT Times</h3>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Detects attendance records where check-in time is later than check-out time (timestamps got swapped) and corrects them by re-sorting punch data.
+                Fixes two problems: (1) First In is blank but Last Out shows the arrival time, and (2) check-in time is later than check-out time. Corrects by re-sorting punch data and removing corrupt entries.
               </p>
             </div>
           </div>

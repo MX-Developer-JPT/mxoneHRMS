@@ -1806,82 +1806,110 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'fixCheckInOutSwap': {
-      // Finds Attendance records where check_in_time > check_out_time (IN/OUT swapped)
-      // and corrects them by re-running buildSessions on their raw_punches.
-      // Safe to run multiple times (idempotent after first successful run).
+      // Fixes two related problems:
+      //   (A) check_in_time > check_out_time  → classic swap
+      //   (B) check_in_time missing but check_out_time has the arrival time
+      //       (single punch stored in the wrong field — shown as "— IN → 10:06 AM OUT")
+      // Also filters out corrupt raw_punches entries (null/invalid times) before
+      // re-running buildSessions, which prevents the "null" string propagating.
+      // Safe to run multiple times (idempotent).
       const { dry_run = true } = p;
 
-      // Pull all non-regularised records that have both times and IN > OUT
-      const swappedRows = await all(`
+      const badRows = await all(`
         SELECT id, data FROM entities
         WHERE type='Attendance'
-          AND data::jsonb->>'check_in_time'  IS NOT NULL
-          AND data::jsonb->>'check_out_time' IS NOT NULL
-          AND data::jsonb->>'status'         != 'regularised'
-          AND data::jsonb->>'check_in_time'  >  data::jsonb->>'check_out_time'
+          AND data::jsonb->>'status' != 'regularised'
+          AND (
+            -- Case A: both times present but IN is later than OUT
+            (
+              data::jsonb->>'check_in_time'  IS NOT NULL
+              AND data::jsonb->>'check_out_time' IS NOT NULL
+              AND data::jsonb->>'check_in_time'  > data::jsonb->>'check_out_time'
+            )
+            OR
+            -- Case B: check_in missing but check_out has a real value
+            (
+              (data::jsonb->>'check_in_time' IS NULL OR data::jsonb->>'check_in_time' = '')
+              AND data::jsonb->>'check_out_time' IS NOT NULL
+              AND data::jsonb->>'check_out_time' != ''
+            )
+          )
       `);
 
-      if (swappedRows.length === 0) {
-        return res.json({ success: true, dry_run, found: 0, fixed: 0, preview: [], message: 'No swapped IN/OUT records found — nothing to fix.' });
+      if (badRows.length === 0) {
+        return res.json({ success: true, dry_run, found: 0, fixed: 0, preview: [],
+          message: 'No records with missing or swapped IN/OUT times — nothing to fix.' });
       }
 
-      // Pre-fetch all employees + shifts so we don't do N per-row DB round-trips
+      // Pre-fetch employees + shifts to avoid N per-row queries
       const empRows   = await all("SELECT data FROM entities WHERE type='Employee'");
       const shiftRows = await all("SELECT id, data FROM entities WHERE type='Shift'");
-      const empMap   = {};  // user_id → { shift_id }
-      const shiftMap = {};  // shift id → shift data
+      const empMap   = {};
+      const shiftMap = {};
       for (const r of empRows)   { const e = JSON.parse(r.data); if (e.user_id) empMap[e.user_id] = e; }
       for (const r of shiftRows) { shiftMap[r.id] = JSON.parse(r.data); }
       const defaultShift = { start_time: '09:30', end_time: '18:30', grace_minutes: 15 };
 
-      const preview  = [];
-      const updates  = [];
+      // Returns true only for ISO-ish timestamp strings with a valid year
+      const isValidTs = (t) => {
+        if (!t) return false;
+        const s = String(t).trim();
+        if (!s || s === 'null' || s === 'undefined') return false;
+        const ms = new Date(s.replace(' ', 'T')).getTime();
+        return !isNaN(ms) && ms > 0 && new Date(ms).getFullYear() > 2000;
+      };
 
-      for (const row of swappedRows) {
+      const preview = [];
+      const updates = [];
+
+      for (const row of badRows) {
         const d = JSON.parse(row.data);
 
-        let newCin, newCout, newStatus, newLateMin, extraSd = {};
+        // Strip out any corrupt raw_punch entries (null time, "null" string, bad dates)
+        const validPunches = (d.raw_punches || []).filter(rp => isValidTs(rp?.time));
 
-        if (d.raw_punches && d.raw_punches.length >= 2) {
-          // Re-run the (now-fixed) buildSessions — it normalises timestamps before
-          // sorting, so even if the stored array is in wrong order it comes out right.
-          const sd = buildSessions(d.raw_punches);
-          newCin  = sd.check_in_time;
-          newCout = sd.check_out_time;
-          extraSd = sd;
+        let sd, newStatus, newLateMin;
 
-          const emp   = empMap[d.user_id] || {};
-          const shift = (emp.shift_id && shiftMap[emp.shift_id]) || defaultShift;
-          const { status, late_minutes } = computeStatusFromSessions(sd, shift);
-          newStatus  = status;
-          newLateMin = late_minutes;
+        if (validPunches.length > 0) {
+          // Re-run buildSessions on clean punches — fixed sort handles ordering
+          sd = buildSessions(validPunches);
         } else {
-          // No raw_punches (e.g. manual / self-check-in record) — just swap the two fields
-          newCin     = d.check_out_time;
-          newCout    = d.check_in_time;
-          newStatus  = d.status;
-          newLateMin = d.late_minutes;
+          // No valid raw_punches: synthesise one punch from check_out_time
+          // (that field holds the actual arrival time in Case B)
+          const syntheticTime = d.check_out_time || d.check_in_time;
+          sd = buildSessions([{ time: syntheticTime, device_direction: 'IN' }]);
         }
 
-        // Skip if the rebuild didn't actually flip anything
-        if (!newCin || newCin === d.check_in_time) continue;
+        const emp   = empMap[d.user_id] || {};
+        const shift = (emp.shift_id && shiftMap[emp.shift_id]) || defaultShift;
+        const { status, late_minutes } = computeStatusFromSessions(sd, shift);
+        newStatus  = status;
+        newLateMin = late_minutes;
+
+        const newCin  = sd.check_in_time  || null;
+        const newCout = sd.check_out_time || null;
+
+        // Nothing changed — skip
+        if (newCin === (d.check_in_time || null) && newCout === (d.check_out_time || null)) continue;
+        if (!newCin) continue; // rebuild also failed — leave alone
 
         preview.push({
-          date:           d.date,
-          employee_code:  d.employee_code || '—',
-          old_check_in:   d.check_in_time,
-          new_check_in:   newCin,
-          old_check_out:  d.check_out_time,
-          new_check_out:  newCout,
+          date:          d.date,
+          employee_code: d.employee_code || '—',
+          old_check_in:  d.check_in_time  || null,
+          new_check_in:  newCin,
+          old_check_out: d.check_out_time || null,
+          new_check_out: newCout,
         });
 
         updates.push([
           newStatus || d.status,
           JSON.stringify({
             ...d,
-            ...extraSd,
+            ...sd,
             check_in_time:  newCin,
             check_out_time: newCout,
+            raw_punches:    validPunches.length > 0 ? validPunches : sd.raw_punches,
             status:         newStatus || d.status,
             late_minutes:   newLateMin ?? d.late_minutes,
           }),
@@ -1901,11 +1929,11 @@ router.post('/:name', async (req, res) => {
       return res.json({
         success: true,
         dry_run,
-        found:   swappedRows.length,
+        found:   badRows.length,
         fixed:   updates.length,
         preview: preview.slice(0, 50),
         message: dry_run
-          ? `Found ${updates.length} record(s) with swapped IN/OUT times. Run without dry_run to fix.`
+          ? `Found ${updates.length} record(s) with missing or swapped IN/OUT times. Run without dry_run to fix.`
           : `Fixed ${updates.length} attendance record(s) — IN/OUT times corrected.`,
       });
     }
