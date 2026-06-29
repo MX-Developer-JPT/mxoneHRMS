@@ -78,8 +78,28 @@ export function buildSessions(rawPunches) {
     };
   }
 
+  // Strip punches with missing or unparseable timestamps before sorting.
+  // An empty-string or null time would sort before real timestamps (falsy → position 0)
+  // and produce sessions[0].check_in = "" → check_in_time = null, which is the root
+  // cause of "First In: — / Last Out: 10:06 AM" display bug.
+  const validPunches = rawPunches.filter(p => {
+    const t = String(p?.time ?? '').trim();
+    if (!t || t === 'null' || t === 'undefined') return false;
+    const ms = new Date(t.replace(' ', 'T')).getTime();
+    return !isNaN(ms) && ms > 0;
+  });
+  if (validPunches.length === 0) {
+    return {
+      raw_punches: [], sessions: [], breaks: [], punch_sessions: [],
+      total_working_minutes: 0, total_break_minutes: 0,
+      session_count: 0, punch_count: 0, is_in_progress: false,
+      check_in_time: null, check_out_time: null,
+      working_hours: 0, break_hours: 0,
+    };
+  }
+
   // Sort chronologically — normalise space→T first so mixed-format logs sort correctly
-  const sorted = [...rawPunches]
+  const sorted = [...validPunches]
     .map(p => ({ ...p, time: String(p.time).trim().replace(' ', 'T') }))
     .sort((a, b) => a.time.localeCompare(b.time));
 

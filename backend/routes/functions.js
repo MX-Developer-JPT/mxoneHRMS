@@ -846,11 +846,16 @@ router.post('/:name', async (req, res) => {
       const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
       const employees = empRows.map(r => JSON.parse(r.data));
 
-      // Get employees who have an attendance record for this date
-      const attRows = await all(
-        "SELECT user_id FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1"
-      , [targetDate]);
-      const presentUserIds = new Set(attRows.map(r => r.user_id));
+      // Get employees who have an attendance record for this date.
+      // Use COALESCE so records where the DB user_id column is NULL (e.g. biometric
+      // records whose employee code wasn't mapped at insert time but user_id IS in the
+      // JSON blob) are still counted — otherwise those employees get a duplicate absent record.
+      const attRows = await all(`
+        SELECT COALESCE(user_id, data::jsonb->>'user_id') AS user_id
+        FROM entities
+        WHERE type='Attendance' AND data::jsonb->>'date'=$1
+      `, [targetDate]);
+      const presentUserIds = new Set(attRows.map(r => r.user_id).filter(Boolean));
 
       // Check for approved leaves on this date
       const leaveRows = await all("SELECT data FROM entities WHERE type='Leave' AND status='approved'");
@@ -1711,14 +1716,37 @@ router.post('/:name', async (req, res) => {
       // SQL-level date filtering for performance
       let query = "SELECT data FROM entities WHERE type='Attendance'";
       const params = [];
-      if (uid)       { query += ` AND user_id=$${params.length+1}`;                               params.push(uid); }
+      if (uid)       { query += ` AND (user_id=$${params.length+1} OR data::jsonb->>'user_id'=$${params.length+1})`; params.push(uid); }
       if (date)      { query += ` AND data::jsonb->>'date'=$${params.length+1}`;                   params.push(date); }
       else {
         if (date_from) { query += ` AND data::jsonb->>'date'>=$${params.length+1}`; params.push(date_from); }
         if (date_to)   { query += ` AND data::jsonb->>'date'<=$${params.length+1}`; params.push(date_to); }
       }
       const rows = await all(query, params);
-      return res.json({ records: rows.map(r => JSON.parse(r.data)) });
+      const allRecords = rows.map(r => JSON.parse(r.data));
+
+      // Deduplicate per (user_id, date): prefer biometric records over auto-absent records.
+      // markAbsentEmployees can create a duplicate absent record when the biometric record's
+      // DB user_id column is null but the JSON user_id is populated (code-map mismatch at
+      // insert time). Without dedup the absent record (inserted last) would win in the
+      // frontend map and hide the real biometric data.
+      const dedupKey = (r) => `${r.user_id || ''}__${r.date || ''}`;
+      const best = {};
+      for (const rec of allRecords) {
+        const key = dedupKey(rec);
+        if (!rec.user_id) continue; // skip records with no user_id — cannot map to employee
+        const prev = best[key];
+        if (!prev) { best[key] = rec; continue; }
+        // Keep the "better" record:
+        //   biometric_synced=true > has check_in_time > not-absent > otherwise keep newer
+        const score = (r) =>
+          (r.biometric_synced ? 8 : 0) +
+          (r.check_in_time    ? 4 : 0) +
+          (r.status !== 'absent' && r.status !== 'auto_marked' ? 2 : 0) +
+          (r.status === 'regularised' ? 1 : 0);
+        if (score(rec) > score(prev)) best[key] = rec;
+      }
+      return res.json({ records: Object.values(best) });
     }
 
     case 'syncManagerRoles': {
