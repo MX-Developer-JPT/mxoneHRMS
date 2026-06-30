@@ -668,13 +668,15 @@ router.post('/:name', async (req, res) => {
         // Attendance-based LOP calculation
         const attRecords = attByUser[emp.user_id] || [];
 
-        const presentDays = attRecords.filter(a => ['present', 'late', 'on_duty', 'work_from_home'].includes(a.status)).length;
-        const halfDays    = attRecords.filter(a => a.status === 'half_day').length;
-        const lopDays     = attRecords.filter(a => ['absent', 'lop'].includes(a.status)).length
-                          + attRecords.reduce((sum, a) => sum + (a.lop_deduction_days || 0), 0);
+        const presentDays  = attRecords.filter(a => ['present', 'late', 'on_duty', 'work_from_home'].includes(a.status)).length;
+        const halfDays     = attRecords.filter(a => a.status === 'half_day').length;
+        const absentDays   = attRecords.filter(a => ['absent', 'lop'].includes(a.status)).length
+                           + attRecords.reduce((sum, a) => sum + (a.lop_deduction_days || 0), 0);
 
+        // Standard LOP rule: absent = 1 day LOP, half day = 0.5 day LOP
+        const totalLOPDays = absentDays + halfDays * 0.5;
         const effectivePresentDays = presentDays + halfDays * 0.5;
-        const lopAmount = lopDays > 0 ? Math.round((gross / workingDays) * lopDays) : 0;
+        const lopAmount = totalLOPDays > 0 ? Math.round((gross / workingDays) * totalLOPDays) : 0;
         const grossAfterLop = Math.max(0, gross - lopAmount);
 
         // PF employee: 12% on basic, capped at ₹15,000 wage ceiling
@@ -718,7 +720,8 @@ router.post('/:name', async (req, res) => {
           working_days: workingDays,
           present_days: Math.round(effectivePresentDays),
           half_days: halfDays,
-          loss_of_pay_days: lopDays,
+          absent_days: absentDays,
+          loss_of_pay_days: totalLOPDays,
           loss_of_pay_amount: lopAmount,
           status: 'processed', processed_by: cu?.id,
           processed_at: new Date().toISOString(),
@@ -1398,43 +1401,40 @@ router.post('/:name', async (req, res) => {
 
         // ── Attendance counts ─────────────────────────────────────────────────────
         // Always derive from raw attendance records for accuracy.
-        // If no records exist yet for this month, fall back to payroll summary values.
-        let daysPresent, daysHalfDay, daysLOP, daysAbsent;
+        // Fall back to payroll summary only when no attendance records exist for the month.
+        let daysPresent, daysHalfDay, daysAbsent;
         if (recs.length > 0) {
           daysPresent = recs.filter(a => PRESENT_STATUSES.includes(a.status)).length;
           daysHalfDay = recs.filter(a => a.status === 'half_day').length;
-          // LOP = explicit absent/lop records + any fractional lop_deduction_days stored on records
-          daysLOP     = recs.filter(a => ['absent', 'lop'].includes(a.status)).length
+          daysAbsent  = recs.filter(a => ['absent', 'lop'].includes(a.status)).length
                       + recs.reduce((sum, a) => sum + (a.lop_deduction_days || 0), 0);
-          daysAbsent  = recs.filter(a => a.status === 'absent').length;
         } else {
-          // No attendance punched — use payroll data if available
-          // Note: payroll stores loss_of_pay_days (not lop_days)
-          daysPresent = pr?.present_days      || 0;
-          daysHalfDay = 0;
-          daysLOP     = pr?.loss_of_pay_days  || 0;
-          daysAbsent  = 0;
+          daysPresent = pr?.present_days || 0;
+          daysHalfDay = pr?.half_days    || 0;
+          daysAbsent  = pr?.absent_days  || 0;
         }
-        const effectiveDays = daysPresent + daysHalfDay * 0.5;
+
+        // Standard LOP rule: absent = 1 day, half day = 0.5 day
+        const totalLOPDays  = daysAbsent + daysHalfDay * 0.5;
+        // Eff. Days = standard working days (same for ALL employees, not per-employee count)
+        const effectiveDays = workingDays;
 
         // ── Earnings ─────────────────────────────────────────────────────────────
-        // Full monthly salary components (before LOP deduction).
-        // Use payroll record when processed; otherwise pro-rate from salary structure.
+        // Always show full monthly amounts; LOP is applied as a deduction below.
         const grossMonthly = (ss.basic_salary||0)+(ss.hra||0)+(ss.conveyance||0)+(ss.special_allowance||0);
-        const ratio = workingDays > 0 ? effectiveDays / workingDays : 1;
-        const basic   = pr?.basic_salary       || Math.round((ss.basic_salary||0)   * ratio);
-        const hra     = pr?.hra                || Math.round((ss.hra||0)             * ratio);
-        const conv    = pr?.conveyance         || Math.round((ss.conveyance||0)      * ratio);
-        const special = pr?.special_allowance  || Math.round((ss.special_allowance||0) * ratio);
+        const basic   = pr?.basic_salary      || (ss.basic_salary||0);
+        const hra     = pr?.hra               || (ss.hra||0);
+        const conv    = pr?.conveyance        || (ss.conveyance||0);
+        const special = pr?.special_allowance || (ss.special_allowance||0);
         const grossCalc = basic + hra + conv + special;
 
-        // ── LOP deduction (standard rule) ─────────────────────────────────────────
-        // LOP = (Monthly Gross / Working Days) × LOP Days
-        // Prefer stored payroll value; recompute from attendance when not available.
+        // ── LOP deduction (standard rule): Gross / 26 × LOP Days ────────────────
+        // Prefer stored payroll value (includes half-day LOP from processAdvancedPayroll).
+        // Recompute from attendance when payroll hasn't been run yet.
         const lopFromPayroll = pr?.deductions?.lop ?? pr?.loss_of_pay_amount;
         const lop = lopFromPayroll != null
           ? lopFromPayroll
-          : (daysLOP > 0 ? Math.round((grossMonthly / workingDays) * daysLOP) : 0);
+          : (totalLOPDays > 0 ? Math.round((grossMonthly / workingDays) * totalLOPDays) : 0);
 
         // ── Other deductions ─────────────────────────────────────────────────────
         const pfBase  = Math.min(basic, 15000);
@@ -1451,7 +1451,10 @@ router.post('/:name', async (req, res) => {
           code: emp.employee_code||'', name: emp.display_name||'',
           dept: emp.department||'',    desig: emp.designation||'',
           account: emp.bank_account_number||'', ifsc: emp.ifsc_code||'', bank: emp.bank_name||'',
-          daysPresent, daysHalfDay, daysLOP: Math.round(daysLOP), daysAbsent, effectiveDays,
+          daysPresent, daysHalfDay,
+          daysLOP: totalLOPDays,   // may be 0.5, 1.5 etc. — exact LOP days for formula
+          daysAbsent: Math.round(daysAbsent),
+          effectiveDays,            // always = workingDays (26), same for all
           gross: pr?.gross_salary || grossCalc, basic, hra, conv, special,
           pfEmp, pfEmpr, esiEmp, esiEmpr, pt, lop, totalDed, net,
           status: pr ? (pr.status === 'paid' ? 'Paid' : 'Processed') : 'Pending',

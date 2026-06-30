@@ -49,19 +49,19 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const bonusFixed = salaryStructure.performance_bonus || 0;
   const grossFixed = basicFixed + hraFixed + conveyanceFixed;
 
-  // Present/Working days for pro-rata
+  // Working / attendance days
   const workingDays = payroll.working_days || 26;
   const presentDays = payroll.present_days || workingDays;
-  const leaveDays = payroll.leave_days || 0;
-  const lopDays = payroll.loss_of_pay_days || 0;
+  const halfDays    = payroll.half_days    || 0;
+  const leaveDays   = payroll.leave_days   || 0;
+  const lopDays     = payroll.loss_of_pay_days || 0;   // may be fractional (e.g. 1.5)
+  const absentDays  = payroll.absent_days  || Math.floor(lopDays);
 
-  const ratio = workingDays > 0 ? presentDays / workingDays : 1;
-
-  // Earned = Fixed * (present / working)
-  const basicEarned = payroll.basic_salary || Math.round(basicFixed * ratio);
-  const hraEarned = Math.round(hraFixed * ratio);
-  const conveyanceEarned = allowances.conveyance || Math.round(conveyanceFixed * ratio);
-  const grossSalary = payroll.gross_salary || (basicEarned + hraEarned + conveyanceEarned);
+  // Payslip shows full monthly earnings; LOP is a deduction (not pro-rating)
+  const basicEarned      = payroll.basic_salary || basicFixed;
+  const hraEarned        = payroll.hra          || hraFixed;
+  const conveyanceEarned = allowances.conveyance || payroll.conveyance || conveyanceFixed;
+  const grossSalary      = payroll.gross_salary  || (basicEarned + hraEarned + conveyanceEarned);
 
   // Arrear (from payroll record if stored, else 0)
   const arrear = payroll.arrear || 0;
@@ -77,13 +77,14 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const pfBase = Math.min(basicEarned, 15000);
   const pfComputed = Math.round(pfBase * 0.12);
   // Use stored value only if non-zero; otherwise recompute (stored 0 means old record, not exempt)
-  const pfDeduction = deductions.pf || pfComputed;
-  // ESI: only if basic <= ₹21,000; use payroll record if available
+  const pfDeduction  = deductions.pf || pfComputed;
   const esiDeduction = deductions.esi != null ? deductions.esi : (basicEarned <= 21000 ? (salaryStructure.esi_contribution || Math.round(basicEarned * 0.0075)) : 0);
-  const profTax = deductions.professional_tax || 0;
+  const profTax      = deductions.professional_tax || 0;
   const tdsDeduction = deductions.tds || 0;
-  const loanEmi = deductions.loan_emi || 0;
-  const totalDeductions = pfDeduction + esiDeduction + profTax + tdsDeduction + loanEmi;
+  const loanEmi      = deductions.loan_emi || 0;
+  // LOP deduction: stored in deductions.lop by processAdvancedPayroll
+  const lopDeduction = deductions.lop ?? payroll.loss_of_pay_amount ?? 0;
+  const totalDeductions = pfDeduction + esiDeduction + profTax + tdsDeduction + loanEmi + lopDeduction;
   const netSalary = payroll.net_salary || (grossSalary - totalDeductions);
 
   const empPFBase = Math.min(basicEarned, 15000);
@@ -147,17 +148,17 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
       <!-- Attendance -->
       <div style="display:flex;border-bottom:1px solid #f3e9d8;">
         ${[
-          ['Working Days', workingDays, '#1a1a1a'],
-          ['Present Days', presentDays, '#15803d'],
-          ['Paid Leave', leaveDays, '#1d4ed8'],
-          ['LOP Days', lopDays, lopDays > 0 ? '#dc2626' : '#6b7280'],
+          ['Working Days', workingDays,             '#1a1a1a'],
+          ['Present Days', presentDays,             '#15803d'],
+          ['Half Days',    halfDays,                halfDays > 0 ? '#d97706' : '#6b7280'],
+          ['Absent Days',  absentDays,              absentDays > 0 ? '#dc2626' : '#6b7280'],
+          ['LOP Days',     lopDays,                 lopDays > 0 ? '#dc2626' : '#6b7280'],
           ['Overtime Hrs', payroll.overtime_hours || 0, '#7c3aed'],
         ].map(([l, v, c]) => `
           <div style="flex:1;text-align:center;padding:7px 4px;border-right:1px solid #f3e9d8;">
             <div style="font-size:8px;color:#a07040;text-transform:uppercase;">${l}</div>
             <div style="font-size:17px;font-weight:bold;color:${c};">${v}</div>
           </div>`).join('')}
-        <div style="flex:1;padding:7px 4px;"></div>
       </div>
 
       <!-- Earnings & Deductions -->
@@ -198,6 +199,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
           <div style="background:#fff5f5;padding:5px 12px;font-size:9.5px;font-weight:bold;text-transform:uppercase;color:#dc2626;border-bottom:1px solid #e5e7eb;">Deductions</div>
           <table style="width:100%;border-collapse:collapse;">
             <tbody>
+              ${lopDeduction > 0 ? dedRow(`Loss of Pay (${lopDays} day${lopDays !== 1 ? 's' : ''})`, lopDeduction) : ''}
               ${dedRow(`Provident Fund (12% on Basic, max ₹15,000 wage)`, pfDeduction, true)}
               ${esiDeduction > 0 ? dedRow('ESI (Employee 0.75%)', esiDeduction) : ''}
               ${profTax ? dedRow('Professional Tax', profTax) : ''}
