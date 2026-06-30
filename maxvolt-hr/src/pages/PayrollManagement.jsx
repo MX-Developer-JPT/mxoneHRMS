@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { DollarSign, Users, TrendingUp, Play, Check, Download, FileText, Archive, Loader2, CheckSquare, Square, FileSpreadsheet } from 'lucide-react';
+import { DollarSign, Users, TrendingUp, Play, Check, Download, FileText, Archive, Loader2, CheckSquare, Square, FileSpreadsheet, Search } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import {
@@ -34,6 +34,7 @@ export default function PayrollManagement() {
   const [bulkDownloading, setBulkDownloading] = useState(false);
   const [bulkSelected, setBulkSelected] = useState(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     loadData();
@@ -316,7 +317,17 @@ export default function PayrollManagement() {
     return <div className="flex items-center justify-center h-screen">Loading...</div>;
   }
 
-  const filteredPayrolls = payrolls.filter(p => p.month === selectedMonth && p.year === selectedYear);
+  const filteredPayrolls = payrolls.filter(p => {
+    if (p.month !== selectedMonth || p.year !== selectedYear) return false;
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    const emp = employees.find(e => e.user_id === p.user_id);
+    const name = (emp?.display_name || emp?._user?.full_name || '').toLowerCase();
+    const code = (emp?.employee_code || '').toLowerCase();
+    const dept = (emp?.department || '').toLowerCase();
+    const desig = (emp?.designation || '').toLowerCase();
+    return name.includes(q) || code.includes(q) || dept.includes(q) || desig.includes(q);
+  });
 
   const totalPayroll = filteredPayrolls.reduce((sum, p) => sum + (p.net_salary || 0), 0);
   const processedCount = filteredPayrolls.filter(p => p.status === 'processed' || p.status === 'paid').length;
@@ -471,9 +482,20 @@ export default function PayrollManagement() {
 
         <Card>
           <CardHeader>
-            <div className="flex justify-between items-center">
+            <div className="flex flex-wrap justify-between items-center gap-3">
               <CardTitle>Payroll Records</CardTitle>
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3 items-center">
+                {/* Search bar */}
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-gray-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Search employee, code, dept…"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    className="pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-md w-56 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
                 <Select value={selectedMonth.toString()} onValueChange={(v) => setSelectedMonth(parseInt(v))}>
                   <SelectTrigger className="w-32">
                     <SelectValue />
