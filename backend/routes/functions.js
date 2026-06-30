@@ -715,8 +715,6 @@ router.post('/:name', async (req, res) => {
         const esi    = basic <= 21000 ? Math.round(earnedBasicForESI * 0.0075) : 0;
         const empESI = basic <= 21000 ? Math.round(earnedBasicForESI * 0.0325) : 0;
 
-        const pt = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
-
         // Bonus / VPP based on annual CTC
         const annualCTC = ss?.ctc || (gross * 12);
         let bonusMonthly = 0;
@@ -726,7 +724,7 @@ router.post('/:name', async (req, res) => {
           let vppRate = annualCTC <= 1500000 ? 0.05 : annualCTC <= 2000000 ? 0.08 : annualCTC <= 2500000 ? 0.12 : 0.15;
           bonusMonthly = Math.round((annualCTC * vppRate) / 12);
         }
-        const totalDed = pf + pt + esi + lopAmount;
+        const totalDed = pf + esi + lopAmount;
         const net = Math.max(0, gross - totalDed);
 
         const id = uuidv4();
@@ -734,7 +732,7 @@ router.post('/:name', async (req, res) => {
           id, user_id: emp.user_id, month, year,
           basic_salary: basic, hra, conveyance: conv, special_allowance: spec,
           gross_salary: gross,
-          deductions: { pf, pt, esi, lop: lopAmount },
+          deductions: { pf, esi, lop: lopAmount },
           employer_contributions: { pf: empPF, esi: empESI },
           total_deductions: totalDed, net_salary: net,
           statutory_bonus: bonusMonthly, vpp: annualCTC > 1000000 ? bonusMonthly : 0,
@@ -1497,10 +1495,7 @@ router.post('/:name', async (req, res) => {
         const esiEmp  = pr?.deductions?.esi  ?? (basic <= 21000 ? Math.round(earnedBasicESI * 0.0075) : 0);
         const esiEmpr = pr?.employer_contributions?.esi ?? (basic <= 21000 ? Math.round(earnedBasicESI * 0.0325) : 0);
 
-        const grossEarned = grossMonthly - lop;
-        const pt = pr?.deductions?.pt ?? calcProfessionalTax(grossEarned, emp.work_location || emp.state || 'UTTAR PRADESH');
-
-        const totalDed = pfEmp + esiEmp + pt + lop;
+        const totalDed = pfEmp + esiEmp + lop;
         const net = Math.max(0, grossCalc - totalDed);
 
         return {
@@ -1508,12 +1503,12 @@ router.post('/:name', async (req, res) => {
           code: emp.employee_code||'', name: emp.display_name||'',
           dept: emp.department||'',    desig: emp.designation||'',
           account: emp.bank_account_number||'', ifsc: emp.ifsc_code||'', bank: emp.bank_name||'',
-          daysPresent:  daysPresent,          // present days (Mon–Sat, excluding Sundays)
+          daysPresent:  daysPresent,
           daysHalfDay,
-          daysAbsent:   totalLOPDays,         // absent + half×0.5
-          effectiveDays,                       // calendar days (e.g. 30 or 31)
+          daysAbsent:   totalLOPDays,
+          effectiveDays,
           gross: pr?.gross_salary || grossCalc, basic, hra, conv, special,
-          pfEmp, pfEmpr, esiEmp, esiEmpr, pt, lop, totalDed, net,
+          pfEmp, pfEmpr, esiEmp, esiEmpr, lop, totalDed, net,
           status: pr ? (pr.status === 'paid' ? 'Paid' : 'Processed') : 'Pending',
         };
       });
@@ -1563,7 +1558,6 @@ router.post('/:name', async (req, res) => {
         { header:'PF (Empr 13%)',  key:'pfEmpr',        width:12 },
         { header:'ESI (Emp 0.75%)',key:'esiEmp',        width:13 },
         { header:'ESI (Empr 3.25%)',key:'esiEmpr',      width:14 },
-        { header:'Prof. Tax',      key:'pt',            width:10 },
         { header:'LOP Deduct.',    key:'lop',           width:12 },
         { header:'Total Deduct.',  key:'totalDed',      width:13 },
         // NET PAY (cols 26-27)
@@ -1597,7 +1591,7 @@ router.post('/:name', async (req, res) => {
         { label:'EMPLOYEE DETAILS', cols:8 },
         { label:'ATTENDANCE',       cols:4 },
         { label:'EARNINGS',         cols:5 },
-        { label:'DEDUCTIONS',       cols:7 },
+        { label:'DEDUCTIONS',       cols:6 },
         { label:'NET PAY',          cols:2 },
       ];
       let secCol = 1;
@@ -1631,7 +1625,7 @@ router.post('/:name', async (req, res) => {
           r.sno, r.code, r.name, r.dept, r.desig, r.account, r.ifsc, r.bank,
           r.daysPresent, r.daysHalfDay, r.daysLOP, r.daysAbsent, r.effectiveDays,
           r.gross, r.basic, r.hra, r.conv, r.special,
-          r.pfEmp, r.pfEmpr, r.esiEmp, r.esiEmpr, r.pt, r.lop, r.totalDed, r.net,
+          r.pfEmp, r.pfEmpr, r.esiEmp, r.esiEmpr, r.lop, r.totalDed, r.net,
           r.status,
         ];
         const wsRow = ws.getRow(rowNum);
@@ -1648,7 +1642,7 @@ router.post('/:name', async (req, res) => {
           if (['gross','basic','hra','conv','special'].includes(colKey)) {
             cell.fill = fill(C.earningBg);
             cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' };
-          } else if (['pfEmp','pfEmpr','esiEmp','esiEmpr','pt','lop','totalDed'].includes(colKey)) {
+          } else if (['pfEmp','pfEmpr','esiEmp','esiEmpr','lop','totalDed'].includes(colKey)) {
             cell.fill = fill(C.deductBg);
             cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' };
           } else if (colKey === 'net') {
@@ -1679,7 +1673,6 @@ router.post('/:name', async (req, res) => {
         Math.round(dataRows.reduce((s,r)=>s+r.pfEmpr,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.esiEmp,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.esiEmpr,0)),
-        Math.round(dataRows.reduce((s,r)=>s+r.pt,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.lop,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.totalDed,0)),
         Math.round(totals.net), '',

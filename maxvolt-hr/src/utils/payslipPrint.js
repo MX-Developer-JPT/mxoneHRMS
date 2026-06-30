@@ -89,10 +89,9 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
     ? deductions.esi
     : (basicEarned <= 21000 ? (salaryStructure.esi_contribution || Math.round(earnedBasicForESI * 0.0075)) : 0);
 
-  const profTax      = deductions.professional_tax || deductions.pt || 0;
   const tdsDeduction = deductions.tds || 0;
   const loanEmi      = deductions.loan_emi || 0;
-  const totalDeductions = lopDeduction + pfDeduction + esiDeduction + profTax + tdsDeduction + loanEmi;
+  const totalDeductions = lopDeduction + pfDeduction + esiDeduction + tdsDeduction + loanEmi;
   const netSalary = payroll.net_salary || (grossSalary - totalDeductions);
 
   // Employer contributions
@@ -211,7 +210,6 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
               ${lopDeduction > 0 ? dedRow(`Loss of Pay (${lopDays} day${lopDays !== 1 ? 's' : ''})`, lopDeduction) : ''}
               ${dedRow(`Provident Fund (12% on Basic, max ₹15,000 wage)`, pfDeduction, true)}
               ${esiDeduction > 0 ? dedRow('ESI (Employee 0.75%)', esiDeduction) : ''}
-              ${profTax ? dedRow('Professional Tax', profTax) : ''}
               ${tdsDeduction ? dedRow('Income Tax (TDS)', tdsDeduction) : ''}
               ${loanEmi ? dedRow('Loan EMI', loanEmi) : ''}
             </tbody>
