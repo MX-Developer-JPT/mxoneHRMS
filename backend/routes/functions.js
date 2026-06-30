@@ -1428,13 +1428,14 @@ router.post('/:name', async (req, res) => {
         const special = pr?.special_allowance || (ss.special_allowance||0);
         const grossCalc = basic + hra + conv + special;
 
-        // ── LOP deduction (standard rule): Gross / 26 × LOP Days ────────────────
-        // Prefer stored payroll value (includes half-day LOP from processAdvancedPayroll).
-        // Recompute from attendance when payroll hasn't been run yet.
-        const lopFromPayroll = pr?.deductions?.lop ?? pr?.loss_of_pay_amount;
-        const lop = lopFromPayroll != null
-          ? lopFromPayroll
-          : (totalLOPDays > 0 ? Math.round((grossMonthly / workingDays) * totalLOPDays) : 0);
+        // ── LOP deduction: ALWAYS computed from attendance (standard rule) ────────
+        // Do NOT use stale payroll deductions.lop — payrolls processed before the
+        // half-day fix stored lop=0 for employees with only half-day absences, and
+        // `0 != null` so the old value would silently override the correct calculation.
+        // Attendance records are the single source of truth for LOP.
+        const lop = totalLOPDays > 0
+          ? Math.round((grossMonthly / workingDays) * totalLOPDays)
+          : 0;
 
         // ── Other deductions ─────────────────────────────────────────────────────
         const pfBase  = Math.min(basic, 15000);
@@ -1444,17 +1445,21 @@ router.post('/:name', async (req, res) => {
         const esiEmpr = pr?.employer_contributions?.esi ?? (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
         const pt      = pr?.deductions?.pt  ?? (grossCalc > 15000 ? 200 : grossCalc > 10000 ? 150 : 0);
         const totalDed = pfEmp + esiEmp + pt + lop;
-        const net = pr?.net_salary ?? Math.max(0, grossCalc - totalDed);
+        // Net is also recomputed from attendance-based LOP so the sheet is self-consistent.
+        // If attendance says LOP = 2.5 days but the old payroll was processed with LOP = 0,
+        // the sheet will show the correct net — HR can then reprocess payroll to match.
+        const net = Math.max(0, grossCalc - totalDed);
 
         return {
           sno: idx + 1,
           code: emp.employee_code||'', name: emp.display_name||'',
           dept: emp.department||'',    desig: emp.designation||'',
           account: emp.bank_account_number||'', ifsc: emp.ifsc_code||'', bank: emp.bank_name||'',
-          daysPresent, daysHalfDay,
-          daysLOP: totalLOPDays,   // may be 0.5, 1.5 etc. — exact LOP days for formula
-          daysAbsent: Math.round(daysAbsent),
-          effectiveDays,            // always = workingDays (26), same for all
+          // Present & absent as decimals — matches what the attendance muster shows
+          daysPresent:  daysPresent + daysHalfDay * 0.5,  // e.g. 22 full + 1 half → 22.5
+          daysHalfDay,
+          daysAbsent:   totalLOPDays,                      // e.g. 2 absent + 1 half → 2.5
+          effectiveDays,   // always workingDays (26), same for all
           gross: pr?.gross_salary || grossCalc, basic, hra, conv, special,
           pfEmp, pfEmpr, esiEmp, esiEmpr, pt, lop, totalDed, net,
           status: pr ? (pr.status === 'paid' ? 'Paid' : 'Processed') : 'Pending',
@@ -1490,12 +1495,11 @@ router.post('/:name', async (req, res) => {
         { header:'Account No',     key:'account',       width:16 },
         { header:'IFSC',           key:'ifsc',          width:12 },
         { header:'Bank',           key:'bank',          width:14 },
-        // ATTENDANCE (cols 9-13)
-        { header:'Days Present',   key:'daysPresent',   width:10 },
-        { header:'Half Days',      key:'daysHalfDay',   width:9  },
-        { header:'LOP Days',       key:'daysLOP',       width:9  },
-        { header:'Absent',         key:'daysAbsent',    width:8  },
-        { header:'Eff. Days',      key:'effectiveDays', width:9  },
+        // ATTENDANCE (cols 9-12) — values match the attendance muster
+        { header:'Days Present',   key:'daysPresent',   width:10 },  // decimal: 22.5
+        { header:'Half Days',      key:'daysHalfDay',   width:9  },  // integer: 1
+        { header:'Absent Days',    key:'daysAbsent',    width:10 },  // decimal: 2.5 (= absent + half×0.5)
+        { header:'Eff. Days',      key:'effectiveDays', width:9  },  // 26 for all
         // EARNINGS (cols 14-18)
         { header:'Gross Salary',   key:'gross',         width:13 },
         { header:'Basic',          key:'basic',         width:12 },
@@ -1539,7 +1543,7 @@ router.post('/:name', async (req, res) => {
       // Row 3: Section group headers
       const sectionHeaders = [
         { label:'EMPLOYEE DETAILS', cols:8 },
-        { label:'ATTENDANCE',       cols:5 },
+        { label:'ATTENDANCE',       cols:4 },
         { label:'EARNINGS',         cols:5 },
         { label:'DEDUCTIONS',       cols:7 },
         { label:'NET PAY',          cols:2 },
