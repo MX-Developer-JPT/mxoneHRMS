@@ -633,8 +633,6 @@ router.post('/:name', async (req, res) => {
       const startDate = `${y_int}-${String(m_int).padStart(2,'0')}-01`;
       const lastDay   = new Date(y_int, m_int, 0).getDate();
       const endDate   = `${y_int}-${String(m_int).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-      const workingDays = 26;
-
       // Pre-batch all data to eliminate N+1 queries
       const existingPayrollRows = await all(
         "SELECT user_id FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2",
