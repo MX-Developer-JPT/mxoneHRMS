@@ -650,10 +650,22 @@ router.post('/:name', async (req, res) => {
         "SELECT user_id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
         [startDate, endDate]
       );
+      // date-keyed map: user_id → dateStr → record (same structure as muster + salary sheet)
       const attByUser = {};
       for (const r of attAllRows) {
-        if (!attByUser[r.user_id]) attByUser[r.user_id] = [];
-        attByUser[r.user_id].push(JSON.parse(r.data));
+        const rec = JSON.parse(r.data);
+        if (!rec.date) continue;
+        if (!attByUser[r.user_id]) attByUser[r.user_id] = {};
+        attByUser[r.user_id][rec.date] = rec;
+      }
+
+      // All calendar dates for this month with weekend flag (computed once)
+      const daysInPayMonth = new Date(y_int, m_int, 0).getDate();
+      const payMonthDates = [];
+      for (let d = 1; d <= daysInPayMonth; d++) {
+        const ds = `${y_int}-${String(m_int).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const dow = new Date(ds).getDay();
+        payMonthDates.push({ ds, isWeekend: dow === 0 || dow === 6 });
       }
 
       let processed = 0;
@@ -665,30 +677,46 @@ router.post('/:name', async (req, res) => {
         const basic = ss?.basic_salary||0; const hra=ss?.hra||0; const conv=ss?.conveyance||0; const spec=ss?.special_allowance||0;
         const gross = basic+hra+conv+spec;
 
-        // Attendance-based LOP calculation
-        const attRecords = attByUser[emp.user_id] || [];
+        // ── Attendance tally: day-by-day (mirrors muster — missing weekday = absent) ──
+        const attByDate = attByUser[emp.user_id] || {};
+        let presentDays = 0, halfDays = 0, absentDays = 0;
+        for (const { ds, isWeekend } of payMonthDates) {
+          const rec = attByDate[ds];
+          if (!rec) {
+            if (!isWeekend) absentDays++;
+          } else {
+            const s = rec.status;
+            if (s === 'half_day')                                              { presentDays += 0.5; halfDays++; }
+            else if (['present','late','on_duty','work_from_home'].includes(s)){ presentDays++; }
+            else if (['absent','lop'].includes(s))                             { absentDays += 1 + (rec.lop_deduction_days || 0); }
+            else if (['week_off','holiday','leave','approved_leave'].includes(s)){ /* no LOP */ }
+            else if (rec.check_in_time)                                        { presentDays++; }
+            else                                                               { absentDays++; }
+          }
+        }
 
-        const presentDays  = attRecords.filter(a => ['present', 'late', 'on_duty', 'work_from_home'].includes(a.status)).length;
-        const halfDays     = attRecords.filter(a => a.status === 'half_day').length;
-        const absentDays   = attRecords.filter(a => ['absent', 'lop'].includes(a.status)).length
-                           + attRecords.reduce((sum, a) => sum + (a.lop_deduction_days || 0), 0);
-
-        // Standard LOP rule: absent = 1 day LOP, half day = 0.5 day LOP
+        // LOP: absent = 1 day, half day = 0.5 day
         const totalLOPDays = absentDays + halfDays * 0.5;
-        const effectivePresentDays = presentDays + halfDays * 0.5;
+        const effectivePresentDays = presentDays;   // presentDays already includes 0.5 per half day
         const lopAmount = totalLOPDays > 0 ? Math.round((gross / workingDays) * totalLOPDays) : 0;
         const grossAfterLop = Math.max(0, gross - lopAmount);
 
-        // PF employee: 12% on basic, capped at ₹15,000 wage ceiling
-        const pfBase    = Math.min(basic, 15000);
-        const pf        = Math.round(pfBase * 0.12);
-        // Employer PF: 13% on same capped basis
-        const empPF     = Math.round(pfBase * 0.13);
-        // ESI employee: 0.75% on basic, eligible only if basic ≤ ₹21,000
-        const esi       = basic <= 21000 ? Math.round(basic * 0.0075) : 0;
-        // Employer ESI: 3.25% on basic (same eligibility)
-        const empESI    = basic <= 21000 ? Math.round(basic * 0.0325) : 0;
-        const pt        = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
+        // ── PF: 12% on EARNED basic (pro-rated for LOP), capped at ₹15,000 ──────────
+        // Standard rule: PF is on wages actually paid, not the full monthly CTC.
+        // earnedBasic = Basic × (workingDays − LOPdays) / workingDays
+        const earnedBasic = Math.max(0, Math.round(basic * (workingDays - totalLOPDays) / workingDays));
+        const pfBase = Math.min(earnedBasic, 15000);
+        const pf     = Math.round(pfBase * 0.12);
+        const empPF  = Math.round(pfBase * 0.13);
+
+        // ── ESI: eligibility on FULL gross; contribution on EARNED gross ─────────────
+        // Eligibility: if the employee's fixed monthly gross > ₹21,000, not applicable.
+        // Contribution = 0.75% of actual gross paid this month (after LOP deduction).
+        const esiEligible = gross <= 21000;
+        const esi    = esiEligible ? Math.round(grossAfterLop * 0.0075) : 0;
+        const empESI = esiEligible ? Math.round(grossAfterLop * 0.0325) : 0;
+
+        const pt = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
         // Bonus / VPP based on annual CTC
         const annualCTC = ss?.ctc || (gross * 12);
         let bonusMonthly = 0;
@@ -1469,17 +1497,24 @@ router.post('/:name', async (req, res) => {
           ? Math.round((grossMonthly / workingDays) * totalLOPDays)
           : 0;
 
-        // ── Other deductions ─────────────────────────────────────────────────────
-        const pfBase  = Math.min(basic, 15000);
+        // ── PF: 12% on EARNED basic (pro-rated for LOP), capped at ₹15,000 ─────────
+        // PF is on wages actually paid, not the full monthly CTC.
+        const earnedBasic = Math.max(0, Math.round(basic * (workingDays - totalLOPDays) / workingDays));
+        const pfBase  = Math.min(earnedBasic, 15000);
         const pfEmp   = pr?.deductions?.pf  ?? Math.round(pfBase * 0.12);
         const pfEmpr  = pr?.employer_contributions?.pf  ?? Math.round(pfBase * 0.13);
-        const esiEmp  = pr?.deductions?.esi ?? (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
-        const esiEmpr = pr?.employer_contributions?.esi ?? (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
-        const pt      = pr?.deductions?.pt  ?? (grossCalc > 15000 ? 200 : grossCalc > 10000 ? 150 : 0);
+
+        // ── ESI: eligibility on full monthly gross; contribution on earned gross ───
+        // If employee's fixed monthly gross > ₹21,000: not eligible for ESI.
+        const esiEligible  = grossMonthly <= 21000;
+        const grossEarned  = grossMonthly - lop;
+        const esiEmp  = pr?.deductions?.esi  ?? (esiEligible ? Math.round(grossEarned * 0.0075) : 0);
+        const esiEmpr = pr?.employer_contributions?.esi ?? (esiEligible ? Math.round(grossEarned * 0.0325) : 0);
+
+        // Professional Tax: on earned gross; state-wise slab
+        const pt = pr?.deductions?.pt ?? calcProfessionalTax(grossEarned, emp.work_location || emp.state || 'UTTAR PRADESH');
+
         const totalDed = pfEmp + esiEmp + pt + lop;
-        // Net is also recomputed from attendance-based LOP so the sheet is self-consistent.
-        // If attendance says LOP = 2.5 days but the old payroll was processed with LOP = 0,
-        // the sheet will show the correct net — HR can then reprocess payroll to match.
         const net = Math.max(0, grossCalc - totalDed);
 
         return {
