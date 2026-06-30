@@ -81,14 +81,10 @@ export function letterheadFooter() {
 }
 
 /**
- * Wraps content in a full letterhead page and opens a print window.
- * @param {string} title - Window title
- * @param {string} contentHtml - HTML to place in the content area
- * @param {string} extraStyles - Additional CSS
- * @param {boolean} autoPrint - Whether to auto-trigger print dialog
+ * Returns the full letterhead HTML string without opening any window.
  */
-export function openLetterheadPrintWindow(title, contentHtml, extraStyles = '', autoPrint = true) {
-  const html = `<!DOCTYPE html>
+export function buildLetterheadHtml(title, contentHtml, extraStyles = '') {
+  return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
@@ -111,7 +107,13 @@ export function openLetterheadPrintWindow(title, contentHtml, extraStyles = '', 
 </div>
 </body>
 </html>`;
+}
 
+/**
+ * Wraps content in a full letterhead page and opens a print window.
+ */
+export function openLetterheadPrintWindow(title, contentHtml, extraStyles = '', autoPrint = true) {
+  const html = buildLetterheadHtml(title, contentHtml, extraStyles);
   const win = window.open('', '_blank', 'width=900,height=720');
   win.document.write(html);
   win.document.close();

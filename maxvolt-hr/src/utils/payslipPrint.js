@@ -1,4 +1,4 @@
-import { openLetterheadPrintWindow } from './letterhead.js';
+import { buildLetterheadHtml, openLetterheadPrintWindow } from './letterhead.js';
 
 const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'];
@@ -24,7 +24,21 @@ function numToWords(num) {
   return inWords(Math.round(num)) + ' Rupees Only';
 }
 
-export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStructure, bonuses = [] }) {
+/**
+ * Builds the complete payslip HTML string (letterhead + content) without opening a window.
+ * Use this to bundle payslips into a ZIP file.
+ */
+export function buildPayslipPageHtml(data) {
+  const { contentHtml, extraStyles, title } = _buildPayslipParts(data);
+  return buildLetterheadHtml(title, contentHtml, extraStyles);
+}
+
+export function openPayslipPrintWindow(data) {
+  const { contentHtml, extraStyles, title } = _buildPayslipParts(data);
+  openLetterheadPrintWindow(title, contentHtml, extraStyles);
+}
+
+function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonuses = [] }) {
   const deductions = payroll.deductions || {};
   const allowances = payroll.allowances || {};
 
@@ -242,9 +256,6 @@ export function openPayslipPrintWindow({ payroll, employee, empUser, salaryStruc
     .amt { text-align: right; font-variant-numeric: tabular-nums; }
   `;
 
-  openLetterheadPrintWindow(
-    `Payslip - ${employee.display_name || empUser.full_name || ''} - ${payPeriod}`,
-    contentHtml,
-    extraStyles
-  );
+  const title = `Payslip - ${employee.display_name || empUser.full_name || ''} - ${payPeriod}`;
+  return { contentHtml, extraStyles, title };
 }

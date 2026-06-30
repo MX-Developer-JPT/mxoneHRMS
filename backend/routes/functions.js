@@ -1446,33 +1446,70 @@ router.post('/:name', async (req, res) => {
       const font = (bold=false, color='000000', size=10) => ({ name:'Arial', bold, color:{argb:`FF${color}`}, size });
       const fill = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
       const border = () => ({ top:{style:'thin',color:{argb:'FFD0D0D0'}}, left:{style:'thin',color:{argb:'FFD0D0D0'}}, bottom:{style:'thin',color:{argb:'FFD0D0D0'}}, right:{style:'thin',color:{argb:'FFD0D0D0'}} });
-      const curr = (val) => ({ numFmt:'₹#,##0', alignment:{horizontal:'right'} });
 
-      // Row 1: Title
-      ws.mergeCells('A1:Z1');
+      // Column definitions first so cols.length is available for merge calculations
+      const cols = [
+        { header:'S.No',           key:'sno',          width:5  },
+        { header:'Emp Code',       key:'code',          width:10 },
+        { header:'Employee Name',  key:'name',          width:24 },
+        { header:'Department',     key:'dept',          width:16 },
+        { header:'Designation',    key:'desig',         width:18 },
+        { header:'Account No',     key:'account',       width:16 },
+        { header:'IFSC',           key:'ifsc',          width:12 },
+        { header:'Bank',           key:'bank',          width:14 },
+        // ATTENDANCE (cols 9-13)
+        { header:'Days Present',   key:'daysPresent',   width:10 },
+        { header:'Half Days',      key:'daysHalfDay',   width:9  },
+        { header:'LOP Days',       key:'daysLOP',       width:9  },
+        { header:'Absent',         key:'daysAbsent',    width:8  },
+        { header:'Eff. Days',      key:'effectiveDays', width:9  },
+        // EARNINGS (cols 14-18)
+        { header:'Gross Salary',   key:'gross',         width:13 },
+        { header:'Basic',          key:'basic',         width:12 },
+        { header:'HRA',            key:'hra',           width:11 },
+        { header:'Conveyance',     key:'conv',          width:12 },
+        { header:'Special Allow.', key:'special',       width:13 },
+        // DEDUCTIONS (cols 19-25)
+        { header:'PF (Emp 12%)',   key:'pfEmp',         width:12 },
+        { header:'PF (Empr 13%)',  key:'pfEmpr',        width:12 },
+        { header:'ESI (Emp 0.75%)',key:'esiEmp',        width:13 },
+        { header:'ESI (Empr 3.25%)',key:'esiEmpr',      width:14 },
+        { header:'Prof. Tax',      key:'pt',            width:10 },
+        { header:'LOP Deduct.',    key:'lop',           width:12 },
+        { header:'Total Deduct.',  key:'totalDed',      width:13 },
+        // NET PAY (cols 26-27)
+        { header:'Net Salary',     key:'net',           width:13 },
+        { header:'Status',         key:'status',        width:10 },
+      ];
+
+      // Set column widths explicitly (avoids ExcelJS auto-inserting a header row)
+      cols.forEach((col, i) => { ws.getColumn(i + 1).width = col.width; });
+
+      // Row 1: Title — span all columns
+      ws.mergeCells(1, 1, 1, cols.length);
       const title = ws.getCell('A1');
-      title.value = `SALARY SHEET — ${monthLabel.toUpperCase()}   |   Maxvolt Energy Pvt. Ltd.`;
+      title.value = `SALARY SHEET — ${monthLabel.toUpperCase()}   |   Maxvolt Energy Industries Limited`;
       title.font = { name:'Arial', bold:true, color:{argb:'FFFFFFFF'}, size:14 };
       title.fill = fill(C.headerBg);
       title.alignment = { horizontal:'center', vertical:'middle' };
       ws.getRow(1).height = 32;
 
-      // Row 2: Meta
-      ws.mergeCells('A2:N2');
+      // Row 2: Meta — span all columns
+      ws.mergeCells(2, 1, 2, cols.length);
       const meta = ws.getCell('A2');
-      meta.value = `Generated: ${new Date().toLocaleString('en-IN')}   |   Employees: ${dataRows.length}   |   Total Gross: ₹${Math.round(totals.gross).toLocaleString('en-IN')}   |   Total Net: ₹${Math.round(totals.net).toLocaleString('en-IN')}`;
+      meta.value = `Generated: ${new Date().toLocaleString('en-IN')}   |   Period: ${monthLabel}   |   Employees: ${dataRows.length}   |   Total Gross: ₹${Math.round(totals.gross).toLocaleString('en-IN')}   |   Total Net: ₹${Math.round(totals.net).toLocaleString('en-IN')}`;
       meta.font = { name:'Arial', color:{argb:'FFFFFFFF'}, size:9 };
       meta.fill = fill(C.subBg);
       meta.alignment = { horizontal:'left', vertical:'middle' };
       ws.getRow(2).height = 20;
 
-      // Row 3: Section headers
+      // Row 3: Section group headers
       const sectionHeaders = [
         { label:'EMPLOYEE DETAILS', cols:8 },
-        { label:'ATTENDANCE', cols:5 },
-        { label:'EARNINGS', cols:5 },
-        { label:'DEDUCTIONS', cols:7 },
-        { label:'NET PAY', cols:2 },
+        { label:'ATTENDANCE',       cols:5 },
+        { label:'EARNINGS',         cols:5 },
+        { label:'DEDUCTIONS',       cols:7 },
+        { label:'NET PAY',          cols:2 },
       ];
       let secCol = 1;
       for (const sec of sectionHeaders) {
@@ -1486,38 +1523,9 @@ router.post('/:name', async (req, res) => {
       }
       ws.getRow(3).height = 18;
 
-      // Row 4: Column headers
-      const cols = [
-        { header:'S.No', key:'sno', width:5 },
-        { header:'Emp Code', key:'code', width:10 },
-        { header:'Employee Name', key:'name', width:24 },
-        { header:'Department', key:'dept', width:16 },
-        { header:'Designation', key:'desig', width:18 },
-        { header:'Account No', key:'account', width:16 },
-        { header:'IFSC', key:'ifsc', width:12 },
-        { header:'Bank', key:'bank', width:14 },
-        { header:'Days Present', key:'daysPresent', width:10 },
-        { header:'Half Days', key:'daysHalfDay', width:9 },
-        { header:'LOP Days', key:'daysLOP', width:9 },
-        { header:'Absent', key:'daysAbsent', width:8 },
-        { header:'Eff. Days', key:'effectiveDays', width:9 },
-        { header:'Gross Salary', key:'gross', width:13 },
-        { header:'Basic', key:'basic', width:12 },
-        { header:'HRA', key:'hra', width:11 },
-        { header:'Conveyance', key:'conv', width:12 },
-        { header:'Special Allow.', key:'special', width:13 },
-        { header:'PF (Emp)', key:'pfEmp', width:11 },
-        { header:'PF (Empr)', key:'pfEmpr', width:11 },
-        { header:'ESI (Emp)', key:'esiEmp', width:11 },
-        { header:'ESI (Empr)', key:'esiEmpr', width:11 },
-        { header:'Prof. Tax', key:'pt', width:10 },
-        { header:'LOP Deduct.', key:'lop', width:12 },
-        { header:'Total Deduct.', key:'totalDed', width:13 },
-        { header:'Net Salary', key:'net', width:13 },
-        { header:'Status', key:'status', width:10 },
-      ];
-      ws.columns = cols;
+      // Row 4: Column headers — explicitly write values then style
       const hdrRow = ws.getRow(4);
+      cols.forEach((col, i) => { hdrRow.getCell(i + 1).value = col.header; });
       hdrRow.height = 22;
       hdrRow.eachCell(cell => {
         cell.font = font(true, C.headerFg, 9);

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { DollarSign, Users, TrendingUp, Play, Check, Download, FileText, Printer, Loader2, CheckSquare, Square, FileSpreadsheet } from 'lucide-react';
+import { DollarSign, Users, TrendingUp, Play, Check, Download, FileText, Archive, Loader2, CheckSquare, Square, FileSpreadsheet } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import {
@@ -20,7 +20,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { openPayslipPrintWindow } from '../utils/payslipPrint';
+import JSZip from 'jszip';
+import { openPayslipPrintWindow, buildPayslipPageHtml } from '../utils/payslipPrint';
 
 export default function PayrollManagement() {
   const [payrolls, setPayrolls] = useState([]);
@@ -221,17 +222,35 @@ export default function PayrollManagement() {
       return;
     }
     setBulkDownloading(true);
+    const monthNames2 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     try {
+      const zip = new JSZip();
+      let added = 0;
+      const errors = [];
       for (const payroll of eligible) {
-        const response = await base44.functions.invoke('generatePayslip', { payroll_id: payroll.id });
-        const brd = response?.data || response;
-        if (brd?.success) {
-          openPayslipPrintWindow(brd);
-          // Small delay between windows to avoid browser blocking
-          await new Promise(r => setTimeout(r, 400));
+        try {
+          const response = await base44.functions.invoke('generatePayslip', { payroll_id: payroll.id });
+          const brd = response?.data || response;
+          if (brd?.success) {
+            const html = buildPayslipPageHtml(brd);
+            const empName = (brd.employee?.display_name || brd.empUser?.full_name || 'Employee').replace(/[^a-zA-Z0-9 _-]/g, '_');
+            const code = brd.employee?.employee_code || payroll.id.slice(0, 8);
+            zip.file(`${code}_${empName}_${monthNames2[selectedMonth - 1]}_${selectedYear}.html`, html);
+            added++;
+          }
+        } catch (e) {
+          errors.push(payroll.id);
         }
       }
-      toast.success(`Opened ${eligible.length} payslip(s) for printing`);
+      if (added === 0) { toast.error('No payslips could be generated'); setBulkDownloading(false); return; }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Payslips_${monthNames2[selectedMonth - 1]}_${selectedYear}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Downloaded ${added} payslip${added !== 1 ? 's' : ''} as ZIP${errors.length ? ` (${errors.length} failed)` : ''}`);
     } catch (error) {
       toast.error('Error generating payslips: ' + error.message);
     }
@@ -382,8 +401,8 @@ export default function PayrollManagement() {
               onClick={handleBulkDownloadPayslips}
               disabled={processedCount === 0 || bulkDownloading}
             >
-              {bulkDownloading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Printer className="w-4 h-4 mr-2" />}
-              Print All Payslips
+              {bulkDownloading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Archive className="w-4 h-4 mr-2" />}
+              {bulkDownloading ? 'Building ZIP…' : 'Download Payslips (ZIP)'}
             </Button>
             <Button variant="outline" onClick={handleExportSalarySheet} title="Export complete salary sheet with attendance & components">
               <FileSpreadsheet className="w-4 h-4 mr-2" /> Salary Sheet
