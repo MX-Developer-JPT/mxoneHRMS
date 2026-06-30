@@ -1623,7 +1623,7 @@ router.post('/:name', async (req, res) => {
         const isAlt = i % 2 === 1;
         const rowData = [
           r.sno, r.code, r.name, r.dept, r.desig, r.account, r.ifsc, r.bank,
-          r.daysPresent, r.daysHalfDay, r.daysLOP, r.daysAbsent, r.effectiveDays,
+          r.daysPresent, r.daysHalfDay, r.daysAbsent, r.effectiveDays,
           r.gross, r.basic, r.hra, r.conv, r.special,
           r.pfEmp, r.pfEmpr, r.esiEmp, r.esiEmpr, r.lop, r.totalDed, r.net,
           r.status,
@@ -1652,7 +1652,7 @@ router.post('/:name', async (req, res) => {
           } else if (colKey === 'status') {
             cell.font = font(true, r.status==='Processed' ? C.processedFg : C.pendingFg, 9);
             cell.alignment = { horizontal:'center' };
-          } else if (['daysPresent','daysHalfDay','daysLOP','daysAbsent','effectiveDays'].includes(colKey)) {
+          } else if (['daysPresent','daysHalfDay','daysAbsent','effectiveDays'].includes(colKey)) {
             cell.alignment = { horizontal:'center' };
           } else if (ci < 5) {
             cell.alignment = { horizontal:'left' };
@@ -1665,7 +1665,6 @@ router.post('/:name', async (req, res) => {
         '', 'TOTAL', '', '', '', '', '', '',
         dataRows.reduce((s,r)=>s+r.daysPresent,0),
         dataRows.reduce((s,r)=>s+r.daysHalfDay,0),
-        dataRows.reduce((s,r)=>s+r.daysLOP,0),
         dataRows.reduce((s,r)=>s+r.daysAbsent,0),
         '',
         Math.round(totals.gross), '', '', '', '',
