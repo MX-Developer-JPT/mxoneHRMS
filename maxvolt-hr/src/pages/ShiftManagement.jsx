@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Clock, Users, Edit, Trash2, Upload, FileSpreadsheet, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Plus, Clock, Users, Edit, Trash2, Upload, FileSpreadsheet, CheckCircle2, AlertCircle, Building2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function ShiftManagement() {
@@ -21,6 +21,9 @@ export default function ShiftManagement() {
   const importFileRef = useRef(null);
   const [showDialog, setShowDialog] = useState(false);
   const [editingShift, setEditingShift] = useState(null);
+  const [showDeptDialog, setShowDeptDialog] = useState(false);
+  const [deptAssignments, setDeptAssignments] = useState({});
+  const [deptAssigning, setDeptAssigning] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     start_time: '',
@@ -113,6 +116,30 @@ export default function ShiftManagement() {
     }
   };
 
+  const handleAssignByDepartment = async () => {
+    const toAssign = Object.entries(deptAssignments).filter(([, shiftId]) => shiftId);
+    if (toAssign.length === 0) { toast.error('Select a shift for at least one department'); return; }
+    setDeptAssigning(true);
+    try {
+      let count = 0;
+      for (const [dept, shiftId] of toAssign) {
+        const deptEmps = employees.filter(e => e.status === 'active' && e.department === dept);
+        await Promise.all(deptEmps.map(emp =>
+          base44.entities.Employee.update(emp.id, { shift_id: shiftId === 'none' ? null : shiftId })
+        ));
+        count += deptEmps.length;
+      }
+      toast.success(`Shift assigned to ${count} employee${count !== 1 ? 's' : ''} across ${toAssign.length} department${toAssign.length !== 1 ? 's' : ''}`);
+      setShowDeptDialog(false);
+      setDeptAssignments({});
+      loadData();
+    } catch (e) {
+      toast.error('Failed to assign shifts: ' + e.message);
+    } finally {
+      setDeptAssigning(false);
+    }
+  };
+
   const resetForm = () => {
     setFormData({
       name: '',
@@ -190,7 +217,72 @@ export default function ShiftManagement() {
             <h1 className="text-3xl font-bold">Shift Management</h1>
             <p className="text-gray-600 mt-1">Create and manage work shifts</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
+            {/* Assign by Department dialog */}
+            <Dialog open={showDeptDialog} onOpenChange={(open) => { setShowDeptDialog(open); if (!open) setDeptAssignments({}); }}>
+              <DialogTrigger asChild>
+                <Button variant="outline">
+                  <Building2 className="w-4 h-4 mr-2" />
+                  Assign by Department
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-xl">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    <Building2 className="w-5 h-5 text-blue-600" />
+                    Assign Shift by Department
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-500">
+                    Select a shift for one or more departments. All active employees in the chosen departments will be updated at once.
+                  </p>
+                  <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                    {[...new Set(employees.filter(e => e.status === 'active' && e.department).map(e => e.department))].sort().map(dept => {
+                      const count = employees.filter(e => e.status === 'active' && e.department === dept).length;
+                      return (
+                        <div key={dept} className="flex items-center justify-between gap-3 p-3 border rounded-lg bg-white hover:bg-gray-50">
+                          <div>
+                            <p className="font-medium text-sm">{dept}</p>
+                            <p className="text-xs text-gray-500">{count} active employee{count !== 1 ? 's' : ''}</p>
+                          </div>
+                          <Select
+                            value={deptAssignments[dept] || ''}
+                            onValueChange={(val) => setDeptAssignments(prev => ({ ...prev, [dept]: val }))}
+                          >
+                            <SelectTrigger className="w-52">
+                              <SelectValue placeholder="Select shift…" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">No Shift</SelectItem>
+                              {shifts.map(shift => (
+                                <SelectItem key={shift.id} value={shift.id}>
+                                  {shift.name} ({shift.start_time}–{shift.end_time})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      );
+                    })}
+                    {employees.filter(e => e.status === 'active' && e.department).length === 0 && (
+                      <p className="text-center py-6 text-gray-400 text-sm">No departments found in active employees.</p>
+                    )}
+                  </div>
+                  <div className="flex justify-end gap-2 pt-2 border-t">
+                    <Button variant="outline" onClick={() => setShowDeptDialog(false)}>Cancel</Button>
+                    <Button
+                      className="bg-blue-600 hover:bg-blue-700"
+                      onClick={handleAssignByDepartment}
+                      disabled={deptAssigning || Object.values(deptAssignments).every(v => !v)}
+                    >
+                      {deptAssigning ? 'Assigning…' : 'Apply to Departments'}
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+
             {/* Import Shift Assignments dialog */}
             <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
               <DialogTrigger asChild>
