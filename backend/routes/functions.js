@@ -1384,39 +1384,71 @@ router.post('/:name', async (req, res) => {
       const payrolls  = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2", [String(m), String(y)]));
       const payrollMap = Object.fromEntries(payrolls.map(pr => [pr.user_id, pr]));
 
+      // Build date-keyed attendance map — same structure the muster uses for day-by-day tally
       const attRows2 = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
-      const attMapSS = {};
-      for (const a of attRows2) { if (!attMapSS[a.user_id]) attMapSS[a.user_id] = []; attMapSS[a.user_id].push(a); }
+      const attMapSS = {};   // user_id → dateStr → record
+      for (const a of attRows2) {
+        if (!a.date) continue;
+        if (!attMapSS[a.user_id]) attMapSS[a.user_id] = {};
+        attMapSS[a.user_id][a.date] = a;
+      }
+
+      // All calendar days with weekend flag — computed once, reused per employee
+      const daysInMonthSS = new Date(y, m, 0).getDate();
+      const monthDates = [];
+      for (let d = 1; d <= daysInMonthSS; d++) {
+        const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const dow = new Date(ds).getDay();
+        monthDates.push({ ds, isWeekend: dow === 0 || dow === 6 });
+      }
 
       const ssAllRows2 = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND status='active'");
       const ssMapSS = {};
       for (const r of ssAllRows2) ssMapSS[r.user_id] = JSON.parse(r.data);
 
-      const PRESENT_STATUSES = ['present', 'late', 'on_duty', 'work_from_home'];
-
       const dataRows = employees.map((emp, idx) => {
-        const pr   = payrollMap[emp.user_id];
-        const recs = attMapSS[emp.user_id] || [];
-        const ss   = ssMapSS[emp.user_id] || {};
+        const pr        = payrollMap[emp.user_id];
+        const attByDate = attMapSS[emp.user_id] || {};
+        const hasAtt    = Object.keys(attByDate).length > 0;
+        const ss        = ssMapSS[emp.user_id] || {};
 
-        // ── Attendance counts ─────────────────────────────────────────────────────
-        // Always derive from raw attendance records for accuracy.
-        // Fall back to payroll summary only when no attendance records exist for the month.
-        let daysPresent, daysHalfDay, daysAbsent;
-        if (recs.length > 0) {
-          daysPresent = recs.filter(a => PRESENT_STATUSES.includes(a.status)).length;
-          daysHalfDay = recs.filter(a => a.status === 'half_day').length;
-          daysAbsent  = recs.filter(a => ['absent', 'lop'].includes(a.status)).length
-                      + recs.reduce((sum, a) => sum + (a.lop_deduction_days || 0), 0);
-        } else {
-          daysPresent = pr?.present_days || 0;
-          daysHalfDay = pr?.half_days    || 0;
-          daysAbsent  = pr?.absent_days  || 0;
+        // ── Attendance tally — mirrors the muster's day-by-day logic exactly ─────
+        // Source of truth: attendance records. A weekday with no record = absent (same
+        // rule the muster uses, so the two documents always agree).
+        let daysPresent = 0, daysHalfDay = 0, daysAbsent = 0;
+        if (hasAtt) {
+          for (const { ds, isWeekend } of monthDates) {
+            const rec = attByDate[ds];
+            if (!rec) {
+              if (!isWeekend) daysAbsent++;           // missing punch on working day = LOP
+            } else {
+              const s = rec.status;
+              if (s === 'half_day') {
+                daysPresent += 0.5; daysHalfDay++;
+              } else if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home') {
+                daysPresent++;
+              } else if (s === 'absent' || s === 'lop') {
+                daysAbsent += 1 + (rec.lop_deduction_days || 0);
+              } else if (s === 'week_off' || s === 'holiday' || s === 'leave' || s === 'approved_leave') {
+                // paid / off days — no LOP
+              } else if (rec.check_in_time) {
+                daysPresent++;                         // check-in exists → treat as present
+              } else {
+                daysAbsent++;                          // unknown status, no check-in → LOP
+              }
+            }
+          }
+        } else if (pr) {
+          // No attendance records for this month: fall back to the payroll summary
+          const halfD  = pr.half_days || 0;
+          daysHalfDay  = halfD;
+          daysPresent  = (pr.present_days || 0) - halfD + halfD * 0.5;
+          daysAbsent   = pr.absent_days || pr.loss_of_pay_days || 0;
         }
 
-        // Standard LOP rule: absent = 1 day, half day = 0.5 day
+        // totalLOPDays: full absent days (1 each) + half days (0.5 each)
         const totalLOPDays  = daysAbsent + daysHalfDay * 0.5;
-        // Eff. Days = standard working days (same for ALL employees, not per-employee count)
+        // Eff. Days = standard working days (26), same for all employees
         const effectiveDays = workingDays;
 
         // ── Earnings ─────────────────────────────────────────────────────────────
