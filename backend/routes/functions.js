@@ -659,14 +659,17 @@ router.post('/:name', async (req, res) => {
         attByUser[r.user_id][rec.date] = rec;
       }
 
-      // All calendar dates for this month with weekend flag (computed once)
-      const daysInPayMonth = new Date(y_int, m_int, 0).getDate();
+      // Calendar dates for this month — only Sundays are non-working (Sat is a working day)
+      const calendarDays = new Date(y_int, m_int, 0).getDate();
       const payMonthDates = [];
-      for (let d = 1; d <= daysInPayMonth; d++) {
+      for (let d = 1; d <= calendarDays; d++) {
         const ds = `${y_int}-${String(m_int).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
         const dow = new Date(ds).getDay();
-        payMonthDates.push({ ds, isWeekend: dow === 0 || dow === 6 });
+        payMonthDates.push({ ds, isSunday: dow === 0 });
       }
+      // Sundays are paid days off; Saturdays are working days
+      const sundaysInMonth  = payMonthDates.filter(d => d.isSunday).length;
+      const workingDays     = calendarDays - sundaysInMonth;  // e.g. 30 - 4 = 26
 
       let processed = 0;
       for (const emp of employees) {
@@ -677,54 +680,52 @@ router.post('/:name', async (req, res) => {
         const basic = ss?.basic_salary||0; const hra=ss?.hra||0; const conv=ss?.conveyance||0; const spec=ss?.special_allowance||0;
         const gross = basic+hra+conv+spec;
 
-        // ── Attendance tally: day-by-day (mirrors muster — missing weekday = absent) ──
+        // ── Attendance tally: day-by-day; Sunday = paid off (not absent); missing weekday/Sat = absent ──
         const attByDate = attByUser[emp.user_id] || {};
         let presentDays = 0, halfDays = 0, absentDays = 0;
-        for (const { ds, isWeekend } of payMonthDates) {
+        for (const { ds, isSunday } of payMonthDates) {
+          if (isSunday) continue;                              // Sunday: paid holiday, skip
           const rec = attByDate[ds];
           if (!rec) {
-            if (!isWeekend) absentDays++;
+            absentDays++;                                      // no record on Mon–Sat = absent
           } else {
             const s = rec.status;
             if (s === 'half_day')                                              { presentDays += 0.5; halfDays++; }
             else if (['present','late','on_duty','work_from_home'].includes(s)){ presentDays++; }
             else if (['absent','lop'].includes(s))                             { absentDays += 1 + (rec.lop_deduction_days || 0); }
-            else if (['week_off','holiday','leave','approved_leave'].includes(s)){ /* no LOP */ }
+            else if (['week_off','holiday','leave','approved_leave'].includes(s)){ /* paid/off — no LOP */ }
             else if (rec.check_in_time)                                        { presentDays++; }
             else                                                               { absentDays++; }
           }
         }
 
-        // LOP: absent = 1 day, half day = 0.5 day
+        // ── LOP: divisor = calendar days (company rule: Gross ÷ calendar days = 1 day rate) ──
         const totalLOPDays = absentDays + halfDays * 0.5;
-        const effectivePresentDays = presentDays;   // presentDays already includes 0.5 per half day
-        const lopAmount = totalLOPDays > 0 ? Math.round((gross / workingDays) * totalLOPDays) : 0;
+        const payDays      = calendarDays - totalLOPDays;     // calendar days actually paid
+        const lopAmount    = totalLOPDays > 0 ? Math.round(gross * totalLOPDays / calendarDays) : 0;
         const grossAfterLop = Math.max(0, gross - lopAmount);
 
-        // PF: 12% employee / 13% employer on basic, capped at ₹15,000
-        const pfBase = Math.min(basic, 15000);
+        // ── PF: same proportional rule — earned basic = basic × payDays / calendarDays ──
+        // PF wages capped at ₹15,000; 12% employee / 13% employer
+        const earnedBasic = Math.round(basic * payDays / calendarDays);
+        const pfBase = Math.min(earnedBasic, 15000);
         const pf     = Math.round(pfBase * 0.12);
         const empPF  = Math.round(pfBase * 0.13);
 
-        // ESI: eligibility on basic; 0.75% employee / 3.25% employer on basic
-        const esi    = basic <= 21000 ? Math.round(basic * 0.0075) : 0;
-        const empESI = basic <= 21000 ? Math.round(basic * 0.0325) : 0;
+        // ── ESI: eligibility on full monthly basic; deduction on earned basic ──────
+        const earnedBasicForESI = Math.round(basic * payDays / calendarDays);
+        const esi    = basic <= 21000 ? Math.round(earnedBasicForESI * 0.0075) : 0;
+        const empESI = basic <= 21000 ? Math.round(earnedBasicForESI * 0.0325) : 0;
 
         const pt = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
+
         // Bonus / VPP based on annual CTC
         const annualCTC = ss?.ctc || (gross * 12);
         let bonusMonthly = 0;
         if (annualCTC <= 1000000) {
-          // CTC ≤ ₹10L: 8.33% of monthly basic
           bonusMonthly = Math.round(basic * 0.0833);
         } else {
-          // VPP allocated from CTC above ₹10L
-          let vppRate = 0;
-          if (annualCTC <= 1500000)      vppRate = 0.05;
-          else if (annualCTC <= 2000000) vppRate = 0.08;
-          else if (annualCTC <= 2500000) vppRate = 0.12;
-          else if (annualCTC <= 3000000) vppRate = 0.15;
-          else                           vppRate = 0.15;
+          let vppRate = annualCTC <= 1500000 ? 0.05 : annualCTC <= 2000000 ? 0.08 : annualCTC <= 2500000 ? 0.12 : 0.15;
           bonusMonthly = Math.round((annualCTC * vppRate) / 12);
         }
         const totalDed = pf + pt + esi + lopAmount;
@@ -739,8 +740,10 @@ router.post('/:name', async (req, res) => {
           employer_contributions: { pf: empPF, esi: empESI },
           total_deductions: totalDed, net_salary: net,
           statutory_bonus: bonusMonthly, vpp: annualCTC > 1000000 ? bonusMonthly : 0,
+          calendar_days: calendarDays,
           working_days: workingDays,
-          present_days: Math.round(effectivePresentDays),
+          pay_days: payDays,
+          present_days: presentDays,
           half_days: halfDays,
           absent_days: absentDays,
           loss_of_pay_days: totalLOPDays,
@@ -1399,7 +1402,6 @@ router.post('/:name', async (req, res) => {
       const m = parseInt(month), y = parseInt(year);
       const monthStart = `${y}-${String(m).padStart(2,'0')}-01`;
       const monthEnd   = new Date(y, m, 0).toISOString().slice(0,10);
-      const workingDays = 26;
       const monthLabel = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
@@ -1415,14 +1417,16 @@ router.post('/:name', async (req, res) => {
         attMapSS[a.user_id][a.date] = a;
       }
 
-      // All calendar days with weekend flag — computed once, reused per employee
-      const daysInMonthSS = new Date(y, m, 0).getDate();
+      // Calendar dates — only Sundays are non-working (Saturdays are working days)
+      const calendarDaysSS = new Date(y, m, 0).getDate();
       const monthDates = [];
-      for (let d = 1; d <= daysInMonthSS; d++) {
+      for (let d = 1; d <= calendarDaysSS; d++) {
         const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
         const dow = new Date(ds).getDay();
-        monthDates.push({ ds, isWeekend: dow === 0 || dow === 6 });
+        monthDates.push({ ds, isSunday: dow === 0 });
       }
+      const sundaysInMonthSS = monthDates.filter(d => d.isSunday).length;
+      const workingDays      = calendarDaysSS - sundaysInMonthSS;
 
       const ssAllRows2 = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND status='active'");
       const ssMapSS = {};
@@ -1434,15 +1438,14 @@ router.post('/:name', async (req, res) => {
         const hasAtt    = Object.keys(attByDate).length > 0;
         const ss        = ssMapSS[emp.user_id] || {};
 
-        // ── Attendance tally — mirrors the muster's day-by-day logic exactly ─────
-        // Source of truth: attendance records. A weekday with no record = absent (same
-        // rule the muster uses, so the two documents always agree).
+        // ── Attendance tally — day-by-day; Sunday = paid off; missing Mon–Sat = absent ──
         let daysPresent = 0, daysHalfDay = 0, daysAbsent = 0;
         if (hasAtt) {
-          for (const { ds, isWeekend } of monthDates) {
+          for (const { ds, isSunday } of monthDates) {
+            if (isSunday) continue;                           // Sunday: paid day off
             const rec = attByDate[ds];
             if (!rec) {
-              if (!isWeekend) daysAbsent++;           // missing punch on working day = LOP
+              daysAbsent++;                                   // no record Mon–Sat = absent
             } else {
               const s = rec.status;
               if (s === 'half_day') {
@@ -1452,29 +1455,26 @@ router.post('/:name', async (req, res) => {
               } else if (s === 'absent' || s === 'lop') {
                 daysAbsent += 1 + (rec.lop_deduction_days || 0);
               } else if (s === 'week_off' || s === 'holiday' || s === 'leave' || s === 'approved_leave') {
-                // paid / off days — no LOP
+                // paid/off — no LOP
               } else if (rec.check_in_time) {
-                daysPresent++;                         // check-in exists → treat as present
+                daysPresent++;
               } else {
-                daysAbsent++;                          // unknown status, no check-in → LOP
+                daysAbsent++;
               }
             }
           }
         } else if (pr) {
-          // No attendance records for this month: fall back to the payroll summary
-          const halfD  = pr.half_days || 0;
-          daysHalfDay  = halfD;
-          daysPresent  = (pr.present_days || 0) - halfD + halfD * 0.5;
-          daysAbsent   = pr.absent_days || pr.loss_of_pay_days || 0;
+          daysHalfDay = pr.half_days || 0;
+          daysPresent = pr.present_days || 0;
+          daysAbsent  = pr.absent_days  || pr.loss_of_pay_days || 0;
         }
 
-        // totalLOPDays: full absent days (1 each) + half days (0.5 each)
         const totalLOPDays  = daysAbsent + daysHalfDay * 0.5;
-        // Eff. Days = standard working days (26), same for all employees
-        const effectiveDays = workingDays;
+        // payDays = calendar days − LOP days; effectiveDays = calendar days for all
+        const payDaysSS     = calendarDaysSS - totalLOPDays;
+        const effectiveDays = calendarDaysSS;                 // show calendar days (e.g. 30 or 31)
 
-        // ── Earnings ─────────────────────────────────────────────────────────────
-        // Always show full monthly amounts; LOP is applied as a deduction below.
+        // ── Earnings — full monthly amounts; LOP is a separate deduction ─────────
         const grossMonthly = (ss.basic_salary||0)+(ss.hra||0)+(ss.conveyance||0)+(ss.special_allowance||0);
         const basic   = pr?.basic_salary      || (ss.basic_salary||0);
         const hra     = pr?.hra               || (ss.hra||0);
@@ -1482,25 +1482,23 @@ router.post('/:name', async (req, res) => {
         const special = pr?.special_allowance || (ss.special_allowance||0);
         const grossCalc = basic + hra + conv + special;
 
-        // ── LOP deduction: ALWAYS computed from attendance (standard rule) ────────
-        // Do NOT use stale payroll deductions.lop — payrolls processed before the
-        // half-day fix stored lop=0 for employees with only half-day absences, and
-        // `0 != null` so the old value would silently override the correct calculation.
-        // Attendance records are the single source of truth for LOP.
+        // ── LOP: Gross ÷ calendar days × absent days ──────────────────────────────
+        // Attendance is the single source of truth — always recompute from it.
         const lop = totalLOPDays > 0
-          ? Math.round((grossMonthly / workingDays) * totalLOPDays)
+          ? Math.round(grossMonthly * totalLOPDays / calendarDaysSS)
           : 0;
 
-        // PF: 12% employee / 13% employer on basic, capped at ₹15,000
-        const pfBase  = Math.min(basic, 15000);
+        // ── PF: proportional on earned basic (basic × payDays / calendarDays) ─────
+        const earnedBasicSS = Math.round(basic * payDaysSS / calendarDaysSS);
+        const pfBase  = Math.min(earnedBasicSS, 15000);
         const pfEmp   = pr?.deductions?.pf  ?? Math.round(pfBase * 0.12);
         const pfEmpr  = pr?.employer_contributions?.pf  ?? Math.round(pfBase * 0.13);
 
-        // ESI: eligibility on basic; 0.75% employee / 3.25% employer on basic
-        const esiEmp  = pr?.deductions?.esi  ?? (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
-        const esiEmpr = pr?.employer_contributions?.esi ?? (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
+        // ── ESI: eligibility on full monthly basic; deduction on earned basic ─────
+        const earnedBasicESI = Math.round(basic * payDaysSS / calendarDaysSS);
+        const esiEmp  = pr?.deductions?.esi  ?? (basic <= 21000 ? Math.round(earnedBasicESI * 0.0075) : 0);
+        const esiEmpr = pr?.employer_contributions?.esi ?? (basic <= 21000 ? Math.round(earnedBasicESI * 0.0325) : 0);
 
-        // Professional Tax: state-wise slab on earned gross
         const grossEarned = grossMonthly - lop;
         const pt = pr?.deductions?.pt ?? calcProfessionalTax(grossEarned, emp.work_location || emp.state || 'UTTAR PRADESH');
 
@@ -1512,11 +1510,10 @@ router.post('/:name', async (req, res) => {
           code: emp.employee_code||'', name: emp.display_name||'',
           dept: emp.department||'',    desig: emp.designation||'',
           account: emp.bank_account_number||'', ifsc: emp.ifsc_code||'', bank: emp.bank_name||'',
-          // Present & absent as decimals — matches what the attendance muster shows
-          daysPresent:  daysPresent + daysHalfDay * 0.5,  // e.g. 22 full + 1 half → 22.5
+          daysPresent:  daysPresent,          // present days (Mon–Sat, excluding Sundays)
           daysHalfDay,
-          daysAbsent:   totalLOPDays,                      // e.g. 2 absent + 1 half → 2.5
-          effectiveDays,   // always workingDays (26), same for all
+          daysAbsent:   totalLOPDays,         // absent + half×0.5
+          effectiveDays,                       // calendar days (e.g. 30 or 31)
           gross: pr?.gross_salary || grossCalc, basic, hra, conv, special,
           pfEmp, pfEmpr, esiEmp, esiEmpr, pt, lop, totalDed, net,
           status: pr ? (pr.status === 'paid' ? 'Paid' : 'Processed') : 'Pending',

@@ -49,21 +49,22 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const bonusFixed = salaryStructure.performance_bonus || 0;
   const grossFixed = basicFixed + hraFixed + conveyanceFixed;
 
-  // Working / attendance days
-  const workingDays = payroll.working_days || 26;
-  const presentDays = payroll.present_days || workingDays;
-  const halfDays    = payroll.half_days    || 0;
-  const leaveDays   = payroll.leave_days   || 0;
-  const lopDays     = payroll.loss_of_pay_days || 0;   // may be fractional (e.g. 1.5)
-  const absentDays  = payroll.absent_days  || Math.floor(lopDays);
+  // Days — calendar_days is the LOP divisor; working_days = calendar - Sundays
+  const calendarDays = payroll.calendar_days || 30;    // e.g. 31 for March, 30 for June
+  const workingDays  = payroll.working_days  || 26;    // calendar days - Sundays
+  const presentDays  = payroll.present_days  || workingDays;
+  const halfDays     = payroll.half_days     || 0;
+  const leaveDays    = payroll.leave_days    || 0;
+  const lopDays      = payroll.loss_of_pay_days || 0;  // may be fractional e.g. 1.5
+  const absentDays   = payroll.absent_days   || Math.floor(lopDays);
+  const payDays      = payroll.pay_days      || (calendarDays - lopDays);
 
-  // Payslip shows full monthly earnings; LOP is a separate deduction
+  // Payslip shows full monthly earnings; LOP appears as a deduction line
   const basicEarned      = payroll.basic_salary || basicFixed;
   const hraEarned        = payroll.hra          || hraFixed;
   const conveyanceEarned = allowances.conveyance || payroll.conveyance || conveyanceFixed;
   const grossSalary      = payroll.gross_salary  || (basicEarned + hraEarned + conveyanceEarned);
 
-  // Arrear / YTD
   const arrear   = payroll.arrear    || 0;
   const ytdGross = payroll.ytd_gross || grossSalary;
   const ytdNet   = payroll.ytd_net   || (payroll.net_salary || 0);
@@ -71,18 +72,22 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const bonusBreakdown = bonuses.filter(b => b.amount > 0);
   const otherEarnings  = payroll.bonuses || 0;
 
-  // LOP deduction
-  const lopDeduction = deductions.lop ?? payroll.loss_of_pay_amount ?? 0;
+  // ── LOP: Gross ÷ calendarDays × absent days ──────────────────────────────────
+  const lopDeduction = deductions.lop ?? payroll.loss_of_pay_amount
+    ?? (lopDays > 0 ? Math.round(grossSalary * lopDays / calendarDays) : 0);
 
-  // PF: 12% on basic, capped at ₹15,000
-  const pfBase     = Math.min(basicEarned, 15000);
+  // ── PF: proportional — earned basic = basic × payDays / calendarDays ─────────
+  // PF wages capped at ₹15,000; 12% employee / 13% employer
+  const earnedBasicForPF = Math.round(basicEarned * payDays / calendarDays);
+  const pfBase     = Math.min(earnedBasicForPF, 15000);
   const pfComputed = Math.round(pfBase * 0.12);
   const pfDeduction = deductions.pf || pfComputed;
 
-  // ESI: eligibility on basic; 0.75% on basic
+  // ── ESI: eligibility on full monthly basic; deduction on earned basic ─────────
+  const earnedBasicForESI = Math.round(basicEarned * payDays / calendarDays);
   const esiDeduction = deductions.esi != null
     ? deductions.esi
-    : (basicEarned <= 21000 ? (salaryStructure.esi_contribution || Math.round(basicEarned * 0.0075)) : 0);
+    : (basicEarned <= 21000 ? (salaryStructure.esi_contribution || Math.round(earnedBasicForESI * 0.0075)) : 0);
 
   const profTax      = deductions.professional_tax || deductions.pt || 0;
   const tdsDeduction = deductions.tds || 0;
@@ -91,9 +96,9 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const netSalary = payroll.net_salary || (grossSalary - totalDeductions);
 
   // Employer contributions
-  const empPFBase   = Math.min(basicEarned, 15000);
+  const empPFBase   = Math.min(earnedBasicForPF, 15000);
   const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(empPFBase * 0.13);
-  const employerESI = payroll.employer_contributions?.esi ?? (basicEarned <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(basicEarned * 0.0325)) : 0);
+  const employerESI = payroll.employer_contributions?.esi ?? (basicEarned <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(earnedBasicForESI * 0.0325)) : 0);
   // gratuity removed from payslip
 
   const month = monthNames[(payroll.month || 1) - 1];
@@ -152,12 +157,12 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
       <!-- Attendance -->
       <div style="display:flex;border-bottom:1px solid #f3e9d8;">
         ${[
+          ['Month Days',   calendarDays,            '#1a1a1a'],
           ['Working Days', workingDays,             '#1a1a1a'],
           ['Present Days', presentDays,             '#15803d'],
           ['Half Days',    halfDays,                halfDays > 0 ? '#d97706' : '#6b7280'],
           ['Absent Days',  absentDays,              absentDays > 0 ? '#dc2626' : '#6b7280'],
           ['LOP Days',     lopDays,                 lopDays > 0 ? '#dc2626' : '#6b7280'],
-          ['Overtime Hrs', payroll.overtime_hours || 0, '#7c3aed'],
         ].map(([l, v, c]) => `
           <div style="flex:1;text-align:center;padding:7px 4px;border-right:1px solid #f3e9d8;">
             <div style="font-size:8px;color:#a07040;text-transform:uppercase;">${l}</div>
