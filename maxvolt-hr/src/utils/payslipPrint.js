@@ -71,25 +71,18 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const bonusBreakdown = bonuses.filter(b => b.amount > 0);
   const otherEarnings  = payroll.bonuses || 0;
 
-  // ── LOP deduction (first — needed to compute earned gross for ESI/PF) ──────
+  // LOP deduction
   const lopDeduction = deductions.lop ?? payroll.loss_of_pay_amount ?? 0;
-  const grossEarned  = Math.max(0, grossSalary - lopDeduction);   // gross actually paid this month
 
-  // ── PF: 12% on EARNED basic (pro-rated for LOP), capped at ₹15,000 ─────────
-  // earnedBasic = Basic × (26 − LOPdays) / 26  — use stored if available (already correct)
-  const workingDaysForPF = payroll.working_days || 26;
-  const lopDaysForPF     = payroll.loss_of_pay_days || 0;
-  const earnedBasicForPF = Math.max(0, Math.round(basicEarned * (workingDaysForPF - lopDaysForPF) / workingDaysForPF));
-  const pfBase    = Math.min(earnedBasicForPF, 15000);
+  // PF: 12% on basic, capped at ₹15,000
+  const pfBase     = Math.min(basicEarned, 15000);
   const pfComputed = Math.round(pfBase * 0.12);
   const pfDeduction = deductions.pf || pfComputed;
 
-  // ── ESI: eligibility on FULL monthly gross; contribution on earned gross ─────
-  // If the employee's fixed gross > ₹21,000 → not applicable regardless of LOP.
-  const esiEligible  = grossSalary <= 21000;
+  // ESI: eligibility on basic; 0.75% on basic
   const esiDeduction = deductions.esi != null
     ? deductions.esi
-    : (esiEligible ? (salaryStructure.esi_contribution || Math.round(grossEarned * 0.0075)) : 0);
+    : (basicEarned <= 21000 ? (salaryStructure.esi_contribution || Math.round(basicEarned * 0.0075)) : 0);
 
   const profTax      = deductions.professional_tax || deductions.pt || 0;
   const tdsDeduction = deductions.tds || 0;
@@ -97,10 +90,10 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const totalDeductions = lopDeduction + pfDeduction + esiDeduction + profTax + tdsDeduction + loanEmi;
   const netSalary = payroll.net_salary || (grossSalary - totalDeductions);
 
-  // Employer contributions (CTC components — not deducted from employee)
-  const empPFBase   = Math.min(earnedBasicForPF, 15000);
+  // Employer contributions
+  const empPFBase   = Math.min(basicEarned, 15000);
   const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(empPFBase * 0.13);
-  const employerESI = payroll.employer_contributions?.esi ?? (esiEligible ? (salaryStructure.employer_esi_contribution || Math.round(grossEarned * 0.0325)) : 0);
+  const employerESI = payroll.employer_contributions?.esi ?? (basicEarned <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(basicEarned * 0.0325)) : 0);
   // gratuity removed from payslip
 
   const month = monthNames[(payroll.month || 1) - 1];

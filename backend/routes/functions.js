@@ -701,20 +701,14 @@ router.post('/:name', async (req, res) => {
         const lopAmount = totalLOPDays > 0 ? Math.round((gross / workingDays) * totalLOPDays) : 0;
         const grossAfterLop = Math.max(0, gross - lopAmount);
 
-        // ── PF: 12% on EARNED basic (pro-rated for LOP), capped at ₹15,000 ──────────
-        // Standard rule: PF is on wages actually paid, not the full monthly CTC.
-        // earnedBasic = Basic × (workingDays − LOPdays) / workingDays
-        const earnedBasic = Math.max(0, Math.round(basic * (workingDays - totalLOPDays) / workingDays));
-        const pfBase = Math.min(earnedBasic, 15000);
+        // PF: 12% employee / 13% employer on basic, capped at ₹15,000
+        const pfBase = Math.min(basic, 15000);
         const pf     = Math.round(pfBase * 0.12);
         const empPF  = Math.round(pfBase * 0.13);
 
-        // ── ESI: eligibility on FULL gross; contribution on EARNED gross ─────────────
-        // Eligibility: if the employee's fixed monthly gross > ₹21,000, not applicable.
-        // Contribution = 0.75% of actual gross paid this month (after LOP deduction).
-        const esiEligible = gross <= 21000;
-        const esi    = esiEligible ? Math.round(grossAfterLop * 0.0075) : 0;
-        const empESI = esiEligible ? Math.round(grossAfterLop * 0.0325) : 0;
+        // ESI: eligibility on basic; 0.75% employee / 3.25% employer on basic
+        const esi    = basic <= 21000 ? Math.round(basic * 0.0075) : 0;
+        const empESI = basic <= 21000 ? Math.round(basic * 0.0325) : 0;
 
         const pt = calcProfessionalTax(grossAfterLop, emp.work_location || emp.state || 'UTTAR PRADESH');
         // Bonus / VPP based on annual CTC
@@ -1497,21 +1491,17 @@ router.post('/:name', async (req, res) => {
           ? Math.round((grossMonthly / workingDays) * totalLOPDays)
           : 0;
 
-        // ── PF: 12% on EARNED basic (pro-rated for LOP), capped at ₹15,000 ─────────
-        // PF is on wages actually paid, not the full monthly CTC.
-        const earnedBasic = Math.max(0, Math.round(basic * (workingDays - totalLOPDays) / workingDays));
-        const pfBase  = Math.min(earnedBasic, 15000);
+        // PF: 12% employee / 13% employer on basic, capped at ₹15,000
+        const pfBase  = Math.min(basic, 15000);
         const pfEmp   = pr?.deductions?.pf  ?? Math.round(pfBase * 0.12);
         const pfEmpr  = pr?.employer_contributions?.pf  ?? Math.round(pfBase * 0.13);
 
-        // ── ESI: eligibility on full monthly gross; contribution on earned gross ───
-        // If employee's fixed monthly gross > ₹21,000: not eligible for ESI.
-        const esiEligible  = grossMonthly <= 21000;
-        const grossEarned  = grossMonthly - lop;
-        const esiEmp  = pr?.deductions?.esi  ?? (esiEligible ? Math.round(grossEarned * 0.0075) : 0);
-        const esiEmpr = pr?.employer_contributions?.esi ?? (esiEligible ? Math.round(grossEarned * 0.0325) : 0);
+        // ESI: eligibility on basic; 0.75% employee / 3.25% employer on basic
+        const esiEmp  = pr?.deductions?.esi  ?? (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
+        const esiEmpr = pr?.employer_contributions?.esi ?? (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
 
-        // Professional Tax: on earned gross; state-wise slab
+        // Professional Tax: state-wise slab on earned gross
+        const grossEarned = grossMonthly - lop;
         const pt = pr?.deductions?.pt ?? calcProfessionalTax(grossEarned, emp.work_location || emp.state || 'UTTAR PRADESH');
 
         const totalDed = pfEmp + esiEmp + pt + lop;
