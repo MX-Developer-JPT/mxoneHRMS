@@ -76,11 +76,9 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const lopDeduction = deductions.lop ?? payroll.loss_of_pay_amount
     ?? (lopDays > 0 ? Math.round(grossSalary * lopDays / calendarDays) : 0);
 
-  // ── PF: proportional — earned basic = basic × payDays / calendarDays ─────────
-  // PF wages capped at ₹15,000; 12% employee / 13% employer
-  const earnedBasicForPF = Math.round(basicEarned * payDays / calendarDays);
-  const pfBase     = Math.min(earnedBasicForPF, 15000);
-  const pfComputed = Math.round(pfBase * 0.12);
+  // PF: cap basic at ₹15,000 first, then prorate by days worked
+  const monthlyPFBase = Math.min(basicEarned, 15000);
+  const pfComputed  = Math.round(monthlyPFBase * 0.12 * payDays / calendarDays);
   const pfDeduction = deductions.pf || pfComputed;
 
   // ── ESI: eligibility on full monthly basic; deduction on earned basic ─────────
@@ -95,8 +93,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const netSalary = payroll.net_salary || (grossSalary - totalDeductions);
 
   // Employer contributions
-  const empPFBase   = Math.min(earnedBasicForPF, 15000);
-  const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(empPFBase * 0.13);
+  const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(monthlyPFBase * 0.13 * payDays / calendarDays);
   const employerESI = payroll.employer_contributions?.esi ?? (basicEarned <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(earnedBasicForESI * 0.0325)) : 0);
   // gratuity removed from payslip
 

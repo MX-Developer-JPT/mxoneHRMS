@@ -703,12 +703,11 @@ router.post('/:name', async (req, res) => {
         const lopAmount    = totalLOPDays > 0 ? Math.round(gross * totalLOPDays / calendarDays) : 0;
         const grossAfterLop = Math.max(0, gross - lopAmount);
 
-        // ── PF: same proportional rule — earned basic = basic × payDays / calendarDays ──
-        // PF wages capped at ₹15,000; 12% employee / 13% employer
-        const earnedBasic = Math.round(basic * payDays / calendarDays);
-        const pfBase = Math.min(earnedBasic, 15000);
-        const pf     = Math.round(pfBase * 0.12);
-        const empPF  = Math.round(pfBase * 0.13);
+        // PF: cap basic at ₹15,000 first, then prorate by days worked
+        // monthlyPF = 12% × min(basic, 15000);  Final PF = monthlyPF × payDays / calendarDays
+        const monthlyPFBase = Math.min(basic, 15000);
+        const pf    = Math.round(monthlyPFBase * 0.12 * payDays / calendarDays);
+        const empPF = Math.round(monthlyPFBase * 0.13 * payDays / calendarDays);
 
         // ── ESI: eligibility on full monthly basic; deduction on earned basic ──────
         const earnedBasicForESI = Math.round(basic * payDays / calendarDays);
@@ -1484,11 +1483,10 @@ router.post('/:name', async (req, res) => {
           ? Math.round(grossMonthly * totalLOPDays / calendarDaysSS)
           : 0;
 
-        // ── PF: proportional on earned basic (basic × payDays / calendarDays) ─────
-        const earnedBasicSS = Math.round(basic * payDaysSS / calendarDaysSS);
-        const pfBase  = Math.min(earnedBasicSS, 15000);
-        const pfEmp   = pr?.deductions?.pf  ?? Math.round(pfBase * 0.12);
-        const pfEmpr  = pr?.employer_contributions?.pf  ?? Math.round(pfBase * 0.13);
+        // PF: cap basic at ₹15,000 first, then prorate by days worked
+        const monthlyPFBaseSS = Math.min(basic, 15000);
+        const pfEmp  = pr?.deductions?.pf               ?? Math.round(monthlyPFBaseSS * 0.12 * payDaysSS / calendarDaysSS);
+        const pfEmpr = pr?.employer_contributions?.pf   ?? Math.round(monthlyPFBaseSS * 0.13 * payDaysSS / calendarDaysSS);
 
         // ── ESI: eligibility on full monthly basic; deduction on earned basic ─────
         const earnedBasicESI = Math.round(basic * payDaysSS / calendarDaysSS);
