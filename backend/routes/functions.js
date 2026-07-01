@@ -657,17 +657,14 @@ router.post('/:name', async (req, res) => {
         attByUser[r.user_id][rec.date] = rec;
       }
 
-      // Calendar dates for this month — only Sundays are non-working (Sat is a working day)
+      // All calendar days (including Sundays) are working days at Maxvolt
       const calendarDays = new Date(y_int, m_int, 0).getDate();
       const payMonthDates = [];
       for (let d = 1; d <= calendarDays; d++) {
         const ds = `${y_int}-${String(m_int).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-        const dow = new Date(ds).getDay();
-        payMonthDates.push({ ds, isSunday: dow === 0 });
+        payMonthDates.push({ ds });
       }
-      // Sundays are paid days off; Saturdays are working days
-      const sundaysInMonth  = payMonthDates.filter(d => d.isSunday).length;
-      const workingDays     = calendarDays - sundaysInMonth;  // e.g. 30 - 4 = 26
+      const workingDays = calendarDays;  // 30 or 31 — all days are working days
 
       let processed = 0;
       for (const emp of employees) {
@@ -678,14 +675,13 @@ router.post('/:name', async (req, res) => {
         const basic = ss?.basic_salary||0; const hra=ss?.hra||0; const conv=ss?.conveyance||0; const spec=ss?.special_allowance||0;
         const gross = basic+hra+conv+spec;
 
-        // ── Attendance tally: day-by-day; Sunday = paid off (not absent); missing weekday/Sat = absent ──
+        // ── Attendance tally: day-by-day; all days are working days; missing any day = absent ──
         const attByDate = attByUser[emp.user_id] || {};
         let presentDays = 0, halfDays = 0, absentDays = 0;
-        for (const { ds, isSunday } of payMonthDates) {
-          if (isSunday) continue;                              // Sunday: paid holiday, skip
+        for (const { ds } of payMonthDates) {
           const rec = attByDate[ds];
           if (!rec) {
-            absentDays++;                                      // no record on Mon–Sat = absent
+            absentDays++;                                      // no record on any day = absent
           } else {
             const s = rec.status;
             if (s === 'half_day')                                              { presentDays += 0.5; halfDays++; }
@@ -1412,16 +1408,14 @@ router.post('/:name', async (req, res) => {
         attMapSS[a.user_id][a.date] = a;
       }
 
-      // Calendar dates — only Sundays are non-working (Saturdays are working days)
+      // All calendar days (including Sundays) are working days at Maxvolt
       const calendarDaysSS = new Date(y, m, 0).getDate();
       const monthDates = [];
       for (let d = 1; d <= calendarDaysSS; d++) {
         const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-        const dow = new Date(ds).getDay();
-        monthDates.push({ ds, isSunday: dow === 0 });
+        monthDates.push({ ds });
       }
-      const sundaysInMonthSS = monthDates.filter(d => d.isSunday).length;
-      const workingDays      = calendarDaysSS - sundaysInMonthSS;
+      const workingDays = calendarDaysSS;  // 30 or 31 — all days are working days
 
       const ssAllRows2 = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND status='active'");
       const ssMapSS = {};
@@ -1433,14 +1427,13 @@ router.post('/:name', async (req, res) => {
         const hasAtt    = Object.keys(attByDate).length > 0;
         const ss        = ssMapSS[emp.user_id] || {};
 
-        // ── Attendance tally — day-by-day; Sunday = paid off; missing Mon–Sat = absent ──
+        // ── Attendance tally — day-by-day; all days are working days; missing any day = absent ──
         let daysPresent = 0, daysHalfDay = 0, daysAbsent = 0;
         if (hasAtt) {
-          for (const { ds, isSunday } of monthDates) {
-            if (isSunday) continue;                           // Sunday: paid day off
+          for (const { ds } of monthDates) {
             const rec = attByDate[ds];
             if (!rec) {
-              daysAbsent++;                                   // no record Mon–Sat = absent
+              daysAbsent++;                                   // no record on any day = absent
             } else {
               const s = rec.status;
               if (s === 'half_day') {

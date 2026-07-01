@@ -49,9 +49,9 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const bonusFixed = salaryStructure.performance_bonus || 0;
   const grossFixed = basicFixed + hraFixed + conveyanceFixed;
 
-  // Days — calendar_days is the LOP divisor; working_days = calendar - Sundays
+  // All calendar days are working days at Maxvolt (Sundays included)
   const calendarDays = payroll.calendar_days || 30;    // e.g. 31 for March, 30 for June
-  const workingDays  = payroll.working_days  || 26;    // calendar days - Sundays
+  const workingDays  = payroll.working_days  || calendarDays;  // equals calendar days (30 or 31)
   const presentDays  = payroll.present_days  || workingDays;
   const halfDays     = payroll.half_days     || 0;
   const leaveDays    = payroll.leave_days    || 0;
