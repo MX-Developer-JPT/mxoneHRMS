@@ -42,12 +42,12 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const deductions = payroll.deductions || {};
   const allowances = payroll.allowances || {};
 
-  // Fixed (from salary structure)
-  const basicFixed = salaryStructure.basic_salary || 0;
-  const hraFixed = salaryStructure.hra || 0;
-  const conveyanceFixed = salaryStructure.conveyance || 0;
-  const bonusFixed = salaryStructure.performance_bonus || 0;
-  const grossFixed = basicFixed + hraFixed + conveyanceFixed;
+  // Fixed — full monthly amounts straight from salary structure
+  const basicFixed      = salaryStructure.basic_salary || 0;
+  const hraFixed        = salaryStructure.hra          || 0;
+  const conveyanceFixed = salaryStructure.conveyance   || 0;
+  const bonusFixed      = salaryStructure.performance_bonus || 0;
+  const grossFixed      = basicFixed + hraFixed + conveyanceFixed;
 
   // All calendar days are working days at Maxvolt (Sundays included)
   const calendarDays = payroll.calendar_days || 30;    // e.g. 31 for March, 30 for June
@@ -59,11 +59,17 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const absentDays   = payroll.absent_days   ?? Math.floor(lopDays);
   const payDays      = payroll.pay_days      ?? (calendarDays - lopDays);
 
-  // Payslip shows full monthly earnings; LOP appears as a deduction line
-  const basicEarned      = payroll.basic_salary || basicFixed;
-  const hraEarned        = payroll.hra          || hraFixed;
-  const conveyanceEarned = allowances.conveyance || payroll.conveyance || conveyanceFixed;
-  const grossSalary      = payroll.gross_salary  || (basicEarned + hraEarned + conveyanceEarned);
+  // Earned — prorated by days present (stored by processAdvancedPayroll; fallback: fixed × payDays/calendarDays)
+  const basicEarned      = payroll.basic_salary != null
+    ? payroll.basic_salary
+    : Math.round(basicFixed * payDays / calendarDays);
+  const hraEarned        = payroll.hra != null
+    ? payroll.hra
+    : Math.round(hraFixed * payDays / calendarDays);
+  const conveyanceEarned = (allowances.conveyance ?? payroll.conveyance) != null
+    ? (allowances.conveyance ?? payroll.conveyance)
+    : Math.round(conveyanceFixed * payDays / calendarDays);
+  const grossSalary      = payroll.gross_salary  ?? (basicEarned + hraEarned + conveyanceEarned);
 
   const arrear   = payroll.arrear    || 0;
   const ytdGross = payroll.ytd_gross || grossSalary;

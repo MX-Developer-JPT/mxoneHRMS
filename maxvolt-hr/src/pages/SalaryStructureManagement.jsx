@@ -325,12 +325,15 @@ export default function SalaryStructureManagement() {
     setExportingStructures(true);
     try {
       const res = await base44.functions.invoke('exportSalaryStructures', {});
-      if (res?.base64) {
-        const bytes = Uint8Array.from(atob(res.base64), c => c.charCodeAt(0));
+      const d = res?.data ?? res;
+      if (d?.base64) {
+        const bytes = Uint8Array.from(atob(d.base64), c => c.charCodeAt(0));
         const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = res.filename || 'Salary_Structures.xlsx'; a.click();
-        toast.success(`Exported ${res.total || ''} salary structures`);
-      }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = d.filename || 'Salary_Structures.xlsx'; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toast.success(`Exported ${d.total || ''} salary structures`);
+      } else { toast.error('Export failed: no data returned'); }
     } catch (e) { toast.error('Export failed: ' + (e.message || e)); }
     setExportingStructures(false);
   };

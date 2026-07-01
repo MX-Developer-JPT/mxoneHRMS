@@ -136,11 +136,15 @@ export default function Employees() {
     setExporting(true);
     try {
       const res = await base44.functions.invoke('exportEmployeeDirectory', {});
-      if (res?.base64) {
-        const bytes = Uint8Array.from(atob(res.base64), c => c.charCodeAt(0));
+      const d = res?.data ?? res;
+      if (d?.base64) {
+        const bytes = Uint8Array.from(atob(d.base64), c => c.charCodeAt(0));
         const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = res.filename || 'Employee_Directory.xlsx'; a.click();
-        URL.revokeObjectURL(a.href);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = d.filename || 'Employee_Directory.xlsx'; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } else {
+        console.error('Export: no base64 in response', res);
       }
     } catch (e) {
       console.error('Export failed:', e);

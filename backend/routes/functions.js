@@ -1405,6 +1405,100 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`Attendance_Muster_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
     }
 
+    /* ── Bulk Document Download (ZIP) ───────────────────── */
+    case 'bulkDownloadDocuments': {
+      const { user_ids, document_types } = body;
+
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const empMap = Object.fromEntries(employees.map(e => [e.user_id, e]));
+
+      let docs = parseEntities(await all("SELECT data FROM entities WHERE type='Document'"));
+      if (user_ids?.length)       docs = docs.filter(d => user_ids.includes(d.user_id));
+      if (document_types?.length) docs = docs.filter(d => document_types.includes(d.document_type));
+      docs = docs.filter(d => d.document_url);
+
+      if (!docs.length) return res.json({ success: false, error: 'No documents found matching the selected filters' });
+      if (docs.length > 80) docs = docs.slice(0, 80);
+
+      // Pure-Node CRC32 (no external dep)
+      const _crc32Table = (() => {
+        const t = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+          let c = i;
+          for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+          t[i] = c;
+        }
+        return t;
+      })();
+      const crc32 = (buf) => {
+        let crc = 0xFFFFFFFF;
+        for (let i = 0; i < buf.length; i++) crc = (crc >>> 8) ^ _crc32Table[(crc ^ buf[i]) & 0xFF];
+        return (crc ^ 0xFFFFFFFF) >>> 0;
+      };
+
+      // Minimal ZIP builder using built-in zlib (no extra package)
+      const zlibNode = require('zlib');
+      const buildZip = (files) => {
+        const parts = [], centralDir = [];
+        let offset = 0;
+        for (const { name, data } of files) {
+          const nb = Buffer.from(name, 'utf8');
+          const comp = zlibNode.deflateRawSync(data, { level: 6 });
+          const crc  = crc32(data);
+          const lh = Buffer.alloc(30 + nb.length);
+          lh.writeUInt32LE(0x04034b50,0); lh.writeUInt16LE(20,4);  lh.writeUInt16LE(0,6);
+          lh.writeUInt16LE(8,8);          lh.writeUInt16LE(0,10);  lh.writeUInt16LE(0,12);
+          lh.writeUInt32LE(crc,14);       lh.writeUInt32LE(comp.length,18);
+          lh.writeUInt32LE(data.length,22); lh.writeUInt16LE(nb.length,26); lh.writeUInt16LE(0,28);
+          nb.copy(lh, 30);
+          const cd = Buffer.alloc(46 + nb.length);
+          cd.writeUInt32LE(0x02014b50,0); cd.writeUInt16LE(20,4);  cd.writeUInt16LE(20,6);
+          cd.writeUInt16LE(0,8);          cd.writeUInt16LE(8,10);  cd.writeUInt16LE(0,12);
+          cd.writeUInt16LE(0,14);         cd.writeUInt32LE(crc,16);
+          cd.writeUInt32LE(comp.length,20); cd.writeUInt32LE(data.length,24);
+          cd.writeUInt16LE(nb.length,28); cd.writeUInt16LE(0,30);  cd.writeUInt16LE(0,32);
+          cd.writeUInt16LE(0,34);         cd.writeUInt16LE(0,36);  cd.writeUInt32LE(0,38);
+          cd.writeUInt32LE(offset,42);    nb.copy(cd, 46);
+          parts.push(lh, comp); centralDir.push(cd);
+          offset += lh.length + comp.length;
+        }
+        const cdb  = Buffer.concat(centralDir);
+        const eocd = Buffer.alloc(22);
+        eocd.writeUInt32LE(0x06054b50,0); eocd.writeUInt16LE(0,4);  eocd.writeUInt16LE(0,6);
+        eocd.writeUInt16LE(files.length,8); eocd.writeUInt16LE(files.length,10);
+        eocd.writeUInt32LE(cdb.length,12);  eocd.writeUInt32LE(offset,16); eocd.writeUInt16LE(0,20);
+        return Buffer.concat([...parts, cdb, eocd]);
+      };
+
+      // Fetch each document via URL
+      const files = [];
+      const seen  = {};
+      for (const doc of docs) {
+        try {
+          const resp = await fetch(doc.document_url, { signal: AbortSignal.timeout(15000) });
+          if (!resp.ok) continue;
+          const buf = Buffer.from(await resp.arrayBuffer());
+          const ct  = resp.headers.get('content-type') || '';
+          const ext = ct.includes('pdf') ? '.pdf' : ct.includes('png') ? '.png'
+            : (ct.includes('jpeg') || ct.includes('jpg')) ? '.jpg'
+            : ct.includes('webp') ? '.webp' : '';
+          const emp     = empMap[doc.user_id];
+          const empName = (emp?.display_name || emp?.employee_code || 'Unknown').replace(/[^a-zA-Z0-9]/g, '_');
+          const docType = (doc.document_type || 'document').replace(/[^a-zA-Z0-9]/g, '_');
+          const docName = (doc.document_name || '').replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40);
+          let fname = `${empName}/${docType}_${docName}${ext}`;
+          if (seen[fname]) { seen[fname]++; fname = `${empName}/${docType}_${docName}_${seen[fname]}${ext}`; }
+          else seen[fname] = 1;
+          files.push({ name: fname, data: buf });
+        } catch { /* skip failed/unreachable documents */ }
+      }
+
+      if (!files.length) return res.json({ success: false, error: 'Could not fetch any document files. URLs may be unavailable.' });
+
+      const zipBuf = buildZip(files);
+      return res.json({ success: true, base64: zipBuf.toString('base64'), filename: `Employee_Documents_${new Date().toISOString().slice(0,10)}.zip`, total: files.length });
+    }
+
     /* ── Salary Structure Export (styled Excel) ──────────── */
     case 'exportSalaryStructures': {
       const ExcelJS = require('exceljs');
