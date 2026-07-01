@@ -9,7 +9,9 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DollarSign, Users, Plus, Edit, Printer, Search, TrendingUp, Building, ChevronDown, ChevronUp, Upload, FileSpreadsheet, AlertCircle, CheckCircle2, Download } from 'lucide-react';
+import { DollarSign, Users, Plus, Edit, Printer, Search, TrendingUp, Building, ChevronDown, ChevronUp, Upload, FileSpreadsheet, AlertCircle, CheckCircle2, Download, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
@@ -255,6 +257,7 @@ export default function SalaryStructureManagement() {
 
   // Import state
   const [showImportDialog, setShowImportDialog] = useState(false);
+  const [empSelectOpen, setEmpSelectOpen] = useState(false);
   const [importRows, setImportRows] = useState([]);
   const [importEffectiveFrom, setImportEffectiveFrom] = useState(new Date().toISOString().split('T')[0]);
   const [importing, setImporting] = useState(false);
@@ -695,16 +698,45 @@ export default function SalaryStructureManagement() {
             <div className="grid md:grid-cols-3 gap-4 p-4 bg-blue-50 rounded-lg">
               <div>
                 <Label>Employee *</Label>
-                <Select value={selectedEmployee} onValueChange={setSelectedEmployee} disabled={!!editingStructure}>
-                  <SelectTrigger><SelectValue placeholder="Select employee" /></SelectTrigger>
-                  <SelectContent>
-                    {employees.filter(e => e.status === 'active').map(emp => (
-                      <SelectItem key={emp.user_id} value={emp.user_id}>
-                        {emp.display_name || emp.user?.full_name} ({emp.employee_code})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {editingStructure ? (
+                  <div className="h-9 px-3 py-2 border border-input rounded-md bg-muted text-sm text-muted-foreground flex items-center">
+                    {(() => { const e = employees.find(e => e.user_id === selectedEmployee); return e ? `${e.display_name || e.user?.full_name} (${e.employee_code})` : 'Selected'; })()}
+                  </div>
+                ) : (
+                  <Popover open={empSelectOpen} onOpenChange={setEmpSelectOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                        <span className={selectedEmployee ? 'text-foreground' : 'text-muted-foreground'}>
+                          {selectedEmployee ? (() => { const e = employees.find(e => e.user_id === selectedEmployee); return e ? `${e.display_name || e.user?.full_name} (${e.employee_code})` : 'Select employee'; })() : 'Select employee'}
+                        </span>
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[320px] p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search employee..." />
+                        <CommandList>
+                          <CommandEmpty>No employee found.</CommandEmpty>
+                          <CommandGroup>
+                            {employees.filter(e => e.status === 'active').map(emp => (
+                              <CommandItem
+                                key={emp.user_id}
+                                value={`${emp.display_name || emp.user?.full_name || ''} ${emp.employee_code || ''} ${emp.department || ''}`}
+                                onSelect={() => { setSelectedEmployee(emp.user_id); setEmpSelectOpen(false); }}
+                              >
+                                <Check className={`mr-2 h-4 w-4 ${selectedEmployee === emp.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                                <div>
+                                  <p className="font-medium">{emp.display_name || emp.user?.full_name}</p>
+                                  <p className="text-xs text-muted-foreground">{emp.employee_code} · {emp.department}</p>
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                )}
               </div>
               <div>
                 <Label>Effective From *</Label>

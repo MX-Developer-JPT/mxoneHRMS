@@ -7,7 +7,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Upload, Eye, Plus, Search, User, ChevronDown, ChevronRight, Download, FolderDown, X, Filter } from 'lucide-react';
+import { FileText, Upload, Eye, Plus, Search, User, ChevronDown, ChevronRight, Download, FolderDown, X, Filter, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import DocViewerModal from '@/components/DocViewerModal';
 import { toast } from 'sonner';
 import { safeDate } from '@/lib/dateUtils';
@@ -52,6 +54,7 @@ export default function EmployeeDocuments() {
   const [bulkTypeFilter, setBulkTypeFilter] = useState('');  // doc type or ''
   const [downloading,    setDownloading]    = useState(false);
   const [showBulkPanel,  setShowBulkPanel]  = useState(false);
+  const [bulkEmpOpen, setBulkEmpOpen] = useState(false);
 
   useEffect(() => { loadData(); }, []);
 
@@ -173,21 +176,45 @@ export default function EmployeeDocuments() {
           <Card className="border-blue-200 bg-blue-50">
             <CardContent className="pt-4 pb-4">
               <div className="flex flex-wrap items-end gap-4">
-                <div className="flex-1 min-w-[180px]">
+                <div className="flex-1 min-w-[200px]">
                   <Label className="text-xs font-medium text-gray-600 mb-1 block">Employee (optional)</Label>
-                  <Select value={bulkEmpFilter} onValueChange={setBulkEmpFilter}>
-                    <SelectTrigger className="bg-white">
-                      <SelectValue placeholder="All employees" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="">All employees</SelectItem>
-                      {activeEmployees.map(emp => (
-                        <SelectItem key={emp.user_id} value={emp.user_id}>
-                          {getUserName(emp.user_id)} {emp.employee_code ? `(${emp.employee_code})` : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Popover open={bulkEmpOpen} onOpenChange={setBulkEmpOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-white px-3 py-2 text-sm h-9 hover:bg-accent">
+                        <span className={bulkEmpFilter ? 'text-foreground' : 'text-muted-foreground'}>
+                          {bulkEmpFilter ? (() => { const e = activeEmployees.find(e => e.user_id === bulkEmpFilter); return e ? `${getUserName(e.user_id)}${e.employee_code ? ` (${e.employee_code})` : ''}` : 'All employees'; })() : 'All employees'}
+                        </span>
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[300px] p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search employee..." />
+                        <CommandList>
+                          <CommandEmpty>No employee found.</CommandEmpty>
+                          <CommandGroup>
+                            <CommandItem value="all employees" onSelect={() => { setBulkEmpFilter(''); setBulkEmpOpen(false); }}>
+                              <Check className={`mr-2 h-4 w-4 ${!bulkEmpFilter ? 'opacity-100' : 'opacity-0'}`} />
+                              All employees
+                            </CommandItem>
+                            {activeEmployees.map(emp => (
+                              <CommandItem
+                                key={emp.user_id}
+                                value={`${getUserName(emp.user_id)} ${emp.employee_code || ''} ${emp.department || ''}`}
+                                onSelect={() => { setBulkEmpFilter(emp.user_id); setBulkEmpOpen(false); }}
+                              >
+                                <Check className={`mr-2 h-4 w-4 ${bulkEmpFilter === emp.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                                <div>
+                                  <p className="font-medium">{getUserName(emp.user_id)}</p>
+                                  <p className="text-xs text-muted-foreground">{emp.employee_code} · {emp.department}</p>
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                 </div>
 
                 <div className="flex-1 min-w-[180px]">

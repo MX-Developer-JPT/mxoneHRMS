@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { base44 } from '@/api/base44Client';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, Activity, CalendarDays, List } from 'lucide-react';
+import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, BarChart3, CalendarDays, List, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { safeTime } from '@/lib/dateUtils';
 import { toast } from 'sonner';
@@ -36,7 +38,20 @@ function getDisplayStatus(record) {
   return s || 'absent';
 }
 
+const EMP_STATUS_CAL_COLORS = {
+  present: 'bg-green-100 border-green-300 text-green-800',
+  on_duty: 'bg-teal-100 border-teal-300 text-teal-800',
+  work_from_home: 'bg-cyan-100 border-cyan-300 text-cyan-800',
+  half_day: 'bg-yellow-100 border-yellow-300 text-yellow-800',
+  short_attendance: 'bg-orange-100 border-orange-300 text-orange-800',
+  leave: 'bg-blue-100 border-blue-300 text-blue-800',
+  holiday: 'bg-purple-100 border-purple-300 text-purple-800',
+  week_off: 'bg-gray-100 border-gray-200 text-gray-500',
+  absent: 'bg-red-100 border-red-300 text-red-700',
+};
+
 export default function AllAttendance() {
+  const navigate = useNavigate();
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [attendanceMap, setAttendanceMap] = useState({});
   const [employees, setEmployees] = useState([]);
@@ -52,6 +67,7 @@ export default function AllAttendance() {
   const [calMonthRecords, setCalMonthRecords] = useState([]); // all records for the month (calendar view)
   const [silentRefreshing, setSilentRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [empCal, setEmpCal] = useState({ open: false, emp: null, year: new Date().getFullYear(), month: new Date().getMonth() + 1, records: [], leaveBalances: [], loading: false });
 
   useEffect(() => { loadData(false); }, [date]);
 
@@ -227,6 +243,39 @@ export default function AllAttendance() {
     } catch (e) { toast.error('Export error: ' + e.message); }
   };
 
+  const openEmployeeCalendar = async (emp, e) => {
+    e?.stopPropagation();
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1;
+    setEmpCal({ open: true, emp, year, month, records: [], leaveBalances: [], loading: true });
+    try {
+      const monthStart = `${year}-${String(month).padStart(2,'0')}-01`;
+      const daysInM = new Date(year, month, 0).getDate();
+      const monthEnd = `${year}-${String(month).padStart(2,'0')}-${String(daysInM).padStart(2,'0')}`;
+      const recs = await base44.entities.Attendance.filter({ user_id: emp.user_id, date: { $gte: monthStart, $lte: monthEnd } });
+      setEmpCal(prev => ({ ...prev, records: recs, loading: false }));
+    } catch {
+      setEmpCal(prev => ({ ...prev, loading: false }));
+    }
+  };
+
+  const navigateEmpCalMonth = async (delta) => {
+    const { year, month, emp } = empCal;
+    const d = new Date(year, month - 1 + delta, 1);
+    const newYear = d.getFullYear(), newMonth = d.getMonth() + 1;
+    setEmpCal(prev => ({ ...prev, year: newYear, month: newMonth, loading: true, records: [] }));
+    try {
+      const monthStart = `${newYear}-${String(newMonth).padStart(2,'0')}-01`;
+      const daysInM = new Date(newYear, newMonth, 0).getDate();
+      const monthEnd = `${newYear}-${String(newMonth).padStart(2,'0')}-${String(daysInM).padStart(2,'0')}`;
+      const recs = await base44.entities.Attendance.filter({ user_id: emp.user_id, date: { $gte: monthStart, $lte: monthEnd } });
+      setEmpCal(prev => ({ ...prev, records: recs, loading: false }));
+    } catch {
+      setEmpCal(prev => ({ ...prev, loading: false }));
+    }
+  };
+
   if (loading) return (
     <div className="flex items-center justify-center h-screen">
       <RefreshCw className="animate-spin w-6 h-6 text-blue-500 mr-2" /> Loading attendance...
@@ -243,6 +292,9 @@ export default function AllAttendance() {
             <p className="text-sm text-gray-500 mt-0.5">Biometric + Selfie attendance for all active employees</p>
           </div>
           <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => navigate('/AttendanceReports')} title="View Attendance Analytics">
+              <BarChart3 className="w-4 h-4 mr-1" /> Analytics
+            </Button>
             <BiometricSyncStatus />
             <Button variant="outline" size="sm" onClick={handleMarkAbsent} disabled={markingAbsent} title="Mark employees without attendance as Absent">
               <UserX className="w-4 h-4 mr-1" /> {markingAbsent ? 'Marking...' : 'Mark Absent'}
@@ -553,6 +605,13 @@ export default function AllAttendance() {
                                 <Clock className="w-3 h-3" /> OT {Math.floor(record.overtime_minutes/60)}h{record.overtime_minutes%60>0?`${record.overtime_minutes%60}m`:''}
                               </span>
                             )}
+                            <button
+                              onClick={(e) => openEmployeeCalendar(emp, e)}
+                              className="p-1 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                              title="View individual calendar"
+                            >
+                              <CalendarDays className="w-4 h-4" />
+                            </button>
                             <Badge className={`text-xs border ${STATUS_COLORS[displayStatus] || 'bg-gray-100 text-gray-700'}`}>
                               {displayStatus.replace('_', ' ')}
                             </Badge>
@@ -575,6 +634,129 @@ export default function AllAttendance() {
           )}
         </div>}
       </div>
+
+      {/* Employee Individual Calendar Dialog */}
+      <Dialog open={empCal.open} onOpenChange={open => setEmpCal(prev => ({ ...prev, open }))}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CalendarDays className="w-5 h-5 text-blue-500" />
+              {empCal.emp?.display_name || empCal.emp?._user?.full_name || 'Employee'} — Attendance Calendar
+            </DialogTitle>
+          </DialogHeader>
+          {(() => {
+            const { year, month, records, loading: calLoading } = empCal;
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const firstDow = new Date(year, month - 1, 1).getDay();
+            const monthLabel = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+            const today = format(new Date(), 'yyyy-MM-dd');
+            const recMap = {};
+            records.forEach(r => { recMap[r.date?.slice(0,10)] = r; });
+
+            const weeks = [];
+            let week = Array(firstDow).fill(null);
+            for (let d = 1; d <= daysInMonth; d++) {
+              week.push(d);
+              if (week.length === 7) { weeks.push(week); week = []; }
+            }
+            if (week.length) { while (week.length < 7) week.push(null); weeks.push(week); }
+
+            const statusLabel = { present: 'P', absent: 'A', half_day: 'HD', leave: 'L', holiday: 'H', week_off: 'W', on_duty: 'OD', work_from_home: 'WFH', short_attendance: 'SA' };
+
+            const summary = { present: 0, absent: 0, leave: 0, halfDay: 0, wfh: 0, ot: 0 };
+            records.forEach(r => {
+              const s = getDisplayStatus(r);
+              if (['present','on_duty','short_attendance'].includes(s) || r.check_in_time) summary.present++;
+              else if (s === 'absent') summary.absent++;
+              else if (s === 'leave') summary.leave++;
+              else if (s === 'half_day') summary.halfDay++;
+              if (s === 'work_from_home') summary.wfh++;
+              if ((r.overtime_minutes || 0) > 0) summary.ot++;
+            });
+
+            return (
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <button onClick={() => navigateEmpCalMonth(-1)} className="p-1.5 rounded-lg hover:bg-gray-100">
+                    <ChevronLeft className="w-4 h-4 text-gray-600" />
+                  </button>
+                  <span className="font-semibold text-gray-800 text-sm">{monthLabel}</span>
+                  <button onClick={() => navigateEmpCalMonth(1)} className="p-1.5 rounded-lg hover:bg-gray-100">
+                    <ChevronRight className="w-4 h-4 text-gray-600" />
+                  </button>
+                </div>
+
+                {calLoading ? (
+                  <div className="flex items-center justify-center py-10">
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-7 mb-1">
+                      {['S','M','T','W','T','F','S'].map((d, i) => (
+                        <div key={i} className={`text-center text-[10px] font-bold py-1 ${i === 0 ? 'text-red-400' : 'text-gray-400'}`}>{d}</div>
+                      ))}
+                    </div>
+                    <div className="space-y-1">
+                      {weeks.map((wk, wi) => (
+                        <div key={wi} className="grid grid-cols-7 gap-0.5">
+                          {wk.map((d, di) => {
+                            if (!d) return <div key={di} />;
+                            const ds = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                            const rec = recMap[ds];
+                            const status = rec ? getDisplayStatus(rec) : null;
+                            const colorClass = status ? (EMP_STATUS_CAL_COLORS[status] || 'bg-gray-50 border-gray-200 text-gray-500') : 'bg-white border-gray-100 text-gray-400';
+                            const isToday = ds === today;
+                            const isFuture = ds > today;
+                            const checkIn = rec?.check_in_time;
+                            const checkOut = rec?.check_out_time;
+                            const hours = rec?.working_hours;
+                            return (
+                              <div
+                                key={di}
+                                className={`border rounded text-center py-1 px-0.5 text-[10px] font-medium leading-tight ${isFuture ? 'bg-gray-50 border-gray-100 text-gray-300' : colorClass} ${isToday ? 'ring-1 ring-blue-500' : ''}`}
+                                title={rec ? `${status?.replace(/_/g,' ')}${checkIn ? ` · In: ${safeTime(checkIn)}` : ''}${checkOut ? ` · Out: ${safeTime(checkOut)}` : ''}${hours ? ` · ${hours.toFixed(1)}h` : ''}` : ''}
+                              >
+                                <div className={`font-bold text-[11px] ${isToday ? 'text-blue-600' : di === 0 ? 'text-red-400' : ''}`}>{d}</div>
+                                <div>{status ? (statusLabel[status] || status.slice(0,2).toUpperCase()) : (isFuture ? '' : '—')}</div>
+                                {hours > 0 && <div className="text-[9px] opacity-70">{hours.toFixed(1)}h</div>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Legend */}
+                    <div className="flex flex-wrap gap-2 mt-3 text-[10px]">
+                      {[['P','bg-green-100 text-green-700','Present'],['A','bg-red-100 text-red-700','Absent'],['L','bg-blue-100 text-blue-700','Leave'],['HD','bg-yellow-100 text-yellow-700','Half Day'],['WFH','bg-cyan-100 text-cyan-700','WFH'],['OD','bg-teal-100 text-teal-700','On Duty']].map(([code, cls, label]) => (
+                        <span key={code} className={`px-1.5 py-0.5 rounded border ${cls}`}>{code} {label}</span>
+                      ))}
+                    </div>
+
+                    {/* Summary */}
+                    <div className="grid grid-cols-3 gap-2 mt-3">
+                      {[
+                        { label: 'Present', value: summary.present, cls: 'text-green-700 bg-green-50' },
+                        { label: 'Absent', value: summary.absent, cls: 'text-red-700 bg-red-50' },
+                        { label: 'Leave', value: summary.leave, cls: 'text-blue-700 bg-blue-50' },
+                        { label: 'Half Day', value: summary.halfDay, cls: 'text-yellow-700 bg-yellow-50' },
+                        { label: 'WFH', value: summary.wfh, cls: 'text-cyan-700 bg-cyan-50' },
+                        { label: 'OT Days', value: summary.ot, cls: 'text-purple-700 bg-purple-50' },
+                      ].map(({ label, value, cls }) => (
+                        <div key={label} className={`rounded-lg p-2 text-center ${cls}`}>
+                          <p className="text-sm font-bold">{value}</p>
+                          <p className="text-[10px] opacity-80">{label}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
 
       <AttendanceDetailsDialog
         record={selectedRecord}

@@ -9,7 +9,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from 'sonner';
-import { Plus, UserPlus, Briefcase, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy } from 'lucide-react';
+import { Plus, UserPlus, Briefcase, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { openLetterheadPrintWindow } from '@/utils/letterhead';
 import CandidateDetailDialog from '../components/recruitment/CandidateDetailDialog';
 import CandidateScoreCard from '../components/recruitment/CandidateScoreCard';
@@ -415,6 +417,7 @@ export default function Recruitment() {
   // Stage 2: JD Scoring
   const [jobRequisitions, setJobRequisitions] = useState([]);
   const [selectedJdId, setSelectedJdId] = useState('');
+  const [jdSelectOpen, setJdSelectOpen] = useState(false);
   const [scores, setScores] = useState({}); // keyed by candidate_id
   const [scoringAll, setScoringAll] = useState(false);
   const [scoringIds, setScoringIds] = useState(new Set());
@@ -735,18 +738,39 @@ export default function Recruitment() {
             <div className="flex gap-3 flex-wrap items-end">
               <div className="flex-1 min-w-60">
                 <Label className="text-xs text-gray-500">Select Job Requisition to score candidates against</Label>
-                <Select value={selectedJdId} onValueChange={handleJdChange}>
-                  <SelectTrigger className="border-indigo-200">
-                    <SelectValue placeholder="Choose a Job Requisition..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {jobRequisitions.map(j => (
-                      <SelectItem key={j.id} value={j.id}>
-                        {j.position_title} — {j.department}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={jdSelectOpen} onOpenChange={setJdSelectOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="flex w-full items-center justify-between rounded-md border border-indigo-200 bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                      <span className={selectedJdId ? 'text-foreground' : 'text-muted-foreground'}>
+                        {selectedJdId ? (() => { const j = jobRequisitions.find(j => j.id === selectedJdId); return j ? `${j.position_title} — ${j.department}` : 'Choose a Job Requisition...'; })() : 'Choose a Job Requisition...'}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[360px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search job requisition..." />
+                      <CommandList>
+                        <CommandEmpty>No requisition found.</CommandEmpty>
+                        <CommandGroup>
+                          {jobRequisitions.map(j => (
+                            <CommandItem
+                              key={j.id}
+                              value={`${j.position_title} ${j.department || ''}`}
+                              onSelect={() => { handleJdChange(j.id); setJdSelectOpen(false); }}
+                            >
+                              <Check className={`mr-2 h-4 w-4 ${selectedJdId === j.id ? 'opacity-100' : 'opacity-0'}`} />
+                              <div>
+                                <p className="font-medium">{j.position_title}</p>
+                                <p className="text-xs text-muted-foreground">{j.department}</p>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
               {selectedJdId && (
                 <>

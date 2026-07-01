@@ -7,7 +7,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Calendar, Video, Star, Mail, Loader2, User, CheckCircle, XCircle, MessageCircle, Clock, Search } from 'lucide-react';
+import { Plus, Calendar, Video, Star, Mail, Loader2, User, CheckCircle, XCircle, MessageCircle, Clock, Search, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -30,6 +32,8 @@ export default function InterviewManagement() {
   const [rescheduleTime, setRescheduleTime] = useState('');
   const [justScheduled, setJustScheduled] = useState(null);
 
+  const [candOpen, setCandOpen] = useState(false);
+  const [interviewerOpen, setInterviewerOpen] = useState(false);
   const [formData, setFormData] = useState({
     candidate_id: '',
     interviewer_id: '',
@@ -309,38 +313,80 @@ export default function InterviewManagement() {
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <Label>Candidate *</Label>
-                  <Select value={formData.candidate_id} onValueChange={(v) => setFormData({ ...formData, candidate_id: v })} required>
-                   <SelectTrigger>
-                     <SelectValue placeholder="Select candidate" />
-                   </SelectTrigger>
-                   <SelectContent>
-                     {schedulableCandidates.map(c => (
-                       <SelectItem key={c.id} value={c.id}>
-                         {c.full_name} — {c.position_applied}
-                       </SelectItem>
-                     ))}
-                   </SelectContent>
-                  </Select>
+                  <Popover open={candOpen} onOpenChange={setCandOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                        <span className={formData.candidate_id ? 'text-foreground' : 'text-muted-foreground'}>
+                          {formData.candidate_id ? (() => { const c = schedulableCandidates.find(c => c.id === formData.candidate_id); return c ? `${c.full_name} — ${c.position_applied}` : 'Select candidate'; })() : 'Select candidate'}
+                        </span>
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[360px] p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search candidate..." />
+                        <CommandList>
+                          <CommandEmpty>No candidate found.</CommandEmpty>
+                          <CommandGroup>
+                            {schedulableCandidates.map(c => (
+                              <CommandItem
+                                key={c.id}
+                                value={`${c.full_name} ${c.position_applied || ''}`}
+                                onSelect={() => { setFormData({ ...formData, candidate_id: c.id }); setCandOpen(false); }}
+                              >
+                                <Check className={`mr-2 h-4 w-4 ${formData.candidate_id === c.id ? 'opacity-100' : 'opacity-0'}`} />
+                                <div>
+                                  <p className="font-medium">{c.full_name}</p>
+                                  <p className="text-xs text-muted-foreground">{c.position_applied}</p>
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                 </div>
 
                 {/* Interviewer Selector */}
                 <div>
                   <Label className="flex items-center gap-2"><User className="w-4 h-4" /> Interviewer *</Label>
-                  <Select value={formData.interviewer_id} onValueChange={(v) => setFormData({ ...formData, interviewer_id: v })}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select interviewer" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {interviewerOptions.map(u => {
-                        const empDet = getEmployeeDetails(u.id);
-                        return (
-                          <SelectItem key={u.id} value={u.id}>
-                            {empDet.name}{empDet.designation ? ` — ${empDet.designation}` : ''}{empDet.department ? ` (${empDet.department})` : ''}
-                          </SelectItem>
-                        );
-                      })}
-                    </SelectContent>
-                  </Select>
+                  <Popover open={interviewerOpen} onOpenChange={setInterviewerOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                        <span className={formData.interviewer_id ? 'text-foreground' : 'text-muted-foreground'}>
+                          {formData.interviewer_id ? (() => { const d = getEmployeeDetails(formData.interviewer_id); return `${d.name}${d.designation ? ` — ${d.designation}` : ''}`; })() : 'Select interviewer'}
+                        </span>
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[360px] p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search interviewer..." />
+                        <CommandList>
+                          <CommandEmpty>No interviewer found.</CommandEmpty>
+                          <CommandGroup>
+                            {interviewerOptions.map(u => {
+                              const d = getEmployeeDetails(u.id);
+                              return (
+                                <CommandItem
+                                  key={u.id}
+                                  value={`${d.name} ${d.designation || ''} ${d.department || ''}`}
+                                  onSelect={() => { setFormData({ ...formData, interviewer_id: u.id }); setInterviewerOpen(false); }}
+                                >
+                                  <Check className={`mr-2 h-4 w-4 ${formData.interviewer_id === u.id ? 'opacity-100' : 'opacity-0'}`} />
+                                  <div>
+                                    <p className="font-medium">{d.name}</p>
+                                    <p className="text-xs text-muted-foreground">{d.designation}{d.department ? ` · ${d.department}` : ''}</p>
+                                  </div>
+                                </CommandItem>
+                              );
+                            })}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                   {formData.interviewer_id && (() => {
                     const d = getEmployeeDetails(formData.interviewer_id);
                     return (
