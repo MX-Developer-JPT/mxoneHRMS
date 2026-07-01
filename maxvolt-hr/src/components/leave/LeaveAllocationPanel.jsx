@@ -6,7 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Users, User, Plus } from 'lucide-react';
+import { Users, User, Plus, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 
 const DEPARTMENTS = emp => [...new Set((emp || []).map(e => e.department).filter(Boolean))];
@@ -15,6 +17,7 @@ export default function LeaveAllocationPanel({ employees, leavePolicies }) {
   const [mode, setMode] = useState('individual'); // 'individual' | 'department'
   const [selectedDept, setSelectedDept] = useState('');
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const [lapEmpOpen, setLapEmpOpen] = useState(false);
   const [selectedPolicyId, setSelectedPolicyId] = useState('');
   const [days, setDays] = useState('');
   const [year, setYear] = useState(new Date().getFullYear());
@@ -100,16 +103,35 @@ export default function LeaveAllocationPanel({ employees, leavePolicies }) {
             {mode === 'individual' ? (
               <div className="space-y-1">
                 <Label>Employee *</Label>
-                <Select value={selectedEmployeeId} onValueChange={setSelectedEmployeeId}>
-                  <SelectTrigger><SelectValue placeholder="Select employee" /></SelectTrigger>
-                  <SelectContent>
-                    {employees.map(e => (
-                      <SelectItem key={e.user_id} value={e.user_id}>
-                        {e.display_name} {e.department ? `· ${e.department}` : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={lapEmpOpen} onOpenChange={setLapEmpOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                      <span className={selectedEmployeeId ? 'text-foreground' : 'text-muted-foreground'}>
+                        {selectedEmployeeId ? (() => { const e = employees.find(e => e.user_id === selectedEmployeeId); return e ? `${e.display_name}${e.department ? ` · ${e.department}` : ''}` : selectedEmployeeId; })() : 'Select employee'}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[300px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search employee..." />
+                      <CommandList>
+                        <CommandEmpty>No employee found.</CommandEmpty>
+                        <CommandGroup>
+                          {employees.map(e => (
+                            <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''} ${e.department || ''}`} onSelect={() => { setSelectedEmployeeId(e.user_id); setLapEmpOpen(false); }}>
+                              <Check className={`mr-2 h-4 w-4 ${selectedEmployeeId === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                              <div>
+                                <p className="font-medium">{e.display_name}</p>
+                                {e.department && <p className="text-xs text-muted-foreground">{e.department}</p>}
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
             ) : (
               <div className="space-y-1">

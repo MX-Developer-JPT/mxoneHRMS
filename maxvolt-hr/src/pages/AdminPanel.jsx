@@ -11,8 +11,10 @@ import {
   ChevronLeft, ChevronRight, Eye, Key, AlertTriangle, X, Check,
   BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2,
   Bot, Sparkles, ExternalLink, Zap, Fingerprint, Copy, RotateCcw, Globe, Code2,
-  ScrollText, Clock, Download, Settings2
+  ScrollText, Clock, Download, Settings2, ChevronsUpDown
 } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 
 const TOKEN_KEY = 'base44_access_token';
@@ -834,6 +836,7 @@ function EmployeeAttrsTab() {
   const [search, setSearch]       = useState('');
   const [editEmp, setEditEmp]     = useState(null);
   const [form, setForm]           = useState({});
+  const [adminMgrOpen, setAdminMgrOpen] = useState(false);
   const [saving, setSaving]       = useState(false);
 
   useEffect(() => {
@@ -943,15 +946,35 @@ function EmployeeAttrsTab() {
               ))}
               <div>
                 <Label className="text-xs mb-1 block">Reporting Manager</Label>
-                <Select value={form.reporting_manager || '__none__'} onValueChange={v => setForm(f => ({ ...f, reporting_manager: v }))}>
-                  <SelectTrigger><SelectValue placeholder="Select manager" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">None</SelectItem>
-                    {employees.filter(e => e.id !== editEmp.id && e.user_id).map(e => (
-                      <SelectItem key={e.id} value={e.user_id}>{getName(e.user_id)}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={adminMgrOpen} onOpenChange={setAdminMgrOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                      <span className={form.reporting_manager && form.reporting_manager !== '__none__' ? 'text-foreground' : 'text-muted-foreground'}>
+                        {form.reporting_manager && form.reporting_manager !== '__none__' ? getName(form.reporting_manager) : 'None'}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[280px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search manager..." />
+                      <CommandList>
+                        <CommandEmpty>No employee found.</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem value="none" onSelect={() => { setForm(f => ({ ...f, reporting_manager: '__none__' })); setAdminMgrOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${!form.reporting_manager || form.reporting_manager === '__none__' ? 'opacity-100' : 'opacity-0'}`} /> None
+                          </CommandItem>
+                          {employees.filter(e => e.id !== editEmp.id && e.user_id).map(e => (
+                            <CommandItem key={e.id} value={getName(e.user_id)} onSelect={() => { setForm(f => ({ ...f, reporting_manager: e.user_id })); setAdminMgrOpen(false); }}>
+                              <Check className={`mr-2 h-4 w-4 ${form.reporting_manager === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                              {getName(e.user_id)}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
             </div>
             <div className="flex gap-2 justify-end">

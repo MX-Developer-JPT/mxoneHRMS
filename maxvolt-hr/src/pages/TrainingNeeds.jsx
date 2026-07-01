@@ -6,7 +6,9 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, ArrowLeft, Search, Filter } from 'lucide-react';
+import { Plus, ArrowLeft, Search, Filter, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { format } from 'date-fns';
@@ -27,6 +29,7 @@ export default function TrainingNeeds() {
   const [editNeed, setEditNeed] = useState(null);
   const [form, setForm] = useState({ employee_id: '', department: '', skill_gap: '', description: '', priority: 'medium', source: 'other', status: 'open', notes: '' });
   const [saving, setSaving] = useState(false);
+  const [tnEmpOpen, setTnEmpOpen] = useState(false);
 
   useEffect(() => { loadData(); }, []);
 
@@ -209,13 +212,40 @@ export default function TrainingNeeds() {
             </div>
             <div>
               <label className="text-sm font-medium">Employee (if specific)</label>
-              <Select value={form.employee_id || ''} onValueChange={v => setForm({ ...form, employee_id: v })}>
-                <SelectTrigger className="mt-1"><SelectValue placeholder="Select employee (optional)" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={null}>Not specific</SelectItem>
-                  {allUsers.map(u => <SelectItem key={u.id} value={u.id}>{u.display_name || u.full_name}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Popover open={tnEmpOpen} onOpenChange={setTnEmpOpen}>
+                <PopoverTrigger asChild>
+                  <button type="button" className="mt-1 flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                    <span className={form.employee_id ? 'text-foreground' : 'text-muted-foreground'}>
+                      {form.employee_id ? (allUsers.find(u => u.id === form.employee_id)?.display_name || allUsers.find(u => u.id === form.employee_id)?.full_name || 'Employee') : 'Not specific (optional)'}
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[280px] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Search employee..." />
+                    <CommandList>
+                      <CommandEmpty>No employee found.</CommandEmpty>
+                      <CommandGroup>
+                        <CommandItem value="not specific" onSelect={() => { setForm({ ...form, employee_id: '' }); setTnEmpOpen(false); }}>
+                          <Check className={`mr-2 h-4 w-4 ${!form.employee_id ? 'opacity-100' : 'opacity-0'}`} />
+                          Not specific
+                        </CommandItem>
+                        {allUsers.map(u => (
+                          <CommandItem
+                            key={u.id}
+                            value={`${u.display_name || u.full_name || ''}`}
+                            onSelect={() => { setForm({ ...form, employee_id: u.id }); setTnEmpOpen(false); }}
+                          >
+                            <Check className={`mr-2 h-4 w-4 ${form.employee_id === u.id ? 'opacity-100' : 'opacity-0'}`} />
+                            {u.display_name || u.full_name}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

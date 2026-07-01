@@ -9,7 +9,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, Plus, Edit2, Trash2, Laptop, Monitor, Smartphone, Keyboard, Mouse, Headphones, Printer, Router, HardDrive, Usb, Cable, Search, CheckCircle2, AlertTriangle, Download, Package, Boxes, Tags, ArrowLeft, UserCheck, UserX, RotateCcw, Clock, FileText, PrinterIcon, Wrench, IndianRupee, Upload, FileSpreadsheet } from 'lucide-react';
+import { Loader2, Plus, Edit2, Trash2, Laptop, Monitor, Smartphone, Keyboard, Mouse, Headphones, Printer, Router, HardDrive, Usb, Cable, Search, CheckCircle2, AlertTriangle, Download, Package, Boxes, Tags, ArrowLeft, UserCheck, UserX, RotateCcw, Clock, FileText, PrinterIcon, Wrench, IndianRupee, Upload, FileSpreadsheet, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 import { format, isAfter, isBefore, addDays, parseISO } from 'date-fns';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
@@ -69,6 +71,9 @@ export default function AssetTracking() {
   });
   const [bulkSelected, setBulkSelected] = useState(new Set());
   const [bulkEmployeeId, setBulkEmployeeId] = useState('');
+  const [bulkEmpOpen, setBulkEmpOpen] = useState(false);
+  const [assetAssignOpen, setAssetAssignOpen] = useState({});
+  const [assetDialogEmpOpen, setAssetDialogEmpOpen] = useState(false);
   const [bulkAssigning, setBulkAssigning] = useState(false);
   const [assetForm, setAssetForm] = useState({
     asset_name: '', asset_type_id: '', serial_number: '', model_number: '',
@@ -951,16 +956,35 @@ export default function AssetTracking() {
             {bulkSelected.size > 0 && (
               <div className="flex flex-wrap items-center gap-3 mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
                 <span className="text-sm font-medium">{bulkSelected.size} selected</span>
-                <Select value={bulkEmployeeId || '_none'} onValueChange={v => v !== '_none' && setBulkEmployeeId(v)}>
-                  <SelectTrigger className="h-8 w-48 text-xs"><SelectValue placeholder="Pick employee..." /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_none">Pick employee...</SelectItem>
-                    <SelectItem value="__common__">📦 Common Asset</SelectItem>
-                    {employees.filter(e => e.status === 'active').map(e => (
-                      <SelectItem key={e.user_id} value={e.user_id}>{e.display_name} ({e.employee_code})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={bulkEmpOpen} onOpenChange={setBulkEmpOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="flex items-center justify-between rounded-md border border-input bg-background px-2 py-1 text-xs h-8 w-48 hover:bg-accent">
+                      <span className={bulkEmployeeId ? 'text-foreground truncate' : 'text-muted-foreground'}>
+                        {bulkEmployeeId === '__common__' ? '📦 Common Asset' : bulkEmployeeId ? (employees.find(e => e.user_id === bulkEmployeeId)?.display_name || bulkEmployeeId) : 'Pick employee...'}
+                      </span>
+                      <ChevronsUpDown className="ml-1 h-3 w-3 shrink-0 opacity-50" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[260px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search employee..." />
+                      <CommandList>
+                        <CommandEmpty>No employee found.</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem value="common asset" onSelect={() => { setBulkEmployeeId('__common__'); setBulkEmpOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${bulkEmployeeId === '__common__' ? 'opacity-100' : 'opacity-0'}`} /> 📦 Common Asset
+                          </CommandItem>
+                          {employees.filter(e => e.status === 'active').map(e => (
+                            <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { setBulkEmployeeId(e.user_id); setBulkEmpOpen(false); }}>
+                              <Check className={`mr-2 h-4 w-4 ${bulkEmployeeId === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                              {e.display_name} ({e.employee_code})
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
                 <Button size="sm" disabled={!bulkEmployeeId || bulkAssigning} onClick={handleBulkAssign}>
                   {bulkAssigning ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <UserCheck className="w-3 h-3 mr-1" />}
                   Assign & Print Letter
@@ -1020,17 +1044,32 @@ export default function AssetTracking() {
                             </Button>
                           </>
                         ) : (
-                          <Select value="_none" onValueChange={(v) => v !== '_none' && handleAssignEmployee(asset, v)}>
-                            <SelectTrigger className="h-7 text-xs w-32">
-                              <SelectValue placeholder="Assign..." />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="__common__">📦 Common Asset</SelectItem>
-                              {employees.filter(e => e.status === 'active').map(e => (
-                                <SelectItem key={e.user_id} value={e.user_id}>{e.display_name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <Popover open={!!assetAssignOpen[asset.id]} onOpenChange={open => setAssetAssignOpen(prev => ({ ...prev, [asset.id]: open }))}>
+                            <PopoverTrigger asChild>
+                              <button type="button" className="flex items-center justify-between rounded-md border border-input bg-background px-2 py-0.5 text-xs h-7 w-32 hover:bg-accent">
+                                <span className="text-muted-foreground truncate">Assign...</span>
+                                <ChevronsUpDown className="ml-1 h-3 w-3 shrink-0 opacity-50" />
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-[240px] p-0" align="end">
+                              <Command>
+                                <CommandInput placeholder="Search employee..." />
+                                <CommandList>
+                                  <CommandEmpty>No employee found.</CommandEmpty>
+                                  <CommandGroup>
+                                    <CommandItem value="common asset" onSelect={() => { handleAssignEmployee(asset, '__common__'); setAssetAssignOpen(prev => ({ ...prev, [asset.id]: false })); }}>
+                                      📦 Common Asset
+                                    </CommandItem>
+                                    {employees.filter(e => e.status === 'active').map(e => (
+                                      <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { handleAssignEmployee(asset, e.user_id); setAssetAssignOpen(prev => ({ ...prev, [asset.id]: false })); }}>
+                                        {e.display_name}
+                                      </CommandItem>
+                                    ))}
+                                  </CommandGroup>
+                                </CommandList>
+                              </Command>
+                            </PopoverContent>
+                          </Popover>
                         )}
                         <Button size="xs" variant="ghost" className="h-7 w-7 p-0" onClick={() => openEditAsset(asset)}><Edit2 className="w-3 h-3" /></Button>
                         <Button size="xs" variant="ghost" className="h-7 w-7 p-0 text-red-500" onClick={() => handleDeleteAsset(asset.id, asset.asset_name)}><Trash2 className="w-3 h-3" /></Button>
@@ -1078,14 +1117,38 @@ export default function AssetTracking() {
                 </Select>
               </div>
               <div><Label>Assign To</Label>
-                <Select value={assetForm.assigned_to_user_id || '_none'} onValueChange={v => setAssetForm({...assetForm, assigned_to_user_id: v === '_none' ? '' : v, status: v === '_none' ? 'available' : 'assigned'})}>
-                  <SelectTrigger><SelectValue placeholder="Select employee" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_none">Unassigned</SelectItem>
-                    <SelectItem value="__common__">📦 Common Asset (Shared)</SelectItem>
-                    {employees.filter(e => e.status === 'active').map(e => <SelectItem key={e.user_id} value={e.user_id}>{e.display_name} ({e.employee_code})</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Popover open={assetDialogEmpOpen} onOpenChange={setAssetDialogEmpOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="mt-0.5 flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                      <span className={assetForm.assigned_to_user_id ? 'text-foreground truncate' : 'text-muted-foreground'}>
+                        {assetForm.assigned_to_user_id === '__common__' ? '📦 Common Asset (Shared)' : assetForm.assigned_to_user_id ? (employees.find(e => e.user_id === assetForm.assigned_to_user_id)?.display_name || assetForm.assigned_to_user_id) : 'Unassigned'}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[280px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search employee..." />
+                      <CommandList>
+                        <CommandEmpty>No employee found.</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem value="unassigned" onSelect={() => { setAssetForm({...assetForm, assigned_to_user_id: '', status: 'available'}); setAssetDialogEmpOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${!assetForm.assigned_to_user_id ? 'opacity-100' : 'opacity-0'}`} /> Unassigned
+                          </CommandItem>
+                          <CommandItem value="common asset shared" onSelect={() => { setAssetForm({...assetForm, assigned_to_user_id: '__common__', status: 'assigned'}); setAssetDialogEmpOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${assetForm.assigned_to_user_id === '__common__' ? 'opacity-100' : 'opacity-0'}`} /> 📦 Common Asset (Shared)
+                          </CommandItem>
+                          {employees.filter(e => e.status === 'active').map(e => (
+                            <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { setAssetForm({...assetForm, assigned_to_user_id: e.user_id, status: 'assigned'}); setAssetDialogEmpOpen(false); }}>
+                              <Check className={`mr-2 h-4 w-4 ${assetForm.assigned_to_user_id === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                              {e.display_name} ({e.employee_code})
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
               <div><Label>Assignment Date</Label><Input type="date" value={assetForm.assignment_date} onChange={e => setAssetForm({...assetForm, assignment_date: e.target.value})} /></div>
               <div><Label>Return Date</Label><Input type="date" value={assetForm.return_date} onChange={e => setAssetForm({...assetForm, return_date: e.target.value})} /></div>

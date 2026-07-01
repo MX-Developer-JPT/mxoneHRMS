@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { X } from 'lucide-react';
+import { X, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 
 const KRA_OPTIONS = ['Sales & Revenue', 'Customer Satisfaction', 'Operational Efficiency', 'Team Development', 'Innovation', 'Quality', 'Compliance', 'Cost Management', 'Project Delivery', 'Other'];
 
@@ -12,6 +14,7 @@ export default function GoalAssignForm({ employees, users, reviewCycles, onSave,
     measurable_target: '', weightage: 20, start_date: '', end_date: '', review_cycle_id: ''
   });
   const [saving, setSaving] = useState(false);
+  const [goalEmpOpen, setGoalEmpOpen] = useState(false);
 
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
@@ -35,16 +38,35 @@ export default function GoalAssignForm({ employees, users, reviewCycles, onSave,
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div>
             <label className="text-sm font-medium text-gray-700">Employee *</label>
-            <Select value={form.employee_user_id} onValueChange={v => set('employee_user_id', v)}>
-              <SelectTrigger className="mt-1"><SelectValue placeholder="Select employee" /></SelectTrigger>
-              <SelectContent>
-                {(employees || []).map(emp => (
-                  <SelectItem key={emp.user_id} value={emp.user_id}>
-                    {userMap[emp.user_id]?.full_name || emp.user_id} — {emp.designation}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Popover open={goalEmpOpen} onOpenChange={setGoalEmpOpen}>
+              <PopoverTrigger asChild>
+                <button type="button" className="mt-1 flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                  <span className={form.employee_user_id ? 'text-foreground' : 'text-muted-foreground'}>
+                    {form.employee_user_id ? (() => { const e = (employees || []).find(e => e.user_id === form.employee_user_id); return e ? `${userMap[e.user_id]?.full_name || e.user_id} — ${e.designation}` : form.employee_user_id; })() : 'Select employee'}
+                  </span>
+                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[320px] p-0" align="start">
+                <Command>
+                  <CommandInput placeholder="Search employee..." />
+                  <CommandList>
+                    <CommandEmpty>No employee found.</CommandEmpty>
+                    <CommandGroup>
+                      {(employees || []).map(emp => (
+                        <CommandItem key={emp.user_id} value={`${userMap[emp.user_id]?.full_name || ''} ${emp.designation || ''} ${emp.department || ''}`} onSelect={() => { set('employee_user_id', emp.user_id); setGoalEmpOpen(false); }}>
+                          <Check className={`mr-2 h-4 w-4 ${form.employee_user_id === emp.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                          <div>
+                            <p className="font-medium">{userMap[emp.user_id]?.full_name || emp.user_id}</p>
+                            <p className="text-xs text-muted-foreground">{emp.designation} · {emp.department}</p>
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
           </div>
 
           <div className="grid grid-cols-2 gap-4">

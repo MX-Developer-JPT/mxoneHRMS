@@ -4,7 +4,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, ChevronLeft, ChevronRight, UserCheck, UserX, CalendarDays, FileText, Clock, Users } from 'lucide-react';
+import { Loader2, ChevronLeft, ChevronRight, UserCheck, UserX, CalendarDays, FileText, Clock, Users, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { createPageUrl } from '@/utils';
 import { Link } from 'react-router-dom';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isToday, isSameDay, parseISO, addMonths, subMonths } from 'date-fns';
@@ -25,6 +27,7 @@ export default function TeamCalendar() {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [calendarData, setCalendarData] = useState({ employees: [], holidays: [], attendance: {}, leaves: {} });
   const [selectedEmployee, setSelectedEmployee] = useState('all');
+  const [tcEmpOpen, setTcEmpOpen] = useState(false);
   const [selectedDepartment, setSelectedDepartment] = useState('all');
   const [departments, setDepartments] = useState([]);
   const [viewMode, setViewMode] = useState('grid'); // grid | list
@@ -187,13 +190,35 @@ export default function TeamCalendar() {
                     {departments.map(d => <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
-                  <SelectTrigger className="w-36 h-8 text-xs"><SelectValue placeholder="All Employees" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Employees</SelectItem>
-                    {filteredEmployees.map(e => <SelectItem key={e.user_id} value={e.user_id}>{e.display_name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Popover open={tcEmpOpen} onOpenChange={setTcEmpOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="flex items-center justify-between rounded-md border border-input bg-background px-2 py-1 text-xs h-8 min-w-[144px] hover:bg-accent">
+                      <span className="text-foreground truncate">
+                        {selectedEmployee === 'all' ? 'All Employees' : (filteredEmployees.find(e => e.user_id === selectedEmployee)?.display_name || selectedEmployee)}
+                      </span>
+                      <ChevronsUpDown className="ml-1 h-3 w-3 shrink-0 opacity-50" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[240px] p-0" align="end">
+                    <Command>
+                      <CommandInput placeholder="Search employee..." />
+                      <CommandList>
+                        <CommandEmpty>No employee found.</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem value="all employees" onSelect={() => { setSelectedEmployee('all'); setTcEmpOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${selectedEmployee === 'all' ? 'opacity-100' : 'opacity-0'}`} /> All Employees
+                          </CommandItem>
+                          {filteredEmployees.map(e => (
+                            <CommandItem key={e.user_id} value={`${e.display_name || ''}`} onSelect={() => { setSelectedEmployee(e.user_id); setTcEmpOpen(false); }}>
+                              <Check className={`mr-2 h-4 w-4 ${selectedEmployee === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                              {e.display_name}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
             </div>
           </CardContent>

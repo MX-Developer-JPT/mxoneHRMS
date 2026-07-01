@@ -8,7 +8,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, XCircle, RotateCcw, Clock, Filter, Users, Eye, FileText, Calendar, AlertCircle } from 'lucide-react';
+import { CheckCircle2, XCircle, RotateCcw, Clock, Filter, Users, Eye, FileText, Calendar, AlertCircle, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -42,6 +44,7 @@ export default function RegularisationApproval() {
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterEmployee, setFilterEmployee] = useState('all');
   const [filterDept, setFilterDept] = useState('all');
+  const [regEmpOpen, setRegEmpOpen] = useState(false);
   const [departments, setDepartments] = useState([]);
   const [bulkSelected, setBulkSelected] = useState([]);
 
@@ -210,13 +213,35 @@ export default function RegularisationApproval() {
                   {departments.map(d => <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <Select value={filterEmployee} onValueChange={setFilterEmployee}>
-                <SelectTrigger className="w-52 bg-white"><SelectValue placeholder="All Employees" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Employees</SelectItem>
-                  {employees.map(e => <SelectItem key={e.user_id} value={e.user_id}>{e.display_name || e.employee_code} ({e.employee_code})</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Popover open={regEmpOpen} onOpenChange={setRegEmpOpen}>
+                <PopoverTrigger asChild>
+                  <button type="button" className="flex items-center justify-between rounded-md border border-input bg-white px-3 py-2 text-sm h-9 min-w-[200px] hover:bg-accent">
+                    <span className="text-foreground">
+                      {filterEmployee === 'all' ? 'All Employees' : (employees.find(e => e.user_id === filterEmployee)?.display_name || filterEmployee)}
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[260px] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Search employee..." />
+                    <CommandList>
+                      <CommandEmpty>No employee found.</CommandEmpty>
+                      <CommandGroup>
+                        <CommandItem value="all employees" onSelect={() => { setFilterEmployee('all'); setRegEmpOpen(false); }}>
+                          <Check className={`mr-2 h-4 w-4 ${filterEmployee === 'all' ? 'opacity-100' : 'opacity-0'}`} /> All Employees
+                        </CommandItem>
+                        {employees.map(e => (
+                          <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { setFilterEmployee(e.user_id); setRegEmpOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${filterEmployee === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                            {e.display_name || e.employee_code} ({e.employee_code})
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </>
           )}
         </div>

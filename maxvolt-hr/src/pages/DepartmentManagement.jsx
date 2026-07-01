@@ -8,7 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Building2, Users, Clock, Upload, FileSpreadsheet, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Plus, Building2, Users, Clock, Upload, FileSpreadsheet, CheckCircle2, AlertCircle, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Switch } from "@/components/ui/switch";
 import { toast } from 'sonner';
 
@@ -21,6 +23,7 @@ export default function DepartmentManagement() {
   const deptImportRef = useRef(null);
   const [users, setUsers] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [deptHeadOpen, setDeptHeadOpen] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingDept, setEditingDept] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -298,24 +301,39 @@ export default function DepartmentManagement() {
 
                 <div>
                   <Label>Department Head</Label>
-                  <Select
-                    value={formData.head_user_id}
-                    onValueChange={(value) => setFormData({ ...formData, head_user_id: value })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select head" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {users.map(user => {
-                        const emp = employees.find(e => e.user_id === user.id);
-                        return (
-                          <SelectItem key={user.id} value={user.id}>
-                            {emp?.display_name || user.full_name} ({user.email})
-                          </SelectItem>
-                        );
-                      })}
-                    </SelectContent>
-                  </Select>
+                  <Popover open={deptHeadOpen} onOpenChange={setDeptHeadOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                        <span className={formData.head_user_id ? 'text-foreground' : 'text-muted-foreground'}>
+                          {formData.head_user_id ? (() => { const u = users.find(u => u.id === formData.head_user_id); const e = employees.find(e => e.user_id === formData.head_user_id); return e?.display_name || u?.full_name || formData.head_user_id; })() : 'Select head'}
+                        </span>
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[300px] p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search employee..." />
+                        <CommandList>
+                          <CommandEmpty>No employee found.</CommandEmpty>
+                          <CommandGroup>
+                            {users.map(user => {
+                              const emp = employees.find(e => e.user_id === user.id);
+                              const name = emp?.display_name || user.full_name;
+                              return (
+                                <CommandItem key={user.id} value={`${name} ${user.email}`} onSelect={() => { setFormData({ ...formData, head_user_id: user.id }); setDeptHeadOpen(false); }}>
+                                  <Check className={`mr-2 h-4 w-4 ${formData.head_user_id === user.id ? 'opacity-100' : 'opacity-0'}`} />
+                                  <div>
+                                    <p className="font-medium">{name}</p>
+                                    <p className="text-xs text-muted-foreground">{user.email}</p>
+                                  </div>
+                                </CommandItem>
+                              );
+                            })}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                 </div>
 
                 <div>

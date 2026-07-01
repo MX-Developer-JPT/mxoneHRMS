@@ -4,7 +4,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from 'sonner';
-import { Loader2, Star, Users, MessageSquare, Award, Target } from 'lucide-react';
+import { Loader2, Star, Users, MessageSquare, Award, Target, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 
 const COMPETENCIES = [
   { key: 'communication', label: 'Communication' },
@@ -63,6 +65,7 @@ export default function FeedbackSystem() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
+  const [colleagueOpen, setColleagueOpen] = useState(false);
   const [form, setForm] = useState({
     subject_user_id: '',
     relationship: '',
@@ -161,20 +164,36 @@ export default function FeedbackSystem() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Colleague *</label>
-                  <Select value={form.subject_user_id} onValueChange={v => setForm(f => ({ ...f, subject_user_id: v }))}>
-                    <SelectTrigger><SelectValue placeholder="Select colleague" /></SelectTrigger>
-                    <SelectContent>
-                      {colleagues.length === 0 ? (
-                        <SelectItem value="_none" disabled>No colleagues found</SelectItem>
-                      ) : (
-                        colleagues.map(emp => (
-                          <SelectItem key={emp.id} value={emp.user_id || emp.id}>
-                            {emp.display_name || emp.full_name || emp.email || emp.user_id}
-                          </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
+                  <Popover open={colleagueOpen} onOpenChange={setColleagueOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                        <span className={form.subject_user_id ? 'text-foreground' : 'text-muted-foreground'}>
+                          {form.subject_user_id ? (() => { const e = colleagues.find(e => (e.user_id || e.id) === form.subject_user_id); return e ? (e.display_name || e.full_name || e.email) : 'Select colleague'; })() : 'Select colleague'}
+                        </span>
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[280px] p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search colleague..." />
+                        <CommandList>
+                          <CommandEmpty>No colleagues found.</CommandEmpty>
+                          <CommandGroup>
+                            {colleagues.map(emp => (
+                              <CommandItem
+                                key={emp.id}
+                                value={`${emp.display_name || emp.full_name || emp.email || ''}`}
+                                onSelect={() => { setForm(f => ({ ...f, subject_user_id: emp.user_id || emp.id })); setColleagueOpen(false); }}
+                              >
+                                <Check className={`mr-2 h-4 w-4 ${form.subject_user_id === (emp.user_id || emp.id) ? 'opacity-100' : 'opacity-0'}`} />
+                                {emp.display_name || emp.full_name || emp.email}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Your Relationship *</label>

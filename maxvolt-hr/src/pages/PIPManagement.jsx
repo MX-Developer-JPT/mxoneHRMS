@@ -3,7 +3,9 @@ import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { AlertTriangle, Plus, X, CheckCircle, Clock, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Plus, X, CheckCircle, Clock, RefreshCw, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import UnderDevelopmentBanner from '@/components/UnderDevelopmentBanner';
 
 const STATUS_COLORS = {
@@ -28,6 +30,7 @@ export default function PIPManagement() {
     review_checkpoints: [{ review_date: '', outcome: 'pending', notes: '' }]
   });
   const [saving, setSaving] = useState(false);
+  const [pipEmpOpen, setPipEmpOpen] = useState(false);
 
   useEffect(() => { init(); }, []);
 
@@ -152,12 +155,36 @@ export default function PIPManagement() {
             <div className="p-6 space-y-5">
               <div>
                 <label className="text-sm font-medium text-gray-700">Employee *</label>
-                <Select value={form.employee_user_id} onValueChange={v => setForm(p => ({ ...p, employee_user_id: v }))}>
-                  <SelectTrigger className="mt-1"><SelectValue placeholder="Select employee" /></SelectTrigger>
-                  <SelectContent>
-                    {employees.map(e => <SelectItem key={e.user_id} value={e.user_id}>{userMap[e.user_id]?.full_name || e.user_id}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Popover open={pipEmpOpen} onOpenChange={setPipEmpOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="mt-1 flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                      <span className={form.employee_user_id ? 'text-foreground' : 'text-muted-foreground'}>
+                        {form.employee_user_id ? (userMap[form.employee_user_id]?.full_name || form.employee_user_id) : 'Select employee'}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[300px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search employee..." />
+                      <CommandList>
+                        <CommandEmpty>No employee found.</CommandEmpty>
+                        <CommandGroup>
+                          {employees.map(e => (
+                            <CommandItem
+                              key={e.user_id}
+                              value={`${userMap[e.user_id]?.full_name || ''} ${e.employee_code || ''}`}
+                              onSelect={() => { setForm(p => ({ ...p, employee_user_id: e.user_id })); setPipEmpOpen(false); }}
+                            >
+                              <Check className={`mr-2 h-4 w-4 ${form.employee_user_id === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                              {userMap[e.user_id]?.full_name || e.user_id}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
 
               <div>

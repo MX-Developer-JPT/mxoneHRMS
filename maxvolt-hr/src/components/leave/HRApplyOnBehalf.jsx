@@ -7,12 +7,15 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, UserPlus } from 'lucide-react';
+import { Loader2, UserPlus, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 import { format, differenceInDays } from 'date-fns';
 
 export default function HRApplyOnBehalf({ employees, leavePolicies, loadData, user }) {
   const [selectedEmp, setSelectedEmp] = useState('');
+  const [hrEmpOpen, setHrEmpOpen] = useState(false);
   const [balances, setBalances] = useState([]);
   const [loadingBalances, setLoadingBalances] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -143,16 +146,35 @@ export default function HRApplyOnBehalf({ employees, leavePolicies, loadData, us
           <CardContent className="space-y-4">
             <div>
               <Label>Employee *</Label>
-              <Select value={selectedEmp} onValueChange={setSelectedEmp}>
-                <SelectTrigger><SelectValue placeholder="Search employee..." /></SelectTrigger>
-                <SelectContent>
-                  {activeEmployees.map(e => (
-                    <SelectItem key={e.user_id} value={e.user_id}>
-                      {e.display_name} — {e.employee_code} ({e.department})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover open={hrEmpOpen} onOpenChange={setHrEmpOpen}>
+                <PopoverTrigger asChild>
+                  <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                    <span className={selectedEmp ? 'text-foreground' : 'text-muted-foreground'}>
+                      {selectedEmp ? (() => { const e = activeEmployees.find(e => e.user_id === selectedEmp); return e ? `${e.display_name} — ${e.employee_code}` : selectedEmp; })() : 'Search employee...'}
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[320px] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Search by name, code..." />
+                    <CommandList>
+                      <CommandEmpty>No employee found.</CommandEmpty>
+                      <CommandGroup>
+                        {activeEmployees.map(e => (
+                          <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''} ${e.department || ''}`} onSelect={() => { setSelectedEmp(e.user_id); setHrEmpOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${selectedEmp === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                            <div>
+                              <p className="font-medium">{e.display_name}</p>
+                              <p className="text-xs text-muted-foreground">{e.employee_code} · {e.department}</p>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
 
             {selectedEmp && (

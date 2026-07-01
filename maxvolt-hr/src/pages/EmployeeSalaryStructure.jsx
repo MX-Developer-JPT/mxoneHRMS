@@ -6,7 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, DollarSign, Edit } from 'lucide-react';
+import { Plus, DollarSign, Edit, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 
@@ -16,6 +18,7 @@ export default function EmployeeSalaryStructure() {
   const [salaryStructures, setSalaryStructures] = useState([]);
   const [users, setUsers] = useState([]);
   const [showForm, setShowForm] = useState(false);
+  const [salEmpOpen, setSalEmpOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -179,26 +182,44 @@ export default function EmployeeSalaryStructure() {
                   <div className="grid md:grid-cols-2 gap-4">
                     <div className="md:col-span-2">
                       <Label>Employee *</Label>
-                      <Select 
-                        value={formData.user_id} 
-                        onValueChange={(v) => setFormData({ ...formData, user_id: v })}
-                        disabled={editMode}
-                        required
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select employee" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {employees.map(emp => {
-                            const empUser = users.find(u => u.id === emp.user_id);
-                            return (
-                              <SelectItem key={emp.id} value={emp.user_id}>
-                                {empUser?.full_name} ({emp.employee_code})
-                              </SelectItem>
-                            );
-                          })}
-                        </SelectContent>
-                      </Select>
+                      {editMode ? (
+                        <div className="h-9 px-3 py-2 border border-input rounded-md bg-muted text-sm text-muted-foreground flex items-center">
+                          {(() => { const e = employees.find(e => e.user_id === formData.user_id); const u = users.find(u => u.id === formData.user_id); return e ? `${u?.full_name || ''} (${e.employee_code})` : 'Selected'; })()}
+                        </div>
+                      ) : (
+                        <Popover open={salEmpOpen} onOpenChange={setSalEmpOpen}>
+                          <PopoverTrigger asChild>
+                            <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                              <span className={formData.user_id ? 'text-foreground' : 'text-muted-foreground'}>
+                                {formData.user_id ? (() => { const e = employees.find(e => e.user_id === formData.user_id); const u = users.find(u => u.id === formData.user_id); return `${u?.full_name || ''} (${e?.employee_code || ''})`; })() : 'Select employee'}
+                              </span>
+                              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[320px] p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search employee..." />
+                              <CommandList>
+                                <CommandEmpty>No employee found.</CommandEmpty>
+                                <CommandGroup>
+                                  {employees.map(emp => {
+                                    const empUser = users.find(u => u.id === emp.user_id);
+                                    return (
+                                      <CommandItem key={emp.id} value={`${empUser?.full_name || ''} ${emp.employee_code || ''} ${emp.department || ''}`} onSelect={() => { setFormData({ ...formData, user_id: emp.user_id }); setSalEmpOpen(false); }}>
+                                        <Check className={`mr-2 h-4 w-4 ${formData.user_id === emp.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                                        <div>
+                                          <p className="font-medium">{empUser?.full_name}</p>
+                                          <p className="text-xs text-muted-foreground">{emp.employee_code} · {emp.department}</p>
+                                        </div>
+                                      </CommandItem>
+                                    );
+                                  })}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                      )}
                     </div>
 
                     <div>

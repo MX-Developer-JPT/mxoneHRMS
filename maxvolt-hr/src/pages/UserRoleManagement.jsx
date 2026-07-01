@@ -8,7 +8,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Users, Search, Shield, Pencil } from 'lucide-react';
+import { Users, Search, Shield, Pencil, ChevronsUpDown } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 
 const ROLES = ['admin', 'hr', 'management', 'employee', 'user', 'onboarding_pending', 'gate_admin'];
@@ -35,6 +37,7 @@ export default function UserRoleManagement() {
   const [editForm, setEditForm] = useState({});
   const [saving, setSaving] = useState(false);
   const [employees, setEmployees] = useState({});
+  const [managerOpen, setManagerOpen] = useState(false);
   const [departments, setDepartments] = useState([]);
 
   useEffect(() => { loadUsers(); }, []);
@@ -308,22 +311,35 @@ export default function UserRoleManagement() {
 
             <div className="space-y-2">
               <Label>Reporting Manager</Label>
-              <Select
-                value={editForm.reporting_manager_id || ''}
-                onValueChange={v => setEditForm(f => ({ ...f, reporting_manager_id: v === '_none' ? '' : v }))}
-              >
-                <SelectTrigger><SelectValue placeholder="Select reporting manager" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_none">— None —</SelectItem>
-                  {Object.values(employees)
-                    .filter(e => e.user_id !== editUser?.id)
-                    .map(e => (
-                      <SelectItem key={e.user_id} value={e.user_id}>
-                        {e.display_name || e.user_id} {e.designation ? `· ${e.designation}` : ''}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
+              <Popover open={managerOpen} onOpenChange={setManagerOpen}>
+                <PopoverTrigger asChild>
+                  <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                    <span className={editForm.reporting_manager_id ? 'text-foreground' : 'text-muted-foreground'}>
+                      {editForm.reporting_manager_id ? (Object.values(employees).find(e => e.user_id === editForm.reporting_manager_id)?.display_name || editForm.reporting_manager_id) : '— None —'}
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[300px] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Search manager..." />
+                    <CommandList>
+                      <CommandEmpty>No employee found.</CommandEmpty>
+                      <CommandGroup>
+                        <CommandItem value="none" onSelect={() => { setEditForm(f => ({ ...f, reporting_manager_id: '' })); setManagerOpen(false); }}>
+                          <Check className={`mr-2 h-4 w-4 ${!editForm.reporting_manager_id ? 'opacity-100' : 'opacity-0'}`} /> — None —
+                        </CommandItem>
+                        {Object.values(employees).filter(e => e.user_id !== editUser?.id).map(e => (
+                          <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.designation || ''}`} onSelect={() => { setEditForm(f => ({ ...f, reporting_manager_id: e.user_id })); setManagerOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${editForm.reporting_manager_id === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                            {e.display_name || e.user_id} {e.designation ? `· ${e.designation}` : ''}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
           </div>
 

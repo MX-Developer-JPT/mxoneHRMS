@@ -3,7 +3,9 @@ import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sparkles, Loader2 } from 'lucide-react';
+import { Sparkles, Loader2, ChevronsUpDown, Check } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -13,6 +15,7 @@ export default function AttendanceNarrative() {
   const [user, setUser]           = useState(null);
   const [employees, setEmployees] = useState([]);
   const [selectedUser, setSelectedUser] = useState('__self');
+  const [empNarrOpen, setEmpNarrOpen] = useState(false);
   const [month, setMonth]         = useState(new Date().getMonth() + 1);
   const [year, setYear]           = useState(new Date().getFullYear());
   const [result, setResult]       = useState(null);
@@ -66,19 +69,40 @@ export default function AttendanceNarrative() {
             {isHR && employees.length > 0 && (
               <div className="flex-1 min-w-44">
                 <label className="text-xs text-gray-500 mb-1 block">Employee</label>
-                <Select value={selectedUser} onValueChange={setSelectedUser}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__self">My Attendance</SelectItem>
-                    {employees.map(e => (
-                      <SelectItem key={e.user_id} value={String(e.user_id)}>
-                        {e.display_name || e.user_id}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={empNarrOpen} onOpenChange={setEmpNarrOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
+                      <span className="text-foreground">
+                        {selectedUser === '__self' ? 'My Attendance' : (employees.find(e => String(e.user_id) === selectedUser)?.display_name || selectedUser)}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[260px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search employee..." />
+                      <CommandList>
+                        <CommandEmpty>No employee found.</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem value="my attendance" onSelect={() => { setSelectedUser('__self'); setEmpNarrOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${selectedUser === '__self' ? 'opacity-100' : 'opacity-0'}`} />
+                            My Attendance
+                          </CommandItem>
+                          {employees.map(e => (
+                            <CommandItem
+                              key={e.user_id}
+                              value={`${e.display_name || ''} ${e.employee_code || ''}`}
+                              onSelect={() => { setSelectedUser(String(e.user_id)); setEmpNarrOpen(false); }}
+                            >
+                              <Check className={`mr-2 h-4 w-4 ${selectedUser === String(e.user_id) ? 'opacity-100' : 'opacity-0'}`} />
+                              {e.display_name || e.user_id}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
             )}
 
