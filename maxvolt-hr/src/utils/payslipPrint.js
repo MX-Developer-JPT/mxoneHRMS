@@ -51,13 +51,13 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
 
   // All calendar days are working days at Maxvolt (Sundays included)
   const calendarDays = payroll.calendar_days || 30;    // e.g. 31 for March, 30 for June
-  const workingDays  = payroll.working_days  || calendarDays;  // equals calendar days (30 or 31)
-  const presentDays  = payroll.present_days  || workingDays;
-  const halfDays     = payroll.half_days     || 0;
-  const leaveDays    = payroll.leave_days    || 0;
-  const lopDays      = payroll.loss_of_pay_days || 0;  // may be fractional e.g. 1.5
-  const absentDays   = payroll.absent_days   || Math.floor(lopDays);
-  const payDays      = payroll.pay_days      || (calendarDays - lopDays);
+  const workingDays  = payroll.working_days  ?? calendarDays;  // equals calendar days (30 or 31)
+  const presentDays  = payroll.present_days  ?? workingDays;
+  const halfDays     = payroll.half_days     ?? 0;
+  const leaveDays    = payroll.leave_days    ?? 0;
+  const lopDays      = payroll.loss_of_pay_days ?? 0;
+  const absentDays   = payroll.absent_days   ?? Math.floor(lopDays);
+  const payDays      = payroll.pay_days      ?? (calendarDays - lopDays);
 
   // Payslip shows full monthly earnings; LOP appears as a deduction line
   const basicEarned      = payroll.basic_salary || basicFixed;

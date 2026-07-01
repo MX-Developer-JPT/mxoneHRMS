@@ -95,6 +95,13 @@ export default function AllAttendance() {
       const map = {};
       dayRecords.forEach(r => { map[r.user_id] = r; });
 
+      // Only show employees who had joined by the selected date
+      const selDate = date;
+      emps = emps.filter(e => {
+        if (!e.date_of_joining) return true; // no DOJ stored → always show
+        return e.date_of_joining <= selDate;
+      });
+
       setEmployees(emps);
       setAttendanceMap(map);
       setDepartments(deptRecords.map(d => ({ value: d.name, label: d.name })));
@@ -335,6 +342,18 @@ export default function AllAttendance() {
         {/* Calendar View */}
         {viewMode === 'calendar' && (() => {
           const [yr, mo] = date.split('-').map(Number);
+          const navigateCalMonth = async (delta) => {
+            const d = new Date(yr, mo - 1 + delta, 1);
+            const newYr = d.getFullYear(), newMo = d.getMonth() + 1;
+            const newDate = `${newYr}-${String(newMo).padStart(2,'0')}-01`;
+            setDate(newDate);
+            const daysInM = new Date(newYr, newMo, 0).getDate();
+            const monthEnd = `${newYr}-${String(newMo).padStart(2,'0')}-${String(daysInM).padStart(2,'0')}`;
+            try {
+              const res = await base44.functions.invoke('getAllAttendance', { date_from: newDate, date_to: monthEnd });
+              setCalMonthRecords(res.data?.records || []);
+            } catch {}
+          };
           const daysInMonth = new Date(yr, mo, 0).getDate();
           const firstDow = new Date(yr, mo - 1, 1).getDay(); // 0=Sun
           // Build map: date → { present, absent, leave, half_day, total }
@@ -356,9 +375,20 @@ export default function AllAttendance() {
           }
           if (week.length) { while (week.length < 7) week.push(null); weeks.push(week); }
           const today = format(new Date(), 'yyyy-MM-dd');
+          const monthLabel = new Date(yr, mo - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
           return (
             <Card>
               <CardContent className="p-4">
+                {/* Month navigation */}
+                <div className="flex items-center justify-between mb-3">
+                  <button onClick={() => navigateCalMonth(-1)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-600">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                  </button>
+                  <span className="font-semibold text-gray-800 text-sm">{monthLabel}</span>
+                  <button onClick={() => navigateCalMonth(1)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-600">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                  </button>
+                </div>
                 <div className="grid grid-cols-7 mb-2">
                   {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => (
                     <div key={d} className="text-center text-xs font-semibold text-gray-400 py-1">{d}</div>

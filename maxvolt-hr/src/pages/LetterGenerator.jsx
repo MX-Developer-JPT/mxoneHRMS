@@ -154,6 +154,7 @@ export default function LetterGenerator() {
   const [letterType, setLetterType] = useState('');
   const [extra, setExtra] = useState({});
   const [signatory, setSignatory] = useState('');
+  const [customSignatoryName, setCustomSignatoryName] = useState('');
   const [cc, setCc] = useState('');
   const [generating, setGenerating] = useState(false);
   const [letter, setLetter] = useState('');
@@ -196,7 +197,7 @@ export default function LetterGenerator() {
     setLetter('');
     try {
       const res = await base44.functions.invoke('generateEmployeeLetter', {
-        user_id: selectedEmp.user_id, letter_type: letterType, extra: { ...extra, signatory },
+        user_id: selectedEmp.user_id, letter_type: letterType, extra: { ...extra, signatory: signatory === '__custom' ? customSignatoryName : signatory },
       });
       const d = res.data || res;
       if (d.success) {
@@ -367,7 +368,13 @@ export default function LetterGenerator() {
                   <option value="__custom">Enter custom name…</option>
                 </select>
                 {signatory === '__custom' && (
-                  <Input className="mt-1 text-sm" placeholder="Full name of signatory" onChange={e => setSignatory(e.target.value)} />
+                  <Input
+                    className="mt-1 text-sm"
+                    placeholder="Full name of signatory"
+                    value={customSignatoryName}
+                    onChange={e => setCustomSignatoryName(e.target.value)}
+                    autoFocus
+                  />
                 )}
               </div>
 

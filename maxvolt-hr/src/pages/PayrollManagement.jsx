@@ -319,9 +319,14 @@ export default function PayrollManagement() {
 
   const filteredPayrolls = payrolls.filter(p => {
     if (p.month !== selectedMonth || p.year !== selectedYear) return false;
+    // DOJ filter: don't show payroll for months before the employee joined
+    const emp = employees.find(e => e.user_id === p.user_id);
+    if (emp?.date_of_joining) {
+      const [dojY, dojM] = emp.date_of_joining.split('-').map(Number);
+      if (selectedYear < dojY || (selectedYear === dojY && selectedMonth < dojM)) return false;
+    }
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
-    const emp = employees.find(e => e.user_id === p.user_id);
     const name = (emp?.display_name || emp?._user?.full_name || '').toLowerCase();
     const code = (emp?.employee_code || '').toLowerCase();
     const dept = (emp?.department || '').toLowerCase();
@@ -329,7 +334,12 @@ export default function PayrollManagement() {
     return name.includes(q) || code.includes(q) || dept.includes(q) || desig.includes(q);
   });
 
-  const totalPayroll = filteredPayrolls.reduce((sum, p) => sum + (p.net_salary || 0), 0);
+  const totalGross    = filteredPayrolls.reduce((s, p) => s + (p.gross_salary || 0), 0);
+  const totalNet      = filteredPayrolls.reduce((s, p) => s + (p.net_salary  || 0), 0);
+  const totalLOP      = filteredPayrolls.reduce((s, p) => s + (p.deductions?.lop || p.loss_of_pay_amount || 0), 0);
+  const totalPF       = filteredPayrolls.reduce((s, p) => s + (p.deductions?.pf  || 0), 0);
+  const totalESI      = filteredPayrolls.reduce((s, p) => s + (p.deductions?.esi || 0), 0);
+  const totalPayroll  = totalNet;   // alias used by existing cards
   const processedCount = filteredPayrolls.filter(p => p.status === 'processed' || p.status === 'paid').length;
   const paidCount = filteredPayrolls.filter(p => p.status === 'paid').length;
 
@@ -434,50 +444,27 @@ export default function PayrollManagement() {
           </div>
         </div>
 
-        <div className="grid md:grid-cols-3 gap-6">
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center gap-4">
-                <div className="p-4 bg-blue-100 rounded-full">
-                  <DollarSign className="w-8 h-8 text-blue-600" />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            { label: 'Total Gross', value: `₹${Math.round(totalGross).toLocaleString('en-IN')}`, color: 'text-blue-600', bg: 'bg-blue-50' },
+            { label: 'Total Net (In-Hand)', value: `₹${Math.round(totalNet).toLocaleString('en-IN')}`, color: 'text-green-600', bg: 'bg-green-50' },
+            { label: 'Total LOP Deduction', value: `₹${Math.round(totalLOP).toLocaleString('en-IN')}`, color: 'text-red-600', bg: 'bg-red-50' },
+            { label: 'Total PF (Employee)', value: `₹${Math.round(totalPF).toLocaleString('en-IN')}`, color: 'text-indigo-600', bg: 'bg-indigo-50' },
+            { label: 'Total ESI (Employee)', value: `₹${Math.round(totalESI).toLocaleString('en-IN')}`, color: 'text-purple-600', bg: 'bg-purple-50' },
+            { label: 'Employees Processed', value: `${processedCount} / ${filteredPayrolls.length}`, color: 'text-amber-600', bg: 'bg-amber-50' },
+            { label: 'Employees Paid', value: `${paidCount} / ${filteredPayrolls.length}`, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+            { label: 'Active Employees', value: employees.filter(e => e.status === 'active').length, color: 'text-gray-700', bg: 'bg-gray-50' },
+          ].map(c => (
+            <Card key={c.label}>
+              <CardContent className="p-4">
+                <div className={`inline-flex items-center justify-center w-8 h-8 rounded-lg ${c.bg} mb-2`}>
+                  <DollarSign className={`w-4 h-4 ${c.color}`} />
                 </div>
-                <div>
-                  <p className="text-sm text-gray-600">Total Payroll</p>
-                  <p className="text-2xl font-bold text-blue-600">₹{totalPayroll.toLocaleString()}</p>
-                  <p className="text-xs text-gray-500">{monthNames[selectedMonth - 1]} {selectedYear}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center gap-4">
-                <div className="p-4 bg-green-100 rounded-full">
-                  <Check className="w-8 h-8 text-green-600" />
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600">Paid</p>
-                  <p className="text-2xl font-bold text-green-600">{paidCount}</p>
-                  <p className="text-xs text-gray-500">of {filteredPayrolls.length} employees</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center gap-4">
-                <div className="p-4 bg-purple-100 rounded-full">
-                  <TrendingUp className="w-8 h-8 text-purple-600" />
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600">Active Employees</p>
-                  <p className="text-2xl font-bold text-purple-600">{employees.filter(e => e.status === 'active').length}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+                <p className="text-xs text-gray-500">{c.label}</p>
+                <p className={`text-lg font-bold ${c.color} mt-0.5`}>{c.value}</p>
+              </CardContent>
+            </Card>
+          ))}
         </div>
 
         <Card>
