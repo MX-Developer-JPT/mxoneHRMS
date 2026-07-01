@@ -11,6 +11,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
+import MobileSelect from '@/components/MobileSelect';
 
 // Letter types and the extra fields each one needs
 const LETTER_TYPES = [
@@ -356,17 +357,19 @@ export default function LetterGenerator() {
               {/* Signatory selector */}
               <div>
                 <Label className="text-xs">Authorised Signatory</Label>
-                <select
-                  className="mt-1 w-full border rounded-md px-2 py-1.5 text-sm bg-white"
-                  value={signatory}
-                  onChange={e => setSignatory(e.target.value)}
-                >
-                  <option value="">— Default (Authorised Signatory) —</option>
-                  {managers.map(m => (
-                    <option key={m.user_id} value={m.display_name}>{m.display_name} · {m.designation || m.department}</option>
-                  ))}
-                  <option value="__custom">Enter custom name…</option>
-                </select>
+                <div className="mt-1">
+                  <MobileSelect
+                    label="Authorised Signatory"
+                    placeholder="— Default (Authorised Signatory) —"
+                    value={signatory}
+                    onValueChange={setSignatory}
+                    options={[
+                      { value: '', label: '— Default (Authorised Signatory) —' },
+                      ...managers.map(m => ({ value: m.display_name, label: `${m.display_name} · ${m.designation || m.department}` })),
+                      { value: '__custom', label: 'Enter custom name…' },
+                    ]}
+                  />
+                </div>
                 {signatory === '__custom' && (
                   <Input
                     className="mt-1 text-sm"

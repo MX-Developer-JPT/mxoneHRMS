@@ -49,8 +49,15 @@ export default function AttendanceReports() {
       return ld >= startStr && ld <= endStr;
     });
 
+    // DOJ filter: only include employees who had joined by this month
+    const dojFilteredEmps = emps.filter(e => {
+      if (!e.date_of_joining) return true;
+      const [dojY, dojM] = e.date_of_joining.split('-').map(Number);
+      return year > dojY || (year === dojY && month >= dojM);
+    });
+
     setAttendance(filtered);
-    setEmployees(emps);
+    setEmployees(dojFilteredEmps);
     setBioLogs(filteredLogs);
     setLoading(false);
   };
