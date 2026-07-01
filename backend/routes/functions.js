@@ -1437,7 +1437,7 @@ router.post('/:name', async (req, res) => {
       };
 
       // Minimal ZIP builder using built-in zlib (no extra package)
-      const zlibNode = require('zlib');
+      const zlibNode = _require('zlib');
       const buildZip = (files) => {
         const parts = [], centralDir = [];
         let offset = 0;
@@ -1501,7 +1501,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Salary Structure Export (styled Excel) ──────────── */
     case 'exportSalaryStructures': {
-      const ExcelJS = require('exceljs');
+      const ExcelJS = (await import('exceljs')).default;
       const wb = new ExcelJS.Workbook();
       wb.creator = 'Maxvolt HRMS';
 
@@ -1655,7 +1655,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Employee Directory Export (styled Excel, 2 sheets) ─ */
     case 'exportEmployeeDirectory': {
-      const ExcelJS = require('exceljs');
+      const ExcelJS = (await import('exceljs')).default;
       const wb = new ExcelJS.Workbook();
       wb.creator = 'Maxvolt HRMS';
 
@@ -4144,7 +4144,7 @@ Return ONLY a valid JSON object (no markdown):
 
     /* ── Offer Letter ────────────────────────────────── */
     case 'generateOfferLetter': {
-      const { candidate_id, joining_date, designation, department, ctc, probation_months = 6, reporting_to, location } = p;
+      const { candidate_id, joining_date, designation, department, ctc, probation_months = 6, reporting_to, location, salary_overrides } = p;
       if (!candidate_id) return res.json({ success:false, error:'candidate_id required' });
 
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -4250,7 +4250,7 @@ Return ONLY a valid JSON object (no markdown):
 
     /* ── Send Offer Letter (email to candidate) ─────── */
     case 'sendOfferLetter': {
-      const { candidate_id, joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, notes, medical_contribution = 0 } = p;
+      const { candidate_id, joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, notes, medical_contribution = 0, salary_overrides } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
 
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -4271,8 +4271,10 @@ Return ONLY a valid JSON object (no markdown):
 
       // Salary breakdown — PF for ALL employees; ESI when basic ≤ ₹21,000 on basic salary
       const PF_CEIL = 15000, ESI_CEIL = 21000;
-      const basicM       = Math.round(monthlyCTC * 0.5);
-      const hraM         = Math.round(basicM * 0.4);
+      const autoBasicM = Math.round(monthlyCTC * 0.5);
+      const basicM  = salary_overrides?.basic      ? Number(salary_overrides.basic)      : autoBasicM;
+      const autoHraM  = Math.round(autoBasicM * 0.4);
+      const hraM    = salary_overrides?.hra        ? Number(salary_overrides.hra)        : autoHraM;
       const pfBase       = Math.min(basicM, PF_CEIL);
       const pfEmpM       = Math.round(pfBase * 0.12);
       const pfEmployerM  = Math.round(pfBase * 0.13);
@@ -4284,8 +4286,10 @@ Return ONLY a valid JSON object (no markdown):
       if (ctc <= 1000000) { bonusM = Math.round(basicM * 0.0833); bonusType = 'Bonus (8.33% of Basic)'; }
       else { const vp = ctc <= 1500000 ? 0.05 : ctc <= 2000000 ? 0.08 : ctc <= 2500000 ? 0.12 : 0.15; bonusM = Math.round(ctc * vp / 12); bonusType = `VPP (${Math.round(vp*100)}% of CTC)`; }
       const contribM     = pfEmployerM + esiEmployerM + bonusM + medicalM;
-      const grossM       = Math.round(monthlyCTC - contribM);
-      const convM        = Math.max(grossM - basicM - hraM, 0);
+      const autoGrossM   = Math.round(monthlyCTC - contribM);
+      const autoConvM    = Math.max(autoGrossM - autoBasicM - autoHraM, 0);
+      const convM        = salary_overrides?.conveyance ? Number(salary_overrides.conveyance) : autoConvM;
+      const grossM       = salary_overrides ? (basicM + hraM + convM) : autoGrossM;
       const totalDedM    = pfEmpM + esiEmpM;
       const netM         = grossM - totalDedM;
 
@@ -4343,7 +4347,7 @@ Return ONLY a valid JSON object (no markdown):
   </thead>
   <tbody>
     ${sec('Earnings')}
-    ${[['Basic (50% of CTC)',sal.basic_annual,sal.basic_monthly],['HRA (40% of Basic)',sal.hra_annual,sal.hra_monthly],['Conveyance Allowance (Balance)',sal.conveyance_annual,sal.conveyance_monthly]].map(([l,a,m])=>trow([td(l),tdr(fmtIN(a)),tdr(fmtIN(m))])).join('')}
+    ${[[salary_overrides?.basic?'Basic Salary':'Basic (50% of CTC)',sal.basic_annual,sal.basic_monthly],[salary_overrides?.hra?'House Rent Allowance':'HRA (40% of Basic)',sal.hra_annual,sal.hra_monthly],[salary_overrides?.conveyance?'Conveyance Allowance':'Conveyance Allowance (Balance)',sal.conveyance_annual,sal.conveyance_monthly]].map(([l,a,m])=>trow([td(l),tdr(fmtIN(a)),tdr(fmtIN(m))])).join('')}
     ${sub('Total Gross Salary (A)', sal.gross_annual, sal.gross_monthly)}
     ${sec('Deduction')}
     ${dedRows}

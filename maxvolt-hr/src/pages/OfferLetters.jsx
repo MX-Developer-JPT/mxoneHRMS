@@ -14,7 +14,10 @@ import { safeDate } from '@/lib/dateUtils';
 import {
   FileCheck, Mail, Phone, Loader2, Send, CalendarCheck, Copy, RefreshCw,
   Search, Users, CheckCircle2, Clock, XCircle, FileText, Building2, MapPin, User, Printer,
+  ChevronDown, ChevronsUpDown, Check, Pencil,
 } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { openLetterheadPrintWindow } from '@/utils/letterhead';
 
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -71,7 +74,7 @@ const STATUS_CONFIG = {
   interview_done:{ label: 'Interviewed',  color: 'bg-purple-100 text-purple-800',  icon: Clock },
 };
 
-function ResendOfferDialog({ candidate, onClose, onRefresh }) {
+function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) {
   const [form, setForm] = useState({
     joining_date: candidate?.joining_date || new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
     designation: candidate?.designation || candidate?.position_applied || '',
@@ -88,8 +91,52 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
   const [sent, setSent] = useState(false);
   const [acceptLink, setAcceptLink] = useState('');
   const [previewing, setPreviewing] = useState(false);
+  const [deptOpen, setDeptOpen] = useState(false);
+  const [overrideEnabled, setOverrideEnabled] = useState(false);
+  const [override, setOverride] = useState({ basic: '', hra: '', conveyance: '' });
 
-  const sal = calcSalary(Number(form.annual_ctc) || 0, Number(form.medical_contribution) || 0);
+  const autoSal = calcSalary(Number(form.annual_ctc) || 0, Number(form.medical_contribution) || 0);
+
+  // When override is enabled, use override values (fall back to auto if blank)
+  const sal = overrideEnabled && autoSal
+    ? (() => {
+        const basic  = Number(override.basic)      || autoSal.basic_monthly;
+        const hra    = Number(override.hra)         || autoSal.hra_monthly;
+        const conv   = Number(override.conveyance)  || autoSal.conveyance_monthly;
+        const pfBase = Math.min(basic, 15000);
+        const pfEmp  = Math.round(pfBase * 0.12);
+        const pfEmpr = Math.round(pfBase * 0.13);
+        const isESI  = basic <= 21000;
+        const esiEmp  = isESI ? Math.round(basic * 0.0075) : 0;
+        const esiEmpr = isESI ? Math.round(basic * 0.0325) : 0;
+        const gross  = basic + hra + conv;
+        const net    = gross - pfEmp - esiEmp;
+        const medM   = Number(form.medical_contribution) || 0;
+        const bonus  = autoSal.bonus_monthly;
+        const contrib = pfEmpr + esiEmpr + bonus + medM;
+        const annualCTC = Number(form.annual_ctc) || 0;
+        return {
+          ...autoSal,
+          basic_monthly: basic,   basic_annual: basic * 12,
+          hra_monthly: hra,       hra_annual: hra * 12,
+          conveyance_monthly: conv, conveyance_annual: conv * 12,
+          gross_monthly: gross,   gross_annual: gross * 12,
+          pf_emp_monthly: pfEmp,  pf_emp_annual: pfEmp * 12,
+          esi_emp_monthly: esiEmp, esi_emp_annual: esiEmp * 12,
+          pf_employer_monthly: pfEmpr, pf_employer_annual: pfEmpr * 12,
+          esi_employer_monthly: esiEmpr, esi_employer_annual: esiEmpr * 12,
+          net_monthly: net,       net_annual: net * 12,
+          contribution_monthly: contrib, contribution_annual: contrib * 12,
+          annual_ctc: annualCTC,  monthly_ctc: Math.round(annualCTC / 12),
+          isESI,
+        };
+      })()
+    : autoSal;
+
+  const salaryOverrides = overrideEnabled
+    ? { basic: Number(override.basic) || undefined, hra: Number(override.hra) || undefined, conveyance: Number(override.conveyance) || undefined }
+    : undefined;
+
   const setF = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
   const handlePreview = async () => {
@@ -104,6 +151,7 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
         reporting_to: form.reporting_to,
         ctc: Number(form.annual_ctc),
         probation_months: Number(form.probation_months),
+        salary_overrides: salaryOverrides,
       });
       if (res.data?.success) {
         openLetterheadPrintWindow(`Offer Letter — ${candidate.full_name}`, res.data.html, '', false);
@@ -127,6 +175,7 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
         offer_valid_days: Number(form.offer_valid_days),
         medical_contribution: Number(form.medical_contribution) || 0,
         notes: form.notes,
+        salary_overrides: salaryOverrides,
       });
       if (res.data?.success) {
         setSent(true);
@@ -173,7 +222,6 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
           ['Joining Date *', 'joining_date', 'date'],
           ['Probation (months)', 'probation_months', 'number'],
           ['Designation', 'designation', 'text'],
-          ['Department', 'department', 'text'],
           ['Work Location', 'location', 'text'],
           ['Reporting To', 'reporting_to', 'text'],
           ['Annual CTC (₹)', 'annual_ctc', 'number'],
@@ -186,16 +234,71 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
               placeholder={key === 'reporting_to' ? 'Manager name' : key === 'medical_contribution' ? '0' : ''} />
           </div>
         ))}
+
+        {/* Department combobox */}
+        <div>
+          <Label className="text-xs">Department</Label>
+          <Popover open={deptOpen} onOpenChange={setDeptOpen}>
+            <PopoverTrigger asChild>
+              <button type="button"
+                className="w-full flex items-center justify-between border rounded-md px-3 h-9 text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-ring">
+                <span className={form.department ? '' : 'text-muted-foreground'}>{form.department || 'Select department…'}</span>
+                <ChevronsUpDown className="w-3.5 h-3.5 text-muted-foreground ml-1 shrink-0" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="p-0 w-72" align="start">
+              <Command>
+                <CommandInput placeholder="Search or type department…" value={form.department.includes(departments.find(d=>d===form.department)?'':form.department)?form.department:''} onValueChange={v => setF('department', v)} />
+                <CommandList>
+                  <CommandEmpty>
+                    <div className="text-xs text-gray-500 px-2 py-1">No match — using typed value</div>
+                  </CommandEmpty>
+                  <CommandGroup>
+                    {departments.map(d => (
+                      <CommandItem key={d} value={d} onSelect={() => { setF('department', d); setDeptOpen(false); }}>
+                        <Check className={`w-3.5 h-3.5 mr-2 ${form.department === d ? 'opacity-100' : 'opacity-0'}`} />
+                        {d}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        </div>
+
         <div className="md:col-span-2">
           <Label className="text-xs">Additional Notes (optional)</Label>
           <Textarea value={form.notes} onChange={e => setF('notes', e.target.value)} rows={2} />
         </div>
       </div>
 
-      {/* Salary preview */}
-      {Number(form.annual_ctc) > 0 && (
+      {/* Salary preview with optional override */}
+      {Number(form.annual_ctc) > 0 && sal && (
         <div className="border rounded-lg overflow-hidden">
-          <div className="bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">Salary Preview</div>
+          <div className="bg-gray-50 px-3 py-2 flex items-center justify-between">
+            <span className="text-xs font-semibold text-gray-600">Salary Breakdown</span>
+            <button type="button" onClick={() => setOverrideEnabled(v => !v)}
+              className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded border transition-colors ${overrideEnabled ? 'bg-orange-50 border-orange-300 text-orange-700' : 'bg-white border-gray-200 text-gray-500 hover:text-gray-700'}`}>
+              <Pencil className="w-3 h-3" />
+              {overrideEnabled ? 'Editing components' : 'Override components'}
+            </button>
+          </div>
+
+          {overrideEnabled && (
+            <div className="bg-orange-50 border-b border-orange-200 px-3 py-2 grid grid-cols-3 gap-2">
+              {[['Basic (₹/mo)', 'basic', sal.basic_monthly], ['HRA (₹/mo)', 'hra', sal.hra_monthly], ['Conveyance (₹/mo)', 'conveyance', sal.conveyance_monthly]].map(([label, key, placeholder]) => (
+                <div key={key}>
+                  <Label className="text-xs text-orange-700">{label}</Label>
+                  <Input type="number" placeholder={String(placeholder)} value={override[key]}
+                    onChange={e => setOverride(v => ({ ...v, [key]: e.target.value }))}
+                    className="h-7 text-xs" />
+                </div>
+              ))}
+              <p className="col-span-3 text-xs text-orange-600">Leave blank to use auto-calculated value. Net take-home and CTC will update automatically.</p>
+            </div>
+          )}
+
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-gray-100">
@@ -205,7 +308,11 @@ function ResendOfferDialog({ candidate, onClose, onRefresh }) {
               </tr>
             </thead>
             <tbody>
-              {[['Basic (50% of CTC)', sal.basic_annual, sal.basic_monthly],['HRA (40% of Basic)', sal.hra_annual, sal.hra_monthly],['Conveyance (Balance)', sal.conveyance_annual, sal.conveyance_monthly]].map(([l, a, m]) => (
+              {[
+                [overrideEnabled ? 'Basic (override)' : 'Basic (50% of CTC)', sal.basic_annual, sal.basic_monthly],
+                [overrideEnabled ? 'HRA (override)' : 'HRA (40% of Basic)', sal.hra_annual, sal.hra_monthly],
+                [overrideEnabled ? 'Conveyance (override)' : 'Conveyance (Balance)', sal.conveyance_annual, sal.conveyance_monthly],
+              ].map(([l, a, m]) => (
                 <tr key={l} className="border-b"><td className="px-3 py-1">{l}</td><td className="px-3 py-1 text-right">{fmt(a)}</td><td className="px-3 py-1 text-right">{fmt(m)}</td></tr>
               ))}
               <tr className="bg-blue-50 font-semibold border-b"><td className="px-3 py-1.5">Total Gross (A)</td><td className="px-3 py-1.5 text-right">{fmt(sal.gross_annual)}</td><td className="px-3 py-1.5 text-right">{fmt(sal.gross_monthly)}</td></tr>
@@ -305,6 +412,7 @@ const printConsentForm = (offer, emp) => {
 
 export default function OfferLetters() {
   const [candidates, setCandidates] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -316,11 +424,15 @@ export default function OfferLetters() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const all = await base44.entities.Candidate.list('-created_date', 500);
+      const [all, depts] = await Promise.all([
+        base44.entities.Candidate.list('-created_date', 500),
+        base44.entities.Department.list('name', 200).catch(() => []),
+      ]);
       const relevant = all.filter(c =>
         ['selected', 'interview_done', 'offered', 'offer_accepted', 'joined'].includes(c.status)
       );
       setCandidates(relevant);
+      setDepartments(depts.map(d => d.name).filter(Boolean).sort());
     } catch (e) { toast.error('Failed to load data'); }
     setLoading(false);
   };
@@ -584,6 +696,7 @@ export default function OfferLetters() {
           {dialogCandidate && (
             <ResendOfferDialog
               candidate={dialogCandidate}
+              departments={departments}
               onClose={() => setDialogCandidate(null)}
               onRefresh={loadData}
             />

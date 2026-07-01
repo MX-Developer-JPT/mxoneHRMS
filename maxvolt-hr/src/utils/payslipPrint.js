@@ -59,17 +59,11 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const absentDays   = payroll.absent_days   ?? Math.floor(lopDays);
   const payDays      = payroll.pay_days      ?? (calendarDays - lopDays);
 
-  // Earned — prorated by days present (stored by processAdvancedPayroll; fallback: fixed × payDays/calendarDays)
-  const basicEarned      = payroll.basic_salary != null
-    ? payroll.basic_salary
-    : Math.round(basicFixed * payDays / calendarDays);
-  const hraEarned        = payroll.hra != null
-    ? payroll.hra
-    : Math.round(hraFixed * payDays / calendarDays);
-  const conveyanceEarned = (allowances.conveyance ?? payroll.conveyance) != null
-    ? (allowances.conveyance ?? payroll.conveyance)
-    : Math.round(conveyanceFixed * payDays / calendarDays);
-  const grossSalary      = payroll.gross_salary  ?? (basicEarned + hraEarned + conveyanceEarned);
+  // Earned — always prorated by days present (Fixed shows full month; LOP reflected here, not as deduction)
+  const basicEarned      = Math.round(basicFixed * payDays / calendarDays);
+  const hraEarned        = Math.round(hraFixed * payDays / calendarDays);
+  const conveyanceEarned = Math.round(conveyanceFixed * payDays / calendarDays);
+  const grossSalary      = basicEarned + hraEarned + conveyanceEarned;
 
   const arrear   = payroll.arrear    || 0;
   const ytdGross = payroll.ytd_gross || grossSalary;
@@ -78,29 +72,30 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const bonusBreakdown = bonuses.filter(b => b.amount > 0);
   const otherEarnings  = payroll.bonuses || 0;
 
-  // ── LOP: Gross ÷ calendarDays × absent days ──────────────────────────────────
+  // LOP: stored from backend; used for reference but not added to deductions (Earned is already prorated)
   const lopDeduction = deductions.lop ?? payroll.loss_of_pay_amount
-    ?? (lopDays > 0 ? Math.round(grossSalary * lopDays / calendarDays) : 0);
+    ?? (lopDays > 0 ? Math.round(grossFixed * lopDays / calendarDays) : 0);
 
-  // PF: cap basic at ₹15,000 first, then prorate by days worked
-  const monthlyPFBase = Math.min(basicEarned, 15000);
+  // PF: prorate the full-month PF cap by payDays (Indian standard — 12% on min(fullBasic,15000) × payDays/calDays)
+  const monthlyPFBase = Math.min(basicFixed, 15000);
   const pfComputed  = Math.round(monthlyPFBase * 0.12 * payDays / calendarDays);
   const pfDeduction = deductions.pf || pfComputed;
 
-  // ── ESI: eligibility on full monthly basic; deduction on earned basic ─────────
-  const earnedBasicForESI = Math.round(basicEarned * payDays / calendarDays);
+  // ESI: eligibility on full monthly basic; deduction on earned (prorated) basic
+  const earnedBasicForESI = basicEarned;
   const esiDeduction = deductions.esi != null
     ? deductions.esi
-    : (basicEarned <= 21000 ? (salaryStructure.esi_contribution || Math.round(earnedBasicForESI * 0.0075)) : 0);
+    : (basicFixed <= 21000 ? (salaryStructure.esi_contribution || Math.round(earnedBasicForESI * 0.0075)) : 0);
 
   const tdsDeduction = deductions.tds || 0;
   const loanEmi      = deductions.loan_emi || 0;
-  const totalDeductions = lopDeduction + pfDeduction + esiDeduction + tdsDeduction + loanEmi;
+  // LOP excluded from totalDeductions — already reflected in Earned column (grossSalary is prorated)
+  const totalDeductions = pfDeduction + esiDeduction + tdsDeduction + loanEmi;
   const netSalary = payroll.net_salary || (grossSalary - totalDeductions);
 
   // Employer contributions
   const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(monthlyPFBase * 0.13 * payDays / calendarDays);
-  const employerESI = payroll.employer_contributions?.esi ?? (basicEarned <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(earnedBasicForESI * 0.0325)) : 0);
+  const employerESI = payroll.employer_contributions?.esi ?? (basicFixed <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(earnedBasicForESI * 0.0325)) : 0);
   // gratuity removed from payslip
 
   const month = monthNames[(payroll.month || 1) - 1];
@@ -210,7 +205,6 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
           <div style="background:#fff5f5;padding:5px 12px;font-size:9.5px;font-weight:bold;text-transform:uppercase;color:#dc2626;border-bottom:1px solid #e5e7eb;">Deductions</div>
           <table style="width:100%;border-collapse:collapse;">
             <tbody>
-              ${lopDeduction > 0 ? dedRow(`Loss of Pay (${lopDays} day${lopDays !== 1 ? 's' : ''})`, lopDeduction) : ''}
               ${dedRow(`Provident Fund (12% on Basic, max ₹15,000 wage)`, pfDeduction, true)}
               ${esiDeduction > 0 ? dedRow('ESI (Employee 0.75%)', esiDeduction) : ''}
               ${tdsDeduction ? dedRow('Income Tax (TDS)', tdsDeduction) : ''}

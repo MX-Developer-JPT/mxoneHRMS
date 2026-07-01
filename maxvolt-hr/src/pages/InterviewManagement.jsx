@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Calendar, Video, Star, Mail, Loader2, User, CheckCircle, XCircle, MessageCircle, Clock } from 'lucide-react';
+import { Plus, Calendar, Video, Star, Mail, Loader2, User, CheckCircle, XCircle, MessageCircle, Clock, Search } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -24,6 +24,7 @@ export default function InterviewManagement() {
   const [loading, setLoading] = useState(true);
   const [scheduling, setScheduling] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [rescheduleInterview, setRescheduleInterview] = useState(null);
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleTime, setRescheduleTime] = useState('');
@@ -258,10 +259,25 @@ export default function InterviewManagement() {
   const upcomingInterviews = interviews.filter(i => i.status === 'scheduled' && new Date(i.scheduled_date) > new Date());
   const completedInterviews = interviews.filter(i => i.status === 'completed');
 
-  const displayedInterviews = statusFilter === 'all' ? interviews
+  const statusFiltered = statusFilter === 'all' ? interviews
     : statusFilter === 'upcoming' ? upcomingInterviews
     : statusFilter === 'completed' ? completedInterviews
     : interviews;
+
+  const displayedInterviews = searchQuery.trim()
+    ? statusFiltered.filter(i => {
+        const q = searchQuery.toLowerCase();
+        const candidate = candidates.find(c => c.id === i.candidate_id);
+        const interviewerDet = i.interviewer_ids?.[0] ? getEmployeeDetails(i.interviewer_ids[0]) : null;
+        return (
+          candidate?.full_name?.toLowerCase().includes(q) ||
+          candidate?.position_applied?.toLowerCase().includes(q) ||
+          interviewerDet?.name?.toLowerCase().includes(q) ||
+          i.round_type?.toLowerCase().includes(q) ||
+          i.interview_mode?.toLowerCase().includes(q)
+        );
+      })
+    : statusFiltered;
 
   // Interviewers: all users (any role can interview)
   const interviewerOptions = allUsers;
@@ -428,10 +444,21 @@ export default function InterviewManagement() {
 
         <Card>
           <CardHeader>
-            <CardTitle>
-              {statusFilter === 'upcoming' ? 'Upcoming Interviews' : statusFilter === 'completed' ? 'Completed Interviews' : 'All Interviews'}
-              {statusFilter !== 'all' && <button className="ml-2 text-xs text-blue-500 font-normal" onClick={() => setStatusFilter('all')}>Clear filter ×</button>}
-            </CardTitle>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <CardTitle>
+                {statusFilter === 'upcoming' ? 'Upcoming Interviews' : statusFilter === 'completed' ? 'Completed Interviews' : 'All Interviews'}
+                {statusFilter !== 'all' && <button className="ml-2 text-xs text-blue-500 font-normal" onClick={() => setStatusFilter('all')}>Clear filter ×</button>}
+              </CardTitle>
+              <div className="relative w-full sm:w-72">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                <Input
+                  placeholder="Search by name, position, interviewer…"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="pl-9 h-9 text-sm"
+                />
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
