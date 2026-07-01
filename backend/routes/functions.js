@@ -675,13 +675,31 @@ router.post('/:name', async (req, res) => {
         const basic = ss?.basic_salary||0; const hra=ss?.hra||0; const conv=ss?.conveyance||0; const spec=ss?.special_allowance||0;
         const gross = basic+hra+conv+spec;
 
-        // ── Attendance tally: day-by-day; all days are working days; missing any day = absent ──
+        // ── Attendance tally: day-by-day; sandwich policy for Sundays ──────────────
+        // Sunday is payable only if the employee was present on Saturday OR Monday.
+        // If both Saturday and Monday are absent, Sunday is also LOP (sandwich rule).
         const attByDate = attByUser[emp.user_id] || {};
+        const isMusterPresent = (r) => {
+          if (!r) return false;
+          const s = r.status;
+          if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home' || s === 'half_day') return true;
+          if (!s && r.check_in_time) return true;
+          return false;
+        };
+        const fmtDate = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
         let presentDays = 0, halfDays = 0, absentDays = 0;
         for (const { ds } of payMonthDates) {
+          const [yr, mo, dy] = ds.split('-').map(Number);
+          if (new Date(yr, mo-1, dy).getDay() === 0) {
+            // Sunday: sandwich policy
+            const satPresent = isMusterPresent(attByDate[fmtDate(new Date(yr, mo-1, dy-1))]);
+            const monPresent = isMusterPresent(attByDate[fmtDate(new Date(yr, mo-1, dy+1))]);
+            if (!satPresent && !monPresent) absentDays++;    // both sides absent → Sunday LOP
+            continue;
+          }
           const rec = attByDate[ds];
           if (!rec) {
-            absentDays++;                                      // no record on any day = absent
+            absentDays++;                                      // no record on any weekday = absent
           } else {
             const s = rec.status;
             if (s === 'half_day')                                              { presentDays += 0.5; halfDays++; }
@@ -1427,13 +1445,30 @@ router.post('/:name', async (req, res) => {
         const hasAtt    = Object.keys(attByDate).length > 0;
         const ss        = ssMapSS[emp.user_id] || {};
 
-        // ── Attendance tally — day-by-day; all days are working days; missing any day = absent ──
+        // ── Attendance tally — day-by-day; sandwich policy for Sundays ─────────────
+        // Sunday is payable only if present on Saturday OR Monday (sandwich rule).
+        const isMusterPresentSS = (r) => {
+          if (!r) return false;
+          const s = r.status;
+          if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home' || s === 'half_day') return true;
+          if (!s && r.check_in_time) return true;
+          return false;
+        };
+        const fmtDateSS = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
         let daysPresent = 0, daysHalfDay = 0, daysAbsent = 0;
         if (hasAtt) {
           for (const { ds } of monthDates) {
+            const [yr, mo, dy] = ds.split('-').map(Number);
+            if (new Date(yr, mo-1, dy).getDay() === 0) {
+              // Sunday: sandwich policy
+              const satPresent = isMusterPresentSS(attByDate[fmtDateSS(new Date(yr, mo-1, dy-1))]);
+              const monPresent = isMusterPresentSS(attByDate[fmtDateSS(new Date(yr, mo-1, dy+1))]);
+              if (!satPresent && !monPresent) daysAbsent++;  // both sides absent → Sunday LOP
+              continue;
+            }
             const rec = attByDate[ds];
             if (!rec) {
-              daysAbsent++;                                   // no record on any day = absent
+              daysAbsent++;                                   // no record on any weekday = absent
             } else {
               const s = rec.status;
               if (s === 'half_day') {
