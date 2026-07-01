@@ -135,85 +135,13 @@ export default function Employees() {
   const handleExportAll = async () => {
     setExporting(true);
     try {
-      // Fetch salary structures for all employees
-      const salaryStructures = await base44.entities.SalaryStructure.filter({ status: 'active' });
-      const salaryMap = {};
-      for (const s of salaryStructures) {
-        if (s.user_id && !salaryMap[s.user_id]) salaryMap[s.user_id] = s;
+      const res = await base44.functions.invoke('exportEmployeeDirectory', {});
+      if (res?.base64) {
+        const bytes = Uint8Array.from(atob(res.base64), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = res.filename || 'Employee_Directory.xlsx'; a.click();
+        URL.revokeObjectURL(a.href);
       }
-
-      const rows = employees.map(emp => {
-        const sal = salaryMap[emp.user_id] || {};
-        return {
-          'Employee Code': emp.employee_code || '',
-          'Name': emp.display_name || emp.user?.display_name || emp.user?.full_name || '',
-          'Email': emp.user?.email || '',
-          'Phone': emp.phone || '',
-          'Department': emp.department || '',
-          'Designation': emp.designation || '',
-          'Designation Tier': emp.designation_tier || '',
-          'Employment Type': emp.employment_type || '',
-          'Employee Status': emp.employee_status || '',
-          'Date of Joining': emp.date_of_joining || '',
-          'Confirmation Date': emp.employee_confirmation_date || '',
-          'Work Location': emp.work_location || '',
-          'Status': emp.status || '',
-          'Date of Birth': emp.date_of_birth || '',
-          'Gender': emp.gender || '',
-          'Blood Group': emp.blood_group || '',
-          'Father/Spouse Name': emp.father_spouse_name || '',
-          'Personal Email': emp.personal_email || '',
-          'Address': emp.address || '',
-          'Emergency Contact Name': emp.emergency_contact?.name || '',
-          'Emergency Contact Phone': emp.emergency_contact?.phone || '',
-          'Emergency Contact Relation': emp.emergency_contact?.relationship || '',
-          'PAN Number': emp.pan_number || '',
-          'Aadhar Number': emp.aadhar_number || '',
-          'UAN Number': emp.uan_number || '',
-          'PF Account Number': emp.pf_account_number || '',
-          'ESI Applicable': emp.is_esi_applicable ? 'Yes' : 'No',
-          'ESI Number': emp.esi_number || '',
-          'Bank Account Number': emp.bank_account?.account_number || '',
-          'Bank IFSC': emp.bank_account?.ifsc_code || '',
-          'Bank Name': emp.bank_account?.bank_name || '',
-          'Bank Branch': emp.bank_account?.branch || '',
-          'Biometric ID': emp.biometric_id || '',
-          // Salary Structure
-          'CTC (Annual)': sal.ctc || '',
-          'Basic Salary': sal.basic_salary || '',
-          'HRA': sal.hra || '',
-          'Conveyance': sal.conveyance || '',
-          'Medical': sal.medical || '',
-          'Special Allowance': sal.special_allowance || '',
-          'LTA': sal.lta || '',
-          'Performance Bonus': sal.performance_bonus || '',
-          'PF Contribution (Employee)': sal.pf_contribution || '',
-          'PF Contribution (Employer)': sal.employer_pf_contribution || '',
-          'ESI Contribution (Employee)': sal.esi_contribution || '',
-          'ESI Contribution (Employer)': sal.employer_esi_contribution || '',
-          'Professional Tax': sal.professional_tax || '',
-          'Salary Effective From': sal.effective_from || '',
-        };
-      });
-
-      const headers = Object.keys(rows[0] || {});
-      const csv = [
-        headers.join(','),
-        ...rows.map(row =>
-          headers.map(h => {
-            const val = String(row[h] ?? '').replace(/"/g, '""');
-            return val.includes(',') || val.includes('"') || val.includes('\n') ? `"${val}"` : val;
-          }).join(',')
-        )
-      ].join('\n');
-
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `employee_directory_${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
     } catch (e) {
       console.error('Export failed:', e);
     }

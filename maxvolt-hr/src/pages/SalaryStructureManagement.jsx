@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DollarSign, Users, Plus, Edit, Printer, Search, TrendingUp, Building, ChevronDown, ChevronUp, Upload, FileSpreadsheet, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { DollarSign, Users, Plus, Edit, Printer, Search, TrendingUp, Building, ChevronDown, ChevronUp, Upload, FileSpreadsheet, AlertCircle, CheckCircle2, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
@@ -320,6 +320,21 @@ export default function SalaryStructureManagement() {
     return computed;
   };
 
+  const [exportingStructures, setExportingStructures] = useState(false);
+  const handleExportStructures = async () => {
+    setExportingStructures(true);
+    try {
+      const res = await base44.functions.invoke('exportSalaryStructures', {});
+      if (res?.base64) {
+        const bytes = Uint8Array.from(atob(res.base64), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = res.filename || 'Salary_Structures.xlsx'; a.click();
+        toast.success(`Exported ${res.total || ''} salary structures`);
+      }
+    } catch (e) { toast.error('Export failed: ' + (e.message || e)); }
+    setExportingStructures(false);
+  };
+
   const handleOpenCreate = () => {
     setEditingStructure(null);
     setSelectedEmployee('');
@@ -531,6 +546,9 @@ export default function SalaryStructureManagement() {
             <p className="text-gray-600 mt-1">CTC-based salary structures with auto-calculated components</p>
           </div>
           <div className="flex gap-2">
+            <Button variant="outline" onClick={handleExportStructures} disabled={exportingStructures}>
+              <Download className="w-4 h-4 mr-2" /> {exportingStructures ? 'Exporting…' : 'Export Structures'}
+            </Button>
             <Button variant="outline" onClick={() => { setShowImportDialog(true); setImportRows([]); setImportResult(null); }}>
               <Upload className="w-4 h-4 mr-2" /> Import from Excel
             </Button>

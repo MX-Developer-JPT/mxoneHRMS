@@ -1405,6 +1405,393 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`Attendance_Muster_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
     }
 
+    /* ── Salary Structure Export (styled Excel) ──────────── */
+    case 'exportSalaryStructures': {
+      const ExcelJS = require('exceljs');
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Maxvolt HRMS';
+
+      // Style helpers
+      const C = { hdr:'1A3C5E', sub:'2D6A9F', empBg:'EBF5FB', ctcBg:'EAF4EA', earnBg:'E8F5E9', dedBg:'FFEBEE', netBg:'FFF9C4', emprBg:'F3E5F5', altRow:'F8FBFF', totBg:'1A3C5E' };
+      const fnt = (bold=false,color='000000',size=10) => ({ name:'Arial', bold, color:{argb:`FF${color}`}, size });
+      const fl  = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
+      const bd  = () => ({ top:{style:'thin',color:{argb:'FFD0D0D0'}}, left:{style:'thin',color:{argb:'FFD0D0D0'}}, bottom:{style:'thin',color:{argb:'FFD0D0D0'}}, right:{style:'thin',color:{argb:'FFD0D0D0'}} });
+      const ctr = { horizontal:'center', vertical:'middle' };
+      const rgt = { horizontal:'right', vertical:'middle' };
+      const lft = { horizontal:'left', vertical:'middle' };
+
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const ssRows    = parseEntities(await all("SELECT data FROM entities WHERE type='SalaryStructure' AND status='active'"));
+      const ssMap = {};
+      for (const s of ssRows) { if (s.user_id && !ssMap[s.user_id]) ssMap[s.user_id] = s; }
+
+      const sorted = [...employees].sort((a,b) => (a.department||'').localeCompare(b.department||'') || (a.display_name||'').localeCompare(b.display_name||''));
+
+      // Column definitions
+      const cols = [
+        // EMPLOYEE DETAILS (6)
+        { h:'S.No',         k:'sno',       w:5  },
+        { h:'Emp Code',     k:'code',      w:10 },
+        { h:'Name',         k:'name',      w:22 },
+        { h:'Department',   k:'dept',      w:16 },
+        { h:'Designation',  k:'desig',     w:18 },
+        { h:'Effective',    k:'effDate',   w:12 },
+        // CTC (2)
+        { h:'Annual CTC',   k:'annCTC',    w:13 },
+        { h:'Monthly CTC',  k:'monCTC',    w:12 },
+        // EARNINGS (6)
+        { h:'Basic',        k:'basic',     w:12 },
+        { h:'HRA',          k:'hra',       w:11 },
+        { h:'Conveyance',   k:'conv',      w:12 },
+        { h:'Special Allow',k:'special',   w:13 },
+        { h:'Bonus/VPP',    k:'bonus',     w:12 },
+        { h:'Gross/Month',  k:'gross',     w:13 },
+        // EMPLOYEE DEDUCTIONS (3)
+        { h:'PF (Emp 12%)', k:'pfEmp',     w:12 },
+        { h:'ESI (Emp 0.75%)',k:'esiEmp',  w:14 },
+        { h:'Total Deduct.',k:'totalDed',  w:13 },
+        // NET PAY (1)
+        { h:'Net Take-Home',k:'net',       w:14 },
+        // EMPLOYER CONTRIBUTIONS (3)
+        { h:'PF (Empr 13%)',k:'pfEmpr',    w:13 },
+        { h:'ESI (Empr 3.25%)',k:'esiEmpr',w:15 },
+        { h:'Total Empr.',  k:'totalEmpr', w:13 },
+      ];
+      const sections = [
+        { label:'EMPLOYEE DETAILS', cols:6, bg:'1A3C5E' },
+        { label:'CTC SUMMARY',      cols:2, bg:'1565C0' },
+        { label:'EARNINGS',         cols:6, bg:'1B5E20' },
+        { label:'EMPLOYEE DEDUCTIONS', cols:3, bg:'B71C1C' },
+        { label:'NET PAY',          cols:1, bg:'F57F17' },
+        { label:'EMPLOYER CONTRIBUTIONS', cols:3, bg:'4A148C' },
+      ];
+
+      const ws = wb.addWorksheet('Salary Structures', { views:[{ state:'frozen', xSplit:0, ySplit:4 }] });
+      cols.forEach((c,i) => { ws.getColumn(i+1).width = c.w; });
+
+      // Row 1: Title
+      ws.mergeCells(1,1,1,cols.length);
+      Object.assign(ws.getCell('A1'), { value:'SALARY STRUCTURES   |   Maxvolt Energy Industries Limited', font:fnt(true,'FFFFFF',14), fill:fl(C.hdr), alignment:{ horizontal:'center', vertical:'middle' } });
+      ws.getRow(1).height = 32;
+
+      // Row 2: Meta
+      ws.mergeCells(2,1,2,cols.length);
+      Object.assign(ws.getCell('A2'), { value:`Generated: ${new Date().toLocaleString('en-IN')}   |   Employees: ${sorted.length}   |   Active salary structures only`, font:fnt(false,'FFFFFF',9), fill:fl(C.sub), alignment:lft });
+      ws.getRow(2).height = 18;
+
+      // Row 3: Section headers
+      let sc = 1;
+      for (const sec of sections) {
+        if (sec.cols > 1) ws.mergeCells(3, sc, 3, sc + sec.cols - 1);
+        Object.assign(ws.getCell(3, sc), { value:sec.label, font:fnt(true,'FFFFFF',9), fill:fl(sec.bg), alignment:ctr, border:bd() });
+        sc += sec.cols;
+      }
+      ws.getRow(3).height = 18;
+
+      // Row 4: Column headers
+      const hRow = ws.getRow(4);
+      hRow.height = 22;
+      cols.forEach((c,i) => {
+        Object.assign(hRow.getCell(i+1), { value:c.h, font:fnt(true,'FFFFFF',9), fill:fl(C.hdr), alignment:{ horizontal:'center', vertical:'middle', wrapText:true }, border:bd() });
+      });
+
+      // Data rows
+      const totals = { annCTC:0, monCTC:0, basic:0, hra:0, conv:0, special:0, bonus:0, gross:0, pfEmp:0, esiEmp:0, totalDed:0, net:0, pfEmpr:0, esiEmpr:0, totalEmpr:0 };
+      sorted.forEach((emp, idx) => {
+        const ss = ssMap[emp.user_id] || {};
+        const annCTC = ss.ctc || 0;
+        const monCTC = Math.round(annCTC / 12);
+        const basic  = ss.basic_salary || Math.round(monCTC * 0.5);
+        const hra    = ss.hra || Math.round(basic * 0.4);
+        const conv   = ss.conveyance || 0;
+        const special= ss.special_allowance || 0;
+        const bonus  = ss.performance_bonus || ss.ctc_bonus || Math.round(basic * 0.0833);
+        const gross  = basic + hra + conv + special;
+        const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, 15000) * 0.12);
+        const esiEmp = ss.esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
+        const totalDed = pfEmp + esiEmp;
+        const net    = Math.max(0, gross - totalDed);
+        const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, 15000) * 0.13);
+        const esiEmpr= ss.employer_esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
+        const totalEmpr = pfEmpr + esiEmpr;
+
+        const rowVals = { annCTC, monCTC, basic, hra, conv, special, bonus, gross, pfEmp, esiEmp, totalDed, net, pfEmpr, esiEmpr, totalEmpr };
+        for (const k of Object.keys(totals)) totals[k] += rowVals[k] || 0;
+
+        const isAlt = idx % 2 === 1;
+        const row = [
+          idx+1, emp.employee_code||'', emp.display_name||'', emp.department||'', emp.designation||'', ss.effective_from||'',
+          annCTC, monCTC, basic, hra, conv, special, bonus, gross, pfEmp, esiEmp, totalDed, net, pfEmpr, esiEmpr, totalEmpr,
+        ];
+        const wsRow = ws.getRow(5 + idx);
+        wsRow.height = 18;
+        row.forEach((val, ci) => {
+          const key = cols[ci].k;
+          const cell = wsRow.getCell(ci+1);
+          cell.value = val;
+          cell.border = bd();
+          cell.font = fnt(false, '222222', 9);
+          if (isAlt) cell.fill = fl(C.altRow);
+          const isNum = ['annCTC','monCTC','basic','hra','conv','special','bonus','gross','pfEmp','esiEmp','totalDed','net','pfEmpr','esiEmpr','totalEmpr'].includes(key);
+          if (ci < 6) cell.alignment = ci < 2 ? ctr : lft;
+          if (isNum) { cell.numFmt = '#,##0'; cell.alignment = rgt; }
+          // Section colouring
+          if (['annCTC','monCTC'].includes(key))         cell.fill = fl(C.ctcBg);
+          else if (['basic','hra','conv','special','bonus','gross'].includes(key)) cell.fill = fl(C.earnBg);
+          else if (['pfEmp','esiEmp','totalDed'].includes(key)) cell.fill = fl(C.dedBg);
+          else if (key === 'net')                         cell.fill = fl(C.netBg);
+          else if (['pfEmpr','esiEmpr','totalEmpr'].includes(key)) cell.fill = fl(C.emprBg);
+        });
+      });
+
+      // Totals row
+      const totRow = ws.addRow(['', 'TOTAL', '', '', '', '',
+        Math.round(totals.annCTC), Math.round(totals.monCTC),
+        Math.round(totals.basic), Math.round(totals.hra), Math.round(totals.conv), Math.round(totals.special), Math.round(totals.bonus), Math.round(totals.gross),
+        Math.round(totals.pfEmp), Math.round(totals.esiEmp), Math.round(totals.totalDed),
+        Math.round(totals.net),
+        Math.round(totals.pfEmpr), Math.round(totals.esiEmpr), Math.round(totals.totalEmpr),
+      ]);
+      totRow.height = 22;
+      totRow.eachCell(cell => { cell.font = fnt(true,'FFFFFF',10); cell.fill = fl(C.totBg); cell.border = bd(); if (typeof cell.value === 'number') { cell.numFmt = '#,##0'; cell.alignment = rgt; } });
+
+      const buf = await wb.xlsx.writeBuffer();
+      return res.json({ success:true, base64:Buffer.from(buf).toString('base64'), filename:`Salary_Structures_${new Date().toISOString().slice(0,10)}.xlsx`, total:sorted.length });
+    }
+
+    /* ── Employee Directory Export (styled Excel, 2 sheets) ─ */
+    case 'exportEmployeeDirectory': {
+      const ExcelJS = require('exceljs');
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Maxvolt HRMS';
+
+      const fnt = (bold=false,color='000000',size=10) => ({ name:'Arial', bold, color:{argb:`FF${color}`}, size });
+      const fl  = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
+      const bd  = () => ({ top:{style:'thin',color:{argb:'FFD5D5D5'}}, left:{style:'thin',color:{argb:'FFD5D5D5'}}, bottom:{style:'thin',color:{argb:'FFD5D5D5'}}, right:{style:'thin',color:{argb:'FFD5D5D5'}} });
+      const ctr = { horizontal:'center', vertical:'middle' };
+      const lft = { horizontal:'left', vertical:'middle' };
+      const rgt = { horizontal:'right', vertical:'middle' };
+
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' ORDER BY data::jsonb->>'department', data::jsonb->>'display_name'"));
+      const users     = await all("SELECT id, email, display_name, full_name FROM users");
+      const userMap   = Object.fromEntries(users.map(u => [u.id, u]));
+      const ssRows    = parseEntities(await all("SELECT data FROM entities WHERE type='SalaryStructure' AND status='active'"));
+      const ssMap = {};
+      for (const s of ssRows) { if (s.user_id && !ssMap[s.user_id]) ssMap[s.user_id] = s; }
+
+      // ── Sheet 1: Employee Master ─────────────────────────────
+      const ws1 = wb.addWorksheet('Employee Directory', { views:[{ state:'frozen', xSplit:0, ySplit:4 }] });
+      const dirCols = [
+        { h:'S.No',             k:'sno',       w:5,  bg:'1A3C5E', sec:'IDENTITY' },
+        { h:'Emp Code',         k:'code',      w:10, bg:'1A3C5E', sec:'' },
+        { h:'Full Name',        k:'name',      w:24, bg:'1A3C5E', sec:'' },
+        { h:'Department',       k:'dept',      w:16, bg:'1565C0', sec:'EMPLOYMENT' },
+        { h:'Designation',      k:'desig',     w:18, bg:'1565C0', sec:'' },
+        { h:'Emp Status',       k:'status',    w:12, bg:'1565C0', sec:'' },
+        { h:'Employment Type',  k:'empType',   w:14, bg:'1565C0', sec:'' },
+        { h:'Date of Joining',  k:'doj',       w:13, bg:'1565C0', sec:'' },
+        { h:'Confirmation Date',k:'confDate',  w:15, bg:'1565C0', sec:'' },
+        { h:'Work Location',    k:'loc',       w:14, bg:'1565C0', sec:'' },
+        { h:'Email',            k:'email',     w:24, bg:'2E7D32', sec:'CONTACT' },
+        { h:'Phone',            k:'phone',     w:13, bg:'2E7D32', sec:'' },
+        { h:'Personal Email',   k:'persEmail', w:24, bg:'2E7D32', sec:'' },
+        { h:'Date of Birth',    k:'dob',       w:13, bg:'00695C', sec:'PERSONAL' },
+        { h:'Gender',           k:'gender',    w:9,  bg:'00695C', sec:'' },
+        { h:'Blood Group',      k:'blood',     w:10, bg:'00695C', sec:'' },
+        { h:'Father/Spouse',    k:'fatherSpouse',w:20,bg:'00695C',sec:'' },
+        { h:'Address',          k:'address',   w:30, bg:'00695C', sec:'' },
+        { h:'Emergency Name',   k:'ecName',    w:18, bg:'4E342E', sec:'EMERGENCY' },
+        { h:'Emergency Phone',  k:'ecPhone',   w:14, bg:'4E342E', sec:'' },
+        { h:'Emergency Relation',k:'ecRel',    w:14, bg:'4E342E', sec:'' },
+        { h:'PAN',              k:'pan',       w:13, bg:'4527A0', sec:'STATUTORY' },
+        { h:'Aadhaar',          k:'aadhar',    w:14, bg:'4527A0', sec:'' },
+        { h:'UAN',              k:'uan',       w:14, bg:'4527A0', sec:'' },
+        { h:'PF Account',       k:'pfAcc',     w:16, bg:'4527A0', sec:'' },
+        { h:'ESI Applicable',   k:'esiApp',    w:12, bg:'4527A0', sec:'' },
+        { h:'ESI Number',       k:'esiNo',     w:14, bg:'4527A0', sec:'' },
+        { h:'Bank Account',     k:'bankAcc',   w:18, bg:'1565C0', sec:'BANK' },
+        { h:'IFSC',             k:'ifsc',      w:12, bg:'1565C0', sec:'' },
+        { h:'Bank Name',        k:'bankName',  w:16, bg:'1565C0', sec:'' },
+        { h:'Branch',           k:'branch',    w:16, bg:'1565C0', sec:'' },
+      ];
+      dirCols.forEach((c,i) => { ws1.getColumn(i+1).width = c.w; });
+
+      // Title
+      ws1.mergeCells(1,1,1,dirCols.length);
+      Object.assign(ws1.getCell('A1'), { value:'EMPLOYEE DIRECTORY   |   Maxvolt Energy Industries Limited', font:fnt(true,'FFFFFF',14), fill:fl('1A3C5E'), alignment:ctr });
+      ws1.getRow(1).height = 32;
+      ws1.mergeCells(2,1,2,dirCols.length);
+      Object.assign(ws1.getCell('A2'), { value:`Generated: ${new Date().toLocaleString('en-IN')}   |   Total Employees: ${employees.length}   |   Active employees only`, font:fnt(false,'FFFFFF',9), fill:fl('2D6A9F'), alignment:lft });
+      ws1.getRow(2).height = 18;
+
+      // Section headers row 3
+      const dirSections = [
+        { label:'IDENTITY', cols:3, bg:'1A3C5E' },
+        { label:'EMPLOYMENT DETAILS', cols:7, bg:'1565C0' },
+        { label:'CONTACT', cols:3, bg:'2E7D32' },
+        { label:'PERSONAL', cols:5, bg:'00695C' },
+        { label:'EMERGENCY CONTACT', cols:3, bg:'4E342E' },
+        { label:'STATUTORY IDs', cols:6, bg:'4527A0' },
+        { label:'BANK DETAILS', cols:4, bg:'1565C0' },
+      ];
+      let dc = 1;
+      for (const sec of dirSections) {
+        if (sec.cols > 1) ws1.mergeCells(3, dc, 3, dc + sec.cols - 1);
+        Object.assign(ws1.getCell(3, dc), { value:sec.label, font:fnt(true,'FFFFFF',9), fill:fl(sec.bg), alignment:ctr, border:bd() });
+        dc += sec.cols;
+      }
+      ws1.getRow(3).height = 18;
+
+      // Column headers row 4
+      const hRow1 = ws1.getRow(4);
+      hRow1.height = 22;
+      dirCols.forEach((c,i) => Object.assign(hRow1.getCell(i+1), { value:c.h, font:fnt(true,'FFFFFF',9), fill:fl(c.bg), alignment:{ horizontal:'center', vertical:'middle', wrapText:true }, border:bd() }));
+
+      // Status colour
+      const statusFill = { probation:'FFA500', confirmation:'1B5E20', trainee:'1565C0', active:'1B5E20' };
+
+      // Data rows
+      const sectionFills = ['EBF5FB','EBF5FB','EBF5FB','E8F5E9','E8F5E9','E8F5E9','F3E5F5','F3E5F5','F3E5F5','F3E5F5','F3E5F5','F3F0FF','F3F0FF','F3F0FF','F3F0FF','F3F0FF','F3F0FF','E3F2FD','E3F2FD','E3F2FD','E3F2FD','FFF3E0','FFF3E0','FFF3E0','FFF3E0','FFF3E0','FFF3E0','E8EAF6','E8EAF6','E8EAF6','E8EAF6'];
+      employees.forEach((emp, idx) => {
+        const user  = userMap[emp.user_id] || {};
+        const isAlt = idx % 2 === 1;
+        const row   = [
+          idx+1, emp.employee_code||'', emp.display_name||user.display_name||user.full_name||'',
+          emp.department||'', emp.designation||'', emp.employee_status||'', emp.employment_type||'',
+          emp.date_of_joining||'', emp.employee_confirmation_date||'', emp.work_location||'',
+          user.email||'', emp.phone||'', emp.personal_email||'',
+          emp.date_of_birth||'', emp.gender||'', emp.blood_group||'', emp.father_spouse_name||'', emp.address||'',
+          emp.emergency_contact?.name||'', emp.emergency_contact?.phone||'', emp.emergency_contact?.relationship||'',
+          emp.pan_number||'', emp.aadhar_number||'', emp.uan_number||'', emp.pf_account_number||'',
+          emp.is_esi_applicable ? 'Yes' : 'No', emp.esi_number||'',
+          emp.bank_account?.account_number||emp.bank_account_number||'',
+          emp.bank_account?.ifsc_code||emp.ifsc_code||'',
+          emp.bank_account?.bank_name||emp.bank_name||'',
+          emp.bank_account?.branch||'',
+        ];
+        const wsRow = ws1.getRow(5 + idx);
+        wsRow.height = 16;
+        row.forEach((val, ci) => {
+          const cell = wsRow.getCell(ci+1);
+          cell.value = val; cell.border = bd(); cell.font = fnt(false,'222222',9);
+          const baseFill = sectionFills[ci] || 'FFFFFF';
+          cell.fill = fl(isAlt ? baseFill : 'FFFFFF');
+          cell.alignment = (ci === 0) ? ctr : (ci >= 4 ? lft : lft);
+          // Highlight status cell
+          if (dirCols[ci].k === 'status' && val) {
+            const sFill = statusFill[val] || '555555';
+            cell.fill = fl(sFill + '22');
+            cell.font = fnt(true, sFill, 9);
+          }
+        });
+      });
+
+      // ── Sheet 2: Salary Components ───────────────────────────
+      const ws2 = wb.addWorksheet('Salary Components', { views:[{ state:'frozen', xSplit:0, ySplit:4 }] });
+      const salCols = [
+        { h:'S.No',         k:'sno',    w:5  },
+        { h:'Emp Code',     k:'code',   w:10 },
+        { h:'Name',         k:'name',   w:24 },
+        { h:'Department',   k:'dept',   w:16 },
+        { h:'Effective From',k:'eff',   w:13 },
+        { h:'Annual CTC',   k:'ctc',    w:13 },
+        { h:'Monthly CTC',  k:'monCTC', w:12 },
+        { h:'Basic',        k:'basic',  w:12 },
+        { h:'HRA',          k:'hra',    w:11 },
+        { h:'Conveyance',   k:'conv',   w:12 },
+        { h:'Special Allow',k:'special',w:13 },
+        { h:'Bonus/VPP',    k:'bonus',  w:12 },
+        { h:'Gross/Month',  k:'gross',  w:13 },
+        { h:'PF (Emp)',     k:'pfEmp',  w:12 },
+        { h:'ESI (Emp)',    k:'esiEmp', w:12 },
+        { h:'Net Take-Home',k:'net',    w:13 },
+        { h:'PF (Empr)',    k:'pfEmpr', w:12 },
+        { h:'ESI (Empr)',   k:'esiEmpr',w:13 },
+      ];
+      salCols.forEach((c,i) => { ws2.getColumn(i+1).width = c.w; });
+
+      const salSections = [
+        { label:'EMPLOYEE',    cols:5, bg:'1A3C5E' },
+        { label:'CTC',         cols:2, bg:'1565C0' },
+        { label:'EARNINGS',    cols:6, bg:'1B5E20' },
+        { label:'DEDUCTIONS',  cols:3, bg:'B71C1C' },
+        { label:'EMPR CONTRIB',cols:2, bg:'4A148C' },
+      ];
+      ws2.mergeCells(1,1,1,salCols.length);
+      Object.assign(ws2.getCell('A1'), { value:'SALARY COMPONENTS   |   Maxvolt Energy Industries Limited', font:fnt(true,'FFFFFF',14), fill:fl('1A3C5E'), alignment:ctr });
+      ws2.getRow(1).height = 32;
+      ws2.mergeCells(2,1,2,salCols.length);
+      Object.assign(ws2.getCell('A2'), { value:`Generated: ${new Date().toLocaleString('en-IN')}`, font:fnt(false,'FFFFFF',9), fill:fl('2D6A9F'), alignment:lft });
+      ws2.getRow(2).height = 18;
+      let sc2 = 1;
+      for (const sec of salSections) {
+        if (sec.cols > 1) ws2.mergeCells(3, sc2, 3, sc2 + sec.cols - 1);
+        Object.assign(ws2.getCell(3, sc2), { value:sec.label, font:fnt(true,'FFFFFF',9), fill:fl(sec.bg), alignment:ctr, border:bd() });
+        sc2 += sec.cols;
+      }
+      ws2.getRow(3).height = 18;
+      const hRow2 = ws2.getRow(4);
+      hRow2.height = 22;
+      salCols.forEach((c,i) => Object.assign(hRow2.getCell(i+1), { value:c.h, font:fnt(true,'FFFFFF',9), fill:fl('1A3C5E'), alignment:{ horizontal:'center', vertical:'middle', wrapText:true }, border:bd() }));
+
+      employees.forEach((emp, idx) => {
+        const ss = ssMap[emp.user_id] || {};
+        const annCTC = ss.ctc || 0;
+        const monCTC = Math.round(annCTC / 12);
+        const basic  = ss.basic_salary || Math.round(monCTC * 0.5);
+        const hra    = ss.hra || Math.round(basic * 0.4);
+        const conv   = ss.conveyance || 0;
+        const special= ss.special_allowance || 0;
+        const bonus  = ss.performance_bonus || ss.ctc_bonus || Math.round(basic * 0.0833);
+        const gross  = basic + hra + conv + special;
+        const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, 15000) * 0.12);
+        const esiEmp = ss.esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
+        const net    = Math.max(0, gross - pfEmp - esiEmp);
+        const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, 15000) * 0.13);
+        const esiEmpr= ss.employer_esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
+
+        const isAlt  = idx % 2 === 1;
+        const row2   = [ idx+1, emp.employee_code||'', emp.display_name||'', emp.department||'', ss.effective_from||'', annCTC, monCTC, basic, hra, conv, special, bonus, gross, pfEmp, esiEmp, net, pfEmpr, esiEmpr ];
+        const wsRow  = ws2.getRow(5 + idx);
+        wsRow.height = 16;
+        const salSecFills = ['','','','','','E3F2FD','E3F2FD','E8F5E9','E8F5E9','E8F5E9','E8F5E9','E8F5E9','E8F5E9','FFEBEE','FFEBEE','FFF9C4','F3E5F5','F3E5F5'];
+        row2.forEach((val, ci) => {
+          const cell = wsRow.getCell(ci+1);
+          cell.value = val; cell.border = bd(); cell.font = fnt(false,'222222',9);
+          const base = salSecFills[ci];
+          cell.fill = fl(isAlt && base ? base : (base ? 'FFFFFF' : 'FFFFFF'));
+          if (ci < 5) cell.alignment = (ci === 0 ? ctr : lft);
+          if (ci >= 5) { cell.numFmt = '#,##0'; cell.alignment = rgt; }
+          if (ci >= 5 && base) cell.fill = fl(isAlt ? (base || 'FFFFFF') : 'FFFFFF');
+        });
+      });
+
+      // Totals row on sheet 2
+      const sums = employees.reduce((acc, emp) => {
+        const ss = ssMap[emp.user_id] || {};
+        const annCTC = ss.ctc || 0;
+        const monCTC = Math.round(annCTC / 12);
+        const basic  = ss.basic_salary || Math.round(monCTC * 0.5);
+        const hra    = ss.hra || Math.round(basic * 0.4);
+        const conv   = ss.conveyance || 0;
+        const special= ss.special_allowance || 0;
+        const bonus  = ss.performance_bonus || ss.ctc_bonus || Math.round(basic * 0.0833);
+        const gross  = basic + hra + conv + special;
+        const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, 15000) * 0.12);
+        const esiEmp = ss.esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
+        const net    = Math.max(0, gross - pfEmp - esiEmp);
+        const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, 15000) * 0.13);
+        const esiEmpr= ss.employer_esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
+        return { annCTC:acc.annCTC+annCTC, monCTC:acc.monCTC+monCTC, basic:acc.basic+basic, hra:acc.hra+hra, conv:acc.conv+conv, special:acc.special+special, bonus:acc.bonus+bonus, gross:acc.gross+gross, pfEmp:acc.pfEmp+pfEmp, esiEmp:acc.esiEmp+esiEmp, net:acc.net+net, pfEmpr:acc.pfEmpr+pfEmpr, esiEmpr:acc.esiEmpr+esiEmpr };
+      }, { annCTC:0, monCTC:0, basic:0, hra:0, conv:0, special:0, bonus:0, gross:0, pfEmp:0, esiEmp:0, net:0, pfEmpr:0, esiEmpr:0 });
+      const totRow2 = ws2.addRow(['', 'TOTAL', '', '', '', Math.round(sums.annCTC), Math.round(sums.monCTC), Math.round(sums.basic), Math.round(sums.hra), Math.round(sums.conv), Math.round(sums.special), Math.round(sums.bonus), Math.round(sums.gross), Math.round(sums.pfEmp), Math.round(sums.esiEmp), Math.round(sums.net), Math.round(sums.pfEmpr), Math.round(sums.esiEmpr)]);
+      totRow2.height = 22;
+      totRow2.eachCell(cell => { cell.font = fnt(true,'FFFFFF',10); cell.fill = fl('1A3C5E'); cell.border = bd(); if (typeof cell.value === 'number') { cell.numFmt = '#,##0'; cell.alignment = rgt; } });
+
+      const buf2 = await wb.xlsx.writeBuffer();
+      return res.json({ success:true, base64:Buffer.from(buf2).toString('base64'), filename:`Employee_Directory_${new Date().toISOString().slice(0,10)}.xlsx`, total:employees.length });
+    }
+
     /* ── Salary Sheet Export (styled Excel) ─────────────── */
     case 'exportSalarySheet': {
       const { month, year } = p;
