@@ -694,7 +694,8 @@ router.post('/:name', async (req, res) => {
             // Sunday: sandwich policy
             const satPresent = isMusterPresent(attByDate[fmtDate(new Date(yr, mo-1, dy-1))]);
             const monPresent = isMusterPresent(attByDate[fmtDate(new Date(yr, mo-1, dy+1))]);
-            if (!satPresent && !monPresent) absentDays++;    // both sides absent → Sunday LOP
+            if (!satPresent && !monPresent) { absentDays++; }  // both sides absent → Sunday LOP
+            else { presentDays++; }                             // protected → count as present
             continue;
           }
           const rec = attByDate[ds];
@@ -1463,7 +1464,8 @@ router.post('/:name', async (req, res) => {
               // Sunday: sandwich policy
               const satPresent = isMusterPresentSS(attByDate[fmtDateSS(new Date(yr, mo-1, dy-1))]);
               const monPresent = isMusterPresentSS(attByDate[fmtDateSS(new Date(yr, mo-1, dy+1))]);
-              if (!satPresent && !monPresent) daysAbsent++;  // both sides absent → Sunday LOP
+              if (!satPresent && !monPresent) { daysAbsent++; }  // both sides absent → Sunday LOP
+              else { daysPresent++; }                            // protected → count as present
               continue;
             }
             const rec = attByDate[ds];
