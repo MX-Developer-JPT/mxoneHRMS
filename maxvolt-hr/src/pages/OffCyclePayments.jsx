@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { DollarSign, Plus, Check, X } from 'lucide-react';
+import { DollarSign, Plus, Check, X, ChevronsUpDown } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -22,12 +22,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 
 export default function OffCyclePayments() {
   const [payments, setPayments] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showDialog, setShowDialog] = useState(false);
+  const [empOpen, setEmpOpen] = useState(false);
   const [formData, setFormData] = useState({
     user_id: '',
     payment_type: 'bonus',
@@ -170,18 +173,40 @@ export default function OffCyclePayments() {
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <Label>Employee</Label>
-                  <Select value={formData.user_id} onValueChange={(v) => setFormData({...formData, user_id: v})}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select employee" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {employees.map(emp => (
-                        <SelectItem key={emp.user_id} value={emp.user_id}>
-                          {emp.user?.full_name} - {emp.designation}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Popover open={empOpen} onOpenChange={setEmpOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm hover:bg-accent hover:text-accent-foreground">
+                        <span className={formData.user_id ? 'text-foreground' : 'text-muted-foreground'}>
+                          {formData.user_id
+                            ? (() => { const e = employees.find(e => e.user_id === formData.user_id); return e ? `${e.user?.full_name} — ${e.designation}` : 'Select employee'; })()
+                            : 'Select employee'}
+                        </span>
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[320px] p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search employee..." />
+                        <CommandList>
+                          <CommandEmpty>No employee found.</CommandEmpty>
+                          <CommandGroup>
+                            {employees.map(emp => (
+                              <CommandItem
+                                key={emp.user_id}
+                                value={`${emp.user?.full_name} ${emp.designation} ${emp.employee_code || ''}`}
+                                onSelect={() => { setFormData({ ...formData, user_id: emp.user_id }); setEmpOpen(false); }}
+                              >
+                                <div>
+                                  <p className="font-medium">{emp.user?.full_name}</p>
+                                  <p className="text-xs text-gray-500">{emp.designation} {emp.employee_code ? `· ${emp.employee_code}` : ''}</p>
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                 </div>
                 <div>
                   <Label>Payment Type</Label>

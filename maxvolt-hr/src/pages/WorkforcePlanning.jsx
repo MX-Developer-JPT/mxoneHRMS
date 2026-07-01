@@ -24,7 +24,7 @@ export default function WorkforcePlanning() {
     setLoading(true);
     try {
       const result = await base44.functions.invoke('getWorkforcePlan', {});
-      setData(result);
+      setData(result.data || result);
     } catch (e) {
       toast.error('Failed to load workforce plan');
       setData({ current_headcount: [], plans: [] });

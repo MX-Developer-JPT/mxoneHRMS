@@ -18,7 +18,7 @@ export default function OvertimeManagement() {
     setLoading(true);
     try {
       const result = await base44.functions.invoke('getOvertimeData', { month: Number(month), year: Number(year) });
-      setData(result);
+      setData(result.data || result);
     } catch (e) {
       toast.error('Failed to load overtime data');
       setData({ records: [], total_ot_hours: 0, total_ot_amount: 0, employees_with_ot: 0 });

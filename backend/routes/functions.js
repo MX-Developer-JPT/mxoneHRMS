@@ -7468,8 +7468,9 @@ Return ONLY valid JSON (no markdown):
           [emp.user_id, startDate, endDate]
         );
         const records = attRows.map(r => JSON.parse(r.data));
-        const otRecords = records.filter(a => a.work_hours > (a.shift_hours || 8));
-        const totalOTHours = otRecords.reduce((sum, a) => sum + Math.max(0, (a.work_hours || 0) - (a.shift_hours || 8)), 0);
+        const shiftHrs = 8; // default shift hours; actual OT = worked beyond shift
+        const otRecords = records.filter(a => (a.working_hours || 0) > shiftHrs);
+        const totalOTHours = otRecords.reduce((sum, a) => sum + Math.max(0, (a.working_hours || 0) - shiftHrs), 0);
         if (totalOTHours > 0) {
           const ssRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [emp.user_id]);
           const ss = ssRow ? JSON.parse(ssRow.data) : {};
@@ -7480,11 +7481,20 @@ Return ONLY valid JSON (no markdown):
             employee_id: emp.id, user_id: emp.user_id,
             name: emp.display_name, code: emp.employee_code, department: emp.department,
             total_ot_hours: Math.round(totalOTHours * 10) / 10,
-            ot_amount: otAmount, dates: otRecords.map(a => ({ date: a.date, ot_hours: Math.max(0, (a.work_hours || 0) - (a.shift_hours || 8)) }))
+            ot_amount: otAmount, dates: otRecords.map(a => ({ date: a.date, ot_hours: Math.max(0, (a.working_hours || 0) - shiftHrs) }))
           });
         }
       }
-      return res.json({ success: true, month, year, overtime: overtimeData, total_ot_amount: overtimeData.reduce((s, r) => s + r.ot_amount, 0) });
+      const records = overtimeData.map(r => ({
+        employee_name: r.name, employee_code: r.code, department: r.department,
+        ot_hours: r.total_ot_hours, ot_amount: r.ot_amount, dates: r.dates,
+      }));
+      return res.json({
+        success: true, month, year, records,
+        total_ot_hours: Math.round(overtimeData.reduce((s, r) => s + r.total_ot_hours, 0) * 10) / 10,
+        total_ot_amount: overtimeData.reduce((s, r) => s + r.ot_amount, 0),
+        employees_with_ot: overtimeData.length,
+      });
     }
 
     case 'getWFHReport': {
@@ -7505,14 +7515,30 @@ Return ONLY valid JSON (no markdown):
         byUser[row.user_id].push(d.date);
       }
 
-      const result = [];
+      const wfhResult = [];
       for (const [uid, dates] of Object.entries(byUser)) {
         const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
         const emp = empRow ? JSON.parse(empRow.data) : {};
-        result.push({ user_id: uid, name: emp.display_name, code: emp.employee_code, department: emp.department, wfh_days: dates.length, dates });
+        wfhResult.push({ user_id: uid, employee_name: emp.display_name, employee_code: emp.employee_code, department: emp.department, wfh_days: dates.length, dates: dates.sort() });
       }
+      wfhResult.sort((a, b) => b.wfh_days - a.wfh_days);
 
-      return res.json({ success: true, month, year, wfh_records: result, total_wfh_days: result.reduce((s, r) => s + r.wfh_days, 0) });
+      const deptMap = {};
+      for (const r of wfhResult) {
+        const dept = r.department || 'Unknown';
+        deptMap[dept] = (deptMap[dept] || 0) + r.wfh_days;
+      }
+      const department_summary = Object.entries(deptMap)
+        .map(([department, total_wfh_days]) => ({ department, total_wfh_days }))
+        .sort((a, b) => b.total_wfh_days - a.total_wfh_days);
+
+      return res.json({
+        success: true, month, year,
+        records: wfhResult,
+        total_wfh_days: wfhResult.reduce((s, r) => s + r.wfh_days, 0),
+        unique_employees: wfhResult.length,
+        department_summary,
+      });
     }
 
     case 'getTallyExport': {

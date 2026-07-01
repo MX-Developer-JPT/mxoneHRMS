@@ -41,10 +41,15 @@ export default function LOPConfiguration() {
   const [loadingReports, setLoadingReports] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [accessDenied, setAccessDenied] = useState(false);
 
   useEffect(() => {
-    loadConfig();
-    loadLOPReports();
+    base44.auth.me().then(user => {
+      const isAdmin = user.role === 'admin' || user.custom_role === 'admin';
+      if (!isAdmin) { setAccessDenied(true); return; }
+      loadConfig();
+      loadLOPReports();
+    }).catch(() => setAccessDenied(true));
   }, []);
 
   const loadConfig = async () => {
@@ -106,6 +111,16 @@ export default function LOPConfiguration() {
   const totalLopDays = filteredReports.reduce((s, r) => s + (r.loss_of_pay_days || 0), 0);
 
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  if (accessDenied) return (
+    <div className="flex items-center justify-center h-64">
+      <div className="text-center">
+        <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-3" />
+        <h2 className="text-lg font-semibold text-gray-700">Access Restricted</h2>
+        <p className="text-gray-500 mt-1">This page is only available to administrators.</p>
+      </div>
+    </div>
+  );
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">

@@ -54,7 +54,7 @@ export default function POSHCompliance() {
     setLoading(true);
     try {
       const result = await base44.functions.invoke('getPOSHData', {});
-      setData(result);
+      setData(result.data || result);
     } catch (e) {
       toast.error('Failed to load POSH data');
       setData({ records: [], total: 0, open: 0, closed: 0 });

@@ -26,7 +26,7 @@ export default function TallyExport() {
     setResult(null);
     try {
       const res = await base44.functions.invoke('getTallyExport', { month: Number(month), year: Number(year) });
-      setResult(res);
+      setResult(res.data || res);
       toast.success('Export generated successfully');
     } catch (e) {
       toast.error('Failed to generate export');

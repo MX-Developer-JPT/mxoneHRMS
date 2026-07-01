@@ -72,8 +72,9 @@ export default function AttendanceReports() {
     const earlyOut = attendance.filter(a => a.early_departure).length;
     const biometric = attendance.filter(a => a.biometric_synced).length;
     const selfie = attendance.filter(a => !a.biometric_synced && (a.check_in_selfie_url || a.check_out_selfie_url)).length;
-    const avgHours = total > 0 ? (attendance.reduce((s, a) => s + (a.working_hours || 0), 0) / total) : 0;
-    const totalOvertime = attendance.reduce((s, a) => s + (a.overtime_hours || 0), 0);
+    const workedRecs = attendance.filter(a => (a.working_hours || 0) > 0);
+    const avgHours = workedRecs.length > 0 ? (workedRecs.reduce((s, a) => s + a.working_hours, 0) / workedRecs.length) : 0;
+    const totalOvertime = attendance.reduce((s, a) => s + ((a.overtime_minutes || 0) / 60), 0);
     return { total, present, halfDay, absent, late, earlyOut, biometric, selfie, avgHours, totalOvertime };
   }, [attendance]);
 
@@ -101,7 +102,7 @@ export default function AttendanceReports() {
     const map = {};
     employees.forEach(e => {
       const dept = e.department || 'Unknown';
-      if (!map[dept]) map[dept] = { dept, employees: 0, present: 0, absent: 0, late: 0, earlyOut: 0, avgHours: 0, totalHours: 0, records: 0 };
+      if (!map[dept]) map[dept] = { dept, employees: 0, present: 0, absent: 0, late: 0, earlyOut: 0, avgHours: 0, totalHours: 0, records: 0, workedRecords: 0 };
       map[dept].employees++;
     });
     attendance.forEach(a => {
@@ -113,11 +114,11 @@ export default function AttendanceReports() {
       if (a.status === 'absent') map[dept].absent++;
       if (a.late_arrival) map[dept].late++;
       if (a.early_departure) map[dept].earlyOut++;
-      map[dept].totalHours += a.working_hours || 0;
+      if ((a.working_hours || 0) > 0) { map[dept].totalHours += a.working_hours; map[dept].workedRecords++; }
     });
     return Object.values(map).map(d => ({
       ...d,
-      avgHours: d.records > 0 ? parseFloat((d.totalHours / d.records).toFixed(1)) : 0,
+      avgHours: d.workedRecords > 0 ? parseFloat((d.totalHours / d.workedRecords).toFixed(1)) : 0,
       attendanceRate: d.records > 0 ? parseFloat(((d.present / d.records) * 100).toFixed(1)) : 0,
     })).sort((a, b) => b.employees - a.employees);
   }, [attendance, employees]);

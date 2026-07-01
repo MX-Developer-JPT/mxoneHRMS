@@ -17,7 +17,7 @@ export default function WFHTracking() {
     setLoading(true);
     try {
       const result = await base44.functions.invoke('getWFHReport', { month: Number(month), year: Number(year) });
-      setData(result);
+      setData(result.data || result);
     } catch (e) {
       toast.error('Failed to load WFH data');
       setData({ records: [], total_wfh_days: 0, unique_employees: 0, department_summary: [] });

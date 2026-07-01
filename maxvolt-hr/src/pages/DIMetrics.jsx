@@ -14,7 +14,7 @@ export default function DIMetrics() {
     setLoading(true);
     try {
       const result = await base44.functions.invoke('getDIMetrics', {});
-      setData(result);
+      setData(result.data || result);
     } catch (e) {
       toast.error('Failed to load D&I metrics');
       setData(null);

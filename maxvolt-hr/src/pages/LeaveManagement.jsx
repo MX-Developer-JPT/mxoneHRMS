@@ -109,6 +109,11 @@ export default function LeaveManagement() {
 
       setLeaveRequests(requests);
       setLeavePolicies(policies);
+
+      // Silently run auto EL grant (1 EL per 40 present days) — deduplication handled server-side
+      base44.functions.invoke('grantEarnedLeaveFor40Days', {})
+        .then(res => { const r = res?.data; if (r?.total_granted > 0) toast.success(`Auto-granted ${r.total_granted} Earned Leave(s) for qualifying employee(s)`); })
+        .catch(() => {});
     } catch (error) {
       console.error('Error loading:', error);
     } finally {
