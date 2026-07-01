@@ -47,7 +47,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const hraFixed        = salaryStructure.hra          || 0;
   const conveyanceFixed = salaryStructure.conveyance   || 0;
   const bonusFixed      = salaryStructure.performance_bonus || 0;
-  const grossFixed      = basicFixed + hraFixed + conveyanceFixed;
+  const grossFixed      = basicFixed + hraFixed + conveyanceFixed + bonusFixed;
 
   // All calendar days are working days at Maxvolt (Sundays included)
   const calendarDays = payroll.calendar_days || 30;    // e.g. 31 for March, 30 for June
@@ -63,7 +63,8 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const basicEarned      = Math.round(basicFixed * payDays / calendarDays);
   const hraEarned        = Math.round(hraFixed * payDays / calendarDays);
   const conveyanceEarned = Math.round(conveyanceFixed * payDays / calendarDays);
-  const grossSalary      = basicEarned + hraEarned + conveyanceEarned;
+  const bonusEarned      = Math.round(bonusFixed * payDays / calendarDays);
+  const grossSalary      = basicEarned + hraEarned + conveyanceEarned + bonusEarned;
 
   const arrear   = payroll.arrear    || 0;
   const ytdGross = payroll.ytd_gross || grossSalary;
@@ -185,10 +186,9 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
               ${earningRow('Basic Salary', basicFixed, basicEarned, ytdGross * (basicFixed / (grossFixed || 1)), 0)}
               ${earningRow('House Rent Allowance (HRA)', hraFixed, hraEarned, ytdGross * (hraFixed / (grossFixed || 1)), 0)}
               ${earningRow('Conveyance Allowance', conveyanceFixed, conveyanceEarned, ytdGross * (conveyanceFixed / (grossFixed || 1)), 0)}
+              ${bonusFixed > 0 ? earningRow('Performance Bonus', bonusFixed, bonusEarned, ytdGross * (bonusFixed / (grossFixed || 1)), 0) : ''}
               ${arrear > 0 ? `<tr><td class="td">Arrear</td><td class="td amt">—</td><td class="td amt">—</td><td class="td amt">${fmt(arrear)}</td><td class="td amt">${fmt(arrear)}</td></tr>` : ''}
-              ${bonusBreakdown.length > 0
-                ? bonusBreakdown.map(b => `<tr><td class="td">${(b.bonus_type || 'Bonus').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())} (${b.reason || 'Off-cycle'})</td><td class="td amt">—</td><td class="td amt">${fmt(b.amount)}</td><td class="td amt">—</td><td class="td amt">${fmt(b.amount)}</td></tr>`).join('')
-                : (otherEarnings ? `<tr><td class="td">Performance Bonus</td><td class="td amt">${fmt(bonusFixed)}</td><td class="td amt">${fmt(otherEarnings)}</td><td class="td amt">—</td><td class="td amt">${fmt(otherEarnings)}</td></tr>` : '')}
+              ${bonusBreakdown.map(b => `<tr><td class="td">${(b.bonus_type || 'Bonus').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())} (${b.reason || 'Off-cycle'})</td><td class="td amt">—</td><td class="td amt">${fmt(b.amount)}</td><td class="td amt">—</td><td class="td amt">${fmt(b.amount)}</td></tr>`).join('')}
             </tbody>
             <tfoot>
               <tr style="background:#f0fdf4;font-weight:bold;">
