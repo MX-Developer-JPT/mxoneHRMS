@@ -5213,6 +5213,51 @@ ${contextBlock || 'No employee context available — answer from general policy 
       });
     }
 
+    case 'getMISInsights': {
+      const { metrics = {}, context = {} } = p;
+      const { callAI } = await import('../utils/ai.js');
+
+      const prompt = `You are an HR analytics expert. Analyze the following HRMS metrics and provide 6-8 actionable insights for the HR team.
+
+METRICS:
+- Total Active Employees: ${metrics.totalActive ?? 'N/A'}
+- Present Today: ${metrics.presentToday ?? 'N/A'} (Absent: ${metrics.absentToday ?? 'N/A'})
+- Attendance Rate: ${metrics.totalActive ? (((metrics.presentToday || 0) / metrics.totalActive) * 100).toFixed(1) : 'N/A'}%
+- Attrition Rate (annualized): ${metrics.attritionRate ?? 'N/A'}%
+- Monthly Payroll Cost: ₹${(metrics.totalPayrollCost || 0).toLocaleString('en-IN')}
+- Pending Leave Requests: ${metrics.pendingLeaveRequests ?? 'N/A'}
+- Active Leaves Today: ${metrics.activeLeaves ?? 'N/A'}
+- Open Helpdesk Tickets: ${metrics.openTickets ?? 'N/A'}
+
+ADDITIONAL CONTEXT:
+- Exits in notice period: ${context.exits?.inNotice ?? 0}
+- Exits pending clearance: ${context.exits?.clearancePending ?? 0}
+- F&F pending: ${context.exits?.fnfPending ?? 0}
+- Candidates in pipeline: ${context.recruitment?.inPipeline ?? 0}
+- Hired (all time): ${context.recruitment?.hired ?? 0}
+- Compliance overdue deadlines: ${context.compliance?.overdueDeadlines ?? 0}
+- KYC missing employees: ${context.compliance?.kycMissing ?? 0}
+- Asset overdue returns: ${context.assets?.overdueReturns ?? 0}
+- Assets under repair: ${context.assets?.underRepair ?? 0}
+- Open helpdesk tickets: ${context.tickets?.openTickets ?? 0}
+
+Respond with a JSON object containing an "insights" array. Each insight must have:
+- "type": one of "positive", "warning", "critical", "info"
+- "title": short title (5-8 words)
+- "detail": one sentence explaining the finding
+- "action": one sentence recommended action (what HR should do)
+
+Focus on actionable, specific insights. Flag critical issues first, then warnings, then positives and info.`;
+
+      try {
+        const result = await callAI(prompt, { json: true });
+        const insights = result?.insights || [];
+        return res.json({ success: true, insights });
+      } catch (e) {
+        return res.json({ success: false, error: e.message, insights: [] });
+      }
+    }
+
     case 'getTeamCalendar': {
       const { month, year, manager_id } = p;
       const m = parseInt(month) || new Date().getMonth() + 1;

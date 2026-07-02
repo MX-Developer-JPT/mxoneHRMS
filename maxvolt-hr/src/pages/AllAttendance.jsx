@@ -76,6 +76,24 @@ export default function AllAttendance() {
     return () => clearInterval(interval);
   }, [date]);
 
+  // Auto-mark absent: silently runs for yesterday on page load (HR/admin only)
+  useEffect(() => {
+    const runAutoAbsent = async () => {
+      try {
+        const me = await base44.auth.me();
+        const role = me.custom_role || me.role;
+        if (role !== 'hr' && role !== 'admin') return;
+        const yesterday = format(new Date(Date.now() - 86400000), 'yyyy-MM-dd');
+        const res = await base44.functions.invoke('markAbsentEmployees', { date: yesterday });
+        if (res.data?.marked > 0) {
+          toast.info(`Auto-marked ${res.data.marked} absent for ${yesterday}`);
+          loadData(true);
+        }
+      } catch (_) {}
+    };
+    runAutoAbsent();
+  }, []);
+
   const loadData = async (silent = false) => {
     if (!silent) setLoading(true);
     else setSilentRefreshing(true);

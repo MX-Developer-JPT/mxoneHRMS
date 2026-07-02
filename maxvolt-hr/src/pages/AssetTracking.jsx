@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, Plus, Edit2, Trash2, Laptop, Monitor, Smartphone, Keyboard, Mouse, Headphones, Printer, Router, HardDrive, Usb, Cable, Search, CheckCircle2, AlertTriangle, Download, Package, Boxes, Tags, ArrowLeft, UserCheck, UserX, RotateCcw, Clock, FileText, PrinterIcon, Wrench, IndianRupee, Upload, FileSpreadsheet, ChevronsUpDown, Check } from 'lucide-react';
+import { Loader2, Plus, Edit2, Trash2, Laptop, Monitor, Smartphone, Keyboard, Mouse, Headphones, Printer, Router, HardDrive, Usb, Cable, Search, CheckCircle2, AlertTriangle, Download, Package, Boxes, Tags, ArrowLeft, UserCheck, UserX, RotateCcw, Clock, FileText, PrinterIcon, Wrench, IndianRupee, Upload, FileSpreadsheet, ChevronsUpDown, Check, Tv, Camera, Car, Phone, Wind, Flame, ScanLine, Server, Network, Tablet, Cpu, Wifi, Coffee, BookOpen, Hammer } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
@@ -21,8 +21,47 @@ const TYPE_ICONS = {
   laptop: Laptop, monitor: Monitor, smartphone: Smartphone, keyboard: Keyboard,
   mouse: Mouse, headphones: Headphones, printer: Printer, router: Router,
   hard_drive: HardDrive, usb: Usb, cable: Cable, sim: Router,
-  desktop: Monitor, tablet: Smartphone, chair: Package, desk: Package, other: Package,
+  desktop: Monitor, tablet: Tablet, chair: Package, desk: Package, other: Package,
+  tv: Tv, camera: Camera, vehicle: Car, phone: Phone, ac: Wind,
+  fire_extinguisher: Flame, scanner: ScanLine, server: Server,
+  network_switch: Network, projector: Tv, cpu: Cpu, wifi: Wifi,
+  coffee_machine: Coffee, books: BookOpen, tools: Hammer,
 };
+
+const ICON_OPTIONS = [
+  { value: 'laptop',           label: 'Laptop' },
+  { value: 'desktop',          label: 'Desktop' },
+  { value: 'monitor',          label: 'Monitor' },
+  { value: 'tablet',           label: 'Tablet' },
+  { value: 'smartphone',       label: 'Smartphone' },
+  { value: 'phone',            label: 'Phone / Landline' },
+  { value: 'keyboard',         label: 'Keyboard' },
+  { value: 'mouse',            label: 'Mouse' },
+  { value: 'headphones',       label: 'Headphones' },
+  { value: 'printer',          label: 'Printer' },
+  { value: 'scanner',          label: 'Scanner' },
+  { value: 'router',           label: 'Router / Modem' },
+  { value: 'network_switch',   label: 'Network Switch' },
+  { value: 'server',           label: 'Server' },
+  { value: 'cpu',              label: 'CPU / Tower' },
+  { value: 'wifi',             label: 'WiFi Device' },
+  { value: 'hard_drive',       label: 'Hard Drive / Storage' },
+  { value: 'usb',              label: 'USB / Pen Drive' },
+  { value: 'cable',            label: 'Cable / Accessory' },
+  { value: 'sim',              label: 'SIM / Dongle' },
+  { value: 'camera',           label: 'Camera / CCTV' },
+  { value: 'projector',        label: 'Projector / TV' },
+  { value: 'tv',               label: 'Television' },
+  { value: 'vehicle',          label: 'Vehicle' },
+  { value: 'ac',               label: 'AC / Air Conditioner' },
+  { value: 'fire_extinguisher',label: 'Fire Extinguisher' },
+  { value: 'coffee_machine',   label: 'Coffee Machine / Appliance' },
+  { value: 'chair',            label: 'Chair / Furniture' },
+  { value: 'desk',             label: 'Desk / Table' },
+  { value: 'tools',            label: 'Tools / Equipment' },
+  { value: 'books',            label: 'Books / Library' },
+  { value: 'other',            label: 'Other' },
+];
 
 const STATUS_COLORS = {
   available: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
@@ -1091,15 +1130,20 @@ export default function AssetTracking() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Asset Type *</Label>
-                <Select value={assetForm.asset_type_id || '_none'} onValueChange={v => v !== '_none' && handleAssetFormTypeChange(v)}>
-                  <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_none">Select type...</SelectItem>
-                    {assetTypes.map(t => (
-                      <SelectItem key={t.id} value={t.id}>{t.name} ({t.code})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {assetTypes.length === 0 ? (
+                  <div className="mt-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-2">
+                    No asset types yet. Close and click <strong>Types</strong> button to create one first.
+                  </div>
+                ) : (
+                  <Select value={assetForm.asset_type_id || ''} onValueChange={v => v && handleAssetFormTypeChange(v)}>
+                    <SelectTrigger><SelectValue placeholder="Select type..." /></SelectTrigger>
+                    <SelectContent>
+                      {assetTypes.map(t => (
+                        <SelectItem key={t.id} value={t.id}>{t.name} ({t.code})</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
               <div>
                 <Label>Asset Name/Model *</Label>
@@ -1384,15 +1428,26 @@ export default function AssetTracking() {
           <div className="space-y-4">
             <div><Label>Name *</Label><Input value={typeForm.name} onChange={e => setTypeForm({...typeForm, name: e.target.value})} placeholder="e.g., Laptop" /></div>
             <div><Label>Code *</Label><Input value={typeForm.code} onChange={e => setTypeForm({...typeForm, code: e.target.value.toUpperCase()})} placeholder="e.g., LAP" maxLength={5} /></div>
-            <div><Label>Icon</Label>
-              <Select value={typeForm.icon} onValueChange={v => setTypeForm({...typeForm, icon: v})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {['laptop','desktop','monitor','keyboard','mouse','smartphone','headphones','printer','router','hard_drive','usb','cable','sim','tablet','chair','desk','other'].map(i => (
-                    <SelectItem key={i} value={i}>{i.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div>
+              <Label>Icon</Label>
+              <div className="mt-1.5 grid grid-cols-4 gap-1.5 max-h-52 overflow-y-auto border rounded-lg p-2">
+                {ICON_OPTIONS.map(opt => {
+                  const Icon = TYPE_ICONS[opt.value] || Package;
+                  const active = typeForm.icon === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      title={opt.label}
+                      onClick={() => setTypeForm({...typeForm, icon: opt.value})}
+                      className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs transition-all ${active ? 'bg-primary text-primary-foreground border-primary' : 'hover:bg-muted border-transparent'}`}
+                    >
+                      <Icon className="w-4 h-4" />
+                      <span className="truncate w-full text-center leading-none" style={{fontSize:'9px'}}>{opt.label.split(' ')[0]}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
             <div><Label>Description</Label><Textarea value={typeForm.description} onChange={e => setTypeForm({...typeForm, description: e.target.value})} rows={2} /></div>
             <div className="flex gap-2">

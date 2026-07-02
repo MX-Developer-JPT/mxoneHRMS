@@ -23,6 +23,8 @@ export default function SkillMatrix() {
   const [user, setUser] = useState(null);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ skill_name: '', proficiency_level: '' });
+  const [expandedEmp, setExpandedEmp] = useState(null);
+  const [empSkills, setEmpSkills] = useState({});
 
   useEffect(() => { loadOrg(); loadMe(); }, []);
 
@@ -70,6 +72,18 @@ export default function SkillMatrix() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const loadEmpSkills = async (emp) => {
+    const key = emp.user_id || emp.name;
+    if (expandedEmp === key) { setExpandedEmp(null); return; }
+    setExpandedEmp(key);
+    if (empSkills[key]) return;
+    try {
+      const result = await base44.functions.invoke('getSkillMatrix', { user_id: emp.user_id });
+      const skills = result?.data?.my_skills || result?.my_skills || [];
+      setEmpSkills(prev => ({ ...prev, [key]: skills }));
+    } catch { setEmpSkills(prev => ({ ...prev, [key]: [] })); }
   };
 
   const rawCoverage = orgData?.skill_coverage;
@@ -151,17 +165,46 @@ export default function SkillMatrix() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {employees.map((emp, i) => (
-                        <tr key={i} className="hover:bg-gray-50">
-                          <td className="px-4 py-3 font-medium text-gray-900">{emp.name}</td>
-                          <td className="px-4 py-3 text-gray-600">{emp.department}</td>
-                          <td className="px-4 py-3 text-center">
-                            <span className="inline-block bg-blue-100 text-blue-700 rounded-full px-2 py-0.5 text-xs font-semibold">
-                              {emp.skill_count}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                      {employees.map((emp, i) => {
+                        const key = emp.user_id || emp.name;
+                        const isExpanded = expandedEmp === key;
+                        const skills = empSkills[key];
+                        return (
+                          <React.Fragment key={i}>
+                            <tr className="hover:bg-gray-50 cursor-pointer" onClick={() => loadEmpSkills(emp)}>
+                              <td className="px-4 py-3 font-medium text-gray-900 flex items-center gap-2">
+                                <span className={`text-xs transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                                {emp.name}
+                              </td>
+                              <td className="px-4 py-3 text-gray-600">{emp.department}</td>
+                              <td className="px-4 py-3 text-center">
+                                <span className="inline-block bg-blue-100 text-blue-700 rounded-full px-2 py-0.5 text-xs font-semibold">
+                                  {emp.skill_count}
+                                </span>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr className="bg-blue-50/50">
+                                <td colSpan={3} className="px-6 py-3">
+                                  {!skills ? (
+                                    <p className="text-xs text-gray-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Loading skills…</p>
+                                  ) : skills.length === 0 ? (
+                                    <p className="text-xs text-gray-400">No skills added yet.</p>
+                                  ) : (
+                                    <div className="flex flex-wrap gap-2">
+                                      {skills.map((s, j) => (
+                                        <span key={j} className={`text-xs px-2.5 py-1 rounded-full font-medium border ${PROFICIENCY_COLORS[s.proficiency_level] || 'bg-gray-100 text-gray-600'}`}>
+                                          {s.skill_name} · {PROFICIENCY_LABELS[s.proficiency_level] || `L${s.proficiency_level}`}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </CardContent>

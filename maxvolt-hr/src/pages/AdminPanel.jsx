@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -390,13 +390,14 @@ function EntitiesTab({ typeCounts }) {
   const [viewRecord, setViewRecord]       = useState(null);
   const [confirm, setConfirm]             = useState(null);
   const [selected, setSelected]           = useState(new Set());
-  const [deleteAllTarget, setDeleteAllTarget] = useState(null); // type string to confirm delete-all
+  const [deleteAllTarget, setDeleteAllTarget] = useState(null);
+  const searchDebounce = useRef(null);
 
   const loadRecords = useCallback(async (type = selectedType, pg = page, q = search) => {
     if (!type) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: pg, limit: 20, ...(q ? { search: q } : {}) });
+      const params = new URLSearchParams({ page: pg, limit: 50, ...(q ? { search: q } : {}) });
       const data   = await adminFetch(`/entities/${type}?${params}`);
       setRecords(data.data);
       setTotal(data.total);
@@ -410,6 +411,20 @@ function EntitiesTab({ typeCounts }) {
     setSelectedType(type); setPage(1); setSearch('');
     loadRecords(type, 1, '');
   };
+
+  const handleSearchChange = (val) => {
+    setSearch(val);
+    setPage(1);
+    if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    searchDebounce.current = setTimeout(() => {
+      loadRecords(selectedType, 1, val);
+    }, 300);
+  };
+
+  // Client-side filter on top of server results for instant feedback
+  const clientFiltered = search.trim()
+    ? records.filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(search.toLowerCase())))
+    : records;
 
   const handleSaveEdit = async (data) => {
     try {
@@ -461,7 +476,7 @@ function EntitiesTab({ typeCounts }) {
     const keys = Object.keys(recs[0]).filter(k => !SKIP.includes(k) && !k.startsWith('_'));
     return keys.slice(0, 5);
   };
-  const cols = getPreviewCols(records);
+  const cols = getPreviewCols(clientFiltered.length ? clientFiltered : records);
 
   return (
     <div className="flex gap-4">
@@ -495,7 +510,7 @@ function EntitiesTab({ typeCounts }) {
               <div className="relative flex-1 max-w-xs">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input className="pl-9 h-9" placeholder="Search records…" value={search}
-                  onChange={e => { setSearch(e.target.value); setPage(1); loadRecords(selectedType, 1, e.target.value); }} />
+                  onChange={e => handleSearchChange(e.target.value)} />
               </div>
               <Badge variant="secondary" className="text-xs">{total} records</Badge>
               {selected.size > 0 && (
@@ -525,7 +540,7 @@ function EntitiesTab({ typeCounts }) {
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {records.map(r => (
+                    {clientFiltered.map(r => (
                       <tr key={r.id} className={`hover:bg-muted/30 ${selected.has(r.id) ? 'bg-primary/5' : ''}`}>
                         <td className="px-3 py-2">
                           <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleSelect(r.id)} />

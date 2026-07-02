@@ -219,7 +219,12 @@ export default function Documents() {
                   </div>
 
                   <Button
-                    onClick={() => setViewerDoc({ url: doc.document_url, title: doc.document_name || 'Document' })}
+                    onClick={() => setViewerDoc({
+                      url: doc.document_url || null,
+                      title: doc.document_name || 'Document',
+                      content: doc.letter_content || doc.html_content || doc.content || null,
+                      isHtml: !!(doc.html_content || (doc.letter_content && doc.letter_content.trim().startsWith('<'))),
+                    })}
                     className="w-full"
                     variant="outline"
                     size="sm"
@@ -237,6 +242,8 @@ export default function Documents() {
           open={!!viewerDoc}
           url={viewerDoc?.url}
           title={viewerDoc?.title}
+          content={viewerDoc?.content}
+          isHtml={viewerDoc?.isHtml}
           onClose={() => setViewerDoc(null)}
         />
 

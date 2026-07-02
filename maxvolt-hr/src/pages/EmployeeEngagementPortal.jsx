@@ -81,10 +81,9 @@ export default function EmployeeEngagementPortal() {
     try {
       const emps = await base44.entities.Employee.list('-date_of_joining', 500);
       const activeEmps = emps.filter(e =>
-        e.onboarding_submitted === true &&
         (!e.status || e.status === 'active' || e.status === 'on_leave') &&
-        e.department && e.department !== 'unassigned' && e.department !== 'pending' &&
-        e.designation && e.designation !== 'Pending Assignment'
+        e.display_name && e.display_name.trim() !== '' &&
+        e.department && e.department !== 'unassigned' && e.department !== 'pending'
       );
       // New joiners = employees who joined in the last 30 days
       const thirtyDaysAgo = new Date();

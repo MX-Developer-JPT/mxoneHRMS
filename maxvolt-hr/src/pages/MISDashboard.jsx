@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
-import { Users, UserCheck, UserX, DollarSign, TrendingDown, TrendingUp, FileText, HelpCircle, RefreshCw, Clock, Coffee, Fingerprint, Laptop, LogOut, Shield, IndianRupee, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Users, UserCheck, UserX, DollarSign, TrendingDown, TrendingUp, FileText, HelpCircle, RefreshCw, Clock, Coffee, Fingerprint, Laptop, LogOut, Shield, IndianRupee, AlertCircle, CheckCircle2, Sparkles, Loader2, TrendingUp as Trend, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import MetricCard from '@/components/mis/MetricCard';
 import InsightCard from '@/components/mis/InsightCard';
@@ -33,6 +33,113 @@ const TABS = [
   { id: 'exits', label: 'Exits' },
   { id: 'compliance', label: 'Compliance' },
 ];
+
+const INSIGHT_COLORS = {
+  warning: 'bg-amber-50 border-amber-200 text-amber-800',
+  positive: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+  critical: 'bg-red-50 border-red-200 text-red-800',
+  info: 'bg-blue-50 border-blue-200 text-blue-800',
+};
+const INSIGHT_ICONS = {
+  warning: '⚠️', positive: '✅', critical: '🚨', info: '💡',
+};
+
+function AIInsightsPanel({ data, metrics }) {
+  const [insights, setInsights] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(true);
+  const [error, setError] = useState(null);
+
+  const generateInsights = async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await base44.functions.invoke('getMISInsights', {
+        metrics: {
+          totalActive: metrics.totalActive,
+          presentToday: metrics.presentToday,
+          absentToday: metrics.absentToday,
+          attritionRate: metrics.attritionRate,
+          totalPayrollCost: metrics.totalPayrollCost,
+          pendingLeaveRequests: metrics.pendingLeaveRequests,
+          openTickets: metrics.openTickets,
+          activeLeaves: metrics.activeLeaves,
+        },
+        context: {
+          exits: data?.exits,
+          recruitment: data?.recruitment,
+          compliance: { overdueDeadlines: data?.compliance?.overdueDeadlines, kycMissing: data?.compliance?.kycMissing },
+          assets: { overdueReturns: data?.assets?.overdueReturns, underRepair: data?.assets?.underRepair },
+          tickets: data?.tickets,
+        }
+      });
+      setInsights(res?.data?.insights || res?.insights || []);
+    } catch (e) {
+      setError('AI analysis unavailable. Check GROQ_API_KEY in Railway settings.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="bg-white border border-purple-200 rounded-xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-4 bg-gradient-to-r from-purple-50 to-blue-50 border-b border-purple-100">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-5 h-5 text-purple-600" />
+          <h3 className="font-semibold text-gray-800">AI-Driven Insights</h3>
+          <span className="text-xs px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full font-medium">Powered by Groq</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={generateInsights} disabled={loading}
+            className="bg-purple-600 hover:bg-purple-700 text-white gap-2">
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            {insights ? 'Refresh Analysis' : 'Generate Insights'}
+          </Button>
+          <button onClick={() => setExpanded(e => !e)} className="text-gray-400 hover:text-gray-600 p-1">
+            {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="p-5">
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> {error}
+            </div>
+          )}
+          {loading && (
+            <div className="flex flex-col items-center justify-center py-8 text-gray-400 gap-3">
+              <Loader2 className="w-8 h-8 animate-spin text-purple-400" />
+              <p className="text-sm">Analyzing HR data with AI…</p>
+            </div>
+          )}
+          {!loading && !insights && !error && (
+            <div className="text-center py-8 text-gray-400">
+              <Sparkles className="w-8 h-8 mx-auto mb-2 opacity-40 text-purple-300" />
+              <p className="text-sm">Click "Generate Insights" to get AI-powered analysis of your HR metrics.</p>
+            </div>
+          )}
+          {insights && !loading && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {insights.map((insight, i) => (
+                <div key={i} className={`rounded-lg border p-4 ${INSIGHT_COLORS[insight.type] || INSIGHT_COLORS.info}`}>
+                  <div className="flex items-start gap-2">
+                    <span className="text-lg leading-none mt-0.5">{INSIGHT_ICONS[insight.type] || '💡'}</span>
+                    <div>
+                      <p className="font-semibold text-sm">{insight.title}</p>
+                      <p className="text-sm mt-1 opacity-90">{insight.detail}</p>
+                      {insight.action && <p className="text-xs mt-2 font-medium opacity-75">→ {insight.action}</p>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function MISDashboard() {
   const [data, setData] = useState(null);
@@ -118,6 +225,7 @@ export default function MISDashboard() {
                 </div>
 
                 {/* AI Insights */}
+                <AIInsightsPanel data={data} metrics={m} />
                 <InsightCard insights={data?.insights || []} />
 
                 {/* Charts Row 1 */}

@@ -33,7 +33,6 @@ const employeeMenuGroups = [
   ]},
   { label: 'Leave', items: [
     { name: 'Apply Leave',     icon: FileText,        page: 'Leave' },
-    { name: 'Team Calendar',   icon: Calendar,        page: 'TeamCalendar' },
   ]},
   { label: 'Payroll', items: [
     { name: 'My Payslips',     icon: CreditCard,      page: 'Payslips' },

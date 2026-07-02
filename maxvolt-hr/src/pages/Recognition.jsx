@@ -29,6 +29,7 @@ function initials(name) {
 
 export default function Recognition() {
   const [me, setMe] = useState(null);
+  const isEmployee = (u) => { const r = u?.custom_role || u?.role; return r === 'employee'; };
   const [data, setData] = useState({ feed: [], leaderboard: [], birthdays: [], anniversaries: [], total_this_month: 0, month: '' });
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState([]);
@@ -108,9 +109,11 @@ export default function Recognition() {
             </h1>
             <p className="text-gray-500 mt-1">{data.total_this_month} recognitions given in {data.month} · celebrate your colleagues</p>
           </div>
-          <Button onClick={() => setShowGive(true)} className="bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white shadow-md">
-            <Sparkles className="w-4 h-4 mr-2" /> Give Recognition
-          </Button>
+          {!isEmployee(me) && (
+            <Button onClick={() => setShowGive(true)} className="bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white shadow-md">
+              <Sparkles className="w-4 h-4 mr-2" /> Give Recognition
+            </Button>
+          )}
         </div>
 
         <div className="grid lg:grid-cols-3 gap-6">

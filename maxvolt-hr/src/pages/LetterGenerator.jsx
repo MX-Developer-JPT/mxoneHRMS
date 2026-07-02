@@ -162,6 +162,25 @@ export default function LetterGenerator() {
   const [isHtml, setIsHtml] = useState(false);
   const [ref, setRef] = useState('');
   const [editMode, setEditMode] = useState(false);
+  const [editText, setEditText] = useState('');
+
+  const stripHtml = (html) => {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return tmp.innerText || tmp.textContent || '';
+  };
+
+  const enterEditMode = () => {
+    const plain = isHtml ? stripHtml(letter) : letter;
+    setEditText(plain);
+    setEditMode(true);
+  };
+
+  const exitEditMode = () => {
+    setLetter(editText);
+    setIsHtml(false);
+    setEditMode(false);
+  };
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [approveSending, setApproveSending] = useState(false);
@@ -415,8 +434,8 @@ export default function LetterGenerator() {
                   <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                     <div className="text-xs text-gray-400">{ref && `Ref: ${ref}`}</div>
                     <div className="flex gap-2 flex-wrap">
-                      <Button size="sm" variant="outline" onClick={() => setEditMode(m => !m)}>
-                        {editMode ? 'Preview' : 'Edit'}
+                      <Button size="sm" variant="outline" onClick={() => editMode ? exitEditMode() : enterEditMode()}>
+                        {editMode ? 'Done Editing' : 'Edit'}
                       </Button>
                       <Button size="sm" variant="outline" onClick={copyLetter}><Copy className="w-3.5 h-3.5 mr-1" /> Copy</Button>
                       <Button size="sm" onClick={saveToDocuments} disabled={saving || saved}
@@ -435,7 +454,7 @@ export default function LetterGenerator() {
                     </div>
                   </div>
                   {editMode ? (
-                    <Textarea value={letter} onChange={e => setLetter(e.target.value)} className="font-mono text-xs h-[55vh]" />
+                    <Textarea value={editText} onChange={e => setEditText(e.target.value)} className="font-mono text-xs h-[55vh]" placeholder="Edit letter content as plain text..." />
                   ) : (
                     <div className="border rounded-lg p-6 bg-white max-h-[60vh] overflow-y-auto">
                       {isHtml

@@ -5,8 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from 'sonner';
-import { Users, Search, Clock, CheckCircle2, AlertCircle, Eye, TrendingDown, BarChart3 } from 'lucide-react';
+import { Users, Search, Clock, CheckCircle2, AlertCircle, Eye, TrendingDown, BarChart3, Plus, Loader2 } from 'lucide-react';
 import ExitDetailPanel from '../components/exit/ExitDetailPanel';
 import ExitReportsPanel from '../components/exit/ExitReportsPanel';
 import UnderDevelopmentBanner from '@/components/UnderDevelopmentBanner';
@@ -27,15 +30,40 @@ const STATUS_CONFIG = {
   cancelled: { label: 'Cancelled', color: 'bg-gray-100 text-gray-600' },
 };
 
+const REASON_OPTIONS = [
+  { value: 'resignation', label: 'Resignation' },
+  { value: 'termination', label: 'Termination' },
+  { value: 'retirement', label: 'Retirement' },
+  { value: 'contract_end', label: 'Contract End' },
+  { value: 'absconding', label: 'Absconding' },
+  { value: 'mutual_separation', label: 'Mutual Separation' },
+  { value: 'health_reasons', label: 'Health Reasons' },
+  { value: 'relocation', label: 'Relocation' },
+  { value: 'better_opportunity', label: 'Better Opportunity' },
+  { value: 'other', label: 'Other' },
+];
+
 export default function ExitManagement() {
   const [exits, setExits] = useState([]);
   const [enriched, setEnriched] = useState([]);
+  const [allEmployees, setAllEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selected, setSelected] = useState(null);
   const [activeTab, setActiveTab] = useState('list');
+  const [showInitiate, setShowInitiate] = useState(false);
+  const [initiating, setInitiating] = useState(false);
+  const [empSearch, setEmpSearch] = useState('');
+  const [initForm, setInitForm] = useState({
+    employee_id: '',
+    reason_category: '',
+    resignation_date: format(new Date(), 'yyyy-MM-dd'),
+    last_working_date: '',
+    notes: '',
+  });
+  const [selectedEmp, setSelectedEmp] = useState(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -87,11 +115,58 @@ export default function ExitManagement() {
 
       setExits(allExits);
       setEnriched(enrichedData);
+      setAllEmployees(allEmps);
     } catch (e) {
       console.error(e);
     }
     setLoading(false);
   };
+
+  const isHRRole = () => {
+    const r = currentUser?.custom_role || currentUser?.role;
+    return r === 'hr' || r === 'admin';
+  };
+
+  const handleInitiateExit = async (e) => {
+    e.preventDefault();
+    if (!selectedEmp || !initForm.reason_category || !initForm.last_working_date) {
+      toast.error('Please fill all required fields');
+      return;
+    }
+    setInitiating(true);
+    try {
+      await base44.entities.Exit.create({
+        user_id: selectedEmp.user_id,
+        reason_category: initForm.reason_category,
+        resignation_date: initForm.resignation_date,
+        last_working_date: initForm.last_working_date,
+        hr_notes: initForm.notes,
+        status: 'hr_approved',
+        initiated_by_hr: true,
+        hr_actioned_by: currentUser.id,
+        hr_actioned_at: new Date().toISOString(),
+        audit_log: [{ actor_id: currentUser.id, actor_name: currentUser.full_name, action: 'HR Initiated Exit', comment: initForm.notes || '', timestamp: new Date().toISOString() }],
+      });
+      toast.success('Exit initiated successfully');
+      setShowInitiate(false);
+      setInitForm({ employee_id: '', reason_category: '', resignation_date: format(new Date(), 'yyyy-MM-dd'), last_working_date: '', notes: '' });
+      setSelectedEmp(null);
+      setEmpSearch('');
+      loadData();
+    } catch (err) {
+      toast.error('Failed to initiate exit');
+    } finally {
+      setInitiating(false);
+    }
+  };
+
+  const filteredEmpSearch = empSearch.trim().length > 0
+    ? allEmployees.filter(e =>
+        (e.display_name || '').toLowerCase().includes(empSearch.toLowerCase()) ||
+        (e.employee_code || '').toLowerCase().includes(empSearch.toLowerCase()) ||
+        (e.department || '').toLowerCase().includes(empSearch.toLowerCase())
+      ).slice(0, 8)
+    : [];
 
   const filteredExits = enriched.filter(ex => {
     const matchSearch = !search ||
@@ -121,9 +196,16 @@ export default function ExitManagement() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-red-50">
       <UnderDevelopmentBanner pageName="Exit Management" />
       <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold flex items-center gap-2"><TrendingDown className="w-8 h-8 text-red-600" /> Exit Management</h1>
-          <p className="text-gray-600 mt-1">Manage employee exits, approvals, clearances & F&F settlements</p>
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-3xl font-bold flex items-center gap-2"><TrendingDown className="w-8 h-8 text-red-600" /> Exit Management</h1>
+            <p className="text-gray-600 mt-1">Manage employee exits, approvals, clearances & F&F settlements</p>
+          </div>
+          {isHRRole() && (
+            <Button onClick={() => setShowInitiate(true)} className="bg-red-600 hover:bg-red-700 text-white flex items-center gap-2">
+              <Plus className="w-4 h-4" /> Initiate Exit
+            </Button>
+          )}
         </div>
 
         {/* Stats */}
@@ -236,6 +318,71 @@ export default function ExitManagement() {
 
         {activeTab === 'reports' && <ExitReportsPanel exits={enriched} />}
       </div>
+
+      <Dialog open={showInitiate} onOpenChange={v => { setShowInitiate(v); if (!v) { setSelectedEmp(null); setEmpSearch(''); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><TrendingDown className="w-5 h-5 text-red-600" /> Initiate Employee Exit</DialogTitle></DialogHeader>
+          <form onSubmit={handleInitiateExit} className="space-y-4 mt-2">
+            <div>
+              <Label>Employee <span className="text-red-500">*</span></Label>
+              {selectedEmp ? (
+                <div className="flex items-center justify-between mt-1 p-3 bg-gray-50 border rounded-lg">
+                  <div>
+                    <p className="font-medium text-sm">{selectedEmp.display_name}</p>
+                    <p className="text-xs text-gray-500">{selectedEmp.designation} · {selectedEmp.department} · {selectedEmp.employee_code}</p>
+                  </div>
+                  <button type="button" onClick={() => { setSelectedEmp(null); setEmpSearch(''); }} className="text-xs text-red-600 hover:underline">Change</button>
+                </div>
+              ) : (
+                <div className="relative mt-1">
+                  <Input placeholder="Search employee by name, code, dept..." value={empSearch} onChange={e => setEmpSearch(e.target.value)} autoComplete="off" />
+                  {filteredEmpSearch.length > 0 && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                      {filteredEmpSearch.map(emp => (
+                        <button key={emp.id} type="button" className="w-full text-left px-3 py-2 hover:bg-gray-50 text-sm"
+                          onClick={() => { setSelectedEmp(emp); setEmpSearch(''); }}>
+                          <p className="font-medium">{emp.display_name}</p>
+                          <p className="text-xs text-gray-500">{emp.designation} · {emp.department} · {emp.employee_code}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div>
+              <Label>Exit Reason <span className="text-red-500">*</span></Label>
+              <Select value={initForm.reason_category} onValueChange={v => setInitForm(f => ({ ...f, reason_category: v }))}>
+                <SelectTrigger className="mt-1"><SelectValue placeholder="Select reason" /></SelectTrigger>
+                <SelectContent>
+                  {REASON_OPTIONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Resignation Date <span className="text-red-500">*</span></Label>
+                <Input type="date" className="mt-1" value={initForm.resignation_date} onChange={e => setInitForm(f => ({ ...f, resignation_date: e.target.value }))} />
+              </div>
+              <div>
+                <Label>Last Working Day <span className="text-red-500">*</span></Label>
+                <Input type="date" className="mt-1" value={initForm.last_working_date} onChange={e => setInitForm(f => ({ ...f, last_working_date: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <Label>HR Notes</Label>
+              <Textarea className="mt-1" rows={3} placeholder="Reason, circumstances, or notes..." value={initForm.notes} onChange={e => setInitForm(f => ({ ...f, notes: e.target.value }))} />
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <Button type="button" variant="outline" onClick={() => setShowInitiate(false)}>Cancel</Button>
+              <Button type="submit" disabled={initiating} className="bg-red-600 hover:bg-red-700 text-white">
+                {initiating ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                Initiate Exit
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {selected && (
         <ExitDetailPanel
