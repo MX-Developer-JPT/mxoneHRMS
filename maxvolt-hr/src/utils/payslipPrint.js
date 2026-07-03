@@ -42,14 +42,13 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const deductions = payroll.deductions || {};
   const allowances = payroll.allowances || {};
 
-  // Fixed — full monthly amounts straight from salary structure
+  // Fixed — full monthly CTC amounts from salary structure (performance bonus excluded — off-cycle)
   const basicFixed      = salaryStructure.basic_salary || 0;
   const hraFixed        = salaryStructure.hra          || 0;
   const conveyanceFixed = salaryStructure.conveyance   || 0;
-  const bonusFixed      = salaryStructure.performance_bonus || 0;
-  const grossFixed      = basicFixed + hraFixed + conveyanceFixed + bonusFixed;
+  const grossFixed      = basicFixed + hraFixed + conveyanceFixed;
 
-  // All calendar days are working days at Maxvolt (Sundays included)
+  // Attendance counters (display only)
   const calendarDays = payroll.calendar_days || 30;
   const workingDays  = payroll.working_days  ?? calendarDays;
   const presentDays  = payroll.present_days  ?? workingDays;
@@ -59,13 +58,22 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const absentDays   = payroll.absent_days   ?? Math.floor(lopDays);
   const payDays      = payroll.pay_days      ?? (calendarDays - lopDays);
 
-  // Earned — use stored payroll values (already correctly prorated at processing time).
-  // Fall back to salary-structure proration only if the payroll record has no stored amounts.
-  const basicEarned      = payroll.basic_salary      || Math.round(basicFixed      * payDays / calendarDays);
-  const hraEarned        = payroll.hra               || Math.round(hraFixed        * payDays / calendarDays);
-  const conveyanceEarned = payroll.conveyance        || Math.round(conveyanceFixed * payDays / calendarDays);
-  const bonusEarned      = payroll.performance_bonus || Math.round(bonusFixed      * payDays / calendarDays);
-  const grossSalary      = basicEarned + hraEarned + conveyanceEarned + bonusEarned;
+  // Earned ratio: LOP applied proportionally on all salary components (not as a separate deduction).
+  // Backend payrolls store calendar_days + pay_days; frontend payrolls store working_days + present_days.
+  let earnedRatio;
+  if (payroll.calendar_days && payroll.pay_days != null) {
+    earnedRatio = Math.min(payroll.pay_days / payroll.calendar_days, 1);
+  } else if (payroll.present_days != null && payroll.working_days) {
+    earnedRatio = Math.min(payroll.present_days / payroll.working_days, 1);
+  } else {
+    earnedRatio = 1;
+  }
+
+  // Earned = Fixed × earnedRatio — LOP already reflected here, never as a separate deduction line
+  const basicEarned      = Math.round(basicFixed      * earnedRatio);
+  const hraEarned        = Math.round(hraFixed        * earnedRatio);
+  const conveyanceEarned = Math.round(conveyanceFixed * earnedRatio);
+  const grossSalary      = basicEarned + hraEarned + conveyanceEarned;
 
   const arrear   = payroll.arrear    || 0;
   const ytdGross = payroll.ytd_gross || grossSalary;
@@ -73,27 +81,21 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
 
   const bonusBreakdown = bonuses.filter(b => b.amount > 0);
 
-  // Deductions — prefer stored values; fall back to computation from salary structure
-  const monthlyPFBase = Math.min(basicFixed, 15000);
-  const pfComputed    = Math.round(monthlyPFBase * 0.12 * payDays / calendarDays);
-  const pfDeduction   = deductions.pf ?? payroll.pf_contribution ?? pfComputed;
-
-  const esiDeduction  = deductions.esi != null
+  // Deductions — PF and ESI are computed on earned (prorated) basis
+  const pfDeduction  = deductions.pf  ?? payroll.pf_contribution  ?? Math.round(Math.min(basicEarned, 15000) * 0.12);
+  const esiDeduction = deductions.esi != null
     ? deductions.esi
     : (payroll.esi_contribution ?? (basicFixed <= 21000 ? Math.round(basicEarned * 0.0075) : 0));
+  const tdsDeduction = deductions.tds || 0;
+  // deductions.loan = frontend payroll; deductions.loan_emi = legacy key
+  const loanEmi      = deductions.loan || deductions.loan_emi || 0;
 
-  const tdsDeduction  = deductions.tds || 0;
-  // deductions.loan = frontend payroll, deductions.loan_emi = legacy
-  const loanEmi       = deductions.loan || deductions.loan_emi || 0;
-  // deductions.lop = backend payroll (LOP stored as explicit deduction; earned is full-month in that case)
-  const lopDeduction  = deductions.lop || 0;
-
-  const totalDeductions = pfDeduction + esiDeduction + tdsDeduction + loanEmi + lopDeduction;
-  // Net = Gross Earned − Total Deductions (always computed, never from stored net_salary)
+  // Net = Gross Earned − PF − ESI (± TDS/Loan if applicable); LOP NOT a deduction line
+  const totalDeductions = pfDeduction + esiDeduction + tdsDeduction + loanEmi;
   const netSalary = grossSalary - totalDeductions;
 
-  // Employer contributions
-  const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(monthlyPFBase * 0.13 * payDays / calendarDays);
+  // Employer contributions (CTC components — not deducted from employee salary)
+  const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(Math.min(basicEarned, 15000) * 0.13);
   const employerESI = payroll.employer_contributions?.esi ?? (basicFixed <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(basicEarned * 0.0325)) : 0);
   // gratuity removed from payslip
 
@@ -184,7 +186,6 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
               ${earningRow('Basic Salary', basicFixed, basicEarned, ytdGross * (basicFixed / (grossFixed || 1)), 0)}
               ${earningRow('House Rent Allowance (HRA)', hraFixed, hraEarned, ytdGross * (hraFixed / (grossFixed || 1)), 0)}
               ${earningRow('Conveyance Allowance', conveyanceFixed, conveyanceEarned, ytdGross * (conveyanceFixed / (grossFixed || 1)), 0)}
-              ${bonusFixed > 0 ? earningRow('Performance Bonus', bonusFixed, bonusEarned, ytdGross * (bonusFixed / (grossFixed || 1)), 0) : ''}
               ${arrear > 0 ? `<tr><td class="td">Arrear</td><td class="td amt">—</td><td class="td amt">—</td><td class="td amt">${fmt(arrear)}</td><td class="td amt">${fmt(arrear)}</td></tr>` : ''}
               ${bonusBreakdown.map(b => `<tr><td class="td">${(b.bonus_type || 'Bonus').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())} (${b.reason || 'Off-cycle'})</td><td class="td amt">—</td><td class="td amt">${fmt(b.amount)}</td><td class="td amt">—</td><td class="td amt">${fmt(b.amount)}</td></tr>`).join('')}
             </tbody>
@@ -245,7 +246,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
       <div style="padding:8px 16px;display:flex;justify-content:space-between;align-items:flex-end;font-size:8px;color:#9ca3af;">
         <div>
           This is a computer-generated payslip and does not require a physical signature.
-          ${lopDays > 0 ? `<br><span style="color:#dc2626;">* ${lopDays} day(s) LOP deducted from Basic Salary.</span>` : ''}
+          ${lopDays > 0 ? `<br><span style="color:#dc2626;">* ${lopDays} day(s) LOP applied proportionally on all salary components.</span>` : ''}
         </div>
         <div style="text-align:right;">
           <div style="margin-bottom:20px;">_______________________</div>
