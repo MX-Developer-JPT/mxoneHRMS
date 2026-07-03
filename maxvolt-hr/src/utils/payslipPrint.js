@@ -50,8 +50,8 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const grossFixed      = basicFixed + hraFixed + conveyanceFixed + bonusFixed;
 
   // All calendar days are working days at Maxvolt (Sundays included)
-  const calendarDays = payroll.calendar_days || 30;    // e.g. 31 for March, 30 for June
-  const workingDays  = payroll.working_days  ?? calendarDays;  // equals calendar days (30 or 31)
+  const calendarDays = payroll.calendar_days || 30;
+  const workingDays  = payroll.working_days  ?? calendarDays;
   const presentDays  = payroll.present_days  ?? workingDays;
   const halfDays     = payroll.half_days     ?? 0;
   const leaveDays    = payroll.leave_days    ?? 0;
@@ -59,44 +59,42 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const absentDays   = payroll.absent_days   ?? Math.floor(lopDays);
   const payDays      = payroll.pay_days      ?? (calendarDays - lopDays);
 
-  // Earned — always prorated by days present (Fixed shows full month; LOP reflected here, not as deduction)
-  const basicEarned      = Math.round(basicFixed * payDays / calendarDays);
-  const hraEarned        = Math.round(hraFixed * payDays / calendarDays);
-  const conveyanceEarned = Math.round(conveyanceFixed * payDays / calendarDays);
-  const bonusEarned      = Math.round(bonusFixed * payDays / calendarDays);
+  // Earned — use stored payroll values (already correctly prorated at processing time).
+  // Fall back to salary-structure proration only if the payroll record has no stored amounts.
+  const basicEarned      = payroll.basic_salary      || Math.round(basicFixed      * payDays / calendarDays);
+  const hraEarned        = payroll.hra               || Math.round(hraFixed        * payDays / calendarDays);
+  const conveyanceEarned = payroll.conveyance        || Math.round(conveyanceFixed * payDays / calendarDays);
+  const bonusEarned      = payroll.performance_bonus || Math.round(bonusFixed      * payDays / calendarDays);
   const grossSalary      = basicEarned + hraEarned + conveyanceEarned + bonusEarned;
 
   const arrear   = payroll.arrear    || 0;
   const ytdGross = payroll.ytd_gross || grossSalary;
-  const ytdNet   = payroll.ytd_net   || (payroll.net_salary || 0);
+  const ytdNet   = payroll.ytd_net   || 0;
 
   const bonusBreakdown = bonuses.filter(b => b.amount > 0);
-  const otherEarnings  = payroll.bonuses || 0;
 
-  // LOP: stored from backend; used for reference but not added to deductions (Earned is already prorated)
-  const lopDeduction = deductions.lop ?? payroll.loss_of_pay_amount
-    ?? (lopDays > 0 ? Math.round(grossFixed * lopDays / calendarDays) : 0);
-
-  // PF: prorate the full-month PF cap by payDays (Indian standard — 12% on min(fullBasic,15000) × payDays/calDays)
+  // Deductions — prefer stored values; fall back to computation from salary structure
   const monthlyPFBase = Math.min(basicFixed, 15000);
-  const pfComputed  = Math.round(monthlyPFBase * 0.12 * payDays / calendarDays);
-  const pfDeduction = deductions.pf || pfComputed;
+  const pfComputed    = Math.round(monthlyPFBase * 0.12 * payDays / calendarDays);
+  const pfDeduction   = deductions.pf ?? payroll.pf_contribution ?? pfComputed;
 
-  // ESI: eligibility on full monthly basic; deduction on earned (prorated) basic
-  const earnedBasicForESI = basicEarned;
-  const esiDeduction = deductions.esi != null
+  const esiDeduction  = deductions.esi != null
     ? deductions.esi
-    : (basicFixed <= 21000 ? (salaryStructure.esi_contribution || Math.round(earnedBasicForESI * 0.0075)) : 0);
+    : (payroll.esi_contribution ?? (basicFixed <= 21000 ? Math.round(basicEarned * 0.0075) : 0));
 
-  const tdsDeduction = deductions.tds || 0;
-  const loanEmi      = deductions.loan_emi || 0;
-  // LOP excluded from totalDeductions — already reflected in Earned column (grossSalary is prorated)
-  const totalDeductions = pfDeduction + esiDeduction + tdsDeduction + loanEmi;
-  const netSalary = payroll.net_salary || (grossSalary - totalDeductions);
+  const tdsDeduction  = deductions.tds || 0;
+  // deductions.loan = frontend payroll, deductions.loan_emi = legacy
+  const loanEmi       = deductions.loan || deductions.loan_emi || 0;
+  // deductions.lop = backend payroll (LOP stored as explicit deduction; earned is full-month in that case)
+  const lopDeduction  = deductions.lop || 0;
+
+  const totalDeductions = pfDeduction + esiDeduction + tdsDeduction + loanEmi + lopDeduction;
+  // Net = Gross Earned − Total Deductions (always computed, never from stored net_salary)
+  const netSalary = grossSalary - totalDeductions;
 
   // Employer contributions
   const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(monthlyPFBase * 0.13 * payDays / calendarDays);
-  const employerESI = payroll.employer_contributions?.esi ?? (basicFixed <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(earnedBasicForESI * 0.0325)) : 0);
+  const employerESI = payroll.employer_contributions?.esi ?? (basicFixed <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(basicEarned * 0.0325)) : 0);
   // gratuity removed from payslip
 
   const month = monthNames[(payroll.month || 1) - 1];
