@@ -13,7 +13,7 @@ const WORKING_DAYS = 26;
 
 // Calculate one employee's payroll from their salary structure + attendance.
 // If is_manual_override, all amounts are 0 — HR fills them in the preview.
-function calcFromStructure(structure, presentDays, bonusAmount, loanDeduction) {
+function calcFromStructure(structure, presentDays, loanDeduction) {
   if (structure.is_manual_override) {
     return {
       basic_salary: 0, hra: 0, conveyance: 0,
@@ -32,7 +32,7 @@ function calcFromStructure(structure, presentDays, bonusAmount, loanDeduction) {
   const basic  = Math.round((structure.basic_salary       || 0) * ratio);
   const hra    = Math.round((structure.hra                 || 0) * ratio);
   const conv   = Math.round((structure.conveyance          || 0) * ratio);
-  const perf   = Math.round((structure.performance_bonus   || 0) * ratio) + bonusAmount;
+  const perf   = Math.round((structure.performance_bonus   || 0) * ratio);
   const pfEmp  = Math.round((structure.pf_contribution     || 0) * ratio);
   const esiEmp = Math.round((structure.esi_contribution    || 0) * ratio);
   const gross  = basic + hra + conv + perf;
@@ -74,7 +74,6 @@ export default function PayrollProcessing() {
   const [employees, setEmployees] = useState([]);
   const [attendance, setAttendance] = useState([]);
   const [loans, setLoans]       = useState([]);
-  const [bonuses, setBonuses]   = useState([]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
   const [selectedYear, setSelectedYear]   = useState(new Date().getFullYear());
   const [loading, setLoading]   = useState(false);
@@ -96,11 +95,6 @@ export default function PayrollProcessing() {
 
       const allLoans = await base44.entities.Loan.filter({ status: 'active' });
       setLoans(allLoans);
-
-      const allBonuses = await base44.entities.Bonus.filter({
-        month: selectedMonth, year: selectedYear, status: 'approved', included_in_payroll: false,
-      });
-      setBonuses(allBonuses);
 
       const pad = n => String(n).padStart(2, '0');
       const dateFrom = `${selectedYear}-${pad(selectedMonth)}-01`;
@@ -134,10 +128,8 @@ export default function PayrollProcessing() {
           + empAtt.filter(a => a.status === 'half_day' || a.status === 'short_attendance').length * 0.5;
         const empLoan     = loans.find(l => l.user_id === employee.id);
         const loanDed     = empLoan?.monthly_deduction || 0;
-        const empBonus    = bonuses.find(b => b.user_id === employee.id);
-        const bonusAmt    = empBonus?.amount || 0;
 
-        const computed = calcFromStructure(structure, presentDays, bonusAmt, loanDed);
+        const computed = calcFromStructure(structure, presentDays, loanDed);
 
         calculated.push({
           user_id:             employee.id,
@@ -148,7 +140,6 @@ export default function PayrollProcessing() {
           salary_structure_id: structure.id,
           is_manual_override:  !!structure.is_manual_override,
           ...computed,
-          bonuses: bonusAmt,
           status: 'draft',
         });
       }
@@ -203,8 +194,6 @@ export default function PayrollProcessing() {
       for (const data of previewData) {
         const { employee_name, is_manual_override, ...saveData } = data;
         await base44.entities.Payroll.create({ ...saveData, status: 'processed' });
-        const bonus = bonuses.find(b => b.user_id === data.user_id);
-        if (bonus) await base44.entities.Bonus.update(bonus.id, { included_in_payroll: true });
       }
       toast.success('Payroll approved and processed!');
       setShowPreview(false);
