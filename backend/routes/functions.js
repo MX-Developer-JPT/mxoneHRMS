@@ -683,7 +683,7 @@ router.post('/:name', async (req, res) => {
           if (!r) return false;
           const s = r.status;
           if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home' || s === 'half_day') return true;
-          if (!s && r.check_in_time) return true;
+          if (!s && (r.check_in_time || r.biometric_synced)) return true;
           return false;
         };
         const fmtDate = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -1947,7 +1947,7 @@ router.post('/:name', async (req, res) => {
           if (!r) return false;
           const s = r.status;
           if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home' || s === 'half_day') return true;
-          if (!s && r.check_in_time) return true;
+          if (!s && (r.check_in_time || r.biometric_synced)) return true;
           return false;
         };
         const fmtDateSS = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
