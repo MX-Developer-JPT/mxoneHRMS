@@ -114,20 +114,8 @@ export default function AllAttendance() {
 
       if (userRole === 'manager') {
         emps = emps.filter(e => e.reporting_manager_id === currentUser.id);
-      } else if (userRole === 'management') {
-        try {
-          const depts = await base44.entities.Department.filter({ head_user_id: currentUser.id });
-          if (depts.length > 0) {
-            const codes = new Set(depts.map(d => d.code));
-            emps = emps.filter(e => codes.has(e.department));
-          } else {
-            emps = [];
-          }
-        } catch (e) {
-          console.warn('Could not filter by department:', e.message);
-          emps = [];
-        }
       }
+      // hr, admin, management see all employees — no filtering
 
       const map = {};
       dayRecords.forEach(r => { map[r.user_id] = r; });
