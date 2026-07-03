@@ -45,7 +45,12 @@ export default function Approvals() {
 
       let reimburse;
       if (hrRole) {
-        reimburse = await base44.entities.Reimbursement.filter({ status: 'manager_approved' }, '-created_date');
+        // Management/HR see both pending (no manager yet) and manager_approved (awaiting final approval)
+        const [pendingReimb, mgrApprovedReimb] = await Promise.all([
+          base44.entities.Reimbursement.filter({ status: 'pending' }, '-created_date'),
+          base44.entities.Reimbursement.filter({ status: 'manager_approved' }, '-created_date'),
+        ]);
+        reimburse = [...pendingReimb, ...mgrApprovedReimb];
       } else {
         // Filter all pending by user_id membership (manager_id field may not be set reliably)
         const allPendingReimb = await base44.entities.Reimbursement.filter({ status: 'pending' }, '-created_date');
@@ -61,7 +66,7 @@ export default function Approvals() {
       // Regularisation requests
       const allRegs = await base44.entities.AttendanceRegularisation.list('-created_date', 300);
       const pendingRegs = hrRole
-        ? allRegs.filter(r => r.status === 'manager_approved')
+        ? allRegs.filter(r => r.status === 'pending' || r.status === 'manager_approved')
         : allRegs.filter(r => r.status === 'pending' && directReportUserIds.includes(r.user_id));
 
       setLeaveRequests(leaves);

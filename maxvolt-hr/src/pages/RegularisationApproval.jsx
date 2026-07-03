@@ -57,7 +57,7 @@ export default function RegularisationApproval() {
       const role = currentUser.custom_role || currentUser.role;
       setUserRole(role);
 
-      const isHR = role === 'hr' || role === 'admin';
+      const isHR = role === 'hr' || role === 'admin' || role === 'management';
       const [allReqs, empRecords, deptRecords] = await Promise.all([
         base44.entities.AttendanceRegularisation.list('-created_date', 500),
         base44.entities.Employee.list(),
@@ -292,12 +292,12 @@ export default function RegularisationApproval() {
                         <div className="flex gap-1.5">
                           <Button size="sm" className="h-6 text-xs bg-green-600 hover:bg-green-700 px-2"
                             disabled={processing}
-                            onClick={() => handleBulkAction('approved', actionableIds)}>
+                            onClick={() => handleBulkAction('approve', actionableIds)}>
                             <CheckCircle2 className="w-3 h-3 mr-1" /> Approve All ({actionableIds.length})
                           </Button>
                           <Button size="sm" variant="destructive" className="h-6 text-xs px-2"
                             disabled={processing}
-                            onClick={() => handleBulkAction('rejected', actionableIds)}>
+                            onClick={() => handleBulkAction('reject', actionableIds)}>
                             <XCircle className="w-3 h-3 mr-1" /> Reject All
                           </Button>
                         </div>
