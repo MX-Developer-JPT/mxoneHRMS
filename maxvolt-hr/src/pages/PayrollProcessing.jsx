@@ -22,7 +22,7 @@ function calcFromStructure(structure, presentDays, bonusAmount, loanDeduction) {
       pf_contribution: 0, esi_contribution: 0,
       deductions: { pf: 0, esi: 0, professional_tax: 0, loan: loanDeduction },
       total_deductions: loanDeduction,
-      net_salary: -loanDeduction,
+      net_salary: 0,
       working_days: WORKING_DAYS,
       present_days: 0,
     };
@@ -129,7 +129,9 @@ export default function PayrollProcessing() {
 
         const structure   = structures[0];
         const empAtt      = attendance.filter(a => a.user_id === employee.id);
-        const presentDays = empAtt.filter(a => a.status === 'present').length;
+        const PAID_FULL = new Set(['present', 'late', 'work_from_home', 'on_duty']);
+        const presentDays = empAtt.filter(a => PAID_FULL.has(a.status)).length
+          + empAtt.filter(a => a.status === 'half_day' || a.status === 'short_attendance').length * 0.5;
         const empLoan     = loans.find(l => l.user_id === employee.id);
         const loanDed     = empLoan?.monthly_deduction || 0;
         const empBonus    = bonuses.find(b => b.user_id === employee.id);
@@ -183,7 +185,8 @@ export default function PayrollProcessing() {
   };
 
   const approvePayroll = async () => {
-    if (!user || (user.role !== 'admin' && user.role !== 'management')) {
+    const effectiveRole = user?.custom_role || user?.role;
+    if (!user || (effectiveRole !== 'admin' && effectiveRole !== 'management')) {
       toast.error('Only management can approve payroll');
       return;
     }

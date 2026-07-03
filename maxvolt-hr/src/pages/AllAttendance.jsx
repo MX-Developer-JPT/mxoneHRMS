@@ -120,9 +120,12 @@ export default function AllAttendance() {
           if (depts.length > 0) {
             const codes = new Set(depts.map(d => d.code));
             emps = emps.filter(e => codes.has(e.department));
+          } else {
+            emps = [];
           }
         } catch (e) {
           console.warn('Could not filter by department:', e.message);
+          emps = [];
         }
       }
 
