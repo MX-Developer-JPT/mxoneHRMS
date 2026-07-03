@@ -1361,7 +1361,7 @@ router.post('/:name', async (req, res) => {
           else if (code==='OD') odC++;
         }
 
-        const totalWorked = pC + odC + lC; // present (incl. half-days) + on-duty + paid leaves
+        const totalWorked = pC + odC + lC + woC; // present (incl. half-days) + on-duty + paid leaves + week-off
         const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...codes, pC, aC, lC, hdC, woC, phC, odC, totalWorked];
         const dr = wsM.addRow(rowVals);
         dr.height = 15;
