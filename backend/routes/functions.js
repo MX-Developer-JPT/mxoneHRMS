@@ -1265,9 +1265,22 @@ router.post('/:name', async (req, res) => {
         mAttMap[a.user_id][String(a.date).slice(0,10)] = a;
       }
 
-      const mStatusCode = (rec, dateStr) => {
-        const dow = new Date(dateStr).getDay();
-        if (!rec) return (dow === 0 || dow === 6) ? 'WO' : 'A';
+      const isMusterWorked = (r) => {
+        if (!r) return false;
+        const s = r.status;
+        return s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home' || s === 'half_day' || (!s && (r.check_in_time || r.biometric_synced));
+      };
+      const mStatusCode = (rec, dateStr, empRecs) => {
+        const dateObj = new Date(dateStr + 'T00:00:00');
+        const dow = dateObj.getDay();
+        // Sunday sandwich rule: WO only if present on Saturday or Monday
+        if (dow === 0) {
+          const sat = new Date(dateObj.getTime() - 86400000).toISOString().slice(0,10);
+          const mon = new Date(dateObj.getTime() + 86400000).toISOString().slice(0,10);
+          if (!isMusterWorked(empRecs[sat]) && !isMusterWorked(empRecs[mon])) return 'A';
+          return 'WO';
+        }
+        if (!rec) return dow === 6 ? 'WO' : 'A';
         const s = rec.status;
         const hasIn = rec.check_in_time || rec.biometric_synced || rec.check_in_selfie_url;
         if (s === 'week_off')  return 'WO';
@@ -1350,7 +1363,7 @@ router.post('/:name', async (req, res) => {
 
         for (let d=1; d<=daysInMonth; d++) {
           const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-          const code = mStatusCode(empRecs[ds], ds);
+          const code = mStatusCode(empRecs[ds], ds, empRecs);
           codes.push(code);
           if (code==='P'||code==='P*'||code==='SA') pC++;
           else if (code==='A') aC++;
