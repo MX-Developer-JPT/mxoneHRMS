@@ -235,7 +235,7 @@ export default function AssetTracking() {
         await base44.entities.AssetType.update(editingType.id, typeForm);
         toast.success('Asset type updated');
       } else {
-        await base44.entities.AssetType.create(typeForm);
+        await base44.entities.AssetType.create({ ...typeForm, is_active: true });
         toast.success('Asset type created');
       }
       setShowTypeDialog(false);
