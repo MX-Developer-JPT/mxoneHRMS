@@ -1978,7 +1978,7 @@ router.post('/:name', async (req, res) => {
         const totalLOPDays  = daysAbsent + daysHalfDay * 0.5;
         // payDays = calendar days − LOP days; effectiveDays = calendar days for all
         const payDaysSS     = calendarDaysSS - totalLOPDays;
-        const effectiveDays = calendarDaysSS;                 // show calendar days (e.g. 30 or 31)
+        const effectiveDays = payDaysSS;   // actual days paid: present + paid leaves (week_off/holiday/leave)
 
         // ── Earnings — full monthly amounts; LOP is a separate deduction ─────────
         const grossMonthly = (ss.basic_salary||0)+(ss.hra||0)+(ss.conveyance||0)+(ss.special_allowance||0);
@@ -2055,7 +2055,7 @@ router.post('/:name', async (req, res) => {
         { header:'Days Present',   key:'daysPresent',   width:10 },  // decimal: 22.5
         { header:'Half Days',      key:'daysHalfDay',   width:9  },  // integer: 1
         { header:'Absent Days',    key:'daysAbsent',    width:10 },  // decimal: 2.5 (= absent + half×0.5)
-        { header:'Eff. Days',      key:'effectiveDays', width:9  },  // 26 for all
+        { header:'Total Days',     key:'effectiveDays', width:9  },  // present + paid leaves
         // EARNINGS (cols 14-18)
         { header:'Gross Salary',   key:'gross',         width:13 },
         { header:'Basic',          key:'basic',         width:12 },
