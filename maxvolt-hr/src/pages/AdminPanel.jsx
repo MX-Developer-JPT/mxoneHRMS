@@ -1159,6 +1159,329 @@ Authorization: Bearer ${apiKey || '<YOUR_API_KEY>'}
   );
 }
 
+// ── Attendance Import Tab ──────────────────────────────────
+const XLS_STATUS_MAP = {
+  P: 'present', A: 'absent', OFF: 'week_off',
+  EL: 'leave', CL: 'leave', SL: 'leave', PL: 'leave',
+  COF: 'on_duty', HD: 'half_day',
+};
+
+function parseXlsCell(raw) {
+  if (raw == null) return null;
+  const val = String(raw).trim().toUpperCase();
+  if (!val || val === 'NAN' || val === '-') return null;
+  const parts = val.split(':').map(p => p.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  if (parts.length > 1) {
+    const hasPresent = parts.some(p => p === 'P');
+    const hasLeave   = parts.some(p => ['EL','CL','SL','PL'].includes(p));
+    const hasOff     = parts.some(p => p === 'OFF');
+    if (hasPresent && (hasLeave || hasOff)) return 'half_day';
+    if (hasLeave) return 'leave';
+    return 'half_day';
+  }
+  return XLS_STATUS_MAP[parts[0]] || null;
+}
+
+function AttendanceImportTab() {
+  const [file, setFile]             = useState(null);
+  const [month, setMonth]           = useState(() => { const d = new Date(); return d.getMonth() === 0 ? 12 : d.getMonth(); });
+  const [year, setYear]             = useState(() => { const d = new Date(); return d.getMonth() === 0 ? d.getFullYear()-1 : d.getFullYear(); });
+  const [preview, setPreview]       = useState(null);
+  const [importing, setImporting]   = useState(false);
+  const [progress, setProgress]     = useState({ done: 0, total: 0 });
+  const [results, setResults]       = useState(null);
+  const [parseError, setParseError] = useState('');
+
+  const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+  const parseFile = async (f) => {
+    setParseError('');
+    setPreview(null);
+    setResults(null);
+    try {
+      const XLSX = await import('xlsx');
+      const buf  = await f.arrayBuffer();
+      const wb   = XLSX.read(buf, { type: 'array' });
+      const ws   = wb.Sheets[wb.SheetNames[0]];
+      const raw  = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+
+      // Find the row that has day numbers in cols 4+
+      let headerRow = -1, dataStart = -1;
+      for (let i = 0; i < Math.min(raw.length, 10); i++) {
+        const row = raw[i];
+        if (row && String(row[4] ?? '').trim() === '1' && String(row[5] ?? '').trim() === '2') {
+          headerRow = i; dataStart = i + 1; break;
+        }
+      }
+      if (headerRow < 0) { setParseError('Could not find day header row. Expected day numbers (1, 2, 3…) starting in column E.'); return; }
+
+      // Build col→day mapping (cols 4+ that have numeric day values 1–31)
+      const dayMap = {};
+      const headerRowData = raw[headerRow];
+      for (let c = 4; c < headerRowData.length; c++) {
+        const v = String(headerRowData[c] ?? '').trim();
+        const d = parseInt(v);
+        if (!isNaN(d) && d >= 1 && d <= 31) dayMap[c] = d;
+      }
+      const dayCols = Object.keys(dayMap).map(Number).sort((a,b) => a-b);
+
+      // Parse employee rows
+      const employees = [];
+      for (let i = dataStart; i < raw.length; i++) {
+        const row = raw[i];
+        if (!row) continue;
+        const empCode = String(row[1] ?? '').trim();
+        if (!empCode || !empCode.match(/^MVE|^MVET/i)) continue;
+        const empName = String(row[0] ?? '').trim();
+        const days = {};
+        for (const col of dayCols) {
+          const status = parseXlsCell(row[col]);
+          if (status) days[dayMap[col]] = status;
+        }
+        employees.push({ empCode, empName, days });
+      }
+
+      setPreview({ employees, dayCount: dayCols.length, totalDays: Object.keys(dayMap).length });
+    } catch (e) {
+      setParseError('Failed to parse file: ' + e.message);
+    }
+  };
+
+  const handleFileChange = (e) => {
+    const f = e.target.files?.[0];
+    if (f) { setFile(f); parseFile(f); }
+  };
+
+  const handleImport = async () => {
+    if (!preview || !file) return;
+    setImporting(true);
+    setResults(null);
+    const m  = String(month).padStart(2, '0');
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const monthStart  = `${year}-${m}-01`;
+    const monthEnd    = `${year}-${m}-${String(daysInMonth).padStart(2,'0')}`;
+
+    try {
+      // 1. Load all employees to map code → user_id
+      const allEmps = await base44.entities.Employee.list();
+      const codeMap = {};
+      allEmps.forEach(e => { if (e.employee_code) codeMap[e.employee_code.trim().toUpperCase()] = e.user_id; });
+
+      // 2. Load existing attendance records for the month (bulk fetch)
+      const existingRecs = await base44.entities.Attendance.filter({ date: { $gte: monthStart, $lte: monthEnd } });
+      const existingMap  = {};
+      existingRecs.forEach(r => { existingMap[`${r.user_id}|${r.date}`] = r; });
+
+      let created = 0, updated = 0, skipped = 0, notFound = 0;
+      const notFoundCodes = [];
+      const total = preview.employees.length;
+      setProgress({ done: 0, total });
+
+      for (let ei = 0; ei < preview.employees.length; ei++) {
+        const { empCode, days } = preview.employees[ei];
+        const userId = codeMap[empCode.toUpperCase()];
+        if (!userId) { notFound++; notFoundCodes.push(empCode); setProgress({ done: ei+1, total }); continue; }
+
+        for (const [dayNum, status] of Object.entries(days)) {
+          const dateStr = `${year}-${m}-${String(dayNum).padStart(2,'0')}`;
+          if (parseInt(dayNum) > daysInMonth) continue;
+          const key = `${userId}|${dateStr}`;
+          const existing = existingMap[key];
+          if (existing) {
+            if (existing.status !== status) {
+              await base44.entities.Attendance.update(existing.id, { status, notes: `Imported from muster (${MONTH_NAMES[month-1]} ${year})` });
+              updated++;
+            } else { skipped++; }
+          } else {
+            await base44.entities.Attendance.create({ user_id: userId, date: dateStr, status, notes: `Imported from muster (${MONTH_NAMES[month-1]} ${year})` });
+            created++;
+          }
+        }
+        setProgress({ done: ei+1, total });
+      }
+
+      setResults({ created, updated, skipped, notFound, notFoundCodes, month: MONTH_NAMES[month-1], year });
+    } catch (e) {
+      setResults({ error: e.message });
+    }
+    setImporting(false);
+  };
+
+  const years = [];
+  for (let y = new Date().getFullYear(); y >= 2023; y--) years.push(y);
+
+  return (
+    <div className="space-y-5 max-w-3xl">
+      <div>
+        <h2 className="text-base font-semibold">Attendance Muster Import</h2>
+        <p className="text-xs text-muted-foreground mt-1">
+          Import attendance from the monthly muster XLS/XLSX file. Existing records for the selected month are updated; missing ones are created.
+          Employee codes (MVE/MVET) must match the HRMS employee records.
+        </p>
+      </div>
+
+      {/* Month / Year picker */}
+      <div className="flex gap-3 items-end">
+        <div>
+          <Label className="text-xs">Month</Label>
+          <Select value={String(month)} onValueChange={v => setMonth(Number(v))}>
+            <SelectTrigger className="w-36 h-8 text-xs mt-1"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {MONTH_NAMES.map((n, i) => <SelectItem key={i+1} value={String(i+1)}>{n}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Year</Label>
+          <Select value={String(year)} onValueChange={v => setYear(Number(v))}>
+            <SelectTrigger className="w-24 h-8 text-xs mt-1"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {years.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* File upload */}
+      <div>
+        <Label className="text-xs">Attendance Muster File (.xls / .xlsx)</Label>
+        <div className="mt-1 border-2 border-dashed rounded-lg p-6 text-center hover:border-primary/60 transition-colors">
+          <input type="file" accept=".xls,.xlsx" onChange={handleFileChange} className="hidden" id="muster-upload" />
+          <label htmlFor="muster-upload" className="cursor-pointer">
+            <div className="flex flex-col items-center gap-2">
+              <div className="p-3 bg-primary/10 rounded-full">
+                <svg className="w-6 h-6 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+              </div>
+              {file ? (
+                <div>
+                  <p className="text-sm font-medium text-primary">{file.name}</p>
+                  <p className="text-xs text-muted-foreground">Click to change file</p>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-sm font-medium">Click to upload muster file</p>
+                  <p className="text-xs text-muted-foreground">Supports XLS and XLSX format (Attendance_Muster style)</p>
+                </div>
+              )}
+            </div>
+          </label>
+        </div>
+        {parseError && <p className="text-destructive text-xs mt-2">{parseError}</p>}
+      </div>
+
+      {/* Preview */}
+      {preview && !parseError && (
+        <div className="border rounded-lg p-4 bg-muted/30 space-y-3">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-green-600" />
+            <span className="text-sm font-medium">File parsed successfully</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3 text-xs">
+            <div className="bg-background border rounded p-3 text-center">
+              <p className="text-2xl font-bold text-primary">{preview.employees.length}</p>
+              <p className="text-muted-foreground">Employees found</p>
+            </div>
+            <div className="bg-background border rounded p-3 text-center">
+              <p className="text-2xl font-bold text-primary">{preview.totalDays}</p>
+              <p className="text-muted-foreground">Days in file</p>
+            </div>
+            <div className="bg-background border rounded p-3 text-center">
+              <p className="text-2xl font-bold text-primary">{MONTH_NAMES[month-1]} {year}</p>
+              <p className="text-muted-foreground">Target month</p>
+            </div>
+          </div>
+
+          {/* Sample rows */}
+          <div>
+            <p className="text-xs font-medium mb-1.5 text-muted-foreground">Preview (first 5 employees):</p>
+            <div className="space-y-1">
+              {preview.employees.slice(0, 5).map(e => (
+                <div key={e.empCode} className="flex items-center justify-between text-xs bg-background border rounded px-3 py-1.5">
+                  <span className="font-mono text-primary font-medium">{e.empCode}</span>
+                  <span className="text-muted-foreground truncate mx-3">{e.empName}</span>
+                  <span className="text-muted-foreground shrink-0">{Object.keys(e.days).length} days mapped</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Status legend */}
+          <div className="flex flex-wrap gap-2 text-xs pt-1">
+            {[['P','present','bg-green-100 text-green-700'],['A','absent','bg-red-100 text-red-700'],['OFF','week_off','bg-gray-100 text-gray-600'],
+              ['EL/CL/SL','leave','bg-blue-100 text-blue-700'],['COF','on_duty','bg-teal-100 text-teal-700'],['P:CL etc.','half_day','bg-yellow-100 text-yellow-700']].map(([code, label, cls]) => (
+              <span key={code} className={`px-2 py-0.5 rounded-full font-medium ${cls}`}>{code} → {label}</span>
+            ))}
+          </div>
+
+          <Button onClick={handleImport} disabled={importing} className="w-full">
+            {importing ? (
+              <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Importing… ({progress.done}/{progress.total} employees)</>
+            ) : (
+              <>Import {preview.employees.length} Employees — {MONTH_NAMES[month-1]} {year}</>
+            )}
+          </Button>
+        </div>
+      )}
+
+      {/* Progress bar */}
+      {importing && progress.total > 0 && (
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>Processing employees…</span>
+            <span>{Math.round(progress.done / progress.total * 100)}%</span>
+          </div>
+          <div className="h-2 bg-muted rounded-full overflow-hidden">
+            <div className="h-full bg-primary transition-all" style={{ width: `${Math.round(progress.done / progress.total * 100)}%` }} />
+          </div>
+        </div>
+      )}
+
+      {/* Results */}
+      {results && !results.error && (
+        <div className="border rounded-lg p-4 bg-green-50/50 dark:bg-green-900/10 space-y-3">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-green-600" />
+            <span className="text-sm font-medium">Import complete — {results.month} {results.year}</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            {[['Created',results.created,'text-green-700 bg-green-100'],['Updated',results.updated,'text-blue-700 bg-blue-100'],
+              ['Unchanged',results.skipped,'text-gray-700 bg-gray-100'],['Not Found',results.notFound,'text-red-700 bg-red-100']].map(([l,v,cls]) => (
+              <div key={l} className={`rounded p-3 text-center ${cls}`}>
+                <p className="text-xl font-bold">{v}</p>
+                <p className="font-medium">{l}</p>
+              </div>
+            ))}
+          </div>
+          {results.notFoundCodes.length > 0 && (
+            <div className="text-xs">
+              <p className="font-medium text-red-700 mb-1">Employee codes not found in HRMS:</p>
+              <p className="font-mono text-muted-foreground break-all">{results.notFoundCodes.join(', ')}</p>
+            </div>
+          )}
+        </div>
+      )}
+      {results?.error && (
+        <div className="border border-destructive/30 rounded-lg p-4 bg-destructive/5">
+          <p className="text-sm text-destructive font-medium">Import failed</p>
+          <p className="text-xs text-muted-foreground mt-1">{results.error}</p>
+        </div>
+      )}
+
+      <div className="text-xs text-muted-foreground border-t pt-3 space-y-1">
+        <p className="font-medium">How it works:</p>
+        <ul className="list-disc list-inside space-y-0.5 ml-1">
+          <li>Reads the muster XLS (same format as <em>Attendance_Muster__June-2026 final.xls</em>)</li>
+          <li>Matches employees by <strong>Employee Code</strong> (MVE/MVET prefix)</li>
+          <li>Creates attendance records for days not yet in the system</li>
+          <li>Updates existing records only if the status has changed</li>
+          <li>Records not present in the file (blank cells) are left unchanged</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 // ── Maintenance Tab ────────────────────────────────────────
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const prevMonth = () => { const now = new Date(); return now.getMonth() === 0 ? 12 : now.getMonth(); };
@@ -1637,15 +1960,16 @@ export default function AdminPanel() {
   }
 
   const TABS = [
-    { id: 'entities', label: 'Data Browser',     icon: Database },
-    { id: 'users',    label: 'User Management',   icon: UserCog  },
-    { id: 'emp',      label: 'Employee Attrs',    icon: Settings2 },
-    { id: 'stats',    label: 'Statistics',        icon: BarChart3 },
-    { id: 'email',    label: 'Email Settings',    icon: Mail },
-    { id: 'ai',       label: 'AI Settings',       icon: Bot },
-    { id: 'api',      label: 'API Integration',   icon: Fingerprint },
-    { id: 'audit',    label: 'Audit Log',         icon: ScrollText },
-    { id: 'maintenance', label: 'Maintenance',    icon: RotateCcw },
+    { id: 'entities',   label: 'Data Browser',      icon: Database },
+    { id: 'users',      label: 'User Management',    icon: UserCog  },
+    { id: 'emp',        label: 'Employee Attrs',     icon: Settings2 },
+    { id: 'att_import', label: 'Attendance Import',  icon: Download },
+    { id: 'stats',      label: 'Statistics',         icon: BarChart3 },
+    { id: 'email',      label: 'Email Settings',     icon: Mail },
+    { id: 'ai',         label: 'AI Settings',        icon: Bot },
+    { id: 'api',        label: 'API Integration',    icon: Fingerprint },
+    { id: 'audit',      label: 'Audit Log',          icon: ScrollText },
+    { id: 'maintenance',label: 'Maintenance',        icon: RotateCcw },
   ];
 
   return (
@@ -1675,14 +1999,15 @@ export default function AdminPanel() {
         </div>
       </div>
 
-      {tab === 'entities' && <EntitiesTab typeCounts={typeCounts} />}
-      {tab === 'users'    && <UsersTab />}
-      {tab === 'emp'      && <EmployeeAttrsTab />}
-      {tab === 'email'    && <EmailTab />}
-      {tab === 'ai'       && <AITab />}
-      {tab === 'api'      && <ApiIntegrationTab />}
-      {tab === 'audit'       && <AuditLogTab />}
-      {tab === 'maintenance' && <MaintenanceTab />}
+      {tab === 'entities'   && <EntitiesTab typeCounts={typeCounts} />}
+      {tab === 'users'      && <UsersTab />}
+      {tab === 'emp'        && <EmployeeAttrsTab />}
+      {tab === 'att_import' && <AttendanceImportTab />}
+      {tab === 'email'      && <EmailTab />}
+      {tab === 'ai'         && <AITab />}
+      {tab === 'api'        && <ApiIntegrationTab />}
+      {tab === 'audit'      && <AuditLogTab />}
+      {tab === 'maintenance'&& <MaintenanceTab />}
       {tab === 'stats'    && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           {typeCounts.map(({ type, count }) => (
