@@ -58,15 +58,14 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const absentDays   = payroll.absent_days   ?? Math.floor(lopDays);
   const payDays      = payroll.pay_days      ?? (calendarDays - lopDays);
 
-  // Earned ratio: LOP applied proportionally on all salary components (not as a separate deduction).
-  // Backend payrolls store calendar_days + pay_days; frontend payrolls store working_days + present_days.
+  // Earned ratio: week-offs (paid) are counted as present days.
+  // payDays = calendar_days − LOP_days already includes protected week-offs (sandwich rule applied server-side).
   let earnedRatio;
   if (payroll.calendar_days && payroll.pay_days != null) {
     earnedRatio = Math.min(payroll.pay_days / payroll.calendar_days, 1);
-  } else if (payroll.present_days != null && payroll.working_days) {
-    earnedRatio = Math.min(payroll.present_days / payroll.working_days, 1);
   } else {
-    earnedRatio = 1;
+    // Frontend payrolls: use payDays/calendarDays so week-offs are included
+    earnedRatio = Math.min(payDays / calendarDays, 1);
   }
 
   // Earned = Fixed × earnedRatio — LOP already reflected here, never as a separate deduction line
@@ -157,7 +156,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
         ${[
           ['Month Days',   calendarDays,            '#1a1a1a'],
           ['Working Days', workingDays,             '#1a1a1a'],
-          ['Present Days', presentDays,             '#15803d'],
+          ['Present Days', payDays,                 '#15803d'],
           ['Half Days',    halfDays,                halfDays > 0 ? '#d97706' : '#6b7280'],
           ['Absent Days',  absentDays,              absentDays > 0 ? '#dc2626' : '#6b7280'],
           ['LOP Days',     lopDays,                 lopDays > 0 ? '#dc2626' : '#6b7280'],
