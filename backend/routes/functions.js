@@ -1361,7 +1361,8 @@ router.post('/:name', async (req, res) => {
           else if (code==='OD') odC++;
         }
 
-        const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...codes, pC, aC, lC, hdC, woC, phC, odC, pC+aC+lC+hdC+woC+phC+odC];
+        const totalWorked = pC + odC + lC; // present (incl. half-days) + on-duty + paid leaves
+        const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...codes, pC, aC, lC, hdC, woC, phC, odC, totalWorked];
         const dr = wsM.addRow(rowVals);
         dr.height = 15;
 
@@ -1378,7 +1379,7 @@ router.post('/:name', async (req, res) => {
           });
         });
 
-        [pC,aC,lC,hdC,woC,phC,odC,pC+aC+lC+hdC+woC+phC+odC].forEach((v,i) => {
+        [pC,aC,lC,hdC,woC,phC,odC,totalWorked].forEach((v,i) => {
           const cell = dr.getCell(INFO+daysInMonth+1+i);
           const isTotal = i===SUMM-1;
           Object.assign(cell, {
@@ -1978,7 +1979,7 @@ router.post('/:name', async (req, res) => {
         const totalLOPDays  = daysAbsent + daysHalfDay * 0.5;
         // payDays = calendar days − LOP days; effectiveDays = calendar days for all
         const payDaysSS     = calendarDaysSS - totalLOPDays;
-        const effectiveDays = payDaysSS;   // actual days paid: present + paid leaves (week_off/holiday/leave)
+        const effectiveDays = calendarDaysSS;                 // show calendar days (e.g. 30 or 31)
 
         // ── Earnings — full monthly amounts; LOP is a separate deduction ─────────
         const grossMonthly = (ss.basic_salary||0)+(ss.hra||0)+(ss.conveyance||0)+(ss.special_allowance||0);
@@ -2055,7 +2056,7 @@ router.post('/:name', async (req, res) => {
         { header:'Days Present',   key:'daysPresent',   width:10 },  // decimal: 22.5
         { header:'Half Days',      key:'daysHalfDay',   width:9  },  // integer: 1
         { header:'Absent Days',    key:'daysAbsent',    width:10 },  // decimal: 2.5 (= absent + half×0.5)
-        { header:'Total Days',     key:'effectiveDays', width:9  },  // present + paid leaves
+        { header:'Eff. Days',      key:'effectiveDays', width:9  },  // 26 for all
         // EARNINGS (cols 14-18)
         { header:'Gross Salary',   key:'gross',         width:13 },
         { header:'Basic',          key:'basic',         width:12 },
