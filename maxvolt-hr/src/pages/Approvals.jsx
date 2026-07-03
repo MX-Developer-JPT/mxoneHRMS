@@ -15,6 +15,8 @@ export default function Approvals() {
   const [isHR, setIsHR] = useState(false);
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [reimbursements, setReimbursements] = useState([]);
+  const [reimbursementHistory, setReimbursementHistory] = useState([]);
+  const [showReimbHistory, setShowReimbHistory] = useState(false);
   const [gatePasses, setGatePasses] = useState([]);
   const [regularisations, setRegularisations] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -44,13 +46,17 @@ export default function Approvals() {
       if (!hrRole) leaves = leaves.filter(l => directReportUserIds.includes(l.user_id));
 
       let reimburse;
+      let reimbHistory = [];
       if (hrRole) {
         // Management/HR see both pending (no manager yet) and manager_approved (awaiting final approval)
-        const [pendingReimb, mgrApprovedReimb] = await Promise.all([
+        const [pendingReimb, mgrApprovedReimb, approvedReimb, rejectedReimb] = await Promise.all([
           base44.entities.Reimbursement.filter({ status: 'pending' }, '-created_date'),
           base44.entities.Reimbursement.filter({ status: 'manager_approved' }, '-created_date'),
+          base44.entities.Reimbursement.filter({ status: 'approved' }, '-created_date'),
+          base44.entities.Reimbursement.filter({ status: 'rejected' }, '-created_date'),
         ]);
         reimburse = [...pendingReimb, ...mgrApprovedReimb];
+        reimbHistory = [...approvedReimb, ...rejectedReimb].sort((a, b) => new Date(b.created_date) - new Date(a.created_date));
       } else {
         // Filter all pending by user_id membership (manager_id field may not be set reliably)
         const allPendingReimb = await base44.entities.Reimbursement.filter({ status: 'pending' }, '-created_date');
@@ -71,6 +77,7 @@ export default function Approvals() {
 
       setLeaveRequests(leaves);
       setReimbursements(reimburse);
+      setReimbursementHistory(reimbHistory);
       setGatePasses(pendingGatePasses);
       setRegularisations(pendingRegs);
       setLoading(false);
@@ -391,8 +398,10 @@ export default function Approvals() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {reimbursements.length > 0 ? (
-                    reimbursements.map(reimb => {
+                  {reimbursements.length === 0 && (
+                    <p className="text-center text-muted-foreground py-4">No reimbursements pending</p>
+                  )}
+                  {reimbursements.length > 0 && reimbursements.map(reimb => {
                       const emp = employees.find(e => e.user_id === reimb.user_id);
                       return (
                         <div key={reimb.id} className="border rounded-lg p-4">
@@ -428,13 +437,66 @@ export default function Approvals() {
                           </div>
                         </div>
                       );
-                    })
-                  ) : (
-                    <p className="text-center text-muted-foreground py-8">No reimbursements pending</p>
-                  )}
+                    })}
                 </div>
               </CardContent>
             </Card>
+
+            {isHR && (
+              <Card className="mt-4">
+                <CardHeader className="pb-2">
+                  <button
+                    className="flex items-center justify-between w-full text-left"
+                    onClick={() => setShowReimbHistory(h => !h)}
+                  >
+                    <CardTitle className="text-base">
+                      Expense History
+                      <Badge variant="outline" className="ml-2 text-xs">{reimbursementHistory.length}</Badge>
+                    </CardTitle>
+                    {showReimbHistory ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                  </button>
+                </CardHeader>
+                {showReimbHistory && (
+                  <CardContent>
+                    {reimbursementHistory.length === 0 ? (
+                      <p className="text-center text-muted-foreground py-6">No expense history</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {reimbursementHistory.map(reimb => {
+                          const emp = employees.find(e => e.user_id === reimb.user_id);
+                          return (
+                            <div key={reimb.id} className="border rounded-lg p-4 opacity-80">
+                              <div className="flex justify-between items-start gap-4">
+                                <div className="flex-1">
+                                  <div className="flex items-center justify-between">
+                                    <div>
+                                      <p className="font-medium">{emp?.full_name || 'Unknown'}</p>
+                                      <p className="text-sm text-muted-foreground">{emp?.designation} · {emp?.department} · {emp?.employee_code}</p>
+                                    </div>
+                                    <p className="text-2xl font-bold text-blue-600">₹{reimb.amount?.toLocaleString()}</p>
+                                  </div>
+                                  <p className="text-sm capitalize font-medium mt-1">{reimb.expense_type?.replace(/_/g, ' ')}</p>
+                                  <p className="text-sm text-muted-foreground">{reimb.expense_date ? safeDate(reimb.expense_date, 'MMM d, yyyy') : ''}</p>
+                                  <p className="text-sm mt-1">{reimb.description}</p>
+                                  <div className="flex items-center gap-3 mt-2">
+                                    <Badge className={statusColors[reimb.status]}>{reimb.status.replace(/_/g, ' ').toUpperCase()}</Badge>
+                                    {reimb.receipt_url && (
+                                      <Button variant="link" onClick={() => setViewerDoc({ url: reimb.receipt_url, title: 'Receipt' })} className="px-0 h-auto text-xs" size="sm">
+                                        View Receipt
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                )}
+              </Card>
+            )}
           </TabsContent>
         </Tabs>
       </div>
