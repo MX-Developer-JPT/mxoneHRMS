@@ -8122,7 +8122,7 @@ function buildPayslipHtml(payroll, emp, deptName) {
 
   const gross    = payroll.gross_salary   || 0;
   const totalDed = payroll.total_deductions || (payroll.deductions ? Object.values(payroll.deductions).reduce((s,v)=>s+(v||0),0) : 0);
-  const net      = payroll.net_salary     || 0;
+  const net      = gross - totalDed;
 
   const rows = Array.from({ length: Math.max(earn.length, ded.length) }, (_, i) => `
     <tr>

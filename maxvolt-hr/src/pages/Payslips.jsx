@@ -54,7 +54,10 @@ export default function Payslips() {
 
   const sorted = [...payrolls].sort((a, b) => b.year - a.year || b.month - a.month);
 
-  const totalNet = payrolls.reduce((s, p) => s + (p.net_salary || 0), 0);
+  const totalNet = payrolls.reduce((s, p) => {
+    const td = Object.values(p.deductions || {}).reduce((a, v) => a + (parseFloat(v) || 0), 0);
+    return s + ((p.gross_salary || 0) - td);
+  }, 0);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
@@ -78,7 +81,7 @@ export default function Payslips() {
             {payrolls[0] && (
               <Card><CardContent className="p-4 flex items-center gap-3">
                 <div className="p-2 bg-purple-100 rounded-full"><TrendingUp className="w-5 h-5 text-purple-600" /></div>
-                <div><p className="text-xs text-gray-500">Latest Net Salary</p><p className="font-bold text-purple-600">₹{(payrolls[0]?.net_salary || 0).toLocaleString('en-IN')}</p></div>
+                <div><p className="text-xs text-gray-500">Latest Net Salary</p><p className="font-bold text-purple-600">₹{(() => { const d = payrolls[0]?.deductions || {}; const td = Object.values(d).reduce((s,v)=>s+(parseFloat(v)||0),0); return ((payrolls[0]?.gross_salary||0)-td).toLocaleString('en-IN'); })()}</p></div>
               </CardContent></Card>
             )}
           </div>
@@ -89,6 +92,8 @@ export default function Payslips() {
             {sorted.map(payroll => {
               const deductions = payroll.deductions || {};
               const totalDed = Object.values(deductions).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+              const grossEarned = payroll.gross_salary || 0;
+              const netPay = grossEarned - totalDed;
               return (
                 <Card key={payroll.id} className="hover:shadow-lg transition-shadow">
                   <CardHeader className="pb-3">
@@ -122,7 +127,7 @@ export default function Payslips() {
                       </div>
                       <div className="pt-2 border-t flex justify-between">
                         <span className="font-bold">Net Take-Home</span>
-                        <span className="font-bold text-green-600 text-base">₹{(payroll.net_salary || 0).toLocaleString('en-IN')}</span>
+                        <span className="font-bold text-green-600 text-base">₹{netPay.toLocaleString('en-IN')}</span>
                       </div>
                     </div>
                     {payroll.payment_date && (
