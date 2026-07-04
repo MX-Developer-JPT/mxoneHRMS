@@ -8,10 +8,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { format, differenceInDays } from 'date-fns';
-import { CheckCircle, XCircle, Clock, AlertTriangle, User, Calendar, Star, ChevronRight, Loader2, FileText, Timer, AlertCircle } from 'lucide-react';
+import { Calendar, Loader2, FileText, Search, Plus, UserCheck } from 'lucide-react';
 
 const CRITERIA = [
   { key: 'work_quality',         label: 'Work Quality' },
@@ -40,20 +39,19 @@ const STATUS_LABELS = {
   rejected:          'Not Confirmed',
 };
 
-function ScoreInput({ value, onChange, disabled }) {
+function ScoreInput({ value, onChange }) {
   return (
     <div className="flex gap-1">
       {[1, 2, 3, 4, 5].map(n => (
         <button
           key={n}
           type="button"
-          disabled={disabled}
           onClick={() => onChange(n)}
           className={`w-8 h-8 rounded text-sm font-bold border transition-colors ${
             value >= n
               ? 'bg-blue-600 text-white border-blue-600'
               : 'bg-white text-gray-400 border-gray-200 hover:border-blue-400'
-          } disabled:opacity-50 disabled:cursor-not-allowed`}
+          }`}
         >
           {n}
         </button>
@@ -62,31 +60,114 @@ function ScoreInput({ value, onChange, disabled }) {
   );
 }
 
-export default function ConfirmationManagement() {
-  const [user, setUser]     = useState(null);
-  const [role, setRole]     = useState('');
-  const [loading, setLoading] = useState(true);
+function ReviewForm({ form, setForm, isHRInitiated }) {
+  const avgScore = () => {
+    const vals = Object.values(form.scores || {}).filter(Boolean);
+    return vals.length ? (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1) : null;
+  };
+  return (
+    <div className="space-y-5">
+      <div>
+        <Label className="text-sm font-semibold mb-2 block">Recommendation</Label>
+        <div className="flex gap-3">
+          {[
+            { value: 'confirm', label: 'Confirm',         color: 'bg-green-600 hover:bg-green-700' },
+            { value: 'extend',  label: 'Extend Probation',color: 'bg-orange-500 hover:bg-orange-600' },
+            { value: 'reject',  label: 'Not Confirm',     color: 'bg-red-600 hover:bg-red-700' },
+          ].map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setForm(f => ({ ...f, action: opt.value }))}
+              className={`flex-1 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
+                form.action === opt.value ? opt.color : 'bg-gray-300 text-gray-700 hover:bg-gray-400'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-  // Data
-  const [probationEmps, setProbationEmps] = useState([]);  // employees on probation
-  const [reviews, setReviews]             = useState([]);   // ProbationReview records
+      {form.action === 'extend' && (
+        <div>
+          <Label className="text-sm font-semibold mb-1 block">Extend Until</Label>
+          <Input
+            type="date"
+            value={form.extended_until}
+            onChange={e => setForm(f => ({ ...f, extended_until: e.target.value }))}
+            min={format(new Date(), 'yyyy-MM-dd')}
+          />
+        </div>
+      )}
+
+      <div>
+        <Label className="text-sm font-semibold mb-3 block">
+          Performance Evaluation <span className="font-normal text-gray-500">(1 = Poor, 5 = Excellent)</span>
+        </Label>
+        <div className="space-y-3">
+          {CRITERIA.map(c => (
+            <div key={c.key} className="flex items-center justify-between gap-4">
+              <span className="text-sm text-gray-700 w-60">{c.label}</span>
+              <ScoreInput
+                value={form.scores?.[c.key] || 0}
+                onChange={v => setForm(f => ({ ...f, scores: { ...f.scores, [c.key]: v } }))}
+              />
+              <span className="text-sm font-semibold text-blue-700 w-4">{form.scores?.[c.key] || ''}</span>
+            </div>
+          ))}
+        </div>
+        {avgScore() && (
+          <p className="text-sm text-gray-500 mt-2">
+            Average: <span className="font-semibold">{avgScore()}/5</span>
+          </p>
+        )}
+      </div>
+
+      <div>
+        <Label className="text-sm font-semibold mb-1 block">
+          {isHRInitiated ? 'HR Comments & Evaluation' : 'Comments & Observations'}
+        </Label>
+        <Textarea
+          placeholder="Provide detailed comments about the employee's performance, strengths, and areas of improvement..."
+          value={form.comments}
+          onChange={e => setForm(f => ({ ...f, comments: e.target.value }))}
+          rows={4}
+        />
+      </div>
+    </div>
+  );
+}
+
+export default function ConfirmationManagement() {
+  const [user, setUser]       = useState(null);
+  const [role, setRole]       = useState('');
+  const [loading, setLoading] = useState(true);
+  const [allEmps, setAllEmps] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [search, setSearch]   = useState('');
 
   // Manager submit dialog
-  const [submitDlg, setSubmitDlg]   = useState({ open: false, emp: null });
-  const [submitForm, setSubmitForm] = useState({ action: 'confirm', extended_until: '', manager_scores: {}, manager_comments: '' });
+  const [submitDlg, setSubmitDlg] = useState({ open: false, emp: null });
+  const [submitForm, setSubmitForm] = useState({ action: 'confirm', extended_until: '', scores: {}, comments: '' });
   const [submitting, setSubmitting] = useState(false);
 
+  // HR initiate dialog (same form, different backend call)
+  const [initiateDlg, setInitiateDlg] = useState({ open: false, emp: null });
+  const [initiateForm, setInitiateForm] = useState({ action: 'confirm', extended_until: '', scores: {}, comments: '' });
+  const [initiating, setInitiating] = useState(false);
+
   // HR review dialog
-  const [hrDlg, setHrDlg]     = useState({ open: false, review: null });
-  const [hrForm, setHrForm]   = useState({ hr_action: 'approve', hr_comments: '' });
+  const [hrDlg, setHrDlg]   = useState({ open: false, review: null });
+  const [hrForm, setHrForm] = useState({ hr_action: 'approve', hr_comments: '' });
   const [hrSaving, setHrSaving] = useState(false);
 
   // Management approval dialog
-  const [mgmtDlg, setMgmtDlg]     = useState({ open: false, review: null });
-  const [mgmtForm, setMgmtForm]   = useState({ final_action: 'confirmed', management_comments: '', extended_until: '' });
+  const [mgmtDlg, setMgmtDlg]   = useState({ open: false, review: null });
+  const [mgmtForm, setMgmtForm] = useState({ final_action: 'confirmed', management_comments: '', extended_until: '' });
   const [mgmtSaving, setMgmtSaving] = useState(false);
 
-  // Detail view dialog
+  // Detail view
   const [detailDlg, setDetailDlg] = useState({ open: false, review: null });
 
   useEffect(() => { loadAll(); }, []);
@@ -105,20 +186,17 @@ export default function ConfirmationManagement() {
       ]);
 
       const today = new Date();
-      const onProbation = emps
-        .filter(e => e.employee_status === 'probation')
-        .map(e => {
-          const endDate = e.probation_end_date
-            ? new Date(e.probation_end_date)
-            : e.date_of_joining
-              ? new Date(new Date(e.date_of_joining).getTime() + 180 * 86400000)
-              : null;
-          const daysLeft = endDate ? differenceInDays(endDate, today) : null;
-          return { ...e, probationEndDate: endDate, daysLeft };
-        })
-        .sort((a, b) => (a.daysLeft ?? 999) - (b.daysLeft ?? 999));
+      const enriched = emps.map(e => {
+        const endDate = e.probation_end_date
+          ? new Date(e.probation_end_date)
+          : e.date_of_joining
+            ? new Date(new Date(e.date_of_joining).getTime() + 180 * 86400000)
+            : null;
+        const daysLeft = endDate ? differenceInDays(endDate, today) : null;
+        return { ...e, probationEndDate: endDate, daysLeft };
+      });
 
-      setProbationEmps(onProbation);
+      setAllEmps(enriched);
       setReviews(reviewsRes.data?.reviews || []);
     } catch (e) {
       toast.error('Failed to load data: ' + e.message);
@@ -126,47 +204,83 @@ export default function ConfirmationManagement() {
     setLoading(false);
   };
 
-  // Check if employee already has an active review
-  const hasActiveReview = (userId) =>
+  const hasActiveReview = userId =>
     reviews.some(r => r.user_id === userId && ['manager_submitted', 'hr_approved'].includes(r.status));
 
-  // ── Manager: open submit dialog ──
-  const openSubmit = (emp) => {
-    setSubmitForm({ action: 'confirm', extended_until: '', manager_scores: {}, manager_comments: '' });
+  const hasCompletedReview = userId =>
+    reviews.some(r => r.user_id === userId && ['confirmed', 'extended', 'rejected'].includes(r.status));
+
+  const avgScore = scores => {
+    const vals = Object.values(scores || {}).filter(Boolean);
+    return vals.length ? (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1) : '—';
+  };
+
+  // ── Manager submit review ──
+  const openSubmit = emp => {
+    setSubmitForm({ action: 'confirm', extended_until: '', scores: {}, comments: '' });
     setSubmitDlg({ open: true, emp });
   };
 
   const handleSubmitReview = async () => {
     const { emp } = submitDlg;
-    const missingScores = CRITERIA.filter(c => !submitForm.manager_scores[c.key]);
+    const missingScores = CRITERIA.filter(c => !submitForm.scores[c.key]);
     if (missingScores.length) { toast.error('Please rate all criteria'); return; }
-    if (!submitForm.manager_comments.trim()) { toast.error('Please add comments'); return; }
+    if (!submitForm.comments.trim()) { toast.error('Please add comments'); return; }
     if (submitForm.action === 'extend' && !submitForm.extended_until) { toast.error('Please set extension date'); return; }
-
     setSubmitting(true);
     try {
       const res = await base44.functions.invoke('submitProbationReview', {
         employee_user_id: emp.user_id,
         action: submitForm.action,
         extended_until: submitForm.extended_until,
-        manager_scores: submitForm.manager_scores,
-        manager_comments: submitForm.manager_comments,
+        manager_scores: submitForm.scores,
+        manager_comments: submitForm.comments,
       });
       if (res.data?.success) {
-        toast.success('Probation review submitted to HR');
+        toast.success('Review submitted to HR');
         setSubmitDlg({ open: false, emp: null });
         loadAll();
       } else {
         toast.error(res.data?.error || 'Submission failed');
       }
-    } catch (e) {
-      toast.error(e.message);
-    }
+    } catch (e) { toast.error(e.message); }
     setSubmitting(false);
   };
 
-  // ── HR: review ──
-  const openHRReview = (review) => {
+  // ── HR initiate confirmation ──
+  const openInitiate = emp => {
+    setInitiateForm({ action: 'confirm', extended_until: '', scores: {}, comments: '' });
+    setInitiateDlg({ open: true, emp });
+  };
+
+  const handleInitiate = async () => {
+    const { emp } = initiateDlg;
+    const missingScores = CRITERIA.filter(c => !initiateForm.scores[c.key]);
+    if (missingScores.length) { toast.error('Please rate all criteria'); return; }
+    if (!initiateForm.comments.trim()) { toast.error('Please add comments'); return; }
+    if (initiateForm.action === 'extend' && !initiateForm.extended_until) { toast.error('Please set extension date'); return; }
+    setInitiating(true);
+    try {
+      const res = await base44.functions.invoke('hrInitiateConfirmation', {
+        employee_user_id: emp.user_id,
+        action: initiateForm.action,
+        extended_until: initiateForm.extended_until,
+        scores: initiateForm.scores,
+        comments: initiateForm.comments,
+      });
+      if (res.data?.success) {
+        toast.success('Confirmation initiated — sent to Management for final decision');
+        setInitiateDlg({ open: false, emp: null });
+        loadAll();
+      } else {
+        toast.error(res.data?.error || 'Failed');
+      }
+    } catch (e) { toast.error(e.message); }
+    setInitiating(false);
+  };
+
+  // ── HR review ──
+  const openHRReview = review => {
     setHrForm({ hr_action: 'approve', hr_comments: '' });
     setHrDlg({ open: true, review });
   };
@@ -187,19 +301,21 @@ export default function ConfirmationManagement() {
       } else {
         toast.error(res.data?.error || 'Failed');
       }
-    } catch (e) {
-      toast.error(e.message);
-    }
+    } catch (e) { toast.error(e.message); }
     setHrSaving(false);
   };
 
-  // ── Management: final approval ──
-  const openMgmtApproval = (review) => {
-    setMgmtForm({ final_action: review.action === 'confirm' ? 'confirmed' : review.action === 'extend' ? 'extended' : 'rejected', management_comments: '', extended_until: review.extended_until || '' });
+  // ── Management final decision ──
+  const openMgmt = review => {
+    setMgmtForm({
+      final_action: review.action === 'confirm' ? 'confirmed' : review.action === 'extend' ? 'extended' : 'rejected',
+      management_comments: '',
+      extended_until: review.extended_until || '',
+    });
     setMgmtDlg({ open: true, review });
   };
 
-  const handleMgmtApproval = async () => {
+  const handleMgmt = async () => {
     if (!mgmtForm.management_comments.trim()) { toast.error('Please add comments'); return; }
     if (mgmtForm.final_action === 'extended' && !mgmtForm.extended_until) { toast.error('Please set extension date'); return; }
     setMgmtSaving(true);
@@ -211,33 +327,47 @@ export default function ConfirmationManagement() {
         extended_until: mgmtForm.extended_until,
       });
       if (res.data?.success) {
-        toast.success('Confirmation decision recorded');
+        toast.success('Decision recorded');
         setMgmtDlg({ open: false, review: null });
         loadAll();
       } else {
         toast.error(res.data?.error || 'Failed');
       }
-    } catch (e) {
-      toast.error(e.message);
-    }
+    } catch (e) { toast.error(e.message); }
     setMgmtSaving(false);
   };
 
-  const avgScore = (scores) => {
-    const vals = Object.values(scores || {}).filter(Boolean);
-    return vals.length ? (vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1) : '—';
-  };
-
-  const isHR = ['hr', 'admin'].includes(role);
-  const isMgmt = role === 'management';
+  const isHR     = ['hr', 'admin'].includes(role);
+  const isMgmt   = role === 'management';
   const isManager = role === 'manager';
 
-  // Which reviews the current user can act on
   const hrPendingReviews   = reviews.filter(r => r.status === 'manager_submitted');
   const mgmtPendingReviews = reviews.filter(r => r.status === 'hr_approved');
-  const myTeamEmps = isManager
-    ? probationEmps.filter(e => e.reporting_manager_id === user?.id)
-    : probationEmps;
+
+  // Employees visible to current user
+  const myTeamEmps = isManager && user
+    ? allEmps.filter(e => e.reporting_manager_id === user.id)
+    : allEmps;
+
+  // Filtered by search
+  const filteredEmps = myTeamEmps.filter(e => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return (
+      (e.display_name || '').toLowerCase().includes(s) ||
+      (e.employee_code || '').toLowerCase().includes(s) ||
+      (e.department || '').toLowerCase().includes(s) ||
+      (e.designation || '').toLowerCase().includes(s)
+    );
+  });
+
+  // For the "employees" tab — show those on probation or recently joined (< 270 days)
+  const today = new Date();
+  const probationList = filteredEmps.filter(e =>
+    e.employee_status === 'probation' ||
+    (e.date_of_joining && differenceInDays(today, new Date(e.date_of_joining)) <= 270) ||
+    e.probation_end_date
+  ).sort((a, b) => (a.daysLeft ?? 999) - (b.daysLeft ?? 999));
 
   if (loading) return (
     <div className="flex items-center justify-center h-screen">
@@ -248,7 +378,6 @@ export default function ConfirmationManagement() {
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-6">
       <div className="max-w-6xl mx-auto space-y-5">
-        {/* Header */}
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Employment Confirmation</h1>
           <p className="text-sm text-gray-500 mt-0.5">Manage probation reviews and confirmation approvals</p>
@@ -257,10 +386,10 @@ export default function ConfirmationManagement() {
         {/* Summary cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            { label: 'On Probation',       value: probationEmps.length,                                  color: 'text-orange-600', bg: 'bg-orange-50' },
-            { label: 'Due ≤ 15 Days',      value: probationEmps.filter(e => e.daysLeft != null && e.daysLeft <= 15 && e.daysLeft >= 0).length, color: 'text-red-600', bg: 'bg-red-50' },
-            { label: 'Pending HR Review',  value: hrPendingReviews.length,                               color: 'text-blue-600',   bg: 'bg-blue-50' },
-            { label: 'Pending Management', value: mgmtPendingReviews.length,                             color: 'text-purple-600', bg: 'bg-purple-50' },
+            { label: 'Eligible Employees',   value: probationList.length,                                                            color: 'text-orange-600', bg: 'bg-orange-50' },
+            { label: 'Due ≤ 15 Days',        value: probationList.filter(e => e.daysLeft != null && e.daysLeft <= 15 && e.daysLeft >= 0).length, color: 'text-red-600', bg: 'bg-red-50' },
+            { label: 'Pending HR Review',    value: hrPendingReviews.length,                                                         color: 'text-blue-600',   bg: 'bg-blue-50' },
+            { label: 'Pending Management',   value: mgmtPendingReviews.length,                                                       color: 'text-purple-600', bg: 'bg-purple-50' },
           ].map(s => (
             <Card key={s.label}>
               <CardContent className={`p-4 text-center ${s.bg} rounded-lg`}>
@@ -271,101 +400,121 @@ export default function ConfirmationManagement() {
           ))}
         </div>
 
-        <Tabs defaultValue={isManager ? 'my_team' : isHR ? 'hr_review' : 'mgmt_approval'}>
+        <Tabs defaultValue={isHR ? 'employees' : isMgmt ? 'mgmt_approval' : 'my_team'}>
           <TabsList className="flex flex-wrap gap-1 h-auto">
-            {(isManager) && <TabsTrigger value="my_team">My Team</TabsTrigger>}
-            {(isHR || isMgmt) && <TabsTrigger value="probation_list">All on Probation</TabsTrigger>}
-            {(isHR) && <TabsTrigger value="hr_review">HR Review {hrPendingReviews.length > 0 && <Badge className="ml-1 bg-blue-500 text-white text-xs">{hrPendingReviews.length}</Badge>}</TabsTrigger>}
-            {(isMgmt || isHR) && <TabsTrigger value="mgmt_approval">Management Approval {mgmtPendingReviews.length > 0 && <Badge className="ml-1 bg-purple-500 text-white text-xs">{mgmtPendingReviews.length}</Badge>}</TabsTrigger>}
+            {/* All roles: their employee view */}
+            <TabsTrigger value={isManager ? 'my_team' : 'employees'}>
+              {isManager ? 'My Team' : 'Employees'}
+            </TabsTrigger>
+            {isHR && (
+              <TabsTrigger value="hr_review">
+                HR Review
+                {hrPendingReviews.length > 0 && (
+                  <Badge className="ml-1 bg-blue-500 text-white text-xs">{hrPendingReviews.length}</Badge>
+                )}
+              </TabsTrigger>
+            )}
+            {(isMgmt || isHR) && (
+              <TabsTrigger value="mgmt_approval">
+                Management Approval
+                {mgmtPendingReviews.length > 0 && (
+                  <Badge className="ml-1 bg-purple-500 text-white text-xs">{mgmtPendingReviews.length}</Badge>
+                )}
+              </TabsTrigger>
+            )}
             <TabsTrigger value="history">History</TabsTrigger>
           </TabsList>
 
-          {/* Manager: My Team probation employees */}
-          {isManager && (
-            <TabsContent value="my_team">
-              <Card>
-                <CardHeader><CardTitle>Team Members on Probation</CardTitle></CardHeader>
-                <CardContent>
-                  {myTeamEmps.length === 0 ? (
-                    <p className="text-center text-muted-foreground py-8">No team members on probation</p>
-                  ) : (
-                    <div className="space-y-3">
-                      {myTeamEmps.map(emp => {
-                        const active = hasActiveReview(emp.user_id);
-                        const overdue = emp.daysLeft != null && emp.daysLeft < 0;
-                        const urgent  = emp.daysLeft != null && emp.daysLeft <= 7 && emp.daysLeft >= 0;
-                        return (
-                          <div key={emp.id} className="border rounded-lg p-4 flex items-center justify-between gap-4">
-                            <div>
-                              <p className="font-medium">{emp.display_name}</p>
-                              <p className="text-sm text-muted-foreground">{emp.designation} · {emp.department}</p>
-                              <div className="flex items-center gap-2 mt-1">
-                                <Calendar className="w-3.5 h-3.5 text-gray-400" />
-                                <span className="text-xs text-gray-500">
-                                  Probation ends: {emp.probationEndDate ? format(emp.probationEndDate, 'dd MMM yyyy') : 'N/A'}
+          {/* ── Employees tab (HR/management/manager) ── */}
+          <TabsContent value={isManager ? 'my_team' : 'employees'}>
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <CardTitle>{isManager ? 'My Team' : 'Employees'}</CardTitle>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      className="pl-9 pr-3 py-2 border rounded-lg text-sm w-64 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Search by name, code, department..."
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                    />
+                  </div>
+                </div>
+                {!isManager && (
+                  <p className="text-sm text-gray-500">
+                    Showing employees on probation or joined within the last 9 months.
+                    Use the search to find any specific employee.
+                  </p>
+                )}
+              </CardHeader>
+              <CardContent>
+                {(isManager ? filteredEmps : probationList).length === 0 ? (
+                  <div className="text-center py-12 text-muted-foreground">
+                    <UserCheck className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                    <p className="font-medium">{search ? 'No employees match your search' : 'No employees found'}</p>
+                    {!search && !isManager && (
+                      <p className="text-sm mt-1">Employees on probation or who joined in the last 9 months will appear here.</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {(isManager ? filteredEmps : probationList).map(emp => {
+                      const active    = hasActiveReview(emp.user_id);
+                      const completed = hasCompletedReview(emp.user_id);
+                      const overdue   = emp.daysLeft != null && emp.daysLeft < 0;
+                      const urgent    = emp.daysLeft != null && emp.daysLeft <= 7 && emp.daysLeft >= 0;
+                      return (
+                        <div key={emp.id} className="border rounded-lg p-4 flex items-center justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium">{emp.display_name}</p>
+                            <p className="text-sm text-muted-foreground">{emp.designation} · {emp.department} {emp.employee_code ? `· ${emp.employee_code}` : ''}</p>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              {emp.date_of_joining && (
+                                <span className="text-xs text-gray-500 flex items-center gap-1">
+                                  <Calendar className="w-3 h-3" />
+                                  Joined: {format(new Date(emp.date_of_joining), 'dd MMM yyyy')}
                                 </span>
-                                {overdue && <Badge className="bg-red-100 text-red-700 text-xs">Overdue by {Math.abs(emp.daysLeft)} days</Badge>}
-                                {urgent && !overdue && <Badge className="bg-orange-100 text-orange-700 text-xs">{emp.daysLeft} days left</Badge>}
-                              </div>
-                            </div>
-                            <div>
-                              {active
-                                ? <Badge className="bg-blue-100 text-blue-800">Review Submitted</Badge>
-                                : <Button size="sm" onClick={() => openSubmit(emp)}>Submit Review</Button>
-                              }
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-          )}
-
-          {/* HR/Mgmt: All probation employees */}
-          {(isHR || isMgmt) && (
-            <TabsContent value="probation_list">
-              <Card>
-                <CardHeader><CardTitle>All Employees on Probation</CardTitle></CardHeader>
-                <CardContent>
-                  {probationEmps.length === 0 ? (
-                    <p className="text-center text-muted-foreground py-8">No employees on probation</p>
-                  ) : (
-                    <div className="space-y-3">
-                      {probationEmps.map(emp => {
-                        const overdue = emp.daysLeft != null && emp.daysLeft < 0;
-                        const urgent  = emp.daysLeft != null && emp.daysLeft <= 15 && emp.daysLeft >= 0;
-                        const active  = hasActiveReview(emp.user_id);
-                        return (
-                          <div key={emp.id} className="border rounded-lg p-4 flex items-center justify-between gap-4">
-                            <div>
-                              <p className="font-medium">{emp.display_name}</p>
-                              <p className="text-sm text-muted-foreground">{emp.designation} · {emp.department} · {emp.employee_code}</p>
-                              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              )}
+                              {emp.probationEndDate && (
                                 <span className="text-xs text-gray-500">
-                                  Joined: {emp.date_of_joining ? format(new Date(emp.date_of_joining), 'dd MMM yyyy') : 'N/A'}
+                                  Probation ends: {format(emp.probationEndDate, 'dd MMM yyyy')}
                                 </span>
-                                <span className="text-xs text-gray-500">
-                                  Probation ends: {emp.probationEndDate ? format(emp.probationEndDate, 'dd MMM yyyy') : 'N/A'}
-                                </span>
-                                {overdue && <Badge className="bg-red-100 text-red-700 text-xs">Overdue {Math.abs(emp.daysLeft)}d</Badge>}
-                                {urgent && !overdue && <Badge className="bg-orange-100 text-orange-700 text-xs">{emp.daysLeft} days left</Badge>}
-                                {active && <Badge className="bg-blue-100 text-blue-800 text-xs">Review in Progress</Badge>}
-                              </div>
+                              )}
+                              {overdue && <Badge className="bg-red-100 text-red-700 text-xs">Overdue {Math.abs(emp.daysLeft)}d</Badge>}
+                              {urgent && !overdue && <Badge className="bg-orange-100 text-orange-700 text-xs">{emp.daysLeft} days left</Badge>}
+                              {active && <Badge className="bg-blue-100 text-blue-800 text-xs">Review In Progress</Badge>}
+                              {completed && <Badge className="bg-green-100 text-green-800 text-xs">Review Completed</Badge>}
+                              {emp.employee_status === 'probation' && !active && !completed && (
+                                <Badge className="bg-orange-100 text-orange-800 text-xs">On Probation</Badge>
+                              )}
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-          )}
+                          <div className="shrink-0 flex gap-2">
+                            {active && (
+                              <span className="text-xs text-blue-600 font-medium self-center">In Progress</span>
+                            )}
+                            {!active && (isManager || isHR) && (
+                              <Button
+                                size="sm"
+                                onClick={() => isHR ? openInitiate(emp) : openSubmit(emp)}
+                                className="flex items-center gap-1"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                {isHR ? 'Initiate Review' : 'Submit Review'}
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-          {/* HR Review tab */}
+          {/* ── HR Review tab ── */}
           {isHR && (
             <TabsContent value="hr_review">
               <Card>
@@ -379,14 +528,18 @@ export default function ConfirmationManagement() {
                         <div key={review.id} className="border rounded-lg p-4">
                           <div className="flex items-start justify-between gap-4">
                             <div className="flex-1">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <p className="font-medium">{review.employee_name}</p>
                                 <Badge className={STATUS_COLORS[review.status]}>{STATUS_LABELS[review.status]}</Badge>
                               </div>
                               <p className="text-sm text-muted-foreground">{review.department}</p>
                               <p className="text-sm mt-1">
-                                Manager recommendation: <span className="font-medium capitalize">{review.action === 'confirm' ? 'Confirm' : review.action === 'extend' ? 'Extend Probation' : 'Not Confirm'}</span>
-                                {review.action === 'extend' && review.extended_until && ` until ${format(new Date(review.extended_until), 'dd MMM yyyy')}`}
+                                Recommendation:{' '}
+                                <span className="font-medium">
+                                  {review.action === 'confirm' ? 'Confirm'
+                                    : review.action === 'extend' ? `Extend until ${review.extended_until ? format(new Date(review.extended_until), 'dd MMM yyyy') : '?'}`
+                                    : 'Not Confirm'}
+                                </span>
                               </p>
                               <p className="text-xs text-gray-500 mt-1">
                                 Avg Score: <span className="font-semibold">{avgScore(review.manager_scores)}/5</span>
@@ -397,9 +550,7 @@ export default function ConfirmationManagement() {
                               <Button variant="outline" size="sm" onClick={() => setDetailDlg({ open: true, review })}>
                                 <FileText className="w-4 h-4 mr-1" /> View
                               </Button>
-                              <Button size="sm" onClick={() => openHRReview(review)}>
-                                Review
-                              </Button>
+                              <Button size="sm" onClick={() => openHRReview(review)}>Review</Button>
                             </div>
                           </div>
                         </div>
@@ -411,42 +562,41 @@ export default function ConfirmationManagement() {
             </TabsContent>
           )}
 
-          {/* Management Approval tab */}
+          {/* ── Management Approval tab ── */}
           {(isMgmt || isHR) && (
             <TabsContent value="mgmt_approval">
               <Card>
-                <CardHeader><CardTitle>Reviews Awaiting Management Approval</CardTitle></CardHeader>
+                <CardHeader><CardTitle>Reviews Awaiting Management Decision</CardTitle></CardHeader>
                 <CardContent>
                   {mgmtPendingReviews.length === 0 ? (
-                    <p className="text-center text-muted-foreground py-8">No reviews pending management approval</p>
+                    <p className="text-center text-muted-foreground py-8">No reviews pending management decision</p>
                   ) : (
                     <div className="space-y-3">
                       {mgmtPendingReviews.map(review => (
                         <div key={review.id} className="border rounded-lg p-4">
                           <div className="flex items-start justify-between gap-4">
                             <div className="flex-1">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <p className="font-medium">{review.employee_name}</p>
                                 <Badge className={STATUS_COLORS[review.status]}>{STATUS_LABELS[review.status]}</Badge>
                               </div>
                               <p className="text-sm text-muted-foreground">{review.department}</p>
                               <p className="text-sm mt-1">
-                                Manager recommendation: <span className="font-medium capitalize">{review.action === 'confirm' ? 'Confirm' : review.action === 'extend' ? 'Extend Probation' : 'Not Confirm'}</span>
+                                Recommendation:{' '}
+                                <span className="font-medium">
+                                  {review.action === 'confirm' ? 'Confirm' : review.action === 'extend' ? 'Extend Probation' : 'Not Confirm'}
+                                </span>
                               </p>
                               <p className="text-xs text-gray-500 mt-1">
                                 Avg Score: <span className="font-semibold">{avgScore(review.manager_scores)}/5</span>
-                                {' · '}HR: {review.hr_comments ? '✓ Reviewed' : 'Pending'}
+                                {' · '}HR: {review.hr_comments ? '✓ Reviewed' : '—'}
                               </p>
                             </div>
                             <div className="flex gap-2 shrink-0">
                               <Button variant="outline" size="sm" onClick={() => setDetailDlg({ open: true, review })}>
                                 <FileText className="w-4 h-4 mr-1" /> View
                               </Button>
-                              {isMgmt && (
-                                <Button size="sm" onClick={() => openMgmtApproval(review)}>
-                                  Decide
-                                </Button>
-                              )}
+                              {isMgmt && <Button size="sm" onClick={() => openMgmt(review)}>Decide</Button>}
                             </div>
                           </div>
                         </div>
@@ -458,16 +608,16 @@ export default function ConfirmationManagement() {
             </TabsContent>
           )}
 
-          {/* History */}
+          {/* ── History tab ── */}
           <TabsContent value="history">
             <Card>
               <CardHeader><CardTitle>Confirmation History</CardTitle></CardHeader>
               <CardContent>
-                {reviews.filter(r => ['confirmed','extended','rejected'].includes(r.status)).length === 0 ? (
+                {reviews.filter(r => ['confirmed', 'extended', 'rejected'].includes(r.status)).length === 0 ? (
                   <p className="text-center text-muted-foreground py-8">No completed reviews yet</p>
                 ) : (
                   <div className="space-y-3">
-                    {reviews.filter(r => ['confirmed','extended','rejected'].includes(r.status)).map(review => (
+                    {reviews.filter(r => ['confirmed', 'extended', 'rejected'].includes(r.status)).map(review => (
                       <div key={review.id} className="border rounded-lg p-4 flex items-center justify-between gap-4">
                         <div>
                           <div className="flex items-center gap-2">
@@ -493,86 +643,38 @@ export default function ConfirmationManagement() {
         </Tabs>
       </div>
 
-      {/* ── Manager Submit Review Dialog ── */}
+      {/* ── Manager Submit Dialog ── */}
       <Dialog open={submitDlg.open} onOpenChange={open => !open && setSubmitDlg({ open: false, emp: null })}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Submit Probation Review — {submitDlg.emp?.display_name}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-5">
-            {/* Recommendation */}
-            <div>
-              <Label className="text-sm font-semibold mb-2 block">Recommendation</Label>
-              <div className="flex gap-3">
-                {[
-                  { value: 'confirm', label: 'Confirm', color: 'bg-green-600 hover:bg-green-700' },
-                  { value: 'extend',  label: 'Extend Probation', color: 'bg-orange-500 hover:bg-orange-600' },
-                  { value: 'reject',  label: 'Not Confirm', color: 'bg-red-600 hover:bg-red-700' },
-                ].map(opt => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setSubmitForm(f => ({ ...f, action: opt.value }))}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
-                      submitForm.action === opt.value ? opt.color : 'bg-gray-300 text-gray-700 hover:bg-gray-400'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {submitForm.action === 'extend' && (
-              <div>
-                <Label className="text-sm font-semibold mb-1 block">Extend Until</Label>
-                <Input
-                  type="date"
-                  value={submitForm.extended_until}
-                  onChange={e => setSubmitForm(f => ({ ...f, extended_until: e.target.value }))}
-                  min={format(new Date(), 'yyyy-MM-dd')}
-                />
-              </div>
-            )}
-
-            {/* Performance Scores */}
-            <div>
-              <Label className="text-sm font-semibold mb-3 block">Performance Evaluation (1 = Poor, 5 = Excellent)</Label>
-              <div className="space-y-3">
-                {CRITERIA.map(c => (
-                  <div key={c.key} className="flex items-center justify-between gap-4">
-                    <span className="text-sm text-gray-700 w-56">{c.label}</span>
-                    <ScoreInput
-                      value={submitForm.manager_scores[c.key] || 0}
-                      onChange={v => setSubmitForm(f => ({ ...f, manager_scores: { ...f.manager_scores, [c.key]: v } }))}
-                    />
-                    <span className="text-sm font-semibold text-blue-700 w-4">{submitForm.manager_scores[c.key] || ''}</span>
-                  </div>
-                ))}
-              </div>
-              {Object.keys(submitForm.manager_scores).length > 0 && (
-                <p className="text-sm text-gray-500 mt-2">
-                  Average: <span className="font-semibold">{avgScore(submitForm.manager_scores)}/5</span>
-                </p>
-              )}
-            </div>
-
-            {/* Comments */}
-            <div>
-              <Label className="text-sm font-semibold mb-1 block">Comments & Observations</Label>
-              <Textarea
-                placeholder="Provide detailed comments about the employee's performance, strengths, and areas of improvement..."
-                value={submitForm.manager_comments}
-                onChange={e => setSubmitForm(f => ({ ...f, manager_comments: e.target.value }))}
-                rows={4}
-              />
-            </div>
-          </div>
+          <ReviewForm form={submitForm} setForm={setSubmitForm} />
           <DialogFooter>
             <Button variant="outline" onClick={() => setSubmitDlg({ open: false, emp: null })}>Cancel</Button>
             <Button onClick={handleSubmitReview} disabled={submitting}>
-              {submitting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               Submit to HR
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── HR Initiate Dialog ── */}
+      <Dialog open={initiateDlg.open} onOpenChange={open => !open && setInitiateDlg({ open: false, emp: null })}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Initiate Confirmation Review — {initiateDlg.emp?.display_name}</DialogTitle>
+            <p className="text-sm text-gray-500 mt-1">
+              As HR, you can directly submit this review to Management for final decision.
+            </p>
+          </DialogHeader>
+          <ReviewForm form={initiateForm} setForm={setInitiateForm} isHRInitiated />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setInitiateDlg({ open: false, emp: null })}>Cancel</Button>
+            <Button onClick={handleInitiate} disabled={initiating}>
+              {initiating && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Send to Management
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -587,25 +689,19 @@ export default function ConfirmationManagement() {
           {hrDlg.review && (
             <div className="space-y-4">
               <div className="bg-gray-50 rounded-lg p-3 text-sm space-y-1">
-                <p>Manager recommendation: <span className="font-semibold capitalize">{hrDlg.review.action === 'confirm' ? 'Confirm' : hrDlg.review.action === 'extend' ? 'Extend Probation' : 'Not Confirm'}</span></p>
+                <p>Recommendation: <span className="font-semibold capitalize">{hrDlg.review.action === 'confirm' ? 'Confirm' : hrDlg.review.action === 'extend' ? 'Extend Probation' : 'Not Confirm'}</span></p>
                 <p>Average score: <span className="font-semibold">{avgScore(hrDlg.review.manager_scores)}/5</span></p>
-                <p>Manager comments: <span className="italic">{hrDlg.review.manager_comments}</span></p>
+                <p>Comments: <span className="italic">{hrDlg.review.manager_comments}</span></p>
               </div>
               <div>
                 <Label className="text-sm font-semibold mb-2 block">HR Decision</Label>
                 <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setHrForm(f => ({ ...f, hr_action: 'approve' }))}
-                    className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${hrForm.hr_action === 'approve' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-gray-300'}`}
-                  >
+                  <button type="button" onClick={() => setHrForm(f => ({ ...f, hr_action: 'approve' }))}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium border ${hrForm.hr_action === 'approve' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-gray-300'}`}>
                     Forward to Management
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setHrForm(f => ({ ...f, hr_action: 'reject' }))}
-                    className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${hrForm.hr_action === 'reject' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-700 border-gray-300'}`}
-                  >
+                  <button type="button" onClick={() => setHrForm(f => ({ ...f, hr_action: 'reject' }))}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium border ${hrForm.hr_action === 'reject' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-700 border-gray-300'}`}>
                     Reject
                   </button>
                 </div>
@@ -613,7 +709,7 @@ export default function ConfirmationManagement() {
               <div>
                 <Label className="text-sm font-semibold mb-1 block">HR Comments</Label>
                 <Textarea
-                  placeholder="Add HR comments (attendance, records, document verification notes)..."
+                  placeholder="Add comments (attendance records, document verification, etc.)..."
                   value={hrForm.hr_comments}
                   onChange={e => setHrForm(f => ({ ...f, hr_comments: e.target.value }))}
                   rows={3}
@@ -624,14 +720,14 @@ export default function ConfirmationManagement() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setHrDlg({ open: false, review: null })}>Cancel</Button>
             <Button onClick={handleHRReview} disabled={hrSaving}>
-              {hrSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              {hrSaving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               Submit
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* ── Management Approval Dialog ── */}
+      {/* ── Management Decision Dialog ── */}
       <Dialog open={mgmtDlg.open} onOpenChange={open => !open && setMgmtDlg({ open: false, review: null })}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -640,24 +736,21 @@ export default function ConfirmationManagement() {
           {mgmtDlg.review && (
             <div className="space-y-4">
               <div className="bg-gray-50 rounded-lg p-3 text-sm space-y-1">
-                <p>Manager recommendation: <span className="font-semibold capitalize">{mgmtDlg.review.action === 'confirm' ? 'Confirm' : mgmtDlg.review.action === 'extend' ? 'Extend' : 'Not Confirm'}</span></p>
+                <p>Recommendation: <span className="font-semibold">{mgmtDlg.review.action === 'confirm' ? 'Confirm' : mgmtDlg.review.action === 'extend' ? 'Extend' : 'Not Confirm'}</span></p>
                 <p>Average score: <span className="font-semibold">{avgScore(mgmtDlg.review.manager_scores)}/5</span></p>
-                <p>HR comments: <span className="italic">{mgmtDlg.review.hr_comments}</span></p>
+                {mgmtDlg.review.hr_comments && <p>HR: <span className="italic">{mgmtDlg.review.hr_comments}</span></p>}
               </div>
               <div>
                 <Label className="text-sm font-semibold mb-2 block">Final Decision</Label>
                 <div className="flex gap-2">
                   {[
-                    { value: 'confirmed', label: 'Confirm', color: 'bg-green-600 text-white border-green-600' },
-                    { value: 'extended',  label: 'Extend',  color: 'bg-orange-500 text-white border-orange-500' },
-                    { value: 'rejected',  label: 'Reject',  color: 'bg-red-600 text-white border-red-600' },
+                    { value: 'confirmed', label: 'Confirm',  style: 'bg-green-600 text-white border-green-600' },
+                    { value: 'extended',  label: 'Extend',   style: 'bg-orange-500 text-white border-orange-500' },
+                    { value: 'rejected',  label: 'Reject',   style: 'bg-red-600 text-white border-red-600' },
                   ].map(opt => (
-                    <button
-                      key={opt.value}
-                      type="button"
+                    <button key={opt.value} type="button"
                       onClick={() => setMgmtForm(f => ({ ...f, final_action: opt.value }))}
-                      className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${mgmtForm.final_action === opt.value ? opt.color : 'bg-white text-gray-700 border-gray-300'}`}
-                    >
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium border ${mgmtForm.final_action === opt.value ? opt.style : 'bg-white text-gray-700 border-gray-300'}`}>
                       {opt.label}
                     </button>
                   ))}
@@ -666,18 +759,15 @@ export default function ConfirmationManagement() {
               {mgmtForm.final_action === 'extended' && (
                 <div>
                   <Label className="text-sm font-semibold mb-1 block">Extend Until</Label>
-                  <Input
-                    type="date"
-                    value={mgmtForm.extended_until}
+                  <Input type="date" value={mgmtForm.extended_until}
                     onChange={e => setMgmtForm(f => ({ ...f, extended_until: e.target.value }))}
-                    min={format(new Date(), 'yyyy-MM-dd')}
-                  />
+                    min={format(new Date(), 'yyyy-MM-dd')} />
                 </div>
               )}
               <div>
                 <Label className="text-sm font-semibold mb-1 block">Management Comments</Label>
                 <Textarea
-                  placeholder="Add management comments for the record..."
+                  placeholder="Add comments for the record..."
                   value={mgmtForm.management_comments}
                   onChange={e => setMgmtForm(f => ({ ...f, management_comments: e.target.value }))}
                   rows={3}
@@ -687,8 +777,8 @@ export default function ConfirmationManagement() {
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setMgmtDlg({ open: false, review: null })}>Cancel</Button>
-            <Button onClick={handleMgmtApproval} disabled={mgmtSaving}>
-              {mgmtSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+            <Button onClick={handleMgmt} disabled={mgmtSaving}>
+              {mgmtSaving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               Confirm Decision
             </Button>
           </DialogFooter>
@@ -705,16 +795,19 @@ export default function ConfirmationManagement() {
             const r = detailDlg.review;
             return (
               <div className="space-y-5">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <Badge className={STATUS_COLORS[r.status]}>{STATUS_LABELS[r.status]}</Badge>
                   <span className="text-sm text-muted-foreground">{r.department}</span>
                 </div>
 
-                {/* Manager's evaluation */}
                 <div>
-                  <p className="font-semibold text-sm mb-2">Manager Evaluation</p>
+                  <p className="font-semibold text-sm mb-2">Evaluation</p>
                   <div className="bg-gray-50 rounded-lg p-3 space-y-2">
-                    <p className="text-sm">Recommendation: <span className="font-medium capitalize">{r.action === 'confirm' ? 'Confirm' : r.action === 'extend' ? `Extend until ${r.extended_until ? format(new Date(r.extended_until), 'dd MMM yyyy') : '?'}` : 'Not Confirm'}</span></p>
+                    <p className="text-sm">Recommendation: <span className="font-medium">
+                      {r.action === 'confirm' ? 'Confirm'
+                        : r.action === 'extend' ? `Extend until ${r.extended_until ? format(new Date(r.extended_until), 'dd MMM yyyy') : '?'}`
+                        : 'Not Confirm'}
+                    </span></p>
                     <div className="grid grid-cols-2 gap-1 mt-2">
                       {CRITERIA.map(c => (
                         <div key={c.key} className="flex items-center justify-between text-sm">
@@ -733,7 +826,6 @@ export default function ConfirmationManagement() {
                   </div>
                 </div>
 
-                {/* HR review */}
                 {r.hr_comments && (
                   <div>
                     <p className="font-semibold text-sm mb-2">HR Review</p>
@@ -744,7 +836,6 @@ export default function ConfirmationManagement() {
                   </div>
                 )}
 
-                {/* Management decision */}
                 {r.management_comments && (
                   <div>
                     <p className="font-semibold text-sm mb-2">Management Decision</p>

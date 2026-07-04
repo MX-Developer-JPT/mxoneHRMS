@@ -6233,6 +6233,39 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true, final_action: pmaFinalAction });
     }
 
+    case 'hrInitiateConfirmation': {
+      const { employee_user_id: hicEmpUid, action: hicAction, extended_until: hicExtUntil, scores: hicScores, comments: hicComments } = p;
+      const hicEmpRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [hicEmpUid]);
+      if (!hicEmpRow) return res.json({ success: false, error: 'Employee not found' });
+      const hicEmp = JSON.parse(hicEmpRow.data);
+      const hicEmpUser = await one("SELECT full_name FROM users WHERE id=$1", [hicEmpUid]);
+      const hicEmpName = hicEmpUser?.full_name || hicEmp.display_name || 'Employee';
+      const hicExisting = await one("SELECT id FROM entities WHERE type='ProbationReview' AND user_id=$1 AND (data::jsonb->>'status'='manager_submitted' OR data::jsonb->>'status'='hr_approved')", [hicEmpUid]);
+      if (hicExisting) return res.json({ success: false, error: 'Review already in progress' });
+      const hicId = uuidv4();
+      const hicData = {
+        id: hicId, user_id: hicEmpUid, employee_name: hicEmpName,
+        department: hicEmp.department || '',
+        manager_id: cu?.id, manager_name: cu?.full_name || 'HR',
+        probation_end_date: hicEmp.probation_end_date || null,
+        action: hicAction, extended_until: hicExtUntil || null,
+        manager_scores: hicScores || {},
+        manager_comments: hicComments || '',
+        hr_comments: 'HR initiated review',
+        hr_reviewed_by: cu?.id,
+        hr_reviewed_at: new Date().toISOString(),
+        status: 'hr_approved',
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ProbationReview',$2,'hr_approved',$3)", [hicId, hicEmpUid, JSON.stringify(hicData)]);
+      const hicMgmtRows = await all("SELECT id FROM users WHERE custom_role='management' OR role='management'");
+      for (const hicMgmt of hicMgmtRows) {
+        const hicNid = uuidv4();
+        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [hicNid, hicMgmt.id, 'Confirmation Review Ready', `HR has submitted ${hicEmpName}'s confirmation review for your decision.`, 'probation', '/admin-panel']);
+      }
+      return res.json({ success: true, review_id: hicId });
+    }
+
     case 'processProbationAction': {
       const { user_id: pbUid, action: pbAction, probation_end_date: pbEnd, note: pbNote } = p;
       const pbRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [pbUid]);
