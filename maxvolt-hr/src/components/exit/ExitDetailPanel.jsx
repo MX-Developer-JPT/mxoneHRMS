@@ -82,8 +82,10 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   const [saving, setSaving] = useState(false);
   const [hrInterview, setHrInterview] = useState(initialRecord.hr_exit_interview || { ...BLANK_HR_INTERVIEW });
   const [savingInterview, setSavingInterview] = useState(false);
-  const [assets, setAssets] = useState(initialRecord.assets?.length ? initialRecord.assets : DEFAULT_ASSETS);
+  const [assets, setAssets] = useState(initialRecord.assets?.length ? initialRecord.assets : []);
+  const [loadingAssets, setLoadingAssets] = useState(false);
   const [ktItems, setKtItems] = useState(initialRecord.kt_items || []);
+  const [employees, setEmployees] = useState([]);
   const [fnfData, setFnfData] = useState(initialRecord.fnf_data || {
     monthly_gross: '', leave_days: '', leave_encash: '',
     gratuity_amount: '', bonus: '', incentives: '', reimbursements: '',
@@ -92,6 +94,10 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   });
   const [loadingSalary, setLoadingSalary] = useState(false);
   const [generating, setGenerating] = useState('');
+
+  useEffect(() => {
+    base44.entities.Employee.list().then(list => setEmployees(list || [])).catch(() => {});
+  }, []);
 
   const role = currentUser?.custom_role || currentUser?.role;
   const isHR = role === 'hr' || role === 'admin';
@@ -581,7 +587,20 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                         <div><Label className="text-xs">Task / Item</Label>
                           <Input value={item.task} onChange={e => { const c = [...ktItems]; c[i] = { ...c[i], task: e.target.value }; setKtItems(c); }} placeholder="e.g. Handover Project X docs" /></div>
                         <div><Label className="text-xs">Assignee</Label>
-                          <Input value={item.assignee} onChange={e => { const c = [...ktItems]; c[i] = { ...c[i], assignee: e.target.value }; setKtItems(c); }} placeholder="Who receives this" /></div>
+                          <Select value={item.assignee_user_id || ''} onValueChange={v => {
+                            const emp = employees.find(e => e.user_id === v);
+                            const c = [...ktItems]; c[i] = { ...c[i], assignee_user_id: v, assignee: emp?.display_name || emp?.full_name || v }; setKtItems(c);
+                          }}>
+                            <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select employee..." /></SelectTrigger>
+                            <SelectContent>
+                              {employees.map(emp => (
+                                <SelectItem key={emp.user_id || emp.id} value={emp.user_id || emp.id}>
+                                  {emp.display_name || emp.full_name} {emp.designation ? `· ${emp.designation}` : ''}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
                         <div><Label className="text-xs">Due Date</Label>
                           <Input type="date" value={item.due_date} onChange={e => { const c = [...ktItems]; c[i] = { ...c[i], due_date: e.target.value }; setKtItems(c); }} /></div>
                       </div>
@@ -614,53 +633,40 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
 
           {/* ══ ASSET RETURN ══ */}
           {activeTab === 'assets' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold text-sm">Asset Return Checklist</p>
-                  <p className="text-xs text-gray-500">Track all issued assets and their return status</p>
-                </div>
-                {isHR && (
-                  <Button size="sm" onClick={() => setAssets(p => [...p, { id: Date.now(), name: '', type: 'other', serial_no: '', issued_date: '', returned_date: '', condition: '', status: 'pending', notes: '' }])}>
-                    <Plus className="w-3.5 h-3.5 mr-1" />Add Asset
-                  </Button>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                {assets.map((asset, i) => (
-                  <div key={asset.id || i} className={`border rounded-lg p-3 ${asset.status === 'returned' ? 'bg-green-50 border-green-200' : asset.status === 'damaged' ? 'bg-orange-50 border-orange-200' : asset.status === 'missing' ? 'bg-red-50 border-red-200' : 'bg-gray-50'}`}>
-                    <div className="grid md:grid-cols-4 gap-2">
-                      <div><Label className="text-xs">Asset Name</Label>
-                        <Input value={asset.name} onChange={e => { const c = [...assets]; c[i] = { ...c[i], name: e.target.value }; setAssets(c); }} /></div>
-                      <div><Label className="text-xs">Serial / Tag No</Label>
-                        <Input value={asset.serial_no} onChange={e => { const c = [...assets]; c[i] = { ...c[i], serial_no: e.target.value }; setAssets(c); }} placeholder="Optional" /></div>
-                      <div><Label className="text-xs">Return Date</Label>
-                        <Input type="date" value={asset.returned_date} onChange={e => { const c = [...assets]; c[i] = { ...c[i], returned_date: e.target.value }; setAssets(c); }} /></div>
-                      <div><Label className="text-xs">Status</Label>
-                        <Select value={asset.status} onValueChange={v => { const c = [...assets]; c[i] = { ...c[i], status: v }; setAssets(c); }}>
-                          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="pending">Pending Return</SelectItem>
-                            <SelectItem value="returned">Returned (Good)</SelectItem>
-                            <SelectItem value="damaged">Returned (Damaged)</SelectItem>
-                            <SelectItem value="missing">Missing</SelectItem>
-                          </SelectContent>
-                        </Select></div>
-                    </div>
-                    <div className="mt-2 flex gap-2">
-                      <Input className="flex-1" value={asset.notes} onChange={e => { const c = [...assets]; c[i] = { ...c[i], notes: e.target.value }; setAssets(c); }} placeholder="Remarks / condition notes..." />
-                      <Button size="sm" variant="ghost" className="text-red-400" onClick={() => setAssets(p => p.filter((_, j) => j !== i))}><Trash2 className="w-3.5 h-3.5" /></Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500">{assets.filter(a => a.status === 'returned').length}/{assets.length} returned</span>
-                <Button onClick={handleSaveAssets} disabled={saving}><Save className="w-4 h-4 mr-2" />Save Assets</Button>
-              </div>
-            </div>
+            <AssetReturnTab
+              exit={exit}
+              assets={assets}
+              setAssets={setAssets}
+              loadingAssets={loadingAssets}
+              setLoadingAssets={setLoadingAssets}
+              saving={saving}
+              isHR={isHR}
+              currentUser={currentUser}
+              onSave={handleSaveAssets}
+              onConfirmReturn={async (asset, condition, notes) => {
+                const today = new Date().toISOString().slice(0, 10);
+                const updatedAssets = assets.map(a =>
+                  (a.id === asset.id || a.asset_entity_id === asset.asset_entity_id)
+                    ? { ...a, status: condition === 'good' ? 'returned' : condition, returned_date: today, returned_by: currentUser.full_name, condition, notes: notes || a.notes }
+                    : a
+                );
+                setAssets(updatedAssets);
+                // Also update the Asset entity so it becomes available again
+                if (asset.asset_entity_id) {
+                  try {
+                    await base44.entities.Asset.update(asset.asset_entity_id, {
+                      status: 'available',
+                      assigned_to_user_id: '',
+                      return_date: today,
+                      condition,
+                      notes: `Returned by ${exit.user?.full_name || ''} on ${today}. ${notes || ''}`.trim(),
+                    });
+                  } catch (e) { console.warn('Asset entity update failed:', e.message); }
+                }
+                await saveExit({ assets: updatedAssets, audit_log: addAudit(exit.audit_log, `Asset returned: ${asset.name}`, condition) });
+                toast.success(`${asset.name} marked as returned`);
+              }}
+            />
           )}
 
           {/* ══ CLEARANCE ══ */}
@@ -702,10 +708,24 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                   setLoadingSalary(true);
                   try {
                     const res = await base44.functions.invoke('getEmployeeSalaryForFnF', { user_id: exit.user_id });
-                    if (res.data?.gross) {
-                      setFnfData(p => ({ ...p, monthly_gross: res.data.gross, leave_days: res.data.leave_days || '' }));
+                    const d = res.data;
+                    if (d?.success) {
+                      const perDay = d.per_day_salary || (d.monthly_gross ? Math.round(d.monthly_gross / 26) : 0);
+                      const leaveDays = d.leave_balance || 0;
+                      const leaveEncash = Math.round(leaveDays * perDay);
+                      setFnfData(p => ({
+                        ...p,
+                        monthly_gross: d.monthly_gross || '',
+                        leave_days: leaveDays,
+                        leave_encash: leaveEncash,
+                        gratuity_amount: d.gratuity_eligible ? (d.gratuity_amount || '') : '',
+                        _per_day: perDay,
+                      }));
+                      toast.success(`Loaded: ₹${(d.monthly_gross||0).toLocaleString('en-IN')}/mo · ${leaveDays} leave days · ${d.gratuity_eligible ? 'gratuity eligible' : 'gratuity not eligible'}`);
+                    } else {
+                      toast.error(d?.error || 'Could not fetch salary data');
                     }
-                  } catch {}
+                  } catch (e) { toast.error('Failed: ' + e.message); }
                   setLoadingSalary(false);
                 }} disabled={loadingSalary}>
                   {loadingSalary ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : null}Auto-fill from Payroll
@@ -832,6 +852,200 @@ function ClearanceDeptActions({ dept, data, onUpdate }) {
       <Input className="flex-1 h-7 text-xs" placeholder="Remarks..." value={notes} onChange={e => setNotes(e.target.value)} />
       <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700" onClick={() => onUpdate(dept, 'cleared', notes)}><CheckCircle2 className="w-3 h-3 mr-1" />Clear</Button>
       <Button size="sm" variant="outline" className="h-7 text-xs border-red-300 text-red-600" onClick={() => onUpdate(dept, 'rejected', notes)}><XCircle className="w-3 h-3 mr-1" />Issue Found</Button>
+    </div>
+  );
+}
+
+/* ── Asset Return Tab sub-component ── */
+function AssetReturnTab({ exit, assets, setAssets, loadingAssets, setLoadingAssets, saving, isHR, currentUser, onSave, onConfirmReturn }) {
+  const [confirmDialog, setConfirmDialog] = useState(null); // { asset, index }
+  const [confirmCondition, setConfirmCondition] = useState('good');
+  const [confirmNotes, setConfirmNotes] = useState('');
+  const [fetched, setFetched] = useState(false);
+
+  useEffect(() => {
+    if (fetched) return;
+    setFetched(true);
+    // Only auto-fetch if no assets saved yet in exit record
+    if (assets.length > 0) return;
+    setLoadingAssets(true);
+    base44.entities.Asset.filter({ assigned_to_user_id: exit.user_id })
+      .then(list => {
+        if (list && list.length > 0) {
+          const mapped = list.map(a => ({
+            id: `fetched_${a.id}`,
+            asset_entity_id: a.id,
+            name: a.asset_name || 'Asset',
+            type: a.asset_type_id || 'other',
+            serial_no: a.serial_number || a.asset_id || '',
+            issued_date: a.assignment_date || '',
+            returned_date: '',
+            condition: a.condition || '',
+            status: 'pending',
+            notes: '',
+            _source: 'asset_tracking',
+          }));
+          setAssets(mapped);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingAssets(false));
+  }, [exit.user_id]);
+
+  const handleAddManual = () => setAssets(p => [...p, {
+    id: `manual_${Date.now()}`, name: '', type: 'other', serial_no: '',
+    issued_date: '', returned_date: '', condition: '', status: 'pending', notes: '', _source: 'manual',
+  }]);
+
+  const returnedCount = assets.filter(a => ['returned', 'damaged', 'missing'].includes(a.status)).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-semibold text-sm">Asset Return Checklist</p>
+          <p className="text-xs text-gray-500">Assets assigned to employee from the asset tracking system</p>
+        </div>
+        <div className="flex gap-2">
+          {isHR && (
+            <Button size="sm" variant="outline" onClick={handleAddManual}>
+              <Plus className="w-3.5 h-3.5 mr-1" />Add Manual
+            </Button>
+          )}
+          {isHR && (
+            <Button size="sm" variant="outline" onClick={async () => {
+              setLoadingAssets(true);
+              try {
+                const list = await base44.entities.Asset.filter({ assigned_to_user_id: exit.user_id });
+                if (list?.length) {
+                  const existingEntityIds = new Set(assets.map(a => a.asset_entity_id).filter(Boolean));
+                  const newAssets = list
+                    .filter(a => !existingEntityIds.has(a.id))
+                    .map(a => ({
+                      id: `fetched_${a.id}`, asset_entity_id: a.id,
+                      name: a.asset_name || 'Asset', type: a.asset_type_id || 'other',
+                      serial_no: a.serial_number || a.asset_id || '',
+                      issued_date: a.assignment_date || '', returned_date: '',
+                      condition: a.condition || '', status: 'pending', notes: '', _source: 'asset_tracking',
+                    }));
+                  setAssets(p => [...p, ...newAssets]);
+                  toast.success(`${list.length} asset(s) loaded from tracking system`);
+                } else {
+                  toast.info('No assets found assigned to this employee');
+                }
+              } catch { toast.error('Failed to fetch assets'); }
+              setLoadingAssets(false);
+            }} disabled={loadingAssets}>
+              {loadingAssets ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Package className="w-3.5 h-3.5" />}
+              {loadingAssets ? '' : ' Sync from Tracking'}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {loadingAssets ? (
+        <div className="text-center py-8 text-gray-400"><Loader2 className="w-6 h-6 mx-auto animate-spin mb-2" /><p className="text-sm">Loading assigned assets...</p></div>
+      ) : assets.length === 0 ? (
+        <div className="text-center py-10 text-gray-400 bg-gray-50 rounded-lg">
+          <Package className="w-10 h-10 mx-auto mb-2" />
+          <p className="text-sm font-medium">No assets found</p>
+          <p className="text-xs mt-1">No assets are assigned to this employee in the tracking system.<br />Use "Add Manual" to add ID card, access card, etc.</p>
+          {isHR && <Button size="sm" className="mt-3" onClick={handleAddManual}><Plus className="w-3.5 h-3.5 mr-1" />Add Manual Asset</Button>}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {assets.map((asset, i) => (
+            <div key={asset.id || i} className={`border rounded-lg p-3 ${asset.status === 'returned' ? 'bg-green-50 border-green-200' : asset.status === 'damaged' ? 'bg-orange-50 border-orange-200' : asset.status === 'missing' ? 'bg-red-50 border-red-200' : 'bg-gray-50'}`}>
+              <div className="flex items-start gap-3">
+                <Package className={`w-5 h-5 mt-0.5 flex-shrink-0 ${asset.status === 'returned' ? 'text-green-600' : asset.status === 'damaged' ? 'text-orange-500' : asset.status === 'missing' ? 'text-red-500' : 'text-gray-400'}`} />
+                <div className="flex-1 min-w-0">
+                  {/* Asset name row */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {asset._source === 'manual' ? (
+                      <Input className="h-7 text-sm font-medium w-48" value={asset.name} placeholder="Asset name" onChange={e => { const c=[...assets]; c[i]={...c[i],name:e.target.value}; setAssets(c); }} />
+                    ) : (
+                      <span className="font-medium text-sm">{asset.name}</span>
+                    )}
+                    {asset.serial_no && <span className="text-xs text-gray-500 bg-white border rounded px-1.5 py-0.5">S/N: {asset.serial_no}</span>}
+                    {asset._source === 'asset_tracking' && <span className="text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5">Tracked</span>}
+                    {asset.issued_date && <span className="text-xs text-gray-400">Issued: {asset.issued_date}</span>}
+                  </div>
+                  {/* Status row */}
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    <Badge className={asset.status === 'returned' ? 'bg-green-100 text-green-700' : asset.status === 'damaged' ? 'bg-orange-100 text-orange-700' : asset.status === 'missing' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}>
+                      {asset.status === 'returned' ? 'Returned' : asset.status === 'damaged' ? 'Returned (Damaged)' : asset.status === 'missing' ? 'Missing' : 'Pending Return'}
+                    </Badge>
+                    {asset.returned_date && <span className="text-xs text-gray-500">on {asset.returned_date}</span>}
+                    {asset.returned_by && <span className="text-xs text-gray-500">by {asset.returned_by}</span>}
+                    {asset.notes && <span className="text-xs text-gray-500 italic">{asset.notes}</span>}
+                  </div>
+                </div>
+                {/* Actions */}
+                <div className="flex gap-1.5 flex-shrink-0">
+                  {isHR && asset.status === 'pending' && (
+                    <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700" onClick={() => { setConfirmDialog({ asset, index: i }); setConfirmCondition('good'); setConfirmNotes(''); }}>
+                      <CheckCircle2 className="w-3 h-3 mr-1" />Confirm Return
+                    </Button>
+                  )}
+                  {isHR && asset.status === 'pending' && (
+                    <Button size="sm" variant="outline" className="h-7 text-xs border-red-300 text-red-600" onClick={() => { setConfirmDialog({ asset, index: i }); setConfirmCondition('missing'); setConfirmNotes(''); }}>
+                      <AlertCircle className="w-3 h-3 mr-1" />Mark Missing
+                    </Button>
+                  )}
+                  {isHR && asset.status !== 'pending' && (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-400" onClick={() => { const c=[...assets]; c[i]={...c[i],status:'pending',returned_date:'',returned_by:'',condition:'',notes:''}; setAssets(c); }}>
+                      <RotateCcw className="w-3 h-3" />
+                    </Button>
+                  )}
+                  {isHR && asset._source === 'manual' && (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-red-400" onClick={() => setAssets(p => p.filter((_, j) => j !== i))}><Trash2 className="w-3 h-3" /></Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-gray-500">{returnedCount}/{assets.length} accounted for</span>
+        {isHR && <Button onClick={onSave} disabled={saving}><Save className="w-4 h-4 mr-2" />Save Asset Status</Button>}
+      </div>
+
+      {/* Confirm return dialog */}
+      {confirmDialog && (
+        <Dialog open onOpenChange={() => setConfirmDialog(null)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader><DialogTitle className="text-sm">Confirm Asset Return — {confirmDialog.asset.name}</DialogTitle></DialogHeader>
+            <div className="space-y-3 pt-1">
+              <div>
+                <Label className="text-xs">Condition on Return</Label>
+                <Select value={confirmCondition} onValueChange={setConfirmCondition}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="good">Good — No damage</SelectItem>
+                    <SelectItem value="damaged">Damaged — Visible wear / issues</SelectItem>
+                    <SelectItem value="missing">Not returned / Missing</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Notes (optional)</Label>
+                <Input value={confirmNotes} onChange={e => setConfirmNotes(e.target.value)} placeholder="e.g. screen scratch, missing charger..." />
+              </div>
+              <div className="flex gap-2 pt-1">
+                <Button variant="outline" className="flex-1" onClick={() => setConfirmDialog(null)}>Cancel</Button>
+                <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={async () => {
+                  await onConfirmReturn(confirmDialog.asset, confirmCondition, confirmNotes);
+                  setConfirmDialog(null);
+                }}>
+                  <CheckCircle2 className="w-4 h-4 mr-1" />Confirm
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
