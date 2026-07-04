@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from 'sonner';
-import { Plus, UserPlus, Briefcase, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy, ChevronsUpDown, Check } from 'lucide-react';
+import { Plus, UserPlus, Briefcase, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy, ChevronsUpDown, Check, ClipboardCheck, ThumbsDown, LayoutGrid, List, Calendar, MessageSquare, Filter } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { openLetterheadPrintWindow } from '@/utils/letterhead';
@@ -389,10 +389,173 @@ function AiScoreSection({ candidate }) {
   );
 }
 
+const REJECT_REASONS = [
+  'Not qualified for role',
+  'Overqualified',
+  'Salary expectation mismatch',
+  'Position closed / on hold',
+  'Better candidate selected',
+  'Failed technical assessment',
+  'Failed background check',
+  'Withdrew / unresponsive',
+  'Location / relocation issue',
+  'Other',
+];
+
+const SCORECARD_CRITERIA = [
+  { key: 'technical',      label: 'Technical Skills' },
+  { key: 'communication',  label: 'Communication' },
+  { key: 'cultural_fit',   label: 'Cultural Fit' },
+  { key: 'problem_solving',label: 'Problem Solving' },
+  { key: 'leadership',     label: 'Leadership / Initiative' },
+];
+
+function StarRating({ value, onChange }) {
+  return (
+    <div className="flex gap-1">
+      {[1, 2, 3, 4, 5].map(n => (
+        <button key={n} type="button" onClick={() => onChange(n)}
+          className={`w-7 h-7 rounded text-lg transition-colors ${n <= value ? 'text-amber-400' : 'text-gray-200 hover:text-amber-200'}`}>
+          ★
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function InterviewScorecardDialog({ candidate, onClose, onRefresh }) {
+  const [scores, setScores] = useState({ technical: 3, communication: 3, cultural_fit: 3, problem_solving: 3, leadership: 3 });
+  const [recommendation, setRecommendation] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const overallAvg = Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / SCORECARD_CRITERIA.length * 10) / 10;
+
+  const handleSave = async () => {
+    if (!recommendation) { toast.error('Select a recommendation'); return; }
+    setSaving(true);
+    try {
+      const res = await base44.functions.invoke('saveInterviewScorecard', {
+        candidate_id: candidate.id,
+        scorecard: { ...scores, notes, recommendation, overall: overallAvg },
+      });
+      if (res.data?.success) {
+        toast.success(`Scorecard saved — candidate marked ${res.data.new_status}`);
+        onRefresh();
+        onClose();
+      } else {
+        toast.error(res.data?.error || 'Failed to save scorecard');
+      }
+    } catch (e) { toast.error(e.message); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="space-y-5">
+      <p className="text-sm text-gray-500">Evaluating <strong>{candidate.full_name}</strong> for <strong>{candidate.position_applied}</strong></p>
+      <div className="space-y-3">
+        {SCORECARD_CRITERIA.map(c => (
+          <div key={c.key} className="flex items-center justify-between">
+            <span className="text-sm font-medium w-48">{c.label}</span>
+            <StarRating value={scores[c.key]} onChange={v => setScores(p => ({ ...p, [c.key]: v }))} />
+            <span className="text-sm font-bold w-8 text-right text-gray-600">{scores[c.key]}/5</span>
+          </div>
+        ))}
+      </div>
+      <div className="bg-blue-50 rounded-lg p-3 text-center">
+        <p className="text-xs text-gray-500 mb-1">Overall Average</p>
+        <p className="text-2xl font-bold text-blue-700">{overallAvg}<span className="text-sm font-normal text-gray-500">/5</span></p>
+      </div>
+      <div>
+        <Label className="text-xs">Recommendation *</Label>
+        <Select value={recommendation} onValueChange={setRecommendation}>
+          <SelectTrigger className="mt-1"><SelectValue placeholder="Select recommendation..." /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="select"><span className="text-green-700 font-medium">✓ Select — Move to Offered</span></SelectItem>
+            <SelectItem value="hold"><span className="text-amber-700 font-medium">~ Hold — Keep as Interviewed</span></SelectItem>
+            <SelectItem value="reject"><span className="text-red-700 font-medium">✗ Reject</span></SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div>
+        <Label className="text-xs">Interview Notes</Label>
+        <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="Key observations, strengths, concerns..." className="mt-1" />
+      </div>
+      <div className="flex gap-3">
+        <Button variant="outline" onClick={onClose} className="flex-1">Cancel</Button>
+        <Button onClick={handleSave} disabled={saving || !recommendation} className="flex-1 bg-blue-600 hover:bg-blue-700">
+          {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <ClipboardCheck className="w-4 h-4 mr-2" />}
+          Save Scorecard
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function RejectDialog({ candidate, onClose, onRefresh }) {
+  const [reason, setReason] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const handleReject = async () => {
+    if (!reason) { toast.error('Select a rejection reason'); return; }
+    setSaving(true);
+    try {
+      await base44.entities.Candidate.update(candidate.id, {
+        status: 'rejected',
+        rejection_reason: reason,
+        rejection_notes: notes,
+      });
+      toast.success(`${candidate.full_name} marked as rejected`);
+      onRefresh();
+      onClose();
+    } catch (e) { toast.error(e.message); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500">Rejecting <strong>{candidate.full_name}</strong> for <strong>{candidate.position_applied}</strong></p>
+      <div>
+        <Label className="text-xs">Rejection Reason *</Label>
+        <Select value={reason} onValueChange={setReason}>
+          <SelectTrigger className="mt-1"><SelectValue placeholder="Select reason..." /></SelectTrigger>
+          <SelectContent>
+            {REJECT_REASONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+      <div>
+        <Label className="text-xs">Additional Notes (optional)</Label>
+        <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Any context to retain for records..." className="mt-1" />
+      </div>
+      <div className="flex gap-3">
+        <Button variant="outline" onClick={onClose} className="flex-1">Cancel</Button>
+        <Button onClick={handleReject} disabled={saving || !reason} className="flex-1 bg-red-600 hover:bg-red-700 text-white">
+          {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <ThumbsDown className="w-4 h-4 mr-2" />}
+          Confirm Reject
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const BOARD_STAGES = [
+  { key: 'applied',             label: 'Applied',          color: 'border-blue-200 bg-blue-50' },
+  { key: 'screening',           label: 'Screening',        color: 'border-yellow-200 bg-yellow-50' },
+  { key: 'interview_scheduled', label: 'Interview Sched.', color: 'border-purple-200 bg-purple-50' },
+  { key: 'interviewed',         label: 'Interviewed',      color: 'border-orange-200 bg-orange-50' },
+  { key: 'selected',            label: 'Selected',         color: 'border-green-200 bg-green-50' },
+  { key: 'offered',             label: 'Offered',          color: 'border-teal-200 bg-teal-50' },
+  { key: 'offer_accepted',      label: 'Accepted',         color: 'border-emerald-200 bg-emerald-50' },
+  { key: 'joined',              label: 'Joined',           color: 'border-green-300 bg-green-100' },
+];
+
 const DEFAULT_FILTERS = {
   search: '',
   status: 'all',
   source: 'all',
+  requisition: 'all',
   minExp: 0,
   maxExp: 30,
   minCtc: '',
@@ -409,10 +572,13 @@ export default function Recruitment() {
   const [loading, setLoading] = useState(true);
   const [selectedCandidate, setSelectedCandidate] = useState(null);
   const [offerDialogCandidate, setOfferDialogCandidate] = useState(null);
+  const [scorecardCandidate, setScorecardCandidate] = useState(null);
+  const [rejectCandidate, setRejectCandidate] = useState(null);
   const [invitingId, setInvitingId] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [formData, setFormData] = useState(EMPTY_FORM);
+  const [viewMode, setViewMode] = useState('list'); // 'list' | 'board'
 
   // Stage 2: JD Scoring
   const [jobRequisitions, setJobRequisitions] = useState([]);
@@ -534,6 +700,7 @@ export default function Recruitment() {
   const activeFilterCount = [
     filters.status !== 'all',
     filters.source !== 'all',
+    filters.requisition !== 'all',
     filters.minExp > 0,
     filters.maxExp < 30,
     filters.minCtc !== '',
@@ -549,6 +716,7 @@ export default function Recruitment() {
         !c.current_company?.toLowerCase().includes(filters.search.toLowerCase())) return false;
     if (filters.status !== 'all' && c.status !== filters.status) return false;
     if (filters.source !== 'all' && c.source !== filters.source) return false;
+    if (filters.requisition !== 'all' && c.requisition_id !== filters.requisition) return false;
     if (c.experience_years < filters.minExp || c.experience_years > filters.maxExp) return false;
     if (filters.minCtc !== '' && c.expected_ctc < parseFloat(filters.minCtc)) return false;
     if (filters.maxCtc !== '' && c.expected_ctc > parseFloat(filters.maxCtc)) return false;
@@ -595,7 +763,16 @@ export default function Recruitment() {
             <h1 className="text-3xl font-bold">Recruitment</h1>
             <p className="text-gray-600 mt-1">Manage candidates and hiring pipeline</p>
           </div>
-          <Dialog open={showForm} onOpenChange={setShowForm}>
+          <div className="flex items-center gap-2">
+            <div className="flex border rounded-lg overflow-hidden">
+              <Button size="sm" variant={viewMode === 'list' ? 'default' : 'ghost'} onClick={() => setViewMode('list')} className="rounded-none h-9 px-3">
+                <List className="w-4 h-4" />
+              </Button>
+              <Button size="sm" variant={viewMode === 'board' ? 'default' : 'ghost'} onClick={() => setViewMode('board')} className="rounded-none h-9 px-3">
+                <LayoutGrid className="w-4 h-4" />
+              </Button>
+            </div>
+            <Dialog open={showForm} onOpenChange={setShowForm}>
             <DialogTrigger asChild>
               <Button className="bg-blue-600 hover:bg-blue-700">
                 <Plus className="w-5 h-5 mr-2" /> Add Candidate
@@ -629,6 +806,18 @@ export default function Recruitment() {
                     </Select>
                   </div>
                 </div>
+                  <div>
+                    <Label>Job Requisition (optional)</Label>
+                    <Select value={formData.requisition_id || ''} onValueChange={v => setFormData({ ...formData, requisition_id: v === '_none' ? '' : v })}>
+                      <SelectTrigger><SelectValue placeholder="Link to open position..." /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="_none">— No Requisition —</SelectItem>
+                        {jobRequisitions.filter(j => ['approved','published','on_hold'].includes(j.status)).map(j => (
+                          <SelectItem key={j.id} value={j.id}>{j.position_title} · {j.department}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 <div className="flex gap-3 justify-end">
                   <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
                   <Button type="submit">Add Candidate</Button>
@@ -636,6 +825,7 @@ export default function Recruitment() {
               </form>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
 
         <div className="grid md:grid-cols-3 gap-4">
@@ -678,6 +868,18 @@ export default function Recruitment() {
                     <SelectItem value="all">All Sources</SelectItem>
                     {['job_portal', 'referral', 'company_website', 'linkedin', 'walk_in', 'other'].map(s => (
                       <SelectItem key={s} value={s}>{s.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="w-52">
+                <Label className="text-xs">Requisition</Label>
+                <Select value={filters.requisition} onValueChange={v => setFilter('requisition', v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Positions</SelectItem>
+                    {jobRequisitions.map(j => (
+                      <SelectItem key={j.id} value={j.id}>{j.position_title}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -805,7 +1007,54 @@ export default function Recruitment() {
           </CardContent>
         </Card>
 
-        <Card>
+        {/* ── Board / Kanban View ── */}
+        {viewMode === 'board' && (
+          <div className="overflow-x-auto pb-2">
+            <div className="flex gap-3 min-w-max">
+              {BOARD_STAGES.map(stage => {
+                const stageCandidates = filtered.filter(c => c.status === stage.key);
+                return (
+                  <div key={stage.key} className={`w-56 rounded-xl border-2 ${stage.color} flex flex-col`}>
+                    <div className="px-3 py-2 border-b border-current/20 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-gray-700">{stage.label}</span>
+                      <span className="text-xs bg-white/70 text-gray-600 px-1.5 py-0.5 rounded-full font-bold">{stageCandidates.length}</span>
+                    </div>
+                    <div className="flex-1 p-2 space-y-2 max-h-[500px] overflow-y-auto">
+                      {stageCandidates.length === 0 && (
+                        <p className="text-xs text-gray-400 text-center py-4">Empty</p>
+                      )}
+                      {stageCandidates.map(c => (
+                        <div key={c.id} className="bg-white rounded-lg p-2.5 shadow-sm border cursor-pointer hover:shadow-md transition-shadow"
+                          onClick={() => setSelectedCandidate(c)}>
+                          <p className="text-xs font-semibold text-gray-800 truncate">{c.full_name}</p>
+                          <p className="text-xs text-gray-500 truncate">{c.position_applied}</p>
+                          {c.expected_ctc > 0 && <p className="text-xs text-gray-400 mt-1">₹{(c.expected_ctc / 100000).toFixed(1)}L</p>}
+                          <div className="flex gap-1 mt-1.5">
+                            {stage.key === 'interview_scheduled' && (
+                              <button className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded hover:bg-blue-200"
+                                onClick={e => { e.stopPropagation(); setScorecardCandidate(c); }}>
+                                Scorecard
+                              </button>
+                            )}
+                            {!['rejected','joined','offer_accepted'].includes(stage.key) && (
+                              <button className="text-xs bg-red-50 text-red-600 px-1.5 py-0.5 rounded hover:bg-red-100"
+                                onClick={e => { e.stopPropagation(); setRejectCandidate(c); }}>
+                                Reject
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ── List View ── */}
+        {viewMode === 'list' && <Card>
           <CardHeader>
             <CardTitle>
               Candidates
@@ -874,6 +1123,18 @@ export default function Recruitment() {
                           }
                         </Button>
                       )}
+                      {['interview_scheduled', 'interviewed'].includes(candidate.status) && (
+                        <Button size="sm" variant="outline" onClick={() => setScorecardCandidate(candidate)}
+                          className="border-blue-300 text-blue-700 hover:bg-blue-50 h-8">
+                          <ClipboardCheck className="w-3 h-3 mr-1" /> Scorecard
+                        </Button>
+                      )}
+                      {!['rejected','joined'].includes(candidate.status) && (
+                        <Button size="sm" variant="outline" onClick={() => setRejectCandidate(candidate)}
+                          className="border-red-200 text-red-600 hover:bg-red-50 h-8">
+                          <ThumbsDown className="w-3 h-3 mr-1" /> Reject
+                        </Button>
+                      )}
                       {['selected', 'interview_done', 'offered', 'offer_accepted'].includes(candidate.status) && (
                         <Button
                           size="sm"
@@ -920,7 +1181,7 @@ export default function Recruitment() {
               )}
             </div>
           </CardContent>
-        </Card>
+        </Card>}
       </div>
 
       <CandidateDetailDialog
@@ -942,6 +1203,44 @@ export default function Recruitment() {
             <OfferLetterDialog
               candidate={offerDialogCandidate}
               onClose={() => setOfferDialogCandidate(null)}
+              onRefresh={loadData}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Interview Scorecard Dialog */}
+      <Dialog open={!!scorecardCandidate} onOpenChange={open => { if (!open) setScorecardCandidate(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ClipboardCheck className="w-5 h-5 text-blue-600" />
+              Interview Scorecard
+            </DialogTitle>
+          </DialogHeader>
+          {scorecardCandidate && (
+            <InterviewScorecardDialog
+              candidate={scorecardCandidate}
+              onClose={() => setScorecardCandidate(null)}
+              onRefresh={loadData}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Reject Dialog */}
+      <Dialog open={!!rejectCandidate} onOpenChange={open => { if (!open) setRejectCandidate(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ThumbsDown className="w-5 h-5 text-red-600" />
+              Reject Candidate
+            </DialogTitle>
+          </DialogHeader>
+          {rejectCandidate && (
+            <RejectDialog
+              candidate={rejectCandidate}
+              onClose={() => setRejectCandidate(null)}
               onRefresh={loadData}
             />
           )}

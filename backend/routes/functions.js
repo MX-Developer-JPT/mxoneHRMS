@@ -8599,6 +8599,180 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
       });
     }
 
+    case 'getRecruitmentMIS': {
+      const { days = 180, department: misDept, requisition_id: misReqId } = p;
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      const [reqRows, candRows, intRows, offerRows] = await Promise.all([
+        all("SELECT id,data,created_at FROM entities WHERE type='JobRequisition'"),
+        all("SELECT id,data,created_at FROM entities WHERE type='Candidate'"),
+        all("SELECT id,data,created_at FROM entities WHERE type='Interview'"),
+        all("SELECT id,data,created_at FROM entities WHERE type='OfferLetter'"),
+      ]);
+
+      const allReqs    = reqRows.map(r  => ({ ...JSON.parse(r.data),  _created: r.created_at }));
+      const allCands   = candRows.map(r => ({ ...JSON.parse(r.data),  _created: r.created_at }));
+      const allInts    = intRows.map(r  => ({ ...JSON.parse(r.data),  _created: r.created_at }));
+      const allOffers  = offerRows.map(r=> ({ ...JSON.parse(r.data),  _created: r.created_at }));
+
+      // Period filter for candidates
+      const cands = allCands.filter(c => (c.created_at || c._created || '') >= since);
+      const reqs  = allReqs;
+
+      // ── Stage funnel ─────────────────────────────────────────────
+      const STAGES = ['applied','screening','interview_scheduled','interviewed','selected','offered','offer_accepted','joined'];
+      const stageCounts = {};
+      for (const s of STAGES) stageCounts[s] = 0;
+      for (const c of cands) { const st = c.status || 'applied'; if (stageCounts[st] !== undefined) stageCounts[st]++; }
+
+      // cumulative funnel (everyone at or past each stage)
+      const stageOrder = { applied:0, screening:1, interview_scheduled:2, interviewed:3, selected:4, offered:5, offer_accepted:6, joined:7, rejected:-1, offer_declined:-1 };
+      const funnelCounts = {};
+      for (const s of STAGES) {
+        funnelCounts[s] = cands.filter(c => (stageOrder[c.status] ?? -1) >= stageOrder[s]).length;
+      }
+
+      // Conversion rates between adjacent stages
+      const conversions = [];
+      for (let i = 1; i < STAGES.length; i++) {
+        const from = funnelCounts[STAGES[i-1]] || 0;
+        const to   = funnelCounts[STAGES[i]]   || 0;
+        conversions.push({ from: STAGES[i-1], to: STAGES[i], from_count: from, to_count: to, rate: from > 0 ? Math.round(to/from*100) : 0 });
+      }
+
+      // ── Source quality matrix ─────────────────────────────────────
+      const sourceMap = {};
+      for (const c of cands) {
+        const src = c.source || 'walk_in';
+        if (!sourceMap[src]) sourceMap[src] = { source: src, applied: 0, screened: 0, interviewed: 0, selected: 0, offered: 0, joined: 0 };
+        const order = stageOrder[c.status] ?? 0;
+        sourceMap[src].applied++;
+        if (order >= 1) sourceMap[src].screened++;
+        if (order >= 3) sourceMap[src].interviewed++;
+        if (order >= 4) sourceMap[src].selected++;
+        if (order >= 5) sourceMap[src].offered++;
+        if (order >= 7) sourceMap[src].joined++;
+      }
+
+      // ── Department pipeline ───────────────────────────────────────
+      const deptMap = {};
+      for (const c of cands) {
+        const dept = c.department || 'General';
+        if (!deptMap[dept]) deptMap[dept] = { department: dept, applied: 0, in_progress: 0, selected: 0, offered: 0, joined: 0, rejected: 0 };
+        deptMap[dept].applied++;
+        const order = stageOrder[c.status] ?? 0;
+        if (order >= 1 && order < 4) deptMap[dept].in_progress++;
+        if (order === 4) deptMap[dept].selected++;
+        if (order >= 5) deptMap[dept].offered++;
+        if (order >= 7) deptMap[dept].joined++;
+        if (c.status === 'rejected') deptMap[dept].rejected++;
+      }
+
+      // ── Monthly hiring trend (last 12 months) ────────────────────
+      const monthMap = {};
+      for (let m = 11; m >= 0; m--) {
+        const d = new Date(); d.setMonth(d.getMonth() - m);
+        const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+        monthMap[key] = { month: key, applied: 0, selected: 0, joined: 0 };
+      }
+      for (const c of allCands) {
+        const dt = c.created_at || c._created || '';
+        const key = dt.slice(0,7);
+        if (monthMap[key]) {
+          monthMap[key].applied++;
+          const order = stageOrder[c.status] ?? -1;
+          if (order >= 4) monthMap[key].selected++;
+          if (order >= 7) monthMap[key].joined++;
+        }
+      }
+
+      // ── Requisition health (open positions aging) ─────────────────
+      const reqHealth = reqs
+        .filter(r => ['approved','published','on_hold'].includes(r.status))
+        .map(r => {
+          const createdAt = r.created_at || r._created || '';
+          const daysOpen = createdAt ? Math.floor((Date.now() - new Date(createdAt)) / 86400000) : 0;
+          const relCands = allCands.filter(c => c.requisition_id === r.id || c.position_applied === r.position_title);
+          const intCount = allInts.filter(i => relCands.some(c => c.id === i.candidate_id)).length;
+          return {
+            id: r.id, position: r.position_title, department: r.department,
+            priority: r.priority, status: r.status,
+            days_open: daysOpen, target_hire_date: r.target_hire_date,
+            positions: r.number_of_positions || 1,
+            candidates: relCands.length,
+            interviews: intCount,
+            offers: relCands.filter(c => ['offered','offer_accepted','joined'].includes(c.status)).length,
+            joined: relCands.filter(c => c.status === 'joined').length,
+          };
+        })
+        .sort((a, b) => b.days_open - a.days_open);
+
+      // ── Offer analytics ───────────────────────────────────────────
+      const totalOffers  = cands.filter(c => ['offered','offer_accepted','offer_declined','joined'].includes(c.status)).length;
+      const accepted     = cands.filter(c => ['offer_accepted','joined'].includes(c.status)).length;
+      const declined     = cands.filter(c => c.status === 'offer_declined').length;
+      const joined       = cands.filter(c => c.status === 'joined').length;
+
+      // ── Avg time in stages (using status_updated_at if available) ─
+      const avgDaysToSelect = (() => {
+        const vals = cands.filter(c => c.selected_at && c.created_at)
+          .map(c => (new Date(c.selected_at) - new Date(c.created_at)) / 86400000);
+        return vals.length ? Math.round(vals.reduce((s,v) => s+v,0)/vals.length) : null;
+      })();
+
+      // ── Key KPIs ──────────────────────────────────────────────────
+      const openRequisitions  = reqs.filter(r => ['approved','published'].includes(r.status)).length;
+      const closedThisPeriod  = reqs.filter(r => r.status === 'closed' && (r.closed_date || '') >= since).length;
+      const offerAcceptRate   = totalOffers > 0 ? Math.round(accepted/totalOffers*100) : 0;
+      const totalCandidates   = cands.length;
+      const inPipeline        = cands.filter(c => !['joined','rejected','offer_declined'].includes(c.status)).length;
+
+      return res.json({
+        success: true,
+        period_days: days,
+        kpis: {
+          total_requisitions: reqs.length,
+          open_requisitions: openRequisitions,
+          closed_this_period: closedThisPeriod,
+          total_candidates: totalCandidates,
+          in_pipeline: inPipeline,
+          total_offers: totalOffers,
+          offer_accepted: accepted,
+          offer_declined: declined,
+          joined,
+          offer_accept_rate: offerAcceptRate,
+          avg_days_to_select: avgDaysToSelect,
+        },
+        stage_funnel: STAGES.map(s => ({ stage: s, count: funnelCounts[s] || 0, at_stage: stageCounts[s] || 0 })),
+        stage_conversions: conversions,
+        by_source: Object.values(sourceMap).sort((a,b) => b.applied - a.applied),
+        by_department: Object.values(deptMap).sort((a,b) => b.applied - a.applied),
+        monthly_trend: Object.values(monthMap),
+        requisition_health: reqHealth.slice(0, 30),
+        offer_breakdown: { offered: totalOffers, accepted, declined, joined, pending: totalOffers - accepted - declined },
+      });
+    }
+
+    case 'saveInterviewScorecard': {
+      const { candidate_id: sisCandId, scorecard: sisCard } = p;
+      if (!sisCandId) return res.json({ success: false, error: 'candidate_id required' });
+      const sisCandRow = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [sisCandId]);
+      if (!sisCandRow) return res.json({ success: false, error: 'Candidate not found' });
+      const sisCand = JSON.parse(sisCandRow.data);
+      const now = new Date().toISOString();
+      const updatedCard = { ...sisCard, recorded_by: cu?.full_name, recorded_at: now };
+      const newStatus = sisCard.recommendation === 'select' ? 'selected' : sisCard.recommendation === 'reject' ? 'rejected' : 'interviewed';
+      await run("UPDATE entities SET data=$1,updated_at=$2 WHERE id=$3", [JSON.stringify({ ...sisCand, interview_scorecard: updatedCard, status: newStatus, interviewed_at: now }), now, sisCandRow.id]);
+      // Notify HR
+      const hrUsers = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+      const empName = sisCand.full_name || 'Candidate';
+      const recLabel = sisCard.recommendation === 'select' ? 'SELECTED' : sisCard.recommendation === 'reject' ? 'REJECTED' : 'On Hold';
+      for (const hr of hrUsers) {
+        await notify(hr.id, { title: 'Interview Scorecard Submitted', message: `${empName} — ${recLabel} for ${sisCand.position_applied || 'position'}`, type: sisCard.recommendation === 'select' ? 'success' : 'info', link: '/recruitment' });
+      }
+      return res.json({ success: true, new_status: newStatus });
+    }
+
     case 'getMinimumWagesReport': {
       // Central minimum wages (unskilled) — approximate for 2025 (₹ per month)
       const MINIMUM_WAGES = {
