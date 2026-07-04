@@ -6317,6 +6317,143 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true });
     }
 
+    case 'getEmployeeSalaryForFnF': {
+      const { user_id: gesfUserId } = p;
+      if (!gesfUserId) return res.json({ success: false, error: 'user_id required' });
+      try {
+        const gesfEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [gesfUserId]);
+        const gesfEmp = gesfEmpRow ? JSON.parse(gesfEmpRow.data) : {};
+        const gesfSalRows = await all("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [gesfUserId]);
+        const gesfSal = gesfSalRows[0] ? JSON.parse(gesfSalRows[0].data) : {};
+        const gesfLbRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [gesfUserId]);
+        const gesfLeaveBalance = gesfLbRows.map(r => JSON.parse(r.data));
+        const earnedLeave = gesfLeaveBalance.find(lb => (lb.leave_type || '').toLowerCase().includes('earn') || (lb.leave_policy_name || '').toLowerCase().includes('earn'));
+        const monthlyGross = Number(gesfSal.monthly_gross || gesfSal.gross_salary || gesfEmp.monthly_salary || 0);
+        const perDaySalary = monthlyGross > 0 ? Math.round(monthlyGross / 26) : 0;
+        const doj = gesfEmp.date_of_joining || gesfEmp.joining_date || null;
+        const yearsOfService = doj ? Math.floor((new Date() - new Date(doj)) / (365.25 * 24 * 3600 * 1000)) : 0;
+        const gratuityEligible = yearsOfService >= 5;
+        const gratuityAmount = gratuityEligible ? Math.round((monthlyGross * 15 * yearsOfService) / 26) : 0;
+        return res.json({
+          success: true,
+          monthly_gross: monthlyGross,
+          per_day_salary: perDaySalary,
+          leave_balance: earnedLeave?.available || 0,
+          years_of_service: yearsOfService,
+          gratuity_eligible: gratuityEligible,
+          gratuity_amount: gratuityAmount,
+          salary_structure: gesfSal,
+          employee: gesfEmp,
+        });
+      } catch (e) {
+        return res.json({ success: false, error: e.message });
+      }
+    }
+
+    case 'generateExitDocument': {
+      const { exit_id: gedExitId, doc_type: gedDocType, employee_name: gedEmpName, designation: gedDesignation, department: gedDept, joining_date: gedJoining, last_working_date: gedLwd, fnf_data: gedFnf } = p;
+      if (!gedExitId || !gedDocType) return res.json({ success: false, error: 'exit_id and doc_type required' });
+      try {
+        const gedExitRow = await one("SELECT data FROM entities WHERE type='Exit' AND id=$1", [gedExitId]);
+        if (!gedExitRow) return res.json({ success: false, error: 'Exit record not found' });
+        const gedExit = JSON.parse(gedExitRow.data);
+        const gedUserRow = await one("SELECT full_name, email FROM users WHERE id=$1", [gedExit.user_id]);
+        const gedEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [gedExit.user_id]);
+        const gedEmp = gedEmpRow ? JSON.parse(gedEmpRow.data) : {};
+
+        const empName = gedEmpName || gedUserRow?.full_name || 'Employee';
+        const designation = gedDesignation || gedEmp.designation || 'Employee';
+        const department = gedDept || gedEmp.department || '';
+        const employeeCode = gedEmp.employee_code || '';
+        const joiningDate = gedJoining || gedEmp.date_of_joining || '';
+        const lwd = gedLwd || gedExit.last_working_date || '';
+
+        const ordinalDate = (d) => {
+          if (!d) return '';
+          const date = new Date(d + 'T00:00:00');
+          const day = date.getDate();
+          const suffix = day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th';
+          const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+          return `${day}${suffix} ${months[date.getMonth()]} ${date.getFullYear()}`;
+        };
+
+        const todayStr = new Date().toISOString().slice(0,10);
+        const gender = (gedEmp.gender || '').toLowerCase();
+        const prefix = gender === 'female' ? 'Ms.' : 'Mr.';
+
+        let htmlContent = '';
+
+        if (gedDocType === 'relieving_letter') {
+          htmlContent = `
+<p style="font-weight:bold;text-align:center;">Relieving Letter</p>
+<p style="text-align:right;">${ordinalDate(todayStr)}</p>
+<p>To Whomsoever It May Concern,</p>
+<p>This is to certify that <strong>${prefix} ${empName}</strong>${employeeCode ? ` (Employee Code: ${employeeCode})` : ''} was employed with Maxvolt Energy Industries Limited as <strong>${designation}</strong>${department ? ` in the ${department} department` : ''} from <strong>${ordinalDate(joiningDate)}</strong> to <strong>${ordinalDate(lwd)}</strong>.</p>
+<p>${prefix} ${empName} has been formally relieved from the services of Maxvolt Energy Industries Limited with effect from <strong>${ordinalDate(lwd)}</strong>.</p>
+<p>During ${gender === 'female' ? 'her' : 'his'} tenure, ${gender === 'female' ? 'she' : 'he'} has discharged all ${gender === 'female' ? 'her' : 'his'} duties and responsibilities assigned to ${gender === 'female' ? 'her' : 'him'} diligently and sincerely.</p>
+<p>We wish ${gender === 'female' ? 'her' : 'him'} all the best in ${gender === 'female' ? 'her' : 'his'} future endeavors.</p>
+<p style="margin-top:40px;">Sincerely,<br/><br/><br/>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
+
+          await run("UPDATE entities SET data=jsonb_set(data::jsonb,'{relieving_letter_generated}','true')::text,updated_at=NOW()::TEXT WHERE type='Exit' AND id=$1", [gedExitId]);
+
+        } else if (gedDocType === 'experience_letter') {
+          htmlContent = `
+<p style="font-weight:bold;text-align:center;">Experience Certificate</p>
+<p style="text-align:right;">${ordinalDate(todayStr)}</p>
+<p>To Whomsoever It May Concern,</p>
+<p>This is to certify that <strong>${prefix} ${empName}</strong>${employeeCode ? ` (Employee Code: ${employeeCode})` : ''} was employed with <strong>Maxvolt Energy Industries Limited</strong> from <strong>${ordinalDate(joiningDate)}</strong> to <strong>${ordinalDate(lwd)}</strong>.</p>
+<p>During ${gender === 'female' ? 'her' : 'his'} association with the company, ${gender === 'female' ? 'she' : 'he'} served as <strong>${designation}</strong>${department ? ` in the <strong>${department}</strong> department` : ''}.</p>
+<p>We found ${gender === 'female' ? 'her' : 'him'} to be hardworking, dedicated, and a team player with good interpersonal skills. ${gender === 'female' ? 'She' : 'He'} handled all ${gender === 'female' ? 'her' : 'his'} responsibilities with sincerity and professionalism.</p>
+<p>We wish ${gender === 'female' ? 'her' : 'him'} all the best in ${gender === 'female' ? 'her' : 'his'} future career.</p>
+<p style="margin-top:40px;">Sincerely,<br/><br/><br/>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
+
+          await run("UPDATE entities SET data=jsonb_set(data::jsonb,'{experience_letter_generated}','true')::text,updated_at=NOW()::TEXT WHERE type='Exit' AND id=$1", [gedExitId]);
+
+        } else if (gedDocType === 'fnf_letter') {
+          const fnf = gedFnf || gedExit.fnf_data || {};
+          const earnings = fnf.earnings || {};
+          const deductions = fnf.deductions || {};
+          const totalEarnings = Object.values(earnings).reduce((s, v) => s + Number(v || 0), 0);
+          const totalDeductions = Object.values(deductions).reduce((s, v) => s + Number(v || 0), 0);
+          const netPayable = totalEarnings - totalDeductions;
+          const fmt2 = (n) => Number(n || 0).toLocaleString('en-IN');
+
+          htmlContent = `
+<p style="font-weight:bold;text-align:center;">Full & Final Settlement Letter</p>
+<p style="text-align:right;">${ordinalDate(todayStr)}</p>
+<p>Dear ${prefix} ${empName},</p>
+<p>With reference to your resignation and relieving from the services of Maxvolt Energy Industries Limited on <strong>${ordinalDate(lwd)}</strong>, please find below the details of your Full & Final Settlement:</p>
+<table style="width:100%;border-collapse:collapse;margin:16px 0;">
+  <tr style="background:#f3f4f6;"><td colspan="2" style="padding:8px;font-weight:bold;border:1px solid #d1d5db;">Earnings</td></tr>
+  ${earnings.last_month_salary ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Last Month Salary</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.last_month_salary)}</td></tr>` : ''}
+  ${earnings.leave_encashment ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Leave Encashment</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.leave_encashment)}</td></tr>` : ''}
+  ${earnings.gratuity ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Gratuity</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.gratuity)}</td></tr>` : ''}
+  ${earnings.bonus ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Bonus</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.bonus)}</td></tr>` : ''}
+  ${earnings.incentives ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Incentives</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.incentives)}</td></tr>` : ''}
+  ${earnings.reimbursements ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Reimbursements</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.reimbursements)}</td></tr>` : ''}
+  <tr style="background:#f0fdf4;font-weight:bold;"><td style="padding:8px;border:1px solid #d1d5db;">Total Earnings</td><td style="padding:8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(totalEarnings)}</td></tr>
+  <tr style="background:#f3f4f6;"><td colspan="2" style="padding:8px;font-weight:bold;border:1px solid #d1d5db;">Deductions</td></tr>
+  ${deductions.loan_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Loan Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.loan_recovery)}</td></tr>` : ''}
+  ${deductions.advance_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Advance Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.advance_recovery)}</td></tr>` : ''}
+  ${deductions.notice_period_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Notice Period Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.notice_period_recovery)}</td></tr>` : ''}
+  ${deductions.buyout_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Buyout Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.buyout_recovery)}</td></tr>` : ''}
+  ${deductions.tds ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">TDS</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.tds)}</td></tr>` : ''}
+  <tr style="background:#fef2f2;font-weight:bold;"><td style="padding:8px;border:1px solid #d1d5db;">Total Deductions</td><td style="padding:8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(totalDeductions)}</td></tr>
+  <tr style="background:#1e3a5f;color:white;font-weight:bold;"><td style="padding:10px;border:1px solid #1e3a5f;">Net Amount Payable</td><td style="padding:10px;border:1px solid #1e3a5f;text-align:right;font-size:1.1em;">₹${fmt2(netPayable)}</td></tr>
+</table>
+<p>The above amount of <strong>₹${fmt2(netPayable)}</strong> shall be credited to your registered bank account within 45 days of your last working day.</p>
+<p>Please acknowledge receipt of this letter.</p>
+<p style="margin-top:40px;">Sincerely,<br/><br/><br/>HR / Finance Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
+        } else {
+          return res.json({ success: false, error: 'Unknown doc_type. Use: relieving_letter, experience_letter, fnf_letter' });
+        }
+
+        return res.json({ success: true, html: htmlContent, doc_type: gedDocType });
+      } catch (e) {
+        return res.json({ success: false, error: e.message });
+      }
+    }
+
     case 'processLeaveAction': {
       const { leave_id: plaLeaveId, action: plaAction, note: plaNote, level: plaLevel } = p;
       if (!plaLeaveId || !plaAction) return res.status(400).json({ error: 'leave_id and action required' });
