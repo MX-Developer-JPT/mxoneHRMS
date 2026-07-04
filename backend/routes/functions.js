@@ -378,6 +378,16 @@ const MGR_ROLES = ['hr', 'admin', 'management', 'manager'];
 
 const parseEntities = (rows) => rows.map(r => JSON.parse(r.data));
 
+// Creates an in-app Notification entity for a user
+async function notify(userId, { title, message, type = 'info', link = '' }) {
+  if (!userId) return;
+  try {
+    const nid = uuidv4();
+    const data = { id: nid, user_id: userId, type, title, message, link, read: false, created_at: new Date().toISOString() };
+    await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Notification',$2,'unread',$3)", [nid, userId, JSON.stringify(data)]);
+  } catch {}
+}
+
 /* ── Professional Tax: state-wise monthly slab ───────────────── */
 function calcProfessionalTax(grossMonthly, state = 'UTTAR PRADESH') {
   const s = String(state || '').toUpperCase().trim();
@@ -585,7 +595,7 @@ router.post('/:name', async (req, res) => {
       const { leave_policy_id, start_date, end_date, half_day, user_id } = p;
       if (!leave_policy_id || !start_date || !end_date)
         return res.json({ valid:false, errors:['Missing required fields'], warnings:[], adjusted_days:0, available_balance:0 });
-      const start = new Date(start_date); const end = new Date(end_date);
+      const start = new Date(start_date + 'T00:00:00'); const end = new Date(end_date + 'T00:00:00');
       const diff  = Math.ceil((end - start) / 86400000) + 1;
       const adjusted_days = half_day ? 0.5 : diff;
       const uid = user_id || cu?.id;
@@ -593,9 +603,32 @@ router.post('/:name', async (req, res) => {
       const bal = balRows.map(r=>JSON.parse(r.data)).find(b=>b.leave_policy_id===leave_policy_id);
       const available_balance = bal?.available ?? 999;
       const errors = [];
+      const warnings = [];
+
+      // Check each date in range for holidays or Sundays (week-offs)
+      const year = start.getFullYear();
+      const holidayRows = await all("SELECT data FROM entities WHERE type='Holiday'");
+      const holidays = holidayRows.map(r => JSON.parse(r.data));
+      const holidayDates = new Set(
+        holidays.filter(h => h.date && new Date(h.date).getFullYear() === year).map(h => h.date.slice(0,10))
+      );
+      const conflictDates = [];
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 86400000)) {
+        const ds = d.toISOString().slice(0,10);
+        const dow = d.getDay();
+        if (dow === 0) { conflictDates.push(`${ds} (Sunday/Week-off)`); }
+        else if (holidayDates.has(ds)) {
+          const h = holidays.find(h => h.date?.slice(0,10) === ds);
+          conflictDates.push(`${ds} (Holiday: ${h?.name || 'Public Holiday'})`);
+        }
+      }
+      if (conflictDates.length > 0) {
+        errors.push(`Cannot apply leave on: ${conflictDates.join(', ')}`);
+      }
+
       if (adjusted_days > available_balance) errors.push(`Insufficient balance. Available: ${available_balance}, Requested: ${adjusted_days}`);
       if (adjusted_days > 30) errors.push('Cannot exceed 30 days at once');
-      return res.json({ valid:errors.length===0, adjusted_days, available_balance, errors, warnings:[] });
+      return res.json({ valid:errors.length===0, adjusted_days, available_balance, errors, warnings });
     }
 
     case 'accrueLeaveBalances': {
@@ -4630,13 +4663,17 @@ Return ONLY a valid JSON object (no markdown):
       const pronoun2    = isFemale ? 'she' : 'he';
 
       const fmt = n => n ? '₹' + Number(n).toLocaleString('en-IN') : '[____]';
-      const basic   = ss.basic || 0;
-      const hra     = ss.hra || 0;
-      const conv    = ss.conveyance || 0;
-      const special = ss.special_allowance || 0;
-      const gross   = ss.grossMonthly || (basic + hra + conv + special);
+      // Allow HR to override CTC components via extra.ctc_override
+      const ctcOvr  = extra.ctc_override || {};
+      const basic   = Number(ctcOvr.basic)             || ss.basic || 0;
+      const hra     = Number(ctcOvr.hra)               || ss.hra || 0;
+      const conv    = Number(ctcOvr.conveyance)        || ss.conveyance || 0;
+      const special = Number(ctcOvr.special_allowance) || ss.special_allowance || 0;
+      const otherAl = Number(ctcOvr.other_allowance)   || ss.other_allowance || 0;
+      const gross   = basic + hra + conv + special + otherAl || ss.grossMonthly || 0;
       const pfEmp   = ss.pf_employee || (basic ? Math.round(basic * 0.12) : 0);
-      const net     = ss.netPay || (gross && pfEmp ? gross - pfEmp : 0);
+      const net     = gross ? gross - pfEmp : ss.netPay || 0;
+      const overrideAnnualCTC = Number(ctcOvr.annual_ctc) || annualCTC;
 
       const chosenSignatory = extra.signatory || '';
 
@@ -4664,8 +4701,9 @@ Return ONLY a valid JSON object (no markdown):
         hra     && ['House Rent Allowance (HRA)',             hra,     hra * 12],
         conv    && ['Conveyance Allowance',                   conv,    conv * 12],
         special && ['Special Allowance',                      special, special * 12],
+        otherAl && ['Other Allowance',                        otherAl, otherAl * 12],
         gross   && ['<strong>Gross Monthly</strong>',         gross,   gross * 12],
-        pfEmp   && ['Less: PF – Employee (12%)',         pfEmp,   pfEmp * 12],
+        pfEmp   && ['Less: PF – Employee (12%)',              pfEmp,   pfEmp * 12],
         net     && ['<strong>Net Monthly Take-Home</strong>', net,     net * 12],
       ].filter(Boolean);
 
@@ -4687,7 +4725,7 @@ Return ONLY a valid JSON object (no markdown):
     </tr>`).join('')}
   </tbody>
 </table>
-<p style="margin:10px 0 2px;font-size:12px;">* Annual CTC: <strong>${annualCTC ? fmt(annualCTC) + '/-' : '[____]'}</strong></p>
+<p style="margin:10px 0 2px;font-size:12px;">* Annual CTC: <strong>${overrideAnnualCTC ? fmt(overrideAnnualCTC) + '/-' : '[____]'}</strong></p>
 <p style="font-size:12px;margin:2px 0;">* TDS deducted as per applicable provisions. Gross salary is subject to TDS.</p>
 <p style="font-size:12px;margin:2px 0;">* Statutory benefits (PF, ESI, Gratuity, Bonus) as per applicable labour laws.</p>
 </div>` : '';
@@ -4717,7 +4755,7 @@ ${H('Probation:')}
 ${P('You will be on probation for a period of <strong>Six months</strong> from the date of your joining. Subject to your efficiency, punctuality, conduct, maintenance of discipline and in accordance with the performance criteria as decided by the management / Our Company, being found satisfactory, your confirmation will be communicated to you in writing or can be extended beyond 6 (Six) months at the discretion of the management / Our Company.')}
 ${P('During the probation period, you are entitled to avail <strong>03 Casual Leave</strong> on pro rata basis. Approval for Casual Leave must be sought from your reporting manager in advance.')}
 ${H('Compensation:')}
-${P(`Your annual CTC will be as detailed in <strong>Annexure – A</strong> as annexed to this letter <strong>INR ${annualCTC ? Number(annualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The Salary shall be payable on a monthly basis and arrears within 7th day of each calendar month.`)}
+${P(`Your annual CTC will be as detailed in <strong>Annexure – A</strong> as annexed to this letter <strong>INR ${overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The Salary shall be payable on a monthly basis and arrears within 7th day of each calendar month.`)}
 ${P('All payments shall be made in accordance with the relevant policies of Our Company in effect from time to time, including payroll practices, and shall be subject to income tax deductions at source, as applicable.')}
 ${P('Statutory benefits such as Provident Fund, Employees’ State Insurance (ESI), Gratuity, Bonus and any other applicable benefits shall be governed by and provided in accordance with the applicable provisions of the prevailing labor laws in force in India.')}
 ${H('Performance of Duties:')}
@@ -4783,6 +4821,95 @@ ${P('We wish you all the best in all your future endeavors.')}
 ${sig('Warm Regards,', 'MaxVolt Energy Industries Limited', '(Authorized Signatory)')}
 <p style="margin-top:52px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>`),
 
+        promotion: () => {
+          const newDesig = extra.new_designation || '[New Designation]';
+          const effDate  = extra.effective_date  || '[Effective Date]';
+          return wrap(`
+<p style="font-weight:bold;font-size:12px;margin:0 0 16px;">PRIVATE &amp; STRICTLY CONFIDENTIAL</p>
+<p style="margin:0 0 4px;">${todayDate}</p>
+<p style="margin:0 0 20px;">To ${sal} ${empName},</p>
+<p style="text-align:center;font-weight:bold;font-size:17px;letter-spacing:2px;text-decoration:underline;margin:0 0 6px;">PROMOTION LETTER</p>
+<p style="text-align:right;font-size:12px;color:#555;margin:0 0 24px;"><strong>Ref:</strong> ${ref}</p>
+${P(`Dear ${sal} ${empName},`)}
+${P('We are pleased to inform you that based on your sustained performance, contribution and dedication towards the growth of <strong>Maxvolt Energy Industries Limited</strong>, the Management has decided to promote you.')}
+${P(`You are hereby promoted to the designation of <strong>${newDesig}</strong> in the <strong>${department}</strong> department, with effect from <strong>${effDate}</strong>.`)}
+${P(`Your revised annual CTC will be <strong>INR ${overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong> as detailed in <strong>Annexure – A</strong>. All other terms and conditions of your appointment shall remain unchanged.`)}
+${H('Performance of Duties:')}
+${P(`In your new role as <strong>${newDesig}</strong>, you will be expected to take on greater responsibilities and continue to uphold the values and work ethics that have earned you this recognition. You shall diligently carry out all duties assigned by your Head of Department and contribute proactively to the team's objectives.`)}
+${H('Confidentiality:')}
+${P('Your salary and promotion details are strictly confidential. Any disclosure to unauthorised persons will be treated as a disciplinary offence and may result in termination of employment.')}
+${P('Please sign and return a copy of this letter as your acceptance of the promotion and its terms.')}
+${P('We congratulate you on this well-deserved promotion and wish you continued success at Maxvolt Energy Industries Limited.')}
+${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory')}
+<p style="margin:64px 0 6px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>
+<p>Name: _________________________________</p>
+${salaryTable}`);
+        },
+
+        salary_revision: () => {
+          const newCTC = Number(extra.revised_annual_ctc) || overrideAnnualCTC || 0;
+          const effDate = extra.effective_date || '[Effective Date]';
+          // Old CTC from ss (before override)
+          const oldAnnualCTC = annualCTC || 0;
+          const oldBasic   = ss.basic || 0;
+          const oldHRA     = ss.hra || 0;
+          const oldConv    = ss.conveyance || 0;
+          const oldSpecial = ss.special_allowance || 0;
+          const oldOther   = ss.other_allowance || 0;
+          const oldGross   = ss.grossMonthly || (oldBasic + oldHRA + oldConv + oldSpecial + oldOther);
+          const oldPF      = ss.pf_employee || (oldBasic ? Math.round(oldBasic * 0.12) : 0);
+          const oldNet     = ss.netPay || (oldGross ? oldGross - oldPF : 0);
+
+          const revRows = [
+            ['Basic Pay',                              oldBasic,   basic,   basic * 12],
+            hra || oldHRA ? ['House Rent Allowance (HRA)',         oldHRA,     hra,     hra * 12] : null,
+            conv || oldConv ? ['Conveyance Allowance',             oldConv,    conv,    conv * 12] : null,
+            special || oldSpecial ? ['Special Allowance',          oldSpecial, special, special * 12] : null,
+            otherAl || oldOther ? ['Other Allowance',              oldOther,   otherAl, otherAl * 12] : null,
+            oldGross || gross ? [`<strong>Gross Monthly</strong>`, oldGross,   gross,   gross * 12] : null,
+            oldPF || pfEmp ? [`Less: PF – Employee (12%)`,         oldPF,      pfEmp,   pfEmp * 12] : null,
+            oldNet || net  ? [`<strong>Net Monthly Take-Home</strong>`, oldNet, net,    net * 12] : null,
+          ].filter(Boolean);
+
+          const revTable = revRows.length ? `
+<div style="margin-top:20px;">
+<p style="font-weight:bold;margin:0 0 8px;">Salary Revision – Comparative Statement</p>
+<table style="width:100%;border-collapse:collapse;font-size:13px;">
+  <thead><tr style="background:#222;color:#fff;">
+    <th style="padding:8px 12px;text-align:left;font-weight:normal;">Component</th>
+    <th style="padding:8px 12px;text-align:right;font-weight:normal;">Previous Monthly (₹)</th>
+    <th style="padding:8px 12px;text-align:right;font-weight:normal;">Revised Monthly (₹)</th>
+    <th style="padding:8px 12px;text-align:right;font-weight:normal;">Revised Annual (₹)</th>
+  </tr></thead>
+  <tbody>${revRows.map(([label, old, nw, ann], i) =>
+    `<tr style="background:${i % 2 === 0 ? '#f7f7f7' : '#fff'};">
+      <td style="padding:7px 12px;border-bottom:1px solid #ddd;">${label}</td>
+      <td style="padding:7px 12px;text-align:right;border-bottom:1px solid #ddd;">${old ? fmt(old) : '—'}</td>
+      <td style="padding:7px 12px;text-align:right;border-bottom:1px solid #ddd;">${nw ? fmt(nw) : '—'}</td>
+      <td style="padding:7px 12px;text-align:right;border-bottom:1px solid #ddd;">${ann ? fmt(ann) : '—'}</td>
+    </tr>`).join('')}
+  </tbody>
+</table>
+<p style="margin:10px 0 2px;font-size:12px;">* Previous Annual CTC: <strong>${oldAnnualCTC ? fmt(oldAnnualCTC) + '/-' : '[____]'}</strong> &nbsp;|&nbsp; Revised Annual CTC: <strong>${newCTC ? fmt(newCTC) + '/-' : overrideAnnualCTC ? fmt(overrideAnnualCTC) + '/-' : '[____]'}</strong></p>
+<p style="font-size:12px;margin:2px 0;">* TDS deducted as per applicable provisions. * Statutory benefits as per applicable labour laws.</p>
+</div>` : '';
+
+          return wrap(`
+<p style="font-weight:bold;font-size:12px;margin:0 0 16px;">PRIVATE &amp; STRICTLY CONFIDENTIAL</p>
+<p style="margin:0 0 4px;">${todayDate}</p>
+<p style="margin:0 0 20px;">To ${sal} ${empName},</p>
+<p style="text-align:center;font-weight:bold;font-size:17px;letter-spacing:2px;text-decoration:underline;margin:0 0 6px;">SALARY REVISION LETTER</p>
+<p style="text-align:right;font-size:12px;color:#555;margin:0 0 24px;"><strong>Ref:</strong> ${ref}</p>
+${P(`Dear ${sal} ${empName},`)}
+${P('We are pleased to inform you that the Management has reviewed your performance and contribution to <strong>Maxvolt Energy Industries Limited</strong> and has decided to revise your compensation.')}
+${P(`Effective <strong>${effDate}</strong>, your revised annual CTC will be <strong>INR ${newCTC ? Number(newCTC).toLocaleString('en-IN') : overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The detailed salary breakup is as follows:`)}
+${revTable}
+${P('All other terms and conditions of your employment remain unchanged. Your salary is strictly confidential and any disclosure will invite disciplinary action.')}
+${P('Please sign and return a copy of this letter as acknowledgement of the revised compensation.')}
+${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory')}
+<p style="margin:64px 0 6px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>`);
+        },
+
         experience: () => wrap(`
 <p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 22px;">EXPERIENCE / SERVICE CERTIFICATE</p>
 <p style="margin:0 0 4px;">${todayDate}</p>
@@ -4804,10 +4931,8 @@ ${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised 
         isHtml = true;
       } else {
         const aiTypeInstructions = {
-          salary_revision: `a salary revision letter. Revised CTC: ${extra.revised_annual_ctc ? fmt(extra.revised_annual_ctc) + '/-' : '[____]'} p.a. Effective date: ${extra.effective_date || '[____]'}.`,
           address_proof: `an employment / address verification letter addressed to ${extra.addressed_to || 'Whom It May Concern'} for purpose: ${extra.purpose || 'general verification'}.`,
           warning: `a formal written warning letter. Subject: ${extra.subject || '[subject]'}. Details: ${extra.details || '[details]'}.`,
-          promotion: `a promotion letter. New designation: ${extra.new_designation || '[____]'}. Effective date: ${extra.effective_date || '[____]'}.`,
         };
         const extraLines = Object.entries(extra).filter(([, v]) => v !== '' && v != null)
           .map(([k, v]) => `- ${k.replace(/_/g, ' ')}: ${v}`).join('\n');
@@ -6129,6 +6254,88 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         return { ...e, full_name: u.full_name, email: u.email, probation_end_date: probEnd?.toISOString().slice(0,10), days_left: daysLeft, probation_flag: daysLeft !== null && daysLeft <= 30 ? (daysLeft < 0 ? 'overdue' : 'due_soon') : 'active' };
       }).filter(e => e.employee_status === 'probation' || (e.days_left !== null && e.days_left <= 60));
       return res.json({ success: true, employees: result });
+    }
+
+    case 'notifyLeaveStatusChange': {
+      const { leave_id: nlsLeaveId, action: nlsAction, note: nlsNote, manager_id: nlsMgrId, employee_id: nlsEmpId, start_date: nlsStart, end_date: nlsEnd } = p;
+      try {
+        const actorName = cu?.full_name || 'HR';
+        if (nlsAction === 'submitted') {
+          // Notify manager about new leave request
+          const nlsEmpUser = nlsEmpId ? await one("SELECT full_name FROM users WHERE id=$1", [nlsEmpId]) : null;
+          const nlsEmpName = nlsEmpUser?.full_name || 'An employee';
+          if (nlsMgrId) await notify(nlsMgrId, { title: 'Leave Request', message: `${nlsEmpName} has applied for leave from ${nlsStart || '?'} to ${nlsEnd || '?'}.`, type: 'info', link: '/leave-management' });
+          const hrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+          for (const hr of hrRows) await notify(hr.id, { title: 'New Leave Request', message: `${nlsEmpName} has submitted a leave request (${nlsStart || '?'} – ${nlsEnd || '?'}).`, type: 'info', link: '/leave-management' });
+          return res.json({ success: true });
+        }
+        if (!nlsLeaveId) return res.json({ success: false });
+        const nlsRow = await one("SELECT data FROM entities WHERE type='Leave' AND id=$1", [nlsLeaveId]);
+        if (!nlsRow) return res.json({ success: false });
+        const nlsLv = JSON.parse(nlsRow.data);
+        if (nlsAction === 'approved') {
+          await notify(nlsLv.user_id, { title: 'Leave Approved', message: `Your leave (${nlsLv.start_date} – ${nlsLv.end_date}) has been approved by ${actorName}.`, type: 'success', link: '/leave' });
+        } else if (nlsAction === 'rejected') {
+          await notify(nlsLv.user_id, { title: 'Leave Rejected', message: `Your leave (${nlsLv.start_date} – ${nlsLv.end_date}) has been rejected${nlsNote ? ': ' + nlsNote : ''}.`, type: 'error', link: '/leave' });
+        } else if (nlsAction === 'level1_approved') {
+          await notify(nlsLv.user_id, { title: 'Leave Partially Approved', message: `Your leave (${nlsLv.start_date} – ${nlsLv.end_date}) is approved at Level 1 and awaiting final HR approval.`, type: 'info', link: '/leave' });
+          const hrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+          for (const hr of hrRows) await notify(hr.id, { title: 'Leave Awaiting Final Approval', message: `${nlsLv.employee_name || 'An employee'}'s leave (${nlsLv.start_date} – ${nlsLv.end_date}) requires your final approval.`, type: 'info', link: '/leave-management' });
+        }
+      } catch {}
+      return res.json({ success: true });
+    }
+
+    case 'processLeaveAction': {
+      const { leave_id: plaLeaveId, action: plaAction, note: plaNote, level: plaLevel } = p;
+      if (!plaLeaveId || !plaAction) return res.status(400).json({ error: 'leave_id and action required' });
+      const plaRow = await one("SELECT id,data FROM entities WHERE type='Leave' AND id=$1", [plaLeaveId]);
+      if (!plaRow) return res.json({ success: false, error: 'Leave not found' });
+      const plaLv = JSON.parse(plaRow.data);
+      const plaActorId = cu?.id;
+      const plaActorName = cu?.full_name || 'HR';
+      const now = new Date().toISOString();
+
+      if (plaAction === 'approve') {
+        const isLevel1 = plaLevel === 1 && !['hr','admin','management'].includes(cu?.role || cu?.custom_role);
+        if (isLevel1) {
+          const upd = { ...plaLv, current_approval_level: 2, approval_history: [...(plaLv.approval_history || []), { level: 1, action: 'approved', by: plaActorId, by_name: plaActorName, at: now, note: plaNote || '' }] };
+          await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), plaRow.id]);
+          await notify(plaLv.user_id, { title: 'Leave Partially Approved', message: `Your leave (${plaLv.start_date} – ${plaLv.end_date}) has been approved at Level 1 and sent to HR for final approval.`, type: 'info', link: '/leave' });
+          const hrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+          for (const hr of hrRows) await notify(hr.id, { title: 'Leave Approval Required', message: `${plaLv.employee_name || 'An employee'}'s leave request (${plaLv.start_date} – ${plaLv.end_date}) requires your approval.`, type: 'info', link: '/leave-management' });
+          return res.json({ success: true, status: 'level1_approved' });
+        } else {
+          const upd = { ...plaLv, status: 'approved', approved_by: plaActorId, approved_by_name: plaActorName, approved_date: now, approval_note: plaNote || '', approval_history: [...(plaLv.approval_history || []), { action: 'approved', by: plaActorId, by_name: plaActorName, at: now, note: plaNote || '' }] };
+          await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), plaRow.id]);
+          // Update leave balance
+          try {
+            const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [plaLv.user_id]);
+            const lb = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === plaLv.leave_policy_id);
+            if (lb) {
+              const lbUpd = { ...lb, used: (lb.used || 0) + plaLv.total_days, pending_approval: Math.max((lb.pending_approval || 0) - plaLv.total_days, 0) };
+              await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
+            }
+          } catch {}
+          await notify(plaLv.user_id, { title: 'Leave Approved', message: `Your leave request (${plaLv.start_date} – ${plaLv.end_date}) has been approved by ${plaActorName}.`, type: 'success', link: '/leave' });
+          return res.json({ success: true, status: 'approved' });
+        }
+      } else if (plaAction === 'reject') {
+        const upd = { ...plaLv, status: 'rejected', rejected_by: plaActorId, rejected_by_name: plaActorName, rejected_at: now, rejection_reason: plaNote || '', approval_history: [...(plaLv.approval_history || []), { action: 'rejected', by: plaActorId, by_name: plaActorName, at: now, note: plaNote || '' }] };
+        await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), plaRow.id]);
+        // Restore pending balance
+        try {
+          const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [plaLv.user_id]);
+          const lb = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === plaLv.leave_policy_id);
+          if (lb) {
+            const lbUpd = { ...lb, pending_approval: Math.max((lb.pending_approval || 0) - plaLv.total_days, 0), available: (lb.available || 0) + plaLv.total_days };
+            await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
+          }
+        } catch {}
+        await notify(plaLv.user_id, { title: 'Leave Rejected', message: `Your leave request (${plaLv.start_date} – ${plaLv.end_date}) has been rejected${plaNote ? ': ' + plaNote : ''}.`, type: 'error', link: '/leave' });
+        return res.json({ success: true, status: 'rejected' });
+      }
+      return res.json({ success: false, error: 'Unknown action' });
     }
 
     case 'submitProbationReview': {
@@ -7505,20 +7712,10 @@ Return ONLY valid JSON (no markdown):
       const label   = LETTER_LABELS[letter_type] || 'HR Letter';
       const today   = new Date().toISOString().slice(0, 10);
       const docId   = uuidv4();
-      const docData = {
-        id: docId, user_id,
-        document_type: 'hr_letter',
-        document_name: `${label}${ref ? ` (${ref})` : ''} — ${today}`,
-        letter_type, letter_content, ref: ref || '',
-        employee_name: employee_name || '',
-        status: 'verified',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, user_id, JSON.stringify(docData)]);
 
       // Email to employee with PDF attachment (proper Maxvolt letterhead)
       let email_error = null;
+      let aslDocUrl = null;
       try {
         const empUser = await one("SELECT email, full_name FROM users WHERE id=$1", [user_id]);
         if (!empUser?.email) throw new Error('Employee has no email address on record');
@@ -7527,6 +7724,18 @@ Return ONLY valid JSON (no markdown):
           console.error('Letter PDF generation failed:', err.message);
           return null;
         });
+
+        // Upload to R2 for viewable document_url
+        if (pdfBuffer) {
+          try {
+            const { isR2Configured, buildKey, putToR2, presignGet } = await import('../utils/r2.js');
+            if (isR2Configured()) {
+              const r2Key = buildKey(`letters/${docId}`, '.pdf');
+              await putToR2(r2Key, pdfBuffer, 'application/pdf');
+              aslDocUrl = await presignGet(r2Key, { expiresIn: 31536000, filename: `${label.replace(/\s+/g,'_')}.pdf` });
+            }
+          } catch (r2Err) { console.warn('[approveAndSendLetter] R2 upload failed:', r2Err.message); }
+        }
 
         const attachments = pdfBuffer
           ? [{ filename: `${label.replace(/[^a-z0-9]/gi, '_')}.pdf`, content: pdfBuffer }]
@@ -7549,6 +7758,19 @@ Return ONLY valid JSON (no markdown):
         email_error = e.message;
       }
 
+      const aslDocData = {
+        id: docId, user_id,
+        document_type: 'hr_letter',
+        document_name: `${label}${ref ? ` (${ref})` : ''} — ${today}`,
+        letter_type, letter_content, ref: ref || '',
+        ...(aslDocUrl ? { document_url: aslDocUrl } : {}),
+        employee_name: employee_name || '',
+        status: 'verified',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, user_id, JSON.stringify(aslDocData)]);
+
       return res.json({ success: true, document_id: docId, email_error });
     }
 
@@ -7565,11 +7787,25 @@ Return ONLY valid JSON (no markdown):
       const docId   = uuidv4();
       const label   = LETTER_LABELS[letter_type] || 'HR Letter';
       const today   = new Date().toISOString().slice(0, 10);
+
+      // Generate PDF and upload to R2 so the doc is viewable/downloadable
+      let sldDocUrl = null;
+      try {
+        const pdfBuf = await buildLetterPdf(label, ref || '', letter_content);
+        const { isR2Configured, buildKey, putToR2, presignGet } = await import('../utils/r2.js');
+        if (pdfBuf && isR2Configured()) {
+          const r2Key = buildKey(`letters/${docId}`, '.pdf');
+          await putToR2(r2Key, pdfBuf, 'application/pdf');
+          sldDocUrl = await presignGet(r2Key, { expiresIn: 31536000, filename: `${label.replace(/\s+/g,'_')}.pdf` });
+        }
+      } catch (pdfErr) { console.warn('[saveLetterAsDocument] PDF/R2 failed:', pdfErr.message); }
+
       const docData = {
         id: docId, user_id,
         document_type: 'hr_letter',
         document_name: `${label}${ref ? ` (${ref})` : ''} — ${today}`,
         letter_type, letter_content, ref: ref || '',
+        ...(sldDocUrl ? { document_url: sldDocUrl } : {}),
         employee_name: employee_name || '',
         status: 'verified',
         created_at: new Date().toISOString(),

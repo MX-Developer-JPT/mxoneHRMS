@@ -188,8 +188,13 @@ export default function ConfirmationManagement() {
         base44.functions.invoke('getProbationReviews', {}),
       ]);
 
+      // Exclude employees who are already confirmed (active + have a confirmation_date)
+      const eligibleEmps = emps.filter(e =>
+        !(e.employee_status === 'active' && e.confirmation_date)
+      );
+
       const today = new Date();
-      const enriched = emps.map(e => {
+      const enriched = eligibleEmps.map(e => {
         const endDate = e.probation_end_date
           ? new Date(e.probation_end_date)
           : e.date_of_joining

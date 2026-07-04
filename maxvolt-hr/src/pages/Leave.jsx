@@ -194,6 +194,10 @@ export default function Leave() {
         }
       }
 
+      // Notify manager/HR about new leave request
+      if (employee?.reporting_manager_id) {
+        base44.functions.invoke('notifyLeaveStatusChange', { leave_id: null, action: 'submitted', employee_id: user.id, start_date: formData.start_date, end_date: formData.end_date, manager_id: employee.reporting_manager_id }).catch(() => {});
+      }
       toast.success(isWFH ? 'WFH request submitted for approval!' : 'Leave request submitted successfully!');
       loadData();
     } catch (error) {

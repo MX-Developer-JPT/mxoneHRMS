@@ -108,7 +108,7 @@ export default function EmployeeDocuments() {
     return u ? (u.display_name || u.full_name || u.email) : 'Unknown';
   };
 
-  // Count documents matching bulk filter
+  // Count documents matching bulk filter (only those with a direct URL can be bulk-downloaded)
   const bulkMatchCount = (() => {
     let docs = allDocuments.filter(d => d.document_url);
     if (bulkEmpFilter)  docs = docs.filter(d => d.user_id === bulkEmpFilter);
@@ -329,7 +329,12 @@ export default function EmployeeDocuments() {
                                 {safeDate(doc.created_date, 'MMM d, yyyy')}
                               </p>
                               <div className="flex gap-2 flex-wrap">
-                                <Button size="sm" variant="outline" className="flex-1" onClick={() => setViewerDoc({ url: doc.document_url, title: doc.document_name || 'Document' })}>
+                                <Button size="sm" variant="outline" className="flex-1" onClick={() => setViewerDoc({
+                                  url: doc.document_url || null,
+                                  title: doc.document_name || 'Document',
+                                  content: doc.letter_content || null,
+                                  isHtml: !!(doc.letter_content && doc.letter_content.trim().startsWith('<')),
+                                })}>
                                   <Eye className="w-3 h-3 mr-1" /> View
                                 </Button>
                                 {doc.document_url && (
@@ -376,6 +381,8 @@ export default function EmployeeDocuments() {
         open={!!viewerDoc}
         url={viewerDoc?.url}
         title={viewerDoc?.title}
+        content={viewerDoc?.content}
+        isHtml={viewerDoc?.isHtml}
         onClose={() => setViewerDoc(null)}
       />
 

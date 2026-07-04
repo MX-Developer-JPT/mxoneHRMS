@@ -166,6 +166,7 @@ export default function LeaveManagement() {
             current_approval_level: 2,
             approval_history: [...history, newHistoryEntry]
           });
+          base44.functions.invoke('notifyLeaveStatusChange', { leave_id: leave.id, action: 'level1_approved', note: comment }).catch(() => {});
           toast.success('Level 1 approved. Sent to HR/HOD for final approval.');
         } else {
           // Final approval
@@ -215,6 +216,7 @@ export default function LeaveManagement() {
               });
             }
           }
+          base44.functions.invoke('notifyLeaveStatusChange', { leave_id: leave.id, action: 'approved', note: comment }).catch(() => {});
           toast.success('Leave fully approved. Days marked as present with leave.');
         }
       } else {
@@ -239,6 +241,7 @@ export default function LeaveManagement() {
             available: (lb.available || 0) + leave.total_days
           });
         }
+        base44.functions.invoke('notifyLeaveStatusChange', { leave_id: leave.id, action: 'rejected', note: comment }).catch(() => {});
         toast.success('Leave rejected and balance restored.');
       }
 

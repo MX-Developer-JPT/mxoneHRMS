@@ -1120,6 +1120,64 @@ export default function AssetTracking() {
             )}
           </CardContent>
         </Card>
+
+        {/* Maintenance Log Section */}
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Wrench className="w-5 h-5 text-primary" /> Maintenance History
+              </CardTitle>
+              <Select value="_none" onValueChange={(v) => { if (v !== '_none') { const a = assets.find(x => x.id === v); if (a) openMaintenanceDialog(a); } }}>
+                <SelectTrigger className="w-48 h-8 text-xs"><SelectValue placeholder="+ Log for asset..." /></SelectTrigger>
+                <SelectContent>
+                  {assets.map(a => <SelectItem key={a.id} value={a.id}>{a.asset_id} — {a.asset_name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {maintenanceLogs.length === 0 ? (
+              <p className="text-center text-muted-foreground py-6 text-sm">No maintenance records yet. Select an asset above to log service history.</p>
+            ) : (
+              <div className="space-y-2">
+                {maintenanceLogs.slice(0, 50).map(log => {
+                  const asset = assets.find(a => a.id === log.asset_id);
+                  return (
+                    <div key={log.id} className="flex flex-wrap items-center justify-between border rounded-lg p-3 hover:bg-muted/30 gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-orange-100 dark:bg-orange-900/20 rounded-lg"><Wrench className="w-4 h-4 text-orange-600" /></div>
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-semibold text-sm">{asset?.asset_name || 'Unknown'} <span className="font-mono text-xs text-muted-foreground">({asset?.asset_id})</span></p>
+                            <Badge className={maintenanceTypeColors[log.maintenance_type]}>{log.maintenance_type}</Badge>
+                            <Badge className={maintenanceStatusColors[log.status]}>{log.status.replace('_', ' ')}</Badge>
+                            {log.warranty_covered && <Badge className="bg-teal-100 text-teal-800 text-[10px]">Warranty</Badge>}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {log.service_date && <span>{format(parseISO(log.service_date), 'dd MMM yyyy')}</span>}
+                            {log.completion_date && <span> → {format(parseISO(log.completion_date), 'dd MMM yyyy')}</span>}
+                            {log.vendor_name && <span> · {log.vendor_name}</span>}
+                            {log.cost > 0 && <span className="font-semibold text-foreground"> · ₹{log.cost.toLocaleString('en-IN')}</span>}
+                          </p>
+                          {log.description && <p className="text-xs text-muted-foreground mt-0.5 italic">"{log.description}"</p>}
+                        </div>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button size="xs" variant="ghost" className="h-7 w-7 p-0" onClick={() => openEditMaintenance(log)}><Edit2 className="w-3 h-3" /></Button>
+                        <Button size="xs" variant="ghost" className="h-7 w-7 p-0 text-red-500" onClick={() => handleDeleteMaintenance(log.id)}><Trash2 className="w-3 h-3" /></Button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {maintenanceLogs.length > 50 && <p className="text-xs text-muted-foreground text-center py-2">Showing 50 of {maintenanceLogs.length} records</p>}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Activity Log Section */}
+        <AssetActivityLog logs={activityLogs} />
       </div>
 
       {/* Asset Dialog */}
@@ -1217,64 +1275,6 @@ export default function AssetTracking() {
           </div>
         </DialogContent>
       </Dialog>
-
-      {/* Maintenance Log Section */}
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Wrench className="w-5 h-5 text-primary" /> Maintenance History
-            </CardTitle>
-            <Select value="_none" onValueChange={(v) => { if (v !== '_none') { const a = assets.find(x => x.id === v); if (a) openMaintenanceDialog(a); } }}>
-              <SelectTrigger className="w-48 h-8 text-xs"><SelectValue placeholder="+ Log for asset..." /></SelectTrigger>
-              <SelectContent>
-                {assets.map(a => <SelectItem key={a.id} value={a.id}>{a.asset_id} — {a.asset_name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {maintenanceLogs.length === 0 ? (
-            <p className="text-center text-muted-foreground py-6 text-sm">No maintenance records yet. Select an asset above to log service history.</p>
-          ) : (
-            <div className="space-y-2">
-              {maintenanceLogs.slice(0, 50).map(log => {
-                const asset = assets.find(a => a.id === log.asset_id);
-                return (
-                  <div key={log.id} className="flex flex-wrap items-center justify-between border rounded-lg p-3 hover:bg-muted/30 gap-2">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-orange-100 dark:bg-orange-900/20 rounded-lg"><Wrench className="w-4 h-4 text-orange-600" /></div>
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="font-semibold text-sm">{asset?.asset_name || 'Unknown'} <span className="font-mono text-xs text-muted-foreground">({asset?.asset_id})</span></p>
-                          <Badge className={maintenanceTypeColors[log.maintenance_type]}>{log.maintenance_type}</Badge>
-                          <Badge className={maintenanceStatusColors[log.status]}>{log.status.replace('_', ' ')}</Badge>
-                          {log.warranty_covered && <Badge className="bg-teal-100 text-teal-800 text-[10px]">Warranty</Badge>}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {log.service_date && <span>{format(parseISO(log.service_date), 'dd MMM yyyy')}</span>}
-                          {log.completion_date && <span> → {format(parseISO(log.completion_date), 'dd MMM yyyy')}</span>}
-                          {log.vendor_name && <span> · {log.vendor_name}</span>}
-                          {log.cost > 0 && <span className="font-semibold text-foreground"> · ₹{log.cost.toLocaleString('en-IN')}</span>}
-                        </p>
-                        {log.description && <p className="text-xs text-muted-foreground mt-0.5 italic">"{log.description}"</p>}
-                      </div>
-                    </div>
-                    <div className="flex gap-1">
-                      <Button size="xs" variant="ghost" className="h-7 w-7 p-0" onClick={() => openEditMaintenance(log)}><Edit2 className="w-3 h-3" /></Button>
-                      <Button size="xs" variant="ghost" className="h-7 w-7 p-0 text-red-500" onClick={() => handleDeleteMaintenance(log.id)}><Trash2 className="w-3 h-3" /></Button>
-                    </div>
-                  </div>
-                );
-              })}
-              {maintenanceLogs.length > 50 && <p className="text-xs text-muted-foreground text-center py-2">Showing 50 of {maintenanceLogs.length} records</p>}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Activity Log Section */}
-      <AssetActivityLog logs={activityLogs} />
 
       {/* Return Dialog */}
       <Dialog open={showReturnDialog} onOpenChange={setShowReturnDialog}>

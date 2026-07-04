@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, Save, CheckCircle2, Send, Users
+  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, Save, CheckCircle2, Send, Users, ChevronDown, ChevronUp
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
@@ -147,6 +147,61 @@ function initials(name) {
   return (name || '?').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
 }
 
+const CTC_FIELDS = [
+  { k: 'basic', label: 'Basic Pay' },
+  { k: 'hra', label: 'HRA' },
+  { k: 'conveyance', label: 'Conveyance Allowance' },
+  { k: 'special_allowance', label: 'Special Allowance' },
+  { k: 'other_allowance', label: 'Other Allowance' },
+];
+
+function CTCBreakdownPanel({ value, onChange, employee }) {
+  const [open, setOpen] = useState(false);
+
+  const fmt = n => n ? '₹' + Number(n).toLocaleString('en-IN') : '';
+  const computedGross = CTC_FIELDS.reduce((s, f) => s + (Number(value[f.k]) || 0), 0);
+  const pf = value.basic ? Math.round(Number(value.basic) * 0.12) : 0;
+  const net = computedGross ? computedGross - pf : 0;
+
+  return (
+    <div className="border rounded-lg overflow-hidden">
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-3 py-2 bg-amber-50 hover:bg-amber-100 text-sm font-medium text-amber-800">
+        <span>CTC Breakdown (Optional Override)</span>
+        {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+      </button>
+      {open && (
+        <div className="p-3 space-y-2 bg-white">
+          <p className="text-xs text-gray-500">Leave blank to use salary structure on file. Fill to override for this letter.</p>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="col-span-2">
+              <Label className="text-xs">Annual CTC (₹)</Label>
+              <Input type="number" className="mt-1 h-8 text-sm" placeholder="e.g. 600000"
+                value={value.annual_ctc || ''} onChange={e => onChange({ ...value, annual_ctc: e.target.value })} />
+            </div>
+            {CTC_FIELDS.map(f => (
+              <div key={f.k}>
+                <Label className="text-xs">{f.label} / month</Label>
+                <Input type="number" className="mt-1 h-8 text-sm" placeholder="monthly"
+                  value={value[f.k] || ''} onChange={e => onChange({ ...value, [f.k]: e.target.value })} />
+              </div>
+            ))}
+          </div>
+          {computedGross > 0 && (
+            <div className="mt-2 p-2 bg-gray-50 rounded text-xs text-gray-600 space-y-0.5">
+              <div className="flex justify-between"><span>Gross Monthly</span><span className="font-medium">{fmt(computedGross)}</span></div>
+              <div className="flex justify-between"><span>Less: PF (12%)</span><span>{fmt(pf)}</span></div>
+              <div className="flex justify-between font-semibold border-t pt-0.5 mt-0.5"><span>Net Take-Home</span><span>{fmt(net)}</span></div>
+            </div>
+          )}
+          <Button type="button" size="sm" variant="ghost" className="text-xs text-red-500 h-7"
+            onClick={() => onChange({})}>Clear overrides</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function LetterGenerator() {
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -157,6 +212,7 @@ export default function LetterGenerator() {
   const [signatory, setSignatory] = useState('');
   const [customSignatoryName, setCustomSignatoryName] = useState('');
   const [cc, setCc] = useState('');
+  const [ctcOverride, setCtcOverride] = useState({});
   const [generating, setGenerating] = useState(false);
   const [letter, setLetter] = useState('');
   const [isHtml, setIsHtml] = useState(false);
@@ -217,7 +273,12 @@ export default function LetterGenerator() {
     setLetter('');
     try {
       const res = await base44.functions.invoke('generateEmployeeLetter', {
-        user_id: selectedEmp.user_id, letter_type: letterType, extra: { ...extra, signatory: signatory === '__custom' ? customSignatoryName : signatory },
+        user_id: selectedEmp.user_id, letter_type: letterType,
+        extra: {
+          ...extra,
+          signatory: signatory === '__custom' ? customSignatoryName : signatory,
+          ...(Object.keys(ctcOverride).some(k => ctcOverride[k]) ? { ctc_override: ctcOverride } : {}),
+        },
       });
       const d = res.data || res;
       if (d.success) {
@@ -349,7 +410,7 @@ export default function LetterGenerator() {
                 <Label>Letter Type</Label>
                 <div className="mt-1.5 grid grid-cols-2 gap-2">
                   {LETTER_TYPES.map(t => (
-                    <button key={t.key} onClick={() => { setLetterType(t.key); setExtra({}); }}
+                    <button key={t.key} onClick={() => { setLetterType(t.key); setExtra({}); setCtcOverride({}); }}
                       className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs text-left transition-all ${letterType === t.key ? 'bg-indigo-600 text-white border-transparent shadow' : 'bg-white text-gray-700 hover:bg-gray-50'}`}>
                       <FileText className="w-3.5 h-3.5 flex-shrink-0" /> {t.label}
                     </button>
@@ -399,6 +460,11 @@ export default function LetterGenerator() {
                   />
                 )}
               </div>
+
+              {/* CTC Breakdown for relevant letter types */}
+              {['appointment', 'promotion', 'salary_revision'].includes(letterType) && (
+                <CTCBreakdownPanel value={ctcOverride} onChange={setCtcOverride} employee={selectedEmp} />
+              )}
 
               {/* CC recipients */}
               <div>
