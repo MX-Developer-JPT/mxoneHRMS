@@ -147,6 +147,12 @@ export default function ExitManagement() {
         hr_actioned_at: new Date().toISOString(),
         audit_log: [{ actor_id: currentUser.id, actor_name: currentUser.full_name, action: 'HR Initiated Exit', comment: initForm.notes || '', timestamp: new Date().toISOString() }],
       });
+      base44.functions.invoke('notifyExitStatusChange', {
+        action: 'hr_initiated',
+        employee_id: selectedEmp.user_id,
+        employee_name: selectedEmp.display_name || '',
+        actor_name: currentUser?.full_name || 'HR',
+      }).catch(() => {});
       toast.success('Exit initiated successfully');
       setShowInitiate(false);
       setInitForm({ employee_id: '', reason_category: '', resignation_date: format(new Date(), 'yyyy-MM-dd'), last_working_date: '', notes: '' });

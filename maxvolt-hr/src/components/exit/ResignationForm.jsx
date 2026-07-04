@@ -76,6 +76,16 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
       }
     });
 
+    // Notify manager and HR about resignation
+    try {
+      await base44.functions.invoke('notifyExitStatusChange', {
+        action: 'submitted',
+        employee_id: user.id,
+        employee_name: user.full_name,
+        manager_id: employee?.reporting_manager_id || null,
+      });
+    } catch (_) {}
+
     // Send email notification
     try {
       await base44.integrations.Core.SendEmail({

@@ -67,11 +67,12 @@ function calcSalary(annualCTC, medicalContrib = 0) {
 }
 
 const STATUS_CONFIG = {
-  offered:       { label: 'Sent',         color: 'bg-teal-100 text-teal-800',     icon: Send },
-  offer_accepted:{ label: 'Accepted',     color: 'bg-emerald-100 text-emerald-800', icon: CheckCircle2 },
-  joined:        { label: 'Joined',       color: 'bg-green-200 text-green-900',    icon: Users },
-  selected:      { label: 'Selected',     color: 'bg-blue-100 text-blue-800',      icon: FileCheck },
-  interview_done:{ label: 'Interviewed',  color: 'bg-purple-100 text-purple-800',  icon: Clock },
+  offered:        { label: 'Sent',         color: 'bg-teal-100 text-teal-800',      icon: Send },
+  offer_accepted: { label: 'Accepted',     color: 'bg-emerald-100 text-emerald-800', icon: CheckCircle2 },
+  offer_declined: { label: 'Declined',     color: 'bg-red-100 text-red-800',        icon: XCircle },
+  joined:         { label: 'Joined',       color: 'bg-green-200 text-green-900',    icon: Users },
+  selected:       { label: 'Selected',     color: 'bg-blue-100 text-blue-800',      icon: FileCheck },
+  interview_done: { label: 'Interviewed',  color: 'bg-purple-100 text-purple-800',  icon: Clock },
 };
 
 function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) {
@@ -429,12 +430,24 @@ export default function OfferLetters() {
         base44.entities.Department.list('name', 200).catch(() => []),
       ]);
       const relevant = all.filter(c =>
-        ['selected', 'interview_done', 'offered', 'offer_accepted', 'joined'].includes(c.status)
+        ['selected', 'interview_done', 'offered', 'offer_accepted', 'offer_declined', 'joined'].includes(c.status)
       );
       setCandidates(relevant);
       setDepartments(depts.map(d => d.name).filter(Boolean).sort());
     } catch (e) { toast.error('Failed to load data'); }
     setLoading(false);
+  };
+
+  const handleMarkDeclined = async (c) => {
+    if (!confirm(`Mark offer for ${c.full_name} as declined by candidate?`)) return;
+    try {
+      await base44.entities.Candidate.update(c.id, {
+        status: 'offer_declined',
+        offer_declined_at: new Date().toISOString(),
+      });
+      toast.success('Offer marked as declined');
+      loadData();
+    } catch (e) { toast.error(e.message); }
   };
 
   const handleInvite = async (c) => {
@@ -468,6 +481,7 @@ export default function OfferLetters() {
     total: candidates.length,
     sent: candidates.filter(c => c.status === 'offered').length,
     accepted: candidates.filter(c => c.status === 'offer_accepted').length,
+    declined: candidates.filter(c => c.status === 'offer_declined').length,
     joined: candidates.filter(c => c.status === 'joined').length,
     joiningToday: candidates.filter(c => c.joining_date === TODAY && c.status === 'offer_accepted').length,
   };
@@ -496,8 +510,8 @@ export default function OfferLetters() {
             { label: 'Total',          value: stats.total,        color: 'text-gray-700',    bg: 'bg-gray-100',    filter: 'all' },
             { label: 'Offer Sent',     value: stats.sent,         color: 'text-teal-700',    bg: 'bg-teal-100',    filter: 'offered' },
             { label: 'Accepted',       value: stats.accepted,     color: 'text-emerald-700', bg: 'bg-emerald-100', filter: 'offer_accepted' },
+            { label: 'Declined',       value: stats.declined,     color: 'text-red-700',     bg: 'bg-red-100',     filter: 'offer_declined' },
             { label: 'Joined',         value: stats.joined,       color: 'text-green-700',   bg: 'bg-green-100',   filter: 'joined' },
-            { label: 'Joining Today',  value: stats.joiningToday, color: 'text-purple-700',  bg: 'bg-purple-100',  filter: 'offer_accepted' },
           ].map(s => (
             <Card key={s.label} className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setStatusFilter(s.filter)}>
               <CardContent className="p-4 text-center">
@@ -529,6 +543,7 @@ export default function OfferLetters() {
                     <SelectItem value="interview_done">Interviewed</SelectItem>
                     <SelectItem value="offered">Offer Sent</SelectItem>
                     <SelectItem value="offer_accepted">Accepted</SelectItem>
+                    <SelectItem value="offer_declined">Declined</SelectItem>
                     <SelectItem value="joined">Joined</SelectItem>
                   </SelectContent>
                 </Select>
@@ -642,6 +657,14 @@ export default function OfferLetters() {
                           {c.status === 'offered' && c.offer_accept_token && (
                             <Button size="sm" variant="outline" onClick={() => copyAcceptLink(c)} className="text-xs">
                               <Copy className="w-3 h-3 mr-1" /> Copy Link
+                            </Button>
+                          )}
+
+                          {/* Mark offer as declined by candidate */}
+                          {c.status === 'offered' && (
+                            <Button size="sm" variant="outline" onClick={() => handleMarkDeclined(c)}
+                              className="text-xs border-red-200 text-red-600 hover:bg-red-50">
+                              <XCircle className="w-3 h-3 mr-1" /> Mark Declined
                             </Button>
                           )}
 

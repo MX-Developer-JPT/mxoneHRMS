@@ -139,7 +139,6 @@ const hrMenuGroups = [
   { label: 'Employees', items: [
     { name: 'Employees',               icon: Users,           page: 'Employees' },
     { name: 'Onboarding Approval',     icon: UserPlus,        page: 'OnboardingApproval' },
-    { name: 'Import Employees',        icon: UserPlus,        page: 'ImportEmployees' },
     { name: 'Employee Documents',      icon: FolderOpen,      page: 'EmployeeDocuments' },
     { name: 'Letter Generator (AI)',   icon: FileSignature,   page: 'LetterGenerator' },
   ]},
@@ -400,6 +399,7 @@ export default function Layout({ children, currentPageName }) {
     menuGroups = [...menuGroups, { label: 'Administration', items: [
       { name: 'User Roles',        icon: UserCog,           page: 'UserRoleManagement' },
       { name: 'Admin Panel',       icon: Shield,            page: 'AdminPanel' },
+      { name: 'Import Employees',  icon: UserPlus,          page: 'ImportEmployees' },
       { name: 'Company Policies',  icon: BookOpen,          page: 'CompanyPolicies' },
       { name: 'Business Cards',    icon: QrCode,            page: 'BusinessCardAdmin' },
     ]}];

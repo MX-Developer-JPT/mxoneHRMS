@@ -6286,6 +6286,37 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true });
     }
 
+    case 'notifyExitStatusChange': {
+      const { action: nesAction, employee_id: nesEmpId, employee_name: nesEmpName, actor_name: nesActor, manager_id: nesMgrId } = p;
+      try {
+        const empName = nesEmpName || 'An employee';
+        const hrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+        if (nesAction === 'submitted') {
+          if (nesMgrId) await notify(nesMgrId, { title: 'Resignation Submitted', message: `${empName} has submitted a resignation and requires your approval.`, type: 'warning', link: '/exit-management' });
+          for (const hr of hrRows) await notify(hr.id, { title: 'New Resignation', message: `${empName} has submitted a resignation request.`, type: 'info', link: '/exit-management' });
+        } else if (nesAction === 'hr_initiated') {
+          await notify(nesEmpId, { title: 'Exit Process Initiated', message: `HR has initiated an exit process for your account. Please log in to review the details and complete required steps.`, type: 'warning', link: '/my-exit' });
+        } else if (nesAction === 'manager_approved') {
+          await notify(nesEmpId, { title: 'Resignation Approved by Manager', message: `Your resignation has been approved by your manager and forwarded to HR.`, type: 'info', link: '/my-exit' });
+          for (const hr of hrRows) await notify(hr.id, { title: 'Resignation Awaiting HR Approval', message: `${empName}'s resignation has been approved by manager and requires HR review.`, type: 'info', link: '/exit-management' });
+        } else if (nesAction === 'manager_rejected') {
+          await notify(nesEmpId, { title: 'Resignation Rejected', message: `Your resignation has been rejected by your manager. Please contact HR for assistance.`, type: 'error', link: '/my-exit' });
+        } else if (nesAction === 'hr_approved') {
+          await notify(nesEmpId, { title: 'Resignation Accepted — Notice Period Started', message: `Your resignation has been accepted by HR. Your notice period is now in progress.`, type: 'success', link: '/my-exit' });
+        } else if (nesAction === 'hr_rejected') {
+          await notify(nesEmpId, { title: 'Resignation Rejected by HR', message: `Your resignation has been rejected by HR. Please contact HR for further details.`, type: 'error', link: '/my-exit' });
+        } else if (nesAction === 'clearance_started') {
+          await notify(nesEmpId, { title: 'Clearance Process Started', message: `Your exit clearance has been initiated. Please complete all department clearances before your last working day.`, type: 'info', link: '/my-exit' });
+        } else if (nesAction === 'fnf_pending') {
+          await notify(nesEmpId, { title: 'F&F Settlement Initiated', message: `Your Full & Final settlement process has been initiated by HR.`, type: 'info', link: '/my-exit' });
+          for (const hr of hrRows) await notify(hr.id, { title: 'F&F Settlement Required', message: `${empName}'s clearance is complete. F&F settlement needs to be processed.`, type: 'info', link: '/exit-management' });
+        } else if (nesAction === 'completed') {
+          await notify(nesEmpId, { title: 'Exit Process Completed', message: `Your exit process has been completed. Your relieving and experience letters will be shared shortly.`, type: 'success', link: '/my-exit' });
+        }
+      } catch {}
+      return res.json({ success: true });
+    }
+
     case 'processLeaveAction': {
       const { leave_id: plaLeaveId, action: plaAction, note: plaNote, level: plaLevel } = p;
       if (!plaLeaveId || !plaAction) return res.status(400).json({ error: 'leave_id and action required' });

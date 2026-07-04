@@ -6,8 +6,9 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from 'sonner';
-import { CheckCircle2, XCircle, AlertCircle, ClipboardList, DollarSign, FileText, User, Calendar, Clock, CalendarClock, CalendarX } from 'lucide-react';
+import { CheckCircle2, XCircle, AlertCircle, ClipboardList, DollarSign, FileText, User, Calendar, Clock, CalendarClock, CalendarX, Star, Save } from 'lucide-react';
 import ClearanceStatus from './ClearanceStatus';
 import FnFSummary from './FnFSummary';
 import { format } from 'date-fns';
@@ -30,11 +31,23 @@ const STATUS_CONFIG = {
 const CLEARANCE_DEPTS = ['hr', 'it', 'admin', 'finance', 'reporting_manager'];
 const DEPT_LABELS = { hr: 'HR', it: 'IT', admin: 'Admin', finance: 'Finance', reporting_manager: 'Reporting Mgr' };
 
+const BLANK_HR_INTERVIEW = {
+  work_experience_rating: '', management_rating: '', culture_rating: '',
+  compensation_rating: '', work_life_balance_rating: '',
+  primary_reason: '', things_liked: '', things_disliked: '',
+  suggestions: '', would_recommend_company: '', would_rejoin: '',
+  hr_notes: '', interviewed_by: '',
+};
+
 export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRefresh }) {
   const [activeTab, setActiveTab] = useState('overview');
   const [comment, setComment] = useState('');
   const [lwdEdit, setLwdEdit] = useState(exitRecord.last_working_date);
   const [saving, setSaving] = useState(false);
+  const [hrInterview, setHrInterview] = useState(
+    exitRecord.hr_exit_interview || BLANK_HR_INTERVIEW
+  );
+  const [savingInterview, setSavingInterview] = useState(false);
   const role = currentUser?.custom_role || currentUser?.role;
   const isHR = role === 'hr' || role === 'admin';
   const isManager = currentUser?.id === exitRecord.manager_id || role === 'management';
@@ -43,6 +56,16 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
     ...(existing || []),
     { actor_id: currentUser.id, actor_name: currentUser.full_name, action, comment: comment || '', timestamp: new Date().toISOString() }
   ]);
+
+  const notifyExit = (action) => {
+    base44.functions.invoke('notifyExitStatusChange', {
+      exit_id: exitRecord.id,
+      action,
+      employee_id: exitRecord.user_id,
+      employee_name: exitRecord.user?.full_name || '',
+      actor_name: currentUser?.full_name || 'HR',
+    }).catch(() => {});
+  };
 
   const handleManagerAction = async (action) => {
     setSaving(true);
@@ -54,6 +77,7 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
       manager_actioned_at: new Date().toISOString(),
       audit_log: addAuditLog(exitRecord.audit_log, `Manager ${action}`, comment)
     });
+    notifyExit(action === 'approved' ? 'manager_approved' : 'manager_rejected');
     toast.success(`Resignation ${action}`);
     setSaving(false);
     onRefresh();
@@ -61,8 +85,7 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
 
   const handleHRAction = async (action) => {
     setSaving(true);
-    let newStatus = action === 'approved' ? 'hr_approved' : 'hr_rejected';
-    if (action === 'approved') newStatus = 'in_notice';
+    let newStatus = action === 'approved' ? 'in_notice' : 'hr_rejected';
     await base44.entities.Exit.update(exitRecord.id, {
       status: newStatus,
       hr_action: action,
@@ -72,6 +95,7 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
       last_working_date: lwdEdit,
       audit_log: addAuditLog(exitRecord.audit_log, `HR ${action}`, comment)
     });
+    notifyExit(action === 'approved' ? 'hr_approved' : 'hr_rejected');
     toast.success(`Resignation ${action} by HR`);
     setSaving(false);
     onRefresh();
@@ -83,6 +107,7 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
       status: 'clearance_pending',
       audit_log: addAuditLog(exitRecord.audit_log, 'Clearance process initiated', '')
     });
+    notifyExit('clearance_started');
     setSaving(false);
     onRefresh();
   };
@@ -122,6 +147,7 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
       status: 'fnf_pending',
       audit_log: addAuditLog(exitRecord.audit_log, 'F&F settlement initiated', '')
     });
+    notifyExit('fnf_pending');
     setSaving(false);
     onRefresh();
   };
@@ -135,14 +161,32 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
       experience_letter_generated: true,
       audit_log: addAuditLog(exitRecord.audit_log, 'Exit completed. Access deactivated.', '')
     });
-    // Mark employee as resigned
     const emps = await base44.entities.Employee.filter({ user_id: exitRecord.user_id });
     if (emps.length > 0) {
       await base44.entities.Employee.update(emps[0].id, { status: 'resigned', exit_date: exitRecord.last_working_date });
     }
+    notifyExit('completed');
     toast.success('Exit process completed');
     setSaving(false);
     onRefresh();
+  };
+
+  const handleSaveHRInterview = async () => {
+    setSavingInterview(true);
+    try {
+      await base44.entities.Exit.update(exitRecord.id, {
+        hr_exit_interview: {
+          ...hrInterview,
+          interviewed_by: currentUser.full_name,
+          completed_at: new Date().toISOString(),
+        },
+        hr_interview_completed: true,
+        audit_log: addAuditLog(exitRecord.audit_log, 'HR exit interview recorded', ''),
+      });
+      toast.success('Exit interview saved');
+      onRefresh();
+    } catch { toast.error('Failed to save interview'); }
+    setSavingInterview(false);
   };
 
   const tabs = [
@@ -293,43 +337,47 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
           )}
 
           {activeTab === 'interview' && (
-            <div className="space-y-4">
-              {/* Manager / HR controls for exit interview */}
-              {(isManager || isHR) && ['in_notice', 'clearance_pending', 'clearance_done', 'fnf_pending'].includes(exitRecord.status) && !exitRecord.exit_interview_completed && (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3">
-                  <p className="font-semibold text-amber-800 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Exit Interview Management</p>
-                  <p className="text-sm text-amber-700">The employee has not yet completed the exit interview. You can schedule a reminder or skip it.</p>
-                  <div className="flex gap-3">
-                    <Button size="sm" className="bg-blue-600 hover:bg-blue-700 gap-2" disabled={saving} onClick={() => handleScheduleExitInterview(false)}>
-                      <CalendarClock className="w-3.5 h-3.5" /> Schedule / Remind Employee
-                    </Button>
-                    <Button size="sm" variant="outline" className="border-gray-300 gap-2" disabled={saving} onClick={() => handleScheduleExitInterview(true)}>
-                      <CalendarX className="w-3.5 h-3.5" /> Skip Interview
-                    </Button>
+            <div className="space-y-5">
+              {/* Employee self-interview section */}
+              <div>
+                <p className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+                  <User className="w-4 h-4 text-gray-400" /> Employee Self-Interview
+                </p>
+                {/* Manager / HR controls */}
+                {(isManager || isHR) && ['in_notice', 'clearance_pending', 'clearance_done', 'fnf_pending'].includes(exitRecord.status) && !exitRecord.exit_interview_completed && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3 mb-3">
+                    <p className="font-semibold text-amber-800 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Employee Interview Pending</p>
+                    <p className="text-sm text-amber-700">The employee has not yet completed the exit interview.</p>
+                    <div className="flex gap-3">
+                      <Button size="sm" className="bg-blue-600 hover:bg-blue-700 gap-2" disabled={saving} onClick={() => handleScheduleExitInterview(false)}>
+                        <CalendarClock className="w-3.5 h-3.5" /> Remind Employee
+                      </Button>
+                      <Button size="sm" variant="outline" className="border-gray-300 gap-2" disabled={saving} onClick={() => handleScheduleExitInterview(true)}>
+                        <CalendarX className="w-3.5 h-3.5" /> Skip
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {exitRecord.exit_interview_completed ? (
-                <div className="space-y-4">
-                  {exitRecord.exit_interview?.primary_reason === 'Skipped by manager' ? (
-                    <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
-                      <CalendarX className="w-10 h-10 mx-auto text-gray-400 mb-2" />
-                      <p className="font-medium">Exit interview was skipped by manager</p>
+                {exitRecord.exit_interview_completed ? (
+                  exitRecord.exit_interview?.primary_reason === 'Skipped by manager' ? (
+                    <div className="text-center py-6 text-gray-400 bg-gray-50 rounded-lg">
+                      <CalendarX className="w-8 h-8 mx-auto text-gray-400 mb-2" />
+                      <p className="text-sm">Employee interview was skipped</p>
                     </div>
                   ) : (
-                    <>
-                      <div className="grid md:grid-cols-5 gap-3">
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-5 gap-2">
                         {[
-                          ['Work Experience', exitRecord.exit_interview?.work_experience_rating],
+                          ['Work Exp', exitRecord.exit_interview?.work_experience_rating],
                           ['Management', exitRecord.exit_interview?.management_rating],
                           ['Culture', exitRecord.exit_interview?.culture_rating],
                           ['Compensation', exitRecord.exit_interview?.compensation_rating],
-                          ['Work-Life Balance', exitRecord.exit_interview?.work_life_balance_rating],
+                          ['Work-Life', exitRecord.exit_interview?.work_life_balance_rating],
                         ].map(([label, rating]) => (
-                          <div key={label} className="bg-gray-50 p-3 rounded-lg text-center">
+                          <div key={label} className="bg-gray-50 p-2 rounded-lg text-center">
                             <p className="text-xs text-gray-500">{label}</p>
-                            <p className={`text-2xl font-bold mt-1 ${rating >= 4 ? 'text-green-600' : rating >= 3 ? 'text-yellow-600' : 'text-red-600'}`}>{rating || '—'}</p>
+                            <p className={`text-xl font-bold mt-1 ${rating >= 4 ? 'text-green-600' : rating >= 3 ? 'text-yellow-600' : 'text-red-600'}`}>{rating || '—'}</p>
                             <p className="text-xs text-gray-400">/5</p>
                           </div>
                         ))}
@@ -339,7 +387,7 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
                         ['Liked Most', exitRecord.exit_interview?.things_liked],
                         ['Could Improve', exitRecord.exit_interview?.things_disliked],
                         ['Suggestions', exitRecord.exit_interview?.suggestions],
-                      ].map(([label, val]) => val && (
+                      ].filter(([, v]) => v).map(([label, val]) => (
                         <div key={label} className="bg-blue-50 p-3 rounded-lg">
                           <p className="text-xs font-semibold text-gray-600 mb-1">{label}</p>
                           <p className="text-sm text-gray-700">{val}</p>
@@ -349,13 +397,106 @@ export default function ExitDetailPanel({ exitRecord, currentUser, onClose, onRe
                         <span>Would Recommend: <strong>{exitRecord.exit_interview?.would_recommend_company === true ? 'Yes' : exitRecord.exit_interview?.would_recommend_company === false ? 'No' : '—'}</strong></span>
                         <span>Would Rejoin: <strong>{exitRecord.exit_interview?.would_rejoin === true ? 'Yes' : exitRecord.exit_interview?.would_rejoin === false ? 'No' : '—'}</strong></span>
                       </div>
-                    </>
-                  )}
-                </div>
-              ) : (
-                <div className="text-center py-12 text-gray-400">
-                  <FileText className="w-12 h-12 mx-auto mb-3" />
-                  <p>Exit interview not yet completed by the employee.</p>
+                    </div>
+                  )
+                ) : (
+                  <div className="text-center py-6 text-gray-400 bg-gray-50 rounded-lg">
+                    <FileText className="w-8 h-8 mx-auto mb-2" />
+                    <p className="text-sm">Employee interview not yet submitted</p>
+                  </div>
+                )}
+              </div>
+
+              {/* HR-conducted exit interview */}
+              {isHR && (
+                <div className="border-t pt-4">
+                  <p className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                    <Star className="w-4 h-4 text-amber-500" />
+                    HR Exit Interview
+                    {exitRecord.hr_interview_completed && (
+                      <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Saved</span>
+                    )}
+                  </p>
+                  <div className="space-y-3">
+                    {/* Rating row */}
+                    <div className="grid grid-cols-5 gap-2">
+                      {[
+                        ['Work Exp', 'work_experience_rating'],
+                        ['Management', 'management_rating'],
+                        ['Culture', 'culture_rating'],
+                        ['Compensation', 'compensation_rating'],
+                        ['Work-Life', 'work_life_balance_rating'],
+                      ].map(([label, key]) => (
+                        <div key={key}>
+                          <Label className="text-xs">{label} (1-5)</Label>
+                          <Input type="number" min="1" max="5"
+                            value={hrInterview[key]}
+                            onChange={e => setHrInterview(p => ({ ...p, [key]: e.target.value }))}
+                            className="text-center h-8 text-sm" placeholder="—" />
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid md:grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-xs">Primary Reason for Leaving</Label>
+                        <Input value={hrInterview.primary_reason}
+                          onChange={e => setHrInterview(p => ({ ...p, primary_reason: e.target.value }))} />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Interviewed By</Label>
+                        <Input value={hrInterview.interviewed_by || currentUser?.full_name || ''}
+                          onChange={e => setHrInterview(p => ({ ...p, interviewed_by: e.target.value }))} />
+                      </div>
+                    </div>
+
+                    <div>
+                      <Label className="text-xs">Things employee liked</Label>
+                      <Textarea rows={2} value={hrInterview.things_liked}
+                        onChange={e => setHrInterview(p => ({ ...p, things_liked: e.target.value }))} />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Areas for improvement (as per employee)</Label>
+                      <Textarea rows={2} value={hrInterview.things_disliked}
+                        onChange={e => setHrInterview(p => ({ ...p, things_disliked: e.target.value }))} />
+                    </div>
+                    <div>
+                      <Label className="text-xs">HR Notes & Observations</Label>
+                      <Textarea rows={2} value={hrInterview.hr_notes}
+                        onChange={e => setHrInterview(p => ({ ...p, hr_notes: e.target.value }))} />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-xs">Would Recommend Company?</Label>
+                        <Select value={hrInterview.would_recommend_company}
+                          onValueChange={v => setHrInterview(p => ({ ...p, would_recommend_company: v }))}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select..." /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="yes">Yes</SelectItem>
+                            <SelectItem value="no">No</SelectItem>
+                            <SelectItem value="maybe">Maybe</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-xs">Would Rejoin?</Label>
+                        <Select value={hrInterview.would_rejoin}
+                          onValueChange={v => setHrInterview(p => ({ ...p, would_rejoin: v }))}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select..." /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="yes">Yes</SelectItem>
+                            <SelectItem value="no">No</SelectItem>
+                            <SelectItem value="maybe">Maybe</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <Button className="w-full bg-amber-600 hover:bg-amber-700" disabled={savingInterview} onClick={handleSaveHRInterview}>
+                      {savingInterview ? <><span className="mr-2 animate-spin">⟳</span>Saving...</> : <><Save className="w-4 h-4 mr-2" />Save HR Interview</>}
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
