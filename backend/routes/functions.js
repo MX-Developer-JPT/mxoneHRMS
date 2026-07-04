@@ -6131,6 +6131,108 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true, employees: result });
     }
 
+    case 'submitProbationReview': {
+      const { employee_user_id: sprEmpUid, action: sprAction, extended_until: sprExtUntil, manager_scores: sprScores, manager_comments: sprMgrComments } = p;
+      const sprEmpRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [sprEmpUid]);
+      if (!sprEmpRow) return res.json({ success: false, error: 'Employee not found' });
+      const sprEmp = JSON.parse(sprEmpRow.data);
+      const sprEmpUser = await one("SELECT full_name FROM users WHERE id=$1", [sprEmpUid]);
+      const sprEmpName = sprEmpUser?.full_name || sprEmp.display_name || 'Employee';
+      const sprMgrId = cu?.id;
+      const sprMgrName = cu?.full_name || 'Manager';
+      const sprExisting = await one("SELECT id FROM entities WHERE type='ProbationReview' AND user_id=$1 AND (data::jsonb->>'status'='manager_submitted' OR data::jsonb->>'status'='hr_approved')", [sprEmpUid]);
+      if (sprExisting) return res.json({ success: false, error: 'Review already in progress' });
+      const sprId = uuidv4();
+      const sprData = {
+        id: sprId, user_id: sprEmpUid, employee_name: sprEmpName,
+        department: sprEmp.department || '',
+        manager_id: sprMgrId, manager_name: sprMgrName,
+        probation_end_date: sprEmp.probation_end_date || null,
+        action: sprAction, extended_until: sprExtUntil || null,
+        manager_scores: sprScores || {},
+        manager_comments: sprMgrComments || '',
+        status: 'manager_submitted',
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ProbationReview',$2,'manager_submitted',$3)", [sprId, sprEmpUid, JSON.stringify(sprData)]);
+      const sprHrRows = await all("SELECT id FROM users WHERE role IN ('admin','hr')");
+      for (const sprHr of sprHrRows) {
+        const sprNid = uuidv4();
+        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [sprNid, sprHr.id, 'Probation Review Submitted', `${sprEmpName}'s probation review submitted by ${sprMgrName}.`, 'probation', '/admin-panel']);
+      }
+      return res.json({ success: true, review_id: sprId });
+    }
+
+    case 'getProbationReviews': {
+      const { status: gprStatus, employee_user_id: gprEmpUid } = p;
+      let gprSql = "SELECT data FROM entities WHERE type='ProbationReview'";
+      const gprP = [];
+      if (gprStatus) { gprSql += ` AND data::jsonb->>'status'=$${gprP.push(gprStatus)}`; }
+      if (gprEmpUid) { gprSql += ` AND user_id=$${gprP.push(gprEmpUid)}`; }
+      gprSql += " ORDER BY created_at DESC";
+      const gprUserMap = {};
+      (await all("SELECT id,full_name FROM users")).forEach(u => { gprUserMap[u.id] = u.full_name; });
+      const gprReviews = (await all(gprSql, gprP)).map(r => {
+        const d = JSON.parse(r.data);
+        return { ...d, employee_full_name: gprUserMap[d.user_id] || d.employee_name };
+      });
+      return res.json({ success: true, reviews: gprReviews });
+    }
+
+    case 'processProbationHRReview': {
+      const { review_id: phrRevId, hr_action: phrAction, hr_comments: phrComments } = p;
+      const phrRow = await one("SELECT id,data FROM entities WHERE type='ProbationReview' AND id=$1", [phrRevId]);
+      if (!phrRow) return res.json({ success: false, error: 'Review not found' });
+      const phrRev = JSON.parse(phrRow.data);
+      const phrHrId = cu?.id;
+      const phrHrName = cu?.full_name || 'HR';
+      if (phrAction === 'reject') {
+        const phrUpd = { ...phrRev, status: 'rejected', hr_comments: phrComments || '', hr_reviewed_by: phrHrId, hr_reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+        await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(phrUpd), phrRow.id]);
+        const phrNid = uuidv4();
+        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [phrNid, phrRev.user_id, 'Probation Review Rejected', 'Your probation review has been rejected by HR. Please contact your manager for details.', 'probation', '/profile']);
+      } else {
+        const phrUpd = { ...phrRev, status: 'hr_approved', hr_comments: phrComments || '', hr_reviewed_by: phrHrId, hr_reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+        await run("UPDATE entities SET data=$1,status='hr_approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(phrUpd), phrRow.id]);
+        const phrMgmtRows = await all("SELECT id FROM users WHERE custom_role='management' OR role='management'");
+        for (const phrMgmt of phrMgmtRows) {
+          const phrMNid = uuidv4();
+          await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [phrMNid, phrMgmt.id, 'Probation Review Awaiting Approval', `${phrRev.employee_name}'s probation review has been approved by HR and requires your final decision.`, 'probation', '/admin-panel']);
+        }
+      }
+      return res.json({ success: true });
+    }
+
+    case 'processProbationManagementApproval': {
+      const { review_id: pmaRevId, final_action: pmaFinalAction, management_comments: pmaMgmtComments, extended_until: pmaExtUntil } = p;
+      const pmaRow = await one("SELECT id,data FROM entities WHERE type='ProbationReview' AND id=$1", [pmaRevId]);
+      if (!pmaRow) return res.json({ success: false, error: 'Review not found' });
+      const pmaRev = JSON.parse(pmaRow.data);
+      const pmaMgmtId = cu?.id;
+      const pmaMgmtName = cu?.full_name || 'Management';
+      const pmaToday = new Date().toISOString().slice(0,10);
+      const pmaUpd = { ...pmaRev, final_action: pmaFinalAction, status: pmaFinalAction, management_comments: pmaMgmtComments || '', management_reviewed_by: pmaMgmtId, management_reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(pmaUpd), pmaFinalAction, pmaRow.id]);
+      const pmaEmpRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [pmaRev.user_id]);
+      if (pmaEmpRow) {
+        const pmaEmp = JSON.parse(pmaEmpRow.data);
+        const pmaEmpUpd = { ...pmaEmp };
+        if (pmaFinalAction === 'confirmed') { pmaEmpUpd.employee_status = 'active'; pmaEmpUpd.confirmation_date = pmaToday; }
+        else if (pmaFinalAction === 'extended') { pmaEmpUpd.employee_status = 'probation'; pmaEmpUpd.probation_end_date = pmaExtUntil || pmaRev.extended_until; }
+        else if (pmaFinalAction === 'rejected') { pmaEmpUpd.employee_status = 'terminated'; pmaEmpUpd.termination_date = pmaToday; pmaEmpUpd.termination_reason = 'Probation not confirmed'; }
+        await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(pmaEmpUpd), pmaEmpRow.id]);
+      }
+      const pmaEmpMsgs = { confirmed: 'Congratulations! Your probation period is complete and your employment has been confirmed.', extended: `Your probation period has been extended to ${pmaExtUntil || pmaRev.extended_until}.`, rejected: 'Your probation review has concluded. Please contact HR for further information.' };
+      const pmaNid1 = uuidv4();
+      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [pmaNid1, pmaRev.user_id, 'Probation Decision', pmaEmpMsgs[pmaFinalAction] || 'Your probation status has been updated.', 'probation', '/profile']);
+      if (pmaRev.manager_id) {
+        const pmaMgrMsgs = { confirmed: `${pmaRev.employee_name}'s probation has been confirmed by management.`, extended: `${pmaRev.employee_name}'s probation has been extended by management.`, rejected: `${pmaRev.employee_name}'s probation review has resulted in rejection by management.` };
+        const pmaNid2 = uuidv4();
+        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [pmaNid2, pmaRev.manager_id, 'Probation Review Result', pmaMgrMsgs[pmaFinalAction] || `${pmaRev.employee_name}'s probation status has been updated.`, 'probation', '/admin-panel']);
+      }
+      return res.json({ success: true, final_action: pmaFinalAction });
+    }
+
     case 'processProbationAction': {
       const { user_id: pbUid, action: pbAction, probation_end_date: pbEnd, note: pbNote } = p;
       const pbRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [pbUid]);
