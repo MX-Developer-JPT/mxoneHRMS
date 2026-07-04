@@ -28,18 +28,19 @@ export default function LeaveDashboard() {
       ]);
 
       const role = me?.custom_role || me?.role;
-      const isManagerRole = role === 'management' || role === 'manager';
+      const isManagerOnly = role === 'manager';
 
       let activeEmp = employees.filter(e => e.status === 'active');
       let scopedLeaves = leaves;
       let scopedBalances = leaveBalances;
 
-      if (isManagerRole && me?.id) {
+      if (isManagerOnly && me?.id) {
         const teamUserIds = new Set(activeEmp.filter(e => e.reporting_manager_id === me.id).map(e => e.user_id));
         activeEmp = activeEmp.filter(e => teamUserIds.has(e.user_id));
         scopedLeaves = leaves.filter(l => teamUserIds.has(l.user_id));
         scopedBalances = leaveBalances.filter(b => teamUserIds.has(b.user_id));
       }
+      // hr, admin, management see all employees — no filtering
 
       const deptMap = {};
 
