@@ -6266,6 +6266,122 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true, review_id: hicId });
     }
 
+    case 'sendConfirmationLetter': {
+      const { review_id: sclRevId } = p;
+      if (!sclRevId) return res.json({ success: false, error: 'review_id required' });
+
+      const sclRevRow = await one("SELECT id,data FROM entities WHERE type='ProbationReview' AND id=$1", [sclRevId]);
+      if (!sclRevRow) return res.json({ success: false, error: 'Review not found' });
+      const sclRev = JSON.parse(sclRevRow.data);
+      if (!['confirmed','extended'].includes(sclRev.status)) return res.json({ success: false, error: 'Letter can only be sent for confirmed or extended reviews' });
+
+      const sclEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [sclRev.user_id]);
+      const sclEmp = sclEmpRow ? JSON.parse(sclEmpRow.data) : {};
+      const sclUser = await one("SELECT email, full_name FROM users WHERE id=$1", [sclRev.user_id]);
+      if (!sclUser?.email) return res.json({ success: false, error: 'Employee has no email address on record' });
+
+      const ordinalDate = (d) => {
+        if (!d) return '';
+        const date = new Date(d + 'T00:00:00');
+        const day = date.getDate();
+        const suffix = day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th';
+        const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        return `${day}${suffix} ${months[date.getMonth()]} ${date.getFullYear()}`;
+      };
+
+      const todayStr = new Date().toISOString().slice(0,10);
+      const empName = sclUser.full_name || sclRev.employee_name || 'Employee';
+      const gender = (sclEmp.gender || '').toLowerCase();
+      const prefix = gender === 'female' ? 'Ms.' : 'Mr.';
+      const designation = sclEmp.designation || sclRev.department || 'Employee';
+      const todayFmt = ordinalDate(todayStr);
+
+      let label, htmlContent;
+
+      if (sclRev.status === 'confirmed') {
+        const effectiveDate = sclEmp.confirmation_date || todayStr;
+        const effectiveFmt = ordinalDate(effectiveDate);
+        label = 'Confirmation Letter';
+        htmlContent = `
+<p style="font-weight:bold;text-align:center;">Letter of Confirmation</p>
+<p style="text-align:right;">${todayFmt}</p>
+<p>Dear ${prefix} ${empName},</p>
+<p><strong>Congratulation!!</strong></p>
+<p><strong>Subject: Service Confirmation Letter to the Designation of "${designation}"</strong></p>
+<p>Following completion of your six months' probation period at Maxvolt Energy Industries Limited. We have reviewed your performance and found the same to be satisfactory.</p>
+<p>In view of the above, we are pleased to inform you that you have been confirmed to the position of "<strong>${designation}</strong>" at Maxvolt Energy Industries Limited with effect from <strong>${effectiveFmt}</strong>.</p>
+<p>Your salary will be reviewed every 12 months from the date of joining or as decided by company and increases will be based upon satisfactory performance in the position.</p>
+<p>All other terms and conditions of your appointment will remain the same except the following.</p>
+<p><strong>Notice Period</strong> – Either party may at any time terminate the employment, without cause by giving in writing to the other party a notice period of 30 Days. You may alternatively, exercise the option of buying out your notice period per the terms and conditions of this employment letter. The payment of salary during such notice period would be on the basis of cost to Our Company.</p>
+<p><strong>Leave Credit</strong> – As a gesture of appreciation for your hard work and dedication, we are pleased to inform you that you are now eligible to earn and take advantage of annual leave benefits. Starting <strong>${effectiveFmt}</strong>, you will be entitled to accrue and utilize earned leave days as per our company's leave policy. We believe that providing earned leave is a valuable component of our commitment to the well-being and work-life balance of our employees. We encourage you to plan and utilize your earned leave in a manner that supports your personal and professional needs.</p>
+<p><strong>Salary Settlement (Full & Final)</strong> – The full and final settlement of the employee's salary account is done after 45 days of the employee's last working day of services. The company will provide full and final settlement only in the condition that the employee has served Maxvolt Energy Industries Ltd. with the notice period mentioned in appointment letter and worked fruitfully during the notice been served and has facilitated in the smooth transition. Employee's last salary and other benefits will be provided once the employee has been issued clearance letter from HR, IT, Accounts & Administration department.</p>
+<p>Please signify your acceptance to terms and conditions, mentioned above & in company's policy handbook, by signing this letter and returning it to me at an earliest convenient time.</p>
+<p>In case you have any queries, do not hesitate to reach your manager/supervisor/HR Department.</p>
+<p>Maxvolt Energy Industries Limited congratulates you on your confirmation and wishes you well in your position.</p>
+<p>Sincerely,<br/><br/><br/>HR Head<br/><strong>Maxvolt Energy Industries Limited</strong></p>
+<p>_______________________________<br/><strong>${empName}</strong> &nbsp;&nbsp; Date: _______________</p>`;
+
+      } else {
+        // Extended
+        const extDate = sclRev.extended_until || sclRev.management_reviewed_at?.slice(0,10) || todayStr;
+        const extFmt = ordinalDate(extDate);
+        label = 'Probation Extension Letter';
+        htmlContent = `
+<p style="font-weight:bold;text-align:center;">Probation Extension Letter</p>
+<p style="text-align:right;">${todayFmt}</p>
+<p>Dear ${prefix} ${empName},</p>
+<p><strong>Subject: Extension of Probation Period – "${designation}"</strong></p>
+<p>With reference to your appointment at Maxvolt Energy Industries Limited as "<strong>${designation}</strong>", we wish to inform you that after reviewing your performance during the initial probation period, the management has decided to extend your probation period.</p>
+<p>Your extended probation period will continue up to <strong>${extFmt}</strong>. During this period, you will continue to be governed by the same terms and conditions as mentioned in your appointment letter.</p>
+<p>We encourage you to utilize this time to demonstrate your full potential and align with the performance expectations of the role. Your reporting manager and the HR department will continue to provide you with guidance and support during this period.</p>
+<p>A fresh performance review will be conducted at the end of the extended probation period to determine further confirmation or any other appropriate action.</p>
+<p>Please feel free to reach out to the HR Department or your reporting manager in case of any queries or clarifications.</p>
+<p>We wish you the best and hope to see improvement in the upcoming period.</p>
+<p>Sincerely,<br/><br/><br/>HR Head<br/><strong>Maxvolt Energy Industries Limited</strong></p>
+<p>_______________________________<br/><strong>${empName}</strong> &nbsp;&nbsp; Date: _______________</p>`;
+      }
+
+      let pdfBuffer = null;
+      try {
+        pdfBuffer = await buildLetterPdf(label, '', htmlContent);
+      } catch (pdfErr) {
+        console.error('Confirmation letter PDF failed:', pdfErr.message);
+      }
+
+      const attachments = pdfBuffer
+        ? [{ filename: `${label.replace(/\s+/g,'_')}_${empName.replace(/\s+/g,'_')}.pdf`, content: pdfBuffer }]
+        : [];
+
+      await sendEmail({
+        to: sclUser.email,
+        subject: `${label} – Maxvolt Energy Industries Limited`,
+        html: `<div style="font-family:Arial,sans-serif;color:#111;font-size:14px;line-height:1.7">
+          <p>Dear ${empName},</p>
+          <p>Please find your <strong>${label}</strong> attached to this email from Maxvolt Energy Industries Limited.</p>
+          ${!pdfBuffer ? '<p style="color:#c00">Note: PDF could not be generated — please request it from HR.</p>' : ''}
+          <p style="color:#666;font-size:12px;margin-top:20px;">This is a system-generated letter from Maxvolt HR. For any queries, please contact the HR Department.</p>
+          </div>`,
+        text: `Dear ${empName},\n\nPlease find your ${label} attached.\n\nMaxvolt Energy Industries Limited`,
+        attachments,
+      });
+
+      // Save as Document
+      const sclDocId = uuidv4();
+      const sclDocData = {
+        id: sclDocId, user_id: sclRev.user_id,
+        document_type: 'hr_letter', letter_type: sclRev.status === 'confirmed' ? 'confirmation' : 'probation_extension',
+        document_name: `${label} — ${todayStr}`, letter_content: htmlContent,
+        employee_name: empName, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [sclDocId, sclRev.user_id, JSON.stringify(sclDocData)]);
+
+      // Mark letter as sent on review
+      const sclUpdRev = { ...sclRev, letter_sent: true, letter_sent_at: new Date().toISOString() };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(sclUpdRev), sclRevRow.id]);
+
+      return res.json({ success: true, email_sent_to: sclUser.email });
+    }
+
     case 'processProbationAction': {
       const { user_id: pbUid, action: pbAction, probation_end_date: pbEnd, note: pbNote } = p;
       const pbRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [pbUid]);

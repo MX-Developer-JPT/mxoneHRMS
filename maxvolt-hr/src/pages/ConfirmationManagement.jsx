@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import { format, differenceInDays } from 'date-fns';
-import { Calendar, Loader2, FileText, Search, Plus, UserCheck } from 'lucide-react';
+import { Calendar, Loader2, FileText, Search, Plus, UserCheck, Mail, Send } from 'lucide-react';
 
 const CRITERIA = [
   { key: 'work_quality',         label: 'Work Quality' },
@@ -169,6 +169,9 @@ export default function ConfirmationManagement() {
 
   // Detail view
   const [detailDlg, setDetailDlg] = useState({ open: false, review: null });
+
+  // Letter sending
+  const [sendingLetter, setSendingLetter] = useState(null); // review id being sent
 
   useEffect(() => { loadAll(); }, []);
 
@@ -335,6 +338,21 @@ export default function ConfirmationManagement() {
       }
     } catch (e) { toast.error(e.message); }
     setMgmtSaving(false);
+  };
+
+  // ── Send confirmation/extension letter ──
+  const handleSendLetter = async (reviewId) => {
+    setSendingLetter(reviewId);
+    try {
+      const res = await base44.functions.invoke('sendConfirmationLetter', { review_id: reviewId });
+      if (res.data?.success) {
+        toast.success(`Letter sent to ${res.data.email_sent_to}`);
+        loadAll();
+      } else {
+        toast.error(res.data?.error || 'Failed to send letter');
+      }
+    } catch (e) { toast.error(e.message); }
+    setSendingLetter(null);
   };
 
   const isHR     = ['hr', 'admin'].includes(role);
@@ -620,19 +638,41 @@ export default function ConfirmationManagement() {
                     {reviews.filter(r => ['confirmed', 'extended', 'rejected'].includes(r.status)).map(review => (
                       <div key={review.id} className="border rounded-lg p-4 flex items-center justify-between gap-4">
                         <div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <p className="font-medium">{review.employee_name}</p>
                             <Badge className={STATUS_COLORS[review.status]}>{STATUS_LABELS[review.status]}</Badge>
+                            {review.letter_sent && (
+                              <Badge className="bg-teal-100 text-teal-800 text-xs flex items-center gap-1">
+                                <Mail className="w-3 h-3" /> Letter Sent
+                              </Badge>
+                            )}
                           </div>
                           <p className="text-sm text-muted-foreground">{review.department}</p>
                           <p className="text-xs text-gray-500 mt-1">
                             Avg Score: {avgScore(review.manager_scores)}/5
                             {review.management_reviewed_at && ` · Decided: ${format(new Date(review.management_reviewed_at), 'dd MMM yyyy')}`}
+                            {review.letter_sent_at && ` · Letter sent: ${format(new Date(review.letter_sent_at), 'dd MMM yyyy')}`}
                           </p>
                         </div>
-                        <Button variant="outline" size="sm" onClick={() => setDetailDlg({ open: true, review })}>
-                          <FileText className="w-4 h-4 mr-1" /> View
-                        </Button>
+                        <div className="flex gap-2 shrink-0">
+                          <Button variant="outline" size="sm" onClick={() => setDetailDlg({ open: true, review })}>
+                            <FileText className="w-4 h-4 mr-1" /> View
+                          </Button>
+                          {['confirmed', 'extended'].includes(review.status) && isHR && (
+                            <Button
+                              size="sm"
+                              variant={review.letter_sent ? 'outline' : 'default'}
+                              onClick={() => handleSendLetter(review.id)}
+                              disabled={sendingLetter === review.id}
+                              className="flex items-center gap-1"
+                            >
+                              {sendingLetter === review.id
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <Send className="w-3.5 h-3.5" />}
+                              {review.letter_sent ? 'Resend Letter' : 'Send Letter'}
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -849,6 +889,34 @@ export default function ConfirmationManagement() {
               </div>
             );
           })()}
+          {detailDlg.review && ['confirmed', 'extended'].includes(detailDlg.review.status) && isHR && (
+            <div className="pt-4 border-t mt-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">
+                    {detailDlg.review.status === 'confirmed' ? 'Confirmation Letter' : 'Probation Extension Letter'}
+                  </p>
+                  {detailDlg.review.letter_sent && (
+                    <p className="text-xs text-teal-600 mt-0.5">
+                      ✓ Sent {detailDlg.review.letter_sent_at ? `on ${format(new Date(detailDlg.review.letter_sent_at), 'dd MMM yyyy')}` : ''}
+                    </p>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  variant={detailDlg.review.letter_sent ? 'outline' : 'default'}
+                  onClick={() => handleSendLetter(detailDlg.review.id)}
+                  disabled={sendingLetter === detailDlg.review.id}
+                  className="flex items-center gap-1.5"
+                >
+                  {sendingLetter === detailDlg.review.id
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <Send className="w-4 h-4" />}
+                  {detailDlg.review.letter_sent ? 'Resend Letter' : 'Generate & Send Letter'}
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
