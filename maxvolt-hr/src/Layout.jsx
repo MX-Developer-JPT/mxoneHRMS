@@ -11,7 +11,7 @@ import {
   UserCog, Building2, ShieldOff, PieChart, Shield, GraduationCap,
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
-  Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search,
+  Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
 import DashboardPage from './pages/Dashboard';
@@ -83,6 +83,7 @@ const managementMenuGroups = [
     { name: 'Regularisation Approvals', icon: Clock,           page: 'RegularisationApproval' },
     { name: 'Expense Approvals',        icon: DollarSign,      page: 'Approvals' },
     { name: 'Gate Pass Approvals',      icon: ShieldCheck,     page: 'GatePassApproval' },
+    { name: 'Confirmation',             icon: UserCheck,       page: 'ConfirmationManagement' },
     { name: 'Team Calendar',            icon: Calendar,        page: 'TeamCalendar' },
   ]},
   { label: 'AI Insights', items: [
@@ -184,6 +185,7 @@ const hrMenuGroups = [
   { label: 'Performance', items: [
     { name: 'Performance',             icon: Target,          page: 'PerformanceManagement' },
     { name: 'PIP Management',          icon: AlertTriangle,   page: 'PIPManagement' },
+    { name: 'Confirmation',            icon: UserCheck,       page: 'ConfirmationManagement' },
     { name: '360° Feedback',           icon: MessageSquare,   page: 'FeedbackSystem' },
     { name: 'Skill Matrix',            icon: Zap,             page: 'SkillMatrix' },
     { name: 'PMS Settings',            icon: Settings,        page: 'PMSConfiguration' },

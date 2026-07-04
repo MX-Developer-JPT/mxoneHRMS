@@ -22,6 +22,7 @@ import AttendanceReports from './pages/AttendanceReports';
 import AttendanceRegularisation from './pages/AttendanceRegularisation';
 import AttendanceExemption from './pages/AttendanceExemption';
 import RegularisationApproval from './pages/RegularisationApproval';
+import ConfirmationManagement from './pages/ConfirmationManagement';
 import EmployeeDocuments from './pages/EmployeeDocuments';
 import OnboardingForm from './pages/OnboardingForm';
 import HelpdeskCategoryManagement from './pages/HelpdeskCategoryManagement';
@@ -303,6 +304,11 @@ const AuthenticatedApp = () => {
       <Route path="/RegularisationApproval" element={
         <LayoutWrapper currentPageName="RegularisationApproval">
           <RegularisationApproval />
+        </LayoutWrapper>
+      } />
+      <Route path="/ConfirmationManagement" element={
+        <LayoutWrapper currentPageName="ConfirmationManagement">
+          <ConfirmationManagement />
         </LayoutWrapper>
       } />
       <Route path="/AttendanceExemption" element={
