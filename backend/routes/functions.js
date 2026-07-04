@@ -6365,12 +6365,30 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         attachments,
       });
 
-      // Save as Document
+      // Upload PDF to R2 so document_url is set and View/Download work in employee docs
       const sclDocId = uuidv4();
+      let sclDocUrl = null;
+      if (pdfBuffer) {
+        try {
+          const { isR2Configured, buildKey, putToR2, presignGet } = await import('../utils/r2.js');
+          if (isR2Configured()) {
+            const r2Key = buildKey(`letters/${sclDocId}`, '.pdf');
+            await putToR2(r2Key, pdfBuffer, 'application/pdf');
+            sclDocUrl = await presignGet(r2Key, {
+              expiresIn: 31536000,
+              filename: `${label.replace(/\s+/g,'_')}_${empName.replace(/\s+/g,'_')}.pdf`,
+            });
+          }
+        } catch (r2Err) {
+          console.warn('[sendConfirmationLetter] R2 upload failed:', r2Err.message);
+        }
+      }
+
       const sclDocData = {
         id: sclDocId, user_id: sclRev.user_id,
         document_type: 'hr_letter', letter_type: sclRev.status === 'confirmed' ? 'confirmation' : 'probation_extension',
         document_name: `${label} — ${todayStr}`, letter_content: htmlContent,
+        ...(sclDocUrl ? { document_url: sclDocUrl } : {}),
         employee_name: empName, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [sclDocId, sclRev.user_id, JSON.stringify(sclDocData)]);
