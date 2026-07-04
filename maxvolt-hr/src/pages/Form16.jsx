@@ -4,11 +4,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import MobileSelect from '@/components/MobileSelect';
 import {
   Receipt, IndianRupee, Users, FileText, Search, Download, RefreshCw,
-  Printer, AlertCircle, CheckCircle2
+  Printer, AlertCircle, CheckCircle2, Zap, Edit2, LayoutGrid
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
@@ -32,6 +33,22 @@ export default function Form16() {
 
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  const [worksheetOpen, setWorksheetOpen] = useState(false);
+  const [worksheetHtml, setWorksheetHtml] = useState('');
+  const [worksheetLoading, setWorksheetLoading] = useState(false);
+
+  const [integrateOpen, setIntegrateOpen] = useState(false);
+  const [intMonth, setIntMonth] = useState(String(new Date().getMonth() + 1));
+  const [intYear, setIntYear] = useState(String(new Date().getFullYear()));
+  const [integrating, setIntegrating] = useState(false);
+
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [overridePayrollId, setOverridePayrollId] = useState('');
+  const [overrideTDSAmt, setOverrideTDSAmt] = useState('');
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overriding, setOverriding] = useState(false);
+  const [overrideRow, setOverrideRow] = useState(null);
 
   useEffect(() => { load(); }, [fy]);
 
@@ -63,6 +80,47 @@ export default function Form16() {
     const q = search.toLowerCase();
     return r.name?.toLowerCase().includes(q) || r.employee_code?.toLowerCase().includes(q) || r.pan?.toLowerCase().includes(q);
   });
+
+  const openWorksheet = async (row) => {
+    setWorksheetOpen(true);
+    setWorksheetHtml('');
+    setWorksheetLoading(true);
+    try {
+      const now = new Date();
+      const res = await base44.functions.invoke('getTaxWorksheet', {
+        user_id: row.user_id,
+        month: now.getMonth() + 1,
+        year: now.getFullYear(),
+      });
+      const d = res.data || res;
+      if (d.success) setWorksheetHtml(d.html);
+      else toast.error(d.error || 'Failed to load worksheet');
+    } catch (e) { toast.error('Error: ' + e.message); }
+    setWorksheetLoading(false);
+  };
+
+  const doIntegrate = async () => {
+    setIntegrating(true);
+    try {
+      const res = await base44.functions.invoke('bulkIntegrateTDS', { month: parseInt(intMonth), year: parseInt(intYear) });
+      const d = res.data || res;
+      if (d.success) { toast.success(`TDS integrated for ${d.updated} / ${d.total} payroll records`); setIntegrateOpen(false); load(); }
+      else toast.error(d.error || 'Integration failed');
+    } catch (e) { toast.error('Error: ' + e.message); }
+    setIntegrating(false);
+  };
+
+  const doOverride = async () => {
+    if (!overridePayrollId || overrideTDSAmt === '') return;
+    setOverriding(true);
+    try {
+      const res = await base44.functions.invoke('overrideTDS', { payroll_id: overridePayrollId, tds_amount: Number(overrideTDSAmt), reason: overrideReason });
+      const d = res.data || res;
+      if (d.success) { toast.success(`TDS updated: ${fmt(d.old_tds)} → ${fmt(d.new_tds)}`); setOverrideOpen(false); setOverridePayrollId(''); setOverrideTDSAmt(''); setOverrideReason(''); setOverrideRow(null); }
+      else toast.error(d.error || 'Override failed');
+    } catch (e) { toast.error('Error: ' + e.message); }
+    setOverriding(false);
+  };
 
   const exportCSV = () => {
     const headers = ['Employee Code', 'Name', 'PAN', 'Department', 'Gross Salary', 'Regime', 'Annual Tax (TDS)', 'Monthly TDS', 'Declared'];
@@ -118,6 +176,9 @@ export default function Form16() {
         </div>
         <div className="flex gap-2 items-center">
           <MobileSelect value={fy} onValueChange={setFy} label="Financial Year" className="w-36" options={fyOptions()} />
+          <Button size="sm" className="bg-teal-600 hover:bg-teal-700 text-white" onClick={() => setIntegrateOpen(true)}>
+            <Zap className="w-4 h-4 mr-2" /> Integrate TDS
+          </Button>
           <Button variant="outline" size="sm" onClick={exportCSV} disabled={!filtered.length}><Download className="w-4 h-4 mr-2" /> CSV</Button>
           <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} /> Refresh</Button>
         </div>
@@ -152,6 +213,7 @@ export default function Form16() {
               <th className="px-4 py-3 text-center">Regime</th>
               <th className="px-4 py-3 text-right">Annual TDS</th>
               <th className="px-4 py-3 text-right">Monthly TDS</th>
+              <th className="px-4 py-3 text-center">Worksheet</th>
               <th className="px-4 py-3 text-center">Form 16</th>
             </tr>
           </thead>
@@ -177,6 +239,11 @@ export default function Form16() {
                 <td className="px-4 py-3 text-right font-medium text-teal-700">{fmt(r.annual_tax)}</td>
                 <td className="px-4 py-3 text-right text-gray-700">{fmt(r.monthly_tds)}</td>
                 <td className="px-4 py-3 text-center">
+                  <Button size="sm" variant="outline" onClick={() => openWorksheet(r)}>
+                    <LayoutGrid className="w-3.5 h-3.5 mr-1" /> WS
+                  </Button>
+                </td>
+                <td className="px-4 py-3 text-center">
                   <Button size="sm" variant="outline" onClick={() => openDetail(r)}>
                     <FileText className="w-3.5 h-3.5 mr-1" /> View
                   </Button>
@@ -186,6 +253,91 @@ export default function Form16() {
           </tbody>
         </table>
       </div>
+
+      {/* Worksheet dialog */}
+      <Dialog open={worksheetOpen} onOpenChange={() => setWorksheetOpen(false)}>
+        <DialogContent className="max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <LayoutGrid className="w-5 h-5 text-teal-600" /> Income Tax Worksheet
+              {worksheetHtml && (
+                <Button size="sm" variant="outline" className="ml-auto" onClick={() => { const w = window.open('','_blank'); w.document.write(worksheetHtml); w.document.close(); setTimeout(()=>w.print(),500); }}>
+                  <Printer className="w-4 h-4 mr-1" /> Print
+                </Button>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {worksheetLoading ? (
+            <div className="py-12 text-center text-gray-400"><RefreshCw className="w-6 h-6 mx-auto mb-2 animate-spin" /> Loading…</div>
+          ) : worksheetHtml ? (
+            <div className="flex-1 overflow-auto">
+              <iframe srcDoc={worksheetHtml} style={{ width: '100%', minHeight: '520px', border: 'none' }} title="Tax Worksheet" />
+            </div>
+          ) : (
+            <div className="py-8 text-center text-gray-400">No worksheet data</div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Integrate TDS dialog */}
+      <Dialog open={integrateOpen} onOpenChange={() => setIntegrateOpen(false)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><Zap className="w-5 h-5 text-teal-600" /> Integrate TDS to Payroll</DialogTitle></DialogHeader>
+          <div className="space-y-4 text-sm">
+            <p className="text-gray-600">This will compute and write TDS into all processed payroll records for the selected month. Existing TDS values will be updated.</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs text-gray-500">Month</Label>
+                <select className="w-full border rounded px-2 py-1.5 text-sm mt-1" value={intMonth} onChange={e => setIntMonth(e.target.value)}>
+                  {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m, i) => (
+                    <option key={i} value={String(i+1)}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs text-gray-500">Year</Label>
+                <Input type="number" className="mt-1 h-8 text-sm" value={intYear} onChange={e => setIntYear(e.target.value)} />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" size="sm" onClick={() => setIntegrateOpen(false)}>Cancel</Button>
+              <Button size="sm" className="bg-teal-600 hover:bg-teal-700 text-white" onClick={doIntegrate} disabled={integrating}>
+                {integrating ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
+                {integrating ? 'Integrating…' : 'Integrate Now'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Override TDS dialog */}
+      <Dialog open={overrideOpen} onOpenChange={() => setOverrideOpen(false)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><Edit2 className="w-5 h-5 text-amber-600" /> Override TDS Amount</DialogTitle></DialogHeader>
+          <div className="space-y-4 text-sm">
+            <p className="text-gray-600">Enter the Payroll record ID and the corrected TDS amount. An audit trail will be saved.</p>
+            <div>
+              <Label className="text-xs text-gray-500">Payroll Record ID</Label>
+              <Input className="mt-1 h-8 text-sm font-mono" placeholder="payroll entity id" value={overridePayrollId} onChange={e => setOverridePayrollId(e.target.value)} />
+            </div>
+            <div>
+              <Label className="text-xs text-gray-500">New TDS Amount (₹)</Label>
+              <Input type="number" className="mt-1 h-8 text-sm" placeholder="0" value={overrideTDSAmt} onChange={e => setOverrideTDSAmt(e.target.value)} />
+            </div>
+            <div>
+              <Label className="text-xs text-gray-500">Reason</Label>
+              <Input className="mt-1 h-8 text-sm" placeholder="e.g. Previous employer TDS adjustment" value={overrideReason} onChange={e => setOverrideReason(e.target.value)} />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" size="sm" onClick={() => setOverrideOpen(false)}>Cancel</Button>
+              <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={doOverride} disabled={overriding || !overridePayrollId || overrideTDSAmt === ''}>
+                {overriding ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Edit2 className="w-4 h-4 mr-2" />}
+                {overriding ? 'Saving…' : 'Override'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Detail dialog */}
       <Dialog open={!!detail} onOpenChange={() => setDetail(null)}>
@@ -228,7 +380,10 @@ export default function Form16() {
                 <Line label="Average Monthly TDS" value={fmt(detail.monthly_tds)} />
               </div>
 
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-2 flex-wrap">
+                <Button variant="outline" onClick={() => { setOverrideRow(detail?.row || null); setOverrideOpen(true); }}>
+                  <Edit2 className="w-4 h-4 mr-2" /> Override TDS
+                </Button>
                 <Button variant="outline" onClick={() => setDetail(null)}>Close</Button>
                 <Button onClick={() => printForm16(detail)} className="bg-teal-600 hover:bg-teal-700 text-white">
                   <Printer className="w-4 h-4 mr-2" /> Print Form 16 Part-B

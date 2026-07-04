@@ -677,6 +677,32 @@ router.post('/:name', async (req, res) => {
       const ssMap = {};
       for (const r of ssAllRows) ssMap[r.user_id] = JSON.parse(r.data);
 
+      // ── TDS: pre-load tax declarations + YTD TDS already deducted this FY ──
+      const _tdFYStart = m_int >= 4 ? y_int : y_int - 1;
+      const _tdFY      = `${_tdFYStart}-${_tdFYStart + 1}`;
+      const _tdMIdx    = m_int >= 4 ? m_int - 3 : m_int + 9; // Apr=1 … Mar=12
+      const _tdRemMths = 12 - _tdMIdx + 1; // remaining FY months incl. current
+      const _tdDeclRows = await all(
+        "SELECT user_id,data FROM entities WHERE type='TaxDeclaration' AND data::jsonb->>'financial_year'=$1",
+        [_tdFY]
+      );
+      const _tdDecl = {};
+      for (const r of _tdDeclRows) { const d = JSON.parse(r.data); _tdDecl[r.user_id] = d.declarations || {}; }
+      const _tdYtdRows = await all(
+        `SELECT user_id,data FROM entities WHERE type='Payroll' AND (
+           (data::jsonb->>'year'=$1 AND CAST(data::jsonb->>'month' AS INTEGER) >= 4) OR
+           (data::jsonb->>'year'=$2 AND CAST(data::jsonb->>'month' AS INTEGER) <= 3)
+         )`,
+        [String(_tdFYStart), String(_tdFYStart + 1)]
+      );
+      const _tdYtd = {};
+      for (const r of _tdYtdRows) {
+        const pd = JSON.parse(r.data);
+        const pm = parseInt(pd.month);
+        const pmIdx = pm >= 4 ? pm - 3 : pm + 9;
+        if (pmIdx < _tdMIdx) _tdYtd[r.user_id] = (_tdYtd[r.user_id] || 0) + (pd.deductions?.tds || 0);
+      }
+
       const attAllRows = await all(
         "SELECT user_id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
         [startDate, endDate]
@@ -771,7 +797,24 @@ router.post('/:name', async (req, res) => {
           let vppRate = annualCTC <= 1500000 ? 0.05 : annualCTC <= 2000000 ? 0.08 : annualCTC <= 2500000 ? 0.12 : 0.15;
           bonusMonthly = Math.round((annualCTC * vppRate) / 12);
         }
-        const totalDed = pf + esi + lopAmount;
+        // ── Monthly TDS: project annual tax, spread over remaining FY months ──
+        const _decl = _tdDecl[emp.user_id] || {};
+        const _nd = (k) => Number(_decl[k] || 0);
+        const _80C = Math.min(150000, _nd('life_insurance_premium')+_nd('ppf')+_nd('elss')+_nd('nsc')+_nd('home_loan_principal')+_nd('tuition_fees')+_nd('sukanya_samriddhi')+_nd('five_yr_fd')+_nd('nps_80c'));
+        const _80D = Math.min(75000, _nd('health_insurance_self')+_nd('health_insurance_parents')+Math.min(5000,_nd('preventive_checkup')));
+        const _chVIA = _80C+_80D+Math.min(50000,_nd('nps_additional'))+_nd('education_loan_interest')+_nd('donations_100pct')+Math.round(_nd('donations_50pct')*0.5);
+        const _rent = _nd('hra_rent_paid');
+        const _metro = (_decl.hra_city||'').toLowerCase()==='metro';
+        let _hraEx = 0;
+        if (_rent>0&&hra>0) _hraEx = Math.max(0, Math.min(hra*12, _rent-0.10*basic*12, (_metro?0.50:0.40)*basic*12));
+        const _oldC = computeRegime('old', { grossSalary: gross*12, hraExemption: _hraEx, chapterVIA: _chVIA, profTax: 2400 });
+        const _newC = computeRegime('new', { grossSalary: gross*12 });
+        const _reg  = (_decl.regime==='old'||_decl.regime==='new') ? _decl.regime : (_newC.total_tax<=_oldC.total_tax?'new':'old');
+        const _annT = _reg==='new' ? _newC.total_tax : _oldC.total_tax;
+        const _ytdTDSEmp = _tdYtd[emp.user_id] || 0;
+        const tds = _tdRemMths > 0 ? Math.round(Math.max(0, _annT - _ytdTDSEmp) / _tdRemMths) : 0;
+
+        const totalDed = pf + esi + lopAmount + tds;
         const net = Math.max(0, gross - totalDed);
 
         const id = uuidv4();
@@ -779,9 +822,10 @@ router.post('/:name', async (req, res) => {
           id, user_id: emp.user_id, month, year,
           basic_salary: basic, hra, conveyance: conv, special_allowance: spec,
           gross_salary: gross,
-          deductions: { pf, esi, lop: lopAmount },
+          deductions: { pf, esi, lop: lopAmount, tds },
           employer_contributions: { pf: empPF, esi: empESI },
           total_deductions: totalDed, net_salary: net,
+          tax_regime: _reg,
           statutory_bonus: bonusMonthly, vpp: annualCTC > 1000000 ? bonusMonthly : 0,
           calendar_days: calendarDays,
           working_days: workingDays,
@@ -7694,6 +7738,342 @@ Return ONLY valid JSON (no markdown):
         summary: { employees: rows.length, total_annual_tds: totalTDS, total_monthly_tds: Math.round(totalTDS / 12), taxable_employees: rows.filter(r => r.annual_tax > 0).length, not_declared: rows.filter(r => !r.declared).length },
         employees: rows,
       });
+    }
+
+    /* ── TDS: Income Tax Worksheet (PDF format) ─────── */
+    case 'getTaxWorksheet': {
+      const twUid = p.user_id;
+      if (!twUid) return res.json({ success: false, error: 'user_id required' });
+      if (!(await hasRole(cu, HR_ROLES)) && cu?.id !== twUid) return res.status(403).json({ error: 'Access denied' });
+
+      const twMonth = parseInt(p.month) || new Date().getMonth() + 1;
+      const twYear  = parseInt(p.year)  || new Date().getFullYear();
+      const twFYStart = twMonth >= 4 ? twYear : twYear - 1;
+      const twFY      = `${twFYStart}-${twFYStart + 1}`;
+      const twMIdx    = twMonth >= 4 ? twMonth - 3 : twMonth + 9;
+      const twRemMths = 12 - twMIdx + 1;
+
+      const twEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [twUid]);
+      if (!twEmpRow) return res.json({ success: false, error: 'Employee not found' });
+      const twEmp = JSON.parse(twEmpRow.data);
+      const twURow = await one("SELECT full_name FROM users WHERE id=$1", [twUid]);
+
+      const twSSRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [twUid]);
+      const twSS = twSSRow ? JSON.parse(twSSRow.data) : {};
+      const twBasic = twSS.basic_salary || 0;
+      const twHra   = twSS.hra || 0;
+      const twConv  = twSS.conveyance || 0;
+      const twSpec  = twSS.special_allowance || 0;
+      const twGross = twBasic + twHra + twConv + twSpec;
+
+      const twPayRows = await all(
+        `SELECT data FROM entities WHERE type='Payroll' AND user_id=$1 AND (
+           (data::jsonb->>'year'=$2 AND CAST(data::jsonb->>'month' AS INTEGER) >= 4) OR
+           (data::jsonb->>'year'=$3 AND CAST(data::jsonb->>'month' AS INTEGER) <= 3)
+         ) ORDER BY data::jsonb->>'year', CAST(data::jsonb->>'month' AS INTEGER)`,
+        [twUid, String(twFYStart), String(twFYStart + 1)]
+      );
+      const twPayrolls = twPayRows.map(r => JSON.parse(r.data));
+      const twYtdPayrolls = twPayrolls.filter(pd => {
+        const pmIdx = parseInt(pd.month) >= 4 ? parseInt(pd.month) - 3 : parseInt(pd.month) + 9;
+        return pmIdx <= twMIdx;
+      });
+      const twYtdMths = twMIdx;
+      const twProjMths = 12 - twMIdx;
+
+      const ytdBasic = twYtdPayrolls.length > 0 ? twYtdPayrolls.reduce((s,r) => s+(r.basic_salary||0), 0) : twBasic * twYtdMths;
+      const ytdHra   = twYtdPayrolls.length > 0 ? twYtdPayrolls.reduce((s,r) => s+(r.hra||0), 0) : twHra * twYtdMths;
+      const ytdConv  = twYtdPayrolls.length > 0 ? twYtdPayrolls.reduce((s,r) => s+(r.conveyance||0), 0) : twConv * twYtdMths;
+      const ytdSpec  = twYtdPayrolls.length > 0 ? twYtdPayrolls.reduce((s,r) => s+(r.special_allowance||0), 0) : twSpec * twYtdMths;
+
+      const projBasic = twBasic * twProjMths; const projHra = twHra * twProjMths;
+      const projConv  = twConv  * twProjMths; const projSpec = twSpec * twProjMths;
+      const totalBasic = ytdBasic + projBasic; const totalHra = ytdHra + projHra;
+      const totalConv  = ytdConv  + projConv;  const totalSpec = ytdSpec + projSpec;
+      const annualGross = totalBasic + totalHra + totalConv + totalSpec;
+
+      const twTdRow = await one("SELECT data FROM entities WHERE type='TaxDeclaration' AND user_id=$1 AND data::jsonb->>'financial_year'=$2", [twUid, twFY]);
+      const twDecl = twTdRow ? (JSON.parse(twTdRow.data).declarations || {}) : {};
+      const twN = (k) => Number(twDecl[k] || 0);
+
+      const tw80C = Math.min(150000, twN('life_insurance_premium')+twN('ppf')+twN('elss')+twN('nsc')+twN('home_loan_principal')+twN('tuition_fees')+twN('sukanya_samriddhi')+twN('five_yr_fd')+twN('nps_80c'));
+      const tw80D = Math.min(75000,  twN('health_insurance_self')+twN('health_insurance_parents')+Math.min(5000,twN('preventive_checkup')));
+      const tw80CCD = Math.min(50000, twN('nps_additional'));
+      const tw80E = twN('education_loan_interest');
+      const tw80G = twN('donations_100pct') + Math.round(twN('donations_50pct') * 0.5);
+      const twChVIA = tw80C + tw80D + tw80CCD + tw80E + tw80G;
+
+      const twRent = twN('hra_rent_paid');
+      const twMetro = (twDecl.hra_city || '').toLowerCase() === 'metro';
+      let twHraEx = 0;
+      if (twRent > 0 && twHra > 0) twHraEx = Math.max(0, Math.min(totalHra, twRent - 0.10 * totalBasic, (twMetro ? 0.50 : 0.40) * totalBasic));
+
+      const twOldC = computeRegime('old', { grossSalary: annualGross, hraExemption: twHraEx, chapterVIA: twChVIA, profTax: 2400 });
+      const twNewC = computeRegime('new', { grossSalary: annualGross });
+      const twDefReg = twNewC.total_tax <= twOldC.total_tax ? 'new' : 'old';
+      const twReg = (twDecl.regime === 'old' || twDecl.regime === 'new') ? twDecl.regime : twDefReg;
+      const twCalc = twReg === 'new' ? twNewC : twOldC;
+      const twAnnTax = twCalc.total_tax;
+
+      const twYtdTDS = twPayrolls.filter(pd => {
+        const pmIdx = parseInt(pd.month) >= 4 ? parseInt(pd.month) - 3 : parseInt(pd.month) + 9;
+        return pmIdx < twMIdx;
+      }).reduce((s, pd) => s + (pd.deductions?.tds || 0), 0);
+      const twMonthlyTDS = twRemMths > 0 ? Math.round(Math.max(0, twAnnTax - twYtdTDS) / twRemMths) : 0;
+
+      const twHraExempt = twReg === 'new' ? 0 : Math.round(twHraEx);
+      const twHraTaxable = Math.max(0, totalHra - twHraExempt);
+      const twEmpPFAnnual = Math.round(Math.min(twBasic, 15000) * 0.12 * 12);
+      const tw12BDeduction = twReg === 'new' ? 0 : Math.min(150000, twEmpPFAnnual + twN('life_insurance_premium') + twN('ppf') + twN('elss') + twN('nsc') + twN('home_loan_principal'));
+
+      const twMonths = ['APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC','JAN','FEB','MAR'];
+      const twMonthWise = twMonths.map((lbl, i) => {
+        const fymi = i + 1;
+        const calMon = fymi <= 9 ? fymi + 3 : fymi - 9;
+        const calYr  = fymi <= 9 ? twFYStart : twFYStart + 1;
+        const pr = twPayrolls.find(pd => parseInt(pd.month) === calMon && parseInt(pd.year) === calYr);
+        const payable = fymi === twMIdx ? twMonthlyTDS : (pr ? Math.round(twAnnTax / 12) : null);
+        const deducted = pr ? (pr.deductions?.tds || 0) : null;
+        return { label: lbl, fy_month: fymi, cal_month: calMon, cal_year: calYr, tax_payable: payable, tax_deducted: deducted };
+      });
+
+      const twSlabs = TAX_SLABS[twReg];
+      const twSlabRows = [];
+      let swPrev = 0;
+      for (const [ceiling, rate] of twSlabs) {
+        if (swPrev >= twCalc.taxable_income) break;
+        const from = swPrev;
+        const to = Math.min(ceiling, twCalc.taxable_income);
+        const taxable = Math.max(0, to - from);
+        const tax = Math.round(taxable * rate);
+        twSlabRows.push({ income_from: from, income_to: ceiling, taxable_income: taxable, tax_rate: (rate * 100).toFixed(2), tax });
+        swPrev = ceiling;
+      }
+
+      const twTaxableGross = twReg === 'new'
+        ? Math.max(0, annualGross - 75000)
+        : Math.max(0, annualGross - 50000 - twHraExempt - 2400);
+
+      const twPSRow = await one("SELECT data FROM entities WHERE type='PayrollSettings' ORDER BY created_at DESC LIMIT 1");
+      const twPS = twPSRow ? JSON.parse(twPSRow.data) : {};
+      const companyTAN = twPS.tan || 'DELM34923A';
+      const companyPAN = twPS.company_pan || 'AAMCM6751F';
+      const twMonthLabel = new Date(twYear, twMonth - 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+      const twFYLabel = `01-APR-${twFYStart} TO 31-MAR-${twFYStart + 1}`;
+
+      const fmtW = (n) => n == null ? '-' : Math.round(n || 0).toLocaleString('en-IN');
+      const empName  = twEmp.display_name || twURow?.full_name || '';
+      const twHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;font-size:9pt;color:#000;padding:15px}
+  .hdr{text-align:center;margin-bottom:8px}.hdr h2{font-size:12pt;font-weight:bold;text-transform:uppercase}
+  .hdr p{font-size:9pt}.hdr .title{font-size:11pt;font-weight:bold;margin-top:6px;text-decoration:underline}
+  .hdr .sub{font-size:9pt;font-weight:normal}.tan-row{display:flex;justify-content:space-between;margin-bottom:6px;font-size:9pt;font-weight:bold}
+  table{width:100%;border-collapse:collapse;margin-bottom:6px}td,th{border:1px solid #000;padding:3px 5px;font-size:8.5pt}
+  .sec-hdr{background:#d0d0d0;font-weight:bold;text-align:center;font-size:9pt}
+  .col-hdr{background:#e8e8e8;font-weight:bold;text-align:center;font-size:8pt}
+  .total-row{font-weight:bold;background:#f0f0f0}.right{text-align:right}.center{text-align:center}
+  .bold{font-weight:bold}.indent{padding-left:16px}
+</style></head><body>
+<div class="hdr">
+  <h2>MAXVOLT ENERGY INDUSTRIES LIMITED</h2>
+  <p>E-82 INDUSTRIAL AREA, BULADSHAHR ROAD, DISTT- GHAZIABAD U.P 201002</p>
+  <div class="title">INCOME TAX WORKSHEET FROM ${twFYLabel}</div>
+  <div class="sub">(CALCULATION BASED ON ${twMonthLabel.toUpperCase()})</div>
+</div>
+<div class="tan-row"><span>TAN: ${companyTAN}, PAN: ${companyPAN}</span><span>TAX YEAR:${twFYStart}-${String(twFYStart+1).slice(-2)}</span></div>
+<table>
+<tr><td>EMPLOYEE ID</td><td class="bold">${twEmp.employee_code||''}</td><td>BANK NAME</td><td class="bold">${twEmp.bank_account?.bank_name||''}</td></tr>
+<tr><td>EMPLOYEE NAME</td><td class="bold">${empName.toUpperCase()}</td><td>BANK ACCOUNT</td><td class="bold">${twEmp.bank_account?.account_number||''}</td></tr>
+<tr><td>FATHER / SPOUSE NAME</td><td class="bold">${(twEmp.father_name||'').toUpperCase()}</td><td>IFSC</td><td class="bold">${twEmp.bank_account?.ifsc_code||''}</td></tr>
+<tr><td>PAN</td><td class="bold">${(twEmp.pan_number||'').toUpperCase()}</td><td>LOCATION</td><td class="bold">${(twEmp.location||'GHAZIABAD').toUpperCase()}</td></tr>
+<tr><td>UAN</td><td class="bold">${twEmp.uan_number||''}</td><td>DEPARTMENT</td><td class="bold">${(twEmp.department||'').toUpperCase()}</td></tr>
+<tr><td>PF NUMBER</td><td class="bold">${twEmp.pf_account_number||''}</td><td>DESIGNATION</td><td class="bold">${(twEmp.designation||'').toUpperCase()}</td></tr>
+<tr><td>PAYDAYS</td><td class="bold">${twYtdPayrolls.slice(-1)[0]?.pay_days||'-'}</td><td colspan="2"></td></tr>
+<tr><td>JOINING DATE</td><td class="bold">${twEmp.date_of_joining||''}</td><td>TAX OPTION</td><td class="bold">${twReg==='new'?'NEW TAX REGIME (U/S 202)':'OLD TAX REGIME'}</td></tr>
+</table>
+<table>
+<tr><th class="sec-hdr" colspan="6">E A R N I N G S</th></tr>
+<tr><th class="col-hdr">DESCRIPTION</th><th class="col-hdr right">YTD</th><th class="col-hdr right">PROJECTION</th><th class="col-hdr right">TOTAL INCOME</th><th class="col-hdr right">EXEMPT INCOME</th><th class="col-hdr right">TAXABLE INCOME</th></tr>
+<tr><td>BASIC SALARY</td><td class="right">${fmtW(ytdBasic)}</td><td class="right">${fmtW(projBasic)}</td><td class="right">${fmtW(totalBasic)}</td><td class="right">-</td><td class="right">${fmtW(totalBasic)}</td></tr>
+<tr><td>HRA</td><td class="right">${fmtW(ytdHra)}</td><td class="right">${fmtW(projHra)}</td><td class="right">${fmtW(totalHra)}</td><td class="right">${twHraExempt>0?fmtW(twHraExempt):'-'}</td><td class="right">${fmtW(twHraTaxable)}</td></tr>
+<tr><td>CONVEYANCE</td><td class="right">${fmtW(ytdConv)}</td><td class="right">${fmtW(projConv)}</td><td class="right">${fmtW(totalConv)}</td><td class="right">-</td><td class="right">${fmtW(totalConv)}</td></tr>
+${totalSpec>0?`<tr><td>SPECIAL ALLOWANCE</td><td class="right">${fmtW(ytdSpec)}</td><td class="right">${fmtW(projSpec)}</td><td class="right">${fmtW(totalSpec)}</td><td class="right">-</td><td class="right">${fmtW(totalSpec)}</td></tr>`:''}
+<tr class="total-row"><td>TOTAL</td><td class="right"></td><td class="right"></td><td class="right">${fmtW(annualGross)}</td><td class="right">${twHraExempt>0?fmtW(twHraExempt):'-'}</td><td class="right">${fmtW(annualGross - twHraExempt)}</td></tr>
+</table>
+<table>
+<tr><th class="sec-hdr" colspan="2">INCOME TAX CALCULATION</th></tr>
+<tr><td class="indent">LESS: STANDARD DEDUCTION</td><td class="right">${fmtW(twCalc.standard_deduction)}</td></tr>
+${twReg==='old'?`<tr><td class="indent">LESS: PROFESSIONAL TAX</td><td class="right">2,400</td></tr>`:''}
+${twReg==='old'&&twHraExempt>0?`<tr><td class="indent">LESS: HRA EXEMPTION</td><td class="right">${fmtW(twHraExempt)}</td></tr>`:''}
+<tr class="total-row"><td>TAXABLE GROSS SALARY</td><td class="right">${fmtW(twTaxableGross)}</td></tr>
+<tr><td class="indent">LESS: CHAPTER VIA DEDUCTIONS</td><td class="right">${fmtW(twReg==='new'?0:twChVIA)}</td></tr>
+<tr class="total-row"><td class="bold">TAXABLE INCOME</td><td class="right bold">${fmtW(twCalc.taxable_income)}</td></tr>
+${twCalc.rebate_87a>0?`<tr><td class="indent">LESS: REBATE U/S 87A</td><td class="right">${fmtW(twCalc.rebate_87a)}</td></tr>`:''}
+<tr><td class="indent">HEALTH & EDUCATION CESS (4%)</td><td class="right">${fmtW(twCalc.cess)}</td></tr>
+<tr class="total-row"><td class="bold">INCOME TAX LIABILITY</td><td class="right bold">${fmtW(twAnnTax)}</td></tr>
+</table>
+<table>
+<tr><th class="sec-hdr" colspan="4">SECTION 12B</th></tr>
+<tr><th class="col-hdr">INVESTMENT</th><th class="col-hdr right">CURRENT EMPLOYER AMOUNT</th><th class="col-hdr right">PREVIOUS EMPLOYER AMOUNT</th><th class="col-hdr right">TOTAL AMOUNT</th></tr>
+<tr><td>EMPLOYEE'S CONTRIBUTION TO PF</td><td class="right">${fmtW(twEmpPFAnnual)}</td><td class="right">-</td><td class="right">${fmtW(twEmpPFAnnual)}</td></tr>
+${twN('life_insurance_premium')>0?`<tr><td>LIFE INSURANCE PREMIUM</td><td class="right">${fmtW(twN('life_insurance_premium'))}</td><td class="right">-</td><td class="right">${fmtW(twN('life_insurance_premium'))}</td></tr>`:''}
+${twN('ppf')>0?`<tr><td>PPF</td><td class="right">${fmtW(twN('ppf'))}</td><td class="right">-</td><td class="right">${fmtW(twN('ppf'))}</td></tr>`:''}
+<tr class="total-row"><td colspan="3">DEDUCTION U/S 12B (Old Regime only)</td><td class="right">${fmtW(tw12BDeduction)}</td></tr>
+</table>
+<table>
+<tr><th class="sec-hdr" colspan="5">OTHER SECTIONS UNDER CHAPTER VIA</th></tr>
+<tr><th class="col-hdr">INVESTMENT</th><th class="col-hdr right">AMOUNT</th><th class="col-hdr right">PREV EMP</th><th class="col-hdr right">TOTAL</th><th class="col-hdr right">BENEFIT</th></tr>
+${tw80D>0?`<tr><td>80D – HEALTH INSURANCE</td><td class="right">${fmtW(twN('health_insurance_self')+twN('health_insurance_parents'))}</td><td class="right">-</td><td class="right">${fmtW(twN('health_insurance_self')+twN('health_insurance_parents'))}</td><td class="right">${fmtW(twReg==='new'?0:tw80D)}</td></tr>`:''}
+${tw80CCD>0?`<tr><td>80CCD(1B) – NPS</td><td class="right">${fmtW(twN('nps_additional'))}</td><td class="right">-</td><td class="right">${fmtW(twN('nps_additional'))}</td><td class="right">${fmtW(twReg==='new'?0:tw80CCD)}</td></tr>`:''}
+${tw80E>0?`<tr><td>80E – EDUCATION LOAN</td><td class="right">${fmtW(tw80E)}</td><td class="right">-</td><td class="right">${fmtW(tw80E)}</td><td class="right">${fmtW(twReg==='new'?0:tw80E)}</td></tr>`:''}
+<tr class="total-row"><td colspan="4">TOTAL CHAPTER VIA</td><td class="right">${fmtW(twReg==='new'?0:twChVIA)}</td></tr>
+</table>
+<table>
+<tr><th class="sec-hdr" colspan="14">INCOME TAX DETAILS</th></tr>
+<tr><th class="col-hdr"></th>${twMonthWise.map(m=>`<th class="col-hdr center">${m.label}</th>`).join('')}<th class="col-hdr right">TOTAL</th></tr>
+<tr><td class="bold">TAX PAYABLE</td>${twMonthWise.map(m=>`<td class="right">${m.tax_payable!=null?fmtW(m.tax_payable):'-'}</td>`).join('')}<td class="right bold">${fmtW(twAnnTax)}</td></tr>
+<tr><td class="bold">TAX DEDUCTED</td>${twMonthWise.map(m=>`<td class="right">${m.tax_deducted!=null?fmtW(m.tax_deducted):'-'}</td>`).join('')}<td class="right bold">${fmtW(twYtdTDS)}</td></tr>
+</table>
+<table>
+<tr><th class="sec-hdr" colspan="5">SLAB WISE TAX (${twReg==='new'?'NEW REGIME':'OLD REGIME'})</th></tr>
+<tr><th class="col-hdr right">FROM</th><th class="col-hdr right">TO</th><th class="col-hdr right">TAXABLE</th><th class="col-hdr right">RATE</th><th class="col-hdr right">TAX</th></tr>
+${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td class="right">${s.income_to===Infinity?'Unlimited':s.income_to.toFixed(2)}</td><td class="right">${s.taxable_income.toFixed(2)}</td><td class="right">${s.tax_rate} %</td><td class="right">${s.tax.toFixed(2)}</td></tr>`).join('')}
+<tr class="total-row"><td colspan="4" class="right bold">INCOME TAX LIABILITY</td><td class="right bold">${twCalc.tax_before_rebate.toFixed(2)}</td></tr>
+</table>
+<div style="font-size:8pt;text-align:right;margin-top:4px;color:#666">Employee ID: ${twEmp.employee_code||''} &nbsp; System generated document</div>
+</body></html>`;
+
+      return res.json({
+        success: true, financial_year: twFY,
+        calculation_basis: { month: twMonth, year: twYear, label: twMonthLabel },
+        company: { name: 'MAXVOLT ENERGY INDUSTRIES LIMITED', tan: companyTAN, pan: companyPAN },
+        employee: {
+          name: empName, employee_code: twEmp.employee_code || '',
+          pan: twEmp.pan_number || '', uan: twEmp.uan_number || '',
+          department: twEmp.department || '', designation: twEmp.designation || '',
+          joining_date: twEmp.date_of_joining || '',
+          tax_option: twReg === 'new' ? 'NEW TAX REGIME (U/S 202)' : 'OLD TAX REGIME',
+        },
+        earnings: [
+          { description: 'BASIC SALARY', ytd: ytdBasic, projection: projBasic, total: totalBasic, exempt: 0, taxable: totalBasic },
+          { description: 'HRA', ytd: ytdHra, projection: projHra, total: totalHra, exempt: twHraExempt, taxable: twHraTaxable },
+          { description: 'CONVEYANCE', ytd: ytdConv, projection: projConv, total: totalConv, exempt: 0, taxable: totalConv },
+          ...(totalSpec > 0 ? [{ description: 'SPECIAL ALLOWANCE', ytd: ytdSpec, projection: projSpec, total: totalSpec, exempt: 0, taxable: totalSpec }] : []),
+        ],
+        totals: { total_income: annualGross, exempt: twHraExempt, taxable: annualGross - twHraExempt },
+        tax_calculation: {
+          standard_deduction: twCalc.standard_deduction, taxable_gross: twTaxableGross,
+          chapter_via: twReg === 'new' ? 0 : twChVIA, taxable_income: twCalc.taxable_income,
+          tax_before_rebate: twCalc.tax_before_rebate, rebate_87a: twCalc.rebate_87a,
+          surcharge: twCalc.surcharge || 0, cess: twCalc.cess, total_tax: twAnnTax,
+        },
+        investments: {
+          emp_pf: twEmpPFAnnual, sec80C: tw80C, sec80D: tw80D, sec80CCD1B: tw80CCD, sec80E: tw80E, sec80G: tw80G,
+          chapter_via_total: twChVIA, section_12b_deduction: tw12BDeduction,
+        },
+        month_wise: twMonthWise,
+        slab_wise: twSlabRows,
+        summary: {
+          annual_tax: twAnnTax, monthly_tds: twMonthlyTDS, ytd_tds: twYtdTDS,
+          remaining_tax: Math.max(0, twAnnTax - twYtdTDS), remaining_months: twRemMths,
+          chosen_regime: twReg, recommended_regime: twDefReg,
+          declaration_status: twTdRow ? (JSON.parse(twTdRow.data).status || 'submitted') : 'not_declared',
+        },
+        html: twHtml,
+      });
+    }
+
+    /* ── TDS: Bulk integrate TDS into processed payroll records ── */
+    case 'bulkIntegrateTDS': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const biMonth = parseInt(p.month), biYear = parseInt(p.year);
+      if (!biMonth || !biYear) return res.json({ success: false, error: 'month and year required' });
+
+      const biFYStart  = biMonth >= 4 ? biYear : biYear - 1;
+      const biFY       = `${biFYStart}-${biFYStart + 1}`;
+      const biMIdx     = biMonth >= 4 ? biMonth - 3 : biMonth + 9;
+      const biRemMths  = 12 - biMIdx + 1;
+
+      const biPayRows  = await all("SELECT id,user_id,data FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2", [String(biMonth), String(biYear)]);
+      if (!biPayRows.length) return res.json({ success: false, error: 'No payroll records for this month' });
+
+      const biTdRows = await all("SELECT user_id,data FROM entities WHERE type='TaxDeclaration' AND data::jsonb->>'financial_year'=$1", [biFY]);
+      const biDecl = {};
+      for (const r of biTdRows) { const d = JSON.parse(r.data); biDecl[r.user_id] = d.declarations || {}; }
+
+      const biSsRows = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure'");
+      const biSSMap = {};
+      for (const r of biSsRows) { if (!biSSMap[r.user_id]) biSSMap[r.user_id] = JSON.parse(r.data); }
+
+      const biYtdRows = await all(
+        `SELECT user_id,data FROM entities WHERE type='Payroll' AND (
+           (data::jsonb->>'year'=$1 AND CAST(data::jsonb->>'month' AS INTEGER)>=4) OR
+           (data::jsonb->>'year'=$2 AND CAST(data::jsonb->>'month' AS INTEGER)<=3)
+         )`,
+        [String(biFYStart), String(biFYStart + 1)]
+      );
+      const biYtdTDS = {};
+      for (const r of biYtdRows) {
+        const pd = JSON.parse(r.data);
+        const pm = parseInt(pd.month);
+        const pmIdx = pm >= 4 ? pm - 3 : pm + 9;
+        if (pmIdx < biMIdx) biYtdTDS[r.user_id] = (biYtdTDS[r.user_id] || 0) + (pd.deductions?.tds || 0);
+      }
+
+      let updated = 0;
+      const dbUpdates = [];
+      for (const pr of biPayRows) {
+        const pd = JSON.parse(pr.data);
+        const ss = biSSMap[pr.user_id] || {};
+        const basic = ss.basic_salary || pd.basic_salary || 0;
+        const hra   = ss.hra || pd.hra || 0;
+        const conv  = ss.conveyance || pd.conveyance || 0;
+        const spec  = ss.special_allowance || pd.special_allowance || 0;
+        const annGross = (basic + hra + conv + spec) * 12;
+        const decl = biDecl[pr.user_id] || {};
+        const nD = (k) => Number(decl[k] || 0);
+        const b80C = Math.min(150000, nD('life_insurance_premium')+nD('ppf')+nD('elss')+nD('nsc')+nD('home_loan_principal')+nD('tuition_fees')+nD('sukanya_samriddhi')+nD('five_yr_fd')+nD('nps_80c'));
+        const b80D = Math.min(75000, nD('health_insurance_self')+nD('health_insurance_parents')+Math.min(5000,nD('preventive_checkup')));
+        const bChVIA = b80C+b80D+Math.min(50000,nD('nps_additional'))+nD('education_loan_interest')+nD('donations_100pct')+Math.round(nD('donations_50pct')*0.5);
+        const bRent = nD('hra_rent_paid');
+        const bMetro = (decl.hra_city||'').toLowerCase()==='metro';
+        let bHraEx = 0;
+        if (bRent>0&&hra>0) bHraEx = Math.max(0,Math.min(hra*12,bRent-0.10*basic*12,(bMetro?0.50:0.40)*basic*12));
+        const bOld = computeRegime('old',{grossSalary:annGross,hraExemption:bHraEx,chapterVIA:bChVIA,profTax:2400});
+        const bNew = computeRegime('new',{grossSalary:annGross});
+        const bReg = (decl.regime==='old'||decl.regime==='new')?decl.regime:(bNew.total_tax<=bOld.total_tax?'new':'old');
+        const bAnnTax = bReg==='new'?bNew.total_tax:bOld.total_tax;
+        const bYtd = biYtdTDS[pr.user_id] || 0;
+        const newTDS = biRemMths > 0 ? Math.round(Math.max(0,bAnnTax-bYtd)/biRemMths) : 0;
+        const oldTDS = pd.deductions?.tds || 0;
+        if (newTDS !== oldTDS || !pd.tax_regime) {
+          const newDed = { ...pd.deductions, tds: newTDS };
+          const newTotal = (pd.gross_salary||0) - (newDed.pf||0) - (newDed.esi||0) - (newDed.lop||0) - newTDS;
+          const upd = { ...pd, deductions: newDed, total_deductions: (newDed.pf||0)+(newDed.esi||0)+(newDed.lop||0)+newTDS, net_salary: Math.max(0, newTotal), tax_regime: bReg, tds_integrated_at: new Date().toISOString(), tds_integrated_by: cu?.id };
+          dbUpdates.push(run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), pr.id]));
+          updated++;
+        }
+      }
+      await Promise.all(dbUpdates);
+      return res.json({ success: true, updated, total: biPayRows.length });
+    }
+
+    /* ── TDS: HR override for a specific payroll record ── */
+    case 'overrideTDS': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { payroll_id, tds_amount, reason } = p;
+      if (!payroll_id || tds_amount === undefined) return res.json({ success: false, error: 'payroll_id and tds_amount required' });
+      const ovRow = await one("SELECT id,data FROM entities WHERE id=$1 AND type='Payroll'", [payroll_id]);
+      if (!ovRow) return res.json({ success: false, error: 'Payroll record not found' });
+      const ovPd = JSON.parse(ovRow.data);
+      const ovOld = ovPd.deductions?.tds || 0;
+      const ovNew = Math.round(tds_amount);
+      const ovDed = { ...ovPd.deductions, tds: ovNew };
+      const ovNet = Math.max(0, (ovPd.gross_salary||0) - (ovDed.pf||0) - (ovDed.esi||0) - (ovDed.lop||0) - ovNew);
+      const ovUpd = { ...ovPd, deductions: ovDed, total_deductions: (ovDed.pf||0)+(ovDed.esi||0)+(ovDed.lop||0)+ovNew, net_salary: ovNet, tds_override: true, tds_override_amount: ovNew, tds_override_reason: reason || '', tds_overridden_by: cu?.id, tds_overridden_at: new Date().toISOString() };
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(ovUpd), ovRow.id]);
+      return res.json({ success: true, old_tds: ovOld, new_tds: ovNew, net_salary: ovNet });
     }
 
     /* ── Employee Experience: Recognition (Kudos) ────── */

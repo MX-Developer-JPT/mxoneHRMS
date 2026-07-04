@@ -36,6 +36,7 @@ const employeeMenuGroups = [
   ]},
   { label: 'Payroll', items: [
     { name: 'My Payslips',     icon: CreditCard,      page: 'Payslips' },
+    { name: 'My Tax',          icon: Receipt,         page: 'MyTax' },
     { name: 'Tax Declaration', icon: FileText,        page: 'TaxDeclaration' },
   ]},
   { label: 'Documents & Expenses', items: [
