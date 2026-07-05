@@ -12,7 +12,7 @@ import {
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
-  Network, Grid3x3, CalendarPlus,
+  Network, Grid3x3, CalendarPlus, GitBranch, Route,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
 import DashboardPage from './pages/Dashboard';
@@ -31,6 +31,7 @@ const employeeMenuGroups = [
     { name: 'Mark Attendance', icon: Clock,           page: 'MarkAttendance' },
     { name: 'My Attendance',   icon: Calendar,        page: 'AttendanceHistory' },
     { name: 'Regularisation',  icon: Clock,           page: 'AttendanceRegularisation' },
+    { name: 'Field Duty',      icon: Route,           page: 'FieldDuty' },
   ]},
   { label: 'Leave', items: [
     { name: 'Apply Leave',     icon: FileText,        page: 'Leave' },
@@ -108,6 +109,7 @@ const managementMenuGroups = [
     { name: 'Mark Attendance',          icon: Clock,           page: 'MarkAttendance' },
     { name: 'My Attendance',            icon: Calendar,        page: 'AttendanceHistory' },
     { name: 'Regularisation',           icon: Clock,           page: 'AttendanceRegularisation' },
+    { name: 'Field Duty',               icon: Route,           page: 'FieldDuty' },
   ]},
   { label: 'My Work', items: [
     { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
@@ -159,6 +161,7 @@ const hrMenuGroups = [
     { name: 'WFH Tracking',           icon: Home,             page: 'WFHTracking' },
     { name: 'Overtime Management',    icon: Timer,            page: 'OvertimeManagement' },
     { name: 'Biometric Logs',          icon: Clock,           page: 'AttendanceLogDashboard' },
+    { name: 'Field Duty Tracking',     icon: Route,           page: 'FieldDuty' },
     { name: 'Shift Management',        icon: UserCog,         page: 'ShiftManagement' },
     { name: 'Attendance Exemption',    icon: ShieldOff,       page: 'AttendanceExemption' },
   ]},
@@ -410,6 +413,7 @@ export default function Layout({ children, currentPageName }) {
   if (isAdmin) {
     menuGroups = [...menuGroups, { label: 'Administration', items: [
       { name: 'User Roles',        icon: UserCog,           page: 'UserRoleManagement' },
+      { name: 'Workflow Builder',  icon: GitBranch,         page: 'WorkflowBuilder' },
       { name: 'Admin Panel',       icon: Shield,            page: 'AdminPanel' },
       { name: 'Import Employees',  icon: UserPlus,          page: 'ImportEmployees' },
       { name: 'Company Policies',  icon: BookOpen,          page: 'CompanyPolicies' },

@@ -116,6 +116,8 @@ const MyTax = lazy(() => import('./pages/MyTax'));
 const CompOff = lazy(() => import('./pages/CompOff'));
 const OrgChart = lazy(() => import('./pages/OrgChart'));
 const TalentGrid = lazy(() => import('./pages/TalentGrid'));
+const WorkflowBuilder = lazy(() => import('./pages/WorkflowBuilder'));
+const FieldDuty = lazy(() => import('./pages/FieldDuty'));
 const WorkforcePlanning = lazy(() => import('./pages/WorkforcePlanning'));
 const SkillMatrix = lazy(() => import('./pages/SkillMatrix'));
 const FeedbackSystem = lazy(() => import('./pages/FeedbackSystem'));
@@ -194,6 +196,8 @@ export const PAGES = {
     "CompOff": CompOff,
     "OrgChart": OrgChart,
     "TalentGrid": TalentGrid,
+    "WorkflowBuilder": WorkflowBuilder,
+    "FieldDuty": FieldDuty,
     "WorkforcePlanning": WorkforcePlanning,
     "SkillMatrix": SkillMatrix,
     "FeedbackSystem": FeedbackSystem,

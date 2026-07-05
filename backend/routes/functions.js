@@ -703,17 +703,42 @@ router.post('/:name', async (req, res) => {
       const co = JSON.parse(coRow.data);
       if (co.status !== 'pending') return res.json({ success: false, error: `Already ${co.status}` });
 
-      // Approver must be HR/admin or the employee's reporting manager
       const isHRUser = await hasRole(cu, HR_ROLES);
-      if (!isHRUser) {
-        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [coRow.user_id]);
-        const emp = empRow ? JSON.parse(empRow.data) : {};
-        if (emp.reporting_manager_id !== cu.id) return res.status(403).json({ error: 'Only HR or the reporting manager can decide this request' });
+      const isAdminUser = await hasRole(cu, ['admin']);
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [coRow.user_id]);
+      const emp = empRow ? JSON.parse(empRow.data) : {};
+
+      // Configurable approval chain (Workflow Builder) — falls back to manager-or-HR
+      const wfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='comp_off'");
+      const wf = wfRow ? JSON.parse(wfRow.data) : null;
+      const matchesStep = (step) =>
+        (step.approver_type === 'reporting_manager' && emp.reporting_manager_id === cu.id) ||
+        (step.approver_type === 'hr' && isHRUser) ||
+        (step.approver_type === 'admin' && isAdminUser) ||
+        (step.approver_type === 'specific_user' && step.specific_user_id === cu.id);
+
+      let isFinalStep = true;
+      if (wf?.is_active && Array.isArray(wf.steps) && wf.steps.length > 0) {
+        const level = co.approval_level || 0;
+        const step = wf.steps[level];
+        if (!isAdminUser && !matchesStep(step)) return res.status(403).json({ error: `This request is at approval level ${level + 1} (${step.approver_type.replace(/_/g, ' ')}) — you are not the approver for this step` });
+        isFinalStep = level >= wf.steps.length - 1;
+      } else if (!isHRUser && emp.reporting_manager_id !== cu.id) {
+        return res.status(403).json({ error: 'Only HR or the reporting manager can decide this request' });
       }
 
-      const newStatus = action === 'approve' ? 'approved' : 'rejected';
-      const updated = { ...co, status: newStatus, decided_by: cu.id, decided_at: new Date().toISOString(), decision_note: note || '' };
+      const history = [...(co.approval_history || []), { level: (co.approval_level || 0) + 1, approver_id: cu.id, action, note: note || '', at: new Date().toISOString() }];
+      const newStatus = action === 'reject' ? 'rejected' : (isFinalStep ? 'approved' : 'pending');
+      const updated = {
+        ...co, status: newStatus, approval_history: history,
+        approval_level: action === 'approve' && !isFinalStep ? (co.approval_level || 0) + 1 : (co.approval_level || 0),
+        ...(newStatus !== 'pending' ? { decided_by: cu.id, decided_at: new Date().toISOString(), decision_note: note || '' } : {}),
+      };
       await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(updated), newStatus, coRow.id]);
+      if (action === 'approve' && !isFinalStep) {
+        await notify(coRow.user_id, { title: 'Comp-off — level approved', message: `Your comp-off for ${co.work_date} cleared approval level ${(co.approval_level || 0) + 1} and moved to the next approver.`, type: 'info', link: '/CompOff' });
+        return res.json({ success: true, status: 'pending', advanced_to_level: (co.approval_level || 0) + 2 });
+      }
 
       if (action === 'approve') {
         // Credit a Compensatory Off leave balance (find-or-create policy + balance)
@@ -758,9 +783,13 @@ router.post('/:name', async (req, res) => {
         coBalance = bal?.available || 0;
       }
 
-      // Approvals: HR sees all pending; a manager sees their reports' pending
+      // Approvals: HR sees all pending; a manager sees their reports' pending;
+      // with a configured workflow, the current-level approver sees their queue
       let approvals = [];
       const isHRUser = await hasRole(cu, HR_ROLES);
+      const isAdminUser = await hasRole(cu, ['admin']);
+      const coWfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='comp_off'");
+      const coWf = coWfRow ? JSON.parse(coWfRow.data) : null;
       const pendRows = await all("SELECT user_id,data FROM entities WHERE type='CompOff' AND data::jsonb->>'status'='pending' ORDER BY created_at DESC");
       if (pendRows.length) {
         const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee'")).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
@@ -768,8 +797,20 @@ router.post('/:name', async (req, res) => {
         for (const r of pendRows) {
           if (r.user_id === cu.id) continue;
           const emp = empBy[r.user_id] || {};
-          if (isHRUser || emp.reporting_manager_id === cu.id) {
-            approvals.push({ ...JSON.parse(r.data), employee_name: emp.display_name || 'Employee', employee_code: emp.employee_code || '', department: emp.department || '' });
+          const rec = JSON.parse(r.data);
+          let canSee;
+          if (coWf?.is_active && Array.isArray(coWf.steps) && coWf.steps.length > 0) {
+            const step = coWf.steps[rec.approval_level || 0] || {};
+            canSee = isAdminUser ||
+              (step.approver_type === 'reporting_manager' && emp.reporting_manager_id === cu.id) ||
+              (step.approver_type === 'hr' && isHRUser) ||
+              (step.approver_type === 'admin' && isAdminUser) ||
+              (step.approver_type === 'specific_user' && step.specific_user_id === cu.id);
+          } else {
+            canSee = isHRUser || emp.reporting_manager_id === cu.id;
+          }
+          if (canSee) {
+            approvals.push({ ...rec, current_level: (rec.approval_level || 0) + 1, total_levels: coWf?.is_active ? (coWf.steps?.length || 1) : 1, employee_name: emp.display_name || 'Employee', employee_code: emp.employee_code || '', department: emp.department || '' });
           }
         }
       }
@@ -837,6 +878,155 @@ router.post('/:name', async (req, res) => {
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'TalentAssessment',$2,'active',$3)", [taId, taUid, JSON.stringify({ id: taId, ...payload })]);
       }
       return res.json({ success: true });
+    }
+
+    /* ── Workflow Builder: configurable approval chains ── */
+    case 'getApprovalWorkflows': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const wfRows = await all("SELECT data FROM entities WHERE type='ApprovalWorkflow'");
+      return res.json({ success: true, workflows: wfRows.map(r => JSON.parse(r.data)) });
+    }
+
+    case 'saveApprovalWorkflow': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { module, steps, is_active } = p;
+      const VALID_MODULES = ['leave', 'expense', 'comp_off', 'regularisation', 'gate_pass', 'loan'];
+      if (!VALID_MODULES.includes(module)) return res.json({ success: false, error: 'Invalid module' });
+      if (!Array.isArray(steps) || steps.length < 1 || steps.length > 4) return res.json({ success: false, error: '1 to 4 approval steps required' });
+      for (const s of steps) {
+        if (!['reporting_manager', 'hr', 'admin', 'specific_user'].includes(s.approver_type)) return res.json({ success: false, error: 'Invalid approver_type' });
+        if (s.approver_type === 'specific_user' && !s.specific_user_id) return res.json({ success: false, error: 'specific_user step needs a user' });
+      }
+      const exRow = await one("SELECT id,data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'=$1", [module]);
+      const payload = { module, steps, is_active: is_active !== false, updated_by: cu.id, updated_at: new Date().toISOString() };
+      if (exRow) {
+        const ex = JSON.parse(exRow.data);
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...ex, ...payload }), exRow.id]);
+      } else {
+        const wfId = uuidv4();
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ApprovalWorkflow',NULL,'active',$2)", [wfId, JSON.stringify({ id: wfId, ...payload })]);
+      }
+      return res.json({ success: true });
+    }
+
+    /* ── Field Duty: GPS distance tracking for out-duty staff ── */
+    case 'startFieldTrip': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const active = await one("SELECT id FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [cu.id]);
+      if (active) return res.json({ success: false, error: 'You already have an active field trip — end it first' });
+      const ftId = uuidv4();
+      const ft = {
+        id: ftId, user_id: cu.id, date: new Date().toISOString().slice(0, 10),
+        start_time: new Date().toISOString(), status: 'active',
+        purpose: p.purpose || '', points: [], distance_km: 0, point_count: 0,
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'FieldTrip',$2,'active',$3)", [ftId, cu.id, JSON.stringify(ft)]);
+      return res.json({ success: true, trip: ft });
+    }
+
+    case 'logFieldPoints': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { trip_id, points } = p;
+      if (!trip_id || !Array.isArray(points) || !points.length) return res.json({ success: false, error: 'trip_id and points required' });
+      const ftRow = await one("SELECT id,data FROM entities WHERE id=$1 AND type='FieldTrip' AND user_id=$2", [trip_id, cu.id]);
+      if (!ftRow) return res.json({ success: false, error: 'Trip not found' });
+      const ft = JSON.parse(ftRow.data);
+      if (ft.status !== 'active') return res.json({ success: false, error: 'Trip is not active' });
+
+      const havKm = (a, b) => {
+        const R = 6371, dLat = (b.lat - a.lat) * Math.PI / 180, dLng = (b.lng - a.lng) * Math.PI / 180;
+        const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+        return 2 * R * Math.asin(Math.sqrt(s));
+      };
+      // Filter jitter/jumps, accumulate distance from the last stored point
+      let last = ft.points.length ? ft.points[ft.points.length - 1] : null;
+      let addedKm = 0;
+      const clean = [];
+      for (const pt of points) {
+        const q = { lat: Number(pt.lat), lng: Number(pt.lng), t: pt.t || new Date().toISOString(), acc: Number(pt.acc || 0) };
+        if (!isFinite(q.lat) || !isFinite(q.lng)) continue;
+        if (q.acc > 100) continue;                                   // poor GPS fix
+        if (last) {
+          const dKm = havKm(last, q);
+          const dtH = Math.max((new Date(q.t) - new Date(last.t)) / 3600000, 1 / 3600);
+          if (dKm < 0.01) continue;                                  // < 10 m — stationary jitter
+          if (dKm / dtH > 120) continue;                             // > 120 km/h — GPS jump
+          addedKm += dKm;
+        }
+        clean.push(q);
+        last = q;
+      }
+      // Keep the trail bounded: store up to 2,000 points (thin older ones beyond that)
+      let allPts = [...ft.points, ...clean];
+      if (allPts.length > 2000) allPts = allPts.filter((_, i) => i % 2 === 0 || i >= allPts.length - 500);
+      const upd = { ...ft, points: allPts, point_count: (ft.point_count || 0) + clean.length, distance_km: Math.round(((ft.distance_km || 0) + addedKm) * 100) / 100, last_point_at: new Date().toISOString() };
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
+      return res.json({ success: true, distance_km: upd.distance_km, points_stored: upd.point_count });
+    }
+
+    case 'endFieldTrip': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { trip_id } = p;
+      const ftRow = await one("SELECT id,data FROM entities WHERE id=$1 AND type='FieldTrip' AND user_id=$2", [trip_id, cu.id]);
+      if (!ftRow) return res.json({ success: false, error: 'Trip not found' });
+      const ft = JSON.parse(ftRow.data);
+      if (ft.status !== 'active') return res.json({ success: false, error: 'Trip already ended' });
+      const upd = { ...ft, status: 'completed', end_time: new Date().toISOString() };
+      await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
+      return res.json({ success: true, trip: { ...upd, points: undefined } });
+    }
+
+    case 'getFieldTrips': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const rate = Number((await one("SELECT value FROM settings WHERE key='field_rate_per_km'"))?.value || 0);
+      const isHRUser = await hasRole(cu, HR_ROLES);
+      let rows;
+      if (p.scope === 'all' && isHRUser) {
+        rows = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' ORDER BY created_at DESC LIMIT 300");
+      } else {
+        rows = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND user_id=$1 ORDER BY created_at DESC LIMIT 100", [cu.id]);
+      }
+      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee'");
+      const empBy = {};
+      for (const r of empRows) { const d = JSON.parse(r.data); empBy[r.user_id] = { name: d.display_name || 'Employee', code: d.employee_code || '', department: d.department || '' }; }
+      const trips = rows.map(r => {
+        const d = JSON.parse(r.data);
+        const { points, ...rest } = d;
+        return { ...rest, employee: empBy[r.user_id] || {}, trail_points: (points || []).length };
+      });
+      return res.json({ success: true, trips, rate_per_km: rate, is_hr: isHRUser });
+    }
+
+    case 'setFieldRate': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const rate = Number(p.rate_per_km);
+      if (!isFinite(rate) || rate < 0) return res.json({ success: false, error: 'Valid rate_per_km required' });
+      await run("INSERT INTO settings(key,value,updated_at) VALUES('field_rate_per_km',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [String(rate)]);
+      return res.json({ success: true, rate_per_km: rate });
+    }
+
+    case 'claimFieldTrip': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { trip_id } = p;
+      const ftRow = await one("SELECT id,data FROM entities WHERE id=$1 AND type='FieldTrip' AND user_id=$2", [trip_id, cu.id]);
+      if (!ftRow) return res.json({ success: false, error: 'Trip not found' });
+      const ft = JSON.parse(ftRow.data);
+      if (ft.status !== 'completed') return res.json({ success: false, error: 'End the trip before claiming' });
+      if (ft.claimed) return res.json({ success: false, error: 'Already claimed' });
+      const rate = Number((await one("SELECT value FROM settings WHERE key='field_rate_per_km'"))?.value || 0);
+      if (rate <= 0) return res.json({ success: false, error: 'HR has not configured the per-km rate yet' });
+      if ((ft.distance_km || 0) <= 0) return res.json({ success: false, error: 'No distance recorded on this trip' });
+      const amount = Math.round(ft.distance_km * rate);
+      const rbId = uuidv4();
+      const rb = {
+        id: rbId, user_id: cu.id, category: 'travel',
+        amount, expense_date: ft.date,
+        description: `Field duty travel — ${ft.distance_km} km × ₹${rate}/km (GPS-tracked trip${ft.purpose ? ': ' + ft.purpose : ''})`,
+        status: 'pending', field_trip_id: ft.id, submitted_at: new Date().toISOString(),
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Reimbursement',$2,'pending',$3)", [rbId, cu.id, JSON.stringify(rb)]);
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...ft, claimed: true, claim_id: rbId, claim_amount: amount }), ftRow.id]);
+      return res.json({ success: true, amount, distance_km: ft.distance_km, rate_per_km: rate, claim_id: rbId });
     }
 
     /* ── Payroll ──────────────────────────────────────── */

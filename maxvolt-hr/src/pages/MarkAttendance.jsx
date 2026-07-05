@@ -1,8 +1,9 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn } from 'lucide-react';
+import { Switch } from "@/components/ui/switch";
+import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -29,10 +30,23 @@ export default function MarkAttendance() {
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
 
+  // ── Geofence auto attendance ──
+  const [autoMode, setAutoMode] = useState(() => localStorage.getItem('auto_attendance') === '1');
+  const [officeFence, setOfficeFence] = useState(null);   // assigned AppLocation with lat/lng/radius
+  const [fenceDistance, setFenceDistance] = useState(null); // metres from office centre
+  const autoBusyRef = useRef(false);
+  const fenceCountRef = useRef({ in: 0, out: 0 });
+
+  const distMetres = (lat1, lng1, lat2, lng2) => {
+    const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
+    const s = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(s));
+  };
+
   useEffect(() => {
     loadData();
     getCurrentLocationWithDetails();
-    
+
     // Update time every second
     const timer = setInterval(() => {
       setCurrentTime(new Date());
@@ -57,6 +71,14 @@ export default function MarkAttendance() {
           const defaultShift = await base44.entities.Shift.filter({ is_default: true });
           setShift(defaultShift[0]);
         }
+
+        // Geofence: find the employee's assigned office (Work Location ↔ AppLocation.name)
+        try {
+          const locs = await base44.entities.AppLocation.list();
+          const withFence = locs.filter(l => l.is_active !== false && l.latitude != null && l.longitude != null && l.geofence_radius > 0);
+          const assigned = withFence.find(l => (l.name || '').toLowerCase() === (empRecord[0].work_location || '').toLowerCase());
+          setOfficeFence(assigned || (withFence.length === 1 ? withFence[0] : null));
+        } catch { /* no locations — auto mode unavailable */ }
       }
 
       const today = format(new Date(), 'yyyy-MM-dd');
@@ -242,6 +264,97 @@ export default function MarkAttendance() {
     }
   };
 
+  // ── Geofence auto attendance: watch position while the app is open ──
+  const toggleAutoMode = (on) => {
+    setAutoMode(on);
+    localStorage.setItem('auto_attendance', on ? '1' : '0');
+    fenceCountRef.current = { in: 0, out: 0 };
+    if (on) toast.success('Auto attendance ON — keep the app open; you will be checked in when you reach the office');
+  };
+
+  useEffect(() => {
+    if (!autoMode || !officeFence || !navigator.geolocation) return;
+    if (todayAttendance?.check_out_time) return; // day already closed
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const d = distMetres(pos.coords.latitude, pos.coords.longitude, Number(officeFence.latitude), Number(officeFence.longitude));
+        setFenceDistance(Math.round(d));
+        if (pos.coords.accuracy > 150) return; // ignore poor fixes
+        const inside = d <= Number(officeFence.geofence_radius);
+        const wellOutside = d > Number(officeFence.geofence_radius) + 100; // exit buffer against GPS wobble
+        if (!todayAttendance && inside) {
+          fenceCountRef.current.out = 0;
+          if (++fenceCountRef.current.in >= 2 && !autoBusyRef.current) autoCheckIn(pos.coords);
+        } else if (todayAttendance && !todayAttendance.check_out_time && wellOutside) {
+          fenceCountRef.current.in = 0;
+          if (++fenceCountRef.current.out >= 3 && !autoBusyRef.current) autoCheckOut(pos.coords);
+        } else {
+          fenceCountRef.current = { in: 0, out: 0 };
+        }
+      },
+      () => { /* keep silent — manual flow still works */ },
+      { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+    );
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [autoMode, officeFence, todayAttendance]);
+
+  const autoCheckIn = async (coords) => {
+    autoBusyRef.current = true;
+    try {
+      const checkInTime = toISTTime();
+      const today = checkInTime.toISOString().split('T')[0];
+      const geo = await reverseGeocode(coords.latitude, coords.longitude);
+      const created = await base44.entities.Attendance.create({
+        user_id: user.id, date: today,
+        check_in_time: checkInTime.toISOString(),
+        check_in_location: {
+          latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy,
+          city: geo.city, locality: geo.locality, landmark: geo.landmark, pincode: geo.pincode,
+          address: geo.fullAddress, location_address: geo.summary,
+        },
+        status: 'present', shift_id: shift?.id,
+        auto_geofence: true, geofence_location: officeFence.name,
+      });
+      setTodayAttendance({ id: created?.id, user_id: user.id, date: today, check_in_time: checkInTime.toISOString(), status: 'present', auto_geofence: true });
+      toast.success(`Auto checked-in at ${officeFence.name} 📍`);
+      loadData();
+    } catch (e) {
+      console.error('Auto check-in failed:', e);
+    } finally {
+      autoBusyRef.current = false;
+      fenceCountRef.current = { in: 0, out: 0 };
+    }
+  };
+
+  const autoCheckOut = async (coords) => {
+    if (!todayAttendance?.check_in_time || !todayAttendance?.id) return;
+    autoBusyRef.current = true;
+    try {
+      const checkOutTime = toISTTime();
+      const workingHours = (checkOutTime - new Date(todayAttendance.check_in_time)) / 3600000;
+      const geo = await reverseGeocode(coords.latitude, coords.longitude);
+      await base44.entities.Attendance.update(todayAttendance.id, {
+        check_out_time: checkOutTime.toISOString(),
+        check_out_location: {
+          latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy,
+          city: geo.city, locality: geo.locality, landmark: geo.landmark, pincode: geo.pincode,
+          address: geo.fullAddress, location_address: geo.summary,
+        },
+        working_hours: parseFloat(workingHours.toFixed(2)),
+        status: workingHours < (shift?.working_hours || 8) ? 'half_day' : 'present',
+        auto_geofence_checkout: true,
+      });
+      base44.functions.invoke('computeAttendanceStatus', { attendance_id: todayAttendance.id }).catch(() => {});
+      toast.success(`Auto checked-out — you left ${officeFence.name} (${workingHours.toFixed(1)}h)`);
+      loadData();
+    } catch (e) {
+      console.error('Auto check-out failed:', e);
+    } finally {
+      autoBusyRef.current = false;
+      fenceCountRef.current = { in: 0, out: 0 };
+    }
+  };
+
   const processCheckOut = async () => {
     if (!todayAttendance?.check_in_time) {
       toast.error('Check-in time missing — please refresh and try again');
@@ -322,6 +435,32 @@ export default function MarkAttendance() {
           <h1 className="text-2xl md:text-3xl font-bold">Mark Attendance</h1>
           <p className="text-gray-600 mt-1 text-sm md:text-base">Check in and check out for the day</p>
         </div>
+
+        {/* Geofence auto attendance */}
+        {officeFence && (
+          <Card className={autoMode ? 'border-blue-300 bg-blue-50/50' : ''}>
+            <CardContent className="py-3 px-4 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`p-2 rounded-full ${autoMode ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'}`}>
+                  <Radar className={`w-5 h-5 ${autoMode ? 'animate-pulse' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-gray-800">Auto attendance — {officeFence.name}</p>
+                  <p className="text-xs text-gray-500">
+                    {autoMode
+                      ? fenceDistance != null
+                        ? fenceDistance <= officeFence.geofence_radius
+                          ? `You are inside the office zone (${fenceDistance}m from centre)`
+                          : `${fenceDistance}m from office — zone radius ${officeFence.geofence_radius}m`
+                        : 'Watching your location… keep the app open'
+                      : `Walk in to check in, walk out to check out (${officeFence.geofence_radius}m zone). Works while the app is open.`}
+                  </p>
+                </div>
+              </div>
+              <Switch checked={autoMode} onCheckedChange={toggleAutoMode} />
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader>

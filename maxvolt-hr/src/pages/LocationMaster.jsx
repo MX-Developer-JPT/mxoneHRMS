@@ -18,7 +18,22 @@ export default function LocationMaster() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: '', address: '', city: '', state: '', is_active: true });
+  const [form, setForm] = useState({ name: '', address: '', city: '', state: '', is_active: true, latitude: '', longitude: '', geofence_radius: '' });
+  const [capturing, setCapturing] = useState(false);
+
+  const captureCurrentLocation = () => {
+    if (!navigator.geolocation) { toast.error('Geolocation not supported on this device'); return; }
+    setCapturing(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setForm(f => ({ ...f, latitude: pos.coords.latitude.toFixed(6), longitude: pos.coords.longitude.toFixed(6) }));
+        toast.success(`Captured (±${Math.round(pos.coords.accuracy)}m accuracy) — stand at the office centre for best results`);
+        setCapturing(false);
+      },
+      () => { toast.error('Could not get location — enable GPS and try again'); setCapturing(false); },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  };
   const [expandedLocation, setExpandedLocation] = useState(null);
 
   useEffect(() => { loadData(); }, []);
@@ -81,19 +96,31 @@ export default function LocationMaster() {
 
   const openEdit = (loc) => {
     setEditingId(loc.id);
-    setForm({ name: loc.name || '', address: loc.address || '', city: loc.city || '', state: loc.state || '', is_active: loc.is_active !== false });
+    setForm({
+      name: loc.name || '', address: loc.address || '', city: loc.city || '', state: loc.state || '', is_active: loc.is_active !== false,
+      latitude: loc.latitude != null ? String(loc.latitude) : '', longitude: loc.longitude != null ? String(loc.longitude) : '',
+      geofence_radius: loc.geofence_radius != null ? String(loc.geofence_radius) : '',
+    });
     setShowDialog(true);
   };
 
   const handleSave = async () => {
     if (!form.name.trim()) { toast.error('Location name is required'); return; }
+    const lat = form.latitude !== '' ? Number(form.latitude) : null;
+    const lng = form.longitude !== '' ? Number(form.longitude) : null;
+    const radius = form.geofence_radius !== '' ? Number(form.geofence_radius) : null;
+    if ((lat != null || lng != null || radius != null) && (lat == null || lng == null || !radius)) {
+      toast.error('For geofencing, set latitude, longitude AND radius together');
+      return;
+    }
+    const payload = { ...form, latitude: lat, longitude: lng, geofence_radius: radius };
     setSaving(true);
     try {
       if (editingId) {
-        await base44.entities.AppLocation.update(editingId, form);
+        await base44.entities.AppLocation.update(editingId, payload);
         toast.success('Location updated');
       } else {
-        await base44.entities.AppLocation.create(form);
+        await base44.entities.AppLocation.create(payload);
         toast.success('Location added');
       }
       setShowDialog(false);
@@ -161,7 +188,9 @@ export default function LocationMaster() {
                               <MapPin className="w-5 h-5 text-primary" />
                             </div>
                             <div>
-                              <p className="font-semibold text-foreground">{loc.name}</p>
+                              <p className="font-semibold text-foreground flex items-center gap-2">{loc.name}
+                                {loc.latitude != null && loc.geofence_radius ? <Badge className="bg-blue-100 text-blue-700 text-[10px]">GEOFENCE {loc.geofence_radius}m</Badge> : null}
+                              </p>
                               <p className="text-sm text-muted-foreground">{[loc.address, loc.city, loc.state].filter(Boolean).join(', ') || '—'}</p>
                               <p className="text-xs text-muted-foreground mt-0.5">{empCount} employee(s)</p>
                             </div>
@@ -272,6 +301,22 @@ export default function LocationMaster() {
               <div className="grid grid-cols-2 gap-4">
                 <div><Label>City</Label><Input value={form.city} onChange={e => setForm({...form, city: e.target.value})} placeholder="City" /></div>
                 <div><Label>State</Label><Input value={form.state} onChange={e => setForm({...form, state: e.target.value})} placeholder="State" /></div>
+              </div>
+              {/* Geofence */}
+              <div className="border rounded-lg p-3 space-y-3 bg-muted/30">
+                <div className="flex items-center justify-between">
+                  <Label className="font-semibold">Geofence (auto attendance)</Label>
+                  <Button type="button" size="sm" variant="outline" onClick={captureCurrentLocation} disabled={capturing}>
+                    {capturing ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <MapPin className="w-3.5 h-3.5 mr-1" />}
+                    Use my current location
+                  </Button>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div><Label className="text-xs">Latitude</Label><Input type="number" step="any" value={form.latitude} onChange={e => setForm({...form, latitude: e.target.value})} placeholder="28.6692" /></div>
+                  <div><Label className="text-xs">Longitude</Label><Input type="number" step="any" value={form.longitude} onChange={e => setForm({...form, longitude: e.target.value})} placeholder="77.4538" /></div>
+                  <div><Label className="text-xs">Radius (m)</Label><Input type="number" value={form.geofence_radius} onChange={e => setForm({...form, geofence_radius: e.target.value})} placeholder="200" /></div>
+                </div>
+                <p className="text-xs text-muted-foreground">Employees assigned to this location (Work Location on the employee record) get auto check-in/out when they enter/leave this circle with the app open.</p>
               </div>
               <div className="flex items-center gap-2">
                 <Switch checked={form.is_active} onCheckedChange={v => setForm({...form, is_active: v})} />

@@ -66,6 +66,7 @@ export default function LeaveManagement() {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [leaveBalances, setLeaveBalances] = useState({}); // { userId_policyId: LeaveBalance }
+  const [leaveWorkflow, setLeaveWorkflow] = useState(null); // configurable chain from Workflow Builder
 
   useEffect(() => { loadData(); }, []);
 
@@ -110,6 +111,14 @@ export default function LeaveManagement() {
       setLeaveRequests(requests);
       setLeavePolicies(policies);
 
+      // Configurable approval chain (Workflow Builder) — falls back to built-in 2-level flow
+      try {
+        const wfRes = await base44.functions.invoke('getApprovalWorkflows', {});
+        const wfData = wfRes.data || wfRes;
+        const lwf = (wfData.workflows || []).find(w => w.module === 'leave' && w.is_active !== false);
+        setLeaveWorkflow(lwf?.steps?.length ? lwf : null);
+      } catch { setLeaveWorkflow(null); }
+
       // Silently run auto EL grant (1 EL per 40 present days) — deduplication handled server-side
       base44.functions.invoke('grantEarnedLeaveFor40Days', {})
         .then(res => { const r = res?.data; if (r?.total_granted > 0) toast.success(`Auto-granted ${r.total_granted} Earned Leave(s) for qualifying employee(s)`); })
@@ -129,7 +138,18 @@ export default function LeaveManagement() {
     if (!leave || leave.status !== 'pending') return false;
     // Admin can approve/reject any pending leave at any level
     if (isAdmin) return true;
-    // Level 1: Reporting Manager approves first
+    // Configurable chain (Workflow Builder): match the step at the current level
+    if (leaveWorkflow) {
+      const step = leaveWorkflow.steps[(leave.current_approval_level || 1) - 1];
+      if (!step) return isHR;
+      const leaveEmp = employees.find(e => e.user_id === leave.user_id);
+      if (step.approver_type === 'reporting_manager') return leaveEmp?.reporting_manager_id === user?.id || isHR;
+      if (step.approver_type === 'hr') return isHR;
+      if (step.approver_type === 'admin') return false; // isAdmin already returned true above
+      if (step.approver_type === 'specific_user') return step.specific_user_id === user?.id;
+      return false;
+    }
+    // Built-in flow — Level 1: Reporting Manager approves first
     if (leave.current_approval_level === 1) {
       const leaveEmp = employees.find(e => e.user_id === leave.user_id);
       return leaveEmp?.reporting_manager_id === user?.id || isHR;
@@ -159,15 +179,17 @@ export default function LeaveManagement() {
         timestamp: new Date().toISOString()
       };
 
+      const totalLevels = leaveWorkflow?.steps?.length || 2;
+      const curLevel = leave.current_approval_level || 1;
       if (actionType === 'approve') {
-        if (leave.current_approval_level === 1 && !isAdmin) {
-          // Move to level 2 (HR/HOD approval) — non-admin managers only
+        if (curLevel < totalLevels && !isAdmin) {
+          // Advance to the next approval level in the chain
           await base44.entities.Leave.update(leave.id, {
-            current_approval_level: 2,
+            current_approval_level: curLevel + 1,
             approval_history: [...history, newHistoryEntry]
           });
           base44.functions.invoke('notifyLeaveStatusChange', { leave_id: leave.id, action: 'level1_approved', note: comment }).catch(() => {});
-          toast.success('Level 1 approved. Sent to HR/HOD for final approval.');
+          toast.success(`Level ${curLevel} approved. Sent to level ${curLevel + 1} of ${totalLevels} for ${curLevel + 1 === totalLevels ? 'final ' : ''}approval.`);
         } else {
           // Final approval
           await base44.entities.Leave.update(leave.id, {

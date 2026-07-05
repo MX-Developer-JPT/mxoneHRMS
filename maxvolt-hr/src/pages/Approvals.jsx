@@ -23,8 +23,20 @@ export default function Approvals() {
   const [loading, setLoading] = useState(true);
   const [viewerDoc, setViewerDoc] = useState(null);
   const [processing, setProcessing] = useState({});
+  const [workflows, setWorkflows] = useState({});
 
   useEffect(() => { loadData(); }, []);
+
+  // Does the current user match a workflow step for the given employee record?
+  const matchesStep = (step, empRecord, currentUser, hrRole) => {
+    if (!step) return false;
+    if (step.approver_type === 'reporting_manager')
+      return (empRecord?.reporting_manager_email || '').toLowerCase() === (currentUser?.email || '').toLowerCase() || empRecord?.reporting_manager_id === currentUser?.id;
+    if (step.approver_type === 'hr') return hrRole;
+    if (step.approver_type === 'admin') return (currentUser?.custom_role || currentUser?.role) === 'admin';
+    if (step.approver_type === 'specific_user') return step.specific_user_id === currentUser?.id;
+    return false;
+  };
 
   const loadData = async () => {
     try {
@@ -36,6 +48,15 @@ export default function Approvals() {
 
       const empRecords = await base44.entities.Employee.list();
       setEmployees(empRecords);
+
+      // Configurable approval chains (Workflow Builder)
+      let wfMap = {};
+      try {
+        const wfRes = await base44.functions.invoke('getApprovalWorkflows', {});
+        const wfData = wfRes.data || wfRes;
+        if (wfData.success) wfMap = Object.fromEntries((wfData.workflows || []).filter(w => w.is_active !== false).map(w => [w.module, w]));
+      } catch { /* workflows unavailable — use built-in flows */ }
+      setWorkflows(wfMap);
 
       // Employees store reporting_manager_email (not reporting_manager_id), so match by email
       const directReportUserIds = empRecords
@@ -103,8 +124,31 @@ export default function Approvals() {
 
   const handleReimbursementApproval = async (reimbId, action) => {
     try {
-      if (isHR) {
-        // HR final approval/rejection
+      const wf = workflows.expense;
+      const reimb = reimbursements.find(r => r.id === reimbId);
+      if (wf?.steps?.length && reimb) {
+        // ── Configurable chain from Workflow Builder ──
+        const lvl = reimb.wf_level || 0;
+        const step = wf.steps[lvl];
+        const empRecord = employees.find(e => e.user_id === reimb.user_id);
+        const isAdminUser = (user.custom_role || user.role) === 'admin';
+        if (!isAdminUser && !matchesStep(step, empRecord, user, isHR)) {
+          toast.error(`This claim is at level ${lvl + 1} of ${wf.steps.length} — the assigned approver for this step must act on it`);
+          return;
+        }
+        const history = [...(reimb.wf_history || []), { level: lvl + 1, approver_id: user.id, action, at: new Date().toISOString() }];
+        if (action === 'reject') {
+          await base44.entities.Reimbursement.update(reimbId, { status: 'rejected', wf_history: history, hr_approved_by: user.id, approved_date: new Date().toISOString() });
+          toast.success('Reimbursement rejected');
+        } else if (lvl < wf.steps.length - 1) {
+          await base44.entities.Reimbursement.update(reimbId, { wf_level: lvl + 1, wf_history: history });
+          toast.success(`Approved at level ${lvl + 1} — moved to level ${lvl + 2} of ${wf.steps.length}`);
+        } else {
+          await base44.entities.Reimbursement.update(reimbId, { status: 'approved', wf_level: lvl, wf_history: history, hr_approved_by: user.id, approved_date: new Date().toISOString() });
+          toast.success('Reimbursement fully approved');
+        }
+      } else if (isHR) {
+        // Built-in flow: HR final approval/rejection
         await base44.entities.Reimbursement.update(reimbId, {
           status: action === 'approve' ? 'approved' : 'rejected',
           hr_approved_by: user.id,
@@ -112,7 +156,7 @@ export default function Approvals() {
         });
         toast.success(`Reimbursement ${action === 'approve' ? 'approved' : 'rejected'} by HR`);
       } else {
-        // Manager approval — move to HR queue
+        // Built-in flow: manager approval — move to HR queue
         await base44.entities.Reimbursement.update(reimbId, {
           status: action === 'approve' ? 'manager_approved' : 'rejected',
           manager_approved_by: user.id,
