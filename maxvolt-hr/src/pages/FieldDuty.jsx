@@ -21,6 +21,7 @@ export default function FieldDuty() {
 
   const [activeTrip, setActiveTrip] = useState(null);
   const [liveKm, setLiveKm] = useState(0);
+  const [gpsAccuracy, setGpsAccuracy] = useState(null);
   const [purpose, setPurpose] = useState('');
   const [startDialog, setStartDialog] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -59,7 +60,18 @@ export default function FieldDuty() {
     if ('wakeLock' in navigator) navigator.wakeLock.request('screen').then(wl => { wakeLockRef.current = wl; }).catch(() => {});
     watchRef.current = navigator.geolocation.watchPosition(
       (pos) => {
-        bufferRef.current.push({ lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, t: new Date().toISOString() });
+        setGpsAccuracy(Math.round(pos.coords.accuracy));
+        if (pos.coords.accuracy > 60) return; // poor fix — never contributes distance
+        const q = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, t: new Date().toISOString() };
+        // Client-side thinning: only buffer if we moved beyond the GPS noise floor
+        const prev = bufferRef.current[bufferRef.current.length - 1];
+        if (prev) {
+          const R = 6371000, la1 = prev.lat * Math.PI / 180, la2 = q.lat * Math.PI / 180;
+          const dLa = la2 - la1, dLo = (q.lng - prev.lng) * Math.PI / 180;
+          const dM = 2 * R * Math.asin(Math.sqrt(Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2));
+          if (dM < Math.max(15, Math.min(50, (prev.acc + q.acc) / 2))) return;
+        }
+        bufferRef.current.push(q);
       },
       () => {},
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
@@ -170,6 +182,11 @@ export default function FieldDuty() {
             </div>
             <p className="text-5xl font-bold text-gray-800">{fmtKm(liveKm)}</p>
             {rate > 0 && <p className="text-sm text-gray-500">≈ {fmt(liveKm * rate)} claimable at ₹{rate}/km</p>}
+            {gpsAccuracy != null && (
+              <p className={`text-xs font-medium ${gpsAccuracy <= 25 ? 'text-green-600' : gpsAccuracy <= 60 ? 'text-amber-600' : 'text-red-600'}`}>
+                GPS accuracy: {gpsAccuracy}m {gpsAccuracy > 60 ? '— weak signal, distance paused until it improves' : ''}
+              </p>
+            )}
             <p className="text-xs text-gray-400">Keep the app open (screen stays awake). Points sync every 20 seconds.</p>
             <Button className="bg-red-600 hover:bg-red-700 text-white" onClick={endTrip} disabled={busy}>
               <Square className="w-4 h-4 mr-2" /> End Trip

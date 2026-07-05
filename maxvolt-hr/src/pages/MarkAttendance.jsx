@@ -29,6 +29,8 @@ export default function MarkAttendance() {
   const [capturedPhoto, setCapturedPhoto] = useState(null);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [refining, setRefining] = useState(false);   // GPS accuracy refinement in progress
+  const [remarks, setRemarks] = useState('');        // optional note saved with the punch
 
   // ── Geofence auto attendance ──
   const [autoMode, setAutoMode] = useState(() => localStorage.getItem('auto_attendance') === '1');
@@ -101,62 +103,97 @@ export default function MarkAttendance() {
   const reverseGeocode = async (lat, lng) => {
     try {
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&namedetails=1`,
         { headers: { 'Accept-Language': 'en', 'User-Agent': 'MaxvoltHRMS/1.0' } }
       );
       const data = await res.json();
       // Build a human-readable address with landmark
       const a = data.address || {};
+      const houseNo = a.house_number;
       const parts = [
-        a.amenity || a.building || a.shop || a.tourism || a.leisure,
+        houseNo,
         a.road || a.pedestrian,
-        a.neighbourhood || a.suburb || a.quarter,
+        a.neighbourhood || a.quarter,
+        a.suburb,
         a.city || a.town || a.village || a.county,
         a.state,
       ].filter(Boolean);
+
+      // Landmark with distance: Nominatim returns the matched object's own lat/lon —
+      // distance from us to it gives "32 m from Koshik Builders & Supplier" style text
+      const landmarkName = data.namedetails?.name || a.amenity || a.building || a.shop || a.tourism || a.leisure || a.office;
+      let landmarkLine = '';
+      if (landmarkName && data.lat && data.lon) {
+        const R = 6371000, la1 = lat * Math.PI / 180, la2 = Number(data.lat) * Math.PI / 180;
+        const dLa = la2 - la1, dLo = (Number(data.lon) - lng) * Math.PI / 180;
+        const dM = Math.round(2 * R * Math.asin(Math.sqrt(Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2)));
+        landmarkLine = dM > 0 && dM < 2000 ? `${dM} m from ${landmarkName}` : landmarkName;
+      }
+
       return {
-        summary: parts.slice(0, 4).join(', ') || data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        summary: parts.slice(0, 5).join(', ') || data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        landmark_line: landmarkLine,
         city: a.city || a.town || a.village || 'Unknown',
         locality: a.suburb || a.neighbourhood || a.road || 'Unknown',
-        landmark: a.amenity || a.building || a.shop || a.tourism || 'N/A',
+        landmark: landmarkName || 'N/A',
         pincode: a.postcode || 'Unknown',
         fullAddress: data.display_name || `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
       };
     } catch {
       return {
         summary: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        landmark_line: '',
         city: 'Unknown', locality: 'Unknown', landmark: 'N/A', pincode: 'Unknown',
         fullAddress: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
       };
     }
   };
 
+  // High-accuracy acquisition: watch fixes for up to 20s, keep the most accurate one,
+  // stop early once we are within 15m. A refresh re-runs the refinement.
+  const refineWatchRef = useRef(null);
   const getCurrentLocationWithDetails = () => {
     if (!navigator.geolocation) {
       setLocationError('Geolocation is not supported by your browser.');
       return;
     }
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const coords = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          accuracy: position.coords.accuracy
-        };
-        setLocation(coords);
-        setLocationError('');
+    if (refineWatchRef.current != null) { navigator.geolocation.clearWatch(refineWatchRef.current); refineWatchRef.current = null; }
+    setRefining(true);
+    let best = null;
+    let geocodedFor = 0; // accuracy of the fix we last geocoded — re-geocode only on real improvement
 
+    const finish = () => {
+      if (refineWatchRef.current != null) { navigator.geolocation.clearWatch(refineWatchRef.current); refineWatchRef.current = null; }
+      setRefining(false);
+    };
+
+    const useFix = async (position) => {
+      const coords = {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+      };
+      if (best && coords.accuracy >= best.accuracy) return; // only improvements
+      best = coords;
+      setLocation(coords);
+      setLocationError('');
+      // Re-geocode when accuracy improves by 25m+ (or first fix)
+      if (!geocodedFor || geocodedFor - coords.accuracy > 25) {
+        geocodedFor = coords.accuracy;
         const geo = await reverseGeocode(coords.latitude, coords.longitude);
         setLocationAddress(geo.summary);
         setLocationDetails({
-          city: geo.city,
-          locality: geo.locality,
-          landmark: geo.landmark,
-          pincode: geo.pincode,
-          fullAddress: geo.fullAddress,
+          city: geo.city, locality: geo.locality, landmark: geo.landmark,
+          landmark_line: geo.landmark_line, pincode: geo.pincode, fullAddress: geo.fullAddress,
         });
-      },
+      }
+      if (coords.accuracy <= 15) finish(); // excellent fix — stop refining
+    };
+
+    refineWatchRef.current = navigator.geolocation.watchPosition(
+      useFix,
       (error) => {
+        finish();
         console.error('Error getting location:', error);
         if (error.code === error.PERMISSION_DENIED) {
           setLocationError('Please enable location access in your device Settings to mark attendance.');
@@ -169,8 +206,9 @@ export default function MarkAttendance() {
           toast.error('Unable to get your location. Please try again.');
         }
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
     );
+    setTimeout(finish, 20000); // hard stop after 20s — keep the best fix we got
   };
 
   const handleCameraCapture = (photoBlob) => {
@@ -243,14 +281,17 @@ export default function MarkAttendance() {
           city: locationDetails?.city,
           locality: locationDetails?.locality,
           landmark: locationDetails?.landmark,
+          landmark_distance: locationDetails?.landmark_line,
           pincode: locationDetails?.pincode,
           address: locationDetails?.fullAddress,
           location_address: locationAddress,
         },
         check_in_selfie_url: selfieUrl,
         status: 'present',
-        shift_id: shift?.id
+        shift_id: shift?.id,
+        ...(remarks.trim() ? { notes: remarks.trim().slice(0, 200) } : {}),
       });
+      setRemarks('');
       // Patch optimistic state with the real id so checkout can update correctly
       if (created?.id) setTodayAttendance(prev => prev ? { ...prev, id: created.id } : prev);
 
@@ -398,14 +439,17 @@ export default function MarkAttendance() {
           city: locationDetails?.city,
           locality: locationDetails?.locality,
           landmark: locationDetails?.landmark,
+          landmark_distance: locationDetails?.landmark_line,
           pincode: locationDetails?.pincode,
           address: locationDetails?.fullAddress,
           location_address: locationAddress,
         },
         check_out_selfie_url: selfieUrl,
         working_hours: parseFloat(workingHours.toFixed(2)),
-        status
+        status,
+        ...(remarks.trim() ? { checkout_notes: remarks.trim().slice(0, 200) } : {}),
       });
+      setRemarks('');
 
       // Recompute status server-side (handles grace period, late, overtime properly)
       base44.functions.invoke('computeAttendanceStatus', { attendance_id: todayAttendance.id }).catch(() => {});
@@ -495,36 +539,58 @@ export default function MarkAttendance() {
 
             {locationDetails && (
               <div className="border-t pt-4 md:pt-6">
-                <div className="flex items-start gap-3 mb-3">
-                  <MapPin className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-sm md:text-base">Your Location</p>
-                    {locationAddress && (
-                      <p className="mt-1 text-xs md:text-sm text-blue-700 font-medium break-words">{locationAddress}</p>
-                    )}
-                    <div className="mt-2 space-y-1 text-xs md:text-sm text-gray-600">
-                      <p><strong>City:</strong> {locationDetails.city}</p>
-                      <p><strong>Area:</strong> {locationDetails.locality}</p>
-                      <p><strong>Landmark:</strong> {locationDetails.landmark}</p>
-                      <p><strong>Pin Code:</strong> {locationDetails.pincode}</p>
-                      <p className="break-words"><strong>Address:</strong> {locationDetails.fullAddress}</p>
+                <div className={`rounded-xl p-4 ${location?.accuracy <= 25 ? 'bg-green-50' : location?.accuracy <= 60 ? 'bg-amber-50' : 'bg-red-50'}`}>
+                  <div className="flex items-start gap-3">
+                    <MapPin className={`w-5 h-5 mt-0.5 flex-shrink-0 ${location?.accuracy <= 25 ? 'text-green-700' : location?.accuracy <= 60 ? 'text-amber-600' : 'text-red-600'}`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-semibold text-sm md:text-base text-gray-800">
+                          Your Current Location Accuracy: {location ? `${Math.round(location.accuracy)}m` : '—'}
+                          {refining && <span className="ml-2 text-xs font-normal text-gray-500 animate-pulse">refining…</span>}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={getCurrentLocationWithDetails}
+                          disabled={refining}
+                          className="p-1.5 rounded-full hover:bg-white/70 text-gray-600 flex-shrink-0"
+                          title="Refresh location"
+                        >
+                          <svg className={`w-4 h-4 ${refining ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                        </button>
+                      </div>
+                      <p className="mt-2 text-sm text-gray-600 break-words leading-relaxed">
+                        {locationAddress}
+                        {locationDetails.landmark_line ? <>. <span className="text-gray-700">{locationDetails.landmark_line}</span></> : null}
+                        {locationDetails.pincode && locationDetails.pincode !== 'Unknown' ? `, Pin-${locationDetails.pincode} (India)` : ''}
+                      </p>
                       {location && (
-                        <>
-                          <p><strong>Coordinates:</strong> {location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}</p>
-                          <p>
-                            <strong>GPS Accuracy:</strong>{' '}
-                            <span className={location.accuracy <= 20 ? 'text-green-600 font-semibold' : location.accuracy <= 50 ? 'text-yellow-600 font-semibold' : 'text-red-600 font-semibold'}>
-                              ±{location.accuracy.toFixed(0)} meters
-                            </span>
-                            {location.accuracy <= 20 && ' (Excellent)'}
-                            {location.accuracy > 20 && location.accuracy <= 50 && ' (Good)'}
-                            {location.accuracy > 50 && ' (Poor - Move to open area)'}
-                          </p>
-                        </>
+                        <p className="mt-2 text-sm text-gray-500 break-all">
+                          Long, Lat: {location.longitude.toFixed(14)}, {location.latitude.toFixed(14)}
+                        </p>
+                      )}
+                      {location?.accuracy > 60 && (
+                        <p className="mt-1.5 text-xs text-red-600 font-medium">Poor GPS signal — move to an open area and tap refresh.</p>
                       )}
                     </div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Remarks — saved with the punch */}
+            {!isCheckedOut && (
+              <div className="pt-1">
+                <p className="text-sm text-gray-500 mb-1.5">Remarks</p>
+                <textarea
+                  value={remarks}
+                  onChange={e => setRemarks(e.target.value.slice(0, 200))}
+                  placeholder="Add Remarks"
+                  rows={2}
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-200 resize-none"
+                />
+                <p className="text-xs text-blue-500 mt-0.5">{remarks.length}/200 characters</p>
               </div>
             )}
 

@@ -1038,11 +1038,14 @@ router.post('/:name', async (req, res) => {
       for (const pt of points) {
         const q = { lat: Number(pt.lat), lng: Number(pt.lng), t: pt.t || new Date().toISOString(), acc: Number(pt.acc || 0) };
         if (!isFinite(q.lat) || !isFinite(q.lng)) continue;
-        if (q.acc > 100) continue;                                   // poor GPS fix
+        if (q.acc > 60) continue;                                    // poor GPS fix — don't let it add distance
         if (last) {
           const dKm = havKm(last, q);
           const dtH = Math.max((new Date(q.t) - new Date(last.t)) / 3600000, 1 / 3600);
-          if (dKm < 0.01) continue;                                  // < 10 m — stationary jitter
+          // Movement must exceed combined GPS uncertainty — kills stationary drift
+          // (parked at a client site, points wobble ±acc without real travel)
+          const minMoveM = Math.max(15, Math.min(50, (last.acc + q.acc) / 2));
+          if (dKm * 1000 < minMoveM) continue;
           if (dKm / dtH > 120) continue;                             // > 120 km/h — GPS jump
           addedKm += dKm;
         }
