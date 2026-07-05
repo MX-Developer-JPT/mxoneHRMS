@@ -712,6 +712,15 @@ router.post('/:name', async (req, res) => {
         _loansByUser[r.user_id].push({ rowId: r.id, ...ld });
       }
 
+      // ── Reimbursements: approved claims are paid out with this payroll run ──
+      const _reimbRows = await all("SELECT id,user_id,data FROM entities WHERE type='Reimbursement' AND data::jsonb->>'status'='approved'");
+      const _reimbByUser = {};
+      for (const r of _reimbRows) {
+        const rd = JSON.parse(r.data);
+        if (!_reimbByUser[r.user_id]) _reimbByUser[r.user_id] = [];
+        _reimbByUser[r.user_id].push({ rowId: r.id, ...rd });
+      }
+
       const attAllRows = await all(
         "SELECT user_id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
         [startDate, endDate]
@@ -841,8 +850,12 @@ router.post('/:name', async (req, res) => {
         }
         loanDed = Math.round(loanDed);
 
+        // ── Reimbursements: non-taxable pass-through, added after deductions ──
+        const _empReimbs = _reimbByUser[emp.user_id] || [];
+        const reimbAmt = Math.round(_empReimbs.reduce((s, c) => s + Number(c.amount || 0), 0));
+
         const totalDed = pf + esi + lopAmount + tds + loanDed;
-        const net = Math.max(0, gross - totalDed);
+        const net = Math.max(0, gross - totalDed) + reimbAmt;
 
         const id = uuidv4();
         const payrollData = {
@@ -851,6 +864,8 @@ router.post('/:name', async (req, res) => {
           gross_salary: gross,
           deductions: { pf, esi, lop: lopAmount, tds, loan: loanDed },
           employer_contributions: { pf: empPF, esi: empESI },
+          reimbursement_amount: reimbAmt,
+          reimbursement_ids: _empReimbs.map(c => c.rowId),
           total_deductions: totalDed, net_salary: net,
           tax_regime: _reg,
           statutory_bonus: bonusMonthly, vpp: annualCTC > 1000000 ? bonusMonthly : 0,
@@ -869,6 +884,11 @@ router.post('/:name', async (req, res) => {
         for (const lu of _loanUpdates) {
           const { rowId: _r, ...cleanData } = lu.data;
           await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(cleanData), cleanData.status, lu.rowId]);
+        }
+        for (const rc of _empReimbs) {
+          const { rowId: rcId, ...rcData } = rc;
+          const rcUpd = { ...rcData, status: 'paid', paid_at: new Date().toISOString(), paid_via: 'payroll', payroll_id: id };
+          await run("UPDATE entities SET data=$1, status='paid' WHERE id=$2", [JSON.stringify(rcUpd), rcId]);
         }
         processed++;
       }
@@ -6409,6 +6429,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const yearsOfService = doj ? Math.floor((new Date() - new Date(doj)) / (365.25 * 24 * 3600 * 1000)) : 0;
         const gratuityEligible = yearsOfService >= 5;
         const gratuityAmount = gratuityEligible ? Math.round((monthlyGross * 15 * yearsOfService) / 26) : 0;
+        const gesfLoanRows = await all("SELECT data FROM entities WHERE type='Loan' AND user_id=$1 AND status IN ('approved','active')", [gesfUserId]);
+        const loanOutstanding = gesfLoanRows.reduce((s, r) => { const l = JSON.parse(r.data); return s + Number(l.outstanding_amount ?? l.amount ?? 0); }, 0);
         return res.json({
           success: true,
           monthly_gross: monthlyGross,
@@ -6417,6 +6439,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           years_of_service: yearsOfService,
           gratuity_eligible: gratuityEligible,
           gratuity_amount: gratuityAmount,
+          loan_outstanding: Math.round(loanOutstanding),
           salary_structure: gesfSal,
           employee: gesfEmp,
         });
@@ -8085,7 +8108,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         if (newTDS !== oldTDS || !pd.tax_regime) {
           const newDed = { ...pd.deductions, tds: newTDS };
           const dedSum = (newDed.pf||0)+(newDed.esi||0)+(newDed.lop||0)+(newDed.loan||0)+newTDS;
-          const upd = { ...pd, deductions: newDed, total_deductions: dedSum, net_salary: Math.max(0, (pd.gross_salary||0) - dedSum), tax_regime: bReg, tds_integrated_at: new Date().toISOString(), tds_integrated_by: cu?.id };
+          const upd = { ...pd, deductions: newDed, total_deductions: dedSum, net_salary: Math.max(0, (pd.gross_salary||0) - dedSum) + (pd.reimbursement_amount||0), tax_regime: bReg, tds_integrated_at: new Date().toISOString(), tds_integrated_by: cu?.id };
           dbUpdates.push(run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), pr.id]));
           updated++;
         }
@@ -8106,7 +8129,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       const ovNew = Math.round(tds_amount);
       const ovDed = { ...ovPd.deductions, tds: ovNew };
       const ovDedSum = (ovDed.pf||0)+(ovDed.esi||0)+(ovDed.lop||0)+(ovDed.loan||0)+ovNew;
-      const ovNet = Math.max(0, (ovPd.gross_salary||0) - ovDedSum);
+      const ovNet = Math.max(0, (ovPd.gross_salary||0) - ovDedSum) + (ovPd.reimbursement_amount||0);
       const ovUpd = { ...ovPd, deductions: ovDed, total_deductions: ovDedSum, net_salary: ovNet, tds_override: true, tds_override_amount: ovNew, tds_override_reason: reason || '', tds_overridden_by: cu?.id, tds_overridden_at: new Date().toISOString() };
       await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(ovUpd), ovRow.id]);
       return res.json({ success: true, old_tds: ovOld, new_tds: ovNew, net_salary: ovNet });
@@ -9386,6 +9409,7 @@ function buildPayslipHtml(payroll, emp, deptName) {
     ['Performance Bonus',   payroll.performance_bonus    || 0],
     ['Special Allowance',   payroll.special_allowance    || 0],
     ['Other Allowances',    payroll.other_allowances     || 0],
+    ['Reimbursements',      payroll.reimbursement_amount || 0],
   ].filter(([,v]) => v > 0);
 
   const ded = [
@@ -9399,7 +9423,7 @@ function buildPayslipHtml(payroll, emp, deptName) {
 
   const gross    = payroll.gross_salary   || 0;
   const totalDed = payroll.total_deductions || (payroll.deductions ? Object.values(payroll.deductions).reduce((s,v)=>s+(v||0),0) : 0);
-  const net      = gross - totalDed;
+  const net      = payroll.net_salary != null ? payroll.net_salary : (gross - totalDed + (payroll.reimbursement_amount || 0));
 
   const rows = Array.from({ length: Math.max(earn.length, ded.length) }, (_, i) => `
     <tr>

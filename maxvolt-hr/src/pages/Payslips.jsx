@@ -54,10 +54,12 @@ export default function Payslips() {
 
   const sorted = [...payrolls].sort((a, b) => b.year - a.year || b.month - a.month);
 
-  const totalNet = payrolls.reduce((s, p) => {
+  const netOf = (p) => {
+    if (p.net_salary != null) return p.net_salary;
     const td = Object.values(p.deductions || {}).reduce((a, v) => a + (parseFloat(v) || 0), 0);
-    return s + ((p.gross_salary || 0) - td);
-  }, 0);
+    return (p.gross_salary || 0) - td + (p.reimbursement_amount || 0);
+  };
+  const totalNet = payrolls.reduce((s, p) => s + netOf(p), 0);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
@@ -81,7 +83,7 @@ export default function Payslips() {
             {payrolls[0] && (
               <Card><CardContent className="p-4 flex items-center gap-3">
                 <div className="p-2 bg-purple-100 rounded-full"><TrendingUp className="w-5 h-5 text-purple-600" /></div>
-                <div><p className="text-xs text-gray-500">Latest Net Salary</p><p className="font-bold text-purple-600">₹{(() => { const d = payrolls[0]?.deductions || {}; const td = Object.values(d).reduce((s,v)=>s+(parseFloat(v)||0),0); return ((payrolls[0]?.gross_salary||0)-td).toLocaleString('en-IN'); })()}</p></div>
+                <div><p className="text-xs text-gray-500">Latest Net Salary</p><p className="font-bold text-purple-600">₹{netOf(sorted[0]).toLocaleString('en-IN')}</p></div>
               </CardContent></Card>
             )}
           </div>
@@ -91,9 +93,9 @@ export default function Payslips() {
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
             {sorted.map(payroll => {
               const deductions = payroll.deductions || {};
-              const totalDed = Object.values(deductions).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+              const totalDed = payroll.total_deductions != null ? payroll.total_deductions : Object.values(deductions).reduce((s, v) => s + (parseFloat(v) || 0), 0);
               const grossEarned = payroll.gross_salary || 0;
-              const netPay = grossEarned - totalDed;
+              const netPay = netOf(payroll);
               return (
                 <Card key={payroll.id} className="hover:shadow-lg transition-shadow">
                   <CardHeader className="pb-3">

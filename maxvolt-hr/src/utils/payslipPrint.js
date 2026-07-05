@@ -88,10 +88,11 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const tdsDeduction = deductions.tds || 0;
   // deductions.loan = frontend payroll; deductions.loan_emi = legacy key
   const loanEmi      = deductions.loan || deductions.loan_emi || 0;
+  const reimbAmount  = payroll.reimbursement_amount || 0;
 
-  // Net = Gross Earned − PF − ESI (± TDS/Loan if applicable); LOP NOT a deduction line
+  // Net = Gross Earned − PF − ESI (± TDS/Loan) + Reimbursements; LOP NOT a deduction line
   const totalDeductions = pfDeduction + esiDeduction + tdsDeduction + loanEmi;
-  const netSalary = grossSalary - totalDeductions;
+  const netSalary = grossSalary - totalDeductions + reimbAmount;
 
   // Employer contributions (CTC components — not deducted from employee salary)
   const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(Math.min(basicEarned, 15000) * 0.13);
@@ -186,6 +187,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
               ${earningRow('House Rent Allowance (HRA)', hraFixed, hraEarned, ytdGross * (hraFixed / (grossFixed || 1)), 0)}
               ${earningRow('Conveyance Allowance', conveyanceFixed, conveyanceEarned, ytdGross * (conveyanceFixed / (grossFixed || 1)), 0)}
               ${arrear > 0 ? `<tr><td class="td">Arrear</td><td class="td amt">—</td><td class="td amt">—</td><td class="td amt">${fmt(arrear)}</td><td class="td amt">${fmt(arrear)}</td></tr>` : ''}
+              ${reimbAmount > 0 ? `<tr><td class="td">Expense Reimbursement (non-taxable)</td><td class="td amt">—</td><td class="td amt">${fmt(reimbAmount)}</td><td class="td amt">—</td><td class="td amt">${fmt(reimbAmount)}</td></tr>` : ''}
               ${bonusBreakdown.map(b => `<tr><td class="td">${(b.bonus_type || 'Bonus').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())} (${b.reason || 'Off-cycle'})</td><td class="td amt">—</td><td class="td amt">${fmt(b.amount)}</td><td class="td amt">—</td><td class="td amt">${fmt(b.amount)}</td></tr>`).join('')}
             </tbody>
             <tfoot>

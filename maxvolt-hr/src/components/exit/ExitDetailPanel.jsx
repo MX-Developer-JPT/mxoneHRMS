@@ -719,9 +719,10 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                         leave_days: leaveDays,
                         leave_encash: leaveEncash,
                         gratuity_amount: d.gratuity_eligible ? (d.gratuity_amount || '') : '',
+                        loan_recovery: d.loan_outstanding > 0 ? String(d.loan_outstanding) : p.loan_recovery,
                         _per_day: perDay,
                       }));
-                      toast.success(`Loaded: ₹${(d.monthly_gross||0).toLocaleString('en-IN')}/mo · ${leaveDays} leave days · ${d.gratuity_eligible ? 'gratuity eligible' : 'gratuity not eligible'}`);
+                      toast.success(`Loaded: ₹${(d.monthly_gross||0).toLocaleString('en-IN')}/mo · ${leaveDays} leave days · ${d.gratuity_eligible ? 'gratuity eligible' : 'gratuity not eligible'}${d.loan_outstanding > 0 ? ` · loan due ₹${d.loan_outstanding.toLocaleString('en-IN')}` : ''}`);
                     } else {
                       toast.error(d?.error || 'Could not fetch salary data');
                     }
