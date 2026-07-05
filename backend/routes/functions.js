@@ -7656,11 +7656,48 @@ Return ONLY valid JSON (no markdown):
         [r.uan, r.name, r.gross_wages, r.epf_wages, r.eps_wages, r.edli_wages, r.ee_epf, r.er_eps, r.er_epf, r.ncp_days, r.refund].join('#~#')
       ).join('\n');
 
+      // ── Payment of Bonus Act 1965 register (Form C) — FY containing selected month ──
+      const BONUS_ELIGIBILITY_CEILING = 21000; // basic+DA/month
+      const BONUS_WAGE_FLOOR = 7000;           // bonus computed on min(basic+DA, 7000)
+      const bnFYStart = month >= 4 ? year : year - 1;
+      const bnPayRows = await all(
+        `SELECT user_id,data FROM entities WHERE type='Payroll' AND (
+           (data::jsonb->>'year'=$1 AND CAST(data::jsonb->>'month' AS INTEGER) >= 4) OR
+           (data::jsonb->>'year'=$2 AND CAST(data::jsonb->>'month' AS INTEGER) <= 3)
+         )`,
+        [String(bnFYStart), String(bnFYStart + 1)]
+      );
+      const bnMonthsByUser = {};
+      for (const r of bnPayRows) bnMonthsByUser[r.user_id] = (bnMonthsByUser[r.user_id] || 0) + 1;
+      const bonusRows = [];
+      let bnTot = { wages: 0, min: 0, max: 0 };
+      for (const emp of emps) {
+        const ss = latestSS[emp.user_id];
+        if (!ss) continue;
+        const basicDA = (ss.basic_salary || 0) + (ss.dearness_allowance || ss.da || 0);
+        if (basicDA <= 0 || basicDA > BONUS_ELIGIBILITY_CEILING) continue;
+        const monthsWorked = bnMonthsByUser[emp.user_id] || 0;
+        if (monthsWorked === 0) continue; // <30 days worked in FY
+        const bonusWageMonthly = Math.min(basicDA, BONUS_WAGE_FLOOR);
+        const bonusWagesFY = bonusWageMonthly * monthsWorked;
+        const minBonus = Math.round(bonusWagesFY * 0.0833);
+        const maxBonus = Math.round(bonusWagesFY * 0.20);
+        bonusRows.push({
+          name: emp.display_name || emp.full_name || 'Employee',
+          employee_code: emp.employee_code || '',
+          basic_da: basicDA, months_worked: monthsWorked,
+          bonus_wages: bonusWagesFY, min_bonus: minBonus, max_bonus: maxBonus,
+        });
+        bnTot.wages += bonusWagesFY; bnTot.min += minBonus; bnTot.max += maxBonus;
+      }
+      bonusRows.sort((a, b) => b.min_bonus - a.min_bonus);
+
       return res.json({
         success: true,
         period: { month, year, label: new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' }) },
         pf: { rows: pfRows, totals: pfTot, ecr_text: ecrText, member_count: pfRows.length },
         esi: { rows: esiRows, totals: esiTot, member_count: esiRows.length },
+        bonus: { rows: bonusRows, totals: bnTot, member_count: bonusRows.length, financial_year: `${bnFYStart}-${bnFYStart + 1}` },
       });
     }
 

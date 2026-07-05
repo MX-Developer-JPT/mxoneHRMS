@@ -49,6 +49,19 @@ export default function StatutoryRegisters() {
   const downloadCSV = (kind) => {
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const monLabel = `${MONTHS[month - 1]} ${year}`;
+    if (kind === 'bonus') {
+      const headers = ['Emp Code', 'Name', 'Basic+DA/mo', 'Months Worked', 'Bonus Wages (FY)', 'Min Bonus @8.33%', 'Max Bonus @20%'];
+      const rows = data.bonus.rows;
+      const lines = rows.map(r => [r.employee_code, r.name, r.basic_da, r.months_worked, r.bonus_wages, r.min_bonus, r.max_bonus].map(esc).join(','));
+      const t = data.bonus.totals || {};
+      const totRow = ['', 'TOTAL', '', '', t.wages || 0, t.min || 0, t.max || 0].map(esc).join(',');
+      const csv = [
+        esc('MAXVOLT ENERGY INDUSTRIES LIMITED'), esc(`Bonus Register (Form C) — FY ${data.bonus.financial_year}`), esc(`Generated: ${new Date().toLocaleDateString('en-IN')}`), '',
+        headers.map(esc).join(','), ...lines, '', totRow,
+      ].join('\n');
+      download(`Bonus_register_FY${data.bonus.financial_year}.csv`, csv, 'text/csv');
+      return;
+    }
     if (kind === 'pf') {
       const headers = ['UAN', 'Name', 'Gross Wages', 'EPF Wages', 'EPS Wages', 'EDLI Wages', 'EE EPF (12%)', 'ER EPS (8.33%)', 'ER EPF (3.67%)', 'NCP Days'];
       const rows = data.pf.rows;
@@ -89,9 +102,9 @@ export default function StatutoryRegisters() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-            <ShieldCheck className="w-6 h-6 text-emerald-600" /> Statutory Registers — PF & ESI
+            <ShieldCheck className="w-6 h-6 text-emerald-600" /> Statutory Registers — PF, ESI & Bonus
           </h1>
-          <p className="text-gray-500 text-sm mt-1">Monthly EPF ECR (v2.0) and ESI contribution registers, ready to file. {data?.period?.label || ''}</p>
+          <p className="text-gray-500 text-sm mt-1">Monthly EPF ECR (v2.0), ESI contribution register, and Payment of Bonus Act register (Form C). {data?.period?.label || ''}</p>
         </div>
         <div className="flex gap-2 items-center">
           <MobileSelect value={String(month)} onValueChange={(v) => setMonth(Number(v))} label="Month" className="w-28"
@@ -102,10 +115,14 @@ export default function StatutoryRegisters() {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b gap-0">
-        {[{ k: 'pf', label: `Provident Fund (${data?.pf?.member_count || 0})` }, { k: 'esi', label: `ESI (${data?.esi?.member_count || 0})` }].map(t => (
+      <div className="flex border-b gap-0 overflow-x-auto">
+        {[
+          { k: 'pf', label: `Provident Fund (${data?.pf?.member_count || 0})` },
+          { k: 'esi', label: `ESI (${data?.esi?.member_count || 0})` },
+          { k: 'bonus', label: `Bonus Act (${data?.bonus?.member_count || 0})` },
+        ].map(t => (
           <button key={t.k} onClick={() => setTab(t.k)}
-            className={`px-5 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t.k ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            className={`px-5 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${tab === t.k ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
             {t.label}
           </button>
         ))}
@@ -113,6 +130,25 @@ export default function StatutoryRegisters() {
 
       {loading ? (
         <div className="text-center py-16 text-gray-400"><RefreshCw className="w-6 h-6 mx-auto animate-spin" /></div>
+      ) : tab === 'bonus' ? (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <Stat icon={Users} color="emerald" label="Eligible employees" value={data?.bonus?.member_count || 0} />
+            <Stat icon={IndianRupee} color="blue" label="Bonus wages (FY)" value={fmt(data?.bonus?.totals?.wages)} />
+            <Stat icon={IndianRupee} color="indigo" label="Min bonus @8.33%" value={fmt(data?.bonus?.totals?.min)} />
+            <Stat icon={IndianRupee} color="teal" label="Max bonus @20%" value={fmt(data?.bonus?.totals?.max)} />
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => downloadCSV('bonus')} disabled={!data?.bonus?.member_count}><Download className="w-4 h-4 mr-2" /> CSV (Form C)</Button>
+          </div>
+          <RegisterTable
+            headers={['Emp Code', 'Name', 'Basic+DA/mo', 'Months Worked', 'Bonus Wages (FY)', 'Min @8.33%', 'Max @20%']}
+            rows={data?.bonus?.rows || []}
+            render={(r) => [r.employee_code || '—', r.name, fmt(r.basic_da), r.months_worked, fmt(r.bonus_wages), fmt(r.min_bonus), fmt(r.max_bonus)]}
+            empty="No bonus-eligible employees (basic+DA ≤ ₹21,000 with payroll in this FY)."
+          />
+          <p className="text-xs text-gray-400">Payment of Bonus Act 1965 · FY {data?.bonus?.financial_year} · Eligibility: basic+DA ≤ ₹21,000/month and ≥30 days worked. Bonus computed on min(basic+DA, ₹7,000) per month worked. Payable minimum 8.33%, maximum 20% of bonus wages.</p>
+        </>
       ) : tab === 'pf' ? (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
