@@ -125,7 +125,7 @@ export default function AskMax() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-background">
+    <div className="flex flex-col bg-background h-[calc(100dvh-7.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] lg:h-screen">
       {/* Header */}
       <div className="bg-card border-b border-border px-6 py-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3">

@@ -121,7 +121,7 @@ export default function SkillMatrix() {
             {skillCoverage.length > 0 && (
               <Card>
                 <CardHeader><CardTitle className="text-base flex items-center gap-2"><Zap className="w-4 h-4" /> Skill Coverage</CardTitle></CardHeader>
-                <CardContent className="p-0">
+                <CardContent className="p-0 overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50 border-b">
                       <tr>
@@ -155,7 +155,7 @@ export default function SkillMatrix() {
             {employees.length > 0 && (
               <Card>
                 <CardHeader><CardTitle className="text-base flex items-center gap-2"><Award className="w-4 h-4" /> Employees by Skill Count</CardTitle></CardHeader>
-                <CardContent className="p-0">
+                <CardContent className="p-0 overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50 border-b">
                       <tr>

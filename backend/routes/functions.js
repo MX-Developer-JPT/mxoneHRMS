@@ -703,6 +703,15 @@ router.post('/:name', async (req, res) => {
         if (pmIdx < _tdMIdx) _tdYtd[r.user_id] = (_tdYtd[r.user_id] || 0) + (pd.deductions?.tds || 0);
       }
 
+      // ── Loans: pre-load active loans for EMI recovery through payroll ──
+      const _loanRows = await all("SELECT id,user_id,data FROM entities WHERE type='Loan' AND status IN ('approved','active')");
+      const _loansByUser = {};
+      for (const r of _loanRows) {
+        const ld = JSON.parse(r.data);
+        if (!_loansByUser[r.user_id]) _loansByUser[r.user_id] = [];
+        _loansByUser[r.user_id].push({ rowId: r.id, ...ld });
+      }
+
       const attAllRows = await all(
         "SELECT user_id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
         [startDate, endDate]
@@ -814,7 +823,25 @@ router.post('/:name', async (req, res) => {
         const _ytdTDSEmp = _tdYtd[emp.user_id] || 0;
         const tds = _tdRemMths > 0 ? Math.round(Math.max(0, _annT - _ytdTDSEmp) / _tdRemMths) : 0;
 
-        const totalDed = pf + esi + lopAmount + tds;
+        // ── Loan EMI recovery: deduct min(EMI, outstanding) per active loan ──
+        const _empLoans = _loansByUser[emp.user_id] || [];
+        let loanDed = 0;
+        const _loanUpdates = [];
+        for (const ln of _empLoans) {
+          const out = Number(ln.outstanding_amount ?? ln.amount ?? 0);
+          const emi = Number(ln.emi_amount || 0);
+          if (out <= 0 || emi <= 0) continue;
+          const rec = Math.min(emi, out);
+          loanDed += rec;
+          const newOut = Math.round((out - rec) * 100) / 100;
+          _loanUpdates.push({
+            rowId: ln.rowId,
+            data: { ...ln, rowId: undefined, outstanding_amount: newOut, status: newOut <= 0 ? 'closed' : (ln.status === 'approved' ? 'active' : ln.status), last_recovery: { month: m_int, year: y_int, amount: rec } },
+          });
+        }
+        loanDed = Math.round(loanDed);
+
+        const totalDed = pf + esi + lopAmount + tds + loanDed;
         const net = Math.max(0, gross - totalDed);
 
         const id = uuidv4();
@@ -822,7 +849,7 @@ router.post('/:name', async (req, res) => {
           id, user_id: emp.user_id, month, year,
           basic_salary: basic, hra, conveyance: conv, special_allowance: spec,
           gross_salary: gross,
-          deductions: { pf, esi, lop: lopAmount, tds },
+          deductions: { pf, esi, lop: lopAmount, tds, loan: loanDed },
           employer_contributions: { pf: empPF, esi: empESI },
           total_deductions: totalDed, net_salary: net,
           tax_regime: _reg,
@@ -839,6 +866,10 @@ router.post('/:name', async (req, res) => {
           processed_at: new Date().toISOString(),
         };
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Payroll',$2,'processed',$3)", [id, emp.user_id, JSON.stringify(payrollData)]);
+        for (const lu of _loanUpdates) {
+          const { rowId: _r, ...cleanData } = lu.data;
+          await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(cleanData), cleanData.status, lu.rowId]);
+        }
         processed++;
       }
       return res.json({ success:true, processed, message:`Processed payroll for ${processed} employees` });
@@ -6477,7 +6508,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
   ${earnings.reimbursements ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Reimbursements</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.reimbursements)}</td></tr>` : ''}
   <tr style="background:#f0fdf4;font-weight:bold;"><td style="padding:8px;border:1px solid #d1d5db;">Total Earnings</td><td style="padding:8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(totalEarnings)}</td></tr>
   <tr style="background:#f3f4f6;"><td colspan="2" style="padding:8px;font-weight:bold;border:1px solid #d1d5db;">Deductions</td></tr>
-  ${deductions.loan_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Loan Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.loan_recovery)}</td></tr>` : ''}
+  ${(deductions.loan_recovery || deductions.loan) ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Loan Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.loan_recovery || deductions.loan)}</td></tr>` : ''}
   ${deductions.advance_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Advance Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.advance_recovery)}</td></tr>` : ''}
   ${deductions.notice_period_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Notice Period Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.notice_period_recovery)}</td></tr>` : ''}
   ${deductions.buyout_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Buyout Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.buyout_recovery)}</td></tr>` : ''}
@@ -7974,6 +8005,10 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         },
         month_wise: twMonthWise,
         slab_wise: twSlabRows,
+        regime_comparison: {
+          old: { taxable_income: twOldC.taxable_income, tax_before_rebate: twOldC.tax_before_rebate, rebate_87a: twOldC.rebate_87a, cess: twOldC.cess, total_tax: twOldC.total_tax, standard_deduction: twOldC.standard_deduction },
+          new: { taxable_income: twNewC.taxable_income, tax_before_rebate: twNewC.tax_before_rebate, rebate_87a: twNewC.rebate_87a, cess: twNewC.cess, total_tax: twNewC.total_tax, standard_deduction: twNewC.standard_deduction },
+        },
         summary: {
           annual_tax: twAnnTax, monthly_tds: twMonthlyTDS, ytd_tds: twYtdTDS,
           remaining_tax: Math.max(0, twAnnTax - twYtdTDS), remaining_months: twRemMths,
@@ -8049,8 +8084,8 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         const oldTDS = pd.deductions?.tds || 0;
         if (newTDS !== oldTDS || !pd.tax_regime) {
           const newDed = { ...pd.deductions, tds: newTDS };
-          const newTotal = (pd.gross_salary||0) - (newDed.pf||0) - (newDed.esi||0) - (newDed.lop||0) - newTDS;
-          const upd = { ...pd, deductions: newDed, total_deductions: (newDed.pf||0)+(newDed.esi||0)+(newDed.lop||0)+newTDS, net_salary: Math.max(0, newTotal), tax_regime: bReg, tds_integrated_at: new Date().toISOString(), tds_integrated_by: cu?.id };
+          const dedSum = (newDed.pf||0)+(newDed.esi||0)+(newDed.lop||0)+(newDed.loan||0)+newTDS;
+          const upd = { ...pd, deductions: newDed, total_deductions: dedSum, net_salary: Math.max(0, (pd.gross_salary||0) - dedSum), tax_regime: bReg, tds_integrated_at: new Date().toISOString(), tds_integrated_by: cu?.id };
           dbUpdates.push(run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), pr.id]));
           updated++;
         }
@@ -8070,8 +8105,9 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       const ovOld = ovPd.deductions?.tds || 0;
       const ovNew = Math.round(tds_amount);
       const ovDed = { ...ovPd.deductions, tds: ovNew };
-      const ovNet = Math.max(0, (ovPd.gross_salary||0) - (ovDed.pf||0) - (ovDed.esi||0) - (ovDed.lop||0) - ovNew);
-      const ovUpd = { ...ovPd, deductions: ovDed, total_deductions: (ovDed.pf||0)+(ovDed.esi||0)+(ovDed.lop||0)+ovNew, net_salary: ovNet, tds_override: true, tds_override_amount: ovNew, tds_override_reason: reason || '', tds_overridden_by: cu?.id, tds_overridden_at: new Date().toISOString() };
+      const ovDedSum = (ovDed.pf||0)+(ovDed.esi||0)+(ovDed.lop||0)+(ovDed.loan||0)+ovNew;
+      const ovNet = Math.max(0, (ovPd.gross_salary||0) - ovDedSum);
+      const ovUpd = { ...ovPd, deductions: ovDed, total_deductions: ovDedSum, net_salary: ovNet, tds_override: true, tds_override_amount: ovNew, tds_override_reason: reason || '', tds_overridden_by: cu?.id, tds_overridden_at: new Date().toISOString() };
       await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(ovUpd), ovRow.id]);
       return res.json({ success: true, old_tds: ovOld, new_tds: ovNew, net_salary: ovNet });
     }

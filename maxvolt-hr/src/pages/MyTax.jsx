@@ -33,11 +33,11 @@ function KPICard({ title, value, sub, icon: Icon, color = 'blue' }) {
   );
 }
 
-function RegimeCard({ label, calc, chosen, recommended, onSelect }) {
+function RegimeCard({ label, calc, chosen, recommended }) {
   const isChosen = chosen === label.toLowerCase();
   const isRecommended = recommended === label.toLowerCase();
   return (
-    <Card className={`cursor-pointer border-2 transition-all ${isChosen ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`} onClick={() => onSelect(label.toLowerCase())}>
+    <Card className={`border-2 transition-all ${isChosen ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
       <CardContent className="p-4">
         <div className="flex items-center justify-between mb-3">
           <span className="font-semibold text-sm">{label} Regime</span>
@@ -184,8 +184,8 @@ export default function MyTax() {
         {/* Overview */}
         <TabsContent value="overview" className="space-y-4 mt-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <RegimeCard label="New" calc={data?._newCalc || { taxable_income: tc.taxable_income, tax_before_rebate: tc.tax_before_rebate, rebate_87a: tc.rebate_87a, cess: tc.cess, total_tax: s.chosen_regime === 'new' ? s.annual_tax : null }} chosen={s.chosen_regime} recommended={s.recommended_regime} onSelect={() => {}} />
-            <RegimeCard label="Old" calc={data?._oldCalc || { taxable_income: tc.taxable_income, tax_before_rebate: tc.tax_before_rebate, rebate_87a: tc.rebate_87a, cess: tc.cess, total_tax: s.chosen_regime === 'old' ? s.annual_tax : null }} chosen={s.chosen_regime} recommended={s.recommended_regime} onSelect={() => {}} />
+            <RegimeCard label="New" calc={data?.regime_comparison?.new} chosen={s.chosen_regime} recommended={s.recommended_regime} />
+            <RegimeCard label="Old" calc={data?.regime_comparison?.old} chosen={s.chosen_regime} recommended={s.recommended_regime} />
           </div>
 
           {/* Earnings breakdown */}
@@ -193,7 +193,7 @@ export default function MyTax() {
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Earnings Breakdown</CardTitle>
             </CardHeader>
-            <CardContent className="p-0">
+            <CardContent className="p-0 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-y">
@@ -264,7 +264,7 @@ export default function MyTax() {
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Slab-wise Calculation ({s.chosen_regime === 'new' ? 'New Regime' : 'Old Regime'})</CardTitle>
               </CardHeader>
-              <CardContent className="p-0">
+              <CardContent className="p-0 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-gray-50 border-y">
@@ -321,7 +321,7 @@ export default function MyTax() {
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Month-wise TDS · FY {fyStart}–{(fyStart+1).toString().slice(-2)}</CardTitle>
             </CardHeader>
-            <CardContent className="p-0">
+            <CardContent className="p-0 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-y">
@@ -394,23 +394,14 @@ export default function MyTax() {
             <CardContent>
               <div className="space-y-1 text-sm">
                 {[
-                  ['Employee PF', decl.emp_pf],
-                  ['Life Insurance Premium', decl.sec80C > 0 ? null : 0],
-                  ['PPF', null],
-                  ['ELSS', null],
-                  ['NSC', null],
-                  ['Home Loan Principal', null],
-                ].filter(([, v]) => v !== 0).map(([label], i) => {
-                  const rawKeys = { 'Employee PF': decl.emp_pf };
-                  const val = rawKeys[label] || 0;
-                  if (!val && label !== 'Employee PF') return null;
-                  return val ? (
-                    <div key={i} className="flex justify-between py-1 border-b last:border-0">
-                      <span className="text-gray-600">{label}</span>
-                      <span className="font-medium">{fmt(val)}</span>
-                    </div>
-                  ) : null;
-                })}
+                  ['Employee PF Contribution', decl.emp_pf],
+                  ['Declared 80C Investments', decl.sec80C],
+                ].filter(([, v]) => v > 0).map(([label, val], i) => (
+                  <div key={i} className="flex justify-between py-1 border-b last:border-0">
+                    <span className="text-gray-600">{label}</span>
+                    <span className="font-medium">{fmt(val)}</span>
+                  </div>
+                ))}
                 <div className="flex justify-between py-2 font-bold border-t">
                   <span>80C Total (Allowed)</span>
                   <span className="text-blue-700">{fmt(decl.section_12b_deduction || decl.sec80C)}</span>

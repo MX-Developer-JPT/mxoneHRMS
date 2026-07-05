@@ -276,7 +276,7 @@ function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) 
 
       {/* Salary preview with optional override */}
       {Number(form.annual_ctc) > 0 && sal && (
-        <div className="border rounded-lg overflow-hidden">
+        <div className="border rounded-lg overflow-x-auto">
           <div className="bg-gray-50 px-3 py-2 flex items-center justify-between">
             <span className="text-xs font-semibold text-gray-600">Salary Breakdown</span>
             <button type="button" onClick={() => setOverrideEnabled(v => !v)}

@@ -151,7 +151,7 @@ export default function InsuranceManagement() {
       {loading ? (
         <div className="text-center py-16 text-gray-400">Loading...</div>
       ) : (
-        <div className="bg-white rounded-xl border overflow-hidden">
+        <div className="bg-white rounded-xl border overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-600 text-xs uppercase">
               <tr>
