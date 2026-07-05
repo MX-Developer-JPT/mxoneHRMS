@@ -909,6 +909,99 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true });
     }
 
+    /* ── Native geofencing (Android wrapper): fence config + enter/exit events ── */
+    case 'getMyGeofence': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const gfEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+      const gfEmp = gfEmpRow ? JSON.parse(gfEmpRow.data) : {};
+      const gfLocs = (await all("SELECT data FROM entities WHERE type='AppLocation'")).map(r => JSON.parse(r.data))
+        .filter(l => l.is_active !== false && l.latitude != null && l.longitude != null && Number(l.geofence_radius) > 0);
+      const assigned = gfLocs.find(l => (l.name || '').toLowerCase() === (gfEmp.work_location || '').toLowerCase())
+        || (gfLocs.length === 1 ? gfLocs[0] : null);
+
+      const gfToday = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10); // IST date
+      const gfAttRow = await one("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, gfToday]);
+      const gfAtt = gfAttRow ? JSON.parse(gfAttRow.data) : null;
+      return res.json({
+        success: true,
+        fence: assigned ? { id: assigned.id, name: assigned.name, latitude: Number(assigned.latitude), longitude: Number(assigned.longitude), radius_m: Number(assigned.geofence_radius) } : null,
+        all_fences: gfLocs.map(l => ({ id: l.id, name: l.name, latitude: Number(l.latitude), longitude: Number(l.longitude), radius_m: Number(l.geofence_radius) })),
+        attendance_today: gfAtt ? { checked_in: !!gfAtt.check_in_time, checked_out: !!gfAtt.check_out_time, check_in_time: gfAtt.check_in_time || null, check_out_time: gfAtt.check_out_time || null } : { checked_in: false, checked_out: false },
+        server_time: new Date().toISOString(),
+      });
+    }
+
+    case 'nativeGeofenceEvent': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { event, latitude, longitude, accuracy, occurred_at, location_name, is_mock, device_id } = p;
+      if (!['enter', 'exit'].includes(event)) return res.json({ success: false, error: "event must be 'enter' or 'exit'" });
+      if (is_mock === true) return res.json({ success: false, error: 'Mock locations are not accepted', code: 'MOCK_LOCATION' });
+
+      // Effective event time: client occurred_at if plausible (≤12h old, not future), else server now.
+      let evUtc = Date.now();
+      if (occurred_at) {
+        const t = Date.parse(occurred_at);
+        if (isFinite(t) && t <= Date.now() + 120000 && t >= Date.now() - 12 * 3600000) evUtc = t;
+      }
+      const evIST = new Date(evUtc + 5.5 * 3600000); // store-IST-digits convention
+      const evDate = evIST.toISOString().slice(0, 10);
+
+      // Resolve the employee's fence for validation + labelling
+      const ngEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+      const ngEmp = ngEmpRow ? JSON.parse(ngEmpRow.data) : {};
+      const ngLocs = (await all("SELECT data FROM entities WHERE type='AppLocation'")).map(r => JSON.parse(r.data))
+        .filter(l => l.is_active !== false && l.latitude != null && l.longitude != null && Number(l.geofence_radius) > 0);
+      const ngFence = ngLocs.find(l => location_name && (l.name || '').toLowerCase() === location_name.toLowerCase())
+        || ngLocs.find(l => (l.name || '').toLowerCase() === (ngEmp.work_location || '').toLowerCase())
+        || (ngLocs.length === 1 ? ngLocs[0] : null);
+
+      // Defense-in-depth: an 'enter' with coordinates must plausibly be inside the fence
+      if (event === 'enter' && ngFence && isFinite(Number(latitude)) && isFinite(Number(longitude))) {
+        const R = 6371000, la1 = Number(latitude) * Math.PI / 180, la2 = Number(ngFence.latitude) * Math.PI / 180;
+        const dLa = la2 - la1, dLo = (Number(ngFence.longitude) - Number(longitude)) * Math.PI / 180;
+        const dist = 2 * R * Math.asin(Math.sqrt(Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2));
+        const allowed = Number(ngFence.geofence_radius) + Number(accuracy || 0) + 200;
+        if (dist > allowed) return res.json({ success: false, error: `Reported position is ${Math.round(dist)}m from ${ngFence.name} (allowed ${Math.round(allowed)}m)`, code: 'OUTSIDE_FENCE' });
+      }
+
+      const ngAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, evDate]);
+      const ngAtt = ngAttRow ? JSON.parse(ngAttRow.data) : null;
+
+      if (event === 'enter') {
+        if (ngAtt?.check_in_time) return res.json({ success: true, action: 'none', reason: 'already_checked_in' });
+        const naId = ngAtt?.id || uuidv4();
+        const attData = {
+          ...(ngAtt || {}), id: naId, user_id: cu.id, date: evDate,
+          check_in_time: evIST.toISOString(),
+          check_in_location: { latitude: Number(latitude) || null, longitude: Number(longitude) || null, accuracy: Number(accuracy) || null, location_address: ngFence?.name || location_name || 'Geofence' },
+          status: 'present', shift_id: ngEmp.shift_id || null,
+          auto_geofence: true, geofence_location: ngFence?.name || location_name || '', geofence_source: 'native_android', geofence_device: device_id || '',
+        };
+        if (ngAtt) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(attData), ngAttRow.id]);
+        else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [naId, cu.id, JSON.stringify(attData)]);
+        return res.json({ success: true, action: 'checked_in', check_in_time: attData.check_in_time, location: attData.geofence_location });
+      }
+
+      // exit
+      if (!ngAtt?.check_in_time) return res.json({ success: true, action: 'none', reason: 'not_checked_in' });
+      if (ngAtt.check_out_time) return res.json({ success: true, action: 'none', reason: 'already_checked_out' });
+      const hrs = Math.max(0, (evIST - new Date(ngAtt.check_in_time)) / 3600000);
+      let expectedHrs = 8;
+      if (ngEmp.shift_id) {
+        const shRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [ngEmp.shift_id]);
+        if (shRow) expectedHrs = Number(JSON.parse(shRow.data).working_hours) || 8;
+      }
+      const outData = {
+        ...ngAtt, check_out_time: evIST.toISOString(),
+        check_out_location: { latitude: Number(latitude) || null, longitude: Number(longitude) || null, accuracy: Number(accuracy) || null, location_address: ngFence?.name || location_name || 'Geofence' },
+        working_hours: Math.round(hrs * 100) / 100,
+        status: hrs < expectedHrs ? 'half_day' : ngAtt.status || 'present',
+        auto_geofence_checkout: true, geofence_source: 'native_android', geofence_device: device_id || '',
+      };
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(outData), ngAttRow.id]);
+      return res.json({ success: true, action: 'checked_out', check_out_time: outData.check_out_time, working_hours: outData.working_hours });
+    }
+
     /* ── Field Duty: GPS distance tracking for out-duty staff ── */
     case 'startFieldTrip': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
