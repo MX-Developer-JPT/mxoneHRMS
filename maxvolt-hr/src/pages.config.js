@@ -113,6 +113,9 @@ const POSHCompliance = lazy(() => import('./pages/POSHCompliance'));
 const DIMetrics = lazy(() => import('./pages/DIMetrics'));
 const RecruitmentAnalytics = lazy(() => import('./pages/RecruitmentAnalytics'));
 const MyTax = lazy(() => import('./pages/MyTax'));
+const CompOff = lazy(() => import('./pages/CompOff'));
+const OrgChart = lazy(() => import('./pages/OrgChart'));
+const TalentGrid = lazy(() => import('./pages/TalentGrid'));
 const WorkforcePlanning = lazy(() => import('./pages/WorkforcePlanning'));
 const SkillMatrix = lazy(() => import('./pages/SkillMatrix'));
 const FeedbackSystem = lazy(() => import('./pages/FeedbackSystem'));
@@ -188,6 +191,9 @@ export const PAGES = {
     "DIMetrics": DIMetrics,
     "RecruitmentAnalytics": RecruitmentAnalytics,
     "MyTax": MyTax,
+    "CompOff": CompOff,
+    "OrgChart": OrgChart,
+    "TalentGrid": TalentGrid,
     "WorkforcePlanning": WorkforcePlanning,
     "SkillMatrix": SkillMatrix,
     "FeedbackSystem": FeedbackSystem,

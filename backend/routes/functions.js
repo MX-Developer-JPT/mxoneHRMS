@@ -655,6 +655,190 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, accrued });
     }
 
+    /* ── Comp-Off: earn leave for working on Sundays/holidays ── */
+    case 'requestCompOff': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { work_date, reason } = p;
+      if (!work_date) return res.json({ success: false, error: 'work_date required' });
+
+      // Must be a Sunday or a company holiday
+      const wd = new Date(work_date + 'T00:00:00');
+      const isSunday = wd.getDay() === 0;
+      const holRow = await one("SELECT data FROM entities WHERE type='Holiday' AND data::jsonb->>'date'=$1", [work_date]);
+      if (!isSunday && !holRow) return res.json({ success: false, error: 'Comp-off can only be claimed for a Sunday or a company holiday' });
+
+      // Must have actually worked that day (attendance with check-in / present status)
+      const attRow = await one("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, work_date]);
+      const att = attRow ? JSON.parse(attRow.data) : null;
+      const worked = att && (att.check_in_time || ['present','late','on_duty','work_from_home','half_day'].includes(att.status));
+      if (!worked) return res.json({ success: false, error: 'No attendance record found for that date — comp-off needs a punch on the worked holiday' });
+
+      // No duplicate claim for the same date
+      const dup = await one("SELECT id FROM entities WHERE type='CompOff' AND user_id=$1 AND data::jsonb->>'work_date'=$2 AND data::jsonb->>'status' != 'rejected'", [cu.id, work_date]);
+      if (dup) return res.json({ success: false, error: 'A comp-off request for this date already exists' });
+
+      const coId = uuidv4();
+      const holName = holRow ? (JSON.parse(holRow.data).name || 'Holiday') : 'Sunday';
+      const coData = {
+        id: coId, user_id: cu.id, work_date, day_type: isSunday ? 'sunday' : 'holiday', holiday_name: holName,
+        reason: reason || '', days: att.status === 'half_day' ? 0.5 : 1,
+        status: 'pending', requested_at: new Date().toISOString(),
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'CompOff',$2,'pending',$3)", [coId, cu.id, JSON.stringify(coData)]);
+
+      // Notify reporting manager (fallback: HR)
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+      const emp = empRow ? JSON.parse(empRow.data) : {};
+      const mgrId = emp.reporting_manager_id;
+      if (mgrId) await notify(mgrId, { title: 'Comp-off request', message: `${emp.display_name || 'An employee'} claimed a comp-off for working on ${holName} (${work_date})`, type: 'info', link: '/CompOff' });
+      return res.json({ success: true, comp_off: coData });
+    }
+
+    case 'decideCompOff': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { comp_off_id, action, note } = p;
+      if (!comp_off_id || !['approve','reject'].includes(action)) return res.json({ success: false, error: 'comp_off_id and action (approve/reject) required' });
+      const coRow = await one("SELECT id,user_id,data FROM entities WHERE id=$1 AND type='CompOff'", [comp_off_id]);
+      if (!coRow) return res.json({ success: false, error: 'Comp-off request not found' });
+      const co = JSON.parse(coRow.data);
+      if (co.status !== 'pending') return res.json({ success: false, error: `Already ${co.status}` });
+
+      // Approver must be HR/admin or the employee's reporting manager
+      const isHRUser = await hasRole(cu, HR_ROLES);
+      if (!isHRUser) {
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [coRow.user_id]);
+        const emp = empRow ? JSON.parse(empRow.data) : {};
+        if (emp.reporting_manager_id !== cu.id) return res.status(403).json({ error: 'Only HR or the reporting manager can decide this request' });
+      }
+
+      const newStatus = action === 'approve' ? 'approved' : 'rejected';
+      const updated = { ...co, status: newStatus, decided_by: cu.id, decided_at: new Date().toISOString(), decision_note: note || '' };
+      await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(updated), newStatus, coRow.id]);
+
+      if (action === 'approve') {
+        // Credit a Compensatory Off leave balance (find-or-create policy + balance)
+        let polRow = await one("SELECT id,data FROM entities WHERE type='LeavePolicy' AND data::jsonb->>'name'='Compensatory Off'");
+        let polId;
+        if (polRow) { polId = JSON.parse(polRow.data).id || polRow.id; }
+        else {
+          polId = uuidv4();
+          const pol = { id: polId, name: 'Compensatory Off', code: 'CO', total_days: 0, accrual: 'earned', carry_forward: false, description: 'Earned by working on Sundays/company holidays. Credited on approval of a comp-off claim.', is_active: 1 };
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeavePolicy',NULL,'active',$2)", [polId, JSON.stringify(pol)]);
+        }
+        const coYear = new Date().getFullYear();
+        const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [coRow.user_id]);
+        const bal = balRows.map(r => ({ rowId: r.id, ...JSON.parse(r.data) })).find(b => b.leave_policy_id === polId && b.year === coYear);
+        const credit = co.days || 1;
+        if (bal) {
+          const { rowId, ...bd } = bal;
+          const upd = { ...bd, total_allocated: (bd.total_allocated||0) + credit, accrued_this_year: (bd.accrued_this_year||0) + credit, available: (bd.available||0) + credit };
+          await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), rowId]);
+        } else {
+          const nbId = uuidv4();
+          const nb = { id: nbId, user_id: coRow.user_id, leave_policy_id: polId, year: coYear, total_allocated: credit, accrued_this_year: credit, used: 0, pending_approval: 0, available: credit, carried_forward: 0 };
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [nbId, coRow.user_id, JSON.stringify(nb)]);
+        }
+      }
+      await notify(coRow.user_id, { title: `Comp-off ${newStatus}`, message: action === 'approve' ? `Your comp-off for ${co.work_date} was approved — ${co.days || 1} day credited to your Compensatory Off balance.` : `Your comp-off for ${co.work_date} was rejected${note ? ': ' + note : ''}.`, type: action === 'approve' ? 'success' : 'warning', link: '/CompOff' });
+      return res.json({ success: true, status: newStatus });
+    }
+
+    case 'getCompOffData': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const myRows = await all("SELECT data FROM entities WHERE type='CompOff' AND user_id=$1 ORDER BY created_at DESC", [cu.id]);
+      const mine = myRows.map(r => JSON.parse(r.data));
+
+      // Comp-off balance
+      let coBalance = 0;
+      const coPolRow = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND data::jsonb->>'name'='Compensatory Off'");
+      if (coPolRow) {
+        const coPolId = JSON.parse(coPolRow.data).id;
+        const balRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [cu.id]);
+        const bal = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === coPolId && b.year === new Date().getFullYear());
+        coBalance = bal?.available || 0;
+      }
+
+      // Approvals: HR sees all pending; a manager sees their reports' pending
+      let approvals = [];
+      const isHRUser = await hasRole(cu, HR_ROLES);
+      const pendRows = await all("SELECT user_id,data FROM entities WHERE type='CompOff' AND data::jsonb->>'status'='pending' ORDER BY created_at DESC");
+      if (pendRows.length) {
+        const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee'")).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+        const empBy = Object.fromEntries(emps.map(e => [e.user_id, e]));
+        for (const r of pendRows) {
+          if (r.user_id === cu.id) continue;
+          const emp = empBy[r.user_id] || {};
+          if (isHRUser || emp.reporting_manager_id === cu.id) {
+            approvals.push({ ...JSON.parse(r.data), employee_name: emp.display_name || 'Employee', employee_code: emp.employee_code || '', department: emp.department || '' });
+          }
+        }
+      }
+      return res.json({ success: true, mine, balance: coBalance, approvals, can_approve: isHRUser || approvals.length > 0 });
+    }
+
+    /* ── Org Chart: reporting hierarchy tree ─────────── */
+    case 'getOrgChart': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'"))
+        .map(r => { const d = JSON.parse(r.data); return {
+          user_id: r.user_id, name: d.display_name || 'Employee', employee_code: d.employee_code || '',
+          designation: d.designation || '', department: d.department || '',
+          reporting_manager_id: d.reporting_manager_id || null,
+        }; });
+      return res.json({ success: true, employees: emps, count: emps.length });
+    }
+
+    /* ── Talent: 9-box grid (performance × potential) ── */
+    case 'getTalentGrid': {
+      if (!(await hasRole(cu, [...HR_ROLES, 'management']))) return res.status(403).json({ error: 'HR/Management access required' });
+      const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'"))
+        .map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+      const reviews = (await all("SELECT user_id,data FROM entities WHERE type='PerformanceReview' ORDER BY created_at DESC")).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+      const latestReview = {};
+      for (const rv of reviews) if (!latestReview[rv.user_id]) latestReview[rv.user_id] = rv;
+      const assessRows = (await all("SELECT user_id,data FROM entities WHERE type='TalentAssessment'")).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+      const assessBy = Object.fromEntries(assessRows.map(a => [a.user_id, a]));
+
+      const rows = emps.map(e => {
+        const rv = latestReview[e.user_id];
+        const asmt = assessBy[e.user_id] || {};
+        // Performance band 1-3 from latest review rating (assumes 1-5 scale)
+        const rating = Number(rv?.overall_rating || rv?.rating || 0);
+        const perfBand = asmt.performance_band || (rating >= 4 ? 3 : rating >= 2.5 ? 2 : rating > 0 ? 1 : null);
+        return {
+          user_id: e.user_id, name: e.display_name || 'Employee', employee_code: e.employee_code || '',
+          designation: e.designation || '', department: e.department || '',
+          latest_rating: rating || null,
+          performance_band: perfBand,                        // 1 low, 2 medium, 3 high
+          potential_band: asmt.potential_band || null,       // 1 low, 2 medium, 3 high (HR-assessed)
+          notes: asmt.notes || '',
+          assessed_at: asmt.assessed_at || null,
+        };
+      });
+      return res.json({ success: true, employees: rows });
+    }
+
+    case 'saveTalentAssessment': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { user_id: taUid, performance_band, potential_band, notes } = p;
+      if (!taUid) return res.json({ success: false, error: 'user_id required' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='TalentAssessment' AND user_id=$1", [taUid]);
+      const payload = {
+        user_id: taUid,
+        performance_band: performance_band ? Number(performance_band) : null,
+        potential_band: potential_band ? Number(potential_band) : null,
+        notes: notes || '', assessed_by: cu.id, assessed_at: new Date().toISOString(),
+      };
+      if (exRow) {
+        const ex = JSON.parse(exRow.data);
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...ex, ...payload }), exRow.id]);
+      } else {
+        const taId = uuidv4();
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'TalentAssessment',$2,'active',$3)", [taId, taUid, JSON.stringify({ id: taId, ...payload })]);
+      }
+      return res.json({ success: true });
+    }
+
     /* ── Payroll ──────────────────────────────────────── */
     case 'processPayroll':
     case 'processAdvancedPayroll': {

@@ -12,6 +12,7 @@ import {
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
+  Network, Grid3x3, CalendarPlus,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
 import DashboardPage from './pages/Dashboard';
@@ -33,6 +34,7 @@ const employeeMenuGroups = [
   ]},
   { label: 'Leave', items: [
     { name: 'Apply Leave',     icon: FileText,        page: 'Leave' },
+    { name: 'Comp-Off',        icon: CalendarPlus,    page: 'CompOff' },
   ]},
   { label: 'Payroll', items: [
     { name: 'My Payslips',     icon: CreditCard,      page: 'Payslips' },
@@ -59,6 +61,7 @@ const employeeMenuGroups = [
     { name: 'Recognition',     icon: Award,           page: 'Recognition' },
     { name: 'Pulse Surveys',   icon: ClipboardList,   page: 'PulseSurveys' },
     { name: 'Employee Portal', icon: Users,           page: 'EmployeeEngagementPortal' },
+    { name: 'Org Chart',       icon: Network,         page: 'OrgChart' },
   ]},
   { label: 'AI', items: [
     { name: 'AskMax AI',       icon: Sparkles,        page: 'AskMax' },
@@ -84,8 +87,11 @@ const managementMenuGroups = [
     { name: 'Regularisation Approvals', icon: Clock,           page: 'RegularisationApproval' },
     { name: 'Expense Approvals',        icon: DollarSign,      page: 'Approvals' },
     { name: 'Gate Pass Approvals',      icon: ShieldCheck,     page: 'GatePassApproval' },
+    { name: 'Comp-Off Approvals',       icon: CalendarPlus,    page: 'CompOff' },
     { name: 'Confirmation',             icon: UserCheck,       page: 'ConfirmationManagement' },
     { name: 'Team Calendar',            icon: Calendar,        page: 'TeamCalendar' },
+    { name: 'Org Chart',                icon: Network,         page: 'OrgChart' },
+    { name: 'Talent Grid (9-Box)',      icon: Grid3x3,         page: 'TalentGrid' },
   ]},
   { label: 'AI Insights', items: [
     { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
@@ -141,6 +147,7 @@ const hrMenuGroups = [
   ]},
   { label: 'Employees', items: [
     { name: 'Employees',               icon: Users,           page: 'Employees' },
+    { name: 'Org Chart',               icon: Network,         page: 'OrgChart' },
     { name: 'Onboarding Approval',     icon: UserPlus,        page: 'OnboardingApproval' },
     { name: 'Employee Documents',      icon: FolderOpen,      page: 'EmployeeDocuments' },
     { name: 'Letter Generator (AI)',   icon: FileSignature,   page: 'LetterGenerator' },
@@ -158,6 +165,7 @@ const hrMenuGroups = [
   { label: 'Leave', items: [
     { name: 'Leave Management',        icon: FileText,        page: 'LeaveManagement' },
     { name: 'Leave Dashboard',         icon: PieChart,        page: 'LeaveDashboard' },
+    { name: 'Comp-Off',                icon: CalendarPlus,    page: 'CompOff' },
     { name: 'Approvals',               icon: Bell,            page: 'Approvals' },
   ]},
   { label: 'Payroll', items: [
@@ -186,6 +194,7 @@ const hrMenuGroups = [
   ]},
   { label: 'Performance', items: [
     { name: 'Performance',             icon: Target,          page: 'PerformanceManagement' },
+    { name: 'Talent Grid (9-Box)',     icon: Grid3x3,         page: 'TalentGrid' },
     { name: 'PIP Management',          icon: AlertTriangle,   page: 'PIPManagement' },
     { name: 'Confirmation',            icon: UserCheck,       page: 'ConfirmationManagement' },
     { name: '360° Feedback',           icon: MessageSquare,   page: 'FeedbackSystem' },
