@@ -38,7 +38,7 @@ export default function MarkAttendance() {
   const [officeFence, setOfficeFence] = useState(null);   // assigned AppLocation with lat/lng/radius
   const [fenceDistance, setFenceDistance] = useState(null); // metres from office centre
   const autoBusyRef = useRef(false);
-  const fenceCountRef = useRef({ in: 0, out: 0 });
+  const outsideSinceRef = useRef(null); // timestamp of first continuous "outside" reading — used only to debounce checkout
 
   const distMetres = (lat1, lng1, lat2, lng2) => {
     const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
@@ -307,11 +307,17 @@ export default function MarkAttendance() {
   };
 
   // ── Geofence auto attendance: watch position while the app is open ──
+  // Check-in fires the instant a single accurate fix lands inside the fence — no
+  // waiting for repeat confirmations, per requirement that entry marks present
+  // immediately. Check-out uses a short time-based debounce (not a fix-count),
+  // so a momentary GPS blip or a quick step to the gate doesn't end the day early.
+  const EXIT_DEBOUNCE_MS = 45000; // must be continuously outside(+buffer) for 45s before auto checkout
+
   const toggleAutoMode = (on) => {
     setAutoMode(on);
     localStorage.setItem('auto_attendance', on ? '1' : '0');
-    fenceCountRef.current = { in: 0, out: 0 };
-    if (on) toast.success('Auto attendance ON — keep the app open; you will be checked in when you reach the office');
+    outsideSinceRef.current = null;
+    if (on) toast.success('Auto attendance ON — you will be marked present the moment you enter the office zone');
   };
 
   useEffect(() => {
@@ -321,21 +327,27 @@ export default function MarkAttendance() {
       (pos) => {
         const d = distMetres(pos.coords.latitude, pos.coords.longitude, Number(officeFence.latitude), Number(officeFence.longitude));
         setFenceDistance(Math.round(d));
-        if (pos.coords.accuracy > 150) return; // ignore poor fixes
+        if (pos.coords.accuracy > 150) return; // ignore poor fixes — not accurate enough to trust either way
         const inside = d <= Number(officeFence.geofence_radius);
-        const wellOutside = d > Number(officeFence.geofence_radius) + 100; // exit buffer against GPS wobble
+        const wellOutside = d > Number(officeFence.geofence_radius) + 100; // exit buffer against GPS wobble at the boundary
+
         if (!todayAttendance && inside) {
-          fenceCountRef.current.out = 0;
-          if (++fenceCountRef.current.in >= 2 && !autoBusyRef.current) autoCheckIn(pos.coords);
-        } else if (todayAttendance && !todayAttendance.check_out_time && wellOutside) {
-          fenceCountRef.current.in = 0;
-          if (++fenceCountRef.current.out >= 3 && !autoBusyRef.current) autoCheckOut(pos.coords);
-        } else {
-          fenceCountRef.current = { in: 0, out: 0 };
+          // Immediate: the very first trustworthy in-fence fix checks the employee in.
+          if (!autoBusyRef.current) autoCheckIn(pos.coords);
+          return;
+        }
+        if (todayAttendance && !todayAttendance.check_out_time) {
+          if (wellOutside) {
+            const now = Date.now();
+            if (!outsideSinceRef.current) outsideSinceRef.current = now;
+            else if (now - outsideSinceRef.current >= EXIT_DEBOUNCE_MS && !autoBusyRef.current) autoCheckOut(pos.coords);
+          } else {
+            outsideSinceRef.current = null; // back inside (or in the buffer zone) — cancel any pending checkout
+          }
         }
       },
       () => { /* keep silent — manual flow still works */ },
-      { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
   }, [autoMode, officeFence, todayAttendance]);
@@ -364,7 +376,7 @@ export default function MarkAttendance() {
       console.error('Auto check-in failed:', e);
     } finally {
       autoBusyRef.current = false;
-      fenceCountRef.current = { in: 0, out: 0 };
+      outsideSinceRef.current = null;
     }
   };
 
@@ -393,7 +405,7 @@ export default function MarkAttendance() {
       console.error('Auto check-out failed:', e);
     } finally {
       autoBusyRef.current = false;
-      fenceCountRef.current = { in: 0, out: 0 };
+      outsideSinceRef.current = null;
     }
   };
 
@@ -495,10 +507,12 @@ export default function MarkAttendance() {
                     {autoMode
                       ? fenceDistance != null
                         ? fenceDistance <= officeFence.geofence_radius
-                          ? `You are inside the office zone (${fenceDistance}m from centre)`
+                          ? todayAttendance
+                            ? `Inside the office zone (${fenceDistance}m from centre) — attendance confirmed`
+                            : `Inside the office zone (${fenceDistance}m from centre) — marking you present…`
                           : `${fenceDistance}m from office — zone radius ${officeFence.geofence_radius}m`
                         : 'Watching your location… keep the app open'
-                      : `Walk in to check in, walk out to check out (${officeFence.geofence_radius}m zone). Works while the app is open.`}
+                      : `Marked present the instant you enter the ${officeFence.geofence_radius}m zone; checked out after ~45s continuously outside it. Works while the app is open.`}
                   </p>
                 </div>
               </div>
