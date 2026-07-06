@@ -9,8 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
-import { LogOut, LogIn, Clock, CheckCircle2, XCircle, AlertCircle, Plus, History } from 'lucide-react';
+import { LogOut, LogIn, Clock, CheckCircle2, XCircle, AlertCircle, Plus, History, Car, Bike, Route } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
+import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
+import { toast } from 'sonner';
 
 const STATUS_COLORS = {
   pending_approval: 'bg-yellow-100 text-yellow-800',
@@ -44,7 +46,7 @@ export default function GatePassRequest() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '' });
+  const [form, setForm] = useState({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler' });
   const [activeTab, setActiveTab] = useState('active');
 
   useEffect(() => {
@@ -66,7 +68,8 @@ export default function GatePassRequest() {
     setSubmitting(true);
     const empRecords = await base44.entities.Employee.filter({ user_id: user.id });
     const emp = empRecords?.[0];
-    await base44.entities.GatePass.create({
+    const isOfficial = form.outing_type === 'official_outing';
+    const gatePass = await base44.entities.GatePass.create({
       employee_user_id: user.id,
       outing_type: form.outing_type,
       reason: form.reason,
@@ -76,8 +79,32 @@ export default function GatePassRequest() {
       manager_approval_status: 'pending',
       manager_user_id: emp?.reporting_manager_id || null,
       lop_deduction_days: 0,
+      ...(isOfficial ? { vehicle_type: form.vehicle_type } : {}),
     });
-    setForm({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '' });
+
+    // Official outing: start Field Duty GPS tracking immediately, without waiting for
+    // manager approval — best-effort, never blocks the gate pass request itself.
+    if (isOfficial) {
+      try {
+        const res = await base44.functions.invoke('startFieldTrip', {
+          purpose: form.reason || 'Official outing', vehicle_type: form.vehicle_type, gate_pass_id: gatePass?.id,
+        });
+        const d = res.data || res;
+        if (d.success) {
+          startFieldTripTracking(d.trip.id, 0);
+          if (gatePass?.id) base44.entities.GatePass.update(gatePass.id, { field_trip_id: d.trip.id }).catch(() => {});
+          toast.success('Gate pass submitted — Field Duty tracking started automatically.');
+        } else if (d.code === 'ALREADY_ACTIVE') {
+          toast.info('Gate pass submitted. A Field Duty trip is already in progress — distance is already being tracked.');
+        } else {
+          toast.success('Gate pass submitted.');
+        }
+      } catch {
+        toast.success('Gate pass submitted.'); // tracking is a bonus; the request itself already succeeded
+      }
+    }
+
+    setForm({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler' });
     setShowForm(false);
     await loadData();
     setSubmitting(false);
@@ -127,6 +154,25 @@ export default function GatePassRequest() {
                   {OUTING_TYPES.find(o => o.value === form.outing_type)?.desc}
                 </p>
               </div>
+              {form.outing_type === 'official_outing' && (
+                <div className="rounded-lg border border-orange-200 bg-orange-50 p-3">
+                  <Label className="flex items-center gap-1.5 text-orange-800">
+                    <Route className="w-4 h-4" /> Field Duty tracking will start automatically
+                  </Label>
+                  <p className="text-xs text-orange-700 mt-1 mb-2">Since this is an official outing, GPS distance tracking begins the moment you submit — for a fair km-based travel reimbursement per the Travel Policy.</p>
+                  <Label className="text-xs text-gray-600 mb-1.5 block">Vehicle you'll be using</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => setForm(f => ({ ...f, vehicle_type: '2_wheeler' }))}
+                      className={`flex items-center justify-center gap-2 py-2 rounded-lg border text-sm font-medium transition-colors ${form.vehicle_type === '2_wheeler' ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-gray-600 hover:border-orange-300'}`}>
+                      <Bike className="w-4 h-4" /> 2-Wheeler
+                    </button>
+                    <button type="button" onClick={() => setForm(f => ({ ...f, vehicle_type: '4_wheeler' }))}
+                      className={`flex items-center justify-center gap-2 py-2 rounded-lg border text-sm font-medium transition-colors ${form.vehicle_type === '4_wheeler' ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-gray-600 hover:border-orange-300'}`}>
+                      <Car className="w-4 h-4" /> 4-Wheeler
+                    </button>
+                  </div>
+                </div>
+              )}
               <div>
                 <Label>Reason (optional)</Label>
                 <Textarea
@@ -192,6 +238,11 @@ export default function GatePassRequest() {
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
                       <Badge variant="outline" className="text-xs">{getOutingLabel(pass.outing_type)}</Badge>
+                      {pass.field_trip_id && (
+                        <Badge className="text-xs bg-orange-100 text-orange-700 flex items-center gap-1">
+                          <Route className="w-3 h-3" /> Field Duty tracked
+                        </Badge>
+                      )}
                     </div>
                     {pass.reason && <p className="font-medium text-gray-900 dark:text-gray-100">{pass.reason}</p>}
                     <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">

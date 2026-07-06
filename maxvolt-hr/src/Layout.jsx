@@ -19,6 +19,7 @@ import DashboardPage from './pages/Dashboard';
 import MarkAttendancePage from './pages/MarkAttendance';
 import LeavePage from './pages/Leave';
 import ProfilePage from './pages/Profile';
+import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
@@ -373,6 +374,19 @@ export default function Layout({ children, currentPageName }) {
           } catch (e) { console.error('initNewUser:', e); }
         }
       } catch (_) {}
+
+      // Resume GPS tracking for an already-active Field Duty trip (e.g. one auto-started
+      // from a Gate Pass request, or one left running from before a page reload) — the
+      // tracker itself lives outside any single page, so this is what makes it survive
+      // a full reload/relogin rather than only surviving in-app navigation.
+      (async () => {
+        try {
+          const res = await base44.functions.invoke('getFieldTrips', { scope: 'mine' });
+          const d = res.data || res;
+          const active = d?.success && (d.trips || []).find(t => t.status === 'active');
+          if (active) startFieldTripTracking(active.id, active.distance_km || 0);
+        } catch { /* Field Duty not applicable for this role, or offline — non-fatal */ }
+      })();
     } catch (err) {
       console.error('loadUser:', err);
     }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,7 @@ import {
   CheckCircle2, Car, Bike, FileText, Printer, Download, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { subscribe as subscribeTracker, startTracking, stopTracking, flushNow } from '@/lib/fieldTripTracker';
 
 const fmtKm = (n) => `${(n || 0).toFixed(2)} km`;
 const fmt = (n) => '₹' + Math.round(n || 0).toLocaleString('en-IN');
@@ -57,13 +58,20 @@ export default function FieldDuty() {
   const [submitting, setSubmitting] = useState(false);
   const [pickEmployeeOpen, setPickEmployeeOpen] = useState(false);
 
-  const watchRef = useRef(null);
-  const bufferRef = useRef([]);
-  const flushTimerRef = useRef(null);
-  const wakeLockRef = useRef(null);
-
-  useEffect(() => { load(); return stopWatching; }, [scope]);
+  useEffect(() => { load(); }, [scope]);
   useEffect(() => { if (formOpen) loadFormPreview(); }, [formOpen, periodType, periodDate, targetUser]);
+
+  // Live distance/accuracy come from the shared tracker singleton, not a page-local
+  // watcher — this trip may have been started from Gate Pass Request, or resumed by
+  // Layout.jsx on page load, so this page only ever reads/subscribes, never owns it.
+  useEffect(() => {
+    const unsub = subscribeTracker(({ tripId, km, accuracy }) => {
+      if (!tripId) return; // tracker stopped — this page's own endTrip()/load() already updated activeTrip
+      setLiveKm(km);
+      setGpsAccuracy(accuracy);
+    });
+    return unsub;
+  }, []);
 
   const load = async () => {
     setLoading(true);
@@ -74,50 +82,19 @@ export default function FieldDuty() {
         setTrips(d.trips || []);
         setRates(d.rates || { two_wheeler: 0, four_wheeler: 0 });
         setCanManage(!!d.can_manage);
-        const myActive = (d.trips || []).find(t => t.status === 'active' && (scope === 'mine' || !t.employee?.code));
-        if (myActive) { setActiveTrip(myActive); setLiveKm(myActive.distance_km || 0); startWatching(myActive.id); }
+        // Only "mine" ever reflects/attaches the tracker — an active row seen while
+        // viewing the team's trips (scope=all) belongs to someone else.
+        const myActive = scope === 'mine' ? (d.trips || []).find(t => t.status === 'active') : null;
+        if (myActive) {
+          setActiveTrip(myActive);
+          setLiveKm(myActive.distance_km || 0);
+          startTracking(myActive.id, myActive.distance_km || 0); // no-op if already tracking this trip
+        } else if (scope === 'mine') {
+          setActiveTrip(null);
+        }
       }
     } catch (e) { toast.error('Error: ' + e.message); }
     setLoading(false);
-  };
-
-  // ── GPS watcher: buffer points, flush to server every 20s ──
-  const startWatching = (tripId) => {
-    if (watchRef.current != null || !navigator.geolocation) return;
-    if ('wakeLock' in navigator) navigator.wakeLock.request('screen').then(wl => { wakeLockRef.current = wl; }).catch(() => {});
-    watchRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        setGpsAccuracy(Math.round(pos.coords.accuracy));
-        if (pos.coords.accuracy > 60) return;
-        const q = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, t: new Date().toISOString() };
-        const prev = bufferRef.current[bufferRef.current.length - 1];
-        if (prev) {
-          const R = 6371000, la1 = prev.lat * Math.PI / 180, la2 = q.lat * Math.PI / 180;
-          const dLa = la2 - la1, dLo = (q.lng - prev.lng) * Math.PI / 180;
-          const dM = 2 * R * Math.asin(Math.sqrt(Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2));
-          if (dM < Math.max(15, Math.min(50, (prev.acc + q.acc) / 2))) return;
-        }
-        bufferRef.current.push(q);
-      },
-      () => {},
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
-    );
-    flushTimerRef.current = setInterval(async () => {
-      if (!bufferRef.current.length) return;
-      const points = bufferRef.current.splice(0, bufferRef.current.length);
-      try {
-        const res = await base44.functions.invoke('logFieldPoints', { trip_id: tripId, points });
-        const d = res.data || res;
-        if (d.success) setLiveKm(d.distance_km || 0);
-      } catch { /* retry next flush with new points */ }
-    }, 20000);
-  };
-
-  const stopWatching = () => {
-    if (watchRef.current != null) { navigator.geolocation.clearWatch(watchRef.current); watchRef.current = null; }
-    if (flushTimerRef.current) { clearInterval(flushTimerRef.current); flushTimerRef.current = null; }
-    if (wakeLockRef.current) { wakeLockRef.current.release().catch(() => {}); wakeLockRef.current = null; }
-    bufferRef.current = [];
   };
 
   const startTrip = async () => {
@@ -127,7 +104,7 @@ export default function FieldDuty() {
       const d = res.data || res;
       if (d.success) {
         setActiveTrip(d.trip); setLiveKm(0); setStartDialog(false); setPurpose('');
-        startWatching(d.trip.id);
+        startTracking(d.trip.id, 0);
         toast.success('Trip started — keep the app open while travelling. Distance is being recorded.');
       } else toast.error(d.error || 'Could not start trip');
     } catch (e) { toast.error('Error: ' + e.message); }
@@ -140,16 +117,13 @@ export default function FieldDuty() {
     if (!activeTrip) return;
     setBusy(true);
     try {
-      if (bufferRef.current.length) {
-        const points = bufferRef.current.splice(0, bufferRef.current.length);
-        await base44.functions.invoke('logFieldPoints', { trip_id: activeTrip.id, points }).catch(() => {});
-      }
+      await flushNow();
       const res = await base44.functions.invoke('endFieldTrip', {
         trip_id: activeTrip.id, toll_parking_amount: Number(tollAmount) || 0, notes: endNotes,
       });
       const d = res.data || res;
       if (d.success) {
-        stopWatching();
+        stopTracking();
         setActiveTrip(null);
         setEndDialog(false);
         toast.success(`Trip ended — ${fmtKm(d.trip.distance_km)} recorded`);

@@ -1022,16 +1022,16 @@ router.post('/:name', async (req, res) => {
     /* ── Field Duty: GPS distance tracking for out-duty staff ── */
     case 'startFieldTrip': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { vehicle_type } = p;
+      const { vehicle_type, gate_pass_id } = p;
       if (!['2_wheeler', '4_wheeler'].includes(vehicle_type)) return res.json({ success: false, error: 'vehicle_type must be 2_wheeler or 4_wheeler' });
       const active = await one("SELECT id FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [cu.id]);
-      if (active) return res.json({ success: false, error: 'You already have an active field trip — end it first' });
+      if (active) return res.json({ success: false, error: 'You already have an active field trip — end it first', code: 'ALREADY_ACTIVE' });
       const ftId = uuidv4();
       const ft = {
         id: ftId, user_id: cu.id, date: new Date().toISOString().slice(0, 10),
         start_time: new Date().toISOString(), status: 'active', vehicle_type,
         purpose: p.purpose || '', points: [], distance_km: 0, point_count: 0,
-        toll_parking_amount: 0,
+        toll_parking_amount: 0, gate_pass_id: gate_pass_id || null,
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'FieldTrip',$2,'active',$3)", [ftId, cu.id, JSON.stringify(ft)]);
       return res.json({ success: true, trip: ft });
