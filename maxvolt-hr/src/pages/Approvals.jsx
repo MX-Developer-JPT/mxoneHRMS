@@ -122,6 +122,18 @@ export default function Approvals() {
     }
   };
 
+  const viewFieldDutyForm = async (claimId) => {
+    try {
+      const res = await base44.functions.invoke('getFieldReimbursementFormByClaimId', { claim_id: claimId });
+      const d = res.data || res;
+      if (d.success) {
+        const w = window.open('', '_blank');
+        w.document.write(`<!DOCTYPE html><html><head><title>Field Duty Reimbursement Form</title></head><body>${d.html}</body></html>`);
+        w.document.close();
+      } else toast.error(d.error || 'Could not load form');
+    } catch (e) { toast.error('Error: ' + e.message); }
+  };
+
   const handleReimbursementApproval = async (reimbId, action) => {
     try {
       const wf = workflows.expense;
@@ -467,6 +479,11 @@ export default function Approvals() {
                               {reimb.receipt_url && (
                                 <Button variant="link" onClick={() => setViewerDoc({ url: reimb.receipt_url, title: 'Receipt' })} className="px-0 mt-1" size="sm">
                                   View Receipt
+                                </Button>
+                              )}
+                              {Array.isArray(reimb.field_trip_ids) && reimb.field_trip_ids.length > 0 && (
+                                <Button variant="link" onClick={() => viewFieldDutyForm(reimb.id)} className="px-0 mt-1 block" size="sm">
+                                  View Field Duty Trip Form ({reimb.field_trip_ids.length} trips)
                                 </Button>
                               )}
                             </div>

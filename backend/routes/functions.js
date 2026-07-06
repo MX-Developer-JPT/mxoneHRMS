@@ -1022,13 +1022,16 @@ router.post('/:name', async (req, res) => {
     /* ── Field Duty: GPS distance tracking for out-duty staff ── */
     case 'startFieldTrip': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { vehicle_type } = p;
+      if (!['2_wheeler', '4_wheeler'].includes(vehicle_type)) return res.json({ success: false, error: 'vehicle_type must be 2_wheeler or 4_wheeler' });
       const active = await one("SELECT id FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [cu.id]);
       if (active) return res.json({ success: false, error: 'You already have an active field trip — end it first' });
       const ftId = uuidv4();
       const ft = {
         id: ftId, user_id: cu.id, date: new Date().toISOString().slice(0, 10),
-        start_time: new Date().toISOString(), status: 'active',
+        start_time: new Date().toISOString(), status: 'active', vehicle_type,
         purpose: p.purpose || '', points: [], distance_km: 0, point_count: 0,
+        toll_parking_amount: 0,
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'FieldTrip',$2,'active',$3)", [ftId, cu.id, JSON.stringify(ft)]);
       return res.json({ success: true, trip: ft });
@@ -1079,22 +1082,26 @@ router.post('/:name', async (req, res) => {
 
     case 'endFieldTrip': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { trip_id } = p;
+      const { trip_id, toll_parking_amount, notes } = p;
       const ftRow = await one("SELECT id,data FROM entities WHERE id=$1 AND type='FieldTrip' AND user_id=$2", [trip_id, cu.id]);
       if (!ftRow) return res.json({ success: false, error: 'Trip not found' });
       const ft = JSON.parse(ftRow.data);
       if (ft.status !== 'active') return res.json({ success: false, error: 'Trip already ended' });
-      const upd = { ...ft, status: 'completed', end_time: new Date().toISOString() };
+      const upd = {
+        ...ft, status: 'completed', end_time: new Date().toISOString(),
+        toll_parking_amount: Math.max(0, Number(toll_parking_amount) || 0),
+        notes: (notes || '').slice(0, 300),
+      };
       await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
       return res.json({ success: true, trip: { ...upd, points: undefined } });
     }
 
     case 'getFieldTrips': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const rate = Number((await one("SELECT value FROM settings WHERE key='field_rate_per_km'"))?.value || 0);
-      const isHRUser = await hasRole(cu, HR_ROLES);
+      const rates = await getFieldRates();
+      const isMgmtUser = await hasRole(cu, MGR_ROLES);
       let rows;
-      if (p.scope === 'all' && isHRUser) {
+      if (p.scope === 'all' && isMgmtUser) {
         rows = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' ORDER BY created_at DESC LIMIT 300");
       } else {
         rows = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND user_id=$1 ORDER BY created_at DESC LIMIT 100", [cu.id]);
@@ -1107,39 +1114,108 @@ router.post('/:name', async (req, res) => {
         const { points, ...rest } = d;
         return { ...rest, employee: empBy[r.user_id] || {}, trail_points: (points || []).length };
       });
-      return res.json({ success: true, trips, rate_per_km: rate, is_hr: isHRUser });
+      return res.json({ success: true, trips, rates, is_hr: isMgmtUser, can_manage: isMgmtUser });
     }
 
     case 'setFieldRate': {
-      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
-      const rate = Number(p.rate_per_km);
-      if (!isFinite(rate) || rate < 0) return res.json({ success: false, error: 'Valid rate_per_km required' });
-      await run("INSERT INTO settings(key,value,updated_at) VALUES('field_rate_per_km',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [String(rate)]);
-      return res.json({ success: true, rate_per_km: rate });
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { rate_2w, rate_4w } = p;
+      if (rate_2w == null && rate_4w == null) return res.json({ success: false, error: 'Provide rate_2w and/or rate_4w' });
+      if (rate_2w != null) {
+        const r = Number(rate_2w);
+        if (!isFinite(r) || r < 0) return res.json({ success: false, error: 'Valid rate_2w required' });
+        await run("INSERT INTO settings(key,value,updated_at) VALUES('field_rate_per_km_2w',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [String(r)]);
+      }
+      if (rate_4w != null) {
+        const r = Number(rate_4w);
+        if (!isFinite(r) || r < 0) return res.json({ success: false, error: 'Valid rate_4w required' });
+        await run("INSERT INTO settings(key,value,updated_at) VALUES('field_rate_per_km_4w',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [String(r)]);
+      }
+      return res.json({ success: true, rates: await getFieldRates() });
     }
 
-    case 'claimFieldTrip': {
+    /* ── Field Duty: consolidated weekly/monthly reimbursement form ── */
+    case 'previewFieldReimbursementForm': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { trip_id } = p;
-      const ftRow = await one("SELECT id,data FROM entities WHERE id=$1 AND type='FieldTrip' AND user_id=$2", [trip_id, cu.id]);
-      if (!ftRow) return res.json({ success: false, error: 'Trip not found' });
-      const ft = JSON.parse(ftRow.data);
-      if (ft.status !== 'completed') return res.json({ success: false, error: 'End the trip before claiming' });
-      if (ft.claimed) return res.json({ success: false, error: 'Already claimed' });
-      const rate = Number((await one("SELECT value FROM settings WHERE key='field_rate_per_km'"))?.value || 0);
-      if (rate <= 0) return res.json({ success: false, error: 'HR has not configured the per-km rate yet' });
-      if ((ft.distance_km || 0) <= 0) return res.json({ success: false, error: 'No distance recorded on this trip' });
-      const amount = Math.round(ft.distance_km * rate);
+      const { user_id, period_type, period_date } = p;
+      const targetUid = user_id && user_id !== cu.id ? user_id : cu.id;
+      if (targetUid !== cu.id && !(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required to preview another employee\'s form' });
+      const built = await buildFieldReimbursementForm(targetUid, period_type, period_date);
+      if (built.error) return res.json({ success: false, error: built.error });
+      return res.json({ success: true, ...built });
+    }
+
+    case 'submitFieldReimbursementForm': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { user_id, period_type, period_date, meal_allowance_total } = p;
+      const targetUid = user_id && user_id !== cu.id ? user_id : cu.id;
+      if (targetUid !== cu.id && !(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required to submit on another employee\'s behalf' });
+      const built = await buildFieldReimbursementForm(targetUid, period_type, period_date);
+      if (built.error) return res.json({ success: false, error: built.error });
+      if (!built.rows.length) return res.json({ success: false, error: 'No unclaimed completed trips in this period' });
+
+      const meal = Math.max(0, Number(meal_allowance_total) || 0);
+      const kmTotal = built.rows.reduce((s, r) => s + r.km_amount, 0);
+      const tollTotal = built.rows.reduce((s, r) => s + r.toll_parking_amount, 0);
+      const grandTotal = kmTotal + tollTotal + meal;
+
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [targetUid]);
+      const emp = empRow ? JSON.parse(empRow.data) : {};
+
       const rbId = uuidv4();
+      const tripIds = built.rows.map(r => r.trip_id);
       const rb = {
-        id: rbId, user_id: cu.id, category: 'travel',
-        amount, expense_date: ft.date,
-        description: `Field duty travel — ${ft.distance_km} km × ₹${rate}/km (GPS-tracked trip${ft.purpose ? ': ' + ft.purpose : ''})`,
-        status: 'pending', field_trip_id: ft.id, submitted_at: new Date().toISOString(),
+        id: rbId, user_id: targetUid, expense_type: 'travel',
+        amount: Math.round(grandTotal), expense_date: built.period.date_to,
+        description: `Field duty travel reimbursement — ${built.period.label} (${built.rows.length} trip${built.rows.length === 1 ? '' : 's'}, ${built.totals.distance_km.toFixed(1)} km)`,
+        status: 'pending', manager_id: emp.reporting_manager_id || null,
+        field_trip_ids: tripIds, meal_allowance_total: meal,
+        km_amount: Math.round(kmTotal), toll_parking_amount: Math.round(tollTotal),
+        period_type: built.period.type, period_from: built.period.date_from, period_to: built.period.date_to,
+        submitted_at: new Date().toISOString(),
       };
-      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Reimbursement',$2,'pending',$3)", [rbId, cu.id, JSON.stringify(rb)]);
-      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...ft, claimed: true, claim_id: rbId, claim_amount: amount }), ftRow.id]);
-      return res.json({ success: true, amount, distance_km: ft.distance_km, rate_per_km: rate, claim_id: rbId });
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Reimbursement',$2,'pending',$3)", [rbId, targetUid, JSON.stringify(rb)]);
+
+      // Mark every included trip claimed, apportioning its own km+toll amount (not the shared meal allowance)
+      for (const row of built.rows) {
+        const ftRow = await one("SELECT id,data FROM entities WHERE id=$1 AND type='FieldTrip'", [row.trip_id]);
+        if (!ftRow) continue;
+        const ft = JSON.parse(ftRow.data);
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...ft, claimed: true, claim_id: rbId, claim_amount: Math.round(row.km_amount + row.toll_parking_amount) }), ftRow.id]);
+      }
+
+      const finalBuilt = await buildFieldReimbursementForm(targetUid, period_type, period_date, { claimIdOverride: rbId, mealAllowance: meal });
+      return res.json({ success: true, claim_id: rbId, amount: Math.round(grandTotal), html: finalBuilt.html, rows: built.rows, totals: { ...built.totals, meal_allowance: meal, grand_total: Math.round(grandTotal) } });
+    }
+
+    case 'getFieldReimbursementFormByClaimId': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { claim_id } = p;
+      const rbRow = await one("SELECT data FROM entities WHERE id=$1 AND type='Reimbursement'", [claim_id]);
+      if (!rbRow) return res.json({ success: false, error: 'Claim not found' });
+      const rb = JSON.parse(rbRow.data);
+      if (rb.user_id !== cu.id && !(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'Access denied' });
+      if (!Array.isArray(rb.field_trip_ids) || !rb.field_trip_ids.length) return res.json({ success: false, error: 'This claim was not generated from Field Duty trips' });
+
+      const rates = await getFieldRates();
+      const tripRows = [];
+      for (const tid of rb.field_trip_ids) {
+        const r = await one("SELECT data FROM entities WHERE id=$1 AND type='FieldTrip'", [tid]);
+        if (r) tripRows.push(JSON.parse(r.data));
+      }
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [rb.user_id]);
+      const emp = empRow ? JSON.parse(empRow.data) : {};
+      const uRow = await one("SELECT full_name FROM users WHERE id=$1", [rb.user_id]);
+
+      const rows = tripRows.map(ft => rowFromTrip(ft, rates)).sort((a, b) => a.date.localeCompare(b.date));
+      const totals = {
+        distance_km: rows.reduce((s, r) => s + r.distance_km, 0),
+        km_amount: rows.reduce((s, r) => s + r.km_amount, 0),
+        toll_parking_amount: rows.reduce((s, r) => s + r.toll_parking_amount, 0),
+      };
+      const period = { type: rb.period_type || 'custom', date_from: rb.period_from || rows[0]?.date, date_to: rb.period_to || rows[rows.length - 1]?.date, label: `${rb.period_from || ''} to ${rb.period_to || ''}` };
+      const html = renderFieldReimbursementHtml({ emp, empName: emp.display_name || uRow?.full_name || '', period, rows, totals, mealAllowance: rb.meal_allowance_total || 0, status: rb.status, claimId: claim_id });
+      return res.json({ success: true, rows, totals, period, status: rb.status, amount: rb.amount, html });
     }
 
     /* ── Payroll ──────────────────────────────────────── */
@@ -10007,6 +10083,204 @@ function buildPayslipHtml(payroll, emp, deptName) {
     <span style="font-size:19px;font-weight:bold;color:#1e40af">Net Pay: ₹${net.toLocaleString('en-IN')}</span>
   </div>
   <p style="color:#aaa;font-size:11px;margin-top:14px;text-align:center">This is a computer-generated document and does not require a signature.</p>
+</div>`;
+}
+
+/* ── Field Duty: consolidated reimbursement form (Annexure 6 — Local Conveyance Expense Reimbursement) ── */
+
+async function getFieldRates() {
+  const [r2, r4, legacy] = await Promise.all([
+    one("SELECT value FROM settings WHERE key='field_rate_per_km_2w'"),
+    one("SELECT value FROM settings WHERE key='field_rate_per_km_4w'"),
+    one("SELECT value FROM settings WHERE key='field_rate_per_km'"),
+  ]);
+  const legacyVal = Number(legacy?.value || 0);
+  return {
+    two_wheeler: r2 ? Number(r2.value) : legacyVal,
+    four_wheeler: r4 ? Number(r4.value) : legacyVal,
+  };
+}
+
+function rowFromTrip(ft, rates) {
+  const rate = ft.vehicle_type === '4_wheeler' ? rates.four_wheeler : rates.two_wheeler;
+  const distance_km = Math.round((ft.distance_km || 0) * 100) / 100;
+  const km_amount = Math.round(distance_km * rate);
+  const toll_parking_amount = Math.round(ft.toll_parking_amount || 0);
+  return {
+    trip_id: ft.id, date: ft.date,
+    vehicle_type: ft.vehicle_type || '2_wheeler',
+    vehicle_label: ft.vehicle_type === '4_wheeler' ? '4-Wheeler (Car)' : '2-Wheeler',
+    purpose: ft.purpose || '', notes: ft.notes || '',
+    distance_km, rate_per_km: rate, km_amount, toll_parking_amount,
+    total_amount: km_amount + toll_parking_amount,
+  };
+}
+
+// Monday–Sunday week, or calendar month, containing periodDateStr (defaults to today). Date-only, UTC-safe.
+function getFieldPeriodRange(periodType, periodDateStr) {
+  const base = periodDateStr ? new Date(periodDateStr + 'T00:00:00Z') : new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  if (periodType === 'month') {
+    const y = base.getUTCFullYear(), m = base.getUTCMonth();
+    const first = new Date(Date.UTC(y, m, 1));
+    const last = new Date(Date.UTC(y, m + 1, 0));
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    return { type: 'month', date_from: first.toISOString().slice(0, 10), date_to: last.toISOString().slice(0, 10), label: `${monthNames[m]} ${y}` };
+  }
+  const day = base.getUTCDay(); // 0=Sun..6=Sat
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(base); monday.setUTCDate(base.getUTCDate() + diffToMonday);
+  const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6);
+  const from = monday.toISOString().slice(0, 10), to = sunday.toISOString().slice(0, 10);
+  return { type: 'week', date_from: from, date_to: to, label: `Week: ${from} to ${to}` };
+}
+
+async function buildFieldReimbursementForm(userId, periodType, periodDateStr, opts = {}) {
+  const period = getFieldPeriodRange(periodType === 'month' ? 'month' : 'week', periodDateStr);
+  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
+  if (!empRow) return { error: 'Employee record not found' };
+  const emp = JSON.parse(empRow.data);
+  const uRow = await one("SELECT full_name FROM users WHERE id=$1", [userId]);
+  const rates = await getFieldRates();
+
+  const tripRows = await all(
+    "SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='completed' AND data::jsonb->>'date'>=$2 AND data::jsonb->>'date'<=$3",
+    [userId, period.date_from, period.date_to]
+  );
+  let trips = tripRows.map(r => JSON.parse(r.data));
+  trips = opts.claimIdOverride ? trips.filter(t => t.claim_id === opts.claimIdOverride) : trips.filter(t => !t.claimed);
+
+  const rows = trips.map(ft => rowFromTrip(ft, rates)).sort((a, b) => a.date.localeCompare(b.date));
+  const totals = {
+    distance_km: Math.round(rows.reduce((s, r) => s + r.distance_km, 0) * 100) / 100,
+    km_amount: rows.reduce((s, r) => s + r.km_amount, 0),
+    toll_parking_amount: rows.reduce((s, r) => s + r.toll_parking_amount, 0),
+  };
+  const empName = emp.display_name || uRow?.full_name || '';
+  const html = renderFieldReimbursementHtml({ emp, empName, period, rows, totals, mealAllowance: opts.mealAllowance || 0 });
+  return {
+    rows, totals, period,
+    employee: { name: empName, employee_code: emp.employee_code || '', designation: emp.designation || '', department: emp.department || '' },
+    rates, html,
+  };
+}
+
+function fieldNumToWords(num) {
+  const a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+    'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  if (!num) return 'Zero Rupees Only';
+  const inWords = (n) => {
+    if (n < 20) return a[n];
+    if (n < 100) return b[Math.floor(n / 10)] + (n % 10 ? ' ' + a[n % 10] : '');
+    if (n < 1000) return a[Math.floor(n / 100)] + ' Hundred' + (n % 100 ? ' ' + inWords(n % 100) : '');
+    if (n < 100000) return inWords(Math.floor(n / 1000)) + ' Thousand' + (n % 1000 ? ' ' + inWords(n % 1000) : '');
+    if (n < 10000000) return inWords(Math.floor(n / 100000)) + ' Lakh' + (n % 100000 ? ' ' + inWords(n % 100000) : '');
+    return inWords(Math.floor(n / 10000000)) + ' Crore' + (n % 10000000 ? ' ' + inWords(n % 10000000) : '');
+  };
+  return inWords(Math.round(num)) + ' Rupees Only';
+}
+
+function renderFieldReimbursementHtml({ emp, empName, period, rows, totals, mealAllowance = 0, status, claimId }) {
+  const fmtN = (n) => Math.round(n || 0).toLocaleString('en-IN');
+  const grandTotal = totals.km_amount + totals.toll_parking_amount + mealAllowance;
+  const statusBadge = status
+    ? `<span style="padding:3px 10px;border-radius:12px;font-size:10px;font-weight:bold;background:${status === 'approved' ? '#d1fae5' : status === 'rejected' ? '#fee2e2' : '#fef3c7'};color:${status === 'approved' ? '#065f46' : status === 'rejected' ? '#991b1b' : '#92400e'}">${status.toUpperCase()}</span>`
+    : '';
+  const tripRows = rows.map(r => `
+    <tr>
+      <td style="padding:6px 8px;border:1px solid #999">${r.date}</td>
+      <td style="padding:6px 8px;border:1px solid #999">${r.vehicle_label}</td>
+      <td style="padding:6px 8px;border:1px solid #999">${r.purpose || 'Field Duty'}</td>
+      <td style="padding:6px 8px;border:1px solid #999;text-align:right">${r.distance_km.toFixed(2)}</td>
+      <td style="padding:6px 8px;border:1px solid #999;text-align:right">₹${r.rate_per_km}/km</td>
+      <td style="padding:6px 8px;border:1px solid #999;text-align:right">${fmtN(r.toll_parking_amount)}</td>
+      <td style="padding:6px 8px;border:1px solid #999;text-align:right">-</td>
+      <td style="padding:6px 8px;border:1px solid #999;text-align:right;font-weight:bold">${fmtN(r.total_amount)}</td>
+    </tr>`).join('');
+  const blankRows = Array.from({ length: Math.max(0, 5 - rows.length) }, () => `
+    <tr>${Array.from({ length: 8 }, () => '<td style="padding:6px 8px;border:1px solid #999">&nbsp;</td>').join('')}</tr>`).join('');
+
+  return `<div style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;color:#1a1a1a;font-size:12px">
+  <div style="text-align:center;border-bottom:3px solid #f97316;padding-bottom:10px;margin-bottom:14px">
+    <h2 style="margin:0;font-size:17px;text-transform:uppercase">Maxvolt Energy Industries Limited</h2>
+    <p style="margin:4px 0 0;font-size:11px;color:#555">E-82 Bulandshahr Road Industrial Area, Ghaziabad, Uttar Pradesh – 201009 · CIN U40106DL2019PLC349854</p>
+    <p style="margin:8px 0 0;font-size:14px;font-weight:bold;text-decoration:underline">LOCAL CONVEYANCE EXPENSE REIMBURSEMENT FORM</p>
+    <p style="margin:2px 0 0;font-size:11px;color:#666">${period.label}${statusBadge ? ' &nbsp; ' + statusBadge : ''}</p>
+  </div>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:14px;font-size:12px">
+    <tr>
+      <td style="padding:6px 8px;border:1px solid #999;width:25%"><b>Name of Employee</b></td>
+      <td style="padding:6px 8px;border:1px solid #999;width:25%">${empName}</td>
+      <td style="padding:6px 8px;border:1px solid #999;width:25%"><b>Employee ID</b></td>
+      <td style="padding:6px 8px;border:1px solid #999;width:25%">${emp.employee_code || ''}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border:1px solid #999"><b>Designation</b></td>
+      <td style="padding:6px 8px;border:1px solid #999">${emp.designation || ''}</td>
+      <td style="padding:6px 8px;border:1px solid #999"><b>Department</b></td>
+      <td style="padding:6px 8px;border:1px solid #999">${emp.department || ''}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border:1px solid #999"><b>Purpose</b></td>
+      <td style="padding:6px 8px;border:1px solid #999" colspan="3">Field duty / official conveyance — GPS-tracked trips (Field Duty module)</td>
+    </tr>
+  </table>
+  <p style="font-weight:bold;margin:0 0 4px">For Travel by 4-Wheeler / 2-Wheeler (Personal Vehicle)</p>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:4px;font-size:11.5px">
+    <thead>
+      <tr style="background:#f1f5f9">
+        <th style="padding:6px 8px;border:1px solid #999;text-align:left">Date of Travel</th>
+        <th style="padding:6px 8px;border:1px solid #999;text-align:left">Mode of Travel</th>
+        <th style="padding:6px 8px;border:1px solid #999;text-align:left">Purpose / Route</th>
+        <th style="padding:6px 8px;border:1px solid #999;text-align:right">Km Travelled</th>
+        <th style="padding:6px 8px;border:1px solid #999;text-align:right">Claim Rate/Km</th>
+        <th style="padding:6px 8px;border:1px solid #999;text-align:right">Toll &amp; Parking</th>
+        <th style="padding:6px 8px;border:1px solid #999;text-align:right">Meal Allowance</th>
+        <th style="padding:6px 8px;border:1px solid #999;text-align:right">Total Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${tripRows}${blankRows}
+      <tr style="font-weight:bold;background:#f8fafc">
+        <td colspan="3" style="padding:6px 8px;border:1px solid #999">Sub-Total</td>
+        <td style="padding:6px 8px;border:1px solid #999;text-align:right">${totals.distance_km.toFixed(2)}</td>
+        <td style="padding:6px 8px;border:1px solid #999"></td>
+        <td style="padding:6px 8px;border:1px solid #999;text-align:right">${fmtN(totals.toll_parking_amount)}</td>
+        <td style="padding:6px 8px;border:1px solid #999;text-align:right">${fmtN(mealAllowance)}</td>
+        <td style="padding:6px 8px;border:1px solid #999;text-align:right">${fmtN(totals.km_amount + totals.toll_parking_amount + mealAllowance)}</td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="font-size:11px;color:#666;margin:0 0 14px">Distance and dates are captured via GPS field-duty tracking in the HRMS — no manual odometer log required. Toll/Parking charges as entered by the employee at trip end. The per-km rate applied to each row matches the vehicle type used for that trip.</p>
+  <p style="font-weight:bold;margin:0 0 4px">For Travel by Local Train / Auto / Public Transport</p>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:14px;font-size:11.5px">
+    <thead><tr style="background:#f1f5f9">
+      <th style="padding:6px 8px;border:1px solid #999;text-align:left">Date of Travel</th>
+      <th style="padding:6px 8px;border:1px solid #999;text-align:left">Mode of Travel</th>
+      <th style="padding:6px 8px;border:1px solid #999;text-align:left">From</th>
+      <th style="padding:6px 8px;border:1px solid #999;text-align:left">To</th>
+      <th style="padding:6px 8px;border:1px solid #999;text-align:right">Cost</th>
+      <th style="padding:6px 8px;border:1px solid #999;text-align:right">Total Amount</th>
+    </tr></thead>
+    <tbody>${Array.from({ length: 3 }, () => `<tr>${Array.from({ length: 6 }, () => '<td style="padding:6px 8px;border:1px solid #999">&nbsp;</td>').join('')}</tr>`).join('')}</tbody>
+  </table>
+  <p style="font-size:10.5px;color:#888;margin:0 0 14px">(To be filled manually if applicable — not tracked by the Field Duty GPS module.)</p>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:6px">
+    <tr>
+      <td style="padding:8px;border:1px solid #999;background:#fff7ed"><b>Grand Total (in figures)</b></td>
+      <td style="padding:8px;border:1px solid #999;background:#fff7ed;font-weight:bold;font-size:14px">₹${fmtN(grandTotal)}</td>
+    </tr>
+    <tr>
+      <td style="padding:8px;border:1px solid #999"><b>Grand Total (in words)</b></td>
+      <td style="padding:8px;border:1px solid #999">${fieldNumToWords(grandTotal)}</td>
+    </tr>
+  </table>
+  <div style="display:flex;justify-content:space-between;margin-top:36px;font-size:11px">
+    <div>Employee Signature<br/><span style="color:#999">_____________________</span></div>
+    <div>Reporting Manager<br/><span style="color:#999">_____________________</span></div>
+    <div>HOD / Approver<br/><span style="color:#999">_____________________</span></div>
+  </div>
+  <p style="color:#aaa;font-size:10px;margin-top:18px;text-align:center">Generated by Maxvolt HRMS from GPS-tracked Field Duty trips${claimId ? ` · Claim ID: ${claimId}` : ''} · As per Maxvolt Energy Travel Policy Annexure 1–6.</p>
 </div>`;
 }
 
