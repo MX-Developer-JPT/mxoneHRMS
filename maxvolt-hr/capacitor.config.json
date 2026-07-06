@@ -2,12 +2,18 @@
   "appId": "com.maxvolt.hr",
   "appName": "Maxvolt HR",
   "webDir": "dist",
+  "backgroundColor": "#F2F2F7",
   "server": {
     "url": "https://hr.maxvolt-one.co.in",
     "androidScheme": "https",
     "cleartext": false
   },
   "android": {
-    "allowMixedContent": false
+    "allowMixedContent": false,
+    "backgroundColor": "#F2F2F7"
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#F2F2F7"
   }
 }

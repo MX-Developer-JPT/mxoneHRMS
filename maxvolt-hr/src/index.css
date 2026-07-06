@@ -93,6 +93,8 @@
     font-size: 16px;
     -webkit-text-size-adjust: 100%;
     scroll-behavior: smooth;
+    height: 100%;
+    overflow: hidden;
   }
 
   body {
@@ -103,8 +105,21 @@
     -moz-osx-font-smoothing: grayscale;
     overscroll-behavior: none;
     -webkit-overflow-scrolling: touch;
-    min-height: 100dvh;
+    /* height (not min-height) + overflow:hidden pins body to exactly one screen —
+       Layout.jsx's own inner div is the ONE true scroll container (overflow-y-auto).
+       Without this, body could grow taller than the viewport in a WKWebView/iOS
+       Capacitor shell and rubber-band-scroll on its own, revealing a gray gap of
+       unstyled background below the fixed bottom tab bar when it bounces. */
+    height: 100dvh;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+    width: 100%;
     letter-spacing: -0.01em;
+  }
+
+  #root {
+    height: 100%;
   }
 
   h1, h2, h3, h4, h5, h6 {
