@@ -1,8 +1,9 @@
-// Web Push notifications via VAPID.
-// Keys come from env (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY) when set, otherwise
-// they are generated once and persisted in the settings table so they survive
-// restarts without manual configuration.
-
+// Push notifications, two channels:
+//  1. Web Push (VAPID) — browser tabs / installed PWA, existing behaviour unchanged.
+//  2. FCM (Firebase Cloud Messaging) — the native Android wrapper app, so notifications
+//     land in the real system tray/notification shade even when the app is fully closed,
+//     the same way WhatsApp/any native app does. Silently no-ops if Firebase isn't
+//     configured (FIREBASE_SERVICE_ACCOUNT_JSON not set) so this never blocks web push.
 import webpush from 'web-push';
 import { one, all, run } from '../db.js';
 
@@ -61,33 +62,129 @@ export async function removeSubscription(endpoint) {
   await run("DELETE FROM push_subscriptions WHERE endpoint=$1", [endpoint]);
 }
 
-// Fire-and-forget push to every device a user has registered.
+/* ── FCM (native Android push) ──────────────────────────────── */
+
+let fcmApp = null;   // firebase-admin app instance, or false if unavailable/misconfigured
+let fcmInitTried = false;
+
+async function loadFcm() {
+  if (fcmInitTried) return fcmApp || null;
+  fcmInitTried = true;
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  if (!raw) return null; // not configured — native push simply stays off, web push unaffected
+  try {
+    const admin = (await import('firebase-admin')).default;
+    const serviceAccount = JSON.parse(raw);
+    fcmApp = admin.initializeApp({ credential: admin.credential.cert(serviceAccount) }, 'maxvoltPush');
+    console.log('✓ Firebase Admin initialized for native push (FCM)');
+    return fcmApp;
+  } catch (e) {
+    console.warn('[push] FCM init failed — check FIREBASE_SERVICE_ACCOUNT_JSON:', e.message);
+    fcmApp = false;
+    return null;
+  }
+}
+
+export async function saveDeviceToken(userId, token, platform = 'fcm_android') {
+  if (!token) return false;
+  await run(
+    `INSERT INTO device_tokens(token,user_id,platform,updated_at) VALUES($1,$2,$3,NOW()::TEXT)
+     ON CONFLICT(token) DO UPDATE SET user_id=EXCLUDED.user_id, platform=EXCLUDED.platform, updated_at=NOW()::TEXT`,
+    [token, userId, platform]
+  );
+  return true;
+}
+
+export async function removeDeviceToken(token) {
+  if (!token) return;
+  await run("DELETE FROM device_tokens WHERE token=$1", [token]);
+}
+
+// Severity → Android notification channel. Kept to the 4 values already used across
+// the app (info/success/warning/error) so no other backend code needs to change.
+const CHANNEL_BY_TYPE = {
+  error:   'alerts',
+  warning: 'alerts',
+  success: 'updates',
+  info:    'general',
+};
+
+async function sendFcmToUser(userId, payload) {
+  const app = await loadFcm();
+  if (!app) return;
+  const tokens = (await all("SELECT token FROM device_tokens WHERE user_id=$1", [userId])).map(r => r.token);
+  if (!tokens.length) return;
+
+  const admin = (await import('firebase-admin')).default;
+  const messaging = admin.messaging(app);
+  const channelId = CHANNEL_BY_TYPE[payload.type] || 'general';
+
+  const message = {
+    notification: {
+      title: payload.title || 'Maxvolt HR',
+      body: payload.message || payload.body || '',
+    },
+    data: {
+      link: payload.link || '/',
+      type: payload.type || 'info',
+    },
+    android: {
+      priority: (payload.type === 'error' || payload.type === 'warning') ? 'high' : 'normal',
+      notification: {
+        channelId,
+        icon: 'ic_notification',
+        color: '#F97316',
+        tag: payload.type || 'maxvolt-hr', // same-type notifications replace/group, like WhatsApp threads
+      },
+    },
+  };
+
+  const results = await Promise.allSettled(tokens.map(token => messaging.send({ ...message, token })));
+  const stale = [];
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      const code = r.reason?.errorInfo?.code || r.reason?.code || '';
+      if (code.includes('registration-token-not-registered') || code.includes('invalid-argument')) {
+        stale.push(tokens[i]);
+      }
+    }
+  });
+  if (stale.length) await Promise.all(stale.map(t => removeDeviceToken(t).catch(() => {})));
+}
+
+// Fire-and-forget push to every device a user has registered — both web push
+// subscriptions AND native Android (FCM) tokens get the same notification.
 export async function sendPushToUser(userId, payload) {
   try {
     const v = await loadVapid();
-    if (!v) return;
-    const subs = await all("SELECT endpoint,keys FROM push_subscriptions WHERE user_id=$1", [userId]);
-    if (!subs.length) return;
-
-    const body = JSON.stringify({
-      title: payload.title || 'Maxvolt HR',
-      body: payload.message || payload.body || '',
-      link: payload.link || '/',
-      type: payload.type || 'info',
-    });
-
-    await Promise.all(subs.map(async (s) => {
-      const subscription = { endpoint: s.endpoint, keys: JSON.parse(s.keys) };
-      try {
-        await webpush.sendNotification(subscription, body);
-      } catch (err) {
-        // 404/410 → subscription expired; clean it up
-        if (err.statusCode === 404 || err.statusCode === 410) {
-          await removeSubscription(s.endpoint).catch(() => {});
-        }
+    if (v) {
+      const subs = await all("SELECT endpoint,keys FROM push_subscriptions WHERE user_id=$1", [userId]);
+      if (subs.length) {
+        const body = JSON.stringify({
+          title: payload.title || 'Maxvolt HR',
+          body: payload.message || payload.body || '',
+          link: payload.link || '/',
+          type: payload.type || 'info',
+        });
+        await Promise.all(subs.map(async (s) => {
+          const subscription = { endpoint: s.endpoint, keys: JSON.parse(s.keys) };
+          try {
+            await webpush.sendNotification(subscription, body);
+          } catch (err) {
+            if (err.statusCode === 404 || err.statusCode === 410) {
+              await removeSubscription(s.endpoint).catch(() => {});
+            }
+          }
+        }));
       }
-    }));
+    }
   } catch (e) {
-    console.warn('[push] sendPushToUser error:', e.message);
+    console.warn('[push] sendPushToUser (web push) error:', e.message);
+  }
+
+  try {
+    await sendFcmToUser(userId, payload);
+  } catch (e) {
+    console.warn('[push] sendPushToUser (FCM) error:', e.message);
   }
 }

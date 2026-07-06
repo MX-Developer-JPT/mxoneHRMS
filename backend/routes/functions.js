@@ -909,6 +909,24 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true });
     }
 
+    /* ── Native push (Android wrapper): FCM device token registration ── */
+    case 'registerDeviceToken': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { token, platform } = p;
+      if (!token) return res.json({ success: false, error: 'token required' });
+      const { saveDeviceToken } = await import('../utils/push.js');
+      await saveDeviceToken(cu.id, token, platform === 'fcm_android' ? 'fcm_android' : (platform || 'fcm_android'));
+      return res.json({ success: true });
+    }
+
+    case 'unregisterDeviceToken': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { token } = p;
+      const { removeDeviceToken } = await import('../utils/push.js');
+      await removeDeviceToken(token);
+      return res.json({ success: true });
+    }
+
     /* ── Native geofencing (Android wrapper): fence config + enter/exit events ── */
     case 'getMyGeofence': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
