@@ -610,7 +610,7 @@ export default function Layout({ children, currentPageName }) {
       {/* ── Main content ─────────────────────────────────────── */}
       <div
         ref={contentRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden bg-background"
+        className="flex-1 overflow-y-auto overflow-x-hidden bg-background overscroll-y-contain"
         style={{ WebkitOverflowScrolling: 'touch' }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
