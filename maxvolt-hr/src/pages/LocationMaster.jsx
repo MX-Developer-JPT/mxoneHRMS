@@ -6,10 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, Edit2, Trash2, MapPin, Loader2, Download, Users, ChevronDown } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Plus, Edit2, Trash2, MapPin, Loader2, Download, Users, ChevronDown, UserCog, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+
+const NO_LOCATION = '__none__';
 
 export default function LocationMaster() {
   const [locations, setLocations] = useState([]);
@@ -35,6 +38,10 @@ export default function LocationMaster() {
     );
   };
   const [expandedLocation, setExpandedLocation] = useState(null);
+  const [selectedEmployees, setSelectedEmployees] = useState(new Set());
+  const [assignDialog, setAssignDialog] = useState(null); // { employees: [...], targetLocation }
+  const [assignValue, setAssignValue] = useState('');
+  const [assigning, setAssigning] = useState(false);
 
   useEffect(() => { loadData(); }, []);
 
@@ -55,6 +62,41 @@ export default function LocationMaster() {
 
   const getEmployeesAtLocation = (locationName) => {
     return employees.filter(e => e.work_location === locationName);
+  };
+
+  const unassignedEmployees = employees.filter(e => !e.work_location);
+
+  const toggleSelect = (empId) => {
+    setSelectedEmployees(prev => {
+      const next = new Set(prev);
+      next.has(empId) ? next.delete(empId) : next.add(empId);
+      return next;
+    });
+  };
+
+  const openAssign = (emps) => {
+    setAssignDialog({ employees: emps });
+    setAssignValue(emps.length === 1 ? (emps[0].work_location || NO_LOCATION) : '');
+  };
+
+  const confirmAssign = async () => {
+    if (!assignDialog || !assignValue) return;
+    setAssigning(true);
+    try {
+      const newLocation = assignValue === NO_LOCATION ? '' : assignValue;
+      await Promise.all(assignDialog.employees.map(e => base44.entities.Employee.update(e.id, { work_location: newLocation })));
+      toast.success(
+        assignDialog.employees.length === 1
+          ? `${assignDialog.employees[0].display_name} moved to ${newLocation || 'no location'}`
+          : `${assignDialog.employees.length} employees moved to ${newLocation || 'no location'}`
+      );
+      setAssignDialog(null);
+      setSelectedEmployees(new Set());
+      await loadData();
+    } catch (err) {
+      toast.error('Error assigning location');
+    }
+    setAssigning(false);
   };
 
   const exportLocationEmployees = (locationName) => {
@@ -214,6 +256,36 @@ export default function LocationMaster() {
 
           <TabsContent value="employees">
             <div className="space-y-4">
+              {/* Unassigned employees — need an initial location assignment */}
+              {unassignedEmployees.length > 0 && (
+                <Card className="border-amber-300">
+                  <CardHeader className="cursor-pointer hover:bg-muted/30 transition-colors" onClick={() => setExpandedLocation(expandedLocation === '__unassigned__' ? null : '__unassigned__')}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <AlertCircle className="w-5 h-5 text-amber-500" />
+                        <div>
+                          <CardTitle className="text-base">Unassigned</CardTitle>
+                          <p className="text-sm text-muted-foreground">{unassignedEmployees.length} employee(s) with no work location set</p>
+                        </div>
+                      </div>
+                      <ChevronDown className={`w-5 h-5 transition-transform ${expandedLocation === '__unassigned__' ? 'rotate-180' : ''}`} />
+                    </div>
+                  </CardHeader>
+                  {expandedLocation === '__unassigned__' && (
+                    <CardContent>
+                      <EmployeeLocationTable
+                        emps={unassignedEmployees}
+                        employees={employees}
+                        selected={selectedEmployees}
+                        onToggle={toggleSelect}
+                        onAssignOne={(emp) => openAssign([emp])}
+                        onAssignSelected={(emps) => openAssign(emps)}
+                      />
+                    </CardContent>
+                  )}
+                </Card>
+              )}
+
               {locations.filter(l => l.is_active !== false).map(loc => {
                 const emps = getEmployeesAtLocation(loc.name);
                 const isExpanded = expandedLocation === loc.id;
@@ -246,39 +318,14 @@ export default function LocationMaster() {
                         {emps.length === 0 ? (
                           <p className="text-center text-muted-foreground py-6">No employees at this location</p>
                         ) : (
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-sm">
-                              <thead>
-                                <tr className="border-b text-left text-xs text-muted-foreground uppercase">
-                                  <th className="py-2 px-2 font-medium">Code</th>
-                                  <th className="py-2 px-2 font-medium">Name</th>
-                                  <th className="py-2 px-2 font-medium">Designation</th>
-                                  <th className="py-2 px-2 font-medium">Tier</th>
-                                  <th className="py-2 px-2 font-medium">Department</th>
-                                  <th className="py-2 px-2 font-medium">DOJ</th>
-                                  <th className="py-2 px-2 font-medium">DOB</th>
-                                  <th className="py-2 px-2 font-medium">Manager</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {emps.map(e => {
-                                  const mgr = employees.find(m => m.user_id === e.reporting_manager_id);
-                                  return (
-                                    <tr key={e.id} className="border-b hover:bg-muted/30">
-                                      <td className="py-2 px-2 font-mono text-xs">{e.employee_code}</td>
-                                      <td className="py-2 px-2 font-medium">{e.display_name}</td>
-                                      <td className="py-2 px-2">{e.designation}</td>
-                                      <td className="py-2 px-2"><Badge variant="outline" className="text-xs">{e.designation_tier || '—'}</Badge></td>
-                                      <td className="py-2 px-2">{e.department}</td>
-                                      <td className="py-2 px-2 text-xs">{e.date_of_joining || '—'}</td>
-                                      <td className="py-2 px-2 text-xs">{e.date_of_birth || '—'}</td>
-                                      <td className="py-2 px-2">{mgr?.display_name || '—'}</td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
+                          <EmployeeLocationTable
+                            emps={emps}
+                            employees={employees}
+                            selected={selectedEmployees}
+                            onToggle={toggleSelect}
+                            onAssignOne={(emp) => openAssign([emp])}
+                            onAssignSelected={(emps) => openAssign(emps)}
+                          />
                         )}
                       </CardContent>
                     )}
@@ -291,6 +338,38 @@ export default function LocationMaster() {
             </div>
           </TabsContent>
         </Tabs>
+
+        {/* Assign / Change Location dialog */}
+        <Dialog open={!!assignDialog} onOpenChange={(v) => !v && setAssignDialog(null)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>
+                {assignDialog?.employees.length === 1 ? `Assign Location — ${assignDialog.employees[0].display_name}` : `Assign Location — ${assignDialog?.employees.length || 0} Employees`}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label>Work Location</Label>
+                <Select value={assignValue} onValueChange={setAssignValue}>
+                  <SelectTrigger><SelectValue placeholder="Select a location" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_LOCATION}>— No Location —</SelectItem>
+                    {locations.filter(l => l.is_active !== false).map(l => (
+                      <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setAssignDialog(null)}>Cancel</Button>
+                <Button onClick={confirmAssign} disabled={assigning || !assignValue}>
+                  {assigning ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                  Save
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={showDialog} onOpenChange={setShowDialog}>
           <DialogContent>
@@ -329,6 +408,77 @@ export default function LocationMaster() {
             </div>
           </DialogContent>
         </Dialog>
+      </div>
+    </div>
+  );
+}
+
+function EmployeeLocationTable({ emps, employees, selected, onToggle, onAssignOne, onAssignSelected }) {
+  const selectedHere = emps.filter(e => selected.has(e.id));
+  const allSelected = emps.length > 0 && selectedHere.length === emps.length;
+
+  return (
+    <div className="space-y-3">
+      {selectedHere.length > 0 && (
+        <div className="flex items-center justify-between bg-primary/5 border border-primary/20 rounded-lg px-3 py-2">
+          <span className="text-sm font-medium">{selectedHere.length} selected</span>
+          <Button size="sm" onClick={() => onAssignSelected(selectedHere)}>
+            <UserCog className="w-3.5 h-3.5 mr-1" /> Assign Location
+          </Button>
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-xs text-muted-foreground uppercase">
+              <th className="py-2 px-2 w-8">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4 rounded accent-primary cursor-pointer"
+                  checked={allSelected}
+                  onChange={() => {
+                    if (allSelected) emps.forEach(e => { if (selected.has(e.id)) onToggle(e.id); });
+                    else emps.forEach(e => { if (!selected.has(e.id)) onToggle(e.id); });
+                  }}
+                />
+              </th>
+              <th className="py-2 px-2 font-medium">Code</th>
+              <th className="py-2 px-2 font-medium">Name</th>
+              <th className="py-2 px-2 font-medium">Designation</th>
+              <th className="py-2 px-2 font-medium">Tier</th>
+              <th className="py-2 px-2 font-medium">Department</th>
+              <th className="py-2 px-2 font-medium">DOJ</th>
+              <th className="py-2 px-2 font-medium">Manager</th>
+              <th className="py-2 px-2 font-medium">Location</th>
+              <th className="py-2 px-2 font-medium"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {emps.map(e => {
+              const mgr = employees.find(m => m.user_id === e.reporting_manager_id);
+              return (
+                <tr key={e.id} className="border-b hover:bg-muted/30">
+                  <td className="py-2 px-2">
+                    <input type="checkbox" className="w-4 h-4 rounded accent-primary cursor-pointer" checked={selected.has(e.id)} onChange={() => onToggle(e.id)} />
+                  </td>
+                  <td className="py-2 px-2 font-mono text-xs">{e.employee_code}</td>
+                  <td className="py-2 px-2 font-medium">{e.display_name}</td>
+                  <td className="py-2 px-2">{e.designation}</td>
+                  <td className="py-2 px-2"><Badge variant="outline" className="text-xs">{e.designation_tier || '—'}</Badge></td>
+                  <td className="py-2 px-2">{e.department}</td>
+                  <td className="py-2 px-2 text-xs">{e.date_of_joining || '—'}</td>
+                  <td className="py-2 px-2">{mgr?.display_name || '—'}</td>
+                  <td className="py-2 px-2 text-xs">{e.work_location || <span className="text-amber-600">Unassigned</span>}</td>
+                  <td className="py-2 px-2">
+                    <Button size="sm" variant="ghost" onClick={() => onAssignOne(e)}>
+                      <UserCog className="w-3.5 h-3.5 mr-1" /> Change
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
