@@ -2,11 +2,11 @@
 
 The app ships as a **Capacitor hybrid shell** around the live site at
 **https://hr.maxvolt-one.co.in**, plus a small set of real native modules
-(push notifications now; geofencing next). This is the "hybrid" model
+(push notifications, background geofencing). This is the "hybrid" model
 chosen deliberately over both extremes:
 
-- **not** a plain WebView wrapper — it has real native plugins (push, and
-  soon background geofencing) that a bare wrapper can't do
+- **not** a plain WebView wrapper — it has real native plugins (push,
+  background geofencing) that a bare wrapper can't do
 - **not** a full native rewrite — the ~90 HRMS screens are still the one
   web app, so a feature/content change ships by deploying the backend/web
   app as normal; **you only rebuild the APK/IPA when the native shell
@@ -87,7 +87,11 @@ file is present (`android/app/build.gradle` checks for it and applies
    register for push automatically (see `src/lib/nativePush.js`) and you'll
    get real system-tray notifications, same as any native app.
 
-Full behavior/design reference: `docs/NATIVE_PUSH_SPEC.md`.
+Push uses `@capacitor-firebase/messaging` (not the raw platform plugin) so
+the exact same setup and the exact same backend code deliver to **both**
+Android and iOS — see §2.4. `docs/NATIVE_PUSH_SPEC.md` has the original
+design reasoning (channels, deep-linking) but is otherwise superseded by
+what's actually wired here.
 
 ---
 
@@ -112,9 +116,9 @@ on a physical device beyond a 7-day free-provisioning test build.
 
 ### 2.1 What's already done
 `ios/` is already scaffolded and synced in this repo (`ios/App/App.xcodeproj`,
-Capacitor + push-notifications wired via Swift Package Manager). Whoever has
-Mac access just needs to open it and configure signing — no project setup
-from scratch.
+Capacitor + Firebase Messaging wired via Swift Package Manager — see §2.4).
+Whoever has Mac access just needs to open it, add one config file, and
+configure signing — no project setup from scratch.
 
 ### 2.2 Building on a Mac
 ```bash
@@ -134,42 +138,103 @@ In Xcode:
    Store) or **Ad Hoc**/**Enterprise** (for direct install on registered
    devices only — Ad Hoc is limited to 100 device UDIDs per year).
 
-### 2.3 Push notifications on iOS — one step short
+### 2.3 Enable the Push capability in Xcode
 
-Capacitor's push-notifications plugin is already installed and will
-register the device with **Apple's APNs** directly and hand back a token —
-that part works out of the box once you enable the **Push Notifications**
-capability in Xcode (Signing & Capabilities ▸ **+ Capability** ▸ *Push
-Notifications*, plus **Background Modes ▸ Remote notifications** so it can
-receive pushes while backgrounded).
+One-time, in the Xcode project (Signing & Capabilities tab):
+1. **+ Capability** ▸ **Push Notifications**.
+2. **+ Capability** ▸ **Background Modes** ▸ check **Remote notifications**
+   (lets push wake/deliver to the app while backgrounded).
 
-The gap: the backend currently sends push through **Firebase** (Admin SDK),
-and a raw APNs token isn't directly usable by Firebase's send API as-is.
-The token *is* already being registered against your account (tagged
-`apns_ios` in `device_tokens`) so nothing else needs to change later —
-pick one of these when you're ready to finish iOS delivery:
+### 2.4 Push notifications on iOS — fully wired, needs one Firebase config file
 
-- **Option A — add Firebase to iOS too (recommended, reuses 100% of the
-  existing backend code).** Add the iOS app to the same Firebase project
-  (§1, step 1), download `GoogleService-Info.plist`, add it to the Xcode
-  project, add the `FirebaseMessaging` Swift package, and a few lines in
-  `AppDelegate.swift` so Firebase exchanges the APNs token for an FCM
-  token automatically. Once that FCM token is what gets sent to
-  `registerDeviceToken` instead of the raw APNs token, `utils/push.js`
-  delivers to iOS with **zero backend changes** — the same
-  `sendPushToUser()` already fans out to whatever's in `device_tokens`.
-- **Option B — send directly via Apple's APNs API**, bypassing Firebase
-  for iOS. Needs an APNs auth key (`.p8`) from the Apple Developer portal
-  and a small addition to `utils/push.js` (e.g. the `apn` npm package) to
-  send to `apns_ios`-tagged tokens directly. More backend work, no Firebase
-  iOS SDK/native code needed.
+Push uses **`@capacitor-firebase/messaging`** (not Apple's raw APNs plugin) on
+*both* platforms. On iOS, this plugin's native code registers with APNs and
+then has Firebase's iOS SDK internally exchange that for a real **FCM token**
+— the same kind of token Android produces. That means the backend
+(`utils/push.js`, `sendPushToUser()`) needs **zero iOS-specific code**: it
+already sends every notification via `firebase-admin`'s `messaging().send()`
+to whatever's in `device_tokens`, regardless of platform.
 
-Either is a contained, well-defined follow-up — ask when you're ready to
-wire it and it'll be built against whichever option you pick.
+The only thing left for iOS delivery to actually work is a config file only
+Firebase Console can give you:
+
+1. In the same Firebase project used for Android (§1), **add an iOS app**
+   with bundle ID `com.maxvolt.hr`.
+2. Download `GoogleService-Info.plist`.
+3. In Xcode, drag it into the **App** target's file group (right-click
+   `App` in the Project Navigator ▸ **Add Files to "App"**) — make sure
+   **"Copy items if needed"** and the **App** target checkbox are both
+   ticked. Xcode updates the project file for you; don't hand-edit
+   `project.pbxproj`.
+4. Rebuild and run. `src/lib/nativePush.js` requests permission, calls
+   `FirebaseMessaging.getToken()`, and registers it with the backend —
+   real system-tray notifications on iOS from that point on, same code
+   path as Android.
+
+No `AppDelegate.swift` edits needed — the plugin handles the APNs↔FCM
+token exchange internally.
 
 ---
 
-## 3. Branding (icon + splash) — do this for both platforms
+## 3. Background Geofence (attendance, works with the app closed)
+
+Employees on Mark Attendance can turn on **Background Geofence** — present
+the instant they enter their assigned office zone, checked out the instant
+they leave, even if the app is fully closed. This only appears/works inside
+the native shell (`Capacitor.isNativePlatform()`); a plain browser tab still
+falls back to the existing in-app foreground-only version, which only runs
+while that page is open.
+
+### How it works
+Unlike OS-level geofence *regions* (the original, since-superseded plan in
+`docs/NATIVE_GEOFENCING_SPEC.md`), this uses
+**`@capacitor-community/background-geolocation`**: a genuine Android
+foreground service / iOS "Always" background location that delivers
+continuous location updates while enabled, with the enter/exit distance
+check running in JS (`src/lib/geofenceBackground.js`) against the same
+`getMyGeofence` / `nativeGeofenceEvent` backend endpoints the Android spec
+already describes. Trade-off: this is a **visible, persistent notification**
+while it's on ("Maxvolt HR — Attendance tracking active") and uses more
+battery than the in-app-only toggle — that's Android's policy requirement
+for any background location access, not a bug, and it's disclosed to the
+employee in the toggle's own description.
+
+### Setup needed
+- **Android**: nothing extra — the plugin's own manifest (foreground service
+  + permissions) merges in automatically via Gradle, same pattern as the
+  push plugin.
+- **iOS**: the required `Info.plist` usage-description keys and
+  `UIBackgroundModes` (`location`) are already added in this repo
+  (`ios/App/App/Info.plist`). In Xcode, also enable **Background Modes ▸
+  Location updates** under Signing & Capabilities (this mirrors the
+  `Info.plist` entry — Xcode's UI toggle and the plist key must both be
+  set).
+- **⚠️ Version note**: `@capacitor-community/background-geolocation`
+  currently targets Capacitor 7 upstream, while this project is on
+  Capacitor 8. `npx cap sync` prints a compatibility warning for this (not
+  an error) — it's expected to keep working since Capacitor's native plugin
+  bridge is stable across majors, but **test the actual enter/exit behavior
+  on a real device early** rather than assuming it's fine. If it ever breaks
+  on a future Capacitor upgrade, the fix is either a newer plugin release or
+  swapping to an alternative (e.g. the commercial
+  `@transistorsoft/capacitor-background-geolocation`, which has true native
+  geofence regions and a production license fee, if the free option stops
+  being maintained).
+
+### Testing
+1. Enable the toggle on a real device (simulators don't reliably deliver
+   background location).
+2. Walk into the office radius with the app closed — check-in should appear
+   in HR's All Attendance within moments, tagged **Background geofence
+   (Android)** / **(iOS)**.
+3. Walk out past the buffer — checkout should follow the same way.
+4. Confirm the persistent notification is visible the whole time it's on,
+   and disappears when the toggle is turned off or the employee logs out
+   (logout also calls `stopBackgroundGeofence()`).
+
+---
+
+## 4. Branding (icon + splash) — do this for both platforms
 
 **Easiest — from a single 1024×1024 PNG:**
 ```bash
@@ -188,7 +253,7 @@ Or per-platform manually:
 
 ---
 
-## 4. Changing the target URL / going fully offline-bundled
+## 5. Changing the target URL / going fully offline-bundled
 
 Both platforms read `server.url` from `capacitor.config.json` — change it
 there and re-run `npm run cap:sync` for both to pick it up.
@@ -204,7 +269,7 @@ future native modules still call the backend over the network regardless.
 
 ---
 
-## 5. Quick reference — do I need to rebuild the app?
+## 6. Quick reference — do I need to rebuild the app?
 
 | Change | Rebuild needed? |
 |---|---|

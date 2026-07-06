@@ -17,10 +17,11 @@ export function getAttendanceMethod(record) {
   return ATTENDANCE_METHODS.manual;
 }
 
-// Human-readable detail for the geofence case — distinguishes the native Android
-// background geofence (works with the app closed) from the in-app foreground watcher.
+// Human-readable detail for the geofence case — distinguishes the native background
+// geofence (works with the app backgrounded/closed) from the in-app foreground watcher.
 export function getGeofenceDetail(record) {
-  if (record?.geofence_source === 'native_android') return `Native geofence — ${record.geofence_location || 'assigned office'}`;
+  if (record?.geofence_source === 'native_android') return `Background geofence (Android) — ${record.geofence_location || 'assigned office'}`;
+  if (record?.geofence_source === 'native_ios') return `Background geofence (iOS) — ${record.geofence_location || 'assigned office'}`;
   if (record?.geofence_location) return `In-app geofence — ${record.geofence_location}`;
   return 'Geofence';
 }

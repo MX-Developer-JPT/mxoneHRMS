@@ -6,6 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar, Fingerprint } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { getAttendanceMethod, getGeofenceDetail } from '@/lib/attendanceSource';
+import { isBackgroundGeofenceAvailable, startBackgroundGeofence, stopBackgroundGeofence } from '@/lib/geofenceBackground';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -38,6 +39,40 @@ export default function MarkAttendance() {
   const [officeFence, setOfficeFence] = useState(null);   // assigned AppLocation with lat/lng/radius
   const [fenceDistance, setFenceDistance] = useState(null); // metres from office centre
   const autoBusyRef = useRef(false);
+
+  // ── Background geofence (native app only — works with the app closed) ──
+  const [nativeAvailable, setNativeAvailable] = useState(false);
+  const [bgGeofenceOn, setBgGeofenceOn] = useState(() => localStorage.getItem('background_geofence') === '1');
+  const [bgBusy, setBgBusy] = useState(false);
+
+  useEffect(() => { isBackgroundGeofenceAvailable().then(setNativeAvailable); }, []);
+
+  const toggleBackgroundGeofence = async (on) => {
+    setBgBusy(true);
+    try {
+      if (on) {
+        const res = await startBackgroundGeofence();
+        if (res.started) {
+          setBgGeofenceOn(true);
+          toast.success('Background Geofence ON — attendance now tracks even with the app closed');
+        } else {
+          const messages = {
+            no_fence_assigned: 'No office location assigned to you yet — ask HR to set your Work Location in Location Master.',
+            fetch_failed: 'Could not reach the server — try again.',
+            start_failed: 'Could not start location tracking — check location permission in system settings.',
+          };
+          toast.error(messages[res.reason] || 'Could not enable Background Geofence');
+          setBgGeofenceOn(false);
+        }
+      } else {
+        await stopBackgroundGeofence();
+        setBgGeofenceOn(false);
+        toast.info('Background Geofence off — switched to manual/selfie check-in');
+      }
+    } finally {
+      setBgBusy(false);
+    }
+  };
 
   const distMetres = (lat1, lng1, lat2, lng2) => {
     const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
@@ -456,8 +491,32 @@ export default function MarkAttendance() {
           <p className="text-gray-600 mt-1 text-sm md:text-base">Check in and check out for the day</p>
         </div>
 
-        {/* Geofence auto attendance */}
-        {officeFence && (
+        {/* Background Geofence — native app only, works even with the app closed */}
+        {nativeAvailable && officeFence && (
+          <Card className={bgGeofenceOn ? 'border-orange-300 bg-orange-50/50' : ''}>
+            <CardContent className="py-3 px-4 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`p-2 rounded-full ${bgGeofenceOn ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-400'}`}>
+                  <Radar className={`w-5 h-5 ${bgGeofenceOn ? 'animate-pulse' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-gray-800">Background Geofence — {officeFence.name}</p>
+                  <p className="text-xs text-gray-500">
+                    {bgGeofenceOn
+                      ? `Tracking is active even with the app closed. A persistent notification shows while this is on — that's expected, it's what keeps tracking running.`
+                      : `Marks you present/checked-out automatically at ${officeFence.name}, even if you never open the app. Shows a persistent notification while on (uses more battery than the in-app version below).`}
+                  </p>
+                </div>
+              </div>
+              <Switch checked={bgGeofenceOn} onCheckedChange={toggleBackgroundGeofence} disabled={bgBusy} />
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Geofence auto attendance (in-app, foreground only) — the fallback for
+            plain browser/PWA use, and still offered natively as a no-persistent-
+            notification alternative to Background Geofence above. */}
+        {officeFence && !bgGeofenceOn && (
           <Card className={autoMode ? 'border-blue-300 bg-blue-50/50' : ''}>
             <CardContent className="py-3 px-4 flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-center gap-3 min-w-0">

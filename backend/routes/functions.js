@@ -1024,7 +1024,7 @@ router.post('/:name', async (req, res) => {
         check_out_time: sessionData.is_in_progress ? null : sessionData.check_out_time,
         status, late_minutes, shift_id: ngEmp.shift_id || null,
         auto_geofence: true, geofence_location: ngFence?.name || location_name || '',
-        geofence_source: source === 'in_app' ? 'in_app' : 'native_android', geofence_device: device_id || '',
+        geofence_source: ['in_app', 'native_android', 'native_ios'].includes(source) ? source : 'native_android', geofence_device: device_id || '',
         ...(event === 'enter' ? { check_in_location: locPayload } : { check_out_location: locPayload }),
       };
       if (ngAtt) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(attData), status, ngAttRow.id]);

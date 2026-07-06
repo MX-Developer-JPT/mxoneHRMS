@@ -1,5 +1,14 @@
 # Native Android Push Notifications — Technical Specification
 
+> **⚠️ Superseded.** Written when the mobile app was assumed to be a raw WebView
+> wrapper. It's actually a **Capacitor** app (`maxvolt-hr/android`, `maxvolt-hr/ios`),
+> so push is implemented with the official `@capacitor-firebase/messaging` plugin
+> instead of hand-written Kotlin/Swift — see **`maxvolt-hr/MOBILE_BUILD.md`** for
+> the current, accurate setup (both Android and iOS, already wired in the repo).
+> Kept below for historical reference only — the manual FCM/channel/deep-link
+> *design* here is still conceptually what the Capacitor plugin does under the
+> hood, just don't follow it as literal build steps.
+
 **App:** Maxvolt One Android wrapper (`com.maxvolt.hr`)
 **Goal:** Real, native push notifications — system tray, sound, vibration, badge, lock-screen, heads-up banner, tap-to-open — exactly like WhatsApp or any native app, including when the app is fully closed/killed. This replaces relying on Web Push (which does not work reliably inside a plain WebView, and is restricted on iOS) with **Firebase Cloud Messaging (FCM)**.
 **Backend status:** ✅ Fully deployed already. This document is a build spec for the Android wrapper only.

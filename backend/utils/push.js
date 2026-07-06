@@ -1,9 +1,11 @@
 // Push notifications, two channels:
 //  1. Web Push (VAPID) — browser tabs / installed PWA, existing behaviour unchanged.
-//  2. FCM (Firebase Cloud Messaging) — the native Android wrapper app, so notifications
-//     land in the real system tray/notification shade even when the app is fully closed,
-//     the same way WhatsApp/any native app does. Silently no-ops if Firebase isn't
-//     configured (FIREBASE_SERVICE_ACCOUNT_JSON not set) so this never blocks web push.
+//  2. FCM (Firebase Cloud Messaging) — the native Capacitor shell on both Android and
+//     iOS (via @capacitor-firebase/messaging, which does the APNs<->FCM token exchange
+//     on-device), so notifications land in the real system tray/notification shade even
+//     when the app is fully closed, the same way WhatsApp/any native app does. Silently
+//     no-ops if Firebase isn't configured (FIREBASE_SERVICE_ACCOUNT_JSON not set) so
+//     this never blocks web push.
 import webpush from 'web-push';
 import { one, all, run } from '../db.js';
 
@@ -132,9 +134,26 @@ async function sendFcmToUser(userId, payload) {
       priority: (payload.type === 'error' || payload.type === 'warning') ? 'high' : 'normal',
       notification: {
         channelId,
-        icon: 'ic_notification',
+        // No custom "icon" here on purpose: it must reference a small white-silhouette
+        // drawable resource shipped in the app; referencing one that doesn't exist yet
+        // can silently drop the notification on some Android versions. Falls back to
+        // the launcher icon until a proper monochrome icon is added (see MOBILE_BUILD.md).
         color: '#F97316',
         tag: payload.type || 'maxvolt-hr', // same-type notifications replace/group, like WhatsApp threads
+      },
+    },
+    // iOS ignores the "android" block above (separate Firebase config namespace) —
+    // without this, iOS deliveries would arrive with no sound/badge/grouping at all.
+    apns: {
+      headers: {
+        'apns-priority': (payload.type === 'error' || payload.type === 'warning') ? '10' : '5',
+      },
+      payload: {
+        aps: {
+          sound: 'default',
+          badge: 1,
+          'thread-id': payload.type || 'maxvolt-hr', // same-type notifications stack together, like WhatsApp threads
+        },
       },
     },
   };

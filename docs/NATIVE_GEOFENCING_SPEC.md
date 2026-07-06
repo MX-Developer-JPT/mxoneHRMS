@@ -1,6 +1,17 @@
 # Native Android Geofencing — Technical Specification
 
-**App:** Maxvolt One Android wrapper (`com.maxvolt.hr`)
+> **⚠️ Superseded.** Written when the mobile app was assumed to be a raw WebView
+> wrapper needing hand-written Kotlin `GeofencingClient` code. It's actually a
+> **Capacitor** app, and background geofencing is now implemented with
+> `@capacitor-community/background-geolocation` (continuous background location
+> + a JS-side distance check, rather than OS geofence regions) — see
+> **`maxvolt-hr/MOBILE_BUILD.md`** and `maxvolt-hr/src/lib/geofenceBackground.js`
+> for what's actually wired. The backend contract described below
+> (`getMyGeofence`, `nativeGeofenceEvent`, idempotent enter/exit, mock-location
+> rejection, multi-session) is still exactly what's live — only the native
+> *trigger* mechanism changed from "OS geofence region" to "background location
+> watcher + JS distance check". Kept below for the backend API reference and
+> original design reasoning.
 **Goal:** Employees are checked in automatically when they physically enter their assigned office zone and checked out when they leave — **with the app closed or in the background**. This complements the in-app (foreground) geofencing already live in the PWA; the native layer exists because browsers cannot geolocate in the background.
 **Backend status:** ✅ Both server endpoints described here are already deployed. This document is a build spec for the Android wrapper only — no web or backend changes are required.
 

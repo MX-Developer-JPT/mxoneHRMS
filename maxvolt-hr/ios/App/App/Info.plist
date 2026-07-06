@@ -24,6 +24,18 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Maxvolt HR uses your location to mark attendance automatically when you arrive at or leave your office, and to log distance for field-duty travel claims.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>With Background Geofence turned on, Maxvolt HR checks your location while the app is in the background to mark attendance the moment you enter or leave your office, without you needing to open the app.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>With Background Geofence turned on, Maxvolt HR checks your location while the app is in the background to mark attendance the moment you enter or leave your office, without you needing to open the app.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>fetch</string>
+		<string>remote-notification</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

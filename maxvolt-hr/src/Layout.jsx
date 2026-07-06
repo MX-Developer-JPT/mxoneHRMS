@@ -20,7 +20,8 @@ import MarkAttendancePage from './pages/MarkAttendance';
 import LeavePage from './pages/Leave';
 import ProfilePage from './pages/Profile';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
-import { initNativePush } from '@/lib/nativePush';
+import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
+import { resumeBackgroundGeofenceIfEnabled, stopBackgroundGeofence } from '@/lib/geofenceBackground';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
@@ -392,6 +393,10 @@ export default function Layout({ children, currentPageName }) {
       // No-ops in a plain browser tab; inside the Capacitor shell, registers this
       // device for real native push (FCM on Android, APNs on iOS).
       initNativePush().catch((e) => console.warn('initNativePush:', e.message));
+
+      // Resume Background Geofence if the employee previously turned it on —
+      // same resume-on-load pattern as Field Duty tracking above.
+      resumeBackgroundGeofenceIfEnabled().catch((e) => console.warn('resumeBackgroundGeofence:', e.message));
     } catch (err) {
       console.error('loadUser:', err);
     }
@@ -403,7 +408,11 @@ export default function Layout({ children, currentPageName }) {
     return () => window.removeEventListener('push-notification-tap', onPushTap);
   }, [navigate]);
 
-  const handleLogout = async () => { await base44.auth.logout(); };
+  const handleLogout = async () => {
+    await clearNativePushToken().catch(() => {});
+    await stopBackgroundGeofence().catch(() => {});
+    await base44.auth.logout();
+  };
 
   if (!user) {
     return (

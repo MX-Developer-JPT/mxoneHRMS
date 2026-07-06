@@ -1,18 +1,13 @@
-// Real native push notifications inside the Capacitor shell (Android/iOS).
-// No-ops entirely in a regular browser tab — that path already gets Web Push
-// (VAPID) via utils/pwa.js, which is unrelated and unaffected by this module.
+// Real native push notifications inside the Capacitor shell (Android/iOS), via
+// @capacitor-firebase/messaging. No-ops entirely in a regular browser tab —
+// that path already gets Web Push (VAPID) via utils/pwa.js, unrelated to this.
 //
-// Android: Capacitor's push-notifications plugin registers with Firebase (via
-// google-services.json, see MOBILE_BUILD.md) and hands back a real FCM token —
-// sent straight to the backend, works end-to-end with utils/push.js today.
-//
-// iOS: Capacitor registers with APNs directly and hands back a raw APNs device
-// token, tagged 'apns_ios' below. The backend's FCM sender (firebase-admin)
-// cannot deliver to a raw APNs token as-is — that needs one more native step
-// (either wrap Firebase's iOS SDK so it exchanges the APNs token for an FCM
-// token, or send iOS pushes directly via Apple's APNs API). See MOBILE_BUILD.md
-// "iOS push — one step short" for the two options. The token is still
-// registered here either way so nothing needs to change on this side later.
+// Using Firebase's plugin (rather than the platform-native @capacitor/push-
+// notifications) means BOTH Android and iOS end up with a genuine FCM
+// registration token — Firebase's iOS SDK does the APNs-token-to-FCM-token
+// exchange internally. The backend (utils/push.js) sends through
+// firebase-admin's messaging().send({token}) either way, with no per-platform
+// branching needed once this exchange happens on-device.
 import { base44 } from '@/api/base44Client';
 
 let initialized = false;
@@ -29,51 +24,58 @@ export async function initNativePush() {
   }
   if (!Capacitor.isNativePlatform()) return; // plain browser tab — Web Push handles this path
 
-  const { PushNotifications } = await import('@capacitor/push-notifications');
+  const { FirebaseMessaging } = await import('@capacitor-firebase/messaging');
   const platform = Capacitor.getPlatform(); // 'android' | 'ios'
 
-  const perm = await PushNotifications.checkPermissions();
+  const perm = await FirebaseMessaging.checkPermissions();
   if (perm.receive !== 'granted') {
-    const req = await PushNotifications.requestPermissions();
+    const req = await FirebaseMessaging.requestPermissions();
     if (req.receive !== 'granted') {
       console.warn('[nativePush] permission denied — push notifications will not be delivered');
       return;
     }
   }
 
-  await PushNotifications.register();
-
-  PushNotifications.addListener('registration', async (token) => {
+  const registerToken = async (tokenValue) => {
     try {
       await base44.functions.invoke('registerDeviceToken', {
-        token: token.value,
-        platform: platform === 'ios' ? 'apns_ios' : 'fcm_android',
+        token: tokenValue,
+        platform: platform === 'ios' ? 'fcm_ios' : 'fcm_android',
       });
     } catch (e) {
       console.warn('[nativePush] token registration failed:', e.message);
     }
+  };
+
+  try {
+    const { token } = await FirebaseMessaging.getToken();
+    if (token) await registerToken(token);
+  } catch (e) {
+    console.warn('[nativePush] getToken failed:', e.message);
+  }
+
+  FirebaseMessaging.addListener('tokenReceived', (event) => {
+    if (event.token) registerToken(event.token);
   });
 
-  PushNotifications.addListener('registrationError', (err) => {
-    console.warn('[nativePush] registration error:', err.error);
-  });
-
-  // Foreground arrival: FCM/APNs don't auto-display a system notification while
+  // Foreground arrival: FCM doesn't auto-display a system notification while
   // the app is in the foreground, so surface it as an in-app toast instead.
-  PushNotifications.addListener('pushNotificationReceived', async (notification) => {
+  FirebaseMessaging.addListener('notificationReceived', async (event) => {
     try {
       const { toast } = await import('sonner');
-      const link = notification.data?.link || '/';
-      toast(notification.title || 'Maxvolt HR', {
-        description: notification.body || '',
+      const n = event.notification;
+      const link = n.data?.link || n.link || '/';
+      toast(n.title || 'Maxvolt HR', {
+        description: n.body || '',
         action: { label: 'Open', onClick: () => window.dispatchEvent(new CustomEvent('push-notification-tap', { detail: { link } })) },
       });
     } catch { /* toast is a nicety, never let it break push handling */ }
   });
 
   // Tapped from the system tray (background/killed) — deep-link into the app.
-  PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
-    const link = action.notification?.data?.link || '/';
+  FirebaseMessaging.addListener('notificationActionPerformed', (event) => {
+    const n = event.notification;
+    const link = n.data?.link || n.link || '/';
     window.dispatchEvent(new CustomEvent('push-notification-tap', { detail: { link } }));
   });
 }
@@ -85,10 +87,12 @@ export async function clearNativePushToken() {
   } catch { return; }
   if (!Capacitor.isNativePlatform()) return;
   try {
-    const { PushNotifications } = await import('@capacitor/push-notifications');
-    // Capacitor doesn't expose the last token directly; the backend keeps tokens
-    // per-user, so simply letting the next login re-register is sufficient —
-    // stale tokens are also self-cleaned server-side on first failed send.
-    await PushNotifications.removeAllListeners();
+    const { FirebaseMessaging } = await import('@capacitor-firebase/messaging');
+    // Tell the backend first, while we still know the token, so a device
+    // handed to another employee doesn't keep receiving this user's pushes.
+    const { token } = await FirebaseMessaging.getToken().catch(() => ({ token: null }));
+    if (token) await base44.functions.invoke('unregisterDeviceToken', { token }).catch(() => {});
+    await FirebaseMessaging.deleteToken();
+    await FirebaseMessaging.removeAllListeners();
   } catch { /* best-effort on logout */ }
 }
