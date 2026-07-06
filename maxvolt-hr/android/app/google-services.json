@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "886870609816",
+    "project_id": "maxvolt-hr",
+    "storage_bucket": "maxvolt-hr.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:886870609816:android:c182fe85a5014465d7a5ed",
+        "android_client_info": {
+          "package_name": "com.maxvolt.hr"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBlEcWoRSeAd6Sby-rJzbzq8cGn7RdZvfI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
