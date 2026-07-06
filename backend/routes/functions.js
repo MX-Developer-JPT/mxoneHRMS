@@ -2962,9 +2962,10 @@ router.post('/:name', async (req, res) => {
         const prev = best[key];
         if (!prev) { best[key] = rec; continue; }
         // Keep the "better" record:
-        //   biometric_synced=true > has check_in_time > not-absent > otherwise keep newer
+        //   biometric_synced=true > geofence-marked > has check_in_time > not-absent > otherwise keep newer
         const score = (r) =>
-          (r.biometric_synced ? 8 : 0) +
+          (r.biometric_synced ? 16 : 0) +
+          (r.auto_geofence || r.auto_geofence_checkout ? 8 : 0) +
           (r.check_in_time    ? 4 : 0) +
           (r.status !== 'absent' && r.status !== 'auto_marked' ? 2 : 0) +
           (r.status === 'regularised' ? 1 : 0);

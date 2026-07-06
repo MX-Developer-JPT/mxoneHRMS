@@ -3,8 +3,9 @@ import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar } from 'lucide-react';
+import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar, Fingerprint } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
+import { getAttendanceMethod, getGeofenceDetail } from '@/lib/attendanceSource';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -605,6 +606,13 @@ export default function MarkAttendance() {
                         <p className="font-semibold text-sm md:text-base">
                           {safeDate(todayAttendance.check_in_time, 'h:mm a')}
                         </p>
+                        {(() => {
+                          const m = getAttendanceMethod(todayAttendance);
+                          if (m.key === 'biometric') return <p className="text-xs text-green-600 flex items-center gap-1 mt-0.5"><Fingerprint className="w-3 h-3" /> Source: Biometric</p>;
+                          if (m.key === 'geofence') return <p className="text-xs text-indigo-600 flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3" /> Source: {getGeofenceDetail(todayAttendance)}</p>;
+                          if (m.key === 'selfie') return <p className="text-xs text-blue-600 flex items-center gap-1 mt-0.5"><Camera className="w-3 h-3" /> Source: Selfie</p>;
+                          return null;
+                        })()}
                         </div>
                         </div>
                         {todayAttendance.check_in_selfie_url && (

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertTriangle, Clock, TrendingDown, BarChart3, Users, RefreshCw, Fingerprint, Camera, MapPin, Activity } from 'lucide-react';
+import { getAttendanceMethod } from '@/lib/attendanceSource';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell
@@ -70,12 +71,13 @@ export default function AttendanceReports() {
     const absent = attendance.filter(a => a.status === 'absent').length;
     const late = attendance.filter(a => a.late_arrival).length;
     const earlyOut = attendance.filter(a => a.early_departure).length;
-    const biometric = attendance.filter(a => a.biometric_synced).length;
-    const selfie = attendance.filter(a => !a.biometric_synced && (a.check_in_selfie_url || a.check_out_selfie_url)).length;
+    const biometric = attendance.filter(a => getAttendanceMethod(a).key === 'biometric').length;
+    const geofence  = attendance.filter(a => getAttendanceMethod(a).key === 'geofence').length;
+    const selfie    = attendance.filter(a => getAttendanceMethod(a).key === 'selfie').length;
     const workedRecs = attendance.filter(a => (a.working_hours || 0) > 0);
     const avgHours = workedRecs.length > 0 ? (workedRecs.reduce((s, a) => s + a.working_hours, 0) / workedRecs.length) : 0;
     const totalOvertime = attendance.reduce((s, a) => s + ((a.overtime_minutes || 0) / 60), 0);
-    return { total, present, halfDay, absent, late, earlyOut, biometric, selfie, avgHours, totalOvertime };
+    return { total, present, halfDay, absent, late, earlyOut, biometric, geofence, selfie, avgHours, totalOvertime };
   }, [attendance]);
 
   // --- Daily trend ---
@@ -154,8 +156,9 @@ export default function AttendanceReports() {
   // --- Method distribution ---
   const methodDist = useMemo(() => [
     { name: 'Biometric', value: stats.biometric, color: '#10b981' },
+    { name: 'Geofence', value: stats.geofence, color: '#6366f1' },
     { name: 'Selfie', value: stats.selfie, color: '#3b82f6' },
-    { name: 'Manual', value: stats.total - stats.biometric - stats.selfie, color: '#9ca3af' },
+    { name: 'Manual', value: stats.total - stats.biometric - stats.geofence - stats.selfie, color: '#9ca3af' },
   ].filter(m => m.value > 0), [stats]);
 
   // --- Biometric log stats ---

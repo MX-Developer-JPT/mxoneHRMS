@@ -8,6 +8,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { MapPin, Camera, Clock, Coffee, ArrowDownCircle, ArrowUpCircle, Timer, Fingerprint, Activity } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
+import { getAttendanceMethod, getGeofenceDetail } from '@/lib/attendanceSource';
 
 export default function AttendanceDetailsDialog({ record, employee, open, onClose }) {
   if (!record) return null;
@@ -49,8 +50,7 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
   const totalBreakMins = record.total_break_minutes ?? (record.break_hours ? Math.round(record.break_hours * 60) : 0);
   const totalWorkMins  = record.total_working_minutes ?? (record.working_hours ? Math.round(record.working_hours * 60) : 0);
 
-  const hasSelfie = record.check_in_selfie_url || record.check_out_selfie_url;
-  const attendanceMethod = record.biometric_synced ? 'biometric' : hasSelfie ? 'selfie' : 'manual';
+  const attendanceMethod = getAttendanceMethod(record).key;
   const isWorking = record.is_in_progress || record.status === 'in_progress';
 
   // Unified display sessions list
@@ -112,9 +112,19 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                     <Fingerprint className="w-3 h-3" /> Biometric
                   </Badge>
                 )}
+                {attendanceMethod === 'geofence' && (
+                  <Badge className="bg-indigo-100 text-indigo-700 flex items-center gap-1" title={getGeofenceDetail(record)}>
+                    <MapPin className="w-3 h-3" /> {getGeofenceDetail(record)}
+                  </Badge>
+                )}
                 {attendanceMethod === 'selfie' && (
                   <Badge className="bg-blue-100 text-blue-700 flex items-center gap-1">
                     <Camera className="w-3 h-3" /> Selfie + Location
+                  </Badge>
+                )}
+                {attendanceMethod === 'manual' && record.check_in_time && (
+                  <Badge className="bg-gray-100 text-gray-600 flex items-center gap-1">
+                    <Clock className="w-3 h-3" /> Manual
                   </Badge>
                 )}
               </div>
@@ -275,8 +285,15 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                         target="_blank" rel="noopener noreferrer"
                         className="text-blue-600 hover:underline text-xs mb-2 flex items-center gap-1"
                       >
-                        <MapPin className="w-3 h-3" /> {record.check_in_location.address || 'View on Maps'}
+                        <MapPin className="w-3 h-3 flex-shrink-0" />
+                        <span>
+                          {record.check_in_location.location_address || record.check_in_location.address || 'View on Maps'}
+                          {record.check_in_location.landmark_distance && ` — ${record.check_in_location.landmark_distance}`}
+                        </span>
                       </a>
+                    )}
+                    {record.check_in_location?.accuracy != null && (
+                      <p className="text-[11px] text-gray-400 mb-2">GPS accuracy: ±{Math.round(record.check_in_location.accuracy)}m</p>
                     )}
                     {record.check_in_selfie_url && (
                       <img src={record.check_in_selfie_url} alt="Check-in selfie" className="w-full max-w-[160px] rounded-lg border" />
@@ -294,8 +311,15 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                         target="_blank" rel="noopener noreferrer"
                         className="text-blue-600 hover:underline text-xs mb-2 flex items-center gap-1"
                       >
-                        <MapPin className="w-3 h-3" /> {record.check_out_location.address || 'View on Maps'}
+                        <MapPin className="w-3 h-3 flex-shrink-0" />
+                        <span>
+                          {record.check_out_location.location_address || record.check_out_location.address || 'View on Maps'}
+                          {record.check_out_location.landmark_distance && ` — ${record.check_out_location.landmark_distance}`}
+                        </span>
                       </a>
+                    )}
+                    {record.check_out_location?.accuracy != null && (
+                      <p className="text-[11px] text-gray-400 mb-2">GPS accuracy: ±{Math.round(record.check_out_location.accuracy)}m</p>
                     )}
                     {record.check_out_selfie_url && (
                       <img src={record.check_out_selfie_url} alt="Check-out selfie" className="w-full max-w-[160px] rounded-lg border" />

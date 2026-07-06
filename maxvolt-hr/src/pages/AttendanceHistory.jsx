@@ -5,8 +5,9 @@ import AttendanceCalendar from '../components/attendance/AttendanceCalendar';
 import AttendanceDetailsDialog from '../components/attendance/AttendanceDetailsDialog';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter, getDay } from 'date-fns';
 import { safeDate, safeTime } from '@/lib/dateUtils';
-import { ClipboardList, Coffee, Activity } from 'lucide-react';
+import { ClipboardList, Coffee, Activity, Fingerprint, MapPin, Camera } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
+import { getAttendanceMethod } from '@/lib/attendanceSource';
 import { Button } from "@/components/ui/button";
 import { Link } from 'react-router-dom';
 
@@ -195,6 +196,7 @@ export default function AttendanceHistory() {
                     const totalBreakMins = a.total_break_minutes ?? (a.break_hours ? Math.round(a.break_hours * 60) : 0);
                     const isWorking = a.is_in_progress || a.status === 'in_progress';
                     const sessionCount = a.session_count || sessions.length;
+                    const method = getAttendanceMethod(a);
                     return (
                       <div
                         key={a.id}
@@ -215,6 +217,15 @@ export default function AttendanceHistory() {
                                 <span className="text-amber-600 flex items-center gap-0.5">
                                   <Coffee className="w-3 h-3" /> Break: {fmtMins(totalBreakMins)}
                                 </span>
+                              )}
+                              {a.check_in_time && method.key === 'biometric' && (
+                                <span className="text-green-600 flex items-center gap-0.5"><Fingerprint className="w-3 h-3" /> Biometric</span>
+                              )}
+                              {a.check_in_time && method.key === 'geofence' && (
+                                <span className="text-indigo-600 flex items-center gap-0.5"><MapPin className="w-3 h-3" /> Geofence</span>
+                              )}
+                              {a.check_in_time && method.key === 'selfie' && (
+                                <span className="text-blue-600 flex items-center gap-0.5"><Camera className="w-3 h-3" /> Selfie</span>
                               )}
                             </div>
                             {/* Per-session mini timeline */}

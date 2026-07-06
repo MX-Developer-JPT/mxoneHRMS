@@ -6,7 +6,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, BarChart3, CalendarDays, List, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, MapPin, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, BarChart3, CalendarDays, List, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { getAttendanceMethod, getGeofenceDetail } from '@/lib/attendanceSource';
 import { format } from 'date-fns';
 import { safeTime } from '@/lib/dateUtils';
 import { toast } from 'sonner';
@@ -594,16 +595,25 @@ export default function AllAttendance() {
                                   : `${record.break_hours.toFixed(1)}h`} break
                               </span>
                             )}
-                            {record.biometric_synced && (
-                              <span className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-200">
-                                <Fingerprint className="w-3 h-3" /> Bio
-                              </span>
-                            )}
-                            {!record.biometric_synced && (record.check_in_selfie_url || record.check_out_selfie_url) && (
-                              <span className="inline-flex items-center gap-0.5 text-xs text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                                <Camera className="w-3 h-3" /> Selfie
-                              </span>
-                            )}
+                            {(() => {
+                              const method = getAttendanceMethod(record);
+                              if (method.key === 'biometric') return (
+                                <span className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-200">
+                                  <Fingerprint className="w-3 h-3" /> Bio
+                                </span>
+                              );
+                              if (method.key === 'geofence') return (
+                                <span title={getGeofenceDetail(record)} className="inline-flex items-center gap-0.5 text-xs text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
+                                  <MapPin className="w-3 h-3" /> Geofence
+                                </span>
+                              );
+                              if (method.key === 'selfie') return (
+                                <span className="inline-flex items-center gap-0.5 text-xs text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                                  <Camera className="w-3 h-3" /> Selfie
+                                </span>
+                              );
+                              return null;
+                            })()}
                             {(record.late_arrival || record.late_minutes > 0) && (record.late_arrival_minutes || record.late_minutes) > 0 && (
                               <span className="inline-flex items-center gap-0.5 text-xs text-orange-600">
                                 <AlertTriangle className="w-3 h-3" /> {record.late_arrival_minutes || record.late_minutes}m late
