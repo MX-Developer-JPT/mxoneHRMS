@@ -10,15 +10,18 @@
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc -p ./jsconfig.json",
     "preview": "vite preview",
-    "cap:sync": "vite build && cap sync android",
+    "cap:sync": "vite build && cap sync",
     "android:open": "cap open android",
-    "android:apk": "cd android && gradlew.bat assembleDebug"
+    "android:apk": "cd android && gradlew.bat assembleDebug",
+    "ios:open": "cap open ios"
   },
   "dependencies": {
     "@base44/sdk": "^0.8.32",
     "@base44/vite-plugin": "^1.0.23",
     "@capacitor/android": "^8.4.1",
     "@capacitor/core": "^8.4.1",
+    "@capacitor/ios": "^8.4.1",
+    "@capacitor/push-notifications": "^8.1.1",
     "@hello-pangea/dnd": "^17.0.0",
     "@hookform/resolvers": "^4.1.2",
     "@radix-ui/react-accordion": "^1.2.3",

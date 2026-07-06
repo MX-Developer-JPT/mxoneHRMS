@@ -20,6 +20,7 @@ import MarkAttendancePage from './pages/MarkAttendance';
 import LeavePage from './pages/Leave';
 import ProfilePage from './pages/Profile';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
+import { initNativePush } from '@/lib/nativePush';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
@@ -387,10 +388,20 @@ export default function Layout({ children, currentPageName }) {
           if (active) startFieldTripTracking(active.id, active.distance_km || 0);
         } catch { /* Field Duty not applicable for this role, or offline — non-fatal */ }
       })();
+
+      // No-ops in a plain browser tab; inside the Capacitor shell, registers this
+      // device for real native push (FCM on Android, APNs on iOS).
+      initNativePush().catch((e) => console.warn('initNativePush:', e.message));
     } catch (err) {
       console.error('loadUser:', err);
     }
   };
+
+  useEffect(() => {
+    const onPushTap = (e) => { if (e.detail?.link) navigate(e.detail.link); };
+    window.addEventListener('push-notification-tap', onPushTap);
+    return () => window.removeEventListener('push-notification-tap', onPushTap);
+  }, [navigate]);
 
   const handleLogout = async () => { await base44.auth.logout(); };
 
