@@ -92,14 +92,15 @@ Request body:
   "occurred_at": "2026-07-06T03:40:12.000Z", // UTC ISO — when the transition fired
   "location_name": "Ghaziabad HQ",           // fence name you registered
   "is_mock": false,                          // Location.isMock() / isFromMockProvider
-  "device_id": "Pixel-7a-8f3c"               // stable per-install id (Settings.Secure.ANDROID_ID ok)
+  "device_id": "Pixel-7a-8f3c",              // stable per-install id (Settings.Secure.ANDROID_ID ok)
+  "source": "native_android"                 // always send this literal value from the wrapper app
 }
 ```
 
 Response (success):
 ```json
-{ "success": true, "action": "checked_in",  "check_in_time": "…", "location": "Ghaziabad HQ" }
-{ "success": true, "action": "checked_out", "check_out_time": "…", "working_hours": 8.42 }
+{ "success": true, "action": "checked_in",  "session_number": 1, "is_in_progress": true,  "working_hours": 0,    "location": "Ghaziabad HQ" }
+{ "success": true, "action": "checked_out", "session_number": 1, "is_in_progress": false, "working_hours": 4.2,  "location": "Ghaziabad HQ" }
 { "success": true, "action": "none", "reason": "already_checked_in" }   // idempotent no-ops
 ```
 
@@ -110,11 +111,17 @@ Response (rejected — do NOT retry these):
 ```
 
 Server-side behaviour (for reference):
-- **enter** → creates today's Attendance with `check_in_time` (IST), `auto_geofence: true`, `geofence_source: "native_android"`. Idempotent: a second `enter` returns `action: "none"`.
-- **exit** → sets `check_out_time`, computes `working_hours`, sets `half_day` if below the employee's shift hours. Idempotent; `exit` without a check-in is ignored.
+- **Multi-session, both directions immediate.** Both `enter` and `exit` are applied to today's Attendance the instant they arrive — there is no server-side delay or confirmation window on either transition. Punches are stored on a shared `raw_punches` timeline (the same mechanism biometric devices already use), so a day naturally has session 1 (arrived, later stepped out), session 2 (stepped back in), session 3, etc. `session_number` in the response tells you which session the event just opened/closed; `is_in_progress` tells you whether a session is currently open.
+- **enter** → appends an IN punch and rebuilds the day's sessions. Idempotent: if a session is already open (`is_in_progress` was already true), a second `enter` returns `action:"none", reason:"already_checked_in"` — send `enter` as many times as you like, it's a no-op unless a session actually needs opening.
+- **exit** → appends an OUT punch and rebuilds the day's sessions, closing whichever session is currently open. Idempotent the same way (`reason:"already_checked_out"` / `"not_checked_in"` if no session is open).
+- `working_hours` in the response is the **cumulative total across all of today's sessions**, not just the one that just closed.
+- A pre-existing single check-in/check-out on the day (from a manual/selfie punch, or from before this multi-session behaviour) is automatically treated as session 1 the first time a geofence event arrives — nothing is discarded.
 - `occurred_at` is honoured if it is ≤ 12 h in the past (covers Doze-delayed delivery); otherwise server time is used.
 - Enter events with coordinates are re-validated server-side against the fence (radius + reported accuracy + 200 m slack).
+- Records where the day has been manually regularised by HR (`status:"regularised"`) reject all geofence events with `success:false` — HR's correction is the source of truth for that day.
 - HTTP 401 → token expired/invalid: stop sending, clear stored token, re-acquire from the WebView on next app open.
+
+**Native-side debounce is spatial, not time-based.** Since check-in and check-out are both immediate server-side, the only thing standing between "at the boundary" and a flapping enter/exit loop is geofence geometry: keep `setNotificationResponsiveness(60_000)` (§5) so the OS itself doesn't fire faster than once a minute per region, and rely on Android's own hysteresis at the transition boundary. Do not add your own artificial delay before calling this endpoint — the product requirement is that stepping in marks present immediately and stepping out checks out immediately.
 
 Retry policy: retry only on network failure / HTTP 5xx (exponential backoff via WorkManager). Never retry `success:false` responses or 401.
 
@@ -290,8 +297,9 @@ class GeofenceBroadcastReceiver : BroadcastReceiver() {
 
 | Case | Handling |
 |---|---|
-| Employee already checked in manually / via biometric, then walks in | Server returns `action:"none", reason:"already_checked_in"` — no duplicate. |
-| Brief GPS wobble out of the fence | `notificationResponsiveness` 60 s + Android’s own hysteresis dampens most flapping. If checkout-flapping is observed in pilot, raise exit debounce by registering EXIT with a `setLoiteringDelay` DWELL variant, or bump radius. |
+| Employee already checked in manually / via biometric, then walks in | Server treats the existing punch as session 1 and returns `action:"none", reason:"already_checked_in"` if a session is already open — no duplicate. |
+| Employee steps out for lunch, then back in | Exit closes session 1 immediately; the next entry opens session 2 automatically. This is expected, correct behaviour, not an edge case to suppress. |
+| Brief GPS wobble right at the fence boundary | Both directions are immediate by design, so the only protection against flapping is geometry: `notificationResponsiveness` 60 s (§5) plus Android's own ENTER/EXIT hysteresis. If real flapping is observed in the pilot, the fix is a **larger radius**, not a client-side delay — do not reintroduce a time debounce, it conflicts with the immediate-checkout requirement. |
 | Doze / delayed delivery | Events carry `occurred_at`; server accepts up to 12 h late, so the check-in time stays truthful. |
 | Fake GPS apps | `is_mock` rejected client-side data is still sent with the flag; server rejects `MOCK_LOCATION`. Consider Play Integrity API later if abuse is suspected. |
 | Employee reassigned to another office | Daily refresh worker picks up the new `work_location` fence within 24 h; opening the app refreshes immediately (§3). |

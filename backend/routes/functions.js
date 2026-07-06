@@ -933,7 +933,7 @@ router.post('/:name', async (req, res) => {
 
     case 'nativeGeofenceEvent': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { event, latitude, longitude, accuracy, occurred_at, location_name, is_mock, device_id } = p;
+      const { event, latitude, longitude, accuracy, occurred_at, location_name, is_mock, device_id, source } = p;
       if (!['enter', 'exit'].includes(event)) return res.json({ success: false, error: "event must be 'enter' or 'exit'" });
       if (is_mock === true) return res.json({ success: false, error: 'Mock locations are not accepted', code: 'MOCK_LOCATION' });
 
@@ -966,40 +966,57 @@ router.post('/:name', async (req, res) => {
 
       const ngAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, evDate]);
       const ngAtt = ngAttRow ? JSON.parse(ngAttRow.data) : null;
+      if (ngAtt?.status === 'regularised') return res.json({ success: false, error: 'This day has been manually regularised by HR — geofence events are ignored' });
 
-      if (event === 'enter') {
-        if (ngAtt?.check_in_time) return res.json({ success: true, action: 'none', reason: 'already_checked_in' });
-        const naId = ngAtt?.id || uuidv4();
-        const attData = {
-          ...(ngAtt || {}), id: naId, user_id: cu.id, date: evDate,
-          check_in_time: evIST.toISOString(),
-          check_in_location: { latitude: Number(latitude) || null, longitude: Number(longitude) || null, accuracy: Number(accuracy) || null, location_address: ngFence?.name || location_name || 'Geofence' },
-          status: 'present', shift_id: ngEmp.shift_id || null,
-          auto_geofence: true, geofence_location: ngFence?.name || location_name || '', geofence_source: 'native_android', geofence_device: device_id || '',
-        };
-        if (ngAtt) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(attData), ngAttRow.id]);
-        else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [naId, cu.id, JSON.stringify(attData)]);
-        return res.json({ success: true, action: 'checked_in', check_in_time: attData.check_in_time, location: attData.geofence_location });
+      // Multi-session model: geofence punches share the same raw_punches timeline used by
+      // biometric sync, so a day can have session 1 (walked in, walked out for lunch),
+      // session 2 (walked back in), etc. — "step out" and "step back in" behave symmetrically.
+      let rawPunches = ngAtt?.raw_punches ? [...ngAtt.raw_punches] : [];
+      // Seed session 1 from a pre-existing single check_in/check_out (manual/selfie punch, or
+      // a record from before this multi-session change) so it isn't silently discarded.
+      if (!rawPunches.length && ngAtt?.check_in_time) {
+        rawPunches.push({ time: ngAtt.check_in_time, device_direction: 'IN' });
+        if (ngAtt.check_out_time) rawPunches.push({ time: ngAtt.check_out_time, device_direction: 'OUT' });
       }
 
-      // exit
-      if (!ngAtt?.check_in_time) return res.json({ success: true, action: 'none', reason: 'not_checked_in' });
-      if (ngAtt.check_out_time) return res.json({ success: true, action: 'none', reason: 'already_checked_out' });
-      const hrs = Math.max(0, (evIST - new Date(ngAtt.check_in_time)) / 3600000);
-      let expectedHrs = 8;
+      const priorSessionData = buildSessions(rawPunches);
+      if (event === 'enter') {
+        if (priorSessionData.is_in_progress) return res.json({ success: true, action: 'none', reason: 'already_checked_in' });
+        rawPunches.push({ time: evIST.toISOString(), device_direction: 'IN' });
+      } else {
+        if (!priorSessionData.is_in_progress) return res.json({ success: true, action: 'none', reason: rawPunches.length ? 'already_checked_out' : 'not_checked_in' });
+        rawPunches.push({ time: evIST.toISOString(), device_direction: 'OUT' });
+      }
+
+      const sessionData = buildSessions(rawPunches);
+      let shift = { start_time: '09:00', end_time: '18:00', working_hours: 8, grace_period_minutes: 15 };
       if (ngEmp.shift_id) {
         const shRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [ngEmp.shift_id]);
-        if (shRow) expectedHrs = Number(JSON.parse(shRow.data).working_hours) || 8;
+        if (shRow) shift = JSON.parse(shRow.data);
       }
-      const outData = {
-        ...ngAtt, check_out_time: evIST.toISOString(),
-        check_out_location: { latitude: Number(latitude) || null, longitude: Number(longitude) || null, accuracy: Number(accuracy) || null, location_address: ngFence?.name || location_name || 'Geofence' },
-        working_hours: Math.round(hrs * 100) / 100,
-        status: hrs < expectedHrs ? 'half_day' : ngAtt.status || 'present',
-        auto_geofence_checkout: true, geofence_source: 'native_android', geofence_device: device_id || '',
+      const { status, late_minutes } = computeStatusFromSessions(sessionData, shift);
+
+      const locPayload = { latitude: Number(latitude) || null, longitude: Number(longitude) || null, accuracy: Number(accuracy) || null, location_address: ngFence?.name || location_name || 'Geofence' };
+      const naId = ngAtt?.id || uuidv4();
+      const attData = {
+        ...(ngAtt || {}), id: naId, user_id: cu.id, date: evDate,
+        ...sessionData,
+        // "Last Out" should read as still-active while a session is open, not a stale
+        // timestamp from a session that already ended earlier today.
+        check_out_time: sessionData.is_in_progress ? null : sessionData.check_out_time,
+        status, late_minutes, shift_id: ngEmp.shift_id || null,
+        auto_geofence: true, geofence_location: ngFence?.name || location_name || '',
+        geofence_source: source === 'in_app' ? 'in_app' : 'native_android', geofence_device: device_id || '',
+        ...(event === 'enter' ? { check_in_location: locPayload } : { check_out_location: locPayload }),
       };
-      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(outData), ngAttRow.id]);
-      return res.json({ success: true, action: 'checked_out', check_out_time: outData.check_out_time, working_hours: outData.working_hours });
+      if (ngAtt) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(attData), status, ngAttRow.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [naId, cu.id, status, JSON.stringify(attData)]);
+
+      return res.json({
+        success: true, action: event === 'enter' ? 'checked_in' : 'checked_out',
+        session_number: sessionData.session_count, is_in_progress: sessionData.is_in_progress,
+        working_hours: sessionData.working_hours, location: attData.geofence_location,
+      });
     }
 
     /* ── Field Duty: GPS distance tracking for out-duty staff ── */

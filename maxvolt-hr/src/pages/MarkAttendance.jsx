@@ -38,7 +38,6 @@ export default function MarkAttendance() {
   const [officeFence, setOfficeFence] = useState(null);   // assigned AppLocation with lat/lng/radius
   const [fenceDistance, setFenceDistance] = useState(null); // metres from office centre
   const autoBusyRef = useRef(false);
-  const outsideSinceRef = useRef(null); // timestamp of first continuous "outside" reading — used only to debounce checkout
 
   const distMetres = (lat1, lng1, lat2, lng2) => {
     const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
@@ -307,44 +306,31 @@ export default function MarkAttendance() {
   };
 
   // ── Geofence auto attendance: watch position while the app is open ──
-  // Check-in fires the instant a single accurate fix lands inside the fence — no
-  // waiting for repeat confirmations, per requirement that entry marks present
-  // immediately. Check-out uses a short time-based debounce (not a fix-count),
-  // so a momentary GPS blip or a quick step to the gate doesn't end the day early.
-  const EXIT_DEBOUNCE_MS = 45000; // must be continuously outside(+buffer) for 45s before auto checkout
-
+  // Both directions are immediate — the very first trustworthy fix that crosses
+  // the boundary fires the event, no confirmation delay either way. Re-entering
+  // after a checkout starts a new session (session 2, 3, …) on the same day,
+  // via the same multi-session engine biometric punches already use.
   const toggleAutoMode = (on) => {
     setAutoMode(on);
     localStorage.setItem('auto_attendance', on ? '1' : '0');
-    outsideSinceRef.current = null;
-    if (on) toast.success('Auto attendance ON — you will be marked present the moment you enter the office zone');
+    if (on) toast.success('Auto attendance ON — present the instant you enter, checked out the instant you leave');
   };
 
   useEffect(() => {
     if (!autoMode || !officeFence || !navigator.geolocation) return;
-    if (todayAttendance?.check_out_time) return; // day already closed
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const d = distMetres(pos.coords.latitude, pos.coords.longitude, Number(officeFence.latitude), Number(officeFence.longitude));
         setFenceDistance(Math.round(d));
         if (pos.coords.accuracy > 150) return; // ignore poor fixes — not accurate enough to trust either way
         const inside = d <= Number(officeFence.geofence_radius);
-        const wellOutside = d > Number(officeFence.geofence_radius) + 100; // exit buffer against GPS wobble at the boundary
+        // A small spatial buffer beyond the radius prevents boundary jitter from flapping
+        // in/out repeatedly — this is distance-based hysteresis, not a time delay.
+        const wellOutside = d > Number(officeFence.geofence_radius) + 100;
 
-        if (!todayAttendance && inside) {
-          // Immediate: the very first trustworthy in-fence fix checks the employee in.
-          if (!autoBusyRef.current) autoCheckIn(pos.coords);
-          return;
-        }
-        if (todayAttendance && !todayAttendance.check_out_time) {
-          if (wellOutside) {
-            const now = Date.now();
-            if (!outsideSinceRef.current) outsideSinceRef.current = now;
-            else if (now - outsideSinceRef.current >= EXIT_DEBOUNCE_MS && !autoBusyRef.current) autoCheckOut(pos.coords);
-          } else {
-            outsideSinceRef.current = null; // back inside (or in the buffer zone) — cancel any pending checkout
-          }
-        }
+        const inProgress = !!todayAttendance?.is_in_progress;
+        if (!inProgress && inside) sendGeofenceEvent('enter', pos.coords);
+        else if (inProgress && wellOutside) sendGeofenceEvent('exit', pos.coords);
       },
       () => { /* keep silent — manual flow still works */ },
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
@@ -352,60 +338,37 @@ export default function MarkAttendance() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, [autoMode, officeFence, todayAttendance]);
 
-  const autoCheckIn = async (coords) => {
+  const sendGeofenceEvent = async (eventType, coords) => {
+    if (autoBusyRef.current) return;
     autoBusyRef.current = true;
     try {
-      const checkInTime = toISTTime();
-      const today = checkInTime.toISOString().split('T')[0];
-      const geo = await reverseGeocode(coords.latitude, coords.longitude);
-      const created = await base44.entities.Attendance.create({
-        user_id: user.id, date: today,
-        check_in_time: checkInTime.toISOString(),
-        check_in_location: {
-          latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy,
-          city: geo.city, locality: geo.locality, landmark: geo.landmark, pincode: geo.pincode,
-          address: geo.fullAddress, location_address: geo.summary,
-        },
-        status: 'present', shift_id: shift?.id,
-        auto_geofence: true, geofence_location: officeFence.name,
+      const res = await base44.functions.invoke('nativeGeofenceEvent', {
+        event: eventType,
+        latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy,
+        occurred_at: new Date().toISOString(),
+        location_name: officeFence.name,
+        is_mock: false, device_id: 'web', source: 'in_app',
       });
-      setTodayAttendance({ id: created?.id, user_id: user.id, date: today, check_in_time: checkInTime.toISOString(), status: 'present', auto_geofence: true });
-      toast.success(`Auto checked-in at ${officeFence.name} 📍`);
-      loadData();
+      const d = res.data || res;
+      if (d?.success && d.action === 'checked_in') {
+        toast.success(d.session_number > 1 ? `Auto checked-in at ${officeFence.name} — session ${d.session_number} 📍` : `Auto checked-in at ${officeFence.name} 📍`);
+        loadData();
+      } else if (d?.success && d.action === 'checked_out') {
+        toast.success(`Auto checked-out at ${officeFence.name} — ${d.working_hours?.toFixed(1)}h so far`);
+        loadData();
+      } else if (d?.success && d.action === 'none') {
+        // Sync the local in-progress flag so we stop re-sending the same event on every
+        // subsequent fix (e.g. a manual check-in earlier today that the client didn't know
+        // was "in progress" until the server told us).
+        if (d.reason === 'already_checked_in') setTodayAttendance(prev => prev ? { ...prev, is_in_progress: true } : prev);
+        else if (d.reason === 'already_checked_out' || d.reason === 'not_checked_in') setTodayAttendance(prev => prev ? { ...prev, is_in_progress: false } : prev);
+      } else if (d?.success === false && d.code) {
+        console.warn('Geofence event rejected:', d.error);
+      }
     } catch (e) {
-      console.error('Auto check-in failed:', e);
+      console.error('Geofence event failed:', e);
     } finally {
       autoBusyRef.current = false;
-      outsideSinceRef.current = null;
-    }
-  };
-
-  const autoCheckOut = async (coords) => {
-    if (!todayAttendance?.check_in_time || !todayAttendance?.id) return;
-    autoBusyRef.current = true;
-    try {
-      const checkOutTime = toISTTime();
-      const workingHours = (checkOutTime - new Date(todayAttendance.check_in_time)) / 3600000;
-      const geo = await reverseGeocode(coords.latitude, coords.longitude);
-      await base44.entities.Attendance.update(todayAttendance.id, {
-        check_out_time: checkOutTime.toISOString(),
-        check_out_location: {
-          latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy,
-          city: geo.city, locality: geo.locality, landmark: geo.landmark, pincode: geo.pincode,
-          address: geo.fullAddress, location_address: geo.summary,
-        },
-        working_hours: parseFloat(workingHours.toFixed(2)),
-        status: workingHours < (shift?.working_hours || 8) ? 'half_day' : 'present',
-        auto_geofence_checkout: true,
-      });
-      base44.functions.invoke('computeAttendanceStatus', { attendance_id: todayAttendance.id }).catch(() => {});
-      toast.success(`Auto checked-out — you left ${officeFence.name} (${workingHours.toFixed(1)}h)`);
-      loadData();
-    } catch (e) {
-      console.error('Auto check-out failed:', e);
-    } finally {
-      autoBusyRef.current = false;
-      outsideSinceRef.current = null;
     }
   };
 
@@ -507,12 +470,14 @@ export default function MarkAttendance() {
                     {autoMode
                       ? fenceDistance != null
                         ? fenceDistance <= officeFence.geofence_radius
-                          ? todayAttendance
+                          ? todayAttendance?.is_in_progress
                             ? `Inside the office zone (${fenceDistance}m from centre) — attendance confirmed`
                             : `Inside the office zone (${fenceDistance}m from centre) — marking you present…`
-                          : `${fenceDistance}m from office — zone radius ${officeFence.geofence_radius}m`
+                          : todayAttendance?.is_in_progress
+                            ? `${fenceDistance}m from office — will check you out the instant you clear the ${officeFence.geofence_radius + 100}m buffer`
+                            : `${fenceDistance}m from office — zone radius ${officeFence.geofence_radius}m`
                         : 'Watching your location… keep the app open'
-                      : `Marked present the instant you enter the ${officeFence.geofence_radius}m zone; checked out after ~45s continuously outside it. Works while the app is open.`}
+                      : `Present the instant you enter the ${officeFence.geofence_radius}m zone, checked out the instant you leave. Step back in later and a new session starts. Works while the app is open.`}
                   </p>
                 </div>
               </div>
@@ -643,7 +608,11 @@ export default function MarkAttendance() {
                         <p>
                         <strong>Checked in at: {safeDate(todayAttendance.check_in_time, 'h:mm a')}</strong>
                         </p>
-                        <p className="text-xs mt-1">Status: Working</p>
+                        <p className="text-xs mt-1">
+                          Status: Working
+                          {todayAttendance.session_count > 1 && ` · Session ${todayAttendance.session_count} today`}
+                          {todayAttendance.working_hours > 0 && ` · ${todayAttendance.working_hours.toFixed(1)}h so far`}
+                        </p>
                         </div>
                         )}
                         {todayAttendance.check_out_time && (
@@ -669,7 +638,7 @@ export default function MarkAttendance() {
                     <div className="flex items-center gap-3">
                       <Clock className="w-5 h-5 text-blue-600 flex-shrink-0" />
                       <div>
-                        <p className="text-sm text-gray-600">Working Hours</p>
+                        <p className="text-sm text-gray-600">Working Hours{todayAttendance.session_count > 1 ? ` (${todayAttendance.session_count} sessions)` : ''}</p>
                         <div className="flex items-center gap-2">
                           <p className="font-semibold text-sm md:text-base">
                             {todayAttendance.working_hours?.toFixed(2)} hours
