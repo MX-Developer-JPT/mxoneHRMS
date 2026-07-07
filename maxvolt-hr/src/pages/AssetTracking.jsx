@@ -66,9 +66,15 @@ const ICON_OPTIONS = [
 const STATUS_COLORS = {
   available: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
   assigned: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
+  signed: 'bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300',
   under_repair: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300',
   discarded: 'bg-gray-200 text-gray-700 dark:bg-gray-800 dark:text-gray-400',
 };
+
+// An asset assigned to an employee stays "in active use" whether or not they've
+// completed the digital-signature acknowledgment yet — 'signed' is a sub-state
+// of 'assigned', not a separate lifecycle branch, so counts/filters treat both alike.
+const ACTIVE_ASSIGNMENT_STATUSES = ['assigned', 'signed'];
 
 const CONDITION_COLORS = {
   new: 'bg-emerald-100 text-emerald-700', good: 'bg-green-100 text-green-700',
@@ -172,7 +178,7 @@ export default function AssetTracking() {
         type,
         total: typeAssets.length,
         available: typeAssets.filter(a => a.status === 'available').length,
-        assigned: typeAssets.filter(a => a.status === 'assigned').length,
+        assigned: typeAssets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status)).length,
         underRepair: typeAssets.filter(a => a.status === 'under_repair').length,
         assets: typeAssets,
       };
@@ -184,7 +190,7 @@ export default function AssetTracking() {
         type: { id: '_legacy', name: 'Legacy / Unmapped', code: 'LEG', icon: 'other' },
         total: legacyAssets.length,
         available: legacyAssets.filter(a => a.status === 'available').length,
-        assigned: legacyAssets.filter(a => a.status === 'assigned').length,
+        assigned: legacyAssets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status)).length,
         underRepair: legacyAssets.filter(a => a.status === 'under_repair').length,
         assets: legacyAssets,
       };
@@ -208,10 +214,10 @@ export default function AssetTracking() {
 
   const stats = useMemo(() => ({
     total: assets.length,
-    assigned: assets.filter(a => a.status === 'assigned').length,
+    assigned: assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status)).length,
     available: assets.filter(a => a.status === 'available').length,
     underRepair: assets.filter(a => a.status === 'under_repair').length,
-    overdueReturns: assets.filter(a => a.status === 'assigned' && a.return_date && isBefore(parseISO(a.return_date), new Date())).length,
+    overdueReturns: assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.return_date && isBefore(parseISO(a.return_date), new Date())).length,
   }), [assets]);
 
   // --- Asset Type Management ---
@@ -472,6 +478,15 @@ export default function AssetTracking() {
         These assets must be returned once the original device is restored or the specified period ends.
       </p>` : '';
 
+    // Show the employee's actual captured signature once they've digitally
+    // signed & acknowledged (AssetCheckoutDialog) instead of a blank line.
+    const sigAsset = assetList.find(a => a.signature_url);
+    const signatureBlock = sigAsset
+      ? `<img src="${sigAsset.signature_url}" style="height:50px;max-width:150px;object-fit:contain;margin:0 auto 4px;display:block;" />`
+      : `<div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>`;
+    const signedNote = sigAsset?.signed_at
+      ? `<p style="color:#888;font-size:9px;">Signed ${format(parseISO(sigAsset.signed_at), 'dd MMM yyyy, hh:mm a')}</p>` : '';
+
     return `
       <div style="margin-bottom:20px;">
         <h2 style="font-size:20px;font-weight:bold;color:#e87722;margin:0 0 2px;">Asset ${plural ? 'Assignment' : 'Assignment'} Letter</h2>
@@ -543,9 +558,10 @@ export default function AssetTracking() {
 
         <div style="display:flex;justify-content:space-between;margin-top:40px;font-size:10px;">
           <div style="text-align:center;">
-            <div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>
+            ${signatureBlock}
             <p style="font-weight:600;">Employee Signature</p>
             <p style="color:#888;font-size:9px;">(${empName})</p>
+            ${signedNote}
           </div>
           <div style="text-align:center;">
             <div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>
@@ -555,7 +571,7 @@ export default function AssetTracking() {
         </div>
 
         <div style="margin-top:24px;font-size:9px;text-align:center;color:#888;border-top:1px solid #e5e7eb;padding-top:8px;">
-          Maxvolt Energy Industries Limited — Asset Management | This is a computer-generated document and does not require a physical signature.
+          Maxvolt Energy Industries Limited — Asset Management | ${sigAsset ? 'Digitally signed and acknowledged by the employee.' : 'This is a computer-generated document and does not require a physical signature.'}
         </div>
       </div>`;
   };
@@ -744,7 +760,7 @@ export default function AssetTracking() {
   };
 
   const handleExportAssigned = () => {
-    const assigned = assets.filter(a => a.status === 'assigned' && a.assigned_to_user_id);
+    const assigned = assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.assigned_to_user_id);
     if (assigned.length === 0) { toast.error('No assigned assets to export'); return; }
     const headers = ['asset_id', 'asset_name', 'asset_type_name', 'serial_number', 'model_number', 'condition', 'employee_name', 'employee_code', 'department', 'designation', 'assignment_date', 'return_date', 'is_temporary', 'temporary_reason'];
     const rows = assigned.map(a => {
@@ -767,7 +783,7 @@ export default function AssetTracking() {
   const handlePrintAllForEmployee = (userId) => {
     const emp = getEmployee(userId);
     if (!emp) { toast.error('Employee record not found'); return; }
-    const empAssets = assets.filter(a => a.assigned_to_user_id === userId && a.status === 'assigned');
+    const empAssets = assets.filter(a => a.assigned_to_user_id === userId && ACTIVE_ASSIGNMENT_STATUSES.includes(a.status));
     if (empAssets.length === 0) { toast.error('No assets assigned to this employee'); return; }
     openLetterheadPrintWindow(`Asset Letter - ${emp.display_name}`, buildAssetLetterContent(emp, empAssets), '', false);
   };
@@ -820,7 +836,7 @@ export default function AssetTracking() {
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
-                {assets.filter(a => a.status === 'assigned' && a.return_date && isBefore(parseISO(a.return_date), new Date())).slice(0, 5).map(a => (
+                {assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.return_date && isBefore(parseISO(a.return_date), new Date())).slice(0, 5).map(a => (
                   <div key={a.id} className="flex items-center justify-between text-sm bg-white dark:bg-gray-800 rounded p-2 border">
                     <span className="font-medium">{a.asset_id} — {a.asset_name}</span>
                     <span className="text-gray-500">{getEmployeeName(a.assigned_to_user_id)}</span>
@@ -896,7 +912,7 @@ export default function AssetTracking() {
         {/* Employee-wise Asset Summary */}
         {(() => {
           const empAssetMap = {};
-          assets.filter(a => a.status === 'assigned' && a.assigned_to_user_id).forEach(a => {
+          assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.assigned_to_user_id).forEach(a => {
             if (!empAssetMap[a.assigned_to_user_id]) empAssetMap[a.assigned_to_user_id] = [];
             empAssetMap[a.assigned_to_user_id].push(a);
           });
@@ -1038,7 +1054,7 @@ export default function AssetTracking() {
                 {filteredAssets.map(asset => {
                   const emp = getEmployee(asset.assigned_to_user_id);
                   const Icon = getTypeIcon(assetTypes.find(t => t.id === asset.asset_type_id)?.icon);
-                  const isOverdue = asset.status === 'assigned' && asset.return_date && isBefore(parseISO(asset.return_date), new Date());
+                  const isOverdue = ACTIVE_ASSIGNMENT_STATUSES.includes(asset.status) && asset.return_date && isBefore(parseISO(asset.return_date), new Date());
                   return (
                     <div key={asset.id} className="flex flex-wrap items-center justify-between border rounded-lg p-3 hover:bg-muted/30 transition-colors gap-2">
                       <div className="flex items-center gap-3">
@@ -1070,7 +1086,7 @@ export default function AssetTracking() {
                         {asset.is_temporary && (
                           <Badge className="bg-orange-100 text-orange-700 text-[10px]"><Clock className="w-3 h-3 mr-0.5" />Temporary</Badge>
                         )}
-                        {asset.status === 'assigned' ? (
+                        {ACTIVE_ASSIGNMENT_STATUSES.includes(asset.status) ? (
                           <>
                             <Button size="xs" variant="outline" className="h-7 text-xs" onClick={() => handlePrintLetter(asset)}>
                               <Download className="w-3 h-3 mr-1" /> Letter

@@ -5,13 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, Save, CheckCircle2, Send, Users, ChevronDown, ChevronUp
+  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, Save, CheckCircle2, Send, Users, ChevronDown, ChevronUp, History, ExternalLink, Link2
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
 import MobileSelect from '@/components/MobileSelect';
+import { safeDate } from '@/lib/dateUtils';
 
 // Letter types and the extra fields each one needs
 const LETTER_TYPES = [
@@ -143,6 +145,97 @@ function OfferLetterPanel() {
   );
 }
 
+const LETTER_TYPE_LABELS = LETTER_TYPES.reduce((acc, t) => ({ ...acc, [t.key]: t.label }), {});
+
+function LetterHistoryPanel() {
+  const [letters, setLetters] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await base44.functions.invoke('listHrLetters', {
+        ...(typeFilter ? { letter_type: typeFilter } : {}),
+        ...(search.trim() ? { search: search.trim() } : {}),
+      });
+      const d = res.data || res;
+      setLetters(d.success ? d.letters : []);
+    } catch (e) { toast.error('Failed to load letter history: ' + e.message); }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, [typeFilter]);
+
+  return (
+    <Card>
+      <CardContent className="p-5 space-y-4">
+        <div className="flex items-center gap-2 flex-wrap justify-between">
+          <div className="flex items-center gap-2">
+            <History className="w-4 h-4 text-indigo-600" />
+            <span className="font-semibold text-gray-800">Generated Letters Record</span>
+            <span className="text-xs text-gray-400">({letters.length})</span>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+              <Input className="pl-8 h-8 text-sm w-48" placeholder="Search employee/ref…" value={search}
+                onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && load()} />
+            </div>
+            <select className="h-8 text-sm border rounded-md px-2 bg-white" value={typeFilter} onChange={e => setTypeFilter(e.target.value)}>
+              <option value="">All types</option>
+              {LETTER_TYPES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+            </select>
+            <Button size="sm" variant="outline" onClick={load}><RefreshCw className="w-3.5 h-3.5" /></Button>
+          </div>
+        </div>
+
+        {loading ? (
+          <p className="text-sm text-gray-400 py-6 text-center">Loading…</p>
+        ) : letters.length === 0 ? (
+          <p className="text-sm text-gray-400 py-6 text-center">No letters generated yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50 text-gray-600 text-left">
+                  <th className="px-3 py-2 font-medium">Employee</th>
+                  <th className="px-3 py-2 font-medium">Letter Type</th>
+                  <th className="px-3 py-2 font-medium">Ref</th>
+                  <th className="px-3 py-2 font-medium">Date</th>
+                  <th className="px-3 py-2 font-medium">Linked PMS Review</th>
+                  <th className="px-3 py-2 font-medium text-right">Document</th>
+                </tr>
+              </thead>
+              <tbody>
+                {letters.map(l => (
+                  <tr key={l.id} className="border-t hover:bg-gray-50">
+                    <td className="px-3 py-2 font-medium text-gray-800">{l.employee_name || l.user_id}</td>
+                    <td className="px-3 py-2 text-gray-600">{LETTER_TYPE_LABELS[l.letter_type] || l.letter_type}</td>
+                    <td className="px-3 py-2 text-gray-500">{l.ref || '—'}</td>
+                    <td className="px-3 py-2 text-gray-500">{safeDate(l.created_at, 'dd MMM yyyy')}</td>
+                    <td className="px-3 py-2">
+                      {l.performance_review_id
+                        ? <span className="inline-flex items-center gap-1 text-indigo-600"><Link2 className="w-3 h-3" /> Linked</span>
+                        : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {l.document_url
+                        ? <a href={l.document_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-blue-600 hover:underline"><ExternalLink className="w-3 h-3" /> View</a>
+                        : <span className="text-gray-300">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function initials(name) {
   return (name || '?').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
 }
@@ -203,11 +296,16 @@ function CTCBreakdownPanel({ value, onChange, employee }) {
 }
 
 export default function LetterGenerator() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const presetUserId = urlParams.get('user_id') || '';
+  const presetLetterType = urlParams.get('letter_type') || '';
+  const presetReviewId = urlParams.get('review_id') || '';
+
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selectedEmp, setSelectedEmp] = useState(null);
-  const [letterType, setLetterType] = useState('');
+  const [letterType, setLetterType] = useState(presetLetterType);
   const [extra, setExtra] = useState({});
   const [signatory, setSignatory] = useState('');
   const [customSignatoryName, setCustomSignatoryName] = useState('');
@@ -219,6 +317,8 @@ export default function LetterGenerator() {
   const [ref, setRef] = useState('');
   const [editMode, setEditMode] = useState(false);
   const [editText, setEditText] = useState('');
+  const [performanceReviewId] = useState(presetReviewId);
+  const [activeTab, setActiveTab] = useState('generate');
 
   const stripHtml = (html) => {
     const tmp = document.createElement('div');
@@ -253,7 +353,13 @@ export default function LetterGenerator() {
     setLoading(true);
     try {
       const emps = await base44.entities.Employee.list('-display_name', 1000);
-      setEmployees(emps.filter(e => e.user_id && e.display_name));
+      const filtered = emps.filter(e => e.user_id && e.display_name);
+      setEmployees(filtered);
+      // Deep-linked from a PMS review ("Generate Letter") — pre-select the employee.
+      if (presetUserId) {
+        const match = filtered.find(e => e.user_id === presetUserId);
+        if (match) setSelectedEmp(match);
+      }
     } catch (e) { toast.error('Failed to load employees'); }
     setLoading(false);
   };
@@ -313,6 +419,7 @@ export default function LetterGenerator() {
         letter_content: letter,
         ref,
         employee_name: selectedEmp.display_name,
+        ...(performanceReviewId ? { performance_review_id: performanceReviewId } : {}),
       });
       setSaved(true);
       toast.success('Letter saved to employee Documents');
@@ -333,6 +440,7 @@ export default function LetterGenerator() {
         ref,
         employee_name: selectedEmp.display_name,
         ...(cc.trim() ? { cc: cc.trim() } : {}),
+        ...(performanceReviewId ? { performance_review_id: performanceReviewId } : {}),
       });
       if (res.data?.success) {
         setApproveSent(true);
@@ -358,6 +466,20 @@ export default function LetterGenerator() {
         <p className="text-gray-500 text-sm mt-1">Draft HR letters in seconds — pre-filled from employee data, editable, and print-ready on company letterhead.</p>
       </div>
 
+      {performanceReviewId && (
+        <div className="flex items-center gap-2 text-sm bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-lg px-3 py-2">
+          <Link2 className="w-4 h-4 flex-shrink-0" />
+          This letter will be linked to the employee's PMS performance review it was generated from.
+        </div>
+      )}
+
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="bg-white border">
+          <TabsTrigger value="generate">Generate Letter</TabsTrigger>
+          <TabsTrigger value="history"><History className="w-3.5 h-3.5 mr-1" /> Letter History</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="generate" className="mt-4 space-y-6">
       <OfferLetterPanel />
 
       <div className="grid lg:grid-cols-5 gap-6">
@@ -538,6 +660,12 @@ export default function LetterGenerator() {
           </Card>
         </div>
       </div>
+        </TabsContent>
+
+        <TabsContent value="history" className="mt-4">
+          <LetterHistoryPanel />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

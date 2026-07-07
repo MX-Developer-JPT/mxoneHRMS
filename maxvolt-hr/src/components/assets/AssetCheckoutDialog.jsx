@@ -75,35 +75,48 @@ export default function AssetCheckoutDialog({ open, onOpenChange, asset, employe
     setSaving(true);
     try {
       const canvas = canvasRef.current;
-      const signatureUrl = canvas.toDataURL('image/png');
-      // Store signature as a note on the asset and create activity log
-      const today = format(new Date(), 'yyyy-MM-dd');
-      const signatureNote = `✓ Digitally signed by ${employee?.display_name || user?.display_name || user?.full_name} on ${format(new Date(), 'dd MMM yyyy \'at\' hh:mm a')}`;
+      // Persist the actual signature image (not just a text note) so it can be
+      // embedded on the printed asset letter and kept as a real audit record.
+      const signatureBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const signedByName = employee?.display_name || user?.display_name || user?.full_name;
+      let signatureUrl = null;
+      try {
+        const uploadRes = await base44.integrations.Core.UploadFile({ file: signatureBlob });
+        signatureUrl = uploadRes.file_url;
+      } catch (uploadErr) {
+        console.error('Signature upload failed:', uploadErr.message);
+      }
+
+      const signedAt = new Date().toISOString();
+      const signatureNote = `✓ Digitally signed by ${signedByName} on ${format(new Date(), 'dd MMM yyyy \'at\' hh:mm a')}`;
       const existingNotes = asset.notes || '';
       const updatedNotes = existingNotes ? `${existingNotes}\n${signatureNote}` : signatureNote;
-      
-      await base44.entities.Asset.update(asset.id, { 
+
+      await base44.entities.Asset.update(asset.id, {
         notes: updatedNotes,
-        status: 'assigned',
+        status: 'signed',
+        ...(signatureUrl ? { signature_url: signatureUrl } : {}),
+        signed_at: signedAt,
+        signed_by_name: signedByName,
       });
-      
+
       // Create activity log for checkout
       await base44.entities.AssetActivityLog.create({
         asset_id: asset.id,
         asset_name: asset.asset_name,
         asset_identifier: asset.asset_id,
         previous_status: asset.status || 'assigned',
-        new_status: 'assigned',
+        new_status: 'signed',
         assigned_to_user_id: asset.assigned_to_user_id,
         assigned_to_name: employee?.display_name || '',
         changed_by_user_id: user?.id,
-        changed_by_name: employee?.display_name || user?.display_name || user?.full_name,
+        changed_by_name: signedByName,
         field_changed: 'checkout',
         old_value: '',
         new_value: 'Digitally signed & acknowledged',
-        notes: `Equipment checkout acknowledged via digital signature. Signature captured.`,
+        notes: `Equipment checkout acknowledged via digital signature.${signatureUrl ? ' Signature image saved.' : ' Signature captured but image upload failed.'}`,
       });
-      
+
       setDone(true);
       toast.success('Asset acknowledged — checkout complete');
       if (onCheckedOut) onCheckedOut();

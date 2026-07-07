@@ -1,5 +1,9 @@
 import React from 'react';
 
+// Matches the handful of ways browsers phrase a failed lazy-route chunk
+// fetch after a deploy replaces dist/ with new content-hashed filenames.
+const CHUNK_ERROR_RE = /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed|Loading chunk [\w-]+ failed/i;
+
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -12,6 +16,12 @@ export default class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, info) {
     console.error('[ErrorBoundary] Render error:', error, info);
+    // Stale chunk after a deploy — auto-reload once instead of making the
+    // user click through a generic error screen. Guarded against loops.
+    if (CHUNK_ERROR_RE.test(error?.message || '') && !sessionStorage.getItem('vite_reload_once')) {
+      sessionStorage.setItem('vite_reload_once', '1');
+      window.location.reload();
+    }
   }
 
   render() {

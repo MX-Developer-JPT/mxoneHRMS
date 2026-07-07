@@ -2,7 +2,7 @@
 // Strategy: cache-first for static assets, network-first for API
 // Plus Web Push notification handling.
 
-const CACHE   = 'maxvolt-hr-v3';
+const CACHE   = 'maxvolt-hr-v4';
 const API_PREFIX = '/api/';
 
 const PRECACHE = [
@@ -46,6 +46,25 @@ self.addEventListener('fetch', event => {
           status: 503,
         })
       )
+    );
+    return;
+  }
+
+  // Navigation / HTML shell — ALWAYS network-first. Serving a stale cached
+  // index.html after a deploy makes it reference JS chunk files that no
+  // longer exist on the server (old dist assets are replaced on every
+  // deploy), which is exactly what causes "Failed to fetch dynamically
+  // imported module" errors on lazy-loaded routes. Only fall back to cache
+  // when genuinely offline.
+  if (request.mode === 'navigate' || request.destination === 'document') {
+    event.respondWith(
+      fetch(request)
+        .then(response => {
+          const clone = response.clone();
+          caches.open(CACHE).then(cache => cache.put(request, clone));
+          return response;
+        })
+        .catch(() => caches.match(request).then(cached => cached || caches.match('/')))
     );
     return;
   }

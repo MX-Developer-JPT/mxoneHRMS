@@ -1036,7 +1036,8 @@ router.post('/:name', async (req, res) => {
         const shRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [ngEmp.shift_id]);
         if (shRow) shift = JSON.parse(shRow.data);
       }
-      const { status, late_minutes } = computeStatusFromSessions(sessionData, shift);
+      const statusResult = computeStatusFromSessions(sessionData, shift);
+      const { status } = statusResult;
 
       const locPayload = { latitude: Number(latitude) || null, longitude: Number(longitude) || null, accuracy: Number(accuracy) || null, location_address: ngFence?.name || location_name || 'Geofence' };
       const naId = ngAtt?.id || uuidv4();
@@ -1046,7 +1047,7 @@ router.post('/:name', async (req, res) => {
         // "Last Out" should read as still-active while a session is open, not a stale
         // timestamp from a session that already ended earlier today.
         check_out_time: sessionData.is_in_progress ? null : sessionData.check_out_time,
-        status, late_minutes, shift_id: ngEmp.shift_id || null,
+        ...statusResult, shift_id: ngEmp.shift_id || null,
         auto_geofence: true, geofence_location: ngFence?.name || location_name || '',
         geofence_source: ['in_app', 'native_android', 'native_ios'].includes(source) ? source : 'native_android', geofence_device: device_id || '',
         ...(event === 'enter' ? { check_in_location: locPayload } : { check_out_location: locPayload }),
@@ -3293,9 +3294,9 @@ router.post('/:name', async (req, res) => {
 
         const emp   = empMap[d.user_id] || {};
         const shift = (emp.shift_id && shiftMap[emp.shift_id]) || defaultShift;
-        const { status, late_minutes } = computeStatusFromSessions(sd, shift);
-        newStatus  = status;
-        newLateMin = late_minutes;
+        const statusResult = computeStatusFromSessions(sd, shift);
+        newStatus  = statusResult.status;
+        newLateMin = statusResult.late_minutes;
 
         const newCin  = sd.check_in_time  || null;
         const newCout = sd.check_out_time || null;
@@ -3323,6 +3324,11 @@ router.post('/:name', async (req, res) => {
             raw_punches:    validPunches.length > 0 ? validPunches : sd.raw_punches,
             status:         newStatus || d.status,
             late_minutes:   newLateMin ?? d.late_minutes,
+            early_departure_minutes: statusResult.early_departure_minutes ?? d.early_departure_minutes,
+            overtime_minutes:        statusResult.overtime_minutes ?? d.overtime_minutes,
+            late_arrival:             statusResult.late_arrival,
+            late_arrival_minutes:     statusResult.late_arrival_minutes,
+            early_departure:          statusResult.early_departure,
           }),
           row.id,
         ]);
@@ -3590,18 +3596,19 @@ router.post('/:name', async (req, res) => {
 
         // Build sessions using alternating model
         const sd = buildSessions(rawPunches);
-        const { status, late_minutes } = computeStatusFromSessions(sd, shift);
+        const statusResult = computeStatusFromSessions(sd, shift);
+        const { status } = statusResult;
 
         const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1", [userId, date]);
         if (existing) {
           const d = JSON.parse(existing.data);
           if (d.status === 'regularised') { skipped++; continue; }
-          const upd = { ...d, biometric_synced: true, employee_code: empData.employee_code || empCode || d.employee_code, ...sd, status, late_minutes };
+          const upd = { ...d, biometric_synced: true, employee_code: empData.employee_code || empCode || d.employee_code, ...sd, ...statusResult };
           await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [status, JSON.stringify(upd), existing.id]);
           updated++;
         } else {
           const id2 = uuidv4();
-          const attData = { id: id2, user_id: userId, date, source: 'biometric', biometric_synced: true, employee_code: empData.employee_code || empCode, ...sd, status, late_minutes };
+          const attData = { id: id2, user_id: userId, date, source: 'biometric', biometric_synced: true, employee_code: empData.employee_code || empCode, ...sd, ...statusResult };
           await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [id2, userId, status, JSON.stringify(attData)]);
           created++;
         }
@@ -3761,7 +3768,8 @@ router.post('/:name', async (req, res) => {
         const shiftId = empShiftMap[d.user_id];
         const shift = (shiftId && shiftMap[shiftId]) || defaultShift;
         const sd = buildSessions(punches);
-        const { status, late_minutes } = computeStatusFromSessions(sd, shift);
+        const statusResult = computeStatusFromSessions(sd, shift);
+        const { status } = statusResult;
 
         if (dry_run) {
           preview.push({
@@ -3772,7 +3780,7 @@ router.post('/:name', async (req, res) => {
             punch_count: sd.punch_count,
           });
         } else {
-          const updated = { ...d, ...sd, raw_punches: punches, status, late_minutes, reprocessed_at: new Date().toISOString() };
+          const updated = { ...d, ...sd, raw_punches: punches, ...statusResult, reprocessed_at: new Date().toISOString() };
           updateQueue.push([status, JSON.stringify(updated), row.id]);
         }
         processedCount++;
@@ -4011,7 +4019,8 @@ router.post('/:name', async (req, res) => {
         // Build sessions from ISO punch list
         const rawPunches = punches.map(p2 => ({ time: p2.iso, device_direction: p2.type === 'in' ? 'IN' : 'OUT' }));
         const sd = buildSessions(rawPunches);
-        const { status, late_minutes } = computeStatusFromSessions(sd, shiftS);
+        const statusResult = computeStatusFromSessions(sd, shiftS);
+        const { status } = statusResult;
 
         const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [userId, date]);
         if (existing) {
@@ -4024,7 +4033,8 @@ router.post('/:name', async (req, res) => {
             .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
           mergedPunches.sort((a, b) => a.time.localeCompare(b.time));
           const sdMerged = buildSessions(mergedPunches);
-          const { status: mergedStatus, late_minutes: mergedLate } = computeStatusFromSessions(sdMerged, shiftS);
+          const mergedResult = computeStatusFromSessions(sdMerged, shiftS);
+          const { status: mergedStatus } = mergedResult;
 
           const updated = {
             ...d,
@@ -4034,8 +4044,7 @@ router.post('/:name', async (req, res) => {
             raw_punches:    mergedPunches,
             working_hours:  sdMerged.working_hours,
             is_in_progress: sdMerged.is_in_progress,
-            late_minutes:   mergedLate,
-            status:         mergedStatus,
+            ...mergedResult,
             biometric_synced: true,
           };
           await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [mergedStatus, JSON.stringify(updated), existing.id]);
@@ -4049,8 +4058,7 @@ router.post('/:name', async (req, res) => {
             raw_punches:    rawPunches,
             working_hours:  sd.working_hours,
             is_in_progress: sd.is_in_progress,
-            late_minutes,
-            status,
+            ...statusResult,
             source: 'biometric', biometric_synced: true,
           };
           await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [attId, userId, status, JSON.stringify(attData)]);
@@ -4211,14 +4219,15 @@ router.post('/:name', async (req, res) => {
             const shift = (emp.shift_id && shiftById[emp.shift_id]) || defaultShift;
 
             const sd = buildSessions(uniquePunches);
-            const { status, late_minutes } = computeStatusFromSessions(sd, shift);
+            const statusResult = computeStatusFromSessions(sd, shift);
+            const { status } = statusResult;
 
             const attData = {
               user_id: userId, date, employee_code: emp.employee_code || '',
               check_in_time: sd.check_in_time, check_out_time: sd.check_out_time,
               sessions: sd.sessions, raw_punches: uniquePunches,
               working_hours: sd.working_hours, is_in_progress: sd.is_in_progress,
-              late_minutes, status, punch_count: uniquePunches.length,
+              ...statusResult, punch_count: uniquePunches.length,
               source: 'biometric', updated_at: new Date().toISOString(),
             };
 
@@ -4232,13 +4241,14 @@ router.post('/:name', async (req, res) => {
                 .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
               merged.sort((a, b) => a.time.localeCompare(b.time));
               const sdM = buildSessions(merged);
-              const { status: mStatus, late_minutes: mLate } = computeStatusFromSessions(sdM, shift);
+              const mergedResult = computeStatusFromSessions(sdM, shift);
+              const { status: mStatus } = mergedResult;
               await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
                 [mStatus, JSON.stringify({ ...existAtt.data, ...attData,
                   raw_punches: merged, sessions: sdM.sessions,
                   check_in_time: sdM.check_in_time, check_out_time: sdM.check_out_time,
                   working_hours: sdM.working_hours, is_in_progress: sdM.is_in_progress,
-                  late_minutes: mLate, status: mStatus, id: existAtt.id }), existAtt.id]);
+                  ...mergedResult, id: existAtt.id }), existAtt.id]);
               records_synced++;
             } else {
               const attId = uuidv4();
@@ -4426,7 +4436,7 @@ router.post('/:name', async (req, res) => {
         return h * 60 + m;
       };
 
-      let status = 'absent', working_hours = 0, late_minutes = 0, overtime_minutes = 0;
+      let status = 'absent', working_hours = 0, late_minutes = 0, overtime_minutes = 0, early_departure_minutes = 0;
 
       // Prefer raw_punches path (canonical sessions) when available
       if (attData.raw_punches && attData.raw_punches.length > 0) {
@@ -4434,13 +4444,9 @@ router.post('/:name', async (req, res) => {
         const result = computeStatusFromSessions(sd, shift);
         status = result.status;
         late_minutes = result.late_minutes || 0;
+        overtime_minutes = result.overtime_minutes || 0;
+        early_departure_minutes = result.early_departure_minutes || 0;
         working_hours = sd.working_hours || 0;
-        // Overtime: minutes worked beyond shift end
-        const checkOutMinsR = isoToMins(sd.check_out_time);
-        const shiftEndMinsR = isoToMins(shift.end_time);
-        if (checkOutMinsR !== null && shiftEndMinsR !== null && checkOutMinsR > shiftEndMinsR + grace) {
-          overtime_minutes = checkOutMinsR - shiftEndMinsR - grace;
-        }
       } else {
         // Fall back to stored check_in/check_out (manually entered or legacy records)
         const checkInMins    = isoToMins(attData.check_in_time);
@@ -4464,8 +4470,9 @@ router.post('/:name', async (req, res) => {
             if (status === 'present') status = 'late';
           }
 
-          if (checkOutMins !== null && shiftEndMins !== null && checkOutMins > shiftEndMins + grace) {
-            overtime_minutes = checkOutMins - shiftEndMins - grace;
+          if (checkOutMins !== null && shiftEndMins !== null && status !== 'in_progress') {
+            if (checkOutMins > shiftEndMins + grace) overtime_minutes = checkOutMins - shiftEndMins - grace;
+            else if (checkOutMins < shiftEndMins - grace) early_departure_minutes = shiftEndMins - grace - checkOutMins;
           }
         }
       }
@@ -4476,6 +4483,10 @@ router.post('/:name', async (req, res) => {
         working_hours: Math.round(working_hours * 100) / 100,
         late_minutes,
         overtime_minutes,
+        early_departure_minutes,
+        late_arrival: late_minutes > 0,
+        late_arrival_minutes: late_minutes,
+        early_departure: early_departure_minutes > 0,
         computed_at: new Date().toISOString(),
       };
 
@@ -8959,7 +8970,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
 
     /* ── Save generated letter to employee Documents ─── */
     case 'approveAndSendLetter': {
-      const { user_id, letter_type, letter_content, ref, employee_name, cc } = p;
+      const { user_id, letter_type, letter_content, ref, employee_name, cc, performance_review_id } = p;
       if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
 
       const LETTER_LABELS = {
@@ -9023,8 +9034,11 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         document_name: `${label}${ref ? ` (${ref})` : ''} — ${today}`,
         letter_type, letter_content, ref: ref || '',
         ...(aslDocUrl ? { document_url: aslDocUrl } : {}),
+        ...(performance_review_id ? { performance_review_id } : {}),
         employee_name: employee_name || '',
         status: 'verified',
+        generated_by: cu?.id || null,
+        sent_at: new Date().toISOString(),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -9034,7 +9048,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
     }
 
     case 'saveLetterAsDocument': {
-      const { user_id, letter_type, letter_content, ref, employee_name } = p;
+      const { user_id, letter_type, letter_content, ref, employee_name, performance_review_id } = p;
       if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
 
       const LETTER_LABELS = {
@@ -9065,13 +9079,38 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         document_name: `${label}${ref ? ` (${ref})` : ''} — ${today}`,
         letter_type, letter_content, ref: ref || '',
         ...(sldDocUrl ? { document_url: sldDocUrl } : {}),
+        ...(performance_review_id ? { performance_review_id } : {}),
         employee_name: employee_name || '',
         status: 'verified',
+        generated_by: cu?.id || null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, user_id, JSON.stringify(docData)]);
       return res.json({ success: true, document_id: docId });
+    }
+
+    case 'listHrLetters': {
+      // Tracking/audit view for every generated HR letter (promotion, warning,
+      // confirmation, salary revision, etc.) — including which PMS performance
+      // review (if any) a letter was generated from.
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { letter_type, user_id: filterUserId, search } = p || {};
+      let rows = parseEntities(await all("SELECT data FROM entities WHERE type='Document' AND data::jsonb->>'document_type'='hr_letter' ORDER BY created_at DESC LIMIT 1000"));
+      if (letter_type) rows = rows.filter(r => r.letter_type === letter_type);
+      if (filterUserId) rows = rows.filter(r => r.user_id === filterUserId);
+      if (search) {
+        const q = String(search).toLowerCase();
+        rows = rows.filter(r => (r.employee_name || '').toLowerCase().includes(q) || (r.ref || '').toLowerCase().includes(q));
+      }
+      const letters = rows.map(r => ({
+        id: r.id, user_id: r.user_id, employee_name: r.employee_name || '',
+        letter_type: r.letter_type, ref: r.ref, document_url: r.document_url || null,
+        performance_review_id: r.performance_review_id || null,
+        sent_at: r.sent_at || null, generated_by: r.generated_by || null,
+        created_at: r.created_at || r.created_date,
+      }));
+      return res.json({ success: true, letters, total: letters.length });
     }
 
     /* ── HR Reports ─────────────────────────────────── */

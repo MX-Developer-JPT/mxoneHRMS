@@ -184,18 +184,24 @@ export function buildSessions(rawPunches) {
 }
 
 /**
- * Derive attendance status from session summary + shift config.
+ * Derive attendance status + late/early/overtime figures from session summary + shift config.
+ *
+ * late_minutes / late_arrival(_minutes) — first check-in vs shift start + grace.
+ * early_departure(_minutes) — last check-out vs shift end - grace (only once the day is
+ * complete, i.e. not still in_progress — an open session isn't "early" yet).
+ * overtime_minutes — last check-out beyond shift end + grace.
  */
 export function computeStatusFromSessions(sessionData, shift) {
   const toMins    = (t) => { const [h, m] = String(t || '00:00').split(':').map(Number); return h * 60 + m; };
   const isoToMins = (iso) => toMins(iso ? iso.slice(11, 16) : null);
 
-  const { total_working_minutes, is_in_progress, check_in_time } = sessionData;
+  const { total_working_minutes, is_in_progress, check_in_time, check_out_time } = sessionData;
   const shiftStart = toMins(shift.start_time || '09:00');
+  const shiftEnd   = toMins(shift.end_time   || '18:00');
   const grace      = Number(shift.grace_period_minutes || 15);
   const shiftHours = Number(shift.working_hours || 9);
 
-  let status = 'present', late_minutes = 0;
+  let status = 'present', late_minutes = 0, early_departure_minutes = 0, overtime_minutes = 0;
 
   if (is_in_progress && total_working_minutes === 0) {
     status = 'in_progress';
@@ -217,7 +223,20 @@ export function computeStatusFromSessions(sessionData, shift) {
     }
   }
 
-  return { status, late_minutes };
+  if (!is_in_progress && check_out_time) {
+    const lastOutMins = isoToMins(check_out_time);
+    if (lastOutMins !== null) {
+      if (lastOutMins < shiftEnd - grace)      early_departure_minutes = shiftEnd - grace - lastOutMins;
+      else if (lastOutMins > shiftEnd + grace) overtime_minutes = lastOutMins - shiftEnd - grace;
+    }
+  }
+
+  return {
+    status, late_minutes, early_departure_minutes, overtime_minutes,
+    late_arrival: late_minutes > 0,
+    late_arrival_minutes: late_minutes,
+    early_departure: early_departure_minutes > 0,
+  };
 }
 
 async function processRecord(record) {
@@ -328,13 +347,14 @@ async function processRecord(record) {
   if (!row) {
     // First punch of the day — create new Attendance record
     const sd = buildSessions([newPunch]);
-    const { status, late_minutes } = computeStatusFromSessions(sd, shift);
+    const statusResult = computeStatusFromSessions(sd, shift);
+    const { status } = statusResult;
     const id = uuidv4();
     const attData = {
       id, user_id: userId, date: punchDate,
       source: 'biometric', biometric_synced: true, device_id: deviceName,
       employee_code: empData?.employee_code || codeStr,
-      ...sd, status, late_minutes,
+      ...sd, ...statusResult,
     };
     await run(
       "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)",
@@ -377,14 +397,15 @@ async function processRecord(record) {
   const mergedPunches  = alreadyPresent ? existingPunches : [...existingPunches, newPunch];
 
   const sd = buildSessions(mergedPunches);
-  const { status, late_minutes } = computeStatusFromSessions(sd, shift);
+  const statusResult = computeStatusFromSessions(sd, shift);
+  const { status } = statusResult;
 
   const updated = {
     ...data,
     biometric_synced: true,
     device_id: deviceName || data.device_id,
     employee_code: empData?.employee_code || data.employee_code || codeStr,
-    ...sd, status, late_minutes,
+    ...sd, ...statusResult,
   };
 
   await run(

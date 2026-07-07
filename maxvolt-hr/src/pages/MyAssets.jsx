@@ -19,6 +19,7 @@ const TYPE_ICONS = {
 const STATUS_COLORS = {
   available: 'bg-green-100 text-green-800',
   assigned: 'bg-blue-100 text-blue-800',
+  signed: 'bg-teal-100 text-teal-800',
   under_repair: 'bg-yellow-100 text-yellow-800',
   retired: 'bg-gray-100 text-gray-600',
 };
@@ -39,7 +40,7 @@ export default function MyAssets() {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
       const [assetData, typeData, empData] = await Promise.all([
-        base44.entities.Asset.filter({ assigned_to_user_id: currentUser.id, status: 'assigned' }, '-assignment_date', 500),
+        base44.entities.Asset.filter({ assigned_to_user_id: currentUser.id, status: { $in: ['assigned', 'signed'] } }, '-assignment_date', 500),
         base44.entities.AssetType.list(),
         base44.entities.Employee.filter({ user_id: currentUser.id }, '', 1),
       ]);
@@ -86,6 +87,15 @@ export default function MyAssets() {
           <td style="padding:5px 10px;border:1px solid #ddd;">${asset.return_date ? format(parseISO(asset.return_date), 'dd MMM yyyy') : 'Open-ended'}</td>
         </tr>`;
     }).join('');
+
+    // Show the employee's actual captured signature once they've digitally
+    // signed & acknowledged (AssetCheckoutDialog) instead of a blank line.
+    const sigAsset = assetList.find(a => a.signature_url);
+    const signatureBlock = sigAsset
+      ? `<img src="${sigAsset.signature_url}" style="height:50px;max-width:150px;object-fit:contain;margin:0 auto 4px;display:block;" />`
+      : `<div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>`;
+    const signedNote = sigAsset?.signed_at
+      ? `<p style="color:#888;font-size:9px;">Signed ${format(parseISO(sigAsset.signed_at), 'dd MMM yyyy, hh:mm a')}</p>` : '';
 
     return `
       <div style="margin-bottom:20px;">
@@ -148,9 +158,10 @@ export default function MyAssets() {
         </div>
         <div style="display:flex;justify-content:space-between;margin-top:40px;font-size:10px;">
           <div style="text-align:center;">
-            <div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>
+            ${signatureBlock}
             <p style="font-weight:600;">Employee Signature</p>
             <p style="color:#888;font-size:9px;">(${empName})</p>
+            ${signedNote}
           </div>
           <div style="text-align:center;">
             <div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>
@@ -159,7 +170,7 @@ export default function MyAssets() {
           </div>
         </div>
         <div style="margin-top:24px;font-size:9px;text-align:center;color:#888;border-top:1px solid #e5e7eb;padding-top:8px;">
-          Maxvolt Energy Industries Limited — Asset Management | This is a computer-generated document and does not require a physical signature.
+          Maxvolt Energy Industries Limited — Asset Management | ${sigAsset ? 'Digitally signed and acknowledged by the employee.' : 'This is a computer-generated document and does not require a physical signature.'}
         </div>
       </div>`;
   };
@@ -214,7 +225,7 @@ export default function MyAssets() {
                         <div>
                           <div className="flex items-center gap-2 flex-wrap mb-1">
                             <h3 className="font-semibold text-lg">{asset.asset_name}</h3>
-                            <Badge className={STATUS_COLORS[asset.status]}>Assigned</Badge>
+                            <Badge className={STATUS_COLORS[asset.status]}>{asset.status === 'signed' ? 'Signed' : 'Assigned'}</Badge>
                             {asset.is_temporary && <Badge className="bg-orange-100 text-orange-700"><Clock className="w-3 h-3 mr-0.5" />Temporary</Badge>}
                             {isOverdue && <Badge className="bg-red-100 text-red-700"><AlertTriangle className="w-3 h-3 mr-1" />Return Overdue</Badge>}
                           </div>
@@ -240,9 +251,11 @@ export default function MyAssets() {
                         <Button size="sm" variant="outline" onClick={() => handlePrintLetter(asset)}>
                           <Download className="w-4 h-4 mr-1" /> Letter
                         </Button>
-                        <Button size="sm" variant="default" className="bg-green-600 hover:bg-green-700" onClick={() => { setCheckoutAsset(asset); setShowCheckout(true); }}>
-                          <PenLine className="w-4 h-4 mr-1" /> Sign & Acknowledge
-                        </Button>
+                        {asset.status === 'assigned' && (
+                          <Button size="sm" variant="default" className="bg-green-600 hover:bg-green-700" onClick={() => { setCheckoutAsset(asset); setShowCheckout(true); }}>
+                            <PenLine className="w-4 h-4 mr-1" /> Sign & Acknowledge
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </CardContent>

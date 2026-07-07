@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { Target, Users, TrendingUp, AlertTriangle, CheckCircle, Clock, Plus, RefreshCw, Star, BookOpen } from 'lucide-react';
+import { Target, Users, TrendingUp, AlertTriangle, CheckCircle, Clock, Plus, RefreshCw, Star, BookOpen, FileSignature, ExternalLink } from 'lucide-react';
 import PMSStatCard from '@/components/pms/PMSStatCard';
 import GoalCard from '@/components/pms/GoalCard';
 import GoalAssignForm from '@/components/pms/GoalAssignForm';
@@ -20,6 +20,7 @@ export default function PerformanceManagement() {
   const [teamData, setTeamData] = useState(null);
   const [configs, setConfigs] = useState([]);
   const [pips, setPips] = useState([]);
+  const [lettersByReview, setLettersByReview] = useState({});
   const [loading, setLoading] = useState(true);
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
@@ -58,6 +59,23 @@ export default function PerformanceManagement() {
     setReviews(d?.reviews || []);
     setTeamData(d?.team_data);
     setPips(d?.active_pip ? [d.active_pip] : []);
+
+    // Letters already generated from a review — so HR/managers can see at a
+    // glance whether a promotion/warning/confirmation/salary letter exists
+    // for a given completed review, instead of generating duplicates.
+    if (isMgr) {
+      try {
+        const lettersRes = await base44.functions.invoke('listHrLetters', {});
+        const letters = lettersRes?.data?.letters || [];
+        const map = {};
+        for (const l of letters) {
+          if (!l.performance_review_id) continue;
+          if (!map[l.performance_review_id]) map[l.performance_review_id] = [];
+          map[l.performance_review_id].push(l);
+        }
+        setLettersByReview(map);
+      } catch { /* non-critical */ }
+    }
     setLoading(false);
   };
 
@@ -309,7 +327,8 @@ export default function PerformanceManagement() {
                   <h3 className="text-sm font-semibold text-green-700 mb-3">Completed Reviews</h3>
                   <div className="space-y-3">
                     {completedReviews.map(r => (
-                      <ReviewCard key={r.id} review={r} user={user} userMap={userMap} isManager={isMgr} isHR={isHR} readonly />
+                      <ReviewCard key={r.id} review={r} user={user} userMap={userMap} isManager={isMgr} isHR={isHR}
+                        letters={lettersByReview[r.id] || []} readonly />
                     ))}
                   </div>
                 </div>
@@ -416,7 +435,7 @@ export default function PerformanceManagement() {
 }
 
 // Inline review card component
-function ReviewCard({ review, user, userMap, isManager, isHR, onSubmitSelf, onSubmitManager, onApprove, readonly }) {
+function ReviewCard({ review, user, userMap, isManager, isHR, onSubmitSelf, onSubmitManager, onApprove, readonly, letters = [] }) {
   const [selfScore, setSelfScore] = useState(review.self_assessment_score || 0);
   const [selfComment, setSelfComment] = useState(review.self_assessment_comment || '');
   const [mgrScore, setMgrScore] = useState(review.manager_assessment_score || 0);
@@ -522,6 +541,50 @@ function ReviewCard({ review, user, userMap, isManager, isHR, onSubmitSelf, onSu
                   {review.promotion_recommended && <p className="text-green-600 font-medium">✓ Promotion Recommended</p>}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Generate outcome letter — HR/Management only, linked back to this review */}
+          {isHR && review.status === 'completed' && (
+            <div className="bg-white rounded-lg border p-4">
+              <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-1.5">
+                <FileSignature className="w-4 h-4 text-indigo-500" /> Generate Letter From This Review
+              </h4>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { key: 'promotion', label: 'Promotion Letter', recommended: !!review.promotion_recommended },
+                  { key: 'salary_revision', label: 'Salary Revision Letter', recommended: review.salary_revision_percentage > 0 },
+                  { key: 'confirmation', label: 'Confirmation Letter', recommended: false },
+                  { key: 'warning', label: 'Warning Letter', recommended: false },
+                ].map(t => (
+                  <Button
+                    key={t.key}
+                    size="sm"
+                    variant={t.recommended ? 'default' : 'outline'}
+                    className={t.recommended ? 'bg-indigo-600 hover:bg-indigo-700 text-white text-xs' : 'text-xs'}
+                    onClick={() => {
+                      window.location.href = `/LetterGenerator?user_id=${review.employee_user_id}&letter_type=${t.key}&review_id=${review.id}`;
+                    }}
+                  >
+                    {t.label}{t.recommended ? ' ✓' : ''}
+                  </Button>
+                ))}
+              </div>
+              {letters.length > 0 && (
+                <div className="mt-3 pt-3 border-t space-y-1.5">
+                  <p className="text-xs text-gray-400">Letters already generated from this review:</p>
+                  {letters.map(l => (
+                    <div key={l.id} className="flex items-center justify-between text-xs">
+                      <span className="text-gray-600">{l.letter_type?.replace(/_/g, ' ')} {l.ref ? `(${l.ref})` : ''}</span>
+                      {l.document_url && (
+                        <a href={l.document_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-blue-600 hover:underline">
+                          <ExternalLink className="w-3 h-3" /> View
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
