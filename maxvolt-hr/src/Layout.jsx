@@ -688,8 +688,13 @@ export default function Layout({ children, currentPageName }) {
               plus a calc()-sized list overflowed 78dvh and pushed Sign out
               off-screen on smaller phones. */}
           <div
-            className="lg:hidden fixed bottom-0 left-0 right-0 z-50 rounded-t-[28px] overflow-hidden animate-slide-up flex flex-col"
+            className="lg:hidden fixed left-0 right-0 z-50 rounded-t-[28px] overflow-hidden animate-slide-up flex flex-col"
             style={{
+              // bottom:0 alone leaves a gap on iOS Safari (see main.jsx
+              // trackVisualViewportInset comment) — offset by the tracked
+              // visual-viewport inset so the sheet sits flush to the true
+              // bottom of the screen.
+              bottom: 'var(--vv-bottom-inset, 0px)',
               background: 'rgba(242,242,247,0.96)',
               backdropFilter: 'saturate(180%) blur(40px)',
               WebkitBackdropFilter: 'saturate(180%) blur(40px)',
@@ -816,10 +821,17 @@ export default function Layout({ children, currentPageName }) {
       {/* Solid, theme-aware background that fills through the safe-area inset so
           the whole bar reads as one unit flush to the bottom of the screen — the
           previous translucent grey blended into the page background and looked
-          like the bar was floating with an empty gap beneath it. */}
+          like the bar was floating with an empty gap beneath it.
+          bottom: var(--vv-bottom-inset) (set in main.jsx) instead of plain
+          bottom:0 — iOS Safari resolves position:fixed;bottom:0 against its
+          LAYOUT viewport (which reserves space for the browser's own bottom
+          toolbar, even when not shown / even in standalone PWA mode), leaving
+          a gap the height of that reserved space. Tracking window.visualViewport
+          gives the actual visible bottom edge. */}
       <nav
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-[#1C1C1E] border-t border-black/10 dark:border-white/10"
+        className="lg:hidden fixed left-0 right-0 z-40 bg-white dark:bg-[#1C1C1E] border-t border-black/10 dark:border-white/10"
         style={{
+          bottom: 'var(--vv-bottom-inset, 0px)',
           paddingBottom: 'env(safe-area-inset-bottom)',
         }}
       >

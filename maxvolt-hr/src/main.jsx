@@ -18,6 +18,29 @@ window.addEventListener('vite:preloadError', (event) => {
   }
 });
 
+// iOS Safari bug (still present as of iOS 17/18): position:fixed; bottom:0
+// elements resolve against the browser's LAYOUT viewport, which reserves
+// space for Safari's own bottom toolbar — even in standalone/home-screen PWA
+// mode where that toolbar isn't actually shown, and even with 100dvh (dvh
+// fixes height calculations, not fixed-offset resolution, in the affected
+// versions). The result: a fixed bottom bar floats above the true bottom of
+// the screen with a gap the height of the (hidden) toolbar beneath it.
+// Fix: track window.visualViewport (the actual visible area) and expose the
+// difference as a CSS var so fixed bottom elements can offset by it instead
+// of assuming bottom:0 is the true screen edge.
+function trackVisualViewportInset() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const update = () => {
+    const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    document.documentElement.style.setProperty('--vv-bottom-inset', `${inset}px`);
+  };
+  vv.addEventListener('resize', update);
+  vv.addEventListener('scroll', update);
+  update();
+}
+trackVisualViewportInset();
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <App />
 )
