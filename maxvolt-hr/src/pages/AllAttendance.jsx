@@ -301,7 +301,9 @@ export default function AllAttendance() {
             <h1 className="text-2xl font-bold text-gray-900">All Attendance</h1>
             <p className="text-sm text-gray-500 mt-0.5">Biometric + Selfie attendance for all active employees</p>
           </div>
-          <div className="flex items-center gap-2">
+          {/* flex-wrap so every action (Analytics, Mark Absent, Muster, Report)
+              stays reachable on narrow phones instead of overflowing off-screen */}
+          <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => navigate('/AttendanceReports')} title="View Attendance Analytics">
               <BarChart3 className="w-4 h-4 mr-1" /> Analytics
             </Button>

@@ -665,8 +665,12 @@ export default function Layout({ children, currentPageName }) {
         {mountedTabs.has('Leave')          && <div style={{ display: currentPageName === 'Leave'          ? 'block' : 'none' }}><LeavePage /></div>}
         {mountedTabs.has('Profile')        && <div style={{ display: currentPageName === 'Profile'        ? 'block' : 'none' }}><ProfilePage /></div>}
 
-        {/* Mobile bottom spacer */}
-        <div className="lg:hidden" style={{ height: 'calc(4.5rem + env(safe-area-inset-bottom))' }} />
+        {/* Mobile bottom spacer — must exceed the fixed tab bar's height (tab
+            minHeight 44px + nav padding) plus the safe-area inset, with margin,
+            so the last item on any page scrolls clear of the bar and stays
+            tappable. Was 4.5rem, which left the final card partly under the bar
+            on taller safe-area devices. */}
+        <div className="lg:hidden" style={{ height: 'calc(6rem + env(safe-area-inset-bottom))' }} />
       </div>
 
       {/* ── "More" bottom sheet (iOS style) ─────────────────── */}
@@ -809,14 +813,14 @@ export default function Layout({ children, currentPageName }) {
       )}
 
       {/* ── Mobile bottom tab bar — iOS style ───────────────── */}
+      {/* Solid, theme-aware background that fills through the safe-area inset so
+          the whole bar reads as one unit flush to the bottom of the screen — the
+          previous translucent grey blended into the page background and looked
+          like the bar was floating with an empty gap beneath it. */}
       <nav
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-40"
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-[#1C1C1E] border-t border-black/10 dark:border-white/10"
         style={{
           paddingBottom: 'env(safe-area-inset-bottom)',
-          background: 'rgba(242,242,247,0.88)',
-          backdropFilter: 'saturate(180%) blur(20px)',
-          WebkitBackdropFilter: 'saturate(180%) blur(20px)',
-          borderTop: '0.5px solid rgba(0,0,0,0.12)',
         }}
       >
         <div className="flex items-center pt-1 pb-1">
