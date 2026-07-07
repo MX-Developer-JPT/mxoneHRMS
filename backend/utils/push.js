@@ -111,11 +111,15 @@ const CHANNEL_BY_TYPE = {
   info:    'general',
 };
 
+// Returns a diagnostic result so callers (e.g. the sendTestPush function-route)
+// can tell a user exactly where delivery failed instead of guessing blind —
+// "server has no Firebase credentials" vs "no device registered" vs a specific
+// per-token FCM rejection reason are three very different fixes.
 async function sendFcmToUser(userId, payload) {
   const app = await loadFcm();
-  if (!app) return;
-  const tokens = (await all("SELECT token FROM device_tokens WHERE user_id=$1", [userId])).map(r => r.token);
-  if (!tokens.length) return;
+  if (!app) return { attempted: false, reason: 'fcm_not_configured_on_server' };
+  const tokens = (await all("SELECT token, platform FROM device_tokens WHERE user_id=$1", [userId])).map(r => r.token);
+  if (!tokens.length) return { attempted: false, reason: 'no_device_token_registered' };
 
   const admin = (await import('firebase-admin')).default;
   const messaging = admin.messaging(app);
@@ -160,15 +164,15 @@ async function sendFcmToUser(userId, payload) {
 
   const results = await Promise.allSettled(tokens.map(token => messaging.send({ ...message, token })));
   const stale = [];
-  results.forEach((r, i) => {
-    if (r.status === 'rejected') {
-      const code = r.reason?.errorInfo?.code || r.reason?.code || '';
-      if (code.includes('registration-token-not-registered') || code.includes('invalid-argument')) {
-        stale.push(tokens[i]);
-      }
-    }
+  const perToken = results.map((r, i) => {
+    if (r.status === 'fulfilled') return { token: tokens[i].slice(0, 12) + '…', ok: true };
+    const code = r.reason?.errorInfo?.code || r.reason?.code || '';
+    const message = r.reason?.errorInfo?.message || r.reason?.message || String(r.reason);
+    if (code.includes('registration-token-not-registered') || code.includes('invalid-argument')) stale.push(tokens[i]);
+    return { token: tokens[i].slice(0, 12) + '…', ok: false, code, message };
   });
   if (stale.length) await Promise.all(stale.map(t => removeDeviceToken(t).catch(() => {})));
+  return { attempted: true, token_count: tokens.length, sent_ok: perToken.filter(r => r.ok).length, results: perToken };
 }
 
 // Fire-and-forget push to every device a user has registered — both web push
@@ -206,4 +210,18 @@ export async function sendPushToUser(userId, payload) {
   } catch (e) {
     console.warn('[push] sendPushToUser (FCM) error:', e.message);
   }
+}
+
+// Self-diagnostic variant — returns exactly where delivery stands instead of
+// swallowing everything, so a user/HR can tell in one tap whether the problem
+// is "server has no Firebase credentials", "this device never registered a
+// token", or a specific FCM rejection reason per token.
+export async function sendTestPushToUser(userId) {
+  const fcmResult = await sendFcmToUser(userId, {
+    title: 'Maxvolt HR — Test Notification',
+    message: 'If you can see this, native push notifications are working correctly.',
+    type: 'info',
+    link: '/',
+  }).catch(e => ({ attempted: false, reason: 'error', error: e.message }));
+  return { fcm: fcmResult };
 }

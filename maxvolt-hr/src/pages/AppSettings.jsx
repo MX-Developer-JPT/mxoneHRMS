@@ -24,6 +24,7 @@ export default function AppSettings() {
   // PWA / push
   const [pushState, setPushState] = useState('default'); // default | subscribed | denied | unsupported
   const [pushBusy, setPushBusy] = useState(false);
+  const [testPushBusy, setTestPushBusy] = useState(false);
   const [installEvt, setInstallEvt] = useState(null);
   const [installed, setInstalled] = useState(false);
 
@@ -57,6 +58,35 @@ export default function AppSettings() {
       toast.error(e.message);
     }
     setPushBusy(false);
+  };
+
+  // Self-diagnostic: sends a real test push and reports exactly where
+  // delivery stands (no Firebase configured on the server / no device token
+  // registered / a specific per-token FCM rejection) instead of leaving
+  // "no notifications showing" as an unexplained dead end.
+  const sendTestNotification = async () => {
+    setTestPushBusy(true);
+    try {
+      const res = await base44.functions.invoke('sendTestPush', {});
+      const d = res.data || res;
+      const fcm = d.fcm || {};
+      console.log('[sendTestPush] full diagnostic:', d);
+      if (!fcm.attempted) {
+        const messages = {
+          fcm_not_configured_on_server: 'The server has no Firebase credentials configured (FIREBASE_SERVICE_ACCOUNT_JSON) — ask an admin to set it up.',
+          no_device_token_registered: 'This device never registered a push token. Open the app once more, allow the notification permission if prompted, then try again.',
+        };
+        toast.error(messages[fcm.reason] || `Could not send: ${fcm.reason || 'unknown reason'}`);
+      } else if (fcm.sent_ok > 0) {
+        toast.success(`Test notification sent to ${fcm.sent_ok}/${fcm.token_count} registered device(s) — check your notification shade.`);
+      } else {
+        const firstError = fcm.results?.find(r => !r.ok);
+        toast.error(`Delivery failed for all ${fcm.token_count} device(s)${firstError ? `: ${firstError.code || firstError.message}` : ''}`);
+      }
+    } catch (e) {
+      toast.error('Test failed: ' + e.message);
+    }
+    setTestPushBusy(false);
   };
 
   const handleInstall = async () => {
@@ -203,6 +233,22 @@ export default function AppSettings() {
                 onClick={togglePush}
                 className={pushState === 'subscribed' ? '' : 'bg-blue-600 hover:bg-blue-700'}>
                 {pushBusy ? '…' : pushState === 'subscribed' ? 'Turn off' : 'Enable'}
+              </Button>
+            </div>
+
+            {/* Test push — diagnoses exactly why notifications aren't showing
+                (no Firebase config on the server / no token registered / a
+                specific delivery failure) instead of leaving it a mystery. */}
+            <div className="flex items-center justify-between p-3 border rounded-lg">
+              <div className="flex items-center gap-3">
+                <Bell className="w-5 h-5 text-orange-500" />
+                <div>
+                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Test notifications</p>
+                  <p className="text-xs text-gray-500">Send yourself a real test push to check delivery</p>
+                </div>
+              </div>
+              <Button size="sm" variant="outline" disabled={testPushBusy} onClick={sendTestNotification}>
+                {testPushBusy ? 'Sending…' : 'Send Test'}
               </Button>
             </div>
 

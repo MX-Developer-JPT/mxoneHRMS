@@ -928,6 +928,19 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true });
     }
 
+    // Self-diagnostic: sends the caller a real test push and reports exactly
+    // where delivery stands, so "no notifications showing" can be narrowed
+    // down to one specific cause (server has no Firebase credentials / this
+    // device never registered a token / a specific FCM rejection per token)
+    // instead of guessing blind without device access.
+    case 'sendTestPush': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const tokens = await all("SELECT token, platform, updated_at FROM device_tokens WHERE user_id=$1", [cu.id]);
+      const { sendTestPushToUser } = await import('../utils/push.js');
+      const result = await sendTestPushToUser(cu.id);
+      return res.json({ success: true, registered_tokens: tokens, ...result });
+    }
+
     /* ── Native geofencing (Android wrapper): fence config + enter/exit events ── */
     case 'getMyGeofence': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
