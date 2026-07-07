@@ -150,7 +150,13 @@ export default function Login() {
           </Link>
         </p>
 
-        <p className="text-center text-xs text-muted-foreground/50 mt-8">
+        <p className="text-center text-xs text-muted-foreground/50 mt-4">
+          <a href="/PrivacyPolicy" className="hover:underline underline-offset-2">Privacy Policy</a>
+          {" · "}
+          <a href="/TermsOfService" className="hover:underline underline-offset-2">Terms of Service</a>
+        </p>
+
+        <p className="text-center text-xs text-muted-foreground/50 mt-2">
           Maxvolt Energy Industries Limited
         </p>
       </div>

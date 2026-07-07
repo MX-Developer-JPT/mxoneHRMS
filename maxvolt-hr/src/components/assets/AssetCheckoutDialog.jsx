@@ -77,11 +77,15 @@ export default function AssetCheckoutDialog({ open, onOpenChange, asset, employe
       const canvas = canvasRef.current;
       // Persist the actual signature image (not just a text note) so it can be
       // embedded on the printed asset letter and kept as a real audit record.
+      // Wrapped in a named File (not a bare Blob) so the upload keeps a proper
+      // filename/extension instead of the generic "blob" FormData gives an
+      // unnamed Blob.
       const signatureBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const signatureFile = new File([signatureBlob], `signature-${asset.id}-${Date.now()}.png`, { type: 'image/png' });
       const signedByName = employee?.display_name || user?.display_name || user?.full_name;
       let signatureUrl = null;
       try {
-        const uploadRes = await base44.integrations.Core.UploadFile({ file: signatureBlob });
+        const uploadRes = await base44.integrations.Core.UploadFile({ file: signatureFile });
         signatureUrl = uploadRes.file_url;
       } catch (uploadErr) {
         console.error('Signature upload failed:', uploadErr.message);

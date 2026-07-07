@@ -8,7 +8,34 @@ let swRegistration = null;
 export async function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return null;
   try {
+    // A previously-controlling SW means this is a return visit, not a
+    // brand-new install — only in that case do we want a future SW handover
+    // to force a reload (on first-ever install, reloading right after the
+    // page just finished loading would be a jarring, pointless flash).
+    const hadController = !!navigator.serviceWorker.controller;
+
     swRegistration = await navigator.serviceWorker.register('/sw.js');
+
+    if (hadController) {
+      let refreshed = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshed) return;
+        refreshed = true;
+        window.location.reload();
+      });
+    }
+
+    // The user previously had to manually refresh to see new features —
+    // this was because the app never actively checked for a newer
+    // service-worker version. Force a check every time the app is opened
+    // or brought back to the foreground; if the server has a newer sw.js,
+    // it installs, self-activates (see sw.js skipWaiting/clients.claim),
+    // fires 'controllerchange' above, and the page reloads automatically.
+    swRegistration.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') swRegistration?.update().catch(() => {});
+    });
+
     return swRegistration;
   } catch (e) {
     console.warn('[pwa] SW registration failed:', e.message);

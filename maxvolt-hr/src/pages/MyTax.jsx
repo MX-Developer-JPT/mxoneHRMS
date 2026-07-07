@@ -87,8 +87,9 @@ export default function MyTax() {
         month: parseInt(month),
         year: parseInt(year),
       });
-      if (res.success) setData(res);
-      else setError(res.error || 'Failed to load tax worksheet');
+      const d = res.data || res;
+      if (d.success) setData(d);
+      else setError(d.error || 'Failed to load tax worksheet');
     } catch (e) {
       setError(e.message);
     }

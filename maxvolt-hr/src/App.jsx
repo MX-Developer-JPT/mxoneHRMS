@@ -37,6 +37,8 @@ import MyInsurance from './pages/MyInsurance';
 import OnboardingApproval from './pages/OnboardingApproval';
 import PublicJobBoard from './pages/PublicJobBoard';
 import ApplyForJob from './pages/ApplyForJob';
+import PrivacyPolicy from './pages/PrivacyPolicy';
+import TermsOfService from './pages/TermsOfService';
 import CareersPage from './pages/CareersPage';
 import OfferAcceptPage from './pages/OfferAcceptPage';
 import LOPConfiguration from './pages/LOPConfiguration';
@@ -502,6 +504,8 @@ function App() {
       <Router>
         <Routes>
           {/* Public routes - no login required */}
+          <Route path="/PrivacyPolicy" element={<PrivacyPolicy />} />
+          <Route path="/TermsOfService" element={<TermsOfService />} />
           <Route path="/PublicJobBoard" element={<PublicJobBoard />} />
           <Route path="/ApplyForJob" element={<ApplyForJob />} />
           <Route path="/PublicBusinessCard" element={<PublicBusinessCard />} />
