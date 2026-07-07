@@ -678,24 +678,28 @@ export default function Layout({ children, currentPageName }) {
             style={{ backdropFilter: 'blur(2px)', WebkitBackdropFilter: 'blur(2px)' }}
             onClick={() => { setMoreSheetOpen(false); setSheetSearch(''); }}
           />
-          {/* Sheet */}
+          {/* Sheet — flex column so the footer (sign out + policy links) is always
+              pinned and visible; the menu list takes the remaining space and
+              scrolls. Avoids the earlier bug where fixed header/footer heights
+              plus a calc()-sized list overflowed 78dvh and pushed Sign out
+              off-screen on smaller phones. */}
           <div
-            className="lg:hidden fixed bottom-0 left-0 right-0 z-50 rounded-t-[28px] overflow-hidden animate-slide-up"
+            className="lg:hidden fixed bottom-0 left-0 right-0 z-50 rounded-t-[28px] overflow-hidden animate-slide-up flex flex-col"
             style={{
               background: 'rgba(242,242,247,0.96)',
               backdropFilter: 'saturate(180%) blur(40px)',
               WebkitBackdropFilter: 'saturate(180%) blur(40px)',
-              maxHeight: '78dvh',
+              maxHeight: '85dvh',
               paddingBottom: 'env(safe-area-inset-bottom)',
             }}
           >
             {/* Drag handle */}
-            <div className="flex justify-center pt-3 pb-1">
+            <div className="flex-shrink-0 flex justify-center pt-3 pb-1">
               <div className="w-9 h-1 rounded-full bg-[#8E8E93]/35" />
             </div>
 
             {/* Sheet header */}
-            <div className="flex items-center justify-between px-5 py-2 border-b border-[#E0E0E5]/80">
+            <div className="flex-shrink-0 flex items-center justify-between px-5 py-2 border-b border-[#E0E0E5]/80">
               <div className="flex items-center gap-2.5">
                 <Avatar name={displayName} role={userRole} size="sm" />
                 <div>
@@ -725,7 +729,7 @@ export default function Layout({ children, currentPageName }) {
             </div>
 
             {/* Sheet search */}
-            <div className="px-4 py-2 border-b border-[#E0E0E5]/80">
+            <div className="flex-shrink-0 px-4 py-2 border-b border-[#E0E0E5]/80">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8E8E93]" />
                 <input
@@ -738,8 +742,8 @@ export default function Layout({ children, currentPageName }) {
               </div>
             </div>
 
-            {/* Menu list */}
-            <nav className="overflow-y-auto px-3 py-2" style={{ maxHeight: 'calc(78dvh - 10rem)' }}>
+            {/* Menu list — flex-1 + min-h-0 lets it shrink and scroll within the sheet */}
+            <nav className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
               {filteredMenuGroups(sheetSearch).map((group, gi) => (
                 <div key={gi}>
                   {group.label ? (
@@ -782,8 +786,8 @@ export default function Layout({ children, currentPageName }) {
               )}
             </nav>
 
-            {/* Sheet footer */}
-            <div className="px-3 py-2 border-t border-[#E0E0E5]/80">
+            {/* Sheet footer — flex-shrink-0 keeps Sign out + policy links pinned */}
+            <div className="flex-shrink-0 px-3 py-2 border-t border-[#E0E0E5]/80">
               <button
                 onClick={handleLogout}
                 className="w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-medium text-[#FF3B30] hover:bg-[#FF3B30]/8 transition-colors"

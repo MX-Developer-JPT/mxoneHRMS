@@ -118,8 +118,19 @@
     letter-spacing: -0.01em;
   }
 
+  /* #root is the ONE universal scroll container. Body is pinned to exactly one
+     screen (see above) so it never rubber-bands; #root then scrolls its own
+     overflow. Pages rendered INSIDE Layout.jsx are exactly h-dvh tall, so #root
+     has nothing to scroll and Layout's inner div scrolls instead (no gray gap).
+     Standalone pages rendered straight into #root (Login, Privacy Policy, Terms,
+     Register, etc.) are taller than the screen on small devices and now scroll
+     here — previously they were clipped and unscrollable on iPhone/Android. */
   #root {
     height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
   }
 
   h1, h2, h3, h4, h5, h6 {

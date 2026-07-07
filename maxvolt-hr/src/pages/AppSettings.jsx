@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Sun, Moon, LogOut, Trash2, Settings, Monitor, MapPin, Plus, X, Pencil, Bell, BellOff, Download, Smartphone } from 'lucide-react';
+import { Sun, Moon, LogOut, Trash2, Settings, Monitor, MapPin, Plus, X, Pencil, Bell, BellOff, Download, Smartphone, ShieldCheck, FileText, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from "@/components/ui/badge";
 import { pushSupported, getPushState, enablePush, disablePush } from '@/utils/pwa';
@@ -270,6 +270,35 @@ export default function AppSettings() {
         )}
 
         {/* Account */}
+        {/* Legal — required to be reachable in-app for Google Play / App Store */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Legal</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <a
+              href="/PrivacyPolicy"
+              target="_blank"
+              rel="noreferrer"
+              className="w-full flex items-center gap-3 h-12 px-3 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            >
+              <ShieldCheck className="w-5 h-5 text-blue-500" />
+              <span className="flex-1 text-sm font-medium">Privacy Policy</span>
+              <ChevronRight className="w-4 h-4 text-gray-400" />
+            </a>
+            <a
+              href="/TermsOfService"
+              target="_blank"
+              rel="noreferrer"
+              className="w-full flex items-center gap-3 h-12 px-3 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            >
+              <FileText className="w-5 h-5 text-blue-500" />
+              <span className="flex-1 text-sm font-medium">Terms of Service</span>
+              <ChevronRight className="w-4 h-4 text-gray-400" />
+            </a>
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Account</CardTitle>

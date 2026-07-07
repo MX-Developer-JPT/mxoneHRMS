@@ -14,7 +14,13 @@ function Section({ title, children }) {
 
 export default function PrivacyPolicy() {
   return (
-    <div className="min-h-screen bg-gray-50 py-10 px-4">
+    <div
+      className="min-h-dvh bg-gray-50 px-4"
+      style={{
+        paddingTop: 'calc(2.5rem + env(safe-area-inset-top))',
+        paddingBottom: 'calc(2.5rem + env(safe-area-inset-bottom))',
+      }}
+    >
       <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-sm border p-6 md:p-10">
         <div className="flex items-center gap-3 mb-1">
           <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center flex-shrink-0">
