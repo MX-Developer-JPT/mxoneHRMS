@@ -7,6 +7,7 @@ import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, computeStatusFromSessions } from './attendancelog.js';
+import { runNightlyAttendanceAutomation } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -3667,6 +3668,15 @@ router.post('/:name', async (req, res) => {
         }
       }
       return res.json({ success:true, marked });
+    }
+
+    case 'runAttendanceAutomation': {
+      // Manual trigger for the nightly auto-absent job (also runs automatically
+      // every day at 2:00 AM IST — see server.js). Useful for HR/Admin to
+      // test or re-run for a specific date without waiting for the schedule.
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'Forbidden' });
+      const result = await runNightlyAttendanceAutomation(p?.date);
+      return res.json({ success: true, ...result });
     }
 
     case 'processMonthAttendance': {

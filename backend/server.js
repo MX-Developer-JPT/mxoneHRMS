@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
 import { spawn, execSync } from 'child_process';
+import cron from 'node-cron';
 import authRouter           from './routes/auth.js';
 import entitiesRouter       from './routes/entities.js';
 import functionsRouter      from './routes/functions.js';
@@ -14,6 +15,7 @@ import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
 import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
+import { runNightlyAttendanceAutomation } from './cron/attendanceAutomation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -196,4 +198,11 @@ const server = app.listen(PORT, () => {
 // No hard timeout — long-running ops like bulk biometric processing must complete fully
 server.setTimeout(0);
 server.keepAliveTimeout = 65000;
+
+// ── Nightly attendance automation — 2:00 AM IST ──────────────
+// Marks employees with no attendance record absent, and force-closes
+// any check-in that was never checked out by the 2 AM cutoff.
+cron.schedule('0 2 * * *', () => {
+  runNightlyAttendanceAutomation().catch(err => console.error('[attendance-cron] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
 
