@@ -12,7 +12,7 @@ import {
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
-  Network, Grid3x3, CalendarPlus, GitBranch, Route,
+  Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar,
 } from 'lucide-react';
 import NotificationBell from '@/components/NotificationBell';
 import DashboardPage from './pages/Dashboard';
@@ -21,7 +21,7 @@ import LeavePage from './pages/Leave';
 import ProfilePage from './pages/Profile';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
-import { resumeBackgroundGeofenceIfEnabled, stopBackgroundGeofence } from '@/lib/geofenceBackground';
+import { startBackgroundGeofence, stopBackgroundGeofence } from '@/lib/geofenceBackground';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
@@ -167,6 +167,7 @@ const hrMenuGroups = [
     { name: 'Field Duty Tracking',     icon: Route,           page: 'FieldDuty' },
     { name: 'Shift Management',        icon: UserCog,         page: 'ShiftManagement' },
     { name: 'Attendance Exemption',    icon: ShieldOff,       page: 'AttendanceExemption' },
+    { name: 'Geofence Eligibility',    icon: Radar,           page: 'GeofenceEligibility' },
   ]},
   { label: 'Leave', items: [
     { name: 'Leave Management',        icon: FileText,        page: 'LeaveManagement' },
@@ -393,9 +394,11 @@ export default function Layout({ children, currentPageName }) {
       // device for real native push (FCM on Android, APNs on iOS).
       initNativePush().catch((e) => console.warn('initNativePush:', e.message));
 
-      // Resume Background Geofence if the employee previously turned it on —
-      // same resume-on-load pattern as Field Duty tracking above.
-      resumeBackgroundGeofenceIfEnabled().catch((e) => console.warn('resumeBackgroundGeofence:', e.message));
+      // Start Background Geofence automatically for eligible employees — HR
+      // decides eligibility (Employee.geofence_eligible), employees get no
+      // on/off control. No-ops internally (via getMyGeofence's
+      // geofence_eligible flag) for anyone HR hasn't marked eligible.
+      startBackgroundGeofence().catch((e) => console.warn('startBackgroundGeofence:', e.message));
     } catch (err) {
       console.error('loadUser:', err);
     }

@@ -47,7 +47,13 @@ export async function startBackgroundGeofence() {
     return { started: false, reason: 'fetch_failed', error: e.message };
   }
   const d = fenceRes.data || fenceRes;
-  if (!d?.success || !Array.isArray(d.all_fences) || d.all_fences.length === 0) return { started: false, reason: 'no_fence_assigned' };
+  if (!d?.success) return { started: false, reason: 'fetch_failed' };
+  // HR decides eligibility (Employee.geofence_eligible) — there is no
+  // employee-facing on/off control, but tracking still only ever runs for
+  // employees HR has actually marked eligible. Checked here too (not just by
+  // the caller) so this can't be started via a stale/cached client path.
+  if (!d.geofence_eligible) return { started: false, reason: 'not_eligible' };
+  if (!Array.isArray(d.all_fences) || d.all_fences.length === 0) return { started: false, reason: 'no_fence_assigned' };
   fences = d.all_fences;
   currentFenceId = null;
   lastKnownInProgress = d.attendance_today?.checked_in && !d.attendance_today?.checked_out ? true : null;
@@ -77,7 +83,6 @@ export async function startBackgroundGeofence() {
         if (location) handleLocation(location, platformTag).catch(() => {});
       }
     );
-    localStorage.setItem('background_geofence', '1');
     return { started: true, fences };
   } catch (e) {
     console.warn('[geofenceBackground] failed to start:', e.message);
@@ -86,8 +91,10 @@ export async function startBackgroundGeofence() {
   }
 }
 
+// Only ever called on logout (and internally on a failed start) — there is no
+// employee-facing control that calls this while still logged in. Eligible
+// employees are re-started automatically on next login via startBackgroundGeofence().
 export async function stopBackgroundGeofence() {
-  localStorage.setItem('background_geofence', '0');
   if (!watcherId) return;
   try {
     const { registerPlugin } = await import('@capacitor/core');
@@ -98,13 +105,6 @@ export async function stopBackgroundGeofence() {
   fences = [];
   currentFenceId = null;
   lastKnownInProgress = null;
-}
-
-// Resumes tracking on app open if the employee previously turned this on —
-// mirrors the Field Duty active-trip resume-on-load already in Layout.jsx.
-export async function resumeBackgroundGeofenceIfEnabled() {
-  if (localStorage.getItem('background_geofence') !== '1') return;
-  await startBackgroundGeofence();
 }
 
 // Nearest configured location the current position falls inside, if any —

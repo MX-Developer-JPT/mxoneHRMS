@@ -943,6 +943,10 @@ router.post('/:name', async (req, res) => {
       const gfAtt = gfAttRow ? JSON.parse(gfAttRow.data) : null;
       return res.json({
         success: true,
+        // HR decides who is eligible for geofence-based auto attendance
+        // (Employee.geofence_eligible) — the client uses this to auto-start
+        // tracking with no employee-facing on/off control.
+        geofence_eligible: !!gfEmp.geofence_eligible,
         fence: assigned ? { id: assigned.id, name: assigned.name, latitude: Number(assigned.latitude), longitude: Number(assigned.longitude), radius_m: Number(assigned.geofence_radius) } : null,
         all_fences: gfLocs.map(l => ({ id: l.id, name: l.name, latitude: Number(l.latitude), longitude: Number(l.longitude), radius_m: Number(l.geofence_radius) })),
         attendance_today: gfAtt ? { checked_in: !!gfAtt.check_in_time, checked_out: !!gfAtt.check_out_time, check_in_time: gfAtt.check_in_time || null, check_out_time: gfAtt.check_out_time || null } : { checked_in: false, checked_out: false },
@@ -973,6 +977,10 @@ router.post('/:name', async (req, res) => {
       // to a single employee-assigned fence.
       const ngEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
       const ngEmp = ngEmpRow ? JSON.parse(ngEmpRow.data) : {};
+      // Defense-in-depth: only employees HR has explicitly marked eligible can
+      // ever produce a real attendance change via geofencing, regardless of
+      // what any client sends — eligibility isn't just a UI-level gate.
+      if (!ngEmp.geofence_eligible) return res.json({ success: false, error: 'Not eligible for geofence-based attendance', code: 'NOT_ELIGIBLE' });
       const ngLocs = (await all("SELECT data FROM entities WHERE type='AppLocation'")).map(r => JSON.parse(r.data))
         .filter(l => l.is_active !== false && l.latitude != null && l.longitude != null && Number(l.geofence_radius) > 0);
 

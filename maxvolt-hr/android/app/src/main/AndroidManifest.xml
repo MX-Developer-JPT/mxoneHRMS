@@ -32,4 +32,8 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Required on Android 13 (API 33)+ to show any notification at all — without
+         this declared, FirebaseMessaging.requestPermissions() in nativePush.js has
+         nothing to request and notifications are blocked by default on the OS. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>
