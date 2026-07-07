@@ -106,14 +106,19 @@
     overscroll-behavior: none;
     -webkit-overflow-scrolling: touch;
     /* height (not min-height) + overflow:hidden pins body to exactly one screen —
-       Layout.jsx's own inner div is the ONE true scroll container (overflow-y-auto).
-       Without this, body could grow taller than the viewport in a WKWebView/iOS
-       Capacitor shell and rubber-band-scroll on its own, revealing a gray gap of
-       unstyled background below the fixed bottom tab bar when it bounces. */
+       #root is the ONE true scroll container (see below). Without this, body
+       could grow taller than the viewport and rubber-band-scroll on its own in
+       a WKWebView/iOS PWA shell, revealing a gray gap of unstyled background
+       below the fixed bottom tab bar when it bounces.
+       Deliberately NOT position:fixed here: nesting a position:fixed bottom
+       tab bar (Layout.jsx) inside a position:fixed body is a known WebKit
+       quirk in iOS Safari standalone/home-screen PWA mode that can make the
+       nested fixed element track the wrong containing block, leaving it
+       floating above the true bottom of the screen with a gap beneath it.
+       height:100dvh + overflow:hidden alone already stops body-level bounce
+       without that side effect. */
     height: 100dvh;
     overflow: hidden;
-    position: fixed;
-    inset: 0;
     width: 100%;
     letter-spacing: -0.01em;
   }
