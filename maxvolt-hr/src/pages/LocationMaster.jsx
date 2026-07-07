@@ -11,10 +11,12 @@ import { Plus, Edit2, Trash2, MapPin, Loader2, Download, Users, ChevronDown, Use
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { useAuth } from '@/lib/AuthContext';
 
 const NO_LOCATION = '__none__';
 
 export default function LocationMaster() {
+  const { user } = useAuth();
   const [locations, setLocations] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -193,6 +195,15 @@ export default function LocationMaster() {
       toast.error('Error updating status');
     }
   };
+
+  if (user && user.role !== 'admin') {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+        <AlertCircle className="w-10 h-10 mb-3 opacity-40" />
+        <p>Admin role required to access Location Master.</p>
+      </div>
+    );
+  }
 
   if (loading) return <div className="flex items-center justify-center h-64">Loading...</div>;
 

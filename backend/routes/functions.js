@@ -965,20 +965,43 @@ router.post('/:name', async (req, res) => {
       const evIST = new Date(evUtc + 5.5 * 3600000); // store-IST-digits convention
       const evDate = evIST.toISOString().slice(0, 10);
 
-      // Resolve the employee's fence for validation + labelling
+      // Resolve which configured location this event applies to. Attendance can be
+      // marked present at ANY active location, not just the one tied to the
+      // employee's own assigned shift/work_location — so on 'enter' we pick
+      // whichever configured location the reported coordinates actually fall
+      // inside (nearest wins if more than one overlaps), rather than restricting
+      // to a single employee-assigned fence.
       const ngEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
       const ngEmp = ngEmpRow ? JSON.parse(ngEmpRow.data) : {};
       const ngLocs = (await all("SELECT data FROM entities WHERE type='AppLocation'")).map(r => JSON.parse(r.data))
         .filter(l => l.is_active !== false && l.latitude != null && l.longitude != null && Number(l.geofence_radius) > 0);
-      const ngFence = ngLocs.find(l => location_name && (l.name || '').toLowerCase() === location_name.toLowerCase())
-        || ngLocs.find(l => (l.name || '').toLowerCase() === (ngEmp.work_location || '').toLowerCase())
-        || (ngLocs.length === 1 ? ngLocs[0] : null);
 
-      // Defense-in-depth: an 'enter' with coordinates must plausibly be inside the fence
+      const haversineM = (la1, lo1, la2, lo2) => {
+        const R = 6371000, rLa1 = la1 * Math.PI / 180, rLa2 = la2 * Math.PI / 180;
+        const dLa = rLa2 - rLa1, dLo = (lo2 - lo1) * Math.PI / 180;
+        return 2 * R * Math.asin(Math.sqrt(Math.sin(dLa / 2) ** 2 + Math.cos(rLa1) * Math.cos(rLa2) * Math.sin(dLo / 2) ** 2));
+      };
+
+      let ngFence = null;
+      if (isFinite(Number(latitude)) && isFinite(Number(longitude))) {
+        let nearestDist = Infinity;
+        for (const loc of ngLocs) {
+          const d = haversineM(Number(latitude), Number(longitude), Number(loc.latitude), Number(loc.longitude));
+          const allowed = Number(loc.geofence_radius) + Number(accuracy || 0) + 200;
+          if (d <= allowed && d < nearestDist) { ngFence = loc; nearestDist = d; }
+        }
+      }
+      // No coordinates, or position doesn't fall inside any configured location — fall
+      // back to name/work_location hints (e.g. an 'exit' event using a cached last-known fence).
+      if (!ngFence) {
+        ngFence = ngLocs.find(l => location_name && (l.name || '').toLowerCase() === location_name.toLowerCase())
+          || ngLocs.find(l => (l.name || '').toLowerCase() === (ngEmp.work_location || '').toLowerCase())
+          || (ngLocs.length === 1 ? ngLocs[0] : null);
+      }
+
+      // Defense-in-depth: an 'enter' with coordinates must plausibly be inside the resolved fence
       if (event === 'enter' && ngFence && isFinite(Number(latitude)) && isFinite(Number(longitude))) {
-        const R = 6371000, la1 = Number(latitude) * Math.PI / 180, la2 = Number(ngFence.latitude) * Math.PI / 180;
-        const dLa = la2 - la1, dLo = (Number(ngFence.longitude) - Number(longitude)) * Math.PI / 180;
-        const dist = 2 * R * Math.asin(Math.sqrt(Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2));
+        const dist = haversineM(Number(latitude), Number(longitude), Number(ngFence.latitude), Number(ngFence.longitude));
         const allowed = Number(ngFence.geofence_radius) + Number(accuracy || 0) + 200;
         if (dist > allowed) return res.json({ success: false, error: `Reported position is ${Math.round(dist)}m from ${ngFence.name} (allowed ${Math.round(allowed)}m)`, code: 'OUTSIDE_FENCE' });
       }

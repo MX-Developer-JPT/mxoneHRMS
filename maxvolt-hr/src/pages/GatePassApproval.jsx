@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
-import { safeDate } from '@/lib/dateUtils';
+import { safeDate, nowIST } from '@/lib/dateUtils';
 import { CheckCircle2, XCircle, Clock, User, History, LogOut, LogIn } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 
@@ -80,7 +80,7 @@ export default function GatePassApproval() {
 
   const handleAction = async (action) => {
     setActionLoading(true);
-    const now = new Date().toISOString();
+    const now = nowIST();
     const isApproved = action === 'approved';
     await base44.entities.GatePass.update(selected.id, {
       manager_approval_status: action,

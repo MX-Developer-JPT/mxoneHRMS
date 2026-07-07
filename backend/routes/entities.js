@@ -1,10 +1,24 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import jwt from 'jsonwebtoken';
 import { one, all, run } from '../db.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { sendPushToUser } from '../utils/push.js';
+import { JWT_SECRET } from './auth.js';
 
 const router = Router();
+
+// Location Master (AppLocation) is admin-only to manage — everyone else can
+// still read it (employees need the list client-side for geofence matching),
+// but only an admin may create/update/delete a configured location.
+async function requireAdminForType(req, res, type) {
+  if (type !== 'AppLocation') return true;
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  let role = null;
+  try { role = token ? jwt.verify(token, JWT_SECRET).role : null; } catch { role = null; }
+  if (role !== 'admin') { res.status(403).json({ error: 'Admin role required to manage locations' }); return false; }
+  return true;
+}
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -162,6 +176,7 @@ router.get('/:type/:id', async (req, res) => {
 /* ── CREATE  POST /api/entities/:type ─────────────────── */
 router.post('/:type', async (req, res) => {
   const { type } = req.params;
+  if (!(await requireAdminForType(req, res, type))) return;
   const body = req.body;
   const id = body.id || uuidv4();
   const data = { ...body, id };
@@ -222,6 +237,7 @@ router.post('/:type', async (req, res) => {
 /* ── UPDATE  PATCH /api/entities/:type/:id ─────────────── */
 router.patch('/:type/:id', async (req, res) => {
   const { type, id } = req.params;
+  if (!(await requireAdminForType(req, res, type))) return;
   const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (!row) return res.status(404).json({ error: 'Not found' });
 
@@ -290,6 +306,7 @@ router.patch('/:type/:id', async (req, res) => {
 /* ── DELETE  DELETE /api/entities/:type/:id ─────────────── */
 router.delete('/:type/:id', async (req, res) => {
   const { type, id } = req.params;
+  if (!(await requireAdminForType(req, res, type))) return;
   const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   cacheInvalidate(type);

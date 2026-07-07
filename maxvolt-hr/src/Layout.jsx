@@ -227,7 +227,6 @@ const hrMenuGroups = [
   ]},
   { label: 'Operations', items: [
     { name: 'Departments',             icon: Building2,       page: 'DepartmentManagement' },
-    { name: 'Location Master',         icon: MapPin,          page: 'LocationMaster' },
     { name: 'Asset Tracking',          icon: Laptop,          page: 'AssetTracking' },
     { name: 'Holiday Calendar',        icon: Calendar,        page: 'HolidayCalendar' },
     { name: 'Gate Pass Management',    icon: ShieldCheck,     page: 'GatePassManagement' },
@@ -452,6 +451,7 @@ export default function Layout({ children, currentPageName }) {
       { name: 'Import Employees',  icon: UserPlus,          page: 'ImportEmployees' },
       { name: 'Company Policies',  icon: BookOpen,          page: 'CompanyPolicies' },
       { name: 'Business Cards',    icon: QrCode,            page: 'BusinessCardAdmin' },
+      { name: 'Location Master',   icon: MapPin,            page: 'LocationMaster' },
     ]}];
   }
   const menuItems = menuGroups.flatMap(g => g.items);

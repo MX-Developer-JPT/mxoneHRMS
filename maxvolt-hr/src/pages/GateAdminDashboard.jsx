@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { format, isToday } from 'date-fns';
-import { safeDate, safeTime } from '@/lib/dateUtils';
+import { safeDate, safeTime, nowIST } from '@/lib/dateUtils';
 import {
   LogOut, LogIn, User, Clock, CheckCircle2, ShieldCheck,
   Search, Calendar, ArrowRightLeft, History
@@ -94,7 +94,7 @@ export default function GateAdminDashboard() {
   const markDeparture = async () => {
     setActionLoading(true);
     await base44.entities.GatePass.update(selected.id, {
-      departure_time: new Date().toISOString(),
+      departure_time: nowIST(),
       status: 'departed',
       gate_admin_notes: notes,
     });
@@ -106,9 +106,8 @@ export default function GateAdminDashboard() {
 
   const markReturn = async () => {
     setActionLoading(true);
-    const now = new Date();
-    const nowISO = now.toISOString();
-    const todayStr = now.toISOString().split('T')[0];
+    const nowISO = nowIST();
+    const todayStr = nowISO.slice(0, 10);
 
     // Calculate LOP based on outing type and duration
     const lop = calculateLOP(selected.outing_type, selected.departure_time, nowISO);

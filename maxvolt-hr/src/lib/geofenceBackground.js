@@ -16,7 +16,8 @@
 import { base44 } from '@/api/base44Client';
 
 let watcherId = null;
-let fence = null;
+let fences = []; // ALL active configured locations — attendance triggers at any of them, not just the employee's assigned one
+let currentFenceId = null; // which fence we're currently checked into, if any
 let lastKnownInProgress = null; // null = unknown yet; avoids resending 'enter' every location tick once we know we're in
 
 const distMetres = (lat1, lng1, lat2, lng2) => {
@@ -46,8 +47,9 @@ export async function startBackgroundGeofence() {
     return { started: false, reason: 'fetch_failed', error: e.message };
   }
   const d = fenceRes.data || fenceRes;
-  if (!d?.success || !d.fence) return { started: false, reason: 'no_fence_assigned' };
-  fence = d.fence;
+  if (!d?.success || !Array.isArray(d.all_fences) || d.all_fences.length === 0) return { started: false, reason: 'no_fence_assigned' };
+  fences = d.all_fences;
+  currentFenceId = null;
   lastKnownInProgress = d.attendance_today?.checked_in && !d.attendance_today?.checked_out ? true : null;
 
   // This plugin ships no JS wrapper (native source + type defs only) — the
@@ -60,7 +62,9 @@ export async function startBackgroundGeofence() {
     watcherId = await BackgroundGeolocation.addWatcher(
       {
         backgroundTitle: 'Maxvolt HR — Attendance tracking active',
-        backgroundMessage: `Watching your location to mark attendance at ${fence.name}`,
+        backgroundMessage: fences.length === 1
+          ? `Watching your location to mark attendance at ${fences[0].name}`
+          : `Watching your location to mark attendance at ${fences.length} configured locations`,
         requestPermissions: true,
         stale: false,
         distanceFilter: 15, // matches the GPS noise-floor threshold used elsewhere in the app
@@ -74,7 +78,7 @@ export async function startBackgroundGeofence() {
       }
     );
     localStorage.setItem('background_geofence', '1');
-    return { started: true, fence };
+    return { started: true, fences };
   } catch (e) {
     console.warn('[geofenceBackground] failed to start:', e.message);
     watcherId = null;
@@ -91,7 +95,8 @@ export async function stopBackgroundGeofence() {
     await BackgroundGeolocation.removeWatcher({ id: watcherId });
   } catch { /* best-effort */ }
   watcherId = null;
-  fence = null;
+  fences = [];
+  currentFenceId = null;
   lastKnownInProgress = null;
 }
 
@@ -102,21 +107,44 @@ export async function resumeBackgroundGeofenceIfEnabled() {
   await startBackgroundGeofence();
 }
 
-async function handleLocation(location, platformTag) {
-  if (!fence) return;
-  if (location.accuracy > 100) return; // background fixes are noisier than foreground; still bounded
-  const d = distMetres(location.latitude, location.longitude, Number(fence.latitude), Number(fence.longitude));
-  const inside = d <= Number(fence.radius_m);
-  const wellOutside = d > Number(fence.radius_m) + 100; // spatial hysteresis against boundary jitter, not a time delay
+// Nearest configured location the current position falls inside, if any —
+// this is what makes attendance trigger at ANY configured location, not just
+// the one tied to the employee's assigned shift/work_location.
+function findFence(location) {
+  let best = null, bestDist = Infinity;
+  for (const f of fences) {
+    const d = distMetres(location.latitude, location.longitude, Number(f.latitude), Number(f.longitude));
+    if (d <= Number(f.radius_m) && d < bestDist) { best = f; bestDist = d; }
+  }
+  return best;
+}
 
-  if (inside && lastKnownInProgress !== true) {
-    await sendEvent('enter', location, platformTag);
-  } else if (wellOutside && lastKnownInProgress !== false) {
-    await sendEvent('exit', location, platformTag);
+async function handleLocation(location, platformTag) {
+  if (!fences.length) return;
+  if (location.accuracy > 100) return; // background fixes are noisier than foreground; still bounded
+
+  const insideFence = findFence(location);
+
+  if (insideFence) {
+    if (currentFenceId !== insideFence.id || lastKnownInProgress !== true) {
+      currentFenceId = insideFence.id;
+      await sendEvent('enter', location, platformTag, insideFence);
+    }
+    return;
+  }
+
+  if (!currentFenceId) return;
+  const cur = fences.find(f => f.id === currentFenceId);
+  if (!cur) { currentFenceId = null; return; }
+  const d = distMetres(location.latitude, location.longitude, Number(cur.latitude), Number(cur.longitude));
+  const wellOutside = d > Number(cur.radius_m) + 100; // spatial hysteresis against boundary jitter, not a time delay
+  if (wellOutside && lastKnownInProgress !== false) {
+    await sendEvent('exit', location, platformTag, cur);
+    currentFenceId = null;
   }
 }
 
-async function sendEvent(event, location, platformTag) {
+async function sendEvent(event, location, platformTag, targetFence) {
   try {
     const res = await base44.functions.invoke('nativeGeofenceEvent', {
       event,
@@ -124,7 +152,7 @@ async function sendEvent(event, location, platformTag) {
       longitude: location.longitude,
       accuracy: location.accuracy,
       occurred_at: new Date(location.time || Date.now()).toISOString(),
-      location_name: fence.name,
+      location_name: targetFence.name,
       is_mock: !!location.simulated,
       device_id: 'capacitor-background-geolocation',
       source: platformTag,

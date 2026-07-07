@@ -36,7 +36,9 @@ export default function MarkAttendance() {
 
   // ── Geofence auto attendance ──
   const [autoMode, setAutoMode] = useState(() => localStorage.getItem('auto_attendance') === '1');
-  const [officeFence, setOfficeFence] = useState(null);   // assigned AppLocation with lat/lng/radius
+  const [officeFence, setOfficeFence] = useState(null);   // fence currently relevant for display (nearest / currently checked into)
+  const [allFences, setAllFences] = useState([]);         // ALL active configured locations — attendance triggers at any of them
+  const [activeFenceId, setActiveFenceId] = useState(null); // which fence we're currently checked into (foreground mode)
   const [fenceDistance, setFenceDistance] = useState(null); // metres from office centre
   const autoBusyRef = useRef(false);
 
@@ -109,12 +111,15 @@ export default function MarkAttendance() {
           setShift(defaultShift[0]);
         }
 
-        // Geofence: find the employee's assigned office (Work Location ↔ AppLocation.name)
+        // Geofence: attendance can trigger at ANY configured location, not just
+        // the employee's assigned Work Location — that's just the initial
+        // display placeholder until a live position fix picks the nearest one.
         try {
           const locs = await base44.entities.AppLocation.list();
           const withFence = locs.filter(l => l.is_active !== false && l.latitude != null && l.longitude != null && l.geofence_radius > 0);
+          setAllFences(withFence);
           const assigned = withFence.find(l => (l.name || '').toLowerCase() === (empRecord[0].work_location || '').toLowerCase());
-          setOfficeFence(assigned || (withFence.length === 1 ? withFence[0] : null));
+          setOfficeFence(assigned || withFence[0] || null);
         } catch { /* no locations — auto mode unavailable */ }
       }
 
@@ -352,28 +357,55 @@ export default function MarkAttendance() {
   };
 
   useEffect(() => {
-    if (!autoMode || !officeFence || !navigator.geolocation) return;
+    if (!autoMode || !allFences.length || !navigator.geolocation) return;
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        const d = distMetres(pos.coords.latitude, pos.coords.longitude, Number(officeFence.latitude), Number(officeFence.longitude));
-        setFenceDistance(Math.round(d));
         if (pos.coords.accuracy > 150) return; // ignore poor fixes — not accurate enough to trust either way
-        const inside = d <= Number(officeFence.geofence_radius);
-        // A small spatial buffer beyond the radius prevents boundary jitter from flapping
-        // in/out repeatedly — this is distance-based hysteresis, not a time delay.
-        const wellOutside = d > Number(officeFence.geofence_radius) + 100;
+
+        // Nearest configured location the current position falls inside, if any —
+        // attendance triggers at ANY configured location, not just the one tied
+        // to the employee's assigned Work Location.
+        let nearestInside = null, nearestInsideDist = Infinity;
+        for (const f of allFences) {
+          const fd = distMetres(pos.coords.latitude, pos.coords.longitude, Number(f.latitude), Number(f.longitude));
+          if (fd <= Number(f.geofence_radius) && fd < nearestInsideDist) { nearestInside = f; nearestInsideDist = fd; }
+        }
 
         const inProgress = !!todayAttendance?.is_in_progress;
-        if (!inProgress && inside) sendGeofenceEvent('enter', pos.coords);
-        else if (inProgress && wellOutside) sendGeofenceEvent('exit', pos.coords);
+
+        if (nearestInside) {
+          setOfficeFence(nearestInside);
+          setFenceDistance(Math.round(nearestInsideDist));
+          if (!inProgress || activeFenceId !== nearestInside.id) {
+            setActiveFenceId(nearestInside.id);
+            sendGeofenceEvent('enter', pos.coords, nearestInside);
+          }
+          return;
+        }
+
+        // Not inside any fence — report distance to whichever one we're currently
+        // checked into (if any), and check the exit hysteresis against that one.
+        const cur = allFences.find(f => f.id === activeFenceId) || officeFence || allFences[0];
+        if (cur) {
+          const d = distMetres(pos.coords.latitude, pos.coords.longitude, Number(cur.latitude), Number(cur.longitude));
+          setOfficeFence(cur);
+          setFenceDistance(Math.round(d));
+          // A small spatial buffer beyond the radius prevents boundary jitter from flapping
+          // in/out repeatedly — this is distance-based hysteresis, not a time delay.
+          const wellOutside = d > Number(cur.geofence_radius) + 100;
+          if (inProgress && activeFenceId && wellOutside) {
+            sendGeofenceEvent('exit', pos.coords, cur);
+            setActiveFenceId(null);
+          }
+        }
       },
       () => { /* keep silent — manual flow still works */ },
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [autoMode, officeFence, todayAttendance]);
+  }, [autoMode, allFences, todayAttendance, activeFenceId]);
 
-  const sendGeofenceEvent = async (eventType, coords) => {
+  const sendGeofenceEvent = async (eventType, coords, targetFence) => {
     if (autoBusyRef.current) return;
     autoBusyRef.current = true;
     try {
@@ -381,21 +413,21 @@ export default function MarkAttendance() {
         event: eventType,
         latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy,
         occurred_at: new Date().toISOString(),
-        location_name: officeFence.name,
+        location_name: targetFence.name,
         is_mock: false, device_id: 'web', source: 'in_app',
       });
       const d = res.data || res;
       if (d?.success && d.action === 'checked_in') {
-        toast.success(d.session_number > 1 ? `Auto checked-in at ${officeFence.name} — session ${d.session_number} 📍` : `Auto checked-in at ${officeFence.name} 📍`);
+        toast.success(d.session_number > 1 ? `Auto checked-in at ${targetFence.name} — session ${d.session_number} 📍` : `Auto checked-in at ${targetFence.name} 📍`);
         loadData();
       } else if (d?.success && d.action === 'checked_out') {
-        toast.success(`Auto checked-out at ${officeFence.name} — ${d.working_hours?.toFixed(1)}h so far`);
+        toast.success(`Auto checked-out at ${targetFence.name} — ${d.working_hours?.toFixed(1)}h so far`);
         loadData();
       } else if (d?.success && d.action === 'none') {
         // Sync the local in-progress flag so we stop re-sending the same event on every
         // subsequent fix (e.g. a manual check-in earlier today that the client didn't know
         // was "in progress" until the server told us).
-        if (d.reason === 'already_checked_in') setTodayAttendance(prev => prev ? { ...prev, is_in_progress: true } : prev);
+        if (d.reason === 'already_checked_in') { setActiveFenceId(targetFence.id); setTodayAttendance(prev => prev ? { ...prev, is_in_progress: true } : prev); }
         else if (d.reason === 'already_checked_out' || d.reason === 'not_checked_in') setTodayAttendance(prev => prev ? { ...prev, is_in_progress: false } : prev);
       } else if (d?.success === false && d.code) {
         console.warn('Geofence event rejected:', d.error);

@@ -21,6 +21,10 @@ const parseTs = (s) => {
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
+// Current instant as an "IST digits + Z" ISO string, matching the storage
+// convention used everywhere else in this app (see comment at top of file).
+export const nowIST = () => new Date(Date.now() + IST_OFFSET_MS).toISOString();
+
 export const safeDate = (dateStr, fmt = 'MMM d, yyyy') => {
   if (!dateStr) return '—';
   try { const d = parseTs(dateStr); return isValid(d) ? format(d, fmt) : '—'; } catch { return '—'; }
