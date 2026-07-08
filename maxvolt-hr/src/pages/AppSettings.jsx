@@ -10,6 +10,7 @@ import { Sun, Moon, LogOut, Trash2, Settings, Monitor, MapPin, Plus, X, Pencil, 
 import { toast } from 'sonner';
 import { Badge } from "@/components/ui/badge";
 import { pushSupported, getPushState, enablePush, disablePush } from '@/utils/pwa';
+import { registerNativePush } from '@/lib/nativePush';
 
 export default function AppSettings() {
   const { theme, setTheme } = useTheme();
@@ -25,6 +26,7 @@ export default function AppSettings() {
   const [pushState, setPushState] = useState('default'); // default | subscribed | denied | unsupported
   const [pushBusy, setPushBusy] = useState(false);
   const [testPushBusy, setTestPushBusy] = useState(false);
+  const [registerBusy, setRegisterBusy] = useState(false);
   const [installEvt, setInstallEvt] = useState(null);
   const [installed, setInstalled] = useState(false);
 
@@ -87,6 +89,36 @@ export default function AppSettings() {
       toast.error('Test failed: ' + e.message);
     }
     setTestPushBusy(false);
+  };
+
+  // Runs the actual client-side registration pipeline (permission check →
+  // FCM token fetch → backend registration) right now and reports exactly
+  // which step it reached, instead of the generic "never registered" message
+  // from Send Test, which can't see WHY the device has no token.
+  const registerThisDevice = async () => {
+    setRegisterBusy(true);
+    try {
+      const result = await registerNativePush();
+      console.log('[registerNativePush] result:', result);
+      const messages = {
+        not_native: 'This only applies to the installed app (Android/iOS) — you\'re using it in a browser/PWA, which uses Web Push instead.',
+        capacitor_core_missing: 'Internal error: Capacitor core is unavailable in this build.',
+        plugin_missing: 'Internal error: the Firebase Messaging plugin is missing from this build — the app may need to be rebuilt.',
+        permission_check_failed: `Could not check notification permission: ${result.error || 'unknown error'}`,
+        permission_request_failed: `Could not request notification permission: ${result.error || 'unknown error'}`,
+        permission_denied: 'Notification permission was not granted. Enable it for Maxvolt HR in your device Settings → Apps → Notifications, then try again.',
+        token_fetch_failed: `Firebase could not issue a device token: ${result.error || 'unknown error'}. Check that Google Play Services is installed and up to date on this device.`,
+        token_empty: 'Firebase returned an empty token — try again in a moment.',
+        backend_registration_failed: `Got a device token but the server rejected it: ${result.error || 'unknown error'}`,
+        success: `Device registered successfully (token ${result.token_prefix}…). Try Send Test now.`,
+      };
+      const msg = messages[result.step] || `Unexpected result: ${result.step}`;
+      if (result.step === 'success') toast.success(msg);
+      else toast.error(msg);
+    } catch (e) {
+      toast.error('Registration failed: ' + e.message);
+    }
+    setRegisterBusy(false);
   };
 
   const handleInstall = async () => {
@@ -233,6 +265,23 @@ export default function AppSettings() {
                 onClick={togglePush}
                 className={pushState === 'subscribed' ? '' : 'bg-blue-600 hover:bg-blue-700'}>
                 {pushBusy ? '…' : pushState === 'subscribed' ? 'Turn off' : 'Enable'}
+              </Button>
+            </div>
+
+            {/* Register This Device — runs the actual client-side FCM
+                registration pipeline right now and names the exact step it
+                failed at (permission / token fetch / server rejection),
+                instead of the generic "no token" message Send Test gives. */}
+            <div className="flex items-center justify-between p-3 border rounded-lg">
+              <div className="flex items-center gap-3">
+                <Smartphone className="w-5 h-5 text-purple-500" />
+                <div>
+                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Register this device</p>
+                  <p className="text-xs text-gray-500">Retry native push registration and see exactly where it fails, if it does</p>
+                </div>
+              </div>
+              <Button size="sm" variant="outline" disabled={registerBusy} onClick={registerThisDevice}>
+                {registerBusy ? 'Registering…' : 'Register'}
               </Button>
             </div>
 
