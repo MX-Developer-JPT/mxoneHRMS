@@ -141,6 +141,10 @@ export default function AppSettings() {
   };
 
   const isAdmin = () => user?.role === 'hr' || user?.role === 'admin';
+  // Push diagnostics (Register this device / Send Test) are strictly
+  // admin-only — not HR, not any other role — per explicit instruction.
+  // Unlike isAdmin() above (HR+admin), this is admin role exactly.
+  const isSuperAdmin = user?.role === 'admin';
 
   const handleSaveLocation = async () => {
     if (!locForm.name.trim()) { toast.error('Location name is required'); return; }
@@ -268,38 +272,40 @@ export default function AppSettings() {
               </Button>
             </div>
 
-            {/* Register This Device — runs the actual client-side FCM
-                registration pipeline right now and names the exact step it
-                failed at (permission / token fetch / server rejection),
-                instead of the generic "no token" message Send Test gives. */}
-            <div className="flex items-center justify-between p-3 border rounded-lg">
-              <div className="flex items-center gap-3">
-                <Smartphone className="w-5 h-5 text-purple-500" />
-                <div>
-                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Register this device</p>
-                  <p className="text-xs text-gray-500">Retry native push registration and see exactly where it fails, if it does</p>
+            {/* Register This Device / Send Test — internal diagnostic tools,
+                admin-only. Not shown to any other role at all. Note this does
+                NOT affect automatic push registration on login (Layout.jsx /
+                initNativePush), which still runs for every user regardless
+                of role — only these manual diagnostic actions are gated. */}
+            {isSuperAdmin && (
+              <>
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <Smartphone className="w-5 h-5 text-purple-500" />
+                    <div>
+                      <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Register this device</p>
+                      <p className="text-xs text-gray-500">Retry native push registration and see exactly where it fails, if it does</p>
+                    </div>
+                  </div>
+                  <Button size="sm" variant="outline" disabled={registerBusy} onClick={registerThisDevice}>
+                    {registerBusy ? 'Registering…' : 'Register'}
+                  </Button>
                 </div>
-              </div>
-              <Button size="sm" variant="outline" disabled={registerBusy} onClick={registerThisDevice}>
-                {registerBusy ? 'Registering…' : 'Register'}
-              </Button>
-            </div>
 
-            {/* Test push — diagnoses exactly why notifications aren't showing
-                (no Firebase config on the server / no token registered / a
-                specific delivery failure) instead of leaving it a mystery. */}
-            <div className="flex items-center justify-between p-3 border rounded-lg">
-              <div className="flex items-center gap-3">
-                <Bell className="w-5 h-5 text-orange-500" />
-                <div>
-                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Test notifications</p>
-                  <p className="text-xs text-gray-500">Send yourself a real test push to check delivery</p>
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <Bell className="w-5 h-5 text-orange-500" />
+                    <div>
+                      <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Test notifications</p>
+                      <p className="text-xs text-gray-500">Send yourself a real test push to check delivery</p>
+                    </div>
+                  </div>
+                  <Button size="sm" variant="outline" disabled={testPushBusy} onClick={sendTestNotification}>
+                    {testPushBusy ? 'Sending…' : 'Send Test'}
+                  </Button>
                 </div>
-              </div>
-              <Button size="sm" variant="outline" disabled={testPushBusy} onClick={sendTestNotification}>
-                {testPushBusy ? 'Sending…' : 'Send Test'}
-              </Button>
-            </div>
+              </>
+            )}
 
             {/* Install */}
             <div className="flex items-center justify-between p-3 border rounded-lg">

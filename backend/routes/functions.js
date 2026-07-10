@@ -935,6 +935,10 @@ router.post('/:name', async (req, res) => {
     // instead of guessing blind without device access.
     case 'sendTestPush': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      // Admin-only diagnostic tool — not HR, not any other role. Doesn't
+      // affect automatic push registration/delivery for everyone else, which
+      // goes through registerDeviceToken / sendPushToUser unrestricted.
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
       const tokens = await all("SELECT token, platform, updated_at FROM device_tokens WHERE user_id=$1", [cu.id]);
       const { sendTestPushToUser } = await import('../utils/push.js');
       const result = await sendTestPushToUser(cu.id);
