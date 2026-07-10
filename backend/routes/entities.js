@@ -20,6 +20,37 @@ async function requireAdminForType(req, res, type) {
   return true;
 }
 
+// Employees may submit at most 5 AttendanceRegularisation requests per
+// calendar month (IST). Rejected requests don't count against the quota —
+// they were declined, not a wasted submission slot. Enforced server-side
+// here (not just as a frontend nicety) since creation goes through this
+// generic entity route rather than a dedicated function-route case.
+async function checkRegularisationLimit(res, type, data) {
+  if (type !== 'AttendanceRegularisation') return true;
+  if (!data.user_id) return true;
+  const rows = await all("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id]);
+  const nowIST = new Date(Date.now() + 5.5 * 3600000);
+  const curYM = `${nowIST.getUTCFullYear()}-${String(nowIST.getUTCMonth() + 1).padStart(2, '0')}`;
+  const countThisMonth = rows.filter(r => {
+    let d;
+    try { d = JSON.parse(r.data); } catch { return false; }
+    if (d.status === 'rejected') return false;
+    if (!r.created_at) return false;
+    // created_at is Postgres CURRENT_TIMESTAMP::TEXT (UTC) — shift to IST so
+    // the "calendar month" boundary matches the rest of the app's convention.
+    const createdUtcMs = Date.parse(r.created_at.replace(' ', 'T') + (r.created_at.includes('Z') ? '' : 'Z'));
+    if (isNaN(createdUtcMs)) return false;
+    const createdIST = new Date(createdUtcMs + 5.5 * 3600000);
+    const ym = `${createdIST.getUTCFullYear()}-${String(createdIST.getUTCMonth() + 1).padStart(2, '0')}`;
+    return ym === curYM;
+  }).length;
+  if (countThisMonth >= 5) {
+    res.status(400).json({ error: 'You have already submitted 5 attendance regularisation requests this month — the monthly limit has been reached.' });
+    return false;
+  }
+  return true;
+}
+
 /* ── helpers ─────────────────────────────────────────── */
 
 const parseRow = (row) => {
@@ -180,6 +211,7 @@ router.post('/:type', async (req, res) => {
   const body = req.body;
   const id = body.id || uuidv4();
   const data = { ...body, id };
+  if (!(await checkRegularisationLimit(res, type, data))) return;
 
   await run(
     `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,

@@ -399,6 +399,36 @@ export default function LetterGenerator() {
     setGenerating(false);
   };
 
+  // Every unfilled amount/date the backend couldn't compute (e.g. no salary
+  // structure on file) is emitted as a literal "[____]" placeholder in the
+  // generated letter. Detect each occurrence with a bit of surrounding
+  // context so HR can see what it's for, and fill them in one place instead
+  // of hunting through the full-text Edit mode for four underscores.
+  const PLACEHOLDER_RE = /\[____\]/g;
+  const placeholders = useMemo(() => {
+    if (!letter) return [];
+    const stripTags = (s) => s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return [...letter.matchAll(PLACEHOLDER_RE)].map((m, i) => {
+      const idx = m.index;
+      const before = stripTags(letter.slice(Math.max(0, idx - 60), idx));
+      const after = stripTags(letter.slice(idx + m[0].length, idx + m[0].length + 60));
+      return { index: i, before, after };
+    });
+  }, [letter]);
+  const [placeholderInputs, setPlaceholderInputs] = useState({});
+
+  const applyPlaceholders = () => {
+    let i = 0;
+    const filled = letter.replace(PLACEHOLDER_RE, () => {
+      const val = (placeholderInputs[i] || '').trim();
+      i++;
+      return val || '[____]';
+    });
+    setLetter(filled);
+    setPlaceholderInputs({});
+    toast.success('Placeholders filled');
+  };
+
   const printLetter = () => {
     if (!letter) return;
     const html = isHtml ? letter : `<div style="font-size:11px;line-height:1.8;color:#1a1a1a;white-space:pre-wrap;">${
@@ -651,6 +681,36 @@ export default function LetterGenerator() {
                       }
                     </div>
                   )}
+
+                  {/* Fill placeholders — one input per [____] found, each with
+                      surrounding text so it's clear what value belongs there,
+                      instead of hunting through full-text Edit mode. */}
+                  {!editMode && placeholders.length > 0 && (
+                    <div className="mt-3 border border-amber-300 bg-amber-50 rounded-lg p-4 space-y-3">
+                      <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5" /> Fill Placeholders ({placeholders.length} found)
+                      </p>
+                      <div className="space-y-2.5">
+                        {placeholders.map(ph => (
+                          <div key={ph.index}>
+                            <Label className="text-[11px] text-amber-700 font-normal leading-snug block mb-1">
+                              …{ph.before} <strong className="text-amber-900">[____]</strong> {ph.after}…
+                            </Label>
+                            <Input
+                              className="h-8 text-sm bg-white"
+                              placeholder="Value to insert"
+                              value={placeholderInputs[ph.index] || ''}
+                              onChange={e => setPlaceholderInputs(p => ({ ...p, [ph.index]: e.target.value }))}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <Button size="sm" onClick={applyPlaceholders} className="bg-amber-600 hover:bg-amber-700 text-white">
+                        Apply
+                      </Button>
+                    </div>
+                  )}
+
                   <p className="text-xs text-amber-600 mt-3 flex items-center gap-1">
                     <Sparkles className="w-3 h-3" /> Review all details and fill any [____] placeholders before issuing.
                   </p>

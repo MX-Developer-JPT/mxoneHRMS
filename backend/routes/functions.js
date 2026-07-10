@@ -2049,6 +2049,12 @@ router.post('/:name', async (req, res) => {
         if (s === 'half_day')  return 'HD';
         if (s === 'short_attendance') return 'SA';
         if (s === 'late' || rec.late_arrival) return 'P*';
+        // Must be checked before the hasIn fallback below — an explicit
+        // 'absent' status (e.g. checked in but never checked out, auto-closed
+        // overnight by markUnclosedCheckInsAsAbsent) still has check_in_time
+        // set, so hasIn would otherwise wrongly report this employee as
+        // Present for the whole day.
+        if (s === 'absent')    return 'A';
         if (hasIn || s === 'present') return 'P';
         return 'A';
       };

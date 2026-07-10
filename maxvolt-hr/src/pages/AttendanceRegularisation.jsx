@@ -213,6 +213,20 @@ export default function AttendanceRegularisation() {
     inProgress: requests.filter(r => r.status === 'manager_approved').length
   };
 
+  // Mirrors the server-side monthly cap (backend/routes/entities.js
+  // checkRegularisationLimit) — rejected requests don't count against the
+  // quota. This is a UX nicety only; the backend is the real enforcement.
+  const MONTHLY_LIMIT = 5;
+  const nowIST = new Date(Date.now() + 5.5 * 3600000);
+  const curYM = `${nowIST.getUTCFullYear()}-${String(nowIST.getUTCMonth() + 1).padStart(2, '0')}`;
+  const usedThisMonth = requests.filter(r => {
+    if (r.status === 'rejected') return false;
+    if (!r.created_date) return false;
+    const createdIST = new Date(new Date(r.created_date).getTime() + 5.5 * 3600000);
+    return `${createdIST.getUTCFullYear()}-${String(createdIST.getUTCMonth() + 1).padStart(2, '0')}` === curYM;
+  }).length;
+  const limitReached = usedThisMonth >= MONTHLY_LIMIT;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
       <div className="max-w-5xl mx-auto space-y-5">
@@ -221,8 +235,17 @@ export default function AttendanceRegularisation() {
           <div>
             <h1 className="text-2xl md:text-3xl font-bold">Attendance Regularisation</h1>
             <p className="text-gray-600 mt-1">Raise requests to correct missing or incorrect attendance</p>
+            <p className={`text-xs mt-1 ${limitReached ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
+              {usedThisMonth}/{MONTHLY_LIMIT} requests used this month
+              {limitReached && ' — monthly limit reached'}
+            </p>
           </div>
-          <Button className="bg-blue-600 hover:bg-blue-700" onClick={() => setShowForm(true)}>
+          <Button
+            className="bg-blue-600 hover:bg-blue-700"
+            onClick={() => setShowForm(true)}
+            disabled={limitReached}
+            title={limitReached ? `You've used all ${MONTHLY_LIMIT} regularisation requests for this month` : undefined}
+          >
             <Plus className="w-4 h-4 mr-2" /> New Request
           </Button>
         </div>

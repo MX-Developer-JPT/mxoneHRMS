@@ -32,8 +32,15 @@ function toDateStr(val) {
 
 function getDisplayStatus(record) {
   const s = record.status;
-  // Preserve meaningful statuses that have check_in_time set
-  if (s && s !== 'absent' && s !== 'in_progress') return s;
+  // Trust an explicit backend status always — including 'absent', which may be
+  // a deliberate auto-close (checked in, never checked out — see
+  // backend/cron/attendanceAutomation.js markUnclosedCheckInsAsAbsent) and must
+  // never be silently overridden back to 'present' just because check_in_time
+  // is set (it always is for that exact case). Only 'in_progress' (a session
+  // still open) falls through to the check-in-based 'present' inference below,
+  // which is intentional — an open session should read as present, not as its
+  // own separate badge, until it resolves one way or the other.
+  if (s && s !== 'in_progress') return s;
   // Fall back to 'present' when check_in_time exists but status is stale/missing
   if (record.check_in_time) return 'present';
   return s || 'absent';
