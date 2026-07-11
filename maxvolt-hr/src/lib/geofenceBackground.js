@@ -67,7 +67,7 @@ export async function startBackgroundGeofence() {
   try {
     watcherId = await BackgroundGeolocation.addWatcher(
       {
-        backgroundTitle: 'Maxvolt HR — Attendance tracking active',
+        backgroundTitle: 'Maxvolt One — Attendance tracking active',
         backgroundMessage: fences.length === 1
           ? `Watching your location to mark attendance at ${fences[0].name}`
           : `Watching your location to mark attendance at ${fences.length} configured locations`,

@@ -121,7 +121,7 @@ export default async function seed() {
 
   // ── Sample Announcements ───────────────────────────────────
   await mkEnt('Announcement', {
-    title: 'Welcome to Maxvolt HR Portal',
+    title: 'Welcome to Maxvolt One',
     content: 'The new self-hosted HR system is now live. Please update your profile and review company policies.',
     category: 'general', status: 'active', target_audience: 'all',
     published_by: adminId, publish_date: new Date().toISOString(),

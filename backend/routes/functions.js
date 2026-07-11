@@ -1868,7 +1868,7 @@ router.post('/:name', async (req, res) => {
       const dayNums = Array.from({ length: daysInMonth }, (_, i) => i+1);
       const ExcelJSAR = (await import('exceljs')).default;
       const wbAR = new ExcelJSAR.Workbook();
-      wbAR.creator = 'Maxvolt HRMS'; wbAR.created = new Date();
+      wbAR.creator = 'Maxvolt One'; wbAR.created = new Date();
       const wsAR = wbAR.addWorksheet('Attendance Report', { views: [{ state:'frozen', xSplit:6, ySplit:3 }] });
 
       const arFill = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
@@ -2282,7 +2282,7 @@ router.post('/:name', async (req, res) => {
     case 'exportSalaryStructures': {
       const ExcelJS = (await import('exceljs')).default;
       const wb = new ExcelJS.Workbook();
-      wb.creator = 'Maxvolt HRMS';
+      wb.creator = 'Maxvolt One';
 
       // Style helpers
       const C = { hdr:'1A3C5E', sub:'2D6A9F', empBg:'EBF5FB', ctcBg:'EAF4EA', earnBg:'E8F5E9', dedBg:'FFEBEE', netBg:'FFF9C4', emprBg:'F3E5F5', altRow:'F8FBFF', totBg:'1A3C5E' };
@@ -2436,7 +2436,7 @@ router.post('/:name', async (req, res) => {
     case 'exportEmployeeDirectory': {
       const ExcelJS = (await import('exceljs')).default;
       const wb = new ExcelJS.Workbook();
-      wb.creator = 'Maxvolt HRMS';
+      wb.creator = 'Maxvolt One';
 
       const fnt = (bold=false,color='000000',size=10) => ({ name:'Arial', bold, color:{argb:`FF${color}`}, size });
       const fl  = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
@@ -2809,7 +2809,7 @@ router.post('/:name', async (req, res) => {
       // Build styled Excel with exceljs
       const ExcelJS = (await import('exceljs')).default;
       const wb = new ExcelJS.Workbook();
-      wb.creator = 'Maxvolt HRMS'; wb.created = new Date();
+      wb.creator = 'Maxvolt One'; wb.created = new Date();
       const ws = wb.addWorksheet('Salary Sheet', { views: [{ state:'frozen', xSplit:0, ySplit:4 }] });
 
       // Colour palette
@@ -5351,7 +5351,7 @@ Return ONLY a valid JSON object (no markdown):
 
       await sendEmail({
         to: cand.email,
-        subject: `Welcome to Maxvolt HR System – Your Account Awaits!`,
+        subject: `Welcome to Maxvolt One – Your Account Awaits!`,
         html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
           <div style="background:#ea580c;color:#fff;padding:28px;border-radius:12px 12px 0 0;text-align:center;">
             <h1 style="margin:0;font-size:24px;">Welcome to Maxvolt Energy!</h1>
@@ -7489,7 +7489,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           <p>Dear ${empName},</p>
           <p>Please find your <strong>${label}</strong> attached to this email from Maxvolt Energy Industries Limited.</p>
           ${!pdfBuffer ? '<p style="color:#c00">Note: PDF could not be generated — please request it from HR.</p>' : ''}
-          <p style="color:#666;font-size:12px;margin-top:20px;">This is a system-generated letter from Maxvolt HR. For any queries, please contact the HR Department.</p>
+          <p style="color:#666;font-size:12px;margin-top:20px;">This is a system-generated letter from Maxvolt One. For any queries, please contact the HR Department.</p>
           </div>`,
         text: `Dear ${empName},\n\nPlease find your ${label} attached.\n\nMaxvolt Energy Industries Limited`,
         attachments,
@@ -9050,9 +9050,9 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
                  <p>Dear ${empUser.full_name || employee_name || 'Employee'},</p>
                  <p>Please find your <strong>${label}</strong> attached to this email as a PDF. This document has also been saved in your HR Documents section on the HRMS portal.</p>
                  ${!pdfBuffer ? '<p style="color:#c00;font-size:12px;">Note: PDF attachment could not be generated this time. Please use Print / PDF from the portal instead.</p>' : ''}
-                 <p style="color:#666;font-size:12px;margin-top:20px;">This is a system-generated letter from Maxvolt HR. Please contact HR for any queries.</p>
+                 <p style="color:#666;font-size:12px;margin-top:20px;">This is a system-generated letter from Maxvolt One. Please contact HR for any queries.</p>
                  </div>`,
-          text: `Dear ${empUser.full_name || employee_name},\n\nPlease find your ${label} attached to this email.\n\nThis is a system-generated letter from Maxvolt HR.`,
+          text: `Dear ${empUser.full_name || employee_name},\n\nPlease find your ${label} attached to this email.\n\nThis is a system-generated letter from Maxvolt One.`,
           attachments,
         });
       } catch (e) {
@@ -10401,7 +10401,7 @@ function renderFieldReimbursementHtml({ emp, empName, period, rows, totals, meal
     <div>Reporting Manager<br/><span style="color:#999">_____________________</span></div>
     <div>HOD / Approver<br/><span style="color:#999">_____________________</span></div>
   </div>
-  <p style="color:#aaa;font-size:10px;margin-top:18px;text-align:center">Generated by Maxvolt HRMS from GPS-tracked Field Duty trips${claimId ? ` · Claim ID: ${claimId}` : ''} · As per Maxvolt Energy Travel Policy Annexure 1–6.</p>
+  <p style="color:#aaa;font-size:10px;margin-top:18px;text-align:center">Generated by Maxvolt One from GPS-tracked Field Duty trips${claimId ? ` · Claim ID: ${claimId}` : ''} · As per Maxvolt Energy Travel Policy Annexure 1–6.</p>
 </div>`;
 }
 

@@ -30,7 +30,7 @@ async function attachListenersOnce(FirebaseMessaging) {
       const { toast } = await import('sonner');
       const n = event.notification;
       const link = n.data?.link || n.link || '/';
-      toast(n.title || 'Maxvolt HR', {
+      toast(n.title || 'Maxvolt One', {
         description: n.body || '',
         action: { label: 'Open', onClick: () => window.dispatchEvent(new CustomEvent('push-notification-tap', { detail: { link } })) },
       });

@@ -59,7 +59,7 @@ export default function Login() {
             <img src="/maxvolt-logo.jpg" alt="MaxVolt Energy" className="h-14 w-auto object-contain" />
           </div>
           <h1 className="text-2xl font-extrabold text-foreground tracking-tight">Welcome back</h1>
-          <p className="text-muted-foreground mt-1.5 text-sm font-medium">Sign in to Maxvolt HR</p>
+          <p className="text-muted-foreground mt-1.5 text-sm font-medium">Sign in to Maxvolt One</p>
         </div>
 
         {/* Card */}

@@ -106,7 +106,7 @@ export default function AppSettings() {
         plugin_missing: 'Internal error: the Firebase Messaging plugin is missing from this build — the app may need to be rebuilt.',
         permission_check_failed: `Could not check notification permission: ${result.error || 'unknown error'}`,
         permission_request_failed: `Could not request notification permission: ${result.error || 'unknown error'}`,
-        permission_denied: 'Notification permission was not granted. Enable it for Maxvolt HR in your device Settings → Apps → Notifications, then try again.',
+        permission_denied: 'Notification permission was not granted. Enable it for Maxvolt One in your device Settings → Apps → Notifications, then try again.',
         token_fetch_failed: `Firebase could not issue a device token: ${result.error || 'unknown error'}. Check that Google Play Services is installed and up to date on this device.`,
         token_empty: 'Firebase returned an empty token — try again in a moment.',
         backend_registration_failed: `Got a device token but the server rejected it: ${result.error || 'unknown error'}`,
@@ -314,7 +314,7 @@ export default function AppSettings() {
                 <div>
                   <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Install app</p>
                   <p className="text-xs text-gray-500">
-                    {installed ? 'Installed — launch it from your home screen' : 'Add Maxvolt HR to your home screen for quick access'}
+                    {installed ? 'Installed — launch it from your home screen' : 'Add Maxvolt One to your home screen for quick access'}
                   </p>
                 </div>
               </div>

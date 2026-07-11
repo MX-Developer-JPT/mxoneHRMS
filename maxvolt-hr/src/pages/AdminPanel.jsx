@@ -662,7 +662,7 @@ function EmailTab() {
           <Input
             value={from}
             onChange={e => setFrom(e.target.value)}
-            placeholder="Maxvolt HR <hr@maxvoltenergy.com>"
+            placeholder="Maxvolt One <hr@maxvoltenergy.com>"
             className="h-9 text-sm"
           />
           <p className="text-xs text-muted-foreground">

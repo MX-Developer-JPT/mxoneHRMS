@@ -549,7 +549,7 @@ export default function Layout({ children, currentPageName }) {
             <img src="/favicon.svg" alt="MaxVolt" className="w-full h-full object-contain" />
           </div>
           <div className="min-w-0">
-            <p className="font-semibold text-[13px] text-[#1D1D1F] dark:text-white truncate leading-none">Maxvolt HRMS</p>
+            <p className="font-semibold text-[13px] text-[#1D1D1F] dark:text-white truncate leading-none">Maxvolt One</p>
             <p className="text-[11px] text-[#6E6E73] dark:text-[#8E8E93] mt-0.5">Human Resources</p>
           </div>
         </div>

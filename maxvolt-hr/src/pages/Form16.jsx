@@ -160,7 +160,7 @@ export default function Form16() {
         ${row('12. Average Monthly TDS', fmt(d.monthly_tds))}
       </table>
       ${d.chosen_regime === 'old' ? `<p style="font-size:10px;color:#666;margin-top:8px;">Chapter VI-A: 80C ${fmt(d.deductions.sec80C)} · 80D ${fmt(d.deductions.sec80D)} · 80CCD(1B) ${fmt(d.deductions.sec80CCD1B)} · 80E ${fmt(d.deductions.sec80E)} · 80G ${fmt(d.deductions.sec80G)}</p>` : ''}
-      <p style="font-size:10px;color:#888;margin-top:14px;">Computed by Maxvolt HR. This is a system-generated working sheet and not a substitute for the TRACES-generated Form 16 Part A.</p>
+      <p style="font-size:10px;color:#888;margin-top:14px;">Computed by Maxvolt One. This is a system-generated working sheet and not a substitute for the TRACES-generated Form 16 Part A.</p>
     </div>`;
     openLetterheadPrintWindow(`Form 16 - ${d.employee.name} - FY ${d.financial_year}`, html, '', false);
   };

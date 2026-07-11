@@ -28,14 +28,14 @@ export default function PrivacyPolicy() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-gray-900">Privacy Policy</h1>
-            <p className="text-xs text-gray-400">Maxvolt HR — Maxvolt Energy Industries Limited</p>
+            <p className="text-xs text-gray-400">Maxvolt One — Maxvolt Energy Industries Limited</p>
           </div>
         </div>
         <p className="text-xs text-gray-400 mb-8">Last updated: {LAST_UPDATED}</p>
 
         <Section title="1. Introduction">
           <p>
-            Maxvolt Energy Industries Limited ("Maxvolt", "we", "us", "our") operates the Maxvolt HR
+            Maxvolt Energy Industries Limited ("Maxvolt", "we", "us", "our") operates the Maxvolt One
             application ("the App"), a Human Resources Management System provided for the exclusive use
             of Maxvolt employees and authorized personnel. This Privacy Policy explains what information
             the App collects, how it is used, and the choices available to you. By using the App, you

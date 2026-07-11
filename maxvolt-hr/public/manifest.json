@@ -1,6 +1,6 @@
 {
-  "name": "Maxvolt HR Portal",
-  "short_name": "Maxvolt HR",
+  "name": "Maxvolt One",
+  "short_name": "Maxvolt One",
   "description": "HR management system for Maxvolt Energy Industries",
   "start_url": "/",
   "display": "standalone",

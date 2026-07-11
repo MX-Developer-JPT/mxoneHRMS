@@ -1,4 +1,4 @@
-// Maxvolt HR — Service Worker
+// Maxvolt One — Service Worker
 // Strategy: cache-first for static assets, network-first for API
 // Plus Web Push notification handling.
 
@@ -97,7 +97,7 @@ self.addEventListener('fetch', event => {
 self.addEventListener('push', event => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data && event.data.text() }; }
-  const title = data.title || 'Maxvolt HR';
+  const title = data.title || 'Maxvolt One';
   const options = {
     body: data.body || '',
     icon: '/icons/icon-192.png',

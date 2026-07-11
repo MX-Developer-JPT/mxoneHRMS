@@ -127,7 +127,7 @@ async function sendFcmToUser(userId, payload) {
 
   const message = {
     notification: {
-      title: payload.title || 'Maxvolt HR',
+      title: payload.title || 'Maxvolt One',
       body: payload.message || payload.body || '',
     },
     data: {
@@ -184,7 +184,7 @@ export async function sendPushToUser(userId, payload) {
       const subs = await all("SELECT endpoint,keys FROM push_subscriptions WHERE user_id=$1", [userId]);
       if (subs.length) {
         const body = JSON.stringify({
-          title: payload.title || 'Maxvolt HR',
+          title: payload.title || 'Maxvolt One',
           body: payload.message || payload.body || '',
           link: payload.link || '/',
           type: payload.type || 'info',
@@ -218,7 +218,7 @@ export async function sendPushToUser(userId, payload) {
 // token", or a specific FCM rejection reason per token.
 export async function sendTestPushToUser(userId) {
   const fcmResult = await sendFcmToUser(userId, {
-    title: 'Maxvolt HR — Test Notification',
+    title: 'Maxvolt One — Test Notification',
     message: 'If you can see this, native push notifications are working correctly.',
     type: 'info',
     link: '/',

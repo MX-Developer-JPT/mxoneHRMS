@@ -156,7 +156,7 @@ app.get('/api/health', (_req, res) => {
 
 // Mock base44 public-settings so AuthContext doesn't crash on old code
 app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
-  res.json({ id: _req.params.id, public_settings: { auth_required: true, google_auth_enabled: false }, app_name: 'Maxvolt HR' });
+  res.json({ id: _req.params.id, public_settings: { auth_required: true, google_auth_enabled: false }, app_name: 'Maxvolt One' });
 });
 
 app.use('/api/auth',            authRouter);
@@ -193,7 +193,7 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 const server = app.listen(PORT, () => {
-  console.log(`\n✓ Maxvolt HR Backend  http://localhost:${PORT}  [${process.env.NODE_ENV || 'development'}]`);
+  console.log(`\n✓ Maxvolt One Backend  http://localhost:${PORT}  [${process.env.NODE_ENV || 'development'}]`);
 });
 // No hard timeout — long-running ops like bulk biometric processing must complete fully
 server.setTimeout(0);

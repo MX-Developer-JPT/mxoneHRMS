@@ -9,7 +9,7 @@ export default function MaxvoltLogo({ className = "h-8 w-auto", showText = false
       />
       {showText && (
         <div>
-          <div className="font-bold text-sm leading-tight text-sidebar-foreground">MaxVolt HR</div>
+          <div className="font-bold text-sm leading-tight text-sidebar-foreground">Maxvolt One</div>
           <div className="text-[10px] text-sidebar-foreground/60 font-medium leading-tight">Energizing future</div>
         </div>
       )}

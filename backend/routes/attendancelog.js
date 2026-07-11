@@ -487,7 +487,7 @@ router.post('/reprocess', authMiddleware, async (req, res) => {
 // Docs endpoint
 router.get('/', (_req, res) => {
   res.json({
-    description: 'Maxvolt HR — External Attendance Log API',
+    description: 'Maxvolt One — External Attendance Log API',
     version: '3.0',
     auth: 'Authorization: Bearer <ATTENDANCE_API_KEY>',
     note: 'Punches interpreted by alternating position (1st=In, 2nd=Out, 3rd=In…). Sessions and break times calculated automatically.',

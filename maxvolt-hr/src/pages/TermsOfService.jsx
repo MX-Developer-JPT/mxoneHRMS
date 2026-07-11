@@ -28,14 +28,14 @@ export default function TermsOfService() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-gray-900">Terms of Service</h1>
-            <p className="text-xs text-gray-400">Maxvolt HR — Maxvolt Energy Industries Limited</p>
+            <p className="text-xs text-gray-400">Maxvolt One — Maxvolt Energy Industries Limited</p>
           </div>
         </div>
         <p className="text-xs text-gray-400 mb-8">Last updated: {LAST_UPDATED}</p>
 
         <Section title="1. Acceptance of Terms">
           <p>
-            These Terms of Service ("Terms") govern your access to and use of the Maxvolt HR application
+            These Terms of Service ("Terms") govern your access to and use of the Maxvolt One application
             ("the App"), provided by Maxvolt Energy Industries Limited ("Maxvolt", "we", "us"). By logging
             in to or using the App, you agree to be bound by these Terms. If you do not agree, you must
             not use the App.
