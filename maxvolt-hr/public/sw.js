@@ -2,7 +2,7 @@
 // Strategy: cache-first for static assets, network-first for API
 // Plus Web Push notification handling.
 
-const CACHE   = 'maxvolt-hr-v4';
+const CACHE   = 'maxvolt-hr-v5';
 const API_PREFIX = '/api/';
 
 const PRECACHE = [
