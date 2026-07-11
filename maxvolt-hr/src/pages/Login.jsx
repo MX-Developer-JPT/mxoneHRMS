@@ -56,7 +56,7 @@ export default function Login() {
         {/* Brand header */}
         <div className="text-center mb-8">
           <div className="inline-block bg-white rounded-2xl px-6 py-3 shadow-sm mb-5">
-            <img src="/maxvolt-logo.jpg?v=4" alt="MaxVolt Energy" className="h-14 w-auto object-contain" />
+            <img src="/maxvolt-logo.jpg?v=5" alt="MaxVolt Energy" className="h-14 w-auto object-contain" />
           </div>
           <h1 className="text-2xl font-extrabold text-foreground tracking-tight">Welcome back</h1>
           <p className="text-muted-foreground mt-1.5 text-sm font-medium">Sign in to Maxvolt One</p>

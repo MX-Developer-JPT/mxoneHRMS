@@ -2,7 +2,7 @@ export default function MaxvoltLogo({ className = "h-8 w-auto", showText = false
   return (
     <div className={`flex items-center gap-2.5 ${showText ? '' : ''}`}>
       <img
-        src="/maxvolt-logo.jpg?v=4"
+        src="/maxvolt-logo.jpg?v=5"
         alt="Maxvolt Energy"
         className={className}
         style={{ objectFit: 'contain' }}

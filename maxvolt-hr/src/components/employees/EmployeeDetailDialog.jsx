@@ -9,9 +9,9 @@ import { safeDate } from '@/lib/dateUtils';
 import { User, Mail, Phone, Briefcase, Calendar, MapPin, Shield, Users, CreditCard, Building2, Heart, ShieldCheck, ChevronLeft, ChevronRight } from 'lucide-react';
 
 const Field = ({ label, value, colSpan }) => (
-  <div className={colSpan ? 'col-span-2' : ''}>
+  <div className={`min-w-0 ${colSpan ? 'col-span-2' : ''}`}>
     <p className="text-xs text-gray-500 uppercase tracking-wide font-medium">{label}</p>
-    <p className="text-sm font-medium text-gray-800 mt-0.5">{value || <span className="text-gray-400">—</span>}</p>
+    <p className="text-sm font-medium text-gray-800 mt-0.5 break-words">{value || <span className="text-gray-400">—</span>}</p>
   </div>
 );
 

@@ -103,7 +103,7 @@ export default function OfferAcceptPage() {
       {/* Header */}
       <div className="bg-white border-b shadow-sm">
         <div className="max-w-3xl mx-auto px-4 py-4 flex items-center gap-4">
-          <img src="/favicon.svg?v=4" alt="Maxvolt Energy" className="h-10 object-contain" />
+          <img src="/favicon.svg?v=5" alt="Maxvolt Energy" className="h-10 object-contain" />
           <div>
             <h1 className="text-lg font-bold text-gray-900">Maxvolt Energy Industries Limited</h1>
             <p className="text-xs text-gray-500">Offer Letter Acceptance Portal</p>
