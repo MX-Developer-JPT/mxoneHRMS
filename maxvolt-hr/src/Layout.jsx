@@ -14,6 +14,8 @@ import {
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
   Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar,
 } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 import NotificationBell from '@/components/NotificationBell';
 import DashboardPage from './pages/Dashboard';
 import MarkAttendancePage from './pages/MarkAttendance';
@@ -21,7 +23,7 @@ import LeavePage from './pages/Leave';
 import ProfilePage from './pages/Profile';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
-import { startBackgroundGeofence, stopBackgroundGeofence } from '@/lib/geofenceBackground';
+import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility } from '@/lib/geofenceBackground';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
@@ -312,6 +314,7 @@ export default function Layout({ children, currentPageName }) {
   const { theme, setTheme } = useTheme();
 
   const [user,                setUser]               = useState(null);
+  const [showGeoDisclosure,   setShowGeoDisclosure]  = useState(false);
   const [employeeDisplayName, setEmployeeDisplayName]= useState('');
   const [employeeDepartment,  setEmployeeDepartment] = useState('');
   const [moreSheetOpen,       setMoreSheetOpen]      = useState(false);
@@ -398,7 +401,20 @@ export default function Layout({ children, currentPageName }) {
       // decides eligibility (Employee.geofence_eligible), employees get no
       // on/off control. No-ops internally (via getMyGeofence's
       // geofence_eligible flag) for anyone HR hasn't marked eligible.
-      startBackgroundGeofence().catch((e) => console.warn('startBackgroundGeofence:', e.message));
+      //
+      // Google Play's background-location policy requires a prominent in-app
+      // disclosure BEFORE the OS permission dialog appears (a Privacy Policy
+      // mention alone isn't sufficient) — shown once per employee per device,
+      // acknowledgment-only, not an opt-out (that stays HR-controlled).
+      checkGeofenceEligibility().then((geo) => {
+        if (!geo.eligible) return;
+        const disclosedKey = `bg_geo_disclosed_${currentUser.id}`;
+        if (localStorage.getItem(disclosedKey)) {
+          startBackgroundGeofence().catch((e) => console.warn('startBackgroundGeofence:', e.message));
+        } else {
+          setShowGeoDisclosure(true);
+        }
+      }).catch(() => {});
     } catch (err) {
       console.error('loadUser:', err);
     }
@@ -414,6 +430,12 @@ export default function Layout({ children, currentPageName }) {
     await clearNativePushToken().catch(() => {});
     await stopBackgroundGeofence().catch(() => {});
     await base44.auth.logout();
+  };
+
+  const acknowledgeGeoDisclosure = () => {
+    if (user) localStorage.setItem(`bg_geo_disclosed_${user.id}`, '1');
+    setShowGeoDisclosure(false);
+    startBackgroundGeofence().catch((e) => console.warn('startBackgroundGeofence:', e.message));
   };
 
   if (!user) {
@@ -896,6 +918,42 @@ export default function Layout({ children, currentPageName }) {
           </button>
         </div>
       </nav>
+
+      {/* One-time, acknowledgment-only background-location disclosure — shown
+          before the OS permission dialog for eligible employees, per Google
+          Play's background-location policy. Not an opt-out: HR still
+          controls eligibility, this is purely informational. */}
+      <Dialog open={showGeoDisclosure} onOpenChange={() => {}}>
+        <DialogContent
+          className="max-w-[95vw] sm:max-w-md"
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MapPin className="w-5 h-5 text-blue-600" />
+              Background Location Access
+            </DialogTitle>
+          </DialogHeader>
+          <div className="text-sm text-gray-600 dark:text-gray-300 space-y-2 leading-relaxed">
+            <p>
+              Your employer has enabled automatic attendance tracking for your account.
+              This app collects your device's location — including while the app is
+              closed or not in use — to automatically mark your attendance when you
+              arrive at or leave a configured office/site location.
+            </p>
+            <p>
+              This location data is used only for attendance and is not shared with
+              third parties or used for any other form of tracking. See our{' '}
+              <a href="/PrivacyPolicy" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
+                Privacy Policy
+              </a>{' '}
+              for details.
+            </p>
+          </div>
+          <Button onClick={acknowledgeGeoDisclosure} className="w-full mt-2">Got it</Button>
+        </DialogContent>
+      </Dialog>
 
     </div>
   );

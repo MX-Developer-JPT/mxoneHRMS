@@ -35,6 +35,25 @@ export async function isBackgroundGeofenceAvailable() {
   return !!Capacitor?.isNativePlatform();
 }
 
+// Cheap pre-check so the caller can show a prominent in-app disclosure
+// BEFORE the OS background-location permission dialog appears — required by
+// Google Play's background location policy, separate from the Privacy Policy
+// text. Safe to call even when not eligible/not native; just returns false.
+export async function checkGeofenceEligibility() {
+  const Capacitor = await getCapacitor();
+  if (!Capacitor?.isNativePlatform()) return { eligible: false, reason: 'not_native' };
+  try {
+    const fenceRes = await base44.functions.invoke('getMyGeofence', {});
+    const d = fenceRes.data || fenceRes;
+    if (!d?.success) return { eligible: false, reason: 'fetch_failed' };
+    if (!d.geofence_eligible) return { eligible: false, reason: 'not_eligible' };
+    if (!Array.isArray(d.all_fences) || d.all_fences.length === 0) return { eligible: false, reason: 'no_fence_assigned' };
+    return { eligible: true };
+  } catch (e) {
+    return { eligible: false, reason: 'fetch_failed', error: e.message };
+  }
+}
+
 export async function startBackgroundGeofence() {
   const Capacitor = await getCapacitor();
   if (!Capacitor?.isNativePlatform()) return { started: false, reason: 'not_native' };

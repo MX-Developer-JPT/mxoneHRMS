@@ -36,4 +36,20 @@
          this declared, FirebaseMessaging.requestPermissions() in nativePush.js has
          nothing to request and notifications are blocked by default on the OS. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required for the web-standard getUserMedia() selfie-attendance camera
+         (AttendanceCamera.jsx / AttendanceCameraCapture.jsx) to work at all.
+         Capacitor's BridgeWebChromeClient.onPermissionRequest() runtime-requests
+         android.permission.CAMERA when the WebView asks for VIDEO_CAPTURE — a
+         permission that was never declared here can never be granted, so the
+         camera silently failed on every native Android build without this. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <!-- Required on Android 10 (API 29)+ for the background geofence feature
+         (geofenceBackground.js / @capacitor-community/background-geolocation)
+         to actually track location while the app is closed/backgrounded — the
+         plugin's own manifest only merges in ACCESS_FINE/COARSE_LOCATION, not
+         this one, since Play Store treats background location as sensitive and
+         expects the app itself to opt in explicitly. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 </manifest>

@@ -24,12 +24,14 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Maxvolt One uses your camera to capture a selfie photo at the moment you check in or out, to verify your identity for attendance.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Maxvolt HR uses your location to mark attendance automatically when you arrive at or leave your office, and to log distance for field-duty travel claims.</string>
+	<string>Maxvolt One uses your location to mark attendance automatically when you arrive at or leave your office, and to log distance for field-duty travel claims.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>With Background Geofence turned on, Maxvolt HR checks your location while the app is in the background to mark attendance the moment you enter or leave your office, without you needing to open the app.</string>
+	<string>With Background Geofence turned on, Maxvolt One checks your location while the app is in the background to mark attendance the moment you enter or leave your office, without you needing to open the app.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
-	<string>With Background Geofence turned on, Maxvolt HR checks your location while the app is in the background to mark attendance the moment you enter or leave your office, without you needing to open the app.</string>
+	<string>With Background Geofence turned on, Maxvolt One checks your location while the app is in the background to mark attendance the moment you enter or leave your office, without you needing to open the app.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
