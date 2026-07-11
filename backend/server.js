@@ -172,15 +172,26 @@ app.use('/api/push',            pushRouter);
 // Production: serve built React frontend
 if (process.env.NODE_ENV === 'production') {
   const frontendDist = path.join(__dirname, 'public');
+  // Brand assets (favicon/logo/manifest icons) aren't content-hashed like the
+  // JS/CSS bundle, so a 1y cache means anyone who already loaded the app keeps
+  // serving old bytes from disk cache indefinitely after a logo/icon swap —
+  // bit us once already. Short-cache + revalidate these specifically instead.
+  const SHORT_CACHE_FILES = new Set([
+    'favicon.ico', 'favicon.svg', 'favicon-96x96.png', 'apple-touch-icon.png',
+    'maxvolt-logo.jpg', 'manifest.json',
+  ]);
   app.use(express.static(frontendDist, {
     maxAge: '1y',
     etag: true,
     setHeaders: (res, filePath) => {
+      const base = path.basename(filePath);
       // Never cache HTML or the service worker — always revalidate
       if (filePath.endsWith('.html') || filePath.endsWith('sw.js')) {
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
+      } else if (SHORT_CACHE_FILES.has(base) || filePath.includes(`${path.sep}icons${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate');
       }
     },
   }));
