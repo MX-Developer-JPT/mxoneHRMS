@@ -837,10 +837,10 @@ export default function AssetTracking() {
             <CardContent>
               <div className="space-y-2">
                 {assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.return_date && isBefore(parseISO(a.return_date), new Date())).slice(0, 5).map(a => (
-                  <div key={a.id} className="flex items-center justify-between text-sm bg-white dark:bg-gray-800 rounded p-2 border">
-                    <span className="font-medium">{a.asset_id} — {a.asset_name}</span>
-                    <span className="text-gray-500">{getEmployeeName(a.assigned_to_user_id)}</span>
-                    <Badge className="bg-red-100 text-red-800">Due: {format(parseISO(a.return_date), 'dd MMM yyyy')}</Badge>
+                  <div key={a.id} className="flex items-center justify-between gap-2 flex-wrap text-sm bg-white dark:bg-gray-800 rounded p-2 border">
+                    <span className="font-medium min-w-0 break-words">{a.asset_id} — {a.asset_name}</span>
+                    <span className="text-gray-500 min-w-0 break-words">{getEmployeeName(a.assigned_to_user_id)}</span>
+                    <Badge className="bg-red-100 text-red-800 shrink-0">Due: {format(parseISO(a.return_date), 'dd MMM yyyy')}</Badge>
                   </div>
                 ))}
               </div>

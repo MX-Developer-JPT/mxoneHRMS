@@ -197,19 +197,19 @@ export default function OnboardingApproval() {
                 {pendingUsers.map(user => {
                   const empRecord = employees.find(e => e.user_id === user.id);
                   return (
-                    <div key={user.id} className="border rounded-lg p-4 flex justify-between items-center">
-                      <div>
-                        <p className="font-semibold text-lg">
+                    <div key={user.id} className="border rounded-lg p-4 flex justify-between items-center flex-wrap gap-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-lg break-words">
                           {[user.first_name, user.middle_name, user.last_name].filter(Boolean).join(' ') || user.full_name || '(Name not set)'}
                         </p>
-                        <p className="text-sm text-gray-600">{user.email}</p>
+                        <p className="text-sm text-gray-600 break-words">{user.email}</p>
                         {empRecord && (
                           <p className="text-xs text-gray-500 mt-1">
                             Registered: {new Date(empRecord.created_date).toLocaleDateString()}
                           </p>
                         )}
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 flex-wrap">
                         {empRecord?.onboarding_submitted && (
                           <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full self-center">Docs Submitted</span>
                         )}

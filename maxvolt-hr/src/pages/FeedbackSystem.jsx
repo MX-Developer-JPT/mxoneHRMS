@@ -167,7 +167,7 @@ export default function FeedbackSystem() {
                   <Popover open={colleagueOpen} onOpenChange={setColleagueOpen}>
                     <PopoverTrigger asChild>
                       <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
-                        <span className={form.subject_user_id ? 'text-foreground' : 'text-muted-foreground'}>
+                        <span className={`truncate min-w-0 ${form.subject_user_id ? 'text-foreground' : 'text-muted-foreground'}`}>
                           {form.subject_user_id ? (() => { const e = colleagues.find(e => (e.user_id || e.id) === form.subject_user_id); return e ? (e.display_name || e.full_name || e.email) : 'Select colleague'; })() : 'Select colleague'}
                         </span>
                         <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />

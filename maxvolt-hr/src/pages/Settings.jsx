@@ -45,7 +45,7 @@ export default function Settings() {
         </div>
 
         <Tabs defaultValue="departments" className="w-full">
-          <TabsList className="grid w-full max-w-2xl grid-cols-4">
+          <TabsList className="grid w-full max-w-2xl grid-cols-2 sm:grid-cols-4">
             <TabsTrigger value="departments">Departments</TabsTrigger>
             <TabsTrigger value="holidays">Holidays</TabsTrigger>
             <TabsTrigger value="leaves">Leave Policies</TabsTrigger>

@@ -336,11 +336,11 @@ export default function OffCyclePayments() {
                 const emp = employees.find(e => e.user_id === payment.user_id);
                 return (
                   <div key={payment.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <p className="font-semibold">{emp?.user?.full_name}</p>
+                    <div className="flex justify-between items-start gap-3 flex-wrap">
+                      <div className="min-w-0">
+                        <p className="font-semibold break-words">{emp?.user?.full_name}</p>
                         <p className="text-sm text-gray-600 capitalize">{payment.bonus_type?.replace('_', ' ')} Bonus</p>
-                        <p className="text-xs text-gray-500 mt-1">{payment.reason}</p>
+                        <p className="text-xs text-gray-500 mt-1 break-words">{payment.reason}</p>
                         <p className="text-xs text-gray-500">
                           Payment Date: {new Date(payment.payment_date).toLocaleDateString()}
                         </p>
@@ -353,7 +353,7 @@ export default function OffCyclePayments() {
                       </div>
                       <div className="text-right">
                         <p className="text-xl font-bold text-green-600">₹{payment.amount?.toLocaleString()}</p>
-                        <div className="mt-2 flex gap-2 justify-end items-center">
+                        <div className="mt-2 flex gap-2 justify-end items-center flex-wrap">
                           <Badge className={statusColors[payment.status]}>
                             {payment.status.toUpperCase()}
                           </Badge>

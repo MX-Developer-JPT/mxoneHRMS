@@ -199,7 +199,7 @@ export default function ComplianceDashboard() {
 
         {/* Main Tabs */}
         <Tabs defaultValue="overview">
-          <TabsList className="bg-white border">
+          <TabsList className="bg-white border flex-wrap h-auto">
             <TabsTrigger value="overview">Overview & Deadlines</TabsTrigger>
             <TabsTrigger value="records">Employee Records</TabsTrigger>
             <TabsTrigger value="kyc">KYC Compliance</TabsTrigger>

@@ -448,17 +448,17 @@ function ReviewCard({ review, user, userMap, isManager, isHR, onSubmitSelf, onSu
 
   return (
     <div className="bg-white border rounded-xl overflow-hidden">
-      <div className="p-4 flex items-center justify-between cursor-pointer" onClick={() => setExpanded(!expanded)}>
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-sm">
+      <div className="p-4 flex items-center justify-between flex-wrap gap-2 cursor-pointer" onClick={() => setExpanded(!expanded)}>
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-sm flex-shrink-0">
             {userMap[review.employee_user_id]?.full_name?.charAt(0) || '?'}
           </div>
-          <div>
-            <p className="font-semibold text-gray-800">{userMap[review.employee_user_id]?.full_name || 'N/A'}</p>
+          <div className="min-w-0">
+            <p className="font-semibold text-gray-800 break-words">{userMap[review.employee_user_id]?.full_name || 'N/A'}</p>
             <p className="text-xs text-gray-400">Period: {review.review_period_start} — {review.review_period_end}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {review.final_score > 0 && <span className="text-lg font-bold text-indigo-600">{review.final_score?.toFixed(2)}/5</span>}
           <RatingBadge rating={review.overall_rating} />
           <ReviewStatusBadge status={review.status} />

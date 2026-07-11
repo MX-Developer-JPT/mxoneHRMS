@@ -579,11 +579,11 @@ export default function AttendanceLogDashboard() {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between pt-1">
+        <div className="flex items-center justify-between flex-wrap gap-2 pt-1">
           <span className="text-sm text-gray-500">
             Page {page} of {totalPages} · {totalRecords.toLocaleString()} total records
           </span>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 flex-wrap">
             <Button variant="outline" size="sm" disabled={page <= 1 || loading} onClick={() => goToPage(1)}>
               «
             </Button>

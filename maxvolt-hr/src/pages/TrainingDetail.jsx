@@ -229,7 +229,7 @@ export default function TrainingDetail() {
                         <span>📍 {sess.location || sess.meeting_link || '—'}</span>
                       </div>
                     </div>
-                    <div className="flex gap-2 shrink-0">
+                    <div className="flex flex-wrap gap-2 shrink-0">
                       <Button size="sm" variant="outline" className="text-xs" onClick={() => openSessionForm(sess)}>Edit</Button>
                       <Button size="sm" className="text-xs bg-purple-600 hover:bg-purple-700" onClick={() => { setEnrollSessionId(sess.id); setShowEnrollForm(true); }}>
                         <UserPlus className="w-3 h-3 mr-1" />Enroll
@@ -258,8 +258,8 @@ export default function TrainingDetail() {
                 <Card key={enr.id}>
                   <CardContent className="p-3">
                     <div className="grid grid-cols-5 gap-2 items-center text-sm">
-                      <span className="font-medium truncate">{getUserName(enr.user_id)}</span>
-                      <span className="text-gray-500 text-xs truncate">{sess?.batch_name || 'Batch'}</span>
+                      <span className="font-medium truncate min-w-0">{getUserName(enr.user_id)}</span>
+                      <span className="text-gray-500 text-xs truncate min-w-0">{sess?.batch_name || 'Batch'}</span>
                       <Badge variant="outline" className="text-xs w-fit">{enr.enrollment_type}</Badge>
                       <Badge className={`text-xs w-fit ${enrollStatusColor[enr.status]}`}>{enr.status}</Badge>
                       <div className="flex gap-1">

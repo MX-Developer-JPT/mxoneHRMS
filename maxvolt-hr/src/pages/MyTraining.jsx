@@ -164,9 +164,9 @@ export default function MyTraining() {
                 <Card key={enr.id}>
                   <CardContent className="p-4">
                     <div className="flex items-start justify-between gap-3">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <p className="font-semibold text-sm">{prog?.title}</p>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <p className="font-semibold text-sm break-words">{prog?.title}</p>
                           <Badge className={`text-xs ${enrollStatusColor[enr.status]}`}>{enr.status}</Badge>
                         </div>
                         <p className="text-xs text-gray-500">{sess?.batch_name} · {sess?.start_date ? safeDate(sess.start_date, 'MMM d, yyyy') : 'TBD'}</p>
@@ -257,9 +257,9 @@ export default function MyTraining() {
                       <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center shrink-0">
                         <Award className="w-5 h-5 text-purple-600" />
                       </div>
-                      <div className="flex-1">
-                        <p className="font-semibold text-sm">{prog?.title}</p>
-                        <div className="flex gap-3 text-xs text-gray-500 mt-0.5">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-sm break-words">{prog?.title}</p>
+                        <div className="flex gap-3 text-xs text-gray-500 mt-0.5 flex-wrap">
                           <span>Completed: {enr.completion_date ? safeDate(enr.completion_date, 'MMM d, yyyy') : '—'}</span>
                           {enr.pre_assessment_score != null && <span>Pre: {enr.pre_assessment_score}%</span>}
                           {enr.post_assessment_score != null && <span>Post: {enr.post_assessment_score}%</span>}

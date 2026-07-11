@@ -95,9 +95,9 @@ export default function PMSConfiguration() {
             {configs.map(c => (
               <div key={c.id} className={`bg-white border rounded-xl p-5 ${c.is_active ? 'border-indigo-300 ring-1 ring-indigo-200' : ''}`}>
                 <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-bold text-gray-800">{c.cycle_name}</h3>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="font-bold text-gray-800 break-words">{c.cycle_name}</h3>
                       {c.is_active && <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-medium">Active</span>}
                       <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full capitalize">{c.cycle_type}</span>
                     </div>

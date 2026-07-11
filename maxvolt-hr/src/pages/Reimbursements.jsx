@@ -240,7 +240,7 @@ export default function Reimbursements() {
                 reimbursements.map(claim => (
                   <div key={claim.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
                     <div className="flex flex-wrap justify-between items-start gap-4">
-                      <div className="flex-1">
+                      <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-3 mb-2">
                           <Receipt className="w-5 h-5 text-gray-600" />
                           <p className="font-semibold capitalize">{(claim.expense_type || '').replace('_', ' ')}</p>
@@ -251,10 +251,10 @@ export default function Reimbursements() {
                         <p className="text-sm text-gray-600 mb-1">
                           {safeDate(claim.expense_date, 'MMM d, yyyy')}
                         </p>
-                        <p className="text-sm">{claim.description}</p>
+                        <p className="text-sm break-words">{claim.description}</p>
                         {claim.rejection_reason && (
                           <div className="mt-2 p-2 bg-red-50 rounded">
-                            <p className="text-sm text-red-800">
+                            <p className="text-sm text-red-800 break-words">
                               <strong>Rejection Reason:</strong> {claim.rejection_reason}
                             </p>
                           </div>

@@ -268,8 +268,8 @@ function PIPCard({ pip, userMap, currentUser, isManager, onUpdateStatus, onUpdat
             <div className="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center text-orange-700 font-bold text-sm">
               {userMap[pip.employee_user_id]?.full_name?.charAt(0) || '?'}
             </div>
-            <div>
-              <p className="font-semibold text-gray-800">{userMap[pip.employee_user_id]?.full_name || pip.employee_user_id}</p>
+            <div className="min-w-0">
+              <p className="font-semibold text-gray-800 break-words">{userMap[pip.employee_user_id]?.full_name || pip.employee_user_id}</p>
               <p className="text-xs text-gray-400">{pip.start_date} → {pip.end_date} · {pip.pip_goals?.length || 0} goals</p>
             </div>
           </div>
@@ -353,7 +353,7 @@ function PIPCard({ pip, userMap, currentUser, isManager, onUpdateStatus, onUpdat
 
           {/* Manager Actions */}
           {isManager && pip.status === 'active' && (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => onUpdateStatus(pip, 'completed')}>Mark Completed</Button>
               <Button size="sm" variant="outline" onClick={() => onUpdateStatus(pip, 'extended')}>Extend PIP</Button>
               <Button size="sm" variant="outline" className="text-red-600 border-red-200" onClick={() => onUpdateStatus(pip, 'failed')}>Mark Failed</Button>

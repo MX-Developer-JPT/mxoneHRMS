@@ -174,7 +174,7 @@ export default function Form16() {
           </h1>
           <p className="text-gray-500 text-sm mt-1">Annual income-tax computation (old vs new regime), TDS projection, and Form 16 Part-B — FY {fy}.</p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           <MobileSelect value={fy} onValueChange={setFy} label="Financial Year" className="w-36" options={fyOptions()} />
           <Button size="sm" className="bg-teal-600 hover:bg-teal-700 text-white" onClick={() => setIntegrateOpen(true)}>
             <Zap className="w-4 h-4 mr-2" /> Integrate TDS

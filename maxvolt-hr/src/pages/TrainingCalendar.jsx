@@ -140,7 +140,7 @@ export default function TrainingCalendar() {
                           <div className="flex-1">
                             <p className="font-semibold text-sm">{prog?.title || 'Training'}</p>
                             <p className="text-xs text-gray-500">{s.batch_name} · {s.start_date ? safeDate(s.start_date, 'h:mm a') : ''}</p>
-                            <div className="flex gap-2 mt-1">
+                            <div className="flex flex-wrap gap-2 mt-1">
                               <Badge className={`text-xs ${statusColor[s.status]}`}>{s.status}</Badge>
                               {prog && <Badge className={`text-xs ${modeColor[prog.mode]}`}>{prog.mode}</Badge>}
                               {enrolled && <Badge className="text-xs bg-purple-100 text-purple-700">Enrolled</Badge>}

@@ -275,13 +275,13 @@ export default function RegularisationApproval() {
                 return (
                   <div key={uid} className="border rounded-xl overflow-hidden">
                     {/* Employee group header */}
-                    <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b">
-                      <div className="flex items-center gap-2">
+                    <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b flex-wrap gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
                         <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs flex-shrink-0">
                           {empName.charAt(0)}
                         </div>
-                        <div>
-                          <span className="font-semibold text-sm">{empName}</span>
+                        <div className="min-w-0">
+                          <span className="font-semibold text-sm break-words">{empName}</span>
                           {empDept && <span className="text-xs text-gray-500 ml-2">· {empDept}</span>}
                         </div>
                         <Badge className="bg-blue-100 text-blue-700 text-xs border-0 ml-1">
@@ -289,7 +289,7 @@ export default function RegularisationApproval() {
                         </Badge>
                       </div>
                       {actionableIds.length > 0 && (
-                        <div className="flex gap-1.5">
+                        <div className="flex gap-1.5 flex-wrap">
                           <Button size="sm" className="h-6 text-xs bg-green-600 hover:bg-green-700 px-2"
                             disabled={processing}
                             onClick={() => handleBulkAction('approve', actionableIds)}>

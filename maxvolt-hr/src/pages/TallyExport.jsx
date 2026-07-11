@@ -134,7 +134,7 @@ export default function TallyExport() {
                 <CardTitle className="text-base flex items-center gap-2">
                   <FileText className="w-4 h-4" /> Export Files
                 </CardTitle>
-                <div className="flex gap-3">
+                <div className="flex flex-wrap gap-3">
                   {result.tally_xml && (
                     <Button
                       variant="outline"

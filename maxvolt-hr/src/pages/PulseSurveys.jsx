@@ -98,10 +98,10 @@ export default function PulseSurveys() {
           <h2 className="font-semibold text-gray-700">Awaiting your response</h2>
           {activeForMe.map(s => (
             <Card key={s.id} className="border-violet-200 bg-violet-50/50 hover:shadow-md transition-shadow">
-              <CardContent className="p-4 flex items-center justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-semibold text-gray-800">{s.title}</p>
+              <CardContent className="p-4 flex items-center justify-between gap-4 flex-wrap">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-semibold text-gray-800 break-words">{s.title}</p>
                     <Badge className={s.type === 'enps' ? 'bg-teal-100 text-teal-700' : 'bg-violet-100 text-violet-700'}>{s.type === 'enps' ? 'eNPS' : 'Pulse'}</Badge>
                   </div>
                   {s.description && <p className="text-sm text-gray-500 mt-0.5">{s.description}</p>}

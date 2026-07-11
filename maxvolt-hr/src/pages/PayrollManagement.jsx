@@ -361,7 +361,7 @@ export default function PayrollManagement() {
             <h1 className="text-3xl font-bold">Payroll Management</h1>
             <p className="text-gray-600 mt-1">Manage employee payroll and salary disbursement</p>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <Dialog open={showProcessDialog} onOpenChange={setShowProcessDialog}>
               <DialogTrigger asChild>
                 <Button className="bg-blue-600 hover:bg-blue-700">
@@ -546,21 +546,21 @@ export default function PayrollManagement() {
                   const empName = emp?.display_name || emp?._user?.full_name || '—';
                   return (
                     <div key={payroll.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
-                      <div className="flex justify-between items-start">
-                        <div className="flex items-center gap-3">
-                          <input type="checkbox" className="w-4 h-4 rounded accent-blue-600 cursor-pointer mt-1" checked={bulkSelected.has(payroll.id)} onChange={() => toggleBulkSelect(payroll.id)} />
+                      <div className="flex justify-between items-start flex-wrap gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <input type="checkbox" className="w-4 h-4 rounded accent-blue-600 cursor-pointer mt-1 flex-shrink-0" checked={bulkSelected.has(payroll.id)} onChange={() => toggleBulkSelect(payroll.id)} />
                           <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                             <span className="text-blue-600 font-semibold">
                               {empName.charAt(0).toUpperCase()}
                             </span>
                           </div>
-                          <div>
-                            <p className="font-semibold">{empName}</p>
-                            <p className="text-sm text-gray-600">
+                          <div className="min-w-0">
+                            <p className="font-semibold break-words">{empName}</p>
+                            <p className="text-sm text-gray-600 break-words">
                               {emp?.designation || '—'}
                               {emp?.department ? ` · ${emp.department}` : ''}
                             </p>
-                            <p className="text-xs text-gray-500">
+                            <p className="text-xs text-gray-500 break-words">
                               {emp?.employee_code ? `Code: ${emp.employee_code}` : ''}
                               {emp?.date_of_joining ? ` · DOJ: ${new Date(emp.date_of_joining).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })}` : ''}
                             </p>
@@ -570,7 +570,7 @@ export default function PayrollManagement() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-6 flex-wrap">
                           <div className="text-right">
                             <p className="text-sm text-gray-600">Gross</p>
                             <p className="font-semibold">₹{payroll.gross_salary?.toLocaleString()}</p>

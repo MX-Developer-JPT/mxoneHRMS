@@ -408,8 +408,8 @@ export default function Approvals() {
                       const emp = employees.find(e => e.user_id === leave.user_id);
                       return (
                         <div key={leave.id} className="border rounded-lg p-4">
-                          <div className="flex justify-between items-start gap-4">
-                            <div>
+                          <div className="flex justify-between items-start gap-4 flex-wrap">
+                            <div className="min-w-0">
                               <p className="font-semibold">{emp?.display_name || '—'}</p>
                               <p className="text-sm text-muted-foreground">{emp?.designation} · {emp?.department}</p>
                               <p className="text-sm mt-2">
@@ -461,14 +461,14 @@ export default function Approvals() {
                       const emp = employees.find(e => e.user_id === reimb.user_id);
                       return (
                         <div key={reimb.id} className="border rounded-lg p-4">
-                          <div className="flex justify-between items-start gap-4">
-                            <div className="flex-1">
-                              <div className="flex items-start justify-between mb-2">
-                                <div>
+                          <div className="flex justify-between items-start gap-4 flex-wrap">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-start justify-between gap-2 mb-2 flex-wrap">
+                                <div className="min-w-0">
                                   <p className="font-semibold">{emp?.display_name || '—'}</p>
                                   <p className="text-sm text-muted-foreground">{emp?.designation} · {emp?.department} · {emp?.employee_code}</p>
                                 </div>
-                                <p className="text-2xl font-bold text-blue-600">₹{reimb.amount?.toLocaleString()}</p>
+                                <p className="text-2xl font-bold text-blue-600 shrink-0">₹{reimb.amount?.toLocaleString()}</p>
                               </div>
                               <p className="text-sm capitalize font-medium">{reimb.expense_type?.replace(/_/g, ' ')}</p>
                               <p className="text-sm text-muted-foreground">{reimb.expense_date ? safeDate(reimb.expense_date, 'MMM d, yyyy') : ''}</p>

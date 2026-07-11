@@ -281,9 +281,9 @@ export default function PayrollProcessing() {
             {payrolls.length > 0 ? payrolls.map(payroll => {
               const employee = employees.find(e => e.id === payroll.user_id);
               return (
-                <div key={payroll.id} className="border rounded-lg p-4 flex justify-between items-center">
-                  <div>
-                    <p className="font-semibold">{employee?.full_name || 'Employee'}</p>
+                <div key={payroll.id} className="border rounded-lg p-4 flex justify-between items-center flex-wrap gap-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold break-words">{employee?.full_name || 'Employee'}</p>
                     <p className="text-sm text-gray-600">
                       Days: {payroll.present_days}/{payroll.working_days}
                       &nbsp;·&nbsp;Gross: ₹{(payroll.gross_salary||0).toLocaleString('en-IN')}

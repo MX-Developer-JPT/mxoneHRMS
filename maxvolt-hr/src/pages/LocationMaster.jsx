@@ -248,7 +248,7 @@ export default function LocationMaster() {
                               <p className="text-xs text-muted-foreground mt-0.5">{empCount} employee(s)</p>
                             </div>
                           </div>
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-3 flex-wrap justify-end">
                             <Badge className={loc.is_active !== false ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}>
                               {loc.is_active !== false ? 'Active' : 'Inactive'}
                             </Badge>

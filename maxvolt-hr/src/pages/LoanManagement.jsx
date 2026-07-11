@@ -311,7 +311,7 @@ export default function LoanManagement() {
                         <p className="text-xl font-bold text-blue-600">₹{loan.loan_amount?.toLocaleString()}</p>
                         <p className="text-sm text-gray-600">Outstanding: ₹{loan.outstanding_amount?.toLocaleString()}</p>
                         <p className="text-xs text-gray-500">EMI: ₹{loan.monthly_deduction?.toLocaleString()}/month</p>
-                        <div className="mt-2 flex gap-2 justify-end">
+                        <div className="mt-2 flex flex-wrap gap-2 justify-end">
                           <Badge className={statusColors[loan.status]}>
                             {loan.status.toUpperCase()}
                           </Badge>
