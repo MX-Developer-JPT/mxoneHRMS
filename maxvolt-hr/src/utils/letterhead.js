@@ -3,7 +3,7 @@
  * Matches the official letterhead format exactly.
  */
 
-const LOGO_URL = (typeof window !== 'undefined' ? window.location.origin : '') + '/maxvolt-logo.jpg?v=2';
+const LOGO_URL = (typeof window !== 'undefined' ? window.location.origin : '') + '/maxvolt-logo.jpg?v=3';
 
 export function letterheadStyles() {
   return `

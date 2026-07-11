@@ -49,7 +49,7 @@ export default function PublicJobBoard() {
       {/* Header */}
       <div className="bg-white border-b shadow-sm">
         <div className="max-w-5xl mx-auto px-4 py-6 flex items-center gap-4">
-          <img src="/favicon.svg?v=2" alt="Maxvolt Energy" className="h-12 object-contain" />
+          <img src="/favicon.svg?v=3" alt="Maxvolt Energy" className="h-12 object-contain" />
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Careers at Maxvolt Energy</h1>
             <p className="text-gray-500 text-sm">Explore open positions and join our team</p>
