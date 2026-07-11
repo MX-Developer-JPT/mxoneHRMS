@@ -654,7 +654,7 @@ export default function Layout({ children, currentPageName }) {
             <span>·</span>
             <a href="/TermsOfService" target="_blank" rel="noreferrer" className="hover:underline">Terms</a>
             <span>·</span>
-            <a href="/DeleteAccountRequest" target="_blank" rel="noreferrer" className="hover:underline">Delete Account</a>
+            <a href="/DeleteAccountRequest" className="hover:underline">Delete Account</a>
           </div>
         </div>
       </aside>
@@ -839,7 +839,7 @@ export default function Layout({ children, currentPageName }) {
                 <span>·</span>
                 <a href="/TermsOfService" target="_blank" rel="noreferrer" className="hover:underline">Terms of Service</a>
                 <span>·</span>
-                <a href="/DeleteAccountRequest" target="_blank" rel="noreferrer" className="hover:underline">Delete Account</a>
+                <a href="/DeleteAccountRequest" className="hover:underline">Delete Account</a>
               </div>
             </div>
           </div>

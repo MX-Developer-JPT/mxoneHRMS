@@ -399,8 +399,6 @@ export default function AppSettings() {
             </a>
             <a
               href="/DeleteAccountRequest"
-              target="_blank"
-              rel="noreferrer"
               className="w-full flex items-center gap-3 h-12 px-3 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
             >
               <Trash2 className="w-5 h-5 text-red-500" />
