@@ -107,13 +107,15 @@ function ReviewForm({ form, setForm, isHRInitiated }) {
         </Label>
         <div className="space-y-3">
           {CRITERIA.map(c => (
-            <div key={c.key} className="flex items-center justify-between gap-4">
-              <span className="text-sm text-gray-700 w-60">{c.label}</span>
-              <ScoreInput
-                value={form.scores?.[c.key] || 0}
-                onChange={v => setForm(f => ({ ...f, scores: { ...f.scores, [c.key]: v } }))}
-              />
-              <span className="text-sm font-semibold text-blue-700 w-4">{form.scores?.[c.key] || ''}</span>
+            <div key={c.key} className="flex items-center justify-between gap-4 flex-wrap">
+              <span className="text-sm text-gray-700 flex-1 min-w-[120px]">{c.label}</span>
+              <div className="flex items-center gap-2 shrink-0">
+                <ScoreInput
+                  value={form.scores?.[c.key] || 0}
+                  onChange={v => setForm(f => ({ ...f, scores: { ...f.scores, [c.key]: v } }))}
+                />
+                <span className="text-sm font-semibold text-blue-700 w-4">{form.scores?.[c.key] || ''}</span>
+              </div>
             </div>
           ))}
         </div>

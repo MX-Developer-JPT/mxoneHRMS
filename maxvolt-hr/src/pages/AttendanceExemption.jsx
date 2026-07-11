@@ -163,19 +163,19 @@ export default function AttendanceExemption() {
           <CardContent>
             <div className="space-y-3">
               {filtered.map(emp => (
-                <div key={emp.id} className="flex items-center justify-between p-4 border rounded-lg bg-white hover:bg-gray-50 transition-colors">
-                  <div className="flex items-center gap-3">
+                <div key={emp.id} className="flex items-center justify-between p-4 border rounded-lg bg-white hover:bg-gray-50 transition-colors gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                       <span className="text-blue-600 font-semibold">
                         {(emp.display_name || emp.employee_code)?.charAt(0).toUpperCase()}
                       </span>
                     </div>
-                    <div>
-                      <p className="font-semibold">{emp.display_name || emp.employee_code}</p>
-                      <p className="text-sm text-gray-500">{emp.designation} · {emp.department} · {emp.employee_code}</p>
+                    <div className="min-w-0">
+                      <p className="font-semibold truncate">{emp.display_name || emp.employee_code}</p>
+                      <p className="text-sm text-gray-500 truncate">{emp.designation} · {emp.department} · {emp.employee_code}</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-shrink-0">
                     {emp.is_attendance_exempt && (
                       <Badge className="bg-purple-100 text-purple-800">Exempt</Badge>
                     )}

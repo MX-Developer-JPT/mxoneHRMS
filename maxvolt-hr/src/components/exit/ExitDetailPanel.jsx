@@ -66,9 +66,9 @@ const BLANK_HR_INTERVIEW = {
 function fmt(n) { return Number(n || 0).toLocaleString('en-IN'); }
 function InfoRow({ label, value }) {
   return (
-    <div className="bg-gray-50 p-3 rounded-lg">
+    <div className="bg-gray-50 p-3 rounded-lg min-w-0">
       <p className="text-xs text-gray-500">{label}</p>
-      <p className="font-medium text-sm capitalize mt-0.5">{value || '—'}</p>
+      <p className="font-medium text-sm capitalize mt-0.5 break-words">{value || '—'}</p>
     </div>
   );
 }
@@ -604,8 +604,8 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                         <div><Label className="text-xs">Due Date</Label>
                           <Input type="date" value={item.due_date} onChange={e => { const c = [...ktItems]; c[i] = { ...c[i], due_date: e.target.value }; setKtItems(c); }} /></div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <div className="flex-1"><Label className="text-xs">Description</Label>
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <div className="flex-1 min-w-[140px]"><Label className="text-xs">Description</Label>
                           <Input value={item.description} onChange={e => { const c = [...ktItems]; c[i] = { ...c[i], description: e.target.value }; setKtItems(c); }} placeholder="Details..." /></div>
                         <div><Label className="text-xs">Status</Label>
                           <Select value={item.status} onValueChange={v => { const c = [...ktItems]; c[i] = { ...c[i], status: v }; setKtItems(c); }}>

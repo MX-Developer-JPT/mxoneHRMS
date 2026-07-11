@@ -76,12 +76,12 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
           <div className="space-y-4">
             {/* Basic Info */}
             <div className="grid grid-cols-2 gap-3 text-sm">
-              <div className="flex items-center gap-2 text-gray-600"><Mail className="w-4 h-4" />{localCandidate.email}</div>
-              <div className="flex items-center gap-2 text-gray-600"><Phone className="w-4 h-4" />{localCandidate.phone}</div>
-              <div className="flex items-center gap-2 text-gray-600"><FileText className="w-4 h-4" />{localCandidate.position_applied}</div>
-              {localCandidate.current_company && <div className="flex items-center gap-2 text-gray-600"><Building2 className="w-4 h-4" />{localCandidate.current_company}</div>}
-              <div className="flex items-center gap-2 text-gray-600"><Clock className="w-4 h-4" />{localCandidate.experience_years} yrs exp · {localCandidate.notice_period || 0} days notice</div>
-              <div className="flex items-center gap-2 text-gray-600"><DollarSign className="w-4 h-4" />Expected: ₹{localCandidate.expected_ctc?.toLocaleString() || '—'}</div>
+              <div className="flex items-center gap-2 text-gray-600 min-w-0"><Mail className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.email}</span></div>
+              <div className="flex items-center gap-2 text-gray-600 min-w-0"><Phone className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.phone}</span></div>
+              <div className="flex items-center gap-2 text-gray-600 min-w-0"><FileText className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.position_applied}</span></div>
+              {localCandidate.current_company && <div className="flex items-center gap-2 text-gray-600 min-w-0"><Building2 className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.current_company}</span></div>}
+              <div className="flex items-center gap-2 text-gray-600 min-w-0"><Clock className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.experience_years} yrs exp · {localCandidate.notice_period || 0} days notice</span></div>
+              <div className="flex items-center gap-2 text-gray-600 min-w-0"><DollarSign className="w-4 h-4 flex-shrink-0" /><span className="truncate">Expected: ₹{localCandidate.expected_ctc?.toLocaleString() || '—'}</span></div>
             </div>
 
             {/* CV Actions */}

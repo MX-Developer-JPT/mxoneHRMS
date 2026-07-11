@@ -284,9 +284,9 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
                   ['Serving Full Notice', form.willing_to_serve_notice === 'yes' ? 'Yes' : 'No (Requesting buyout)'],
                   form.new_employer && ['New Employer', form.new_employer],
                 ].filter(Boolean).map(([label, value]) => (
-                  <div key={label} className="bg-white rounded p-2.5">
+                  <div key={label} className="bg-white rounded p-2.5 min-w-0">
                     <p className="text-xs text-gray-500">{label}</p>
-                    <p className="font-medium">{value}</p>
+                    <p className="font-medium break-words">{value}</p>
                   </div>
                 ))}
               </div>

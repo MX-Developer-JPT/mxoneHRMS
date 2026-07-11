@@ -471,23 +471,23 @@ export default function DepartmentManagement() {
                 <div className="space-y-2">
                   {employees.filter(e => e.department === selectedDepartment?.name).length > 0 ? (
                     employees.filter(e => e.department === selectedDepartment?.name).map(emp => (
-                      <div key={emp.id} className="flex items-center justify-between p-3 border rounded-lg bg-blue-50">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+                      <div key={emp.id} className="flex items-center justify-between p-3 border rounded-lg bg-blue-50 gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                             <span className="text-blue-600 font-semibold">
                               {(emp.display_name || emp.user?.full_name)?.charAt(0).toUpperCase()}
                             </span>
                           </div>
-                          <div>
-                            <p className="font-semibold">{emp.display_name || emp.user?.full_name}</p>
-                            <p className="text-sm text-gray-600">{emp.employee_code} • {emp.designation}</p>
+                          <div className="min-w-0">
+                            <p className="font-semibold truncate">{emp.display_name || emp.user?.full_name}</p>
+                            <p className="text-sm text-gray-600 truncate">{emp.employee_code} • {emp.designation}</p>
                           </div>
                         </div>
                         <Select
                           value={emp.department}
                           onValueChange={(value) => assignEmployeeToDepartment(emp.id, value)}
                         >
-                          <SelectTrigger className="w-48">
+                          <SelectTrigger className="w-40 sm:w-48 flex-shrink-0">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>

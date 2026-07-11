@@ -52,36 +52,38 @@ export default function ImportResultsDashboard({ results }) {
 
       {/* Result Table */}
       <div className="border rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 border-b">
-              <th className="text-left px-3 py-2 text-gray-600 font-medium">Name</th>
-              <th className="text-left px-3 py-2 text-gray-600 font-medium">Email</th>
-              <th className="text-left px-3 py-2 text-gray-600 font-medium">Emp. Code</th>
-              <th className="text-left px-3 py-2 text-gray-600 font-medium">Account</th>
-            </tr>
-          </thead>
-          <tbody>
-            {results.map((r, i) => {
-              const cfg = statusConfig[r.status] || statusConfig.error;
-              const StatusIcon = cfg.icon;
-              return (
-                <tr key={i} className="border-t hover:bg-gray-50">
-                  <td className="px-3 py-2 text-gray-700 font-medium">{r.name || '—'}</td>
-                  <td className="px-3 py-2 text-gray-500">{r.email}</td>
-                  <td className="px-3 py-2 text-gray-500">{r.employee_code || '—'}</td>
-                  <td className="px-3 py-2">
-                    <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${cfg.color}`}>
-                      <StatusIcon className="w-3 h-3" />
-                      {cfg.label}
-                    </span>
-                    {r.note && <p className="text-xs text-gray-400 mt-0.5">{r.note}</p>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b">
+                <th className="text-left px-3 py-2 text-gray-600 font-medium">Name</th>
+                <th className="text-left px-3 py-2 text-gray-600 font-medium">Email</th>
+                <th className="text-left px-3 py-2 text-gray-600 font-medium">Emp. Code</th>
+                <th className="text-left px-3 py-2 text-gray-600 font-medium">Account</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((r, i) => {
+                const cfg = statusConfig[r.status] || statusConfig.error;
+                const StatusIcon = cfg.icon;
+                return (
+                  <tr key={i} className="border-t hover:bg-gray-50">
+                    <td className="px-3 py-2 text-gray-700 font-medium">{r.name || '—'}</td>
+                    <td className="px-3 py-2 text-gray-500">{r.email}</td>
+                    <td className="px-3 py-2 text-gray-500">{r.employee_code || '—'}</td>
+                    <td className="px-3 py-2">
+                      <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${cfg.color}`}>
+                        <StatusIcon className="w-3 h-3" />
+                        {cfg.label}
+                      </span>
+                      {r.note && <p className="text-xs text-gray-400 mt-0.5">{r.note}</p>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
