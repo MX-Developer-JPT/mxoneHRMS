@@ -10108,6 +10108,55 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
       return res.json({ success: true, id: planId });
     }
 
+    case 'requestAccountDeletion': {
+      // Public, unauthenticated on purpose — Play Store / App Store policy
+      // requires a data-deletion request path that works without a login,
+      // since some requesters may no longer be able to sign in. HR records
+      // carry statutory retention requirements, so this only files a
+      // reviewable request rather than deleting anything automatically.
+      const { email, reason } = p;
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
+        return res.status(400).json({ error: 'A valid email address is required' });
+      }
+      const reqId = uuidv4();
+      const d = {
+        id: reqId,
+        email: String(email).trim().toLowerCase(),
+        reason: (reason || '').trim(),
+        status: 'pending',
+        requested_at: new Date().toISOString(),
+      };
+      await run("INSERT INTO entities(id,type,status,data) VALUES($1,'AccountDeletionRequest','pending',$2)", [reqId, JSON.stringify(d)]);
+
+      try {
+        await sendEmail({
+          to: 'hr@maxvoltenergy.com',
+          subject: `Account Deletion Request — ${d.email}`,
+          html: `<div style="font-family:Arial,sans-serif;font-size:14px">
+            <p>A user has requested deletion of their account and associated data.</p>
+            <p><strong>Email:</strong> ${d.email}</p>
+            ${d.reason ? `<p><strong>Reason:</strong> ${d.reason}</p>` : ''}
+            <p style="color:#888;font-size:12px">Request ID: ${reqId}</p>
+          </div>`,
+          meta: { type: 'account_deletion_request' },
+        });
+      } catch (e) { console.error('[account-deletion] HR notify failed:', e.message); }
+
+      try {
+        await sendEmail({
+          to: d.email,
+          subject: 'Your account deletion request has been received — Maxvolt One',
+          html: `<div style="font-family:Arial,sans-serif;font-size:14px">
+            <p>We've received your request to delete your Maxvolt One account and associated data.</p>
+            <p>Our HR team will review and process your request, subject to any statutory record-retention
+            requirements under applicable law. You'll receive a follow-up email once it has been actioned.</p>
+          </div>`,
+        });
+      } catch (e) { console.error('[account-deletion] confirmation email failed:', e.message); }
+
+      return res.json({ success: true, request_id: reqId });
+    }
+
     default:
       console.warn(`[functions] Unknown function: ${name}`);
       return res.status(404).json({ error: `Function '${name}' not implemented` });

@@ -627,10 +627,12 @@ export default function Layout({ children, currentPageName }) {
             <LogOut className="w-4 h-4 flex-shrink-0" />
             <span>Sign out</span>
           </button>
-          <div className="px-3 pt-1 flex items-center gap-2 text-[10.5px] text-[#8E8E93]">
+          <div className="px-3 pt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-[#8E8E93]">
             <a href="/PrivacyPolicy" target="_blank" rel="noreferrer" className="hover:underline">Privacy</a>
             <span>·</span>
             <a href="/TermsOfService" target="_blank" rel="noreferrer" className="hover:underline">Terms</a>
+            <span>·</span>
+            <a href="/DeleteAccountRequest" target="_blank" rel="noreferrer" className="hover:underline">Delete Account</a>
           </div>
         </div>
       </aside>
@@ -810,10 +812,12 @@ export default function Layout({ children, currentPageName }) {
                 </div>
                 Sign out
               </button>
-              <div className="flex items-center justify-center gap-2 pt-2 text-[11px] text-[#8E8E93]">
+              <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 pt-2 text-[11px] text-[#8E8E93]">
                 <a href="/PrivacyPolicy" target="_blank" rel="noreferrer" className="hover:underline">Privacy Policy</a>
                 <span>·</span>
                 <a href="/TermsOfService" target="_blank" rel="noreferrer" className="hover:underline">Terms of Service</a>
+                <span>·</span>
+                <a href="/DeleteAccountRequest" target="_blank" rel="noreferrer" className="hover:underline">Delete Account</a>
               </div>
             </div>
           </div>
