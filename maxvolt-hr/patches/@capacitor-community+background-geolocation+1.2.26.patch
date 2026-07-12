@@ -13,11 +13,51 @@ index d235202..e6f626f 100644
      ],
      targets: [
          .target(
+diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/AndroidManifest.xml b/node_modules/@capacitor-community/background-geolocation/android/src/main/AndroidManifest.xml
+index 9e65984..c72735b 100644
+--- a/node_modules/@capacitor-community/background-geolocation/android/src/main/AndroidManifest.xml
++++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/AndroidManifest.xml
+@@ -5,6 +5,20 @@
+             android:enabled="true"
+             android:exported="true"
+             android:foregroundServiceType="location" />
++        <!-- Restarts tracking natively (no JS/Activity involved) after a device
++             reboot, and BackgroundGeolocationService.onTaskRemoved() hands off to
++             the same native path if the app is swiped away from recents while
++             tracking was active — both read the state persisted by
++             persistHeadlessState() the last time the JS side started tracking. -->
++        <receiver
++            android:name="com.equimaps.capacitor_background_geolocation.BootReceiver"
++            android:enabled="true"
++            android:exported="true">
++            <intent-filter>
++                <action android:name="android.intent.action.BOOT_COMPLETED" />
++                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
++            </intent-filter>
++        </receiver>
+     </application>
+ 
+     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+@@ -16,6 +30,7 @@
+     <!-- Android SDK 33+ requires the POST_NOTIFICATIONS runtime permission to
+     display the foreground service notification. -->
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
++    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+     <uses-feature android:name="android.hardware.location.gps" />
+ </manifest>
+   
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
-index a92fcf9..a8ee670 100644
+index a92fcf9..c825b52 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
-@@ -18,6 +18,7 @@ import android.location.LocationManager;
+@@ -12,12 +12,14 @@ import android.content.Context;
+ import android.content.Intent;
+ import android.content.IntentFilter;
+ import android.content.ServiceConnection;
++import android.content.SharedPreferences;
+ import android.content.pm.PackageManager;
+ import android.location.Location;
+ import android.location.LocationManager;
  import android.net.Uri;
  import android.os.Build;
  import android.os.IBinder;
@@ -25,7 +65,7 @@ index a92fcf9..a8ee670 100644
  import android.provider.Settings;
  
  import com.getcapacitor.JSObject;
-@@ -45,6 +46,16 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+@@ -45,6 +47,16 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
                                  Manifest.permission.ACCESS_FINE_LOCATION
                          },
                          alias = "location"
@@ -42,7 +82,7 @@ index a92fcf9..a8ee670 100644
                  )
          }
  )
-@@ -84,6 +95,15 @@ public class BackgroundGeolocation extends Plugin {
+@@ -84,6 +96,15 @@ public class BackgroundGeolocation extends Plugin {
              } else {
                  call.reject("Permission denied.", "NOT_AUTHORIZED");
              }
@@ -58,7 +98,7 @@ index a92fcf9..a8ee670 100644
          } else if (!isLocationEnabled(getContext())) {
              call.reject("Location services disabled.", "NOT_AUTHORIZED");
          }
-@@ -181,6 +201,48 @@ public class BackgroundGeolocation extends Plugin {
+@@ -181,6 +202,48 @@ public class BackgroundGeolocation extends Plugin {
          }
      }
  
@@ -107,3 +147,432 @@ index a92fcf9..a8ee670 100644
      @PluginMethod()
      public void removeWatcher(PluginCall call) {
          String callbackId = call.getString("id");
+@@ -196,6 +259,42 @@ public class BackgroundGeolocation extends Plugin {
+         call.resolve();
+     }
+ 
++    // Called by geofenceBackground.js every time it successfully starts
++    // tracking, so BackgroundGeolocationService can pick up where the JS side
++    // left off — without any JS running at all — after a reboot (BootReceiver)
++    // or if the app is swiped from recents while tracking was active
++    // (onTaskRemoved). fencesJson matches the same shape geofenceBackground.js
++    // already uses: [{id, name, latitude, longitude, radius_m}, ...].
++    @PluginMethod()
++    public void persistHeadlessState(PluginCall call) {
++        String token = call.getString("token");
++        String fencesJson = call.getString("fencesJson");
++        String apiBase = call.getString("apiBase");
++        if (token == null || fencesJson == null || apiBase == null) {
++            call.reject("token, fencesJson, and apiBase are required.");
++            return;
++        }
++        getContext().getSharedPreferences(BackgroundGeolocationService.HEADLESS_PREFS, Context.MODE_PRIVATE)
++                .edit()
++                .putString(BackgroundGeolocationService.PREF_AUTH_TOKEN, token)
++                .putString(BackgroundGeolocationService.PREF_FENCES_JSON, fencesJson)
++                .putString(BackgroundGeolocationService.PREF_API_BASE, apiBase)
++                .putBoolean(BackgroundGeolocationService.PREF_TRACKING_ACTIVE, true)
++                .apply();
++        call.resolve();
++    }
++
++    // Called on logout / stopBackgroundGeofence so a reboot after logging out
++    // does not resume tracking for a session that's no longer active.
++    @PluginMethod()
++    public void clearHeadlessState(PluginCall call) {
++        getContext().getSharedPreferences(BackgroundGeolocationService.HEADLESS_PREFS, Context.MODE_PRIVATE)
++                .edit()
++                .putBoolean(BackgroundGeolocationService.PREF_TRACKING_ACTIVE, false)
++                .apply();
++        call.resolve();
++    }
++
+     @PluginMethod()
+     public void openSettings(PluginCall call) {
+         Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
+index fafbb86..b69bc8b 100644
+--- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
++++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
+@@ -1,8 +1,10 @@
+ package com.equimaps.capacitor_background_geolocation;
+ 
+ import android.app.Notification;
++import android.app.PendingIntent;
+ import android.app.Service;
+ import android.content.Intent;
++import android.content.SharedPreferences;
+ import android.content.pm.ServiceInfo;
+ import android.location.Location;
+ import android.os.Binder;
+@@ -17,17 +19,48 @@ import com.google.android.gms.location.LocationRequest;
+ import com.google.android.gms.location.LocationResult;
+ import com.google.android.gms.location.LocationServices;
+ 
++import org.json.JSONArray;
++import org.json.JSONObject;
++
++import java.io.OutputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.nio.charset.StandardCharsets;
++import java.text.SimpleDateFormat;
++import java.util.Date;
+ import java.util.HashSet;
++import java.util.Locale;
++import java.util.TimeZone;
+ 
+ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+ 
+ // A bound and started service that is promoted to a foreground service
+ // (showing a persistent notification) when the first background watcher is
+ // added, and demoted when the last background watcher is removed.
++//
++// Also supports a "headless" mode with no JS/Activity/Capacitor bridge
++// involved at all — used to keep tracking genuinely continuous across a
++// device reboot (BootReceiver) and across the app being swiped from recents
++// while tracking was active (onTaskRemoved below). In headless mode this
++// class does its own location watching, its own geofence enter/exit
++// matching, and its own authenticated HTTP call to the backend — it doesn't
++// rely on JS running at all, because after a reboot (or with the app task
++// removed) nothing JS-side exists yet to drive it. State is written by
++// BackgroundGeolocation.persistHeadlessState(), called from geofenceBackground.js
++// every time the JS side successfully starts tracking.
+ public class BackgroundGeolocationService extends Service {
+     static final String ACTION_BROADCAST = (
+             BackgroundGeolocationService.class.getPackage().getName() + ".broadcast"
+     );
++    static final String ACTION_START_HEADLESS = (
++            BackgroundGeolocationService.class.getPackage().getName() + ".START_HEADLESS"
++    );
++    static final String HEADLESS_PREFS = "maxvolt_geofence_headless";
++    static final String PREF_TRACKING_ACTIVE = "tracking_active";
++    static final String PREF_AUTH_TOKEN = "auth_token";
++    static final String PREF_FENCES_JSON = "fences_json";
++    static final String PREF_API_BASE = "api_base";
++
+     private final IBinder binder = new LocalBinder();
+ 
+     // Must be unique for this application.
+@@ -42,22 +75,55 @@ public class BackgroundGeolocationService extends Service {
+     }
+     private HashSet<Watcher> watchers = new HashSet<Watcher>();
+ 
++    // Headless (native-only) tracking state — deliberately separate from
++    // `watchers` above so JS unbinding/rebinding never interferes with it.
++    private boolean headlessActive = false;
++    private FusedLocationProviderClient headlessClient;
++    private LocationCallback headlessCallback;
++    private String headlessCurrentFenceId = null;
++    private Boolean headlessLastKnownInProgress = null; // null=unknown, true=checked-in, false=checked-out
++
+     @Override
+     public IBinder onBind(Intent intent) {
+         return binder;
+     }
+ 
++    @Override
++    public int onStartCommand(Intent intent, int flags, int startId) {
++        if (intent != null && ACTION_START_HEADLESS.equals(intent.getAction())) {
++            startHeadlessTrackingIfNeeded();
++        }
++        return START_STICKY;
++    }
++
++    // Fires when the app is swiped away from recents (task removed) while
++    // this service is still running. If JS-driven tracking was active,
++    // nothing will be listening for the LocalBroadcastManager location
++    // events anymore once the process actually dies — so hand off to the
++    // same headless path used after a reboot, using the state JS already
++    // persisted, instead of losing tracking until the employee reopens the app.
++    @Override
++    public void onTaskRemoved(Intent rootIntent) {
++        if (!watchers.isEmpty()) {
++            startHeadlessTrackingIfNeeded();
++        }
++        super.onTaskRemoved(rootIntent);
++    }
++
+     // Some devices allow a foreground service to outlive the application's main
+     // activity, leading to nasty crashes as reported in issue #59. If we learn
+     // that the application has been killed, all watchers are stopped and the
+-    // service is terminated immediately.
++    // service is terminated immediately — unless headless tracking has taken
++    // over, in which case the service must keep running independently.
+     @Override
+     public boolean onUnbind(Intent intent) {
+         for (Watcher watcher : watchers) {
+             watcher.client.removeLocationUpdates(watcher.locationCallback);
+         }
+         watchers = new HashSet<Watcher>();
+-        stopSelf();
++        if (!headlessActive) {
++            stopSelf();
++        }
+         return false;
+     }
+ 
+@@ -77,6 +143,10 @@ public class BackgroundGeolocationService extends Service {
+                 Notification backgroundNotification,
+                 float distanceFilter
+         ) {
++            // JS is driving tracking again (app reopened) — hand control back
++            // from headless mode to avoid two independent watchers racing.
++            stopHeadlessTracking();
++
+             FusedLocationProviderClient client = LocationServices.getFusedLocationProviderClient(
+                     BackgroundGeolocationService.this
+             );
+@@ -172,4 +242,208 @@ public class BackgroundGeolocationService extends Service {
+             BackgroundGeolocationService.this.stopSelf();
+         }
+     }
++
++    // ── Headless (native-only) tracking ──────────────────────────────────
++
++    private void startHeadlessTrackingIfNeeded() {
++        if (headlessActive || !watchers.isEmpty()) return;
++        SharedPreferences prefs = getSharedPreferences(HEADLESS_PREFS, MODE_PRIVATE);
++        if (!prefs.getBoolean(PREF_TRACKING_ACTIVE, false)) return;
++        String token = prefs.getString(PREF_AUTH_TOKEN, null);
++        String fencesJson = prefs.getString(PREF_FENCES_JSON, null);
++        String apiBase = prefs.getString(PREF_API_BASE, null);
++        if (token == null || fencesJson == null || apiBase == null) return;
++
++        headlessActive = true;
++        headlessCurrentFenceId = null;
++        headlessLastKnownInProgress = null;
++        headlessClient = LocationServices.getFusedLocationProviderClient(this);
++
++        LocationRequest request = new LocationRequest();
++        request.setInterval(15000);
++        request.setFastestInterval(10000);
++        request.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
++        request.setSmallestDisplacement(15f);
++
++        headlessCallback = new LocationCallback() {
++            @Override
++            public void onLocationResult(LocationResult locationResult) {
++                Location location = locationResult.getLastLocation();
++                if (location != null) {
++                    handleHeadlessLocation(location, token, fencesJson, apiBase);
++                }
++            }
++        };
++
++        try {
++            headlessClient.requestLocationUpdates(request, headlessCallback, null);
++        } catch (SecurityException e) {
++            headlessActive = false;
++            return;
++        }
++
++        try {
++            startForeground(NOTIFICATION_ID, buildHeadlessNotification());
++        } catch (Exception e) {
++            Logger.error("Failed to foreground headless tracking service", e);
++        }
++    }
++
++    private void stopHeadlessTracking() {
++        if (!headlessActive) return;
++        headlessActive = false;
++        if (headlessClient != null && headlessCallback != null) {
++            headlessClient.removeLocationUpdates(headlessCallback);
++        }
++        headlessCurrentFenceId = null;
++        headlessLastKnownInProgress = null;
++    }
++
++    private Notification buildHeadlessNotification() {
++        Notification.Builder builder = new Notification.Builder(getApplicationContext())
++                .setContentTitle("Maxvolt One — Attendance tracking active")
++                .setContentText("Watching your location to mark attendance")
++                .setOngoing(true)
++                .setPriority(Notification.PRIORITY_HIGH)
++                .setWhen(System.currentTimeMillis());
++
++        try {
++            builder.setSmallIcon(getApplicationInfo().icon);
++        } catch (Exception ignored) {}
++
++        Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
++        if (launchIntent != null) {
++            launchIntent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
++            builder.setContentIntent(
++                    PendingIntent.getActivity(
++                            this,
++                            0,
++                            launchIntent,
++                            PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_IMMUTABLE
++                    )
++            );
++        }
++
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++            builder.setChannelId(BackgroundGeolocationService.class.getPackage().getName());
++        }
++
++        return builder.build();
++    }
++
++    private void handleHeadlessLocation(Location location, String token, String fencesJson, String apiBase) {
++        if (location.hasAccuracy() && location.getAccuracy() > 100) return;
++        try {
++            JSONArray fences = new JSONArray(fencesJson);
++
++            JSONObject best = null;
++            double bestDist = Double.MAX_VALUE;
++            for (int i = 0; i < fences.length(); i++) {
++                JSONObject f = fences.getJSONObject(i);
++                double d = distanceMetres(
++                        location.getLatitude(), location.getLongitude(),
++                        f.getDouble("latitude"), f.getDouble("longitude")
++                );
++                double radius = f.getDouble("radius_m");
++                if (d <= radius && d < bestDist) { best = f; bestDist = d; }
++            }
++
++            if (best != null) {
++                String fenceId = best.getString("id");
++                if (!fenceId.equals(headlessCurrentFenceId) || !Boolean.TRUE.equals(headlessLastKnownInProgress)) {
++                    headlessCurrentFenceId = fenceId;
++                    postGeofenceEvent("enter", location, best, token, apiBase);
++                }
++                return;
++            }
++
++            if (headlessCurrentFenceId == null) return;
++            JSONObject cur = null;
++            for (int i = 0; i < fences.length(); i++) {
++                JSONObject f = fences.getJSONObject(i);
++                if (f.getString("id").equals(headlessCurrentFenceId)) { cur = f; break; }
++            }
++            if (cur == null) { headlessCurrentFenceId = null; return; }
++
++            double d = distanceMetres(
++                    location.getLatitude(), location.getLongitude(),
++                    cur.getDouble("latitude"), cur.getDouble("longitude")
++            );
++            boolean wellOutside = d > cur.getDouble("radius_m") + 100;
++            if (wellOutside && !Boolean.FALSE.equals(headlessLastKnownInProgress)) {
++                postGeofenceEvent("exit", location, cur, token, apiBase);
++                headlessCurrentFenceId = null;
++            }
++        } catch (Exception e) {
++            Logger.error("Headless geofence match failed", e);
++        }
++    }
++
++    private static double distanceMetres(double lat1, double lon1, double lat2, double lon2) {
++        double R = 6371000;
++        double dLat = Math.toRadians(lat2 - lat1);
++        double dLon = Math.toRadians(lon2 - lon1);
++        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
++                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
++                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
++        return 2 * R * Math.asin(Math.sqrt(a));
++    }
++
++    // Fires the same idempotent nativeGeofenceEvent endpoint the JS path uses
++    // (backend/routes/functions.js), so re-detecting an already-handled
++    // enter/exit on the next boot/task-removal is harmless. Runs off the main
++    // thread — network calls are not permitted there.
++    private void postGeofenceEvent(
++            final String event, final Location location, final JSONObject fence,
++            final String token, final String apiBase
++    ) {
++        final boolean isMock = location.isFromMockProvider();
++        final double lat = location.getLatitude();
++        final double lon = location.getLongitude();
++        final boolean hasAccuracy = location.hasAccuracy();
++        final float accuracy = location.getAccuracy();
++        final long time = location.getTime();
++
++        new Thread(() -> {
++            HttpURLConnection conn = null;
++            try {
++                SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
++                sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
++
++                JSONObject body = new JSONObject();
++                body.put("event", event);
++                body.put("latitude", lat);
++                body.put("longitude", lon);
++                body.put("accuracy", hasAccuracy ? accuracy : JSONObject.NULL);
++                body.put("occurred_at", sdf.format(new Date(time)));
++                body.put("location_name", fence.getString("name"));
++                body.put("is_mock", isMock);
++                body.put("device_id", "capacitor-background-geolocation-headless");
++                body.put("source", "native_android");
++
++                URL url = new URL(apiBase + "/api/functions/nativeGeofenceEvent");
++                conn = (HttpURLConnection) url.openConnection();
++                conn.setRequestMethod("POST");
++                conn.setRequestProperty("Content-Type", "application/json");
++                conn.setRequestProperty("Authorization", "Bearer " + token);
++                conn.setConnectTimeout(15000);
++                conn.setReadTimeout(15000);
++                conn.setDoOutput(true);
++                try (OutputStream os = conn.getOutputStream()) {
++                    os.write(body.toString().getBytes(StandardCharsets.UTF_8));
++                }
++                int code = conn.getResponseCode();
++                if (code >= 200 && code < 300) {
++                    if ("enter".equals(event)) headlessLastKnownInProgress = true;
++                    else if ("exit".equals(event)) headlessLastKnownInProgress = false;
++                } else {
++                    Logger.debug("Headless geofence event failed, HTTP " + code);
++                }
++            } catch (Exception e) {
++                Logger.error("Headless geofence POST failed", e);
++            } finally {
++                if (conn != null) conn.disconnect();
++            }
++        }).start();
++    }
+ }
+diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
+new file mode 100644
+index 0000000..d64a828
+--- /dev/null
++++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
+@@ -0,0 +1,38 @@
++package com.equimaps.capacitor_background_geolocation;
++
++import android.content.BroadcastReceiver;
++import android.content.Context;
++import android.content.Intent;
++import android.content.SharedPreferences;
++import android.os.Build;
++
++// Restarts background geofence tracking directly — no JS, no Activity, no
++// Capacitor bridge involved — after the device reboots. Only fires if the JS
++// side left tracking_active=true via BackgroundGeolocation.persistHeadlessState(),
++// i.e. an eligible employee actually had tracking running before the reboot.
++public class BootReceiver extends BroadcastReceiver {
++    @Override
++    public void onReceive(Context context, Intent intent) {
++        String action = intent.getAction();
++        if (
++                !Intent.ACTION_BOOT_COMPLETED.equals(action)
++                && !"android.intent.action.QUICKBOOT_POWERON".equals(action)
++        ) {
++            return;
++        }
++
++        SharedPreferences prefs = context.getSharedPreferences(
++                BackgroundGeolocationService.HEADLESS_PREFS, Context.MODE_PRIVATE
++        );
++        boolean trackingActive = prefs.getBoolean(BackgroundGeolocationService.PREF_TRACKING_ACTIVE, false);
++        if (!trackingActive) return;
++
++        Intent serviceIntent = new Intent(context, BackgroundGeolocationService.class);
++        serviceIntent.setAction(BackgroundGeolocationService.ACTION_START_HEADLESS);
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++            context.startForegroundService(serviceIntent);
++        } else {
++            context.startService(serviceIntent);
++        }
++    }
++}

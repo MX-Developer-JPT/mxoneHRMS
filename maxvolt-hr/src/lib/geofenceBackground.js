@@ -119,6 +119,20 @@ export async function startBackgroundGeofence() {
         if (location) handleLocation(location, platformTag).catch(() => {});
       }
     );
+
+    // Android only (no-op elsewhere) — lets the native service resume
+    // tracking with zero JS involvement after a reboot or if the app is
+    // swiped from recents while tracking was active. Best-effort: if this
+    // fails, JS-driven tracking above still works fine on its own, this
+    // only affects the reboot/task-removed fallback path.
+    if (Capacitor.getPlatform() === 'android') {
+      BackgroundGeolocation.persistHeadlessState({
+        token: localStorage.getItem('base44_access_token') || '',
+        fencesJson: JSON.stringify(fences),
+        apiBase: window.location.origin,
+      }).catch(() => {});
+    }
+
     return { started: true, fences };
   } catch (e) {
     console.warn('[geofenceBackground] failed to start:', e.message);
@@ -131,6 +145,20 @@ export async function startBackgroundGeofence() {
 // employee-facing control that calls this while still logged in. Eligible
 // employees are re-started automatically on next login via startBackgroundGeofence().
 export async function stopBackgroundGeofence() {
+  const Capacitor = await getCapacitor();
+
+  // Clear the persisted headless state unconditionally (even if `watcherId`
+  // is already null in this JS instance's memory, e.g. after headless mode
+  // took over post-task-removal) so a later reboot never resumes tracking
+  // for a session that has since logged out.
+  if (Capacitor?.getPlatform() === 'android') {
+    try {
+      const { registerPlugin } = await import('@capacitor/core');
+      const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
+      await BackgroundGeolocation.clearHeadlessState();
+    } catch { /* best-effort */ }
+  }
+
   if (!watcherId) return;
   try {
     const { registerPlugin } = await import('@capacitor/core');
