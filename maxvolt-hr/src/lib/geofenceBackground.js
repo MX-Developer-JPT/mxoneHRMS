@@ -54,6 +54,23 @@ export async function checkGeofenceEligibility() {
   }
 }
 
+// Android-only. OEM battery managers (Xiaomi/Oppo/Vivo/Samsung) and stock
+// Android's own Doze/App Standby kill the background location service even
+// with every runtime permission correctly granted, unless the app is
+// exempted from battery optimization — this is the single most common
+// real-world reason "always on" tracking silently stops. Best-effort: safe
+// to call repeatedly, no-ops on iOS/web, and never throws.
+export async function requestBatteryOptimizationExemption() {
+  const Capacitor = await getCapacitor();
+  if (!Capacitor?.isNativePlatform() || Capacitor.getPlatform() !== 'android') return;
+  try {
+    const { registerPlugin } = await import('@capacitor/core');
+    const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
+    const { ignoring } = await BackgroundGeolocation.isIgnoringBatteryOptimizations();
+    if (!ignoring) await BackgroundGeolocation.requestIgnoreBatteryOptimizations();
+  } catch { /* best-effort — plugin method availability depends on the patched native build */ }
+}
+
 export async function startBackgroundGeofence() {
   const Capacitor = await getCapacitor();
   if (!Capacitor?.isNativePlatform()) return { started: false, reason: 'not_native' };

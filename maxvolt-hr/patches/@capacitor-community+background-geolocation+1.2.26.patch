@@ -1,0 +1,109 @@
+diff --git a/node_modules/@capacitor-community/background-geolocation/Package.swift b/node_modules/@capacitor-community/background-geolocation/Package.swift
+index d235202..e6f626f 100644
+--- a/node_modules/@capacitor-community/background-geolocation/Package.swift
++++ b/node_modules/@capacitor-community/background-geolocation/Package.swift
+@@ -12,9 +12,7 @@ let package = Package(
+     ],
+     dependencies: [
+         .package(
+-            url: "https://github.com/ionic-team/capacitor-swift-pm.git",
+-            from: "7.0.0"
+-        )
++            url: "https://github.com/ionic-team/capacitor-swift-pm.git", from: "8.0.0")
+     ],
+     targets: [
+         .target(
+diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
+index a92fcf9..a8ee670 100644
+--- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
++++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
+@@ -18,6 +18,7 @@ import android.location.LocationManager;
+ import android.net.Uri;
+ import android.os.Build;
+ import android.os.IBinder;
++import android.os.PowerManager;
+ import android.provider.Settings;
+ 
+ import com.getcapacitor.JSObject;
+@@ -45,6 +46,16 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+                                 Manifest.permission.ACCESS_FINE_LOCATION
+                         },
+                         alias = "location"
++                ),
++                // Android 10+ (API 29+) silently withholds location updates once the app is
++                // backgrounded unless this is held, and API 30+ auto-denies it if requested in
++                // the same dialog as foreground location — it must be its own alias, requested
++                // as a separate follow-up call after foreground is already granted.
++                @Permission(
++                        strings = {
++                                Manifest.permission.ACCESS_BACKGROUND_LOCATION
++                        },
++                        alias = "backgroundLocation"
+                 )
+         }
+ )
+@@ -84,6 +95,15 @@ public class BackgroundGeolocation extends Plugin {
+             } else {
+                 call.reject("Permission denied.", "NOT_AUTHORIZED");
+             }
++        } else if (
++                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
++                && getPermissionState("backgroundLocation") != PermissionState.GRANTED
++                && call.getBoolean("requestPermissions", true)
++        ) {
++            // Foreground is already granted — ask for "Allow all the time" as its own
++            // follow-up dialog now. Not fatal if the user declines: the watcher still
++            // starts below and works while the app is open/foregrounded either way.
++            requestPermissionForAlias("backgroundLocation", call, "backgroundLocationPermissionsCallback");
+         } else if (!isLocationEnabled(getContext())) {
+             call.reject("Location services disabled.", "NOT_AUTHORIZED");
+         }
+@@ -181,6 +201,48 @@ public class BackgroundGeolocation extends Plugin {
+         }
+     }
+ 
++    @PermissionCallback
++    private void backgroundLocationPermissionsCallback(PluginCall call) {
++        // Best-effort — declining "Allow all the time" only means tracking is
++        // limited to while the app is open, not a hard failure.
++        if (call.getBoolean("stale", false)) {
++            fetchLastLocation(call);
++        }
++        if (service != null) {
++            service.onPermissionsGranted();
++            stoppedWithoutPermissions = false;
++        }
++    }
++
++    // Xiaomi/Oppo/Vivo/Samsung and stock Android's own Doze/App Standby all kill
++    // background services that aren't exempted from battery optimization, which is
++    // the most common real-world reason "always on" location tracking silently
++    // stops working even with every permission correctly granted. This surfaces
++    // the system's "Allow background activity" exemption dialog directly — Play
++    // Store explicitly permits this for apps whose core function requires
++    // continuous background location (delivery/fleet/attendance tracking).
++    @PluginMethod()
++    public void isIgnoringBatteryOptimizations(PluginCall call) {
++        PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
++        boolean ignoring = pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
++        JSObject ret = new JSObject();
++        ret.put("ignoring", ignoring);
++        call.resolve(ret);
++    }
++
++    @PluginMethod()
++    public void requestIgnoreBatteryOptimizations(PluginCall call) {
++        try {
++            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
++            intent.setData(Uri.parse("package:" + getContext().getPackageName()));
++            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            getContext().startActivity(intent);
++            call.resolve();
++        } catch (Exception e) {
++            call.reject("Could not open battery optimization settings.", e);
++        }
++    }
++
+     @PluginMethod()
+     public void removeWatcher(PluginCall call) {
+         String callbackId = call.getString("id");

@@ -23,7 +23,7 @@ import LeavePage from './pages/Leave';
 import ProfilePage from './pages/Profile';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
-import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility } from '@/lib/geofenceBackground';
+import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption } from '@/lib/geofenceBackground';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
@@ -435,6 +435,10 @@ export default function Layout({ children, currentPageName }) {
   const acknowledgeGeoDisclosure = () => {
     if (user) localStorage.setItem(`bg_geo_disclosed_${user.id}`, '1');
     setShowGeoDisclosure(false);
+    // Best-effort battery-optimization exemption prompt (Android only, no-op
+    // elsewhere) — surfaced right alongside the location grant so it reads as
+    // one continuous setup step to the employee, rather than a separate ask.
+    requestBatteryOptimizationExemption().catch(() => {});
     startBackgroundGeofence().catch((e) => console.warn('startBackgroundGeofence:', e.message));
   };
 
@@ -949,6 +953,11 @@ export default function Layout({ children, currentPageName }) {
                 Privacy Policy
               </a>{' '}
               for details.
+            </p>
+            <p>
+              After tapping "Got it", your device may show one or two system prompts —
+              for location access and to allow this app to run in the background. Please
+              allow both so attendance is captured reliably, even with your phone locked.
             </p>
           </div>
           <Button onClick={acknowledgeGeoDisclosure} className="w-full mt-2">Got it</Button>

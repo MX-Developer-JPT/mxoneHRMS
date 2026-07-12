@@ -52,4 +52,14 @@
          this one, since Play Store treats background location as sensitive and
          expects the app itself to opt in explicitly. -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- Lets the app surface the system "exempt from battery optimization" dialog
+         (BackgroundGeolocation.requestIgnoreBatteryOptimizations(), patched in via
+         patches/@capacitor-community+background-geolocation+*.patch). Without this
+         exemption, OEM battery managers (Xiaomi/Oppo/Vivo/Samsung) and stock
+         Android's own Doze/App Standby routinely kill the background location
+         service anyway, even with every runtime permission correctly granted —
+         this is the single most common real-world cause of "always on" background
+         tracking silently stopping. Play Store explicitly permits this for apps
+         whose core function requires continuous background location. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 </manifest>
