@@ -126,6 +126,22 @@ function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs
   );
 }
 
+class ChartErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="text-center py-16 text-gray-400">
+          <Network className="w-10 h-10 mx-auto mb-2 text-gray-300" />
+          Couldn't render the chart ({this.state.error.message || 'unknown error'}). Try Refresh above.
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function OrgChart() {
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState([]);
@@ -150,12 +166,27 @@ export default function OrgChart() {
   const { roots, matchSet, orphanCount } = useMemo(() => {
     const byId = {};
     employees.forEach(e => { byId[e.user_id] = { ...e, children: [] }; });
+    // Detects whether attaching `id` under `mgrId` would create a cycle in the
+    // reporting chain (e.g. corrupted/imported data where A reports to B who,
+    // through some chain, reports back to A). Without this check such a cycle
+    // makes the recursive tree walks below (countDescendants, sortRec) recurse
+    // forever and silently crash the chart's render.
+    const createsCycle = (id, mgrId) => {
+      let cur = byId[mgrId];
+      const seen = new Set();
+      while (cur) {
+        if (cur.user_id === id || seen.has(cur.user_id)) return true;
+        seen.add(cur.user_id);
+        cur = cur.reporting_manager_id ? byId[cur.reporting_manager_id] : null;
+      }
+      return false;
+    };
     const roots = [];
     let orphanCount = 0;
     employees.forEach(e => {
       const node = byId[e.user_id];
       const mgr = e.reporting_manager_id && byId[e.reporting_manager_id];
-      if (mgr && e.reporting_manager_id !== e.user_id) mgr.children.push(node);
+      if (mgr && e.reporting_manager_id !== e.user_id && !createsCycle(e.user_id, e.reporting_manager_id)) mgr.children.push(node);
       else { roots.push(node); if (e.reporting_manager_id) orphanCount++; }
     });
     const sortRec = (nodes) => { nodes.sort((a, b) => countDescendants(b) - countDescendants(a) || a.name.localeCompare(b.name)); nodes.forEach(n => sortRec(n.children)); };
@@ -235,13 +266,15 @@ export default function OrgChart() {
           No employees found. Set reporting managers on employee records to build the chart.
         </div>
       ) : (
-        <div className="overflow-x-auto overflow-y-visible pb-8 pt-2">
-          <div className="min-w-max flex justify-center gap-10">
-            {displayRoots.map(r => (
-              <ChartNode key={r.user_id} node={r} depth={0} collapsed={effectiveCollapsed} toggle={toggle} matchSet={matchSet} onFocus={focus} nodeRefs={nodeRefs} />
-            ))}
+        <ChartErrorBoundary key={displayRoots.map(r => r.user_id).join(',')}>
+          <div className="overflow-x-auto overflow-y-visible pb-8 pt-2">
+            <div className="min-w-max flex justify-center gap-10">
+              {displayRoots.map(r => (
+                <ChartNode key={r.user_id} node={r} depth={0} collapsed={effectiveCollapsed} toggle={toggle} matchSet={matchSet} onFocus={focus} nodeRefs={nodeRefs} />
+              ))}
+            </div>
           </div>
-        </div>
+        </ChartErrorBoundary>
       )}
     </div>
   );
