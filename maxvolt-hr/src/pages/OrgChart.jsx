@@ -3,7 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
+import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut, Download, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const AVATAR_COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-emerald-500', 'bg-orange-500', 'bg-pink-500', 'bg-teal-500', 'bg-indigo-500', 'bg-rose-500'];
@@ -149,7 +149,9 @@ export default function OrgChart() {
   const [collapsed, setCollapsed] = useState(new Set());
   const [focusedId, setFocusedId] = useState(null); // drill-down: view just this person's team
   const [zoom, setZoom] = useState(1);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const nodeRefs = useRef({});
+  const chartRef = useRef(null);
 
   const zoomIn = () => setZoom(z => Math.min(1.5, Math.round((z + 0.1) * 10) / 10));
   const zoomOut = () => setZoom(z => Math.max(0.4, Math.round((z - 0.1) * 10) / 10));
@@ -258,6 +260,64 @@ export default function OrgChart() {
   const focusResult = focusedId ? findNodeAndTrail(roots, focusedId) : null;
   const displayRoots = focusResult ? [focusResult.node] : roots;
 
+  // Exports the full org chart (not just a drilled-down subteam, even if
+  // one is currently focused) as a multi-page landscape PDF — tiled like a
+  // poster/Gantt-chart printout rather than shrunk to fit one page, since a
+  // ~250-person tree at readable card size is far wider/taller than A4.
+  const downloadPdf = async () => {
+    setDownloadingPdf(true);
+    const prevCollapsed = collapsed, prevZoom = zoom, prevFocusedId = focusedId;
+    setFocusedId(null);
+    setCollapsed(new Set());
+    setZoom(1);
+    try {
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await new Promise(r => setTimeout(r, 300)); // let a large (~250-node) expansion finish reflowing
+      const el = chartRef.current;
+      if (!el) throw new Error('Chart not ready');
+      const images = Array.from(el.querySelectorAll('img'));
+      await Promise.all(images.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = img.onerror = res; })));
+
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')]);
+      const isDark = document.documentElement.classList.contains('dark');
+      const bg = isDark ? '#0b0b0d' : '#ffffff';
+      const canvas = await html2canvas(el, { scale: 2, backgroundColor: bg, useCORS: true });
+
+      const TILE_W = 1600, TILE_H = 1000; // px per PDF page, landscape poster tiles
+      const cols = Math.ceil(canvas.width / TILE_W);
+      const rows = Math.ceil(canvas.height / TILE_H);
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [TILE_W, TILE_H] });
+      const dateStr = new Date().toLocaleDateString('en-IN');
+      let page = 0;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const sx = c * TILE_W, sy = r * TILE_H;
+          const sw = Math.min(TILE_W, canvas.width - sx);
+          const sh = Math.min(TILE_H, canvas.height - sy);
+          const tile = document.createElement('canvas');
+          tile.width = TILE_W; tile.height = TILE_H;
+          const tctx = tile.getContext('2d');
+          tctx.fillStyle = bg; tctx.fillRect(0, 0, TILE_W, TILE_H);
+          tctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+          if (page > 0) pdf.addPage([TILE_W, TILE_H], 'landscape');
+          pdf.addImage(tile.toDataURL('image/png'), 'PNG', 0, 0, TILE_W, TILE_H);
+          pdf.setFontSize(10);
+          pdf.setTextColor(isDark ? 200 : 90);
+          pdf.text(`Organisation Chart — generated ${dateStr} — page ${page + 1} of ${rows * cols}`, 12, TILE_H - 10);
+          page++;
+        }
+      }
+      pdf.save(`org-chart-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (e) {
+      toast.error('Failed to generate PDF: ' + e.message);
+    } finally {
+      setCollapsed(prevCollapsed);
+      setZoom(prevZoom);
+      setFocusedId(prevFocusedId);
+      setDownloadingPdf(false);
+    }
+  };
+
   return (
     <div className="p-4 md:p-6 space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -279,6 +339,10 @@ export default function OrgChart() {
             <Button variant="ghost" size="sm" className="h-8 px-2 rounded-l-none" onClick={zoomIn} disabled={zoom >= 1.5} title="Zoom in"><ZoomIn className="w-4 h-4" /></Button>
           </div>
           <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></Button>
+          <Button variant="outline" size="sm" onClick={downloadPdf} disabled={downloadingPdf || loading || roots.length === 0} title="Download the full chart as a multi-page PDF">
+            {downloadingPdf ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}
+            {downloadingPdf ? 'Generating…' : 'Download PDF'}
+          </Button>
         </div>
       </div>
 
@@ -311,7 +375,7 @@ export default function OrgChart() {
       ) : (
         <ChartErrorBoundary key={displayRoots.map(r => r.user_id).join(',')}>
           <div className="overflow-auto pb-8 pt-2 max-h-[75vh]" onWheel={handleWheel}>
-            <div className="min-w-max flex justify-center gap-10" style={{ zoom }}>
+            <div ref={chartRef} className="min-w-max flex justify-center gap-10" style={{ zoom }}>
               {displayRoots.map(r => (
                 <ChartNode key={r.user_id} node={r} depth={0} collapsed={effectiveCollapsed} toggle={toggle} matchSet={matchSet} onFocus={focus} nodeRefs={nodeRefs} />
               ))}
