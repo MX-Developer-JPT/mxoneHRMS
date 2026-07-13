@@ -141,7 +141,7 @@ const ROLES = [
 ];
 const roleColor = (role) => ROLES.find(r => r.value === role)?.color || 'bg-gray-100 text-gray-700';
 
-function UserFormModal({ title, initial, onSave, onClose, isNew }) {
+function UserFormModal({ title, initial, onSave, onClose, isNew, canEditEmail }) {
   const [form, setForm] = useState({
     full_name: initial?.full_name || '',
     email: initial?.email || '',
@@ -149,6 +149,10 @@ function UserFormModal({ title, initial, onSave, onClose, isNew }) {
     password: '',
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  // Changing an existing account's login email is admin-only — creating a
+  // brand-new account still needs it (that's a different action, not a
+  // change), so this only locks the field in edit mode for non-admins.
+  const emailLocked = !isNew && !canEditEmail;
 
   const handleSubmit = () => {
     if (!form.email) return toast.error('Email is required');
@@ -173,7 +177,8 @@ function UserFormModal({ title, initial, onSave, onClose, isNew }) {
           </div>
           <div>
             <Label className="text-sm font-medium">Email <span className="text-red-500">*</span></Label>
-            <Input className="mt-1" type="email" placeholder="user@company.com" value={form.email} onChange={e => set('email', e.target.value)} />
+            <Input className="mt-1" type="email" placeholder="user@company.com" value={form.email} onChange={e => set('email', e.target.value)} disabled={emailLocked} />
+            {emailLocked && <p className="text-xs text-muted-foreground mt-1">Only admins can change a user's login email.</p>}
           </div>
           <div>
             <Label className="text-sm font-medium">Role <span className="text-red-500">*</span></Label>
@@ -203,6 +208,8 @@ function UserFormModal({ title, initial, onSave, onClose, isNew }) {
 }
 
 function UsersTab() {
+  const { user: currentUser } = useAuth();
+  const isAdmin = currentUser?.role === 'admin';
   const [users, setUsers]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch]   = useState('');
@@ -338,7 +345,7 @@ function UsersTab() {
         <p className="text-xs text-muted-foreground mt-2">{selected.size} user(s) selected</p>
       )}
 
-      {editUser && <UserFormModal title={`Edit User — ${editUser.email}`} initial={editUser} onSave={handleSaveEdit} onClose={() => setEditUser(null)} />}
+      {editUser && <UserFormModal title={`Edit User — ${editUser.email}`} initial={editUser} onSave={handleSaveEdit} onClose={() => setEditUser(null)} canEditEmail={isAdmin} />}
       {newUserForm && <UserFormModal title="Create New User" isNew onSave={handleCreate} onClose={() => setNewUserForm(false)} />}
       {pwdModal && <PasswordModal user={pwdModal} onSave={handlePasswordReset} onClose={() => setPwdModal(null)} />}
       {confirm && <ConfirmDialog message={`Delete user "${confirm.email}"? This cannot be undone.`} onConfirm={() => handleDelete(confirm.id)} onCancel={() => setConfirm(null)} />}

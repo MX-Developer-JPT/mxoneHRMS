@@ -182,7 +182,23 @@ router.patch('/users/:id', async (req, res) => {
   } else if (custom_role) {
     fields.push(`custom_role=$${++pi}`); vals.push(custom_role);
   }
-  if (email) { fields.push(`email=$${++pi}`); vals.push(email.toLowerCase().trim()); }
+  if (email) {
+    const normEmail = email.toLowerCase().trim();
+    const current = await one("SELECT email FROM users WHERE id=$1", [req.params.id]);
+    // Only block/validate when the email is actually changing — the
+    // frontend form always includes the current email in its payload even
+    // when the field wasn't touched, so this must not reject a no-op edit
+    // (e.g. HR saving a full_name change) just because email is present.
+    if (current && normEmail !== current.email) {
+      // Login email is the account's credential — restrict changing it to
+      // admin only, even though HR can reach every other field on this route
+      // (the router-level guard only requires admin OR hr).
+      if (!req.isAdmin) return res.status(403).json({ error: 'Only admins can change a user\'s login email' });
+      const dup = await one("SELECT id FROM users WHERE email=$1 AND id!=$2", [normEmail, req.params.id]);
+      if (dup) return res.status(400).json({ error: 'That email is already in use by another account' });
+      fields.push(`email=$${++pi}`); vals.push(normEmail);
+    }
+  }
   if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
   fields.push(`updated_at=NOW()::TEXT`);
   vals.push(req.params.id);
