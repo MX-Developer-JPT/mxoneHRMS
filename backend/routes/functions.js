@@ -7249,16 +7249,40 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         } else {
           const upd = { ...plaLv, status: 'approved', approved_by: plaActorId, approved_by_name: plaActorName, approved_date: now, approval_note: plaNote || '', approval_history: [...(plaLv.approval_history || []), { action: 'approved', by: plaActorId, by_name: plaActorName, at: now, note: plaNote || '' }] };
           await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), plaRow.id]);
-          // Update leave balance
-          try {
-            const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [plaLv.user_id]);
-            const lb = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === plaLv.leave_policy_id);
-            if (lb) {
-              const lbUpd = { ...lb, used: (lb.used || 0) + plaLv.total_days, pending_approval: Math.max((lb.pending_approval || 0) - plaLv.total_days, 0) };
-              await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
-            }
-          } catch {}
-          await notify(plaLv.user_id, { title: 'Leave Approved', message: `Your leave request (${plaLv.start_date} – ${plaLv.end_date}) has been approved by ${plaActorName}.`, type: 'success', link: '/leave' });
+          const plaIsWfh = plaLv.is_wfh || plaLv.leave_type === 'work_from_home';
+          if (plaIsWfh) {
+            // WFH doesn't use leave balances — instead, write an Attendance
+            // row per day so WFH Tracking (getWFHReport), which reads only
+            // from Attendance, picks up the approved request.
+            try {
+              const plaDates = [];
+              for (let d = new Date(plaLv.start_date + 'T00:00:00'); d <= new Date(plaLv.end_date + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+                plaDates.push(d.toISOString().split('T')[0]);
+              }
+              for (const plaDate of plaDates) {
+                const plaAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [plaLv.user_id, plaDate]);
+                if (plaAttRow) {
+                  const plaAtt = { ...JSON.parse(plaAttRow.data), status: 'work_from_home', leave_id: plaLeaveId };
+                  await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", ['work_from_home', JSON.stringify(plaAtt), plaAttRow.id]);
+                } else {
+                  const plaAttId = uuidv4();
+                  const plaAtt = { id: plaAttId, user_id: plaLv.user_id, date: plaDate, status: 'work_from_home', leave_id: plaLeaveId, created_at: now };
+                  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'work_from_home',$3)", [plaAttId, plaLv.user_id, JSON.stringify(plaAtt)]);
+                }
+              }
+            } catch (e) { console.warn('WFH attendance sync on leave approval failed:', e.message); }
+          } else {
+            // Update leave balance
+            try {
+              const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [plaLv.user_id]);
+              const lb = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === plaLv.leave_policy_id);
+              if (lb) {
+                const lbUpd = { ...lb, used: (lb.used || 0) + plaLv.total_days, pending_approval: Math.max((lb.pending_approval || 0) - plaLv.total_days, 0) };
+                await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
+              }
+            } catch {}
+          }
+          await notify(plaLv.user_id, { title: plaIsWfh ? 'WFH Request Approved' : 'Leave Approved', message: `Your ${plaIsWfh ? 'work from home' : 'leave'} request (${plaLv.start_date} – ${plaLv.end_date}) has been approved by ${plaActorName}.`, type: 'success', link: '/leave' });
           return res.json({ success: true, status: 'approved' });
         }
       } else if (plaAction === 'reject') {

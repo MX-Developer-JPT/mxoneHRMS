@@ -51,6 +51,23 @@ async function checkRegularisationLimit(res, type, data) {
   return true;
 }
 
+// Work-From-Home requests are submitted as a Leave with is_wfh/leave_type
+// set client-side (Leave.jsx only shows the WFH option when the employee's
+// wfh_eligible flag is set) — enforce that same rule server-side too, since
+// this generic route is reachable directly without going through the UI.
+async function checkWfhEligibility(res, type, data) {
+  if (type !== 'Leave') return true;
+  if (!data.is_wfh && data.leave_type !== 'work_from_home') return true;
+  if (!data.user_id) return true;
+  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [data.user_id]);
+  const emp = empRow ? JSON.parse(empRow.data) : null;
+  if (!emp?.wfh_eligible) {
+    res.status(403).json({ error: 'You are not eligible for Work From Home.' });
+    return false;
+  }
+  return true;
+}
+
 /* ── helpers ─────────────────────────────────────────── */
 
 const parseRow = (row) => {
@@ -212,6 +229,7 @@ router.post('/:type', async (req, res) => {
   const id = body.id || uuidv4();
   const data = { ...body, id };
   if (!(await checkRegularisationLimit(res, type, data))) return;
+  if (!(await checkWfhEligibility(res, type, data))) return;
 
   await run(
     `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
