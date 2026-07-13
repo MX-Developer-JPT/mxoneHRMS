@@ -209,9 +209,9 @@ export default function TeamCalendar() {
                             <Check className={`mr-2 h-4 w-4 ${selectedEmployee === 'all' ? 'opacity-100' : 'opacity-0'}`} /> All Employees
                           </CommandItem>
                           {filteredEmployees.map(e => (
-                            <CommandItem key={e.user_id} value={`${e.display_name || ''}`} onSelect={() => { setSelectedEmployee(e.user_id); setTcEmpOpen(false); }}>
+                            <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { setSelectedEmployee(e.user_id); setTcEmpOpen(false); }}>
                               <Check className={`mr-2 h-4 w-4 ${selectedEmployee === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
-                              {e.display_name}
+                              {e.display_name} {e.employee_code && <span className="text-xs text-muted-foreground ml-1">({e.employee_code})</span>}
                             </CommandItem>
                           ))}
                         </CommandGroup>
@@ -261,7 +261,7 @@ export default function TeamCalendar() {
                     <div key={emp.user_id} className="grid gap-px mt-px" style={{ gridTemplateColumns: `120px repeat(${days.length}, 1fr)` }}>
                       <div className="p-2 text-xs truncate border-b flex flex-col justify-center">
                         <span className="font-medium">{emp.display_name}</span>
-                        <span className="text-[10px] text-muted-foreground">{emp.department}</span>
+                        <span className="text-[10px] text-muted-foreground">{emp.employee_code}{emp.employee_code && emp.department ? ' · ' : ''}{emp.department}</span>
                       </div>
                       {days.map(day => {
                         const dateStr = format(day, 'yyyy-MM-dd');
@@ -298,7 +298,7 @@ export default function TeamCalendar() {
                             <span className="text-primary font-semibold text-sm">{emp.display_name?.charAt(0)}</span>
                           </div>
                           <div>
-                            <p className="font-medium text-sm">{emp.display_name}</p>
+                            <p className="font-medium text-sm">{emp.display_name} {emp.employee_code && <span className="text-xs font-normal text-muted-foreground">({emp.employee_code})</span>}</p>
                             <p className="text-xs text-muted-foreground">{emp.department} · {emp.designation}</p>
                           </div>
                         </div>

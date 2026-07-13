@@ -497,7 +497,7 @@ export default function LeaveManagement() {
                                  {emp?.display_name?.charAt(0).toUpperCase()}
                               </div>
                               <div>
-                                <p className="font-semibold">{emp?.display_name}</p>
+                                <p className="font-semibold">{emp?.display_name} {emp?.employee_code && <span className="text-xs font-normal text-gray-400">({emp.employee_code})</span>}</p>
                                 <p className="text-xs text-gray-500">{emp?.designation} · {emp?.department}</p>
                               </div>
                             </div>
@@ -591,7 +591,7 @@ export default function LeaveManagement() {
           <div className="space-y-4">
             {selectedLeave && (
               <div className="bg-gray-50 rounded-lg p-3 text-sm">
-                <p><strong>Employee:</strong> {employees.find(e => e.user_id === selectedLeave.user_id)?.display_name}</p>
+                <p><strong>Employee:</strong> {employees.find(e => e.user_id === selectedLeave.user_id)?.display_name} {employees.find(e => e.user_id === selectedLeave.user_id)?.employee_code && `(${employees.find(e => e.user_id === selectedLeave.user_id)?.employee_code})`}</p>
                 <p><strong>Leave Type:</strong> {leavePolicies.find(p => p.id === selectedLeave.leave_policy_id)?.name}</p>
                 <p><strong>Duration:</strong> {selectedLeave.total_days} day(s) — {safeDate(selectedLeave.start_date, 'MMM d')} to {safeDate(selectedLeave.end_date, 'MMM d, yyyy')}</p>
                 {actionType === 'approve' && selectedLeave.current_approval_level === 1 && (

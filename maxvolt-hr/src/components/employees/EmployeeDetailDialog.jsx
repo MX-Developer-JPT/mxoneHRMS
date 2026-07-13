@@ -225,7 +225,7 @@ export default function EmployeeDetailDialog({ employee, onClose }) {
               <span className="text-blue-600 font-bold text-xl">{displayName?.charAt(0).toUpperCase()}</span>
             </div>
             <div className="min-w-0">
-              <p className="text-lg font-bold truncate">{displayName}</p>
+              <p className="text-lg font-bold truncate">{displayName} {emp.employee_code && <span className="text-xs font-normal text-gray-400">({emp.employee_code})</span>}</p>
               <p className="text-sm text-gray-500 font-normal truncate">{emp.designation} · {emp.department}</p>
             </div>
           </DialogTitle>

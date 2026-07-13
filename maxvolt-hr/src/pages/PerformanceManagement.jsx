@@ -288,7 +288,7 @@ export default function PerformanceManagement() {
                         <div key={emp.id} className="border rounded-lg p-3 flex items-center justify-between gap-2">
                           <div>
                             <p className="font-medium text-sm">{u?.full_name || 'N/A'}</p>
-                            <p className="text-xs text-gray-400">{emp.designation}</p>
+                            <p className="text-xs text-gray-400">{emp.employee_code}{emp.employee_code && emp.designation ? ' · ' : ''}{emp.designation}</p>
                           </div>
                           {hasReview
                             ? <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Review Active</span>

@@ -297,7 +297,7 @@ export default function LoanManagement() {
                     <div className="flex justify-between items-start">
                       <div>
                         {isHR && emp && (
-                          <p className="font-semibold">{emp.user?.full_name}</p>
+                          <p className="font-semibold">{emp.user?.full_name} {emp.employee_code && <span className="text-xs font-normal text-gray-400">({emp.employee_code})</span>}</p>
                         )}
                         <p className="text-sm text-gray-600 capitalize">{loan.loan_type} Loan</p>
                         <p className="text-xs text-gray-500 mt-1">

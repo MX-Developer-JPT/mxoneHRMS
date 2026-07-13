@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle, Upload, FileText, User, Phone, AlertCircle, Shield } from 'lucide-react';
+import { CheckCircle, Upload, FileText, User, Phone, AlertCircle, Shield, Camera, Loader2 } from 'lucide-react';
 import MobileSelect from '@/components/MobileSelect';
 import { toast } from 'sonner';
 
@@ -57,6 +57,15 @@ export default function OnboardingForm() {
   const [healthReportFile, setHealthReportFile] = useState(null);
   const [nomineePanFile, setNomineePanFile] = useState(null);
   const [nomineeAadharFile, setNomineeAadharFile] = useState(null);
+  const [profilePhotoFile, setProfilePhotoFile] = useState(null);
+  const [profilePhotoPreview, setProfilePhotoPreview] = useState('');
+
+  const handleProfilePhotoSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setProfilePhotoFile(file);
+    setProfilePhotoPreview(URL.createObjectURL(file));
+  };
 
   const emptyPolicy = () => ({ insurance_type: '', insurer_name: '', policy_number: '', sum_insured: '', validity_date: '', nominee_name: '', nominee_relationship: '', nominee_date_of_birth: '' });
 
@@ -163,6 +172,7 @@ export default function OnboardingForm() {
     const esiValid = !personalInfo.is_esi_applicable || esiNumber;
     return personalInfo.first_name && personalInfo.phone && personalInfo.date_of_birth &&
       personalInfo.blood_group &&
+      profilePhotoFile &&
       emergencyContact.name && emergencyContact.phone &&
       bankDetails.account_number && bankDetails.ifsc_code && bankDetails.bank_name &&
       aadharNumber && panNumber &&
@@ -172,12 +182,16 @@ export default function OnboardingForm() {
 
   const handleSubmit = async () => {
     if (!allMandatoryFilled()) {
-      toast.error('Please fill all mandatory fields and upload all required documents');
+      toast.error(!profilePhotoFile
+        ? 'Please upload a profile photo (Personal Information step)'
+        : 'Please fill all mandatory fields and upload all required documents');
       return;
     }
 
     setSubmitting(true);
     try {
+
+    const { file_url: profilePhotoUrl } = await base44.integrations.Core.UploadFile({ file: profilePhotoFile });
 
     await base44.functions.invoke('updateUserName', {
       first_name: personalInfo.first_name,
@@ -221,6 +235,7 @@ export default function OnboardingForm() {
       department: 'unassigned',
       designation: 'New Joiner',
       date_of_joining: new Date().toISOString().split('T')[0],
+      profile_picture_url: profilePhotoUrl,
       phone: personalInfo.phone,
       personal_email: personalInfo.personal_email,
       blood_group: personalInfo.blood_group,
@@ -433,6 +448,18 @@ export default function OnboardingForm() {
           <Card>
             <CardHeader><CardTitle className="flex gap-2"><User className="w-5 h-5" />Personal Information</CardTitle></CardHeader>
             <CardContent className="space-y-4">
+              <div className="flex flex-col items-center gap-2 pb-2">
+                <Label>Profile Photo *</Label>
+                <label className="relative w-24 h-24 rounded-full border-2 border-dashed border-gray-300 hover:border-blue-400 flex items-center justify-center cursor-pointer overflow-hidden bg-gray-50 group">
+                  {profilePhotoPreview ? (
+                    <img src={profilePhotoPreview} alt="Profile preview" className="w-full h-full object-cover" />
+                  ) : (
+                    <Camera className="w-7 h-7 text-gray-400 group-hover:text-blue-500" />
+                  )}
+                  <input type="file" accept="image/*" className="hidden" onChange={handleProfilePhotoSelect} />
+                </label>
+                <p className="text-xs text-gray-400">Required — used across the app to identify you</p>
+              </div>
               <div className="grid md:grid-cols-3 gap-4">
                 <div>
                   <Label>First Name *</Label>
@@ -552,7 +579,7 @@ export default function OnboardingForm() {
               <div className="flex justify-end">
                 <Button
                   onClick={() => setStep(2)}
-                  disabled={!personalInfo.first_name || !personalInfo.phone || !personalInfo.date_of_birth || !personalInfo.blood_group || !personalInfo.gender || !emergencyContact.name || !emergencyContact.phone}
+                  disabled={!personalInfo.first_name || !personalInfo.phone || !personalInfo.date_of_birth || !personalInfo.blood_group || !personalInfo.gender || !profilePhotoFile || !emergencyContact.name || !emergencyContact.phone}
                 >
                   Next: Bank & IDs →
                 </Button>

@@ -161,7 +161,7 @@ export default function GatePassApproval() {
                         <div className="flex items-center gap-2 mb-1">
                           <User className="w-4 h-4 text-gray-400" />
                           <span className="font-semibold text-gray-900">{emp?.display_name || 'Unknown'}</span>
-                          {emp && <span className="text-xs text-gray-400">· {emp.designation} · {emp.department}</span>}
+                          {emp && <span className="text-xs text-gray-400">· {emp.employee_code} · {emp.designation} · {emp.department}</span>}
                         </div>
                         <div className="flex items-center gap-2 mt-1">
                           {pass.outing_type && <Badge variant="outline" className="text-xs">{pass.outing_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</Badge>}
@@ -208,7 +208,7 @@ export default function GatePassApproval() {
           {selected && (
             <div className="space-y-4">
               <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-                <p><span className="font-medium">Employee:</span> {employees[selected.employee_user_id]?.display_name || 'Unknown'}</p>
+                <p><span className="font-medium">Employee:</span> {employees[selected.employee_user_id]?.display_name || 'Unknown'}{employees[selected.employee_user_id]?.employee_code && ` (${employees[selected.employee_user_id].employee_code})`}</p>
                 <p><span className="font-medium">Outing Type:</span> <Badge variant="outline">{selected.outing_type?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'N/A'}</Badge></p>
                 <p><span className="font-medium">Reason:</span> {selected.reason || '—'}</p>
                 <p><span className="font-medium">Requested:</span> {safeDate(selected.created_date, 'dd MMM yyyy, hh:mm a')}</p>

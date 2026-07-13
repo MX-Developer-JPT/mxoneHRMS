@@ -88,6 +88,7 @@ export default function HRDashboard({ user }) {
       const u = userMap[a.user_id];
       return {
         name: emp?.display_name || u?.full_name || a.user_id,
+        code: emp?.employee_code || '',
         dept: emp?.department || '—',
         checkIn: safeTime(a.check_in_time),
         status: a.status || 'present'
@@ -97,7 +98,7 @@ export default function HRDashboard({ user }) {
     const presentUserIds = new Set(todayAttendance.map(a => a.user_id));
     const absentDetails = employees
       .filter(e => !presentUserIds.has(e.user_id))
-      .map(e => ({ name: e.display_name || userMap[e.user_id]?.full_name || '—', dept: e.department || '—' }));
+      .map(e => ({ name: e.display_name || userMap[e.user_id]?.full_name || '—', code: e.employee_code || '', dept: e.department || '—' }));
 
     const deptMap = {};
     employees.forEach(e => {
@@ -240,7 +241,7 @@ export default function HRDashboard({ user }) {
                   : data.presentDetails.map((e, i) => (
                     <div key={i} className="flex justify-between items-center p-3 bg-emerald-50 dark:bg-emerald-950/40 rounded-lg">
                       <div>
-                        <p className="text-sm font-medium text-foreground">{e.name}</p>
+                        <p className="text-sm font-medium text-foreground">{e.name} {e.code && <span className="text-xs font-normal text-muted-foreground">({e.code})</span>}</p>
                         <p className="text-xs text-muted-foreground capitalize">{e.dept}</p>
                       </div>
                       <div className="text-right">
@@ -273,7 +274,7 @@ export default function HRDashboard({ user }) {
                   ? <p className="text-muted-foreground text-sm text-center py-4">Everyone is present!</p>
                   : data.absentDetails.map((e, i) => (
                     <div key={i} className="flex justify-between items-center p-3 bg-red-50 dark:bg-red-950/40 rounded-lg">
-                      <p className="text-sm font-medium text-foreground">{e.name}</p>
+                      <p className="text-sm font-medium text-foreground">{e.name} {e.code && <span className="text-xs font-normal text-muted-foreground">({e.code})</span>}</p>
                       <span className="text-xs text-muted-foreground capitalize">{e.dept}</span>
                     </div>
                   ))

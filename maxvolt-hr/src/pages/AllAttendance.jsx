@@ -68,6 +68,7 @@ export default function AllAttendance() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [deptFilter, setDeptFilter] = useState('all');
+  const [methodFilter, setMethodFilter] = useState('all');
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [collapsedDepts, setCollapsedDepts] = useState({});
   const [markingAbsent, setMarkingAbsent] = useState(false);
@@ -168,6 +169,7 @@ export default function AllAttendance() {
       const displayStatus = getDisplayStatus(r);
       if (statusFilter !== 'all' && displayStatus !== statusFilter) return false;
       if (deptFilter !== 'all' && r._emp?.department !== deptFilter) return false;
+      if (methodFilter !== 'all' && getAttendanceMethod(r).key !== methodFilter) return false;
       if (searchTerm) {
         const t = searchTerm.toLowerCase();
         const name = (r._emp?.display_name || r._emp?._user?.full_name || '').toLowerCase();
@@ -176,7 +178,7 @@ export default function AllAttendance() {
       }
       return true;
     });
-  }, [rows, statusFilter, deptFilter, searchTerm]);
+  }, [rows, statusFilter, deptFilter, methodFilter, searchTerm]);
 
 
   const grouped = useMemo(() => {
@@ -406,6 +408,13 @@ export default function AllAttendance() {
                 { value: 'all', label: 'All Departments' },
                 ...departments
               ]} />
+              <MobileSelect value={methodFilter} onValueChange={setMethodFilter} label="Method" className="w-[150px]" options={[
+                { value: 'all', label: 'All Methods' },
+                { value: 'biometric', label: 'Biometric' },
+                { value: 'geofence', label: 'Geofence' },
+                { value: 'selfie', label: 'Selfie' },
+                { value: 'manual', label: 'Manual' },
+              ]} />
             </div>
           </CardContent>
         </Card>
@@ -556,7 +565,7 @@ export default function AllAttendance() {
                             </div>
                             <div className="min-w-0">
                               <p className="font-medium text-sm text-gray-900 truncate">{name}</p>
-                              <p className="text-xs text-gray-400 truncate">{emp?.designation || emp?.employee_code}</p>
+                              <p className="text-xs text-gray-400 truncate">{[emp?.employee_code, emp?.designation].filter(Boolean).join(' • ')}</p>
                             </div>
                           </div>
 
@@ -669,7 +678,9 @@ export default function AllAttendance() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <CalendarDays className="w-5 h-5 text-blue-500" />
-              {empCal.emp?.display_name || empCal.emp?._user?.full_name || 'Employee'} — Attendance Calendar
+              {empCal.emp?.display_name || empCal.emp?._user?.full_name || 'Employee'}
+              {empCal.emp?.employee_code && <span className="text-xs font-normal text-gray-400">({empCal.emp.employee_code})</span>}
+              {' '}— Attendance Calendar
             </DialogTitle>
           </DialogHeader>
           {(() => {

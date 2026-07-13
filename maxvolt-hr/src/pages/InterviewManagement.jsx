@@ -94,7 +94,8 @@ export default function InterviewManagement() {
     return {
       name: emp?.display_name || usr?.full_name || userId,
       designation: emp?.designation || '',
-      department: emp?.department || ''
+      department: emp?.department || '',
+      employee_code: emp?.employee_code || ''
     };
   };
 
@@ -376,7 +377,7 @@ export default function InterviewManagement() {
                                 >
                                   <Check className={`mr-2 h-4 w-4 ${formData.interviewer_id === u.id ? 'opacity-100' : 'opacity-0'}`} />
                                   <div>
-                                    <p className="font-medium">{d.name}</p>
+                                    <p className="font-medium">{d.name} {d.employee_code && <span className="text-xs text-muted-foreground">({d.employee_code})</span>}</p>
                                     <p className="text-xs text-muted-foreground">{d.designation}{d.department ? ` · ${d.department}` : ''}</p>
                                   </div>
                                 </CommandItem>
@@ -533,6 +534,7 @@ export default function InterviewManagement() {
                             <p className="flex items-center gap-1">
                               <User className="w-3 h-3 text-gray-400" />
                               Interviewer: <strong>{interviewerDetails.name}</strong>
+                              {interviewerDetails.employee_code ? ` (${interviewerDetails.employee_code})` : ''}
                               {interviewerDetails.designation ? ` · ${interviewerDetails.designation}` : ''}
                               {interviewerDetails.department ? ` · ${interviewerDetails.department}` : ''}
                             </p>

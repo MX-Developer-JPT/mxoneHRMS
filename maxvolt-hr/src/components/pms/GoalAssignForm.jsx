@@ -42,7 +42,7 @@ export default function GoalAssignForm({ employees, users, reviewCycles, onSave,
               <PopoverTrigger asChild>
                 <button type="button" className="mt-1 flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
                   <span className={form.employee_user_id ? 'text-foreground' : 'text-muted-foreground'}>
-                    {form.employee_user_id ? (() => { const e = (employees || []).find(e => e.user_id === form.employee_user_id); return e ? `${userMap[e.user_id]?.full_name || e.user_id} — ${e.designation}` : form.employee_user_id; })() : 'Select employee'}
+                    {form.employee_user_id ? (() => { const e = (employees || []).find(e => e.user_id === form.employee_user_id); return e ? `${userMap[e.user_id]?.full_name || e.user_id}${e.employee_code ? ` (${e.employee_code})` : ''} — ${e.designation}` : form.employee_user_id; })() : 'Select employee'}
                   </span>
                   <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </button>
@@ -57,7 +57,7 @@ export default function GoalAssignForm({ employees, users, reviewCycles, onSave,
                         <CommandItem key={emp.user_id} value={`${userMap[emp.user_id]?.full_name || ''} ${emp.designation || ''} ${emp.department || ''}`} onSelect={() => { set('employee_user_id', emp.user_id); setGoalEmpOpen(false); }}>
                           <Check className={`mr-2 h-4 w-4 ${form.employee_user_id === emp.user_id ? 'opacity-100' : 'opacity-0'}`} />
                           <div>
-                            <p className="font-medium">{userMap[emp.user_id]?.full_name || emp.user_id}</p>
+                            <p className="font-medium">{userMap[emp.user_id]?.full_name || emp.user_id} {emp.employee_code && <span className="text-xs text-muted-foreground">({emp.employee_code})</span>}</p>
                             <p className="text-xs text-muted-foreground">{emp.designation} · {emp.department}</p>
                           </div>
                         </CommandItem>

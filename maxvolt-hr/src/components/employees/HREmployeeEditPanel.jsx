@@ -43,7 +43,7 @@ export default function HREmployeeEditPanel({ employee, onClose, onSave }) {
     <Dialog open={!!employee} onOpenChange={onClose}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Edit UAN & PF Details — {employee.user?.full_name}</DialogTitle>
+          <DialogTitle>Edit UAN & PF Details — {employee.user?.full_name}{employee.employee_code && <span className="text-xs font-normal text-gray-400"> ({employee.employee_code})</span>}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 mt-2">
           <div className="grid grid-cols-2 gap-4">

@@ -79,6 +79,7 @@ export default function ManagementDashboard({ user }) {
       const att = todayTeamAtt.find(a => a.user_id === e.user_id);
       return {
         name: e.display_name || userMap[e.user_id]?.full_name || '—',
+        code: e.employee_code || '',
         dept: e.department || '—',
         designation: e.designation || '—',
         checkIn: safeTime(att?.check_in_time),
@@ -91,12 +92,14 @@ export default function ManagementDashboard({ user }) {
       .filter(e => !presentUserIds.has(e.user_id) && !onLeaveIds.has(e.user_id))
       .map(e => ({
         name: e.display_name || userMap[e.user_id]?.full_name || '—',
+        code: e.employee_code || '',
         dept: e.department || '—',
         designation: e.designation || '—'
       }));
 
     const onLeaveEmployees = employees.filter(e => onLeaveIds.has(e.user_id)).map(e => ({
       name: e.display_name || userMap[e.user_id]?.full_name || '—',
+      code: e.employee_code || '',
       dept: e.department || '—'
     }));
 
@@ -106,6 +109,7 @@ export default function ManagementDashboard({ user }) {
     // Enrich team members list
     const teamMembers = employees.map(e => ({
       name: e.display_name || userMap[e.user_id]?.full_name || '—',
+      code: e.employee_code || '',
       designation: e.designation || '—',
       dept: e.department || '—'
     }));
@@ -198,7 +202,7 @@ export default function ManagementDashboard({ user }) {
                   : data.teamMembers.map((e, i) => (
                     <div key={i} className="flex justify-between items-center p-3 bg-indigo-50 dark:bg-indigo-950/40 rounded-lg">
                       <div>
-                        <p className="text-sm font-medium text-foreground">{e.name}</p>
+                        <p className="text-sm font-medium text-foreground">{e.name} {e.code && <span className="text-xs font-normal text-muted-foreground">({e.code})</span>}</p>
                         <p className="text-xs text-muted-foreground">{e.designation}</p>
                       </div>
                       <span className="text-xs text-muted-foreground capitalize">{e.dept}</span>
@@ -228,7 +232,7 @@ export default function ManagementDashboard({ user }) {
                   : data.presentEmployees.map((e, i) => (
                     <div key={i} className="flex justify-between items-center p-3 bg-emerald-50 dark:bg-emerald-950/40 rounded-lg">
                       <div>
-                        <p className="text-sm font-medium text-foreground">{e.name}</p>
+                        <p className="text-sm font-medium text-foreground">{e.name} {e.code && <span className="text-xs font-normal text-muted-foreground">({e.code})</span>}</p>
                         <p className="text-xs text-muted-foreground">{e.designation} · {e.dept}</p>
                       </div>
                       <div className="text-right">
@@ -261,7 +265,7 @@ export default function ManagementDashboard({ user }) {
                   : data.absentEmployees.map((e, i) => (
                     <div key={i} className="flex justify-between items-center p-3 bg-red-50 dark:bg-red-950/40 rounded-lg">
                       <div>
-                        <p className="text-sm font-medium text-foreground">{e.name}</p>
+                        <p className="text-sm font-medium text-foreground">{e.name} {e.code && <span className="text-xs font-normal text-muted-foreground">({e.code})</span>}</p>
                         <p className="text-xs text-muted-foreground">{e.designation}</p>
                       </div>
                       <span className="text-xs text-muted-foreground capitalize">{e.dept}</span>
@@ -290,7 +294,7 @@ export default function ManagementDashboard({ user }) {
                   ? <p className="text-muted-foreground text-sm text-center py-4">No one on leave today</p>
                   : data.onLeaveEmployees.map((e, i) => (
                     <div key={i} className="flex justify-between items-center p-3 bg-amber-50 dark:bg-amber-950/40 rounded-lg">
-                      <p className="text-sm font-medium text-foreground">{e.name}</p>
+                      <p className="text-sm font-medium text-foreground">{e.name} {e.code && <span className="text-xs font-normal text-muted-foreground">({e.code})</span>}</p>
                       <span className="text-xs text-muted-foreground capitalize">{e.dept}</span>
                     </div>
                   ))
@@ -377,7 +381,7 @@ export default function ManagementDashboard({ user }) {
                     return (
                       <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-muted/50">
                         <div>
-                          <p className="text-sm font-medium text-foreground">{emp.name}</p>
+                          <p className="text-sm font-medium text-foreground">{emp.name} {emp.code && <span className="text-xs font-normal text-muted-foreground">({emp.code})</span>}</p>
                           <p className="text-xs text-muted-foreground">{emp.designation} · {emp.dept}</p>
                         </div>
                         <div className="text-right">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -320,21 +320,25 @@ export default function LetterGenerator() {
   const [performanceReviewId] = useState(presetReviewId);
   const [activeTab, setActiveTab] = useState('generate');
 
-  const stripHtml = (html) => {
-    const tmp = document.createElement('div');
-    tmp.innerHTML = html;
-    return tmp.innerText || tmp.textContent || '';
-  };
+  // HTML letters are edited in-place via a contentEditable div (letterEditRef)
+  // instead of round-tripping through plain text — stripping to innerText and
+  // saving that back as the new letter was throwing away every bit of
+  // formatting (bold, headings, letterhead layout) the moment you edited
+  // anything. Only non-HTML (markdown/plain) letters still use the plain
+  // Textarea below, since there's no formatting to lose there.
+  const letterEditRef = useRef(null);
 
   const enterEditMode = () => {
-    const plain = isHtml ? stripHtml(letter) : letter;
-    setEditText(plain);
+    if (!isHtml) setEditText(letter);
     setEditMode(true);
   };
 
   const exitEditMode = () => {
-    setLetter(editText);
-    setIsHtml(false);
+    if (isHtml) {
+      if (letterEditRef.current) setLetter(letterEditRef.current.innerHTML);
+    } else {
+      setLetter(editText);
+    }
     setEditMode(false);
   };
   const [saving, setSaving] = useState(false);
@@ -672,7 +676,18 @@ export default function LetterGenerator() {
                     </div>
                   </div>
                   {editMode ? (
-                    <Textarea value={editText} onChange={e => setEditText(e.target.value)} className="font-mono text-xs h-[55vh]" placeholder="Edit letter content as plain text..." />
+                    isHtml ? (
+                      <div
+                        key="letter-edit-html"
+                        ref={letterEditRef}
+                        contentEditable
+                        suppressContentEditableWarning
+                        dangerouslySetInnerHTML={{ __html: letter }}
+                        className="border rounded-lg p-6 bg-white h-[55vh] overflow-y-auto focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                      />
+                    ) : (
+                      <Textarea value={editText} onChange={e => setEditText(e.target.value)} className="font-mono text-xs h-[55vh]" placeholder="Edit letter content as plain text..." />
+                    )
                   ) : (
                     <div className="border rounded-lg p-6 bg-white max-h-[60vh] overflow-y-auto">
                       {isHtml

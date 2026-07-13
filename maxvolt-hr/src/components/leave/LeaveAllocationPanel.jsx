@@ -107,7 +107,7 @@ export default function LeaveAllocationPanel({ employees, leavePolicies }) {
                   <PopoverTrigger asChild>
                     <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
                       <span className={selectedEmployeeId ? 'text-foreground' : 'text-muted-foreground'}>
-                        {selectedEmployeeId ? (() => { const e = employees.find(e => e.user_id === selectedEmployeeId); return e ? `${e.display_name}${e.department ? ` · ${e.department}` : ''}` : selectedEmployeeId; })() : 'Select employee'}
+                        {selectedEmployeeId ? (() => { const e = employees.find(e => e.user_id === selectedEmployeeId); return e ? `${e.display_name}${e.employee_code ? ` (${e.employee_code})` : ''}${e.department ? ` · ${e.department}` : ''}` : selectedEmployeeId; })() : 'Select employee'}
                       </span>
                       <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </button>
@@ -122,7 +122,7 @@ export default function LeaveAllocationPanel({ employees, leavePolicies }) {
                             <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''} ${e.department || ''}`} onSelect={() => { setSelectedEmployeeId(e.user_id); setLapEmpOpen(false); }}>
                               <Check className={`mr-2 h-4 w-4 ${selectedEmployeeId === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
                               <div>
-                                <p className="font-medium">{e.display_name}</p>
+                                <p className="font-medium">{e.display_name} {e.employee_code && <span className="text-xs text-muted-foreground">({e.employee_code})</span>}</p>
                                 {e.department && <p className="text-xs text-muted-foreground">{e.department}</p>}
                               </div>
                             </CommandItem>
@@ -192,7 +192,7 @@ export default function LeaveAllocationPanel({ employees, leavePolicies }) {
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {targetEmployees.slice(0, 10).map(e => (
-                  <Badge key={e.user_id} variant="outline" className="text-xs">{e.display_name}</Badge>
+                  <Badge key={e.user_id} variant="outline" className="text-xs">{e.display_name}{e.employee_code ? ` (${e.employee_code})` : ''}</Badge>
                 ))}
                 {targetEmployees.length > 10 && (
                   <Badge variant="outline" className="text-xs">+{targetEmployees.length - 10} more</Badge>

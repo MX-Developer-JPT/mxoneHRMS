@@ -379,13 +379,24 @@ const MGR_ROLES = ['hr', 'admin', 'management', 'manager'];
 
 const parseEntities = (rows) => rows.map(r => JSON.parse(r.data));
 
-// Creates an in-app Notification entity for a user
+// Creates an in-app notification for a user. IMPORTANT: this writes to the
+// dedicated `notifications` SQL table — the same one GET /api/notifications
+// (NotificationBell.jsx) actually reads. An earlier version of this helper
+// inserted into `entities` as type='Notification' instead, which nothing in
+// the frontend ever queries — every notify() call across the whole codebase
+// (Leave, Comp-Off, Exit/Resignation, interview scorecards, etc.) was
+// silently writing to a table nobody reads. Also fires a push notification,
+// matching the working pattern already used by entities.js's own hook.
 async function notify(userId, { title, message, type = 'info', link = '' }) {
   if (!userId) return;
   try {
     const nid = uuidv4();
-    const data = { id: nid, user_id: userId, type, title, message, link, read: false, created_at: new Date().toISOString() };
-    await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Notification',$2,'unread',$3)", [nid, userId, JSON.stringify(data)]);
+    await run(
+      "INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)",
+      [nid, userId, title, message, type, link || null]
+    );
+    const { sendPushToUser } = await import('../utils/push.js');
+    sendPushToUser(userId, { title, message, type, link }); // fire-and-forget
   } catch {}
 }
 
@@ -4386,16 +4397,18 @@ router.post('/:name', async (req, res) => {
       await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [newStatus, JSON.stringify(updReg), regularisation_id]);
 
       // In-app notification to employee
-      try {
-        const notifId = uuidv4();
-        const notifData = {
-          id: notifId, user_id: reg.user_id, type: newStatus === 'completed' ? 'success' : newStatus === 'rejected' ? 'error' : 'info',
-          title: `Regularisation ${newStatus === 'completed' ? 'Approved' : newStatus === 'rejected' ? 'Rejected' : 'Updated'}`,
-          message: `Your regularisation request for ${reg.date} has been ${newStatus.replace('_', ' ')}.${comment ? ' Comment: ' + comment : ''}`,
-          read: false, created_at: new Date().toISOString(),
-        };
-        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Notification',$2,'unread',$3)", [notifId, reg.user_id, JSON.stringify(notifData)]);
-      } catch {}
+      await notify(reg.user_id, {
+        title: `Regularisation ${newStatus === 'completed' ? 'Approved' : newStatus === 'rejected' ? 'Rejected' : 'Updated'}`,
+        message: `Your regularisation request for ${reg.date} has been ${newStatus.replace('_', ' ')}.${comment ? ' Comment: ' + comment : ''}`,
+        type: newStatus === 'completed' ? 'success' : newStatus === 'rejected' ? 'error' : 'info',
+        link: '/AttendanceRegularisation',
+      });
+
+      // Notify HR when manager has approved and it now awaits final HR approval
+      if (newStatus === 'manager_approved') {
+        const hrRowsReg = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+        for (const hr of hrRowsReg) await notify(hr.id, { title: 'Regularisation Awaiting Final Approval', message: `A regularisation request for ${reg.date} has been approved by the manager and requires your final approval.`, type: 'info', link: '/RegularisationApproval' });
+      }
 
       return res.json({ success: true, status: newStatus });
     }
@@ -6250,6 +6263,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         }
       } catch(e) { console.error('[email/ann] Onboarding approval error:', e.message); }
 
+      await notify(uid, { title: 'Onboarding Approved', message: `Welcome aboard! Your onboarding has been approved and your account is now fully active.`, type: 'success', link: '/' });
+
       return res.json({ success:true });
     }
 
@@ -6273,6 +6288,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           );
         }
       } catch(e) { console.error('[email] Onboarding rejection email error:', e.message); }
+
+      await notify(uid, { title: 'Onboarding Rejected', message: `Your onboarding submission was rejected${reason ? ': ' + reason : ''}. Please review and resubmit your details.`, type: 'error', link: '/OnboardingForm' });
 
       return res.json({ success:true });
     }
@@ -7353,12 +7370,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(pmaEmpUpd), pmaEmpRow.id]);
       }
       const pmaEmpMsgs = { confirmed: 'Congratulations! Your probation period is complete and your employment has been confirmed.', extended: `Your probation period has been extended to ${pmaExtUntil || pmaRev.extended_until}.`, rejected: 'Your probation review has concluded. Please contact HR for further information.' };
-      const pmaNid1 = uuidv4();
-      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [pmaNid1, pmaRev.user_id, 'Probation Decision', pmaEmpMsgs[pmaFinalAction] || 'Your probation status has been updated.', 'probation', '/profile']);
+      await notify(pmaRev.user_id, { title: 'Probation Decision', message: pmaEmpMsgs[pmaFinalAction] || 'Your probation status has been updated.', type: pmaFinalAction === 'confirmed' ? 'success' : pmaFinalAction === 'rejected' ? 'error' : 'info', link: '/ConfirmationManagement' });
       if (pmaRev.manager_id) {
         const pmaMgrMsgs = { confirmed: `${pmaRev.employee_name}'s probation has been confirmed by management.`, extended: `${pmaRev.employee_name}'s probation has been extended by management.`, rejected: `${pmaRev.employee_name}'s probation review has resulted in rejection by management.` };
-        const pmaNid2 = uuidv4();
-        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [pmaNid2, pmaRev.manager_id, 'Probation Review Result', pmaMgrMsgs[pmaFinalAction] || `${pmaRev.employee_name}'s probation status has been updated.`, 'probation', '/admin-panel']);
+        await notify(pmaRev.manager_id, { title: 'Probation Review Result', message: pmaMgrMsgs[pmaFinalAction] || `${pmaRev.employee_name}'s probation status has been updated.`, type: 'info', link: '/ConfirmationManagement' });
       }
       return res.json({ success: true, final_action: pmaFinalAction });
     }
@@ -7565,8 +7580,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const ss = JSON.parse(ssRow.data);
       const ssIsApprove = name === 'approveShiftSwap';
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify({ ...ss, status: ssIsApprove?'approved':'rejected', processed_by: ssProcBy, processed_at: new Date().toISOString() }), ssIsApprove?'approved':'rejected', ssRow.id]);
-      const ssNid2 = uuidv4();
-      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [ssNid2, ss.requester_id, `Shift Swap ${ssIsApprove?'Approved':'Rejected'}`, `Your shift swap request for ${ss.requester_date} has been ${ssIsApprove?'approved':'rejected'}.`, 'shift_swap', '/shift-management']);
+      await notify(ss.requester_id, { title: `Shift Swap ${ssIsApprove?'Approved':'Rejected'}`, message: `Your shift swap request for ${ss.requester_date} has been ${ssIsApprove?'approved':'rejected'}.`, type: ssIsApprove?'success':'error', link: '/ShiftManagement' });
+      if (ss.target_user_id) await notify(ss.target_user_id, { title: `Shift Swap ${ssIsApprove?'Approved':'Rejected'}`, message: `The shift swap requested with you for ${ss.requester_date} has been ${ssIsApprove?'approved':'rejected'}.`, type: ssIsApprove?'success':'error', link: '/ShiftManagement' });
       return res.json({ success: true });
     }
 
@@ -7630,8 +7645,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (!tdaRow) return res.json({ success: false, error: 'Declaration not found' });
       const tdaData = { ...JSON.parse(tdaRow.data), status: 'approved', approved_by: tdaBy, approved_at: new Date().toISOString(), hr_notes: tdaNotes };
       await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(tdaData), tdaRow.id]);
-      const tdaNid = uuidv4();
-      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [tdaNid, tdaUid, 'Tax Declaration Approved', `Your tax declaration for FY ${tdaFY} has been approved.`, 'tax', '/profile']);
+      await notify(tdaUid, { title: 'Tax Declaration Approved', message: `Your tax declaration for FY ${tdaFY} has been approved.`, type: 'success', link: '/TaxDeclaration' });
       return res.json({ success: true });
     }
 
@@ -7659,8 +7673,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const isLnApprove = name === 'approveLoan';
       const lnUpd = { ...lnData, status: isLnApprove?'approved':'rejected', processed_by: lnActBy, processed_at: new Date().toISOString(), ...(isLnApprove ? { disbursement_date, repayment_start_date: disbursement_date } : { rejection_reason }) };
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(lnUpd), lnUpd.status, lnRow.id]);
-      const lnNid = uuidv4();
-      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [lnNid, lnData.user_id, `Loan ${isLnApprove?'Approved':'Rejected'}`, isLnApprove?`Your loan of ₹${lnData.amount?.toLocaleString('en-IN')} has been approved. Disbursement: ${disbursement_date||'TBD'}.`:`Your loan application was rejected. ${rejection_reason||''}`, 'loan', '/loan-management']);
+      await notify(lnData.user_id, { title: `Loan ${isLnApprove?'Approved':'Rejected'}`, message: isLnApprove?`Your loan of ₹${lnData.amount?.toLocaleString('en-IN')} has been approved. Disbursement: ${disbursement_date||'TBD'}.`:`Your loan application was rejected. ${rejection_reason||''}`, type: isLnApprove?'success':'error', link: '/LoanManagement' });
       return res.json({ success: true });
     }
 

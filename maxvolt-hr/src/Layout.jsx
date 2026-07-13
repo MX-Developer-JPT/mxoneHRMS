@@ -12,10 +12,11 @@ import {
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
-  Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar,
+  Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar, Camera, Loader2,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
 import NotificationBell from '@/components/NotificationBell';
 import DashboardPage from './pages/Dashboard';
 import MarkAttendancePage from './pages/MarkAttendance';
@@ -315,6 +316,10 @@ export default function Layout({ children, currentPageName }) {
 
   const [user,                setUser]               = useState(null);
   const [showGeoDisclosure,   setShowGeoDisclosure]  = useState(false);
+  const [photoRequiredEmpId,  setPhotoRequiredEmpId] = useState(null);
+  const [photoFile,           setPhotoFile]          = useState(null);
+  const [photoPreview,        setPhotoPreview]       = useState('');
+  const [photoUploading,      setPhotoUploading]     = useState(false);
   const [employeeDisplayName, setEmployeeDisplayName]= useState('');
   const [employeeDepartment,  setEmployeeDepartment] = useState('');
   const [moreSheetOpen,       setMoreSheetOpen]      = useState(false);
@@ -413,6 +418,15 @@ export default function Layout({ children, currentPageName }) {
         if (empRecords.length > 0) {
           if (empRecords[0].display_name) setEmployeeDisplayName(empRecords[0].display_name);
           if (empRecords[0].department)   setEmployeeDepartment(empRecords[0].department);
+          // Mandatory profile photo — covers both employees imported via
+          // Import Employees (which never sets this field at all) and anyone
+          // else missing one, regardless of how their record was created.
+          // Skipped for employees still mid-onboarding — OnboardingForm.jsx
+          // itself now requires a photo as one of its own mandatory fields,
+          // no need to double-gate them here too.
+          if (!empRecords[0].profile_picture_url && empRecords[0].employee_status !== 'pending_onboarding') {
+            setPhotoRequiredEmpId(empRecords[0].id);
+          }
         }
         const isDefaultRole = currentUser.role === 'user' && !currentUser.custom_role;
         if (isDefaultRole && empRecords.length === 0) {
@@ -480,6 +494,29 @@ export default function Layout({ children, currentPageName }) {
   // already set the moment the modal is shown (see loadUser) — this just
   // dismisses it, since it's informational, not a gate.
   const acknowledgeGeoDisclosure = () => setShowGeoDisclosure(false);
+
+  const handleMandatoryPhotoSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setPhotoFile(file);
+    setPhotoPreview(URL.createObjectURL(file));
+  };
+
+  const submitMandatoryPhoto = async () => {
+    if (!photoFile || !photoRequiredEmpId) return;
+    setPhotoUploading(true);
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file: photoFile });
+      await base44.entities.Employee.update(photoRequiredEmpId, { profile_picture_url: file_url });
+      setPhotoRequiredEmpId(null);
+      setPhotoFile(null);
+      setPhotoPreview('');
+    } catch (e) {
+      console.error('Mandatory photo upload failed:', e.message);
+      toast.error('Failed to upload photo — please try again');
+    }
+    setPhotoUploading(false);
+  };
 
   if (!user) {
     return (
@@ -1000,6 +1037,41 @@ export default function Layout({ children, currentPageName }) {
             </p>
           </div>
           <Button onClick={acknowledgeGeoDisclosure} className="w-full mt-2">Got it</Button>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mandatory profile photo — blocks the app until resolved. Covers both
+          brand-new onboarding (as a backstop; OnboardingForm.jsx already
+          requires this itself) and employees created via Import Employees,
+          which never sets this field at all. Not dismissible. */}
+      <Dialog open={!!photoRequiredEmpId} onOpenChange={() => {}}>
+        <DialogContent
+          className="max-w-[95vw] sm:max-w-sm [&>button]:hidden"
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Camera className="w-5 h-5 text-blue-600" />
+              Profile Photo Required
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-gray-600 dark:text-gray-300">
+            Please upload a profile photo to continue. This is used to identify you across the app.
+          </p>
+          <div className="flex flex-col items-center gap-3 py-2">
+            <label className="relative w-24 h-24 rounded-full border-2 border-dashed border-gray-300 hover:border-blue-400 flex items-center justify-center cursor-pointer overflow-hidden bg-gray-50 group">
+              {photoPreview ? (
+                <img src={photoPreview} alt="Profile preview" className="w-full h-full object-cover" />
+              ) : (
+                <Camera className="w-7 h-7 text-gray-400 group-hover:text-blue-500" />
+              )}
+              <input type="file" accept="image/*" className="hidden" onChange={handleMandatoryPhotoSelect} disabled={photoUploading} />
+            </label>
+            <Button onClick={submitMandatoryPhoto} disabled={!photoFile || photoUploading} className="w-full">
+              {photoUploading ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Uploading...</> : 'Save Photo'}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 
