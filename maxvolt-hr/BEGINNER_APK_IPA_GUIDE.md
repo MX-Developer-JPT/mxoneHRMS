@@ -149,24 +149,15 @@ You need the project code on your Mac to build it there (Xcode reads the `ios/` 
    npm install
    ```
    This downloads all the project's JavaScript dependencies — takes a few minutes.
-4. Install CocoaPods (manages the iOS native dependencies, like npm but for iOS libraries):
-   ```
-   sudo gem install cocoapods
-   ```
-   Enter your Mac password when prompted (it won't show characters as you type — that's normal, just type and press Enter).
-5. Build the web app and sync it into the native iOS project:
+4. Build the web app and sync it into the native iOS project:
    ```
    npx vite build
    npx cap sync ios
    ```
-6. Install the iOS native pods:
-   ```
-   cd ios/App
-   pod install
-   cd ../..
-   ```
 
-### Rebuilding after this (future updates): repeat only steps 5 and 6 above (`npx vite build`, `npx cap sync ios`, `pod install`) — no need to reinstall Node/CocoaPods again. If you only changed web/JS code (not native config), you technically don't need to rebuild the IPA at all — the live site updates automatically.
+**Note — no CocoaPods, no `pod install`, no `.xcworkspace`:** This project uses Capacitor's Swift Package Manager (SPM) integration for iOS, not CocoaPods. There is no `Podfile` anywhere in `ios/App` — that's expected, not an error. `npx cap sync ios` manages native iOS dependencies itself by writing `ios/App/App/CapApp-SPM/Package.swift` (you'll see "Writing Package.swift" in its output). Skip any instructions elsewhere telling you to run `sudo gem install cocoapods` or `pod install` — you don't need them for this project. Later, when opening the project in Xcode, open `App.xcodeproj` (not `App.xcworkspace` — that file doesn't exist here since there's no CocoaPods to merge in).
+
+### Rebuilding after this (future updates): repeat only step 4 above (`npx vite build`, `npx cap sync ios`) — no need to reinstall Node again. If you only changed web/JS code (not native config), you technically don't need to rebuild the IPA at all — the live site updates automatically.
 
 ## 2.4 Set up push notifications for iOS (Firebase)
 
@@ -179,7 +170,7 @@ This step is required for push notifications to work on iPhones. Skip only if yo
    - **App nickname**: "Maxvolt HR iOS" (optional, just a label)
    - Click **Register app**.
 4. Firebase now shows a **Download GoogleService-Info.plist** button. Click it — this downloads a small file to your Mac's Downloads folder.
-5. Open Xcode, open the project: `maxvolt-hr/ios/App/App.xcworkspace` (note: `.xcworkspace`, NOT `.xcodeproj` — CocoaPods requires opening the workspace file, opening the wrong one will cause build errors about missing Pods).
+5. Open Xcode, open the project: `maxvolt-hr/ios/App/App.xcodeproj`.
 6. In Xcode's left sidebar (Project Navigator), find the **App** folder (blue folder icon, inside the top-level **App** project).
 7. Drag the downloaded `GoogleService-Info.plist` from Finder's Downloads folder directly into that **App** folder in Xcode's sidebar.
 8. A dialog appears — check **"Copy items if needed"**, ensure **"App"** target is checked under "Add to targets", click **Finish**.

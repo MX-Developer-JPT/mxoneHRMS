@@ -125,7 +125,7 @@ configure signing — no project setup from scratch.
 cd maxvolt-hr
 npm install
 npm run cap:sync
-npm run ios:open        # opens ios/App/App.xcworkspace in Xcode
+npm run ios:open        # opens ios/App/App.xcodeproj in Xcode (SPM, no CocoaPods/.xcworkspace)
 ```
 In Xcode:
 1. Select the **App** target ▸ **Signing & Capabilities**.
