@@ -175,7 +175,7 @@ export default function OrgChart() {
     setLoading(false);
   };
 
-  const { roots, matchSet, orphanCount } = useMemo(() => {
+  const { roots, orphanCount } = useMemo(() => {
     const byId = {};
     employees.forEach(e => { byId[e.user_id] = { ...e, children: [] }; });
     // Detects whether attaching `id` under `mgrId` would create a cycle in the
@@ -183,11 +183,19 @@ export default function OrgChart() {
     // through some chain, reports back to A). Without this check such a cycle
     // makes the recursive tree walks below (countDescendants, sortRec) recurse
     // forever and silently crash the chart's render.
+    //
+    // Only a chain that loops back to `id` itself disqualifies this edge. A
+    // cycle further up the chain that never reaches `id` is unrelated to this
+    // employee — real orgs commonly funnel many people through the same
+    // senior chain, so `seen` re-triggering there must NOT disqualify every
+    // employee downstream of it (that previously mass-orphaned ~150 people
+    // whose chain merely passed near one unrelated bad edge).
     const createsCycle = (id, mgrId) => {
       let cur = byId[mgrId];
       const seen = new Set();
       while (cur) {
-        if (cur.user_id === id || seen.has(cur.user_id)) return true;
+        if (cur.user_id === id) return true;
+        if (seen.has(cur.user_id)) return false; // unrelated cycle further up — safe to attach here
         seen.add(cur.user_id);
         cur = cur.reporting_manager_id ? byId[cur.reporting_manager_id] : null;
       }
@@ -203,13 +211,31 @@ export default function OrgChart() {
     });
     const sortRec = (nodes) => { nodes.sort((a, b) => countDescendants(b) - countDescendants(a) || a.name.localeCompare(b.name)); nodes.forEach(n => sortRec(n.children)); };
     sortRec(roots);
+    return { roots, orphanCount };
+  }, [employees]);
+
+  const matchSet = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const matchSet = new Set(q ? employees.filter(e =>
+    if (!q) return new Set();
+    return new Set(employees.filter(e =>
       e.name.toLowerCase().includes(q) || (e.designation || '').toLowerCase().includes(q) ||
       (e.department || '').toLowerCase().includes(q) || (e.employee_code || '').toLowerCase().includes(q)
-    ).map(e => e.user_id) : []);
-    return { roots, matchSet, orphanCount };
+    ).map(e => e.user_id));
   }, [employees, search]);
+
+  // First render of a freshly-loaded tree: show roots + their direct reports
+  // only, collapse everyone below that. A ~250-person org fully expanded at
+  // once is unreadable — this gives a top-down starting point to drill from.
+  useEffect(() => {
+    if (!roots.length) return;
+    const toCollapse = new Set();
+    const walk = (node, depth) => {
+      if (depth === 1) { toCollapse.add(node.user_id); return; }
+      node.children.forEach(c => walk(c, depth + 1));
+    };
+    roots.forEach(r => walk(r, 0));
+    setCollapsed(toCollapse);
+  }, [roots]);
 
   const searchForcedOpen = useMemo(() => (matchSet.size ? collectAncestorIds(roots, matchSet) : new Set()), [roots, matchSet]);
   const effectiveCollapsed = useMemo(() => {
