@@ -3,7 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2 } from 'lucide-react';
+import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
 import { toast } from 'sonner';
 
 const AVATAR_COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-emerald-500', 'bg-orange-500', 'bg-pink-500', 'bg-teal-500', 'bg-indigo-500', 'bg-rose-500'];
@@ -148,7 +148,19 @@ export default function OrgChart() {
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState(new Set());
   const [focusedId, setFocusedId] = useState(null); // drill-down: view just this person's team
+  const [zoom, setZoom] = useState(1);
   const nodeRefs = useRef({});
+
+  const zoomIn = () => setZoom(z => Math.min(1.5, Math.round((z + 0.1) * 10) / 10));
+  const zoomOut = () => setZoom(z => Math.max(0.4, Math.round((z - 0.1) * 10) / 10));
+  const zoomReset = () => setZoom(1);
+  // Ctrl/Cmd + wheel (mouse) and pinch (trackpad, which browsers report as a
+  // ctrlKey wheel event) zoom the chart instead of scrolling the page.
+  const handleWheel = (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    if (e.deltaY < 0) zoomIn(); else zoomOut();
+  };
 
   useEffect(() => { load(); }, []);
 
@@ -235,6 +247,11 @@ export default function OrgChart() {
             <Input className="pl-9 w-56" placeholder="Search name, role, dept…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <Button variant="outline" size="sm" onClick={() => setCollapsed(new Set())}><Maximize2 className="w-4 h-4 mr-1" /> Expand All</Button>
+          <div className="flex items-center border rounded-md">
+            <Button variant="ghost" size="sm" className="h-8 px-2 rounded-r-none" onClick={zoomOut} disabled={zoom <= 0.4} title="Zoom out"><ZoomOut className="w-4 h-4" /></Button>
+            <button onClick={zoomReset} className="text-xs w-11 text-center text-gray-500 dark:text-gray-400 hover:text-violet-600" title="Reset zoom">{Math.round(zoom * 100)}%</button>
+            <Button variant="ghost" size="sm" className="h-8 px-2 rounded-l-none" onClick={zoomIn} disabled={zoom >= 1.5} title="Zoom in"><ZoomIn className="w-4 h-4" /></Button>
+          </div>
           <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></Button>
         </div>
       </div>
@@ -267,8 +284,8 @@ export default function OrgChart() {
         </div>
       ) : (
         <ChartErrorBoundary key={displayRoots.map(r => r.user_id).join(',')}>
-          <div className="overflow-x-auto overflow-y-visible pb-8 pt-2">
-            <div className="min-w-max flex justify-center gap-10">
+          <div className="overflow-auto pb-8 pt-2 max-h-[75vh]" onWheel={handleWheel}>
+            <div className="min-w-max flex justify-center gap-10" style={{ zoom }}>
               {displayRoots.map(r => (
                 <ChartNode key={r.user_id} node={r} depth={0} collapsed={effectiveCollapsed} toggle={toggle} matchSet={matchSet} onFocus={focus} nodeRefs={nodeRefs} />
               ))}
