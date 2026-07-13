@@ -837,6 +837,7 @@ router.post('/:name', async (req, res) => {
           user_id: r.user_id, name: d.display_name || 'Employee', employee_code: d.employee_code || '',
           designation: d.designation || '', department: d.department || '',
           reporting_manager_id: d.reporting_manager_id || null,
+          profile_picture_url: d.profile_picture_url || '',
         }; });
       return res.json({ success: true, employees: emps, count: emps.length });
     }
