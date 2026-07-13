@@ -71,6 +71,22 @@ export async function requestBatteryOptimizationExemption() {
   } catch { /* best-effort — plugin method availability depends on the patched native build */ }
 }
 
+// Android-only, "Allow all the time" escalation — deliberately its own call
+// rather than something addWatcher() triggers internally, so it can't ever
+// collide with addWatcher()'s own foreground-permission request or with
+// Android's single outstanding requestPermissions() slot per Activity. Call
+// this AFTER startBackgroundGeofence() has resolved, once foreground
+// permission is confirmed, not concurrently with it.
+export async function requestBackgroundLocationIfNeeded() {
+  const Capacitor = await getCapacitor();
+  if (!Capacitor?.isNativePlatform() || Capacitor.getPlatform() !== 'android') return;
+  try {
+    const { registerPlugin } = await import('@capacitor/core');
+    const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
+    await BackgroundGeolocation.requestBackgroundLocationIfNeeded();
+  } catch { /* best-effort — plugin method availability depends on the patched native build */ }
+}
+
 export async function startBackgroundGeofence() {
   const Capacitor = await getCapacitor();
   if (!Capacitor?.isNativePlatform()) return { started: false, reason: 'not_native' };

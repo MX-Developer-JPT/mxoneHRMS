@@ -23,7 +23,7 @@ import LeavePage from './pages/Leave';
 import ProfilePage from './pages/Profile';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
-import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption } from '@/lib/geofenceBackground';
+import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption, requestBackgroundLocationIfNeeded } from '@/lib/geofenceBackground';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
@@ -358,6 +358,52 @@ export default function Layout({ children, currentPageName }) {
 
   useEffect(() => { loadUser(); }, []);
 
+  // Shared by the initial login-time attempt and the app-resume retry below.
+  // startBackgroundGeofence() itself already no-ops if a watcher is already
+  // running, so calling this liberally (every resume) is safe and cheap —
+  // it only does real work when tracking genuinely isn't active yet.
+  const ensureBackgroundGeofence = useCallback(async (userId) => {
+    try {
+      const geo = await checkGeofenceEligibility();
+      if (!geo.eligible) return;
+      const disclosedKey = `bg_geo_disclosed_${userId}`;
+      if (!localStorage.getItem(disclosedKey)) {
+        localStorage.setItem(disclosedKey, '1');
+        setShowGeoDisclosure(true);
+      }
+      requestBatteryOptimizationExemption().catch(() => {});
+      const res = await startBackgroundGeofence();
+      if (!res.started) {
+        console.warn('[geofence] start attempt did not succeed, will retry on next app resume:', res.reason);
+      } else {
+        // Runs after the watcher call settles, never concurrently with it —
+        // its own isolated permission escalation, see geofenceBackground.js.
+        requestBackgroundLocationIfNeeded().catch(() => {});
+      }
+    } catch (e) {
+      console.warn('ensureBackgroundGeofence:', e.message);
+    }
+  }, []);
+
+  // Retries on every app resume (unlocking the phone, switching back from
+  // another app) — not just once at cold launch — so a first attempt that
+  // silently failed for any reason gets a genuine second chance without the
+  // employee needing to do anything, let alone specifically open Mark
+  // Attendance. No-op outside the native shell (import throws, caught below).
+  useEffect(() => {
+    if (!user) return;
+    let handle;
+    (async () => {
+      try {
+        const { App } = await import('@capacitor/app');
+        handle = await App.addListener('resume', () => {
+          ensureBackgroundGeofence(user.id);
+        });
+      } catch { /* not running inside the native shell */ }
+    })();
+    return () => { handle?.remove(); };
+  }, [user, ensureBackgroundGeofence]);
+
   const loadUser = async () => {
     try {
       const currentUser = await base44.auth.me();
@@ -402,26 +448,17 @@ export default function Layout({ children, currentPageName }) {
       // on/off control. No-ops internally (via getMyGeofence's
       // geofence_eligible flag) for anyone HR hasn't marked eligible.
       //
-      // Google Play's background-location policy requires a prominent in-app
-      // disclosure BEFORE the OS permission dialog appears (a Privacy Policy
-      // mention alone isn't sufficient) — shown once per employee per device.
-      // IMPORTANT: this must never gate the actual start behind the user
-      // tapping "Got it" — an earlier version did that, and an employee who
-      // never dismissed the modal (or just never noticed it) silently never
-      // got auto-tracked at all, only picking it up if they happened to open
-      // Mark Attendance (which independently starts tracking too). Tracking
-      // starts immediately here regardless; the modal is shown alongside it
-      // purely for disclosure, not as a gate.
-      checkGeofenceEligibility().then((geo) => {
-        if (!geo.eligible) return;
-        const disclosedKey = `bg_geo_disclosed_${currentUser.id}`;
-        if (!localStorage.getItem(disclosedKey)) {
-          localStorage.setItem(disclosedKey, '1');
-          setShowGeoDisclosure(true);
-        }
-        requestBatteryOptimizationExemption().catch(() => {});
-        startBackgroundGeofence().catch((e) => console.warn('startBackgroundGeofence:', e.message));
-      }).catch(() => {});
+      // A cold app launch calling straight into a native permission-request
+      // dialog is a known Android footgun: if the request fires before the
+      // Activity has fully reached RESUMED, the OS can silently drop it —
+      // no error, no callback, the watcher just never starts. A short delay
+      // here gives the Activity time to settle before the very first
+      // attempt, and ensureBackgroundGeofence is re-run on every app resume
+      // (below) as a self-healing retry regardless of why an earlier
+      // attempt didn't take — not relying on the employee happening to
+      // open Mark Attendance (whose own effect was, until now, the only
+      // thing that reliably retried this).
+      setTimeout(() => ensureBackgroundGeofence(currentUser.id), 1500);
     } catch (err) {
       console.error('loadUser:', err);
     }

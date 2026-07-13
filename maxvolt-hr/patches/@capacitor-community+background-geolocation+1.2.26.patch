@@ -47,7 +47,7 @@ index 9e65984..c72735b 100644
  </manifest>
    
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
-index a92fcf9..c825b52 100644
+index a92fcf9..51c2055 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 @@ -12,12 +12,14 @@ import android.content.Context;
@@ -82,37 +82,60 @@ index a92fcf9..c825b52 100644
                  )
          }
  )
-@@ -84,6 +96,15 @@ public class BackgroundGeolocation extends Plugin {
-             } else {
-                 call.reject("Permission denied.", "NOT_AUTHORIZED");
-             }
-+        } else if (
-+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-+                && getPermissionState("backgroundLocation") != PermissionState.GRANTED
-+                && call.getBoolean("requestPermissions", true)
-+        ) {
-+            // Foreground is already granted — ask for "Allow all the time" as its own
-+            // follow-up dialog now. Not fatal if the user declines: the watcher still
-+            // starts below and works while the app is open/foregrounded either way.
-+            requestPermissionForAlias("backgroundLocation", call, "backgroundLocationPermissionsCallback");
+@@ -87,6 +99,16 @@ public class BackgroundGeolocation extends Plugin {
          } else if (!isLocationEnabled(getContext())) {
              call.reject("Location services disabled.", "NOT_AUTHORIZED");
          }
-@@ -181,6 +202,48 @@ public class BackgroundGeolocation extends Plugin {
++        // Deliberately NOT requesting "backgroundLocation" in this shared method —
++        // see requestBackgroundLocationIfNeeded() below. addWatcher() is called
++        // repeatedly (every app resume, from more than one page), and reusing the
++        // same PluginCall for a second concurrent permission escalation here risked
++        // colliding with Capacitor's single pending-permission-request bookkeeping
++        // and Android's single outstanding requestPermissions() slot per Activity —
++        // exactly the kind of thing that silently breaks a watcher with no error.
++        // Keeping this method identical to its original, already-proven-reliable
++        // shape and handling the background escalation as a fully separate,
++        // isolated call instead.
+         if (call.getBoolean("stale", false)) {
+             fetchLastLocation(call);
+         }
+@@ -181,6 +203,70 @@ public class BackgroundGeolocation extends Plugin {
          }
      }
  
++    // Isolated on purpose — see the comment in addWatcher() above. Call this
++    // once (e.g. right after the disclosure modal, alongside the battery
++    // exemption prompt) rather than from addWatcher(), which is invoked
++    // repeatedly and from more than one page.
++    @PluginMethod()
++    public void requestBackgroundLocationIfNeeded(PluginCall call) {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
++            call.resolve();
++            return;
++        }
++        if (getPermissionState("location") != PermissionState.GRANTED) {
++            // Foreground isn't granted yet — nothing to escalate to "always" yet;
++            // addWatcher() will request foreground on its own next call.
++            call.resolve();
++            return;
++        }
++        if (getPermissionState("backgroundLocation") == PermissionState.GRANTED) {
++            call.resolve();
++            return;
++        }
++        requestPermissionForAlias("backgroundLocation", call, "backgroundLocationPermissionsCallback");
++    }
++
 +    @PermissionCallback
 +    private void backgroundLocationPermissionsCallback(PluginCall call) {
-+        // Best-effort — declining "Allow all the time" only means tracking is
-+        // limited to while the app is open, not a hard failure.
-+        if (call.getBoolean("stale", false)) {
-+            fetchLastLocation(call);
-+        }
++        // Best-effort either way — declining "Allow all the time" only means
++        // tracking is limited to while the foreground service notification is
++        // visible, not a hard failure.
 +        if (service != null) {
 +            service.onPermissionsGranted();
 +            stoppedWithoutPermissions = false;
 +        }
++        call.resolve();
 +    }
 +
 +    // Xiaomi/Oppo/Vivo/Samsung and stock Android's own Doze/App Standby all kill
@@ -147,7 +170,7 @@ index a92fcf9..c825b52 100644
      @PluginMethod()
      public void removeWatcher(PluginCall call) {
          String callbackId = call.getString("id");
-@@ -196,6 +259,42 @@ public class BackgroundGeolocation extends Plugin {
+@@ -196,6 +282,42 @@ public class BackgroundGeolocation extends Plugin {
          call.resolve();
      }
  
