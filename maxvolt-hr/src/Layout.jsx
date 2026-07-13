@@ -404,16 +404,23 @@ export default function Layout({ children, currentPageName }) {
       //
       // Google Play's background-location policy requires a prominent in-app
       // disclosure BEFORE the OS permission dialog appears (a Privacy Policy
-      // mention alone isn't sufficient) — shown once per employee per device,
-      // acknowledgment-only, not an opt-out (that stays HR-controlled).
+      // mention alone isn't sufficient) — shown once per employee per device.
+      // IMPORTANT: this must never gate the actual start behind the user
+      // tapping "Got it" — an earlier version did that, and an employee who
+      // never dismissed the modal (or just never noticed it) silently never
+      // got auto-tracked at all, only picking it up if they happened to open
+      // Mark Attendance (which independently starts tracking too). Tracking
+      // starts immediately here regardless; the modal is shown alongside it
+      // purely for disclosure, not as a gate.
       checkGeofenceEligibility().then((geo) => {
         if (!geo.eligible) return;
         const disclosedKey = `bg_geo_disclosed_${currentUser.id}`;
-        if (localStorage.getItem(disclosedKey)) {
-          startBackgroundGeofence().catch((e) => console.warn('startBackgroundGeofence:', e.message));
-        } else {
+        if (!localStorage.getItem(disclosedKey)) {
+          localStorage.setItem(disclosedKey, '1');
           setShowGeoDisclosure(true);
         }
+        requestBatteryOptimizationExemption().catch(() => {});
+        startBackgroundGeofence().catch((e) => console.warn('startBackgroundGeofence:', e.message));
       }).catch(() => {});
     } catch (err) {
       console.error('loadUser:', err);
@@ -432,15 +439,10 @@ export default function Layout({ children, currentPageName }) {
     await base44.auth.logout();
   };
 
-  const acknowledgeGeoDisclosure = () => {
-    if (user) localStorage.setItem(`bg_geo_disclosed_${user.id}`, '1');
-    setShowGeoDisclosure(false);
-    // Best-effort battery-optimization exemption prompt (Android only, no-op
-    // elsewhere) — surfaced right alongside the location grant so it reads as
-    // one continuous setup step to the employee, rather than a separate ask.
-    requestBatteryOptimizationExemption().catch(() => {});
-    startBackgroundGeofence().catch((e) => console.warn('startBackgroundGeofence:', e.message));
-  };
+  // Tracking, the battery-exemption prompt, and the disclosed flag are all
+  // already set the moment the modal is shown (see loadUser) — this just
+  // dismisses it, since it's informational, not a gate.
+  const acknowledgeGeoDisclosure = () => setShowGeoDisclosure(false);
 
   if (!user) {
     return (
