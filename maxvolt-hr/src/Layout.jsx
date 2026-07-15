@@ -380,6 +380,17 @@ export default function Layout({ children, currentPageName }) {
       const res = await startBackgroundGeofence();
       if (!res.started) {
         console.warn('[geofence] start attempt did not succeed, will retry on next app resume:', res.reason);
+        // checkGeofenceEligibility() above already filters out the expected
+        // no-op reasons (not eligible / no location configured) — anything
+        // reaching here (fetch_failed, start_failed) is a genuine failure
+        // that was previously invisible: it only ever hit a console log on
+        // the phone itself, which nobody debugging remotely can see. Surface
+        // it once per app session (not on every resume retry) so the actual
+        // failure reason can be read and reported instead of guessed at.
+        if (!sessionStorage.getItem('bg_geo_fail_shown')) {
+          sessionStorage.setItem('bg_geo_fail_shown', '1');
+          toast.error(`Background attendance tracking failed to start (${res.reason}${res.error ? ': ' + res.error : ''})`, { duration: 10000 });
+        }
       } else {
         // Runs after the watcher call settles, never concurrently with it —
         // its own isolated permission escalation, see geofenceBackground.js.
