@@ -214,7 +214,7 @@ index a92fcf9..51c2055 100644
      public void openSettings(PluginCall call) {
          Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..b69bc8b 100644
+index fafbb86..6e8e66c 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -346,7 +346,7 @@ index fafbb86..b69bc8b 100644
              FusedLocationProviderClient client = LocationServices.getFusedLocationProviderClient(
                      BackgroundGeolocationService.this
              );
-@@ -172,4 +242,208 @@ public class BackgroundGeolocationService extends Service {
+@@ -172,4 +242,289 @@ public class BackgroundGeolocationService extends Service {
              BackgroundGeolocationService.this.stopSelf();
          }
      }
@@ -365,6 +365,7 @@ index fafbb86..b69bc8b 100644
 +        headlessActive = true;
 +        headlessCurrentFenceId = null;
 +        headlessLastKnownInProgress = null;
++        seedHeadlessAttendanceState(token, apiBase, fencesJson);
 +        headlessClient = LocationServices.getFusedLocationProviderClient(this);
 +
 +        LocationRequest request = new LocationRequest();
@@ -439,6 +440,66 @@ index fafbb86..b69bc8b 100644
 +        return builder.build();
 +    }
 +
++    // Headless mode otherwise starts with no idea whether the employee is
++    // already checked in (e.g. the service restarting after being killed
++    // while they were already at, or had already left, the office earlier
++    // that day) — headlessCurrentFenceId being nulled at start meant exit
++    // could never be detected until a lucky fresh 'enter' happened first.
++    // Fetches current attendance state from the same endpoint the JS side
++    // already uses (getMyGeofence) and seeds headlessCurrentFenceId /
++    // headlessLastKnownInProgress so exit detection works immediately.
++    // Runs off the main thread; best-effort — if it fails or the app isn't
++    // reachable yet, headless tracking still starts, it just can't detect an
++    // exit until a location fix happens to land inside a fence first.
++    private void seedHeadlessAttendanceState(final String token, final String apiBase, final String fencesJson) {
++        new Thread(() -> {
++            HttpURLConnection conn = null;
++            try {
++                URL url = new URL(apiBase + "/api/functions/getMyGeofence");
++                conn = (HttpURLConnection) url.openConnection();
++                conn.setRequestMethod("POST");
++                conn.setRequestProperty("Content-Type", "application/json");
++                conn.setRequestProperty("Authorization", "Bearer " + token);
++                conn.setConnectTimeout(15000);
++                conn.setReadTimeout(15000);
++                conn.setDoOutput(true);
++                try (OutputStream os = conn.getOutputStream()) {
++                    os.write("{}".getBytes(StandardCharsets.UTF_8));
++                }
++                int code = conn.getResponseCode();
++                if (code < 200 || code >= 300) return;
++
++                java.io.InputStream is = conn.getInputStream();
++                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
++                byte[] buf = new byte[1024];
++                int n;
++                while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
++                JSONObject resp = new JSONObject(bos.toString("UTF-8"));
++                if (!resp.optBoolean("success", false)) return;
++                JSONObject att = resp.optJSONObject("attendance_today");
++                if (att == null) return;
++
++                boolean inProgress = att.optBoolean("is_in_progress", false);
++                headlessLastKnownInProgress = inProgress;
++                String fenceName = att.isNull("geofence_location") ? null : att.optString("geofence_location", null);
++                if (inProgress && fenceName != null) {
++                    JSONArray fences = new JSONArray(fencesJson);
++                    for (int i = 0; i < fences.length(); i++) {
++                        JSONObject f = fences.getJSONObject(i);
++                        if (fenceName.equalsIgnoreCase(f.optString("name"))) {
++                            headlessCurrentFenceId = f.getString("id");
++                            break;
++                        }
++                    }
++                }
++            } catch (Exception e) {
++                Logger.error("Headless attendance-state seed failed", e);
++            } finally {
++                if (conn != null) conn.disconnect();
++            }
++        }).start();
++    }
++
 +    private void handleHeadlessLocation(Location location, String token, String fencesJson, String apiBase) {
 +        if (location.hasAccuracy() && location.getAccuracy() > 100) return;
 +        try {
@@ -465,20 +526,40 @@ index fafbb86..b69bc8b 100644
 +                return;
 +            }
 +
-+            if (headlessCurrentFenceId == null) return;
++            // Not inside any fence. Only relevant if we actually know we're
++            // checked in — otherwise there's nothing to exit from, or the
++            // seed fetch (below) simply hasn't resolved yet.
++            if (!Boolean.TRUE.equals(headlessLastKnownInProgress)) return;
 +            JSONObject cur = null;
-+            for (int i = 0; i < fences.length(); i++) {
-+                JSONObject f = fences.getJSONObject(i);
-+                if (f.getString("id").equals(headlessCurrentFenceId)) { cur = f; break; }
++            if (headlessCurrentFenceId != null) {
++                for (int i = 0; i < fences.length(); i++) {
++                    JSONObject f = fences.getJSONObject(i);
++                    if (f.getString("id").equals(headlessCurrentFenceId)) { cur = f; break; }
++                }
 +            }
-+            if (cur == null) { headlessCurrentFenceId = null; return; }
++            if (cur == null) {
++                // No known current fence (e.g. checked in via biometric/selfie
++                // rather than geofence, or the seed fetch didn't resolve one) —
++                // fall back to the nearest configured fence so exit can still
++                // be detected via distance hysteresis.
++                double bestDist = Double.MAX_VALUE;
++                for (int i = 0; i < fences.length(); i++) {
++                    JSONObject f = fences.getJSONObject(i);
++                    double fd = distanceMetres(
++                            location.getLatitude(), location.getLongitude(),
++                            f.getDouble("latitude"), f.getDouble("longitude")
++                    );
++                    if (fd < bestDist) { bestDist = fd; cur = f; }
++                }
++            }
++            if (cur == null) return;
 +
 +            double d = distanceMetres(
 +                    location.getLatitude(), location.getLongitude(),
 +                    cur.getDouble("latitude"), cur.getDouble("longitude")
 +            );
 +            boolean wellOutside = d > cur.getDouble("radius_m") + 100;
-+            if (wellOutside && !Boolean.FALSE.equals(headlessLastKnownInProgress)) {
++            if (wellOutside) {
 +                postGeofenceEvent("exit", location, cur, token, apiBase);
 +                headlessCurrentFenceId = null;
 +            }

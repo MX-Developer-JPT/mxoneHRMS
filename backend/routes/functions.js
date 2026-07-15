@@ -978,7 +978,18 @@ router.post('/:name', async (req, res) => {
         geofence_eligible: !!gfEmp.geofence_eligible,
         fence: assigned ? { id: assigned.id, name: assigned.name, latitude: Number(assigned.latitude), longitude: Number(assigned.longitude), radius_m: Number(assigned.geofence_radius) } : null,
         all_fences: gfLocs.map(l => ({ id: l.id, name: l.name, latitude: Number(l.latitude), longitude: Number(l.longitude), radius_m: Number(l.geofence_radius) })),
-        attendance_today: gfAtt ? { checked_in: !!gfAtt.check_in_time, checked_out: !!gfAtt.check_out_time, check_in_time: gfAtt.check_in_time || null, check_out_time: gfAtt.check_out_time || null } : { checked_in: false, checked_out: false },
+        attendance_today: gfAtt
+          ? {
+              checked_in: !!gfAtt.check_in_time, checked_out: !!gfAtt.check_out_time,
+              check_in_time: gfAtt.check_in_time || null, check_out_time: gfAtt.check_out_time || null,
+              // Lets the client seed its "which fence am I currently checked
+              // into" state on (re)start instead of blanking it — without
+              // this, a watcher restart (app reopened, headless→JS handoff)
+              // while already checked in could never detect the eventual
+              // exit, since it wouldn't know which fence to measure against.
+              is_in_progress: !!gfAtt.is_in_progress, geofence_location: gfAtt.geofence_location || null,
+            }
+          : { checked_in: false, checked_out: false, is_in_progress: false, geofence_location: null },
         server_time: new Date().toISOString(),
       });
     }

@@ -3,6 +3,7 @@
 // 2. Employees who checked in but never checked out before 2 AM the next day → marked absent.
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
+import { buildSessions, computeStatusFromSessions } from '../routes/attendancelog.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -105,6 +106,64 @@ export async function markUnclosedCheckInsAsAbsent(targetDate) {
     marked++;
   }
   return { date, checked: rows.length, marked };
+}
+
+// Mid-day safety net for geofence-driven check-ins. Exit is normally detected
+// client-side (JS watcher or the native Android headless service) the moment
+// a phone reports leaving the radius — but if tracking silently dies after
+// check-in (GPS disabled, an OEM battery killer force-stopping the service,
+// location permission revoked, app crash) no exit event ever fires, and the
+// employee would otherwise stay "checked in" until the *next* day's 2 AM
+// cleanup (markUnclosedCheckInsAsAbsent) — a 20+ hour window with an
+// incorrect status the whole time. Runs frequently (see server.js) and
+// force-closes any GEOFENCE-driven open session that's been running
+// implausibly long for one continuous stretch, checking out "now" and
+// flagging why. Manual/biometric/selfie check-ins are left alone — this is
+// specifically a geofence-tracking-reliability net, not a general
+// "forgot to punch out" sweep (that stays the nightly job's responsibility).
+const STALE_GEOFENCE_SESSION_HOURS = 10;
+
+export async function closeStaleGeofenceSessions() {
+  const date = istDateString(0);
+  const rows = await all(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'is_in_progress'='true' AND data::jsonb->>'auto_geofence'='true'",
+    [date]
+  );
+  if (rows.length === 0) return { date, checked: 0, closed: 0 };
+
+  const defaultShift = await getDefaultShift();
+  const empCache = {};
+  const nowIso = new Date().toISOString();
+  let closed = 0;
+
+  for (const row of rows) {
+    const d = JSON.parse(row.data);
+    if (d.status === 'regularised') continue;
+    const openSession = (d.sessions || [])[d.sessions.length - 1];
+    if (!openSession?.check_in) continue;
+    const openedMs = new Date(openSession.check_in).getTime();
+    if (!isFinite(openedMs)) continue;
+    const hoursOpen = (Date.now() - openedMs) / 3600000;
+    if (hoursOpen < STALE_GEOFENCE_SESSION_HOURS) continue;
+
+    if (!(d.user_id in empCache)) {
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
+      empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
+    }
+    const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+
+    const rawPunches = [...(d.raw_punches || []), { time: nowIso, device_direction: 'OUT' }];
+    const sessionData = buildSessions(rawPunches);
+    const statusResult = computeStatusFromSessions(sessionData, shift);
+    const updated = {
+      ...d, ...sessionData, ...statusResult,
+      auto_closed_at: nowIso,
+      auto_closed_reason: `Geofence tracking appears to have stopped (session open ${Math.round(hoursOpen)}h with no exit detected) — auto-checked-out for review`,
+    };
+    await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [statusResult.status, JSON.stringify(updated), row.id]);
+    closed++;
+  }
+  return { date, checked: rows.length, closed };
 }
 
 export async function runNightlyAttendanceAutomation(targetDate) {

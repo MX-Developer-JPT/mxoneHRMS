@@ -107,8 +107,19 @@ export async function startBackgroundGeofence() {
   if (!d.geofence_eligible) return { started: false, reason: 'not_eligible' };
   if (!Array.isArray(d.all_fences) || d.all_fences.length === 0) return { started: false, reason: 'no_fence_assigned' };
   fences = d.all_fences;
+  // Seed from server-known state instead of blanking to null — if the
+  // employee is already checked in when this watcher (re)starts (app
+  // reopened, native headless mode handing back to JS, etc.) and we don't
+  // know which fence that was, a later exit could never be detected once
+  // they're no longer inside ANY fence (see handleLocation's nearestFence
+  // fallback for the case this still can't resolve, e.g. a non-geofence
+  // check-in).
+  lastKnownInProgress = d.attendance_today?.is_in_progress ? true : (d.attendance_today?.checked_out ? false : null);
   currentFenceId = null;
-  lastKnownInProgress = d.attendance_today?.checked_in && !d.attendance_today?.checked_out ? true : null;
+  if (lastKnownInProgress && d.attendance_today?.geofence_location) {
+    const seeded = fences.find(f => (f.name || '').toLowerCase() === d.attendance_today.geofence_location.toLowerCase());
+    if (seeded) currentFenceId = seeded.id;
+  }
 
   // This plugin ships no JS wrapper (native source + type defs only) — the
   // documented usage is to register it directly via Capacitor's registerPlugin.
@@ -199,6 +210,19 @@ function findFence(location) {
   return best;
 }
 
+// Nearest configured fence regardless of whether the position is inside its
+// radius — used as a fallback for exit distance/hysteresis checks when
+// currentFenceId is unknown (e.g. checked in via biometric/selfie rather
+// than geofence, or the server-state seed on start didn't resolve one).
+function nearestFence(location) {
+  let best = null, bestDist = Infinity;
+  for (const f of fences) {
+    const d = distMetres(location.latitude, location.longitude, Number(f.latitude), Number(f.longitude));
+    if (d < bestDist) { best = f; bestDist = d; }
+  }
+  return best;
+}
+
 async function handleLocation(location, platformTag) {
   if (!fences.length) return;
   if (location.accuracy > 100) return; // background fixes are noisier than foreground; still bounded
@@ -213,12 +237,15 @@ async function handleLocation(location, platformTag) {
     return;
   }
 
-  if (!currentFenceId) return;
-  const cur = fences.find(f => f.id === currentFenceId);
-  if (!cur) { currentFenceId = null; return; }
+  // Not inside any fence. Only relevant if we actually know we're checked
+  // in — otherwise there's nothing to exit from (or we simply don't know
+  // yet, e.g. the server-state fetch on start hasn't resolved).
+  if (lastKnownInProgress !== true) return;
+  const cur = (currentFenceId && fences.find(f => f.id === currentFenceId)) || nearestFence(location);
+  if (!cur) return;
   const d = distMetres(location.latitude, location.longitude, Number(cur.latitude), Number(cur.longitude));
   const wellOutside = d > Number(cur.radius_m) + 100; // spatial hysteresis against boundary jitter, not a time delay
-  if (wellOutside && lastKnownInProgress !== false) {
+  if (wellOutside) {
     await sendEvent('exit', location, platformTag, cur);
     currentFenceId = null;
   }

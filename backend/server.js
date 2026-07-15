@@ -15,7 +15,7 @@ import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
 import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
-import { runNightlyAttendanceAutomation } from './cron/attendanceAutomation.js';
+import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions } from './cron/attendanceAutomation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -215,5 +215,14 @@ server.keepAliveTimeout = 65000;
 // any check-in that was never checked out by the 2 AM cutoff.
 cron.schedule('0 2 * * *', () => {
   runNightlyAttendanceAutomation().catch(err => console.error('[attendance-cron] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Geofence tracking safety net — every 30 minutes ──────────
+// Catches the case where a phone's background location tracking silently
+// dies mid-day (see closeStaleGeofenceSessions for why) — without this, a
+// stuck "checked in" employee would only get corrected by the 2 AM job
+// above, which runs once for the *previous* day.
+cron.schedule('*/30 * * * *', () => {
+  closeStaleGeofenceSessions().catch(err => console.error('[geofence-safety-net] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
