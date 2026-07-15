@@ -30,6 +30,23 @@ function toDateStr(val) {
   return String(val).slice(0, 10);
 }
 
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+// A missing Attendance record only means "absent" if the employee was
+// actually scheduled to work that day — a declared company Holiday or a
+// day outside their Shift's working-days list (typically Sunday) is a paid
+// day off, not an absence. Mirrors the same check
+// backend/cron/attendanceAutomation.js already uses when auto-marking
+// absences, so the live page and the nightly job agree.
+function scheduledOffStatus(emp, dateStr, holidaySet, shiftMap, defaultShift) {
+  if (holidaySet.has(dateStr)) return 'holiday';
+  const shift = (emp.shift_id && shiftMap[emp.shift_id]) || defaultShift;
+  const days = Array.isArray(shift?.days) && shift.days.length ? shift.days : defaultShift?.days;
+  if (!days) return null;
+  const weekday = WEEKDAY_NAMES[new Date(dateStr + 'T00:00:00').getDay()];
+  return days.includes(weekday) ? null : 'week_off';
+}
+
 function getDisplayStatus(record) {
   const s = record.status;
   // Trust an explicit backend status always — including 'absent', which may be
@@ -64,6 +81,9 @@ export default function AllAttendance() {
   const [attendanceMap, setAttendanceMap] = useState({});
   const [employees, setEmployees] = useState([]);
   const [departments, setDepartments] = useState([]);
+  const [shiftMap, setShiftMap] = useState({});
+  const [defaultShift, setDefaultShift] = useState(null);
+  const [holidaySet, setHolidaySet] = useState(new Set());
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -77,6 +97,25 @@ export default function AllAttendance() {
   const [silentRefreshing, setSilentRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [empCal, setEmpCal] = useState({ open: false, emp: null, year: new Date().getFullYear(), month: new Date().getMonth() + 1, records: [], leaveBalances: [], loading: false });
+
+  // Shifts and Holidays are reference data, not per-day — loaded once rather
+  // than on every date change / 30s silent refresh below.
+  useEffect(() => {
+    (async () => {
+      try {
+        const [shifts, holidays] = await Promise.all([
+          base44.entities.Shift.list(),
+          base44.entities.Holiday.list(),
+        ]);
+        const map = {};
+        let def = null;
+        shifts.forEach(s => { map[s.id] = s; if (s.is_default) def = s; });
+        setShiftMap(map);
+        setDefaultShift(def || { days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] });
+        setHolidaySet(new Set(holidays.map(h => toDateStr(h.date))));
+      } catch { /* best-effort — falls back to treating every missing record as absent */ }
+    })();
+  }, []);
 
   useEffect(() => { loadData(false); }, [date]);
 
@@ -152,17 +191,18 @@ export default function AllAttendance() {
     return employees.map(emp => {
       const record = attendanceMap[emp.user_id];
       if (record) return { ...record, _emp: emp };
+      const offStatus = scheduledOffStatus(emp, date, holidaySet, shiftMap, defaultShift);
       return {
         id: `virtual_${emp.user_id}`,
         user_id: emp.user_id,
         date,
-        status: 'absent',
+        status: offStatus || 'absent',
         working_hours: 0,
         _virtual: true,
         _emp: emp,
       };
     });
-  }, [employees, attendanceMap, date]);
+  }, [employees, attendanceMap, date, holidaySet, shiftMap, defaultShift]);
 
   const filtered = useMemo(() => {
     return rows.filter(r => {
@@ -441,11 +481,16 @@ export default function AllAttendance() {
           for (let d = 1; d <= daysInMonth; d++) {
             const ds = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
             const dayRecs = calMonthRecords.filter(r => r.date?.slice(0,10) === ds);
+            const recordedIds = new Set(dayRecs.map(r => r.user_id));
             const present = dayRecs.filter(r => r.check_in_time || ['present','late','on_duty','work_from_home'].includes(r.status)).length;
             const leave = dayRecs.filter(r => r.status === 'leave').length;
             const halfDay = dayRecs.filter(r => r.status === 'half_day').length;
-            const absent = employees.length - present - leave - halfDay;
-            dayMap[ds] = { present, absent: Math.max(absent, 0), leave, halfDay, total: employees.length };
+            // Employees with no record on a day they weren't even scheduled to
+            // work (a declared Holiday, or outside their Shift's working days —
+            // typically Sunday) are on a paid day off, not absent.
+            const off = employees.filter(e => !recordedIds.has(e.user_id) && scheduledOffStatus(e, ds, holidaySet, shiftMap, defaultShift)).length;
+            const absent = employees.length - present - leave - halfDay - off;
+            dayMap[ds] = { present, absent: Math.max(absent, 0), leave, halfDay, off, total: employees.length };
           }
           const weeks = [];
           let week = Array(firstDow).fill(null);
@@ -497,6 +542,7 @@ export default function AllAttendance() {
                                 {info.absent > 0 && <div className="text-[10px] leading-tight text-red-500">{info.absent} Ab</div>}
                                 {info.leave > 0 && <div className="text-[10px] leading-tight text-blue-500">{info.leave} Lv</div>}
                                 {info.halfDay > 0 && <div className="text-[10px] leading-tight text-yellow-600">{info.halfDay} HD</div>}
+                                {info.off > 0 && <div className="text-[10px] leading-tight text-gray-400">{info.off} Off</div>}
                               </div>
                             ) : (
                               <div className="text-[10px] text-gray-300">{isSun ? 'Off' : ''}</div>
