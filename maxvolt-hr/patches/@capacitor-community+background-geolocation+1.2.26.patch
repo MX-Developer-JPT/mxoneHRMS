@@ -214,7 +214,7 @@ index a92fcf9..51c2055 100644
      public void openSettings(PluginCall call) {
          Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..6e8e66c 100644
+index fafbb86..a138d5d 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -277,7 +277,7 @@ index fafbb86..6e8e66c 100644
      private final IBinder binder = new LocalBinder();
  
      // Must be unique for this application.
-@@ -42,22 +75,55 @@ public class BackgroundGeolocationService extends Service {
+@@ -42,22 +75,70 @@ public class BackgroundGeolocationService extends Service {
      }
      private HashSet<Watcher> watchers = new HashSet<Watcher>();
  
@@ -308,11 +308,18 @@ index fafbb86..6e8e66c 100644
 +    // events anymore once the process actually dies — so hand off to the
 +    // same headless path used after a reboot, using the state JS already
 +    // persisted, instead of losing tracking until the employee reopens the app.
++    //
++    // NOTE: this is NOT reliably ordered before onUnbind() below — on many
++    // devices onUnbind() fires first (as part of the bound Activity/WebView
++    // disconnecting), which used to clear `watchers` to empty before this
++    // method ever got to check it, silently defeating the handoff every
++    // time. The real handoff now happens in onUnbind() itself (which sees
++    // watchers before they're cleared); this call is a harmless no-op
++    // backstop for any device ordering where onTaskRemoved fires first —
++    // startHeadlessTrackingIfNeeded()'s own guard makes re-calling it safe.
 +    @Override
 +    public void onTaskRemoved(Intent rootIntent) {
-+        if (!watchers.isEmpty()) {
-+            startHeadlessTrackingIfNeeded();
-+        }
++        startHeadlessTrackingIfNeeded();
 +        super.onTaskRemoved(rootIntent);
 +    }
 +
@@ -324,18 +331,26 @@ index fafbb86..6e8e66c 100644
 +    // over, in which case the service must keep running independently.
      @Override
      public boolean onUnbind(Intent intent) {
++        // Capture this BEFORE clearing watchers below — onTaskRemoved()'s own
++        // check of `watchers` can no longer be trusted once this method has
++        // run (see its comment), so the headless handoff decision has to be
++        // made right here, with the client-was-tracking signal still intact.
++        boolean wasTracking = !watchers.isEmpty();
          for (Watcher watcher : watchers) {
              watcher.client.removeLocationUpdates(watcher.locationCallback);
          }
          watchers = new HashSet<Watcher>();
 -        stopSelf();
++        if (wasTracking) {
++            startHeadlessTrackingIfNeeded();
++        }
 +        if (!headlessActive) {
 +            stopSelf();
 +        }
          return false;
      }
  
-@@ -77,6 +143,10 @@ public class BackgroundGeolocationService extends Service {
+@@ -77,6 +158,10 @@ public class BackgroundGeolocationService extends Service {
                  Notification backgroundNotification,
                  float distanceFilter
          ) {
@@ -346,7 +361,7 @@ index fafbb86..6e8e66c 100644
              FusedLocationProviderClient client = LocationServices.getFusedLocationProviderClient(
                      BackgroundGeolocationService.this
              );
-@@ -172,4 +242,289 @@ public class BackgroundGeolocationService extends Service {
+@@ -172,4 +257,289 @@ public class BackgroundGeolocationService extends Service {
              BackgroundGeolocationService.this.stopSelf();
          }
      }
