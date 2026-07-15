@@ -214,7 +214,7 @@ index a92fcf9..51c2055 100644
      public void openSettings(PluginCall call) {
          Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..a138d5d 100644
+index fafbb86..17c2a74 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -557,14 +557,14 @@ index fafbb86..a138d5d 100644
 +                // rather than geofence, or the seed fetch didn't resolve one) —
 +                // fall back to the nearest configured fence so exit can still
 +                // be detected via distance hysteresis.
-+                double bestDist = Double.MAX_VALUE;
++                double nearestDist = Double.MAX_VALUE;
 +                for (int i = 0; i < fences.length(); i++) {
 +                    JSONObject f = fences.getJSONObject(i);
 +                    double fd = distanceMetres(
 +                            location.getLatitude(), location.getLongitude(),
 +                            f.getDouble("latitude"), f.getDouble("longitude")
 +                    );
-+                    if (fd < bestDist) { bestDist = fd; cur = f; }
++                    if (fd < nearestDist) { nearestDist = fd; cur = f; }
 +                }
 +            }
 +            if (cur == null) return;
