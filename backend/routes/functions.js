@@ -6069,15 +6069,39 @@ ${contextBlock || 'No employee context available — answer from general policy 
     }
 
     case 'saveSaturdaySettings': {
-      const { year, location, saturdays_working } = body;
-      if (!year || !location) return res.status(400).json({ error: 'year and location required' });
-      const key = `saturday_settings_${year}_${location}`;
+      // Was referencing an undefined `body` variable (should have been `p`)
+      // — threw a ReferenceError on every call, silently swallowed by the
+      // frontend's try/catch. Also only ever wrote to a settings key that
+      // nothing else in the system reads, so even without the bug this
+      // toggle had zero real effect. Now actually updates Shift.days — the
+      // real source of truth Attendance Report/Muster and the absence cron
+      // read — since that's the only thing that makes this toggle mean
+      // anything. Shift has no per-location or per-year concept, so this
+      // is necessarily a company-wide change across every Shift, regardless
+      // of the location filter selected in the UI.
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR or admin access required' });
+      const { year, location, saturdays_working } = p;
+      if (!year) return res.status(400).json({ error: 'year required' });
+      const key = `saturday_settings_${year}_${location || 'All'}`;
       await run(
         `INSERT INTO settings(key,value,updated_at) VALUES($1,$2,NOW()::TEXT)
          ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT`,
-        [key, JSON.stringify({ year, location, saturdays_working })]
+        [key, JSON.stringify({ year, location: location || 'All', saturdays_working })]
       );
-      return res.json({ success: true });
+
+      const shiftRows = await all("SELECT id,data FROM entities WHERE type='Shift'");
+      let updatedShifts = 0;
+      for (const row of shiftRows) {
+        const shift = JSON.parse(row.data);
+        const days = Array.isArray(shift.days) ? [...shift.days] : [];
+        const hasSaturday = days.includes('Saturday');
+        if (saturdays_working && !hasSaturday) days.push('Saturday');
+        else if (!saturdays_working && hasSaturday) days.splice(days.indexOf('Saturday'), 1);
+        else continue;
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...shift, days }), row.id]);
+        updatedShifts++;
+      }
+      return res.json({ success: true, updated_shifts: updatedShifts, total_shifts: shiftRows.length });
     }
 
     /* ── MIS & Reporting ─────────────────────────────── */
@@ -7357,6 +7381,37 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
               }
             } catch (e) { console.warn('WFH attendance sync on leave approval failed:', e.message); }
           } else {
+            // Regular leave — writes an Attendance row per day too, mirroring
+            // the WFH path above. Without this, payroll
+            // (processPayroll/processAdvancedPayroll) and every other page
+            // that reads Attendance (All Attendance, reports, muster) saw no
+            // record at all for an approved leave day and treated it as an
+            // unpaid absence/LOP, even though LeaveBalance had correctly
+            // deducted it as paid leave usage. LeaveBalance stays the
+            // authoritative leave-usage record; this Attendance row exists
+            // purely so day-by-day consumers agree with it. Skips a day that
+            // already has real check-in data (e.g. leave approved after they
+            // already attended part of that day) rather than clobbering it.
+            try {
+              const plaDates = [];
+              for (let d = new Date(plaLv.start_date + 'T00:00:00'); d <= new Date(plaLv.end_date + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+                plaDates.push(d.toISOString().split('T')[0]);
+              }
+              for (const plaDate of plaDates) {
+                const plaAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [plaLv.user_id, plaDate]);
+                if (plaAttRow) {
+                  const plaExisting = JSON.parse(plaAttRow.data);
+                  if (plaExisting.check_in_time) continue; // already genuinely attended this day — don't overwrite
+                  const plaAtt = { ...plaExisting, status: 'leave', leave_id: plaLeaveId };
+                  await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", ['leave', JSON.stringify(plaAtt), plaAttRow.id]);
+                } else {
+                  const plaAttId = uuidv4();
+                  const plaAtt = { id: plaAttId, user_id: plaLv.user_id, date: plaDate, status: 'leave', leave_id: plaLeaveId, created_at: now };
+                  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'leave',$3)", [plaAttId, plaLv.user_id, JSON.stringify(plaAtt)]);
+                }
+              }
+            } catch (e) { console.warn('Leave attendance sync on approval failed:', e.message); }
+
             // Update leave balance
             try {
               const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [plaLv.user_id]);

@@ -171,18 +171,22 @@ export default function HolidayCalendar() {
     }
     setWorkingDayOverrides(updated);
     localStorage.setItem('workingDayOverrides', JSON.stringify(updated));
-    // Persist to DB as WorkingDaySetting entities
+    // This is what actually takes effect system-wide: Attendance Report,
+    // Attendance Muster, and the absence-marking cron all read Saturday's
+    // working/off status from each employee's Shift.days, not from anything
+    // on this page — Shift has no per-location concept, so this updates
+    // every Shift company-wide regardless of the Location filter above.
     try {
-      await base44.functions.invoke('saveSaturdaySettings', {
+      const res = await base44.functions.invoke('saveSaturdaySettings', {
         year: selectedYear,
         location: satLocation,
         saturdays_working: makeWorking,
       });
+      const n = res.data?.updated_shifts ?? 0;
+      toast.success(`Saturday marked as ${makeWorking ? 'a working day' : 'off'} on ${n} shift${n === 1 ? '' : 's'} company-wide — Attendance Report/Muster will reflect this immediately.`);
     } catch (e) {
-      // Non-critical — local state already updated
-      console.warn('Could not persist Saturday settings to server:', e.message);
+      toast.error('Could not update shift working days: ' + e.message);
     }
-    toast.success(`All Saturdays of ${selectedYear} ${makeWorking ? 'marked as working' : 'marked as off'} for ${satLocation}`);
     setSatTogglingOn(false);
   };
 
@@ -401,6 +405,9 @@ export default function HolidayCalendar() {
                   <ToggleLeft className="w-4 h-4 mr-1" /> Mark All Saturdays Off
                 </Button>
               </div>
+              <p className="text-xs text-amber-700 mt-2">
+                Updates every Shift's working days company-wide — the Location filter above doesn't scope this, since shifts aren't location-specific.
+              </p>
             </CardContent>
           </Card>
         )}
