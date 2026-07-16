@@ -1890,6 +1890,11 @@ router.post('/:name', async (req, res) => {
       const getShift = (shiftId) => shiftId ? (shiftCache[shiftId] || null) : null;
 
       const defaultShift = parseEntities(await all("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'='true' OR data::jsonb->>'name' LIKE '%General%') LIMIT 1"))[0] || null;
+      const FALLBACK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const WEEKDAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const reportHolidaySet = new Set(parseEntities(await all(
+        "SELECT data FROM entities WHERE type='Holiday' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]
+      )).map(h => h.date));
 
       const toMinutes = (t) => {
         if (!t) return 0;
@@ -1916,13 +1921,20 @@ router.post('/:name', async (req, res) => {
         for (let d = 1; d <= daysInMonth; d++) {
           const dateStr = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
           const rec  = attMap[emp.user_id]?.[dateStr];
-          const dow  = new Date(dateStr).getDay();
-          const isWeekend = dow === 0 || dow === 6;
+          // Off-day for THIS employee is whatever their own Shift.days
+          // says, not a hardcoded Saturday/Sunday check — a shift that
+          // includes Saturday as a working day must not show it as OFF
+          // just because there's no attendance record yet.
+          const weekday = WEEKDAY_NAMES[new Date(dateStr).getDay()];
+          const workingDays = Array.isArray(shift?.days) && shift.days.length ? shift.days : (defaultShift?.days || FALLBACK_DAYS);
+          const isHoliday = reportHolidaySet.has(dateStr);
+          const isScheduledOff = !workingDays.includes(weekday);
 
           let cell = '', workedMins = 0, otMins = 0;
 
           if (!rec) {
-            if (isWeekend) { cell = 'OFF'; totalOff++; }
+            if (isHoliday) { cell = 'H'; totalHoliday++; }
+            else if (isScheduledOff) { cell = 'OFF'; totalOff++; }
             else { cell = 'A'; totalAbsent++; }
           } else {
             const s = rec.status;
@@ -2126,22 +2138,52 @@ router.post('/:name', async (req, res) => {
         mAttMap[a.user_id][String(a.date).slice(0,10)] = a;
       }
 
+      const mFallbackDays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const mWeekdayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const mHolidaySet = new Set(parseEntities(await all(
+        "SELECT data FROM entities WHERE type='Holiday' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]
+      )).map(h => h.date));
+      const mShiftCache = {};
+      let mDefaultShift = { days: mFallbackDays };
+      (await all("SELECT data FROM entities WHERE type='Shift'")).forEach(r => {
+        const s = JSON.parse(r.data);
+        mShiftCache[s.id] = s;
+        if (s.is_default) mDefaultShift = s;
+      });
+      const mWorkingDaysFor = (emp) => {
+        const shift = (emp?.shift_id && mShiftCache[emp.shift_id]) || mDefaultShift;
+        return Array.isArray(shift?.days) && shift.days.length ? shift.days : (mDefaultShift.days || mFallbackDays);
+      };
+
       const isMusterWorked = (r) => {
         if (!r) return false;
         const s = r.status;
         return s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home' || s === 'half_day' || (!s && (r.check_in_time || r.biometric_synced));
       };
-      const mStatusCode = (rec, dateStr, empRecs) => {
+      // workingDays is THIS employee's real Shift.days (not a hardcoded
+      // Saturday/Sunday check) — a shift that includes Saturday as a
+      // working day must not show 'WO' for it just because there's no
+      // attendance record yet.
+      const mStatusCode = (rec, dateStr, empRecs, workingDays) => {
         const dateObj = new Date(dateStr + 'T00:00:00');
         const dow = dateObj.getDay();
-        // Sunday sandwich rule: WO only if present on Saturday or Monday
-        if (dow === 0) {
+        const weekday = mWeekdayNames[dow];
+        const isHoliday = mHolidaySet.has(dateStr);
+        const isScheduledOff = !isHoliday && !workingDays.includes(weekday);
+        // Sunday sandwich rule — only meaningful when Sunday is actually
+        // this employee's scheduled off day; a shift that has Sunday as a
+        // working day falls through to normal handling below instead.
+        if (dow === 0 && isScheduledOff) {
           const sat = new Date(dateObj.getTime() - 86400000).toISOString().slice(0,10);
           const mon = new Date(dateObj.getTime() + 86400000).toISOString().slice(0,10);
           if (!isMusterWorked(empRecs[sat]) && !isMusterWorked(empRecs[mon])) return 'A';
           return 'WO';
         }
-        if (!rec) return dow === 6 ? 'WO' : 'A';
+        if (!rec) {
+          if (isHoliday) return 'PH';
+          if (isScheduledOff) return 'WO';
+          return 'A';
+        }
         const s = rec.status;
         const hasIn = rec.check_in_time || rec.biometric_synced || rec.check_in_selfie_url;
         if (s === 'week_off')  return 'WO';
@@ -2224,12 +2266,13 @@ router.post('/:name', async (req, res) => {
         if (!(dept in deptBgMap)) deptBgMap[dept] = DEPT_BG[dci++ % DEPT_BG.length];
         const bg = deptBgMap[dept];
         const empRecs = mAttMap[emp.user_id] || {};
+        const workingDays = mWorkingDaysFor(emp);
         let pC=0, aC=0, lC=0, hdC=0, woC=0, phC=0, odC=0;
         const codes = [];
 
         for (let d=1; d<=daysInMonth; d++) {
           const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-          const code = mStatusCode(empRecs[ds], ds, empRecs);
+          const code = mStatusCode(empRecs[ds], ds, empRecs, workingDays);
           codes.push(code);
           if (code==='P'||code==='P*'||code==='SA') pC++;
           else if (code==='A') aC++;
