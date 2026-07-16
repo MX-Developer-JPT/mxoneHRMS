@@ -3,7 +3,7 @@
 // 2. Employees who checked in but never checked out before 2 AM the next day → marked absent.
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
-import { buildSessions, computeStatusFromSessions } from '../routes/attendancelog.js';
+import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession } from '../routes/attendancelog.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -82,27 +82,56 @@ export async function markMissingAttendanceAsAbsent(targetDate) {
   return { date, checked: employees.length, marked };
 }
 
-// Force-close any Attendance row that's still "in progress" (checked in, never
-// checked out) once the 2 AM cutoff has passed — regardless of hours worked.
-export async function markUnclosedCheckInsAsAbsent(targetDate) {
+// Force-close any Attendance row that's still "in progress" (a session
+// checked in but never checked out) once the 2 AM cutoff has passed.
+//
+// Previously this blanket-marked the ENTIRE day 'absent' whenever the final
+// session was left open — discarding any real hours already worked in
+// earlier sessions that day (e.g. a normal 9-6 shift, then a forgotten
+// supplementary check-in at 8 PM that was never checked out, wiped the whole
+// day to absent instead of just flagging the stray trailing punch). Now the
+// trailing open session is closed as zero-duration (see
+// closeTrailingOpenSession) and the day's status is recomputed from
+// whatever was actually, legitimately worked.
+export async function closeUnfinishedSessions(targetDate) {
   const date = targetDate || istDateString(-1);
   const rows = await all("SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1", [date]);
 
+  const defaultShift = await getDefaultShift();
+  const empCache = {};
   let marked = 0;
+
   for (const row of rows) {
     const d = JSON.parse(row.data);
     if (d.status === 'regularised') continue;
-    if (!d.is_in_progress && d.status !== 'in_progress') continue; // already checked out
 
+    // Older records may predate the multi-session model and only carry
+    // check_in_time/check_out_time — seed raw_punches from those so this
+    // still finalizes them correctly instead of skipping.
+    let rawPunches = Array.isArray(d.raw_punches) && d.raw_punches.length ? d.raw_punches : [];
+    if (!rawPunches.length && d.check_in_time) {
+      rawPunches = [{ time: d.check_in_time, device_direction: 'IN' }];
+      if (d.check_out_time) rawPunches.push({ time: d.check_out_time, device_direction: 'OUT' });
+    }
+    if (!rawPunches.length) continue;
+
+    const currentSd = buildSessions(rawPunches);
+    if (!currentSd.is_in_progress) continue; // already fully checked out
+
+    if (!(d.user_id in empCache)) {
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
+      empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
+    }
+    const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+
+    const sessionData = closeTrailingOpenSession(rawPunches);
+    const statusResult = computeStatusFromSessions(sessionData, shift);
     const updated = {
-      ...d,
-      status: 'absent',
-      is_in_progress: false,
+      ...d, ...sessionData, ...statusResult,
       auto_closed_at: new Date().toISOString(),
-      auto_closed_reason: 'Checked in but did not check out before 2 AM the next day — marked absent automatically',
-      sessions: (d.sessions || []).map(s => (s.is_complete ? s : { ...s, auto_closed: true })),
+      auto_closed_reason: 'Final session of the day was never checked out before the 2 AM cutoff — closed as a zero-duration session at the last recorded punch; status reflects hours actually worked in completed sessions.',
     };
-    await run("UPDATE entities SET status='absent', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(updated), row.id]);
+    await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [statusResult.status, JSON.stringify(updated), row.id]);
     marked++;
   }
   return { date, checked: rows.length, marked };
@@ -114,7 +143,7 @@ export async function markUnclosedCheckInsAsAbsent(targetDate) {
 // check-in (GPS disabled, an OEM battery killer force-stopping the service,
 // location permission revoked, app crash) no exit event ever fires, and the
 // employee would otherwise stay "checked in" until the *next* day's 2 AM
-// cleanup (markUnclosedCheckInsAsAbsent) — a 20+ hour window with an
+// cleanup (closeUnfinishedSessions) — a 20+ hour window with an
 // incorrect status the whole time. Runs frequently (see server.js) and
 // force-closes any GEOFENCE-driven open session that's been running
 // implausibly long for one continuous stretch, checking out "now" and
@@ -169,7 +198,7 @@ export async function closeStaleGeofenceSessions() {
 export async function runNightlyAttendanceAutomation(targetDate) {
   const date = targetDate || istDateString(-1);
   const noRecord = await markMissingAttendanceAsAbsent(date);
-  const unclosed = await markUnclosedCheckInsAsAbsent(date);
-  console.log(`[attendance-cron] ${date} — no-record absent: ${noRecord.marked}/${noRecord.checked}, unclosed check-in absent: ${unclosed.marked}/${unclosed.checked}`);
+  const unclosed = await closeUnfinishedSessions(date);
+  console.log(`[attendance-cron] ${date} — no-record absent: ${noRecord.marked}/${noRecord.checked}, unclosed sessions closed: ${unclosed.marked}/${unclosed.checked}`);
   return { date, noRecord, unclosed };
 }

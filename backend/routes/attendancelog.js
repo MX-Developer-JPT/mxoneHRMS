@@ -184,6 +184,26 @@ export function buildSessions(rawPunches) {
 }
 
 /**
+ * Given a day's raw punches, closes a still-open trailing session (an odd
+ * final check-in with no matching check-out) by synthesizing a check-out at
+ * the SAME timestamp — a zero-duration session — instead of leaving the day
+ * "in progress" indefinitely. Already-completed earlier sessions that day
+ * are untouched, so their real worked hours aren't discarded.
+ *
+ * This is a FINALIZATION step, not a live/real-time one: only call this when
+ * closing out a day that has actually ended (the nightly cron, historical
+ * recalculation) — never for today's still-ongoing session, which needs to
+ * stay genuinely open for check-out/geofence-exit detection and the Mark
+ * Attendance UI to keep working correctly.
+ */
+export function closeTrailingOpenSession(rawPunches) {
+  const sd = buildSessions(rawPunches);
+  if (!sd.is_in_progress) return sd; // already closed — nothing to finalize
+  const lastPunch = sd.raw_punches[sd.raw_punches.length - 1];
+  return buildSessions([...sd.raw_punches, { time: lastPunch.time, device_direction: 'OUT', auto_closed_session: true }]);
+}
+
+/**
  * Derive attendance status + late/early/overtime figures from session summary + shift config.
  *
  * late_minutes / late_arrival(_minutes) — first check-in vs shift start + grace.
@@ -203,9 +223,7 @@ export function computeStatusFromSessions(sessionData, shift) {
 
   let status = 'present', late_minutes = 0, early_departure_minutes = 0, overtime_minutes = 0;
 
-  if (is_in_progress && total_working_minutes === 0) {
-    status = 'in_progress';
-  } else if (is_in_progress) {
+  if (is_in_progress) {
     // Still working — don't finalise status yet
     status = 'in_progress';
   } else if (total_working_minutes > 0) {
@@ -213,6 +231,12 @@ export function computeStatusFromSessions(sessionData, shift) {
     if (wh < shiftHours / 2)    status = 'short_attendance';
     else if (wh < shiftHours * 0.9) status = 'half_day';
     else status = 'present';
+  } else {
+    // Closed out with zero worked minutes — e.g. the day's only punch was a
+    // trailing check-in that closeTrailingOpenSession() had to neutralize
+    // into a zero-duration session, with no other real session that day.
+    // Must not silently fall through to the 'present' default above.
+    status = 'absent';
   }
 
   if (check_in_time) {
