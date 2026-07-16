@@ -6,7 +6,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
-import { buildSessions, computeStatusFromSessions } from './attendancelog.js';
+import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession } from './attendancelog.js';
 import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
@@ -1021,6 +1021,95 @@ router.post('/:name', async (req, res) => {
         old_bug_recomputable_count: recomputable.length,
         old_bug_sample: oldBugRows.slice(0, 8).map(r => ({ id: r.id, date: r.data.date, user_id: r.user_id, raw_punch_count: (r.data.raw_punches || []).length, has_check_in_time: !!r.data.check_in_time })),
       });
+    }
+
+    // TEMPORARY historical data correction for the two bugs
+    // debugAttendanceAudit found — see markAbsentEmployees/closeOpenSessions
+    // fix. Admin-only. Defaults to dryRun (no writes) — pass { dryRun: false }
+    // explicitly to actually apply changes. Two categories:
+    //   A) 'absent' rows on a day that was actually a scheduled off-day
+    //      (per the employee's current Shift.days) or a declared Holiday —
+    //      these should never have existed as real rows at all (no Attendance
+    //      row = "week off"/"holiday", already correctly inferred by the
+    //      frontend) — deleted outright, not just re-labeled.
+    //   B) rows carrying the old blanket-wipe auto_closed_reason marker,
+    //      recomputed via closeTrailingOpenSession + computeStatusFromSessions
+    //      using each employee's real shift — updated in place, not deleted,
+    //      since these represent real days that need a corrected status.
+    // Safe to remove once the correction has been run.
+    case 'historicalAttendanceCorrection': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const dryRun = p?.dryRun !== false;
+      const WD = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const OLD_MARKER = 'Checked in but did not check out before 2 AM the next day — marked absent automatically';
+
+      const holidaySet = new Set((await all("SELECT data FROM entities WHERE type='Holiday'")).map(r => JSON.parse(r.data).date));
+      const shiftMap = {};
+      let defaultShift = { days: ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'] };
+      (await all("SELECT data FROM entities WHERE type='Shift'")).forEach(r => { const s = JSON.parse(r.data); shiftMap[s.id] = s; if (s.is_default) defaultShift = s; });
+      const empMap = {};
+      (await all("SELECT user_id, data FROM entities WHERE type='Employee'")).forEach(r => { empMap[r.user_id] = JSON.parse(r.data); });
+
+      const isOffDay = (userId, dateStr) => {
+        if (holidaySet.has(dateStr)) return true;
+        const emp = empMap[userId] || {};
+        const shift = (emp.shift_id && shiftMap[emp.shift_id]) || defaultShift;
+        const days = Array.isArray(shift?.days) && shift.days.length ? shift.days : defaultShift.days;
+        const weekday = WD[new Date(dateStr + 'T00:00:00Z').getUTCDay()];
+        return !days.includes(weekday);
+      };
+
+      const absentRows = (await all("SELECT id,user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'status'='absent'"))
+        .map(r => ({ id: r.id, user_id: r.user_id, data: JSON.parse(r.data) }));
+
+      const toDelete = absentRows.filter(r => r.data.date && isOffDay(r.user_id, r.data.date));
+      const toRecomputeRows = absentRows.filter(r => r.data.auto_closed_reason === OLD_MARKER && !toDelete.includes(r));
+
+      const recomputed = [];
+      for (const r of toRecomputeRows) {
+        const d = r.data;
+        let rawPunches = Array.isArray(d.raw_punches) && d.raw_punches.length ? d.raw_punches : [];
+        if (!rawPunches.length && d.check_in_time) {
+          rawPunches = [{ time: d.check_in_time, device_direction: 'IN' }];
+          if (d.check_out_time) rawPunches.push({ time: d.check_out_time, device_direction: 'OUT' });
+        }
+        if (!rawPunches.length) continue;
+        const emp = empMap[r.user_id] || {};
+        const shift = (emp.shift_id && shiftMap[emp.shift_id]) || defaultShift;
+        const sessionData = closeTrailingOpenSession(rawPunches);
+        const statusResult = computeStatusFromSessions(sessionData, shift);
+        recomputed.push({ row: r, sessionData, statusResult });
+      }
+
+      if (dryRun) {
+        return res.json({
+          success: true, dry_run: true,
+          would_delete_count: toDelete.length,
+          would_delete_sample: toDelete.slice(0, 10).map(r => ({ id: r.id, date: r.data.date, user_id: r.user_id })),
+          would_recompute_count: recomputed.length,
+          would_recompute_sample: recomputed.slice(0, 10).map(({ row, sessionData, statusResult }) => ({
+            id: row.id, date: row.data.date, user_id: row.user_id,
+            old_status: 'absent', new_status: statusResult.status,
+            working_hours: sessionData.working_hours, check_out_time: sessionData.check_out_time,
+          })),
+        });
+      }
+
+      let deleted = 0, recomputedCount = 0;
+      for (const r of toDelete) {
+        await run("DELETE FROM entities WHERE id=$1", [r.id]);
+        deleted++;
+      }
+      for (const { row, sessionData, statusResult } of recomputed) {
+        const updated = {
+          ...row.data, ...sessionData, ...statusResult,
+          historically_corrected_at: new Date().toISOString(),
+          historically_corrected_reason: 'Recomputed via closeTrailingOpenSession — an unclosed trailing session is excluded from totals instead of blanket-marking the day absent',
+        };
+        await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [statusResult.status, JSON.stringify(updated), row.id]);
+        recomputedCount++;
+      }
+      return res.json({ success: true, dry_run: false, deleted, recomputed: recomputedCount });
     }
 
     case 'nativeGeofenceEvent': {
