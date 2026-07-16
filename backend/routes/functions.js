@@ -994,6 +994,35 @@ router.post('/:name', async (req, res) => {
       });
     }
 
+    // TEMPORARY read-only diagnostic for the historical attendance-correction
+    // investigation — counts/samples records potentially affected by the old
+    // blanket-wipe-to-absent bug (see closeUnfinishedSessions), and checks
+    // whether any real Sunday-marked-absent rows exist in the DB (as opposed
+    // to the already-fixed frontend display bug). Safe to remove once that
+    // investigation is done; it makes no writes.
+    case 'debugAttendanceAudit': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const WD = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const OLD_MARKER = 'Checked in but did not check out before 2 AM the next day — marked absent automatically';
+
+      const absentRows = (await all("SELECT id,user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'status'='absent'"))
+        .map(r => ({ id: r.id, user_id: r.user_id, data: JSON.parse(r.data) }));
+
+      const sundayAbsent = absentRows.filter(r => r.data.date && WD[new Date(r.data.date + 'T00:00:00Z').getUTCDay()] === 'Sunday');
+      const oldBugRows = absentRows.filter(r => r.data.auto_closed_reason === OLD_MARKER);
+      const recomputable = oldBugRows.filter(r => (Array.isArray(r.data.raw_punches) && r.data.raw_punches.length > 0) || r.data.check_in_time);
+
+      return res.json({
+        success: true,
+        total_absent_rows: absentRows.length,
+        sunday_absent_count: sundayAbsent.length,
+        sunday_absent_sample: sundayAbsent.slice(0, 8).map(r => ({ date: r.data.date, user_id: r.user_id, auto_marked_reason: r.data.auto_marked_reason || null, auto_closed_reason: r.data.auto_closed_reason || null })),
+        old_bug_marker_count: oldBugRows.length,
+        old_bug_recomputable_count: recomputable.length,
+        old_bug_sample: oldBugRows.slice(0, 8).map(r => ({ id: r.id, date: r.data.date, user_id: r.user_id, raw_punch_count: (r.data.raw_punches || []).length, has_check_in_time: !!r.data.check_in_time })),
+      });
+    }
+
     case 'nativeGeofenceEvent': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { event, latitude, longitude, accuracy, occurred_at, location_name, is_mock, device_id, source } = p;
