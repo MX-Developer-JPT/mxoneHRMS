@@ -184,11 +184,21 @@ export function buildSessions(rawPunches) {
 }
 
 /**
- * Given a day's raw punches, closes a still-open trailing session (an odd
- * final check-in with no matching check-out) by synthesizing a check-out at
- * the SAME timestamp — a zero-duration session — instead of leaving the day
- * "in progress" indefinitely. Already-completed earlier sessions that day
- * are untouched, so their real worked hours aren't discarded.
+ * Given a day's raw punches, finalizes a still-open trailing session (an odd
+ * final check-in with no matching check-out) by EXCLUDING it from the day's
+ * totals entirely — not padding it to zero-duration, which would incorrectly
+ * make the incomplete session's own check-in time look like the day's "Last
+ * Out". The day's check-out time, total worked minutes, and status are all
+ * derived purely from whatever sessions actually completed; the incomplete
+ * trailing punch stays visible in raw_punches/sessions (so HR can still see
+ * it happened, e.g. "Session 2: 8:56 PM IN, no OUT recorded") but doesn't
+ * affect the calculation. If there were zero completed sessions that day,
+ * this correctly bottoms out at zero worked minutes.
+ *
+ * Example: Session 1 10:07 AM → 8:53 PM (10h46m, complete), Session 2 8:56
+ * PM IN with no OUT. Result: check_out_time = 8:53 PM, total = 10h46m,
+ * status computed from that — Present, not Absent just because a stray
+ * extra check-in was never matched with a check-out.
  *
  * This is a FINALIZATION step, not a live/real-time one: only call this when
  * closing out a day that has actually ended (the nightly cron, historical
@@ -199,8 +209,16 @@ export function buildSessions(rawPunches) {
 export function closeTrailingOpenSession(rawPunches) {
   const sd = buildSessions(rawPunches);
   if (!sd.is_in_progress) return sd; // already closed — nothing to finalize
-  const lastPunch = sd.raw_punches[sd.raw_punches.length - 1];
-  return buildSessions([...sd.raw_punches, { time: lastPunch.time, device_direction: 'OUT', auto_closed_session: true }]);
+  const completed = buildSessions(sd.raw_punches.slice(0, -1)); // drop the trailing unmatched check-in
+  return {
+    ...sd, // keep the full raw_punches/sessions list — including the stray incomplete session — for visibility
+    is_in_progress: false,
+    total_working_minutes: completed.total_working_minutes,
+    total_break_minutes: completed.total_break_minutes,
+    working_hours: completed.working_hours,
+    break_hours: completed.break_hours,
+    check_out_time: completed.check_out_time,
+  };
 }
 
 /**
