@@ -7,7 +7,7 @@ import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, computeStatusFromSessions } from './attendancelog.js';
-import { runNightlyAttendanceAutomation } from '../cron/attendanceAutomation.js';
+import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -1691,59 +1691,20 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'markAbsentEmployees': {
+      // Was its own separate, independent implementation from the nightly
+      // cron's markMissingAttendanceAsAbsent — critically, WITHOUT that
+      // function's weekly-off/Holiday check. Since this case is invoked
+      // automatically every time HR/admin opens the All Attendance page
+      // (AllAttendance.jsx's runAutoAbsent, for "yesterday"), it silently
+      // marked every employee absent on every Sunday/holiday, every time
+      // the page was opened — the actual root cause of a large number of
+      // real bad 'absent' Attendance rows on non-working days (confirmed via
+      // the debugAttendanceAudit diagnostic). Now delegates to the same,
+      // correctly-gated function the cron uses, so there's one
+      // implementation instead of two that can drift out of sync.
       const { date } = p;
-      const targetDate = date || new Date().toISOString().slice(0, 10);
-
-      // Get all active employees
-      const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
-      const employees = empRows.map(r => JSON.parse(r.data));
-
-      // Check for approved leaves on this date
-      const leaveRows = await all("SELECT data FROM entities WHERE type='Leave' AND status='approved'");
-      const onLeaveUserIds = new Set();
-      leaveRows.forEach(row => {
-        const leave = JSON.parse(row.data);
-        if (leave.start_date <= targetDate && leave.end_date >= targetDate) {
-          onLeaveUserIds.add(leave.user_id);
-        }
-      });
-
-      let marked = 0, skipped = 0;
-      for (const emp of employees) {
-        if (!emp.user_id) { skipped++; continue; }
-        if (onLeaveUserIds.has(emp.user_id)) { skipped++; continue; }
-
-        // Direct per-employee check — more robust than a Set built from a separate query.
-        // Matches on user_id (DB column OR JSON blob) AND employee_code, because biometric
-        // records created via MxOneSync may have the employee_code in the JSON even when
-        // the user_id columns don't align (e.g. BiometricCodeMapping pointed to a different
-        // user than the Employee entity's own user_id).
-        const existingAtt = await one(`
-          SELECT id FROM entities
-          WHERE type='Attendance'
-            AND data::jsonb->>'date' = $1
-            AND (
-              user_id = $2
-              OR data::jsonb->>'user_id' = $2
-              OR ($3 <> '' AND data::jsonb->>'employee_code' = $3)
-            )
-          LIMIT 1
-        `, [targetDate, emp.user_id, emp.employee_code || '']);
-
-        if (existingAtt) { skipped++; continue; }
-
-        const attId = uuidv4();
-        await run(
-          "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'absent',$3)",
-          [attId, emp.user_id, JSON.stringify({
-            id: attId, user_id: emp.user_id, date: targetDate,
-            status: 'absent', source: 'auto_marked',
-            created_at: new Date().toISOString(),
-          })]
-        );
-        marked++;
-      }
-      return res.json({ success:true, marked, skipped, date: targetDate, message:`Marked ${marked} employees absent for ${targetDate}` });
+      const result = await markMissingAttendanceAsAbsent(date);
+      return res.json({ success: true, marked: result.marked, skipped: Math.max(result.checked - result.marked, 0), date: result.date, message: `Marked ${result.marked} employees absent for ${result.date}` });
     }
 
     case 'generatePayslip': {
@@ -3700,68 +3661,21 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'closeOpenSessions': {
-      // Runs after 5:30 AM IST — closes any session still "in_progress" from the target date.
-      // Employees who worked meaningful hours are NOT marked absent — we pick present/half_day/short_attendance.
+      // Was its own separate implementation from the nightly cron's
+      // closeUnfinishedSessions — it got the "don't blanket-mark absent"
+      // part right, but never correctly set check_out_time (it never
+      // computed one at all, silently keeping whatever stale/null value was
+      // already on the record) and used a different, less precise "sum all
+      // sessions" calculation than closeTrailingOpenSession's "exclude the
+      // incomplete trailing session" rule. Delegates to the same function
+      // the cron uses so both stay in sync.
       const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
       const nowIST = new Date(Date.now() + IST_OFFSET_MS);
       const todayIST = nowIST.toISOString().slice(0, 10);
       const yesterdayIST = new Date(new Date(todayIST + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
       const targetDate = p?.date || yesterdayIST;
-
-      const rows = await all(
-        "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1",
-        [targetDate]
-      );
-
-      let closed = 0;
-      for (const row of rows) {
-        const d = JSON.parse(row.data);
-        if (d.status === 'regularised') continue;
-        if (!d.is_in_progress && d.status !== 'in_progress') continue;
-
-        // Load shift to determine thresholds
-        const empRow   = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
-        const emp      = empRow ? JSON.parse(empRow.data) : {};
-        const shiftRow = emp.shift_id
-          ? await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id])
-          : await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'='true' LIMIT 1");
-        const shift = shiftRow ? JSON.parse(shiftRow.data) : { start_time:'09:00', end_time:'18:00', working_hours:9, grace_period_minutes:15 };
-        const shiftHours = shift.working_hours || 9;
-
-        // If raw_punches are stored, rebuild sessions; otherwise use stored session data
-        let working_hours = d.working_hours || 0;
-        let updatedSessions = d.sessions || [];
-        if (d.raw_punches && d.raw_punches.length > 0) {
-          const sd = buildSessions(d.raw_punches);
-          working_hours = sd.working_hours || 0;
-          updatedSessions = sd.sessions || [];
-        } else {
-          const completeMins = (d.sessions || []).filter(s => s.is_complete)
-            .reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
-          if (completeMins > 0) working_hours = Math.round(completeMins / 60 * 100) / 100;
-        }
-
-        // Determine status from hours worked — never retroactively mark absent if they worked
-        let status;
-        if (working_hours >= shiftHours * 0.9)   status = 'present';
-        else if (working_hours >= shiftHours / 2) status = 'half_day';
-        else if (working_hours > 0)               status = 'short_attendance';
-        else                                      status = 'absent';
-
-        const updated = {
-          ...d,
-          status,
-          is_in_progress: false,
-          working_hours: Math.round(working_hours * 100) / 100,
-          auto_closed_at: new Date().toISOString(),
-          auto_closed_reason: 'Auto-closed at 5:30 AM — no check-out punch received',
-          sessions: updatedSessions.map(s => s.is_complete ? s : { ...s, auto_closed: true }),
-        };
-        await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [status, JSON.stringify(updated), row.id]);
-        closed++;
-      }
-
-      return res.json({ success: true, closed, date: targetDate });
+      const result = await closeUnfinishedSessions(targetDate);
+      return res.json({ success: true, closed: result.marked, date: result.date });
     }
 
     case 'markExemptEmployeesPresent': {
