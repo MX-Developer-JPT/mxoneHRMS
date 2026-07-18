@@ -266,7 +266,11 @@ async function sendEvent(event, location, platformTag, targetFence) {
     });
     const d = res.data || res;
     if (d?.success) {
-      if (d.action === 'checked_in') lastKnownInProgress = true;
+      // 'location_transfer' fires when the server detects an enter at a
+      // configured location while still checked in at a DIFFERENT one — it
+      // auto-closes the old session and opens a new one, so this is also
+      // an "in progress" outcome, same as a plain checked_in.
+      if (d.action === 'checked_in' || d.action === 'location_transfer') lastKnownInProgress = true;
       else if (d.action === 'checked_out') lastKnownInProgress = false;
       else if (d.reason === 'already_checked_in') lastKnownInProgress = true;
       else if (d.reason === 'already_checked_out' || d.reason === 'not_checked_in') lastKnownInProgress = false;

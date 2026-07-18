@@ -1188,9 +1188,30 @@ router.post('/:name', async (req, res) => {
       }
 
       const priorSessionData = buildSessions(rawPunches);
+      let locationTransfer = false;
       if (event === 'enter') {
-        if (priorSessionData.is_in_progress) return res.json({ success: true, action: 'none', reason: 'already_checked_in' });
-        rawPunches.push({ time: evIST.toISOString(), device_direction: 'IN' });
+        if (priorSessionData.is_in_progress) {
+          // Already checked in — but is it at THIS location, or one they've
+          // physically left? An employee walking directly from one
+          // configured location to another (e.g. Duhai to a different
+          // Ghaziabad site) without ever registering as "outside every
+          // fence" in between previously left them stuck showing present
+          // at the first location forever, since this branch unconditionally
+          // no-op'd on "already checked in" without checking WHERE. Now: if
+          // the currently open session's location differs from where this
+          // enter event resolved to, treat it as a location transfer —
+          // close the old session and open a new one at this enter's
+          // timestamp, rather than silently ignoring it.
+          if (ngAtt?.geofence_location && ngFence?.name && ngAtt.geofence_location !== ngFence.name) {
+            rawPunches.push({ time: evIST.toISOString(), device_direction: 'OUT' });
+            rawPunches.push({ time: evIST.toISOString(), device_direction: 'IN' });
+            locationTransfer = true;
+          } else {
+            return res.json({ success: true, action: 'none', reason: 'already_checked_in' });
+          }
+        } else {
+          rawPunches.push({ time: evIST.toISOString(), device_direction: 'IN' });
+        }
       } else {
         if (!priorSessionData.is_in_progress) return res.json({ success: true, action: 'none', reason: rawPunches.length ? 'already_checked_out' : 'not_checked_in' });
         rawPunches.push({ time: evIST.toISOString(), device_direction: 'OUT' });
@@ -1222,7 +1243,7 @@ router.post('/:name', async (req, res) => {
       else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [naId, cu.id, status, JSON.stringify(attData)]);
 
       return res.json({
-        success: true, action: event === 'enter' ? 'checked_in' : 'checked_out',
+        success: true, action: locationTransfer ? 'location_transfer' : (event === 'enter' ? 'checked_in' : 'checked_out'),
         session_number: sessionData.session_count, is_in_progress: sessionData.is_in_progress,
         working_hours: sessionData.working_hours, location: attData.geofence_location,
       });
