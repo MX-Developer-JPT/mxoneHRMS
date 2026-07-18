@@ -3521,32 +3521,43 @@ router.post('/:name', async (req, res) => {
         const payDaysSS     = calendarDaysSS - totalLOPDays;
         const effectiveDays = calendarDaysSS;                 // show calendar days (e.g. 30 or 31)
 
-        // ── Earnings — full monthly amounts; LOP is a separate deduction ─────────
-        const grossMonthly = (ss.basic_salary||0)+(ss.hra||0)+(ss.conveyance||0)+(ss.special_allowance||0);
-        const basic   = pr?.basic_salary      || (ss.basic_salary||0);
-        const hra     = pr?.hra               || (ss.hra||0);
-        const conv    = pr?.conveyance        || (ss.conveyance||0);
-        const special = pr?.special_allowance || (ss.special_allowance||0);
-        const grossCalc = basic + hra + conv + special;
+        // ── Earnings ── Fixed = full monthly CTC-configured amount, unprorated.
+        // Earned = fixed × (paid days ÷ calendar days) — what the employee
+        // actually gets this month once LOP is applied. The sheet previously
+        // showed Basic/HRA/Conveyance/Special as the FIXED amounts even when
+        // an employee had LOP days, with only a single opaque "LOP Deduct."
+        // line hinting at the gap — misleading, since the earnings columns
+        // didn't reflect what was actually earned. Every earnings column now
+        // shows the earned (attendance-prorated) amount; the fixed CTC gross
+        // is broken out separately for comparison.
+        const basicFixed   = pr?.basic_salary      || (ss.basic_salary||0);
+        const hraFixed     = pr?.hra               || (ss.hra||0);
+        const convFixed    = pr?.conveyance        || (ss.conveyance||0);
+        const specialFixed = pr?.special_allowance || (ss.special_allowance||0);
+        const grossFixed   = basicFixed + hraFixed + convFixed + specialFixed;
 
-        // ── LOP: Gross ÷ calendar days × absent days ──────────────────────────────
-        // Attendance is the single source of truth — always recompute from it.
-        const lop = totalLOPDays > 0
-          ? Math.round(grossMonthly * totalLOPDays / calendarDaysSS)
-          : 0;
+        const proRate  = calendarDaysSS > 0 ? payDaysSS / calendarDaysSS : 0;
+        const basic    = Math.round(basicFixed   * proRate);
+        const hra      = Math.round(hraFixed     * proRate);
+        const conv     = Math.round(convFixed    * proRate);
+        const special  = Math.round(specialFixed * proRate);
+        const grossEarned = basic + hra + conv + special;
 
-        // PF: cap basic at ₹15,000 first, then prorate by days worked
-        const monthlyPFBaseSS = Math.min(basic, 15000);
-        const pfEmp  = pr?.deductions?.pf               ?? Math.round(monthlyPFBaseSS * 0.12 * payDaysSS / calendarDaysSS);
-        const pfEmpr = pr?.employer_contributions?.pf   ?? Math.round(monthlyPFBaseSS * 0.13 * payDaysSS / calendarDaysSS);
+        // Informational — how much of the fixed gross the LOP days cost.
+        const lop = grossFixed - grossEarned;
 
-        // ── ESI: eligibility on full monthly basic; deduction on earned basic ─────
-        const earnedBasicESI = Math.round(basic * payDaysSS / calendarDaysSS);
-        const esiEmp  = pr?.deductions?.esi  ?? (basic <= 21000 ? Math.round(earnedBasicESI * 0.0075) : 0);
-        const esiEmpr = pr?.employer_contributions?.esi ?? (basic <= 21000 ? Math.round(earnedBasicESI * 0.0325) : 0);
+        // PF: cap FIXED basic at ₹15,000 first (eligibility/wage-ceiling is
+        // on the fixed wage), then prorate the contribution by days worked.
+        const monthlyPFBaseSS = Math.min(basicFixed, 15000);
+        const pfEmp  = pr?.deductions?.pf               ?? Math.round(monthlyPFBaseSS * 0.12 * proRate);
+        const pfEmpr = pr?.employer_contributions?.pf   ?? Math.round(monthlyPFBaseSS * 0.13 * proRate);
 
-        const totalDed = pfEmp + esiEmp + lop;
-        const net = Math.max(0, grossCalc - totalDed);
+        // ── ESI: eligibility on full monthly (fixed) basic; deduction on earned basic ─
+        const esiEmp  = pr?.deductions?.esi  ?? (basicFixed <= 21000 ? Math.round(basic * 0.0075) : 0);
+        const esiEmpr = pr?.employer_contributions?.esi ?? (basicFixed <= 21000 ? Math.round(basic * 0.0325) : 0);
+
+        const totalDed = pfEmp + esiEmp;
+        const net = Math.max(0, grossEarned - totalDed);
 
         return {
           sno: idx + 1,
@@ -3557,16 +3568,16 @@ router.post('/:name', async (req, res) => {
           daysHalfDay,
           daysAbsent:   totalLOPDays,
           effectiveDays,
-          gross: pr?.gross_salary || grossCalc, basic, hra, conv, special,
+          grossFixed, grossEarned: pr?.gross_salary || grossEarned, basic, hra, conv, special,
           pfEmp, pfEmpr, esiEmp, esiEmpr, lop, totalDed, net,
           status: pr ? (pr.status === 'paid' ? 'Paid' : 'Processed') : 'Pending',
         };
       });
 
       const totals = dataRows.reduce((acc, r) => {
-        acc.gross += r.gross; acc.net += r.net; acc.pfEmp += r.pfEmp; acc.esiEmp += r.esiEmp;
+        acc.grossFixed += r.grossFixed; acc.grossEarned += r.grossEarned; acc.net += r.net; acc.pfEmp += r.pfEmp; acc.esiEmp += r.esiEmp;
         return acc;
-      }, { gross:0, net:0, pfEmp:0, esiEmp:0 });
+      }, { grossFixed:0, grossEarned:0, net:0, pfEmp:0, esiEmp:0 });
 
       // Build styled Excel with exceljs
       const ExcelJS = (await import('exceljs')).default;
@@ -3597,8 +3608,9 @@ router.post('/:name', async (req, res) => {
         { header:'Half Days',      key:'daysHalfDay',   width:9  },  // integer: 1
         { header:'Absent Days',    key:'daysAbsent',    width:10 },  // decimal: 2.5 (= absent + half×0.5)
         { header:'Eff. Days',      key:'effectiveDays', width:9  },  // 26 for all
-        // EARNINGS (cols 14-18)
-        { header:'Gross Salary',   key:'gross',         width:13 },
+        // EARNINGS (cols 14-19)
+        { header:'Gross Fixed',    key:'grossFixed',    width:13 },
+        { header:'Gross Earned',   key:'grossEarned',   width:13 },
         { header:'Basic',          key:'basic',         width:12 },
         { header:'HRA',            key:'hra',           width:11 },
         { header:'Conveyance',     key:'conv',          width:12 },
@@ -3630,7 +3642,7 @@ router.post('/:name', async (req, res) => {
       // Row 2: Meta — span all columns
       ws.mergeCells(2, 1, 2, cols.length);
       const meta = ws.getCell('A2');
-      meta.value = `Generated: ${new Date().toLocaleString('en-IN')}   |   Period: ${monthLabel}   |   Employees: ${dataRows.length}   |   Total Gross: ₹${Math.round(totals.gross).toLocaleString('en-IN')}   |   Total Net: ₹${Math.round(totals.net).toLocaleString('en-IN')}`;
+      meta.value = `Generated: ${new Date().toLocaleString('en-IN')}   |   Period: ${monthLabel}   |   Employees: ${dataRows.length}   |   Total Gross Fixed: ₹${Math.round(totals.grossFixed).toLocaleString('en-IN')}   |   Total Gross Earned: ₹${Math.round(totals.grossEarned).toLocaleString('en-IN')}   |   Total Net: ₹${Math.round(totals.net).toLocaleString('en-IN')}`;
       meta.font = { name:'Arial', color:{argb:'FFFFFFFF'}, size:9 };
       meta.fill = fill(C.subBg);
       meta.alignment = { horizontal:'left', vertical:'middle' };
@@ -3640,7 +3652,7 @@ router.post('/:name', async (req, res) => {
       const sectionHeaders = [
         { label:'EMPLOYEE DETAILS', cols:8 },
         { label:'ATTENDANCE',       cols:4 },
-        { label:'EARNINGS',         cols:5 },
+        { label:'EARNINGS',         cols:6 },
         { label:'DEDUCTIONS',       cols:6 },
         { label:'NET PAY',          cols:2 },
       ];
@@ -3674,7 +3686,7 @@ router.post('/:name', async (req, res) => {
         const rowData = [
           r.sno, r.code, r.name, r.dept, r.desig, r.account, r.ifsc, r.bank,
           r.daysPresent, r.daysHalfDay, r.daysAbsent, r.effectiveDays,
-          r.gross, r.basic, r.hra, r.conv, r.special,
+          r.grossFixed, r.grossEarned, r.basic, r.hra, r.conv, r.special,
           r.pfEmp, r.pfEmpr, r.esiEmp, r.esiEmpr, r.lop, r.totalDed, r.net,
           r.status,
         ];
@@ -3689,7 +3701,7 @@ router.post('/:name', async (req, res) => {
           if (isAlt) cell.fill = fill(C.altRow);
           // Colour-code sections
           const colKey = cols[ci]?.key;
-          if (['gross','basic','hra','conv','special'].includes(colKey)) {
+          if (['grossFixed','grossEarned','basic','hra','conv','special'].includes(colKey)) {
             cell.fill = fill(C.earningBg);
             cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' };
           } else if (['pfEmp','pfEmpr','esiEmp','esiEmpr','lop','totalDed'].includes(colKey)) {
@@ -3717,7 +3729,7 @@ router.post('/:name', async (req, res) => {
         dataRows.reduce((s,r)=>s+r.daysHalfDay,0),
         dataRows.reduce((s,r)=>s+r.daysAbsent,0),
         '',
-        Math.round(totals.gross), '', '', '', '',
+        Math.round(totals.grossFixed), Math.round(totals.grossEarned), '', '', '', '',
         Math.round(dataRows.reduce((s,r)=>s+r.pfEmp,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.pfEmpr,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.esiEmp,0)),
