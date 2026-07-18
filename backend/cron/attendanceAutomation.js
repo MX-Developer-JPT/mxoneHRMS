@@ -162,7 +162,16 @@ export async function closeStaleGeofenceSessions() {
 
   const defaultShift = await getDefaultShift();
   const empCache = {};
-  const nowIso = new Date().toISOString();
+  // Every punch timestamp in this app (buildSessions, nativeGeofenceEvent,
+  // markSelfieAttendance, processRecord) is stored using the "IST digits
+  // mislabeled as UTC" convention — a 9:00 AM IST punch is stored as
+  // "...T09:00:00.000Z". This function was the one exception: it stored
+  // real, un-shifted UTC as the checkout time (wrong displayed time/hours),
+  // AND compared that real UTC "now" against the IST-labeled check-in time
+  // when computing hoursOpen — inflating the elapsed time by 5.5h, so the
+  // "10 hour" stale threshold actually fired after only ~4.5 real hours.
+  const nowIST = new Date(Date.now() + 5.5 * 3600000);
+  const nowIso = nowIST.toISOString();
   let closed = 0;
 
   for (const row of rows) {
@@ -172,7 +181,7 @@ export async function closeStaleGeofenceSessions() {
     if (!openSession?.check_in) continue;
     const openedMs = new Date(openSession.check_in).getTime();
     if (!isFinite(openedMs)) continue;
-    const hoursOpen = (Date.now() - openedMs) / 3600000;
+    const hoursOpen = (nowIST.getTime() - openedMs) / 3600000;
     if (hoursOpen < STALE_GEOFENCE_SESSION_HOURS) continue;
 
     if (!(d.user_id in empCache)) {

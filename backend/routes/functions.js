@@ -1442,6 +1442,76 @@ router.post('/:name', async (req, res) => {
       });
     }
 
+    // Selfie check-in/out — previously written directly via the generic
+    // entity-create/update route as a plain check_in_time/check_out_time
+    // record with no raw_punches, a structurally different shape than what
+    // biometric sync and geofence both use. Mixing methods on the same day
+    // (e.g. biometric IN in the morning, selfie OUT in the evening) silently
+    // discarded whichever punch wasn't in raw_punches, and a later
+    // computeAttendanceStatus call — which unconditionally prefers
+    // raw_punches when non-empty — could revert a just-recorded selfie
+    // checkout back to "in_progress, 0 hours". Now uses the same
+    // buildSessions/computeStatusFromSessions engine as nativeGeofenceEvent,
+    // so all three methods share one consistent timeline per day. Also
+    // closes the duplicate-row gap the generic entity route had (no
+    // find-existing-by-user+date check) since this always looks up first.
+    case 'markSelfieAttendance': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { event: saEvent, selfie_url: saSelfieUrl, location: saLocation, notes: saNotes } = p;
+      if (!['in', 'out'].includes(saEvent)) return res.json({ success: false, error: "event must be 'in' or 'out'" });
+
+      const saNowIST = new Date(Date.now() + 5.5 * 3600000);
+      const saToday = saNowIST.toISOString().slice(0, 10);
+
+      const saAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, saToday]);
+      const saAtt = saAttRow ? JSON.parse(saAttRow.data) : null;
+      if (saAtt?.status === 'regularised') return res.json({ success: false, error: 'This day has been manually regularised by HR — selfie punches are ignored' });
+
+      let saRawPunches = saAtt?.raw_punches ? [...saAtt.raw_punches] : [];
+      if (!saRawPunches.length && saAtt?.check_in_time) {
+        saRawPunches.push({ time: saAtt.check_in_time, device_direction: 'IN' });
+        if (saAtt.check_out_time) saRawPunches.push({ time: saAtt.check_out_time, device_direction: 'OUT' });
+      }
+
+      const saPriorSessionData = buildSessions(saRawPunches);
+      if (saEvent === 'in') {
+        if (saPriorSessionData.is_in_progress) return res.json({ success: false, error: 'Already checked in', code: 'ALREADY_CHECKED_IN' });
+        saRawPunches.push({ time: saNowIST.toISOString(), device_direction: 'IN' });
+      } else {
+        if (!saPriorSessionData.is_in_progress) return res.json({ success: false, error: 'Not checked in', code: 'NOT_CHECKED_IN' });
+        saRawPunches.push({ time: saNowIST.toISOString(), device_direction: 'OUT' });
+      }
+
+      const saSessionData = buildSessions(saRawPunches);
+      let saShift = { start_time: '09:00', end_time: '18:00', working_hours: 8, grace_period_minutes: 15 };
+      const saEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+      const saEmp = saEmpRow ? JSON.parse(saEmpRow.data) : {};
+      if (saEmp.shift_id) {
+        const saShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [saEmp.shift_id]);
+        if (saShiftRow) saShift = JSON.parse(saShiftRow.data);
+      }
+      const saStatusResult = computeStatusFromSessions(saSessionData, saShift);
+
+      const saId = saAtt?.id || uuidv4();
+      const saAttData = {
+        ...(saAtt || {}), id: saId, user_id: cu.id, date: saToday,
+        ...saSessionData,
+        check_out_time: saSessionData.is_in_progress ? null : saSessionData.check_out_time,
+        ...saStatusResult, shift_id: saEmp.shift_id || null,
+        ...(saEvent === 'in'
+          ? { check_in_selfie_url: saSelfieUrl || '', check_in_location: saLocation || null, ...(saNotes ? { notes: saNotes.slice(0, 200) } : {}) }
+          : { check_out_selfie_url: saSelfieUrl || '', check_out_location: saLocation || null, ...(saNotes ? { checkout_notes: saNotes.slice(0, 200) } : {}) }),
+      };
+      if (saAttRow) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(saAttData), saStatusResult.status, saAttRow.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [saId, cu.id, saStatusResult.status, JSON.stringify(saAttData)]);
+
+      return res.json({
+        success: true, action: saEvent === 'in' ? 'checked_in' : 'checked_out', attendance_id: saId,
+        session_number: saSessionData.session_count, is_in_progress: saSessionData.is_in_progress,
+        working_hours: saSessionData.working_hours, status: saStatusResult.status,
+      });
+    }
+
     /* ── Field Duty: GPS distance tracking for out-duty staff ── */
     case 'startFieldTrip': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });

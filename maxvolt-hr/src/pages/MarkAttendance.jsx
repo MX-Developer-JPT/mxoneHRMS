@@ -315,11 +315,15 @@ export default function MarkAttendance() {
         }
       }
 
-      const created = await base44.entities.Attendance.create({
-        user_id: user.id,
-        date: today,
-        check_in_time: checkInTime.toISOString(),
-        check_in_location: {
+      // Goes through the same raw_punches multi-session engine biometric
+      // sync and geofence both use (markSelfieAttendance), instead of
+      // writing a plain check_in_time/check_out_time record directly —
+      // mixing this with a biometric or geofence punch on the same day
+      // used to silently discard whichever punch wasn't in raw_punches.
+      const res = await base44.functions.invoke('markSelfieAttendance', {
+        event: 'in',
+        selfie_url: selfieUrl,
+        location: {
           latitude: location.latitude,
           longitude: location.longitude,
           accuracy: location.accuracy,
@@ -331,14 +335,13 @@ export default function MarkAttendance() {
           address: locationDetails?.fullAddress,
           location_address: locationAddress,
         },
-        check_in_selfie_url: selfieUrl,
-        status: 'present',
-        shift_id: shift?.id,
-        ...(remarks.trim() ? { notes: remarks.trim().slice(0, 200) } : {}),
+        notes: remarks.trim() || undefined,
       });
+      const d = res.data || res;
+      if (d?.success === false) throw new Error(d.error || 'Check-in failed');
       setRemarks('');
       // Patch optimistic state with the real id so checkout can update correctly
-      if (created?.id) setTodayAttendance(prev => prev ? { ...prev, id: created.id } : prev);
+      if (d?.attendance_id) setTodayAttendance(prev => prev ? { ...prev, id: d.attendance_id } : prev);
 
       toast.success('Checked in successfully');
       setCapturedPhoto(null);
@@ -346,7 +349,7 @@ export default function MarkAttendance() {
     } catch (error) {
       console.error('Check-in error:', error);
       setTodayAttendance(null); // revert optimistic
-      toast.error('Failed to check in');
+      toast.error(error.message || 'Failed to check in');
     }
   };
 
@@ -474,9 +477,17 @@ export default function MarkAttendance() {
         }
       }
 
-      await base44.entities.Attendance.update(todayAttendance.id, {
-        check_out_time: checkOutTime.toISOString(),
-        check_out_location: {
+      // Goes through the same raw_punches multi-session engine biometric
+      // sync and geofence both use (markSelfieAttendance) — it recomputes
+      // status/hours server-side from the full punch timeline itself, so
+      // the separate computeAttendanceStatus call this used to make
+      // afterward (which could revert a fresh selfie checkout back to
+      // "in_progress, 0 hours" whenever raw_punches didn't yet contain it)
+      // is no longer needed.
+      const res = await base44.functions.invoke('markSelfieAttendance', {
+        event: 'out',
+        selfie_url: selfieUrl,
+        location: {
           latitude: location.latitude,
           longitude: location.longitude,
           accuracy: location.accuracy,
@@ -488,15 +499,11 @@ export default function MarkAttendance() {
           address: locationDetails?.fullAddress,
           location_address: locationAddress,
         },
-        check_out_selfie_url: selfieUrl,
-        working_hours: parseFloat(workingHours.toFixed(2)),
-        status,
-        ...(remarks.trim() ? { checkout_notes: remarks.trim().slice(0, 200) } : {}),
+        notes: remarks.trim() || undefined,
       });
+      const d = res.data || res;
+      if (d?.success === false) throw new Error(d.error || 'Check-out failed');
       setRemarks('');
-
-      // Recompute status server-side (handles grace period, late, overtime properly)
-      base44.functions.invoke('computeAttendanceStatus', { attendance_id: todayAttendance.id }).catch(() => {});
 
       toast.success(`Checked out successfully (${workingHours.toFixed(2)} hours)`);
       setCapturedPhoto(null);
@@ -504,7 +511,7 @@ export default function MarkAttendance() {
     } catch (error) {
       console.error('Check-out error:', error);
       setTodayAttendance(previousAttendance); // revert optimistic
-      toast.error('Failed to check out');
+      toast.error(error.message || 'Failed to check out');
     }
   };
 
