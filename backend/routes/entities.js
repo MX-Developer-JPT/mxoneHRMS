@@ -68,6 +68,27 @@ async function checkWfhEligibility(res, type, data) {
   return true;
 }
 
+// Leave.jsx only enables Submit once client-side validation confirms
+// available >= total_days — but that's purely a UI nicety, bypassable by
+// calling this generic entity route directly. Enforced here too so a
+// request can never be created for more days than the employee actually
+// has, regardless of client. WFH doesn't draw from a leave balance at all
+// (see checkWfhEligibility above), so it's exempt from this check.
+async function checkLeaveBalanceSufficiency(res, type, data) {
+  if (type !== 'Leave') return true;
+  if (data.is_wfh || data.leave_type === 'work_from_home') return true;
+  if (!data.user_id || !data.leave_policy_id || !data.total_days) return true;
+  const year = new Date(data.start_date || Date.now()).getFullYear();
+  const balRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [data.user_id]);
+  const bal = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === data.leave_policy_id && b.year === year);
+  const available = bal?.available ?? 0;
+  if (data.total_days > available) {
+    res.status(400).json({ error: `Insufficient leave balance — requested ${data.total_days} day(s), only ${available} available.` });
+    return false;
+  }
+  return true;
+}
+
 /* ── helpers ─────────────────────────────────────────── */
 
 const parseRow = (row) => {
@@ -230,6 +251,7 @@ router.post('/:type', async (req, res) => {
   const data = { ...body, id };
   if (!(await checkRegularisationLimit(res, type, data))) return;
   if (!(await checkWfhEligibility(res, type, data))) return;
+  if (!(await checkLeaveBalanceSufficiency(res, type, data))) return;
 
   await run(
     `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,

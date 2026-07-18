@@ -405,6 +405,164 @@ async function notify(userId, { title, message, type = 'info', link = '' }) {
   } catch {}
 }
 
+// The SINGLE source of truth for leave approval — advances/finalizes one
+// Leave request. Used by case 'processLeaveAction' (single approve/reject
+// from the Leave Requests page) AND by bulk approve/reject, so both share
+// identical behavior instead of drifting independently (which is how the
+// WFH/Attendance-sync logic here previously went unreachable in practice —
+// the frontend page that's actually used had its own separate
+// reimplementation that never called this). Level-resolution mirrors
+// LeaveManagement.jsx's canApproveLevel() exactly (configurable Workflow
+// Builder chain for module='leave', falling back to the built-in
+// reporting-manager -> HR 2-level flow) so both sides agree on who can act
+// at which step. Returns { httpStatus, body } rather than writing to `res`
+// directly, so callers can either forward it as one response (single
+// action) or aggregate many (bulk).
+async function runLeaveAction(cu, leaveId, action, note) {
+  const row = await one("SELECT id,data FROM entities WHERE type='Leave' AND id=$1", [leaveId]);
+  if (!row) return { httpStatus: 200, body: { success: false, error: 'Leave not found' } };
+  const lv = JSON.parse(row.data);
+  if (lv.status !== 'pending') return { httpStatus: 200, body: { success: false, error: `Already ${lv.status}` } };
+  const actorId = cu?.id;
+  const actorName = cu?.full_name || 'HR';
+  const now = new Date().toISOString();
+
+  const isAdmin = await hasRole(cu, ['admin']);
+  const isHR = await hasRole(cu, HR_ROLES);
+  const wfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='leave'");
+  const wf = wfRow ? JSON.parse(wfRow.data) : null;
+  const useWf = wf?.is_active !== false && Array.isArray(wf?.steps) && wf.steps.length > 0;
+  const totalLevels = useWf ? wf.steps.length : 2;
+  const curLevel = lv.current_approval_level || 1;
+  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [lv.user_id]);
+  const emp = empRow ? JSON.parse(empRow.data) : {};
+  const curStep = useWf ? wf.steps[curLevel - 1] : null;
+
+  let authorized = isAdmin;
+  if (!authorized) {
+    if (useWf) {
+      if (curStep) {
+        if (curStep.approver_type === 'reporting_manager') authorized = emp.reporting_manager_id === actorId || isHR;
+        else if (curStep.approver_type === 'hr') authorized = isHR;
+        else if (curStep.approver_type === 'specific_user') authorized = curStep.specific_user_id === actorId;
+      } else authorized = isHR;
+    } else if (curLevel === 1) authorized = emp.reporting_manager_id === actorId || isHR;
+    else if (curLevel === 2) authorized = isHR;
+  }
+  if (!authorized) return { httpStatus: 403, body: { success: false, error: `This request is at approval level ${curLevel} — you are not the approver for this step` } };
+
+  if (action === 'approve') {
+    if (curLevel < totalLevels) {
+      const upd = { ...lv, current_approval_level: curLevel + 1, approval_history: [...(lv.approval_history || []), { level: curLevel, action: 'approved', by: actorId, by_name: actorName, at: now, note: note || '' }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
+      await notify(lv.user_id, { title: 'Leave Partially Approved', message: `Your leave (${lv.start_date} – ${lv.end_date}) has been approved at level ${curLevel} of ${totalLevels} and sent for further approval.`, type: 'info', link: '/leave' });
+      const nextStep = useWf ? wf.steps[curLevel] : null;
+      if (nextStep?.approver_type === 'reporting_manager' && emp.reporting_manager_id) {
+        await notify(emp.reporting_manager_id, { title: 'Leave Approval Required', message: `${lv.employee_name || 'An employee'}'s leave request (${lv.start_date} – ${lv.end_date}) requires your approval.`, type: 'info', link: '/leave-management' });
+      } else if (nextStep?.approver_type === 'specific_user' && nextStep.specific_user_id) {
+        await notify(nextStep.specific_user_id, { title: 'Leave Approval Required', message: `${lv.employee_name || 'An employee'}'s leave request (${lv.start_date} – ${lv.end_date}) requires your approval.`, type: 'info', link: '/leave-management' });
+      } else {
+        const hrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+        for (const hr of hrRows) await notify(hr.id, { title: 'Leave Approval Required', message: `${lv.employee_name || 'An employee'}'s leave request (${lv.start_date} – ${lv.end_date}) requires your approval.`, type: 'info', link: '/leave-management' });
+      }
+      return { httpStatus: 200, body: { success: true, status: 'level_approved', next_level: curLevel + 1, total_levels: totalLevels } };
+    }
+
+    const upd = { ...lv, status: 'approved', approved_by: actorId, approved_by_name: actorName, approved_date: now, approval_note: note || '', approval_history: [...(lv.approval_history || []), { action: 'approved', by: actorId, by_name: actorName, at: now, note: note || '' }] };
+    await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
+    const isWfh = lv.is_wfh || lv.leave_type === 'work_from_home';
+    if (isWfh) {
+      // WFH doesn't use leave balances — instead, write an Attendance row
+      // per day so WFH Tracking (getWFHReport), which reads only from
+      // Attendance, picks up the approved request.
+      try {
+        const dates = [];
+        for (let d = new Date(lv.start_date + 'T00:00:00'); d <= new Date(lv.end_date + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+          dates.push(d.toISOString().split('T')[0]);
+        }
+        for (const date of dates) {
+          const attRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [lv.user_id, date]);
+          if (attRow) {
+            const att = { ...JSON.parse(attRow.data), status: 'work_from_home', leave_id: leaveId };
+            await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", ['work_from_home', JSON.stringify(att), attRow.id]);
+          } else {
+            const attId = uuidv4();
+            const att = { id: attId, user_id: lv.user_id, date, status: 'work_from_home', leave_id: leaveId, created_at: now };
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'work_from_home',$3)", [attId, lv.user_id, JSON.stringify(att)]);
+          }
+        }
+      } catch (e) { console.warn('WFH attendance sync on leave approval failed:', e.message); }
+    } else {
+      // Regular leave — writes an Attendance row per day too, mirroring the
+      // WFH path above. Without this, payroll (processPayroll/
+      // processAdvancedPayroll) and every other page that reads Attendance
+      // (All Attendance, reports, muster) saw no record at all for an
+      // approved leave day and treated it as an unpaid absence/LOP, even
+      // though LeaveBalance had correctly deducted it as paid leave usage.
+      // LeaveBalance stays the authoritative leave-usage record; this
+      // Attendance row exists purely so day-by-day consumers agree with it.
+      // Skips a day that already has real check-in data (e.g. leave
+      // approved after they already attended part of that day) rather than
+      // clobbering it.
+      try {
+        const dates = [];
+        for (let d = new Date(lv.start_date + 'T00:00:00'); d <= new Date(lv.end_date + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+          dates.push(d.toISOString().split('T')[0]);
+        }
+        for (const date of dates) {
+          const attRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [lv.user_id, date]);
+          if (attRow) {
+            const existing = JSON.parse(attRow.data);
+            if (existing.check_in_time) continue; // already genuinely attended this day — don't overwrite
+            const att = { ...existing, status: 'leave', leave_id: leaveId };
+            await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", ['leave', JSON.stringify(att), attRow.id]);
+          } else {
+            const attId = uuidv4();
+            const att = { id: attId, user_id: lv.user_id, date, status: 'leave', leave_id: leaveId, created_at: now };
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'leave',$3)", [attId, lv.user_id, JSON.stringify(att)]);
+          }
+        }
+      } catch (e) { console.warn('Leave attendance sync on approval failed:', e.message); }
+
+      // Update leave balance — filtered by the leave's own start-date year,
+      // matching the frontend's equivalent lookups (Leave.jsx,
+      // LeaveManagement.jsx). Without this, an employee with balance rows
+      // spanning two years (normal after year one, since accrual creates
+      // one row per year) could have whichever row Postgres happens to
+      // return first silently decremented instead of the correct year's.
+      try {
+        const balYear = new Date(lv.start_date).getFullYear();
+        const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [lv.user_id]);
+        const lb = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === lv.leave_policy_id && b.year === balYear);
+        if (lb) {
+          const lbUpd = { ...lb, used: (lb.used || 0) + lv.total_days, pending_approval: Math.max((lb.pending_approval || 0) - lv.total_days, 0) };
+          await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
+        }
+      } catch {}
+    }
+    await notify(lv.user_id, { title: isWfh ? 'WFH Request Approved' : 'Leave Approved', message: `Your ${isWfh ? 'work from home' : 'leave'} request (${lv.start_date} – ${lv.end_date}) has been approved by ${actorName}.`, type: 'success', link: '/leave' });
+    return { httpStatus: 200, body: { success: true, status: 'approved' } };
+  }
+
+  if (action === 'reject') {
+    const upd = { ...lv, status: 'rejected', rejected_by: actorId, rejected_by_name: actorName, rejected_at: now, rejection_reason: note || '', approval_history: [...(lv.approval_history || []), { action: 'rejected', by: actorId, by_name: actorName, at: now, note: note || '' }] };
+    await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
+    try {
+      const balYear = new Date(lv.start_date).getFullYear();
+      const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [lv.user_id]);
+      const lb = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === lv.leave_policy_id && b.year === balYear);
+      if (lb) {
+        const lbUpd = { ...lb, pending_approval: Math.max((lb.pending_approval || 0) - lv.total_days, 0), available: (lb.available || 0) + lv.total_days };
+        await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
+      }
+    } catch {}
+    await notify(lv.user_id, { title: 'Leave Rejected', message: `Your leave request (${lv.start_date} – ${lv.end_date}) has been rejected${note ? ': ' + note : ''}.`, type: 'error', link: '/leave' });
+    return { httpStatus: 200, body: { success: true, status: 'rejected' } };
+  }
+
+  return { httpStatus: 200, body: { success: false, error: 'Unknown action' } };
+}
+
 /* ── Professional Tax: state-wise monthly slab ───────────────── */
 function calcProfessionalTax(grossMonthly, state = 'UTTAR PRADESH') {
   const s = String(state || '').toUpperCase().trim();
@@ -613,35 +771,65 @@ router.post('/:name', async (req, res) => {
       if (!leave_policy_id || !start_date || !end_date)
         return res.json({ valid:false, errors:['Missing required fields'], warnings:[], adjusted_days:0, available_balance:0 });
       const start = new Date(start_date + 'T00:00:00'); const end = new Date(end_date + 'T00:00:00');
-      const diff  = Math.ceil((end - start) / 86400000) + 1;
-      const adjusted_days = half_day ? 0.5 : diff;
       const uid = user_id || cu?.id;
-      const balRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [uid]);
-      const bal = balRows.map(r=>JSON.parse(r.data)).find(b=>b.leave_policy_id===leave_policy_id);
-      const available_balance = bal?.available ?? 999;
-      const errors = [];
-      const warnings = [];
 
-      // Check each date in range for holidays or Sundays (week-offs)
+      // Resolve the employee's REAL working days (Shift.days) — previously
+      // this only ever excluded Sunday, hardcoded, so an employee whose
+      // shift has Saturday off got charged a full leave day for a Saturday
+      // that fell inside their requested range (over-charging their
+      // balance for a day they were never scheduled to work).
+      const vlaEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
+      const vlaEmp = vlaEmpRow ? JSON.parse(vlaEmpRow.data) : {};
+      let vlaShift = null;
+      if (vlaEmp.shift_id) {
+        const vlaShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [vlaEmp.shift_id]);
+        if (vlaShiftRow) vlaShift = JSON.parse(vlaShiftRow.data);
+      }
+      if (!vlaShift) {
+        const vlaDefRow = await one("SELECT data FROM entities WHERE type='Shift' AND data::jsonb->>'is_default'='true' LIMIT 1");
+        vlaShift = vlaDefRow ? JSON.parse(vlaDefRow.data) : null;
+      }
+      const vlaWorkingDays = Array.isArray(vlaShift?.days) && vlaShift.days.length ? vlaShift.days : ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const vlaWeekdayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
       const year = start.getFullYear();
       const holidayRows = await all("SELECT data FROM entities WHERE type='Holiday'");
       const holidays = holidayRows.map(r => JSON.parse(r.data));
       const holidayDates = new Set(
         holidays.filter(h => h.date && new Date(h.date).getFullYear() === year).map(h => h.date.slice(0,10))
       );
-      const conflictDates = [];
+
+      // Off-days (declared Holiday or a non-working weekday per Shift.days)
+      // are excluded from the charged count rather than blocking the whole
+      // submission — an employee can span a weekend/holiday in one request
+      // and only the days they were actually scheduled to work get deducted.
+      const errors = [];
+      const warnings = [];
+      const offDayDates = [];
+      let chargeableDays = 0;
       for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 86400000)) {
         const ds = d.toISOString().slice(0,10);
-        const dow = d.getDay();
-        if (dow === 0) { conflictDates.push(`${ds} (Sunday/Week-off)`); }
-        else if (holidayDates.has(ds)) {
+        const weekday = vlaWeekdayNames[d.getDay()];
+        if (holidayDates.has(ds)) {
           const h = holidays.find(h => h.date?.slice(0,10) === ds);
-          conflictDates.push(`${ds} (Holiday: ${h?.name || 'Public Holiday'})`);
+          offDayDates.push(`${ds} (Holiday: ${h?.name || 'Public Holiday'})`);
+        } else if (!vlaWorkingDays.includes(weekday)) {
+          offDayDates.push(`${ds} (${weekday} — Week Off)`);
+        } else {
+          chargeableDays++;
         }
       }
-      if (conflictDates.length > 0) {
-        errors.push(`Cannot apply leave on: ${conflictDates.join(', ')}`);
+      const adjusted_days = half_day ? 0.5 : chargeableDays;
+      if (offDayDates.length > 0) {
+        warnings.push(`${offDayDates.length} day(s) in this range are already off-days and won't be charged against your balance: ${offDayDates.join(', ')}`);
       }
+      if (!half_day && chargeableDays === 0) {
+        errors.push('The selected range contains no working days — nothing to apply leave for.');
+      }
+
+      const balRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [uid]);
+      const bal = balRows.map(r=>JSON.parse(r.data)).find(b=>b.leave_policy_id===leave_policy_id && b.year === year);
+      const available_balance = bal?.available ?? 999;
 
       if (adjusted_days > available_balance) errors.push(`Insufficient balance. Available: ${available_balance}, Requested: ${adjusted_days}`);
       if (adjusted_days > 30) errors.push('Cannot exceed 30 days at once');
@@ -7158,45 +7346,42 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     /* ── Bulk leave operations ────────────────────────── */
+    // Both bulk cases now delegate to the same runLeaveAction() the single
+    // approve/reject button uses (see its definition, ~line 407). Previously
+    // these only flipped Leave.status directly — never touching
+    // LeaveBalance (pending_approval/used stuck forever) or Attendance
+    // (approved days silently showed as absent/LOP in payroll), and ignored
+    // the approval-level chain entirely (a multi-level pending request got
+    // instantly force-approved instead of advancing one step). A request
+    // still short of its final approval level now correctly advances one
+    // level rather than fully completing — call again (or use the single
+    // action) once it reaches the requester's own level.
     case 'bulkApproveLeave': {
-      const { leave_ids, approved_by: blApprover, comment: blComment } = p;
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { leave_ids, comment: blComment } = p;
       if (!Array.isArray(leave_ids) || !leave_ids.length) return res.json({ success: false, error: 'No leave IDs provided' });
       let approved = 0, failed = 0;
+      const errors = [];
       for (const lid of leave_ids) {
-        try {
-          const row = await one("SELECT id,data FROM entities WHERE type='Leave' AND id=$1", [lid]);
-          if (!row) { failed++; continue; }
-          const lv = JSON.parse(row.data);
-          if (lv.status === 'approved') { approved++; continue; }
-          const upd = { ...lv, status: 'approved', approved_by: blApprover, approved_at: new Date().toISOString(), approval_note: blComment||'Bulk approved' };
-          await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
-          // Notify employee
-          const nid = uuidv4();
-          await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [nid, lv.user_id, 'Leave Approved', `Your leave request (${lv.start_date} – ${lv.end_date}) has been approved.`, 'leave', '/leave']);
-          approved++;
-        } catch { failed++; }
+        const result = await runLeaveAction(cu, lid, 'approve', blComment || 'Bulk approved');
+        if (result.body.success) approved++;
+        else { failed++; errors.push({ leave_id: lid, error: result.body.error }); }
       }
-      return res.json({ success: true, approved, failed, total: leave_ids.length });
+      return res.json({ success: true, approved, failed, total: leave_ids.length, errors });
     }
 
     case 'bulkRejectLeave': {
-      const { leave_ids: rlIds, rejected_by: rlBy, reason: rlReason } = p;
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { leave_ids: rlIds, reason: rlReason } = p;
       if (!Array.isArray(rlIds) || !rlIds.length) return res.json({ success: false, error: 'No leave IDs provided' });
       let rejected = 0, failed = 0;
+      const errors = [];
       for (const lid of rlIds) {
-        try {
-          const row = await one("SELECT id,data FROM entities WHERE type='Leave' AND id=$1", [lid]);
-          if (!row) { failed++; continue; }
-          const lv = JSON.parse(row.data);
-          if (['approved','rejected'].includes(lv.status)) { rejected++; continue; }
-          const upd = { ...lv, status: 'rejected', rejected_by: rlBy, rejected_at: new Date().toISOString(), rejection_reason: rlReason||'Bulk rejected' };
-          await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
-          const nid = uuidv4();
-          await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [nid, lv.user_id, 'Leave Rejected', `Your leave request (${lv.start_date} – ${lv.end_date}) has been rejected.${rlReason?' Reason: '+rlReason:''}`, 'leave', '/leave']);
-          rejected++;
-        } catch { failed++; }
+        const result = await runLeaveAction(cu, lid, 'reject', rlReason || 'Bulk rejected');
+        if (result.body.success) rejected++;
+        else { failed++; errors.push({ leave_id: lid, error: result.body.error }); }
       }
-      return res.json({ success: true, rejected, failed, total: rlIds.length });
+      return res.json({ success: true, rejected, failed, total: rlIds.length, errors });
     }
 
     /* ── Probation Management ────────────────────────── */
@@ -7417,110 +7602,11 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'processLeaveAction': {
-      const { leave_id: plaLeaveId, action: plaAction, note: plaNote, level: plaLevel } = p;
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { leave_id: plaLeaveId, action: plaAction, note: plaNote } = p;
       if (!plaLeaveId || !plaAction) return res.status(400).json({ error: 'leave_id and action required' });
-      const plaRow = await one("SELECT id,data FROM entities WHERE type='Leave' AND id=$1", [plaLeaveId]);
-      if (!plaRow) return res.json({ success: false, error: 'Leave not found' });
-      const plaLv = JSON.parse(plaRow.data);
-      const plaActorId = cu?.id;
-      const plaActorName = cu?.full_name || 'HR';
-      const now = new Date().toISOString();
-
-      if (plaAction === 'approve') {
-        const isLevel1 = plaLevel === 1 && !['hr','admin','management'].includes(cu?.role || cu?.custom_role);
-        if (isLevel1) {
-          const upd = { ...plaLv, current_approval_level: 2, approval_history: [...(plaLv.approval_history || []), { level: 1, action: 'approved', by: plaActorId, by_name: plaActorName, at: now, note: plaNote || '' }] };
-          await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), plaRow.id]);
-          await notify(plaLv.user_id, { title: 'Leave Partially Approved', message: `Your leave (${plaLv.start_date} – ${plaLv.end_date}) has been approved at Level 1 and sent to HR for final approval.`, type: 'info', link: '/leave' });
-          const hrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
-          for (const hr of hrRows) await notify(hr.id, { title: 'Leave Approval Required', message: `${plaLv.employee_name || 'An employee'}'s leave request (${plaLv.start_date} – ${plaLv.end_date}) requires your approval.`, type: 'info', link: '/leave-management' });
-          return res.json({ success: true, status: 'level1_approved' });
-        } else {
-          const upd = { ...plaLv, status: 'approved', approved_by: plaActorId, approved_by_name: plaActorName, approved_date: now, approval_note: plaNote || '', approval_history: [...(plaLv.approval_history || []), { action: 'approved', by: plaActorId, by_name: plaActorName, at: now, note: plaNote || '' }] };
-          await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), plaRow.id]);
-          const plaIsWfh = plaLv.is_wfh || plaLv.leave_type === 'work_from_home';
-          if (plaIsWfh) {
-            // WFH doesn't use leave balances — instead, write an Attendance
-            // row per day so WFH Tracking (getWFHReport), which reads only
-            // from Attendance, picks up the approved request.
-            try {
-              const plaDates = [];
-              for (let d = new Date(plaLv.start_date + 'T00:00:00'); d <= new Date(plaLv.end_date + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
-                plaDates.push(d.toISOString().split('T')[0]);
-              }
-              for (const plaDate of plaDates) {
-                const plaAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [plaLv.user_id, plaDate]);
-                if (plaAttRow) {
-                  const plaAtt = { ...JSON.parse(plaAttRow.data), status: 'work_from_home', leave_id: plaLeaveId };
-                  await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", ['work_from_home', JSON.stringify(plaAtt), plaAttRow.id]);
-                } else {
-                  const plaAttId = uuidv4();
-                  const plaAtt = { id: plaAttId, user_id: plaLv.user_id, date: plaDate, status: 'work_from_home', leave_id: plaLeaveId, created_at: now };
-                  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'work_from_home',$3)", [plaAttId, plaLv.user_id, JSON.stringify(plaAtt)]);
-                }
-              }
-            } catch (e) { console.warn('WFH attendance sync on leave approval failed:', e.message); }
-          } else {
-            // Regular leave — writes an Attendance row per day too, mirroring
-            // the WFH path above. Without this, payroll
-            // (processPayroll/processAdvancedPayroll) and every other page
-            // that reads Attendance (All Attendance, reports, muster) saw no
-            // record at all for an approved leave day and treated it as an
-            // unpaid absence/LOP, even though LeaveBalance had correctly
-            // deducted it as paid leave usage. LeaveBalance stays the
-            // authoritative leave-usage record; this Attendance row exists
-            // purely so day-by-day consumers agree with it. Skips a day that
-            // already has real check-in data (e.g. leave approved after they
-            // already attended part of that day) rather than clobbering it.
-            try {
-              const plaDates = [];
-              for (let d = new Date(plaLv.start_date + 'T00:00:00'); d <= new Date(plaLv.end_date + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
-                plaDates.push(d.toISOString().split('T')[0]);
-              }
-              for (const plaDate of plaDates) {
-                const plaAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [plaLv.user_id, plaDate]);
-                if (plaAttRow) {
-                  const plaExisting = JSON.parse(plaAttRow.data);
-                  if (plaExisting.check_in_time) continue; // already genuinely attended this day — don't overwrite
-                  const plaAtt = { ...plaExisting, status: 'leave', leave_id: plaLeaveId };
-                  await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", ['leave', JSON.stringify(plaAtt), plaAttRow.id]);
-                } else {
-                  const plaAttId = uuidv4();
-                  const plaAtt = { id: plaAttId, user_id: plaLv.user_id, date: plaDate, status: 'leave', leave_id: plaLeaveId, created_at: now };
-                  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'leave',$3)", [plaAttId, plaLv.user_id, JSON.stringify(plaAtt)]);
-                }
-              }
-            } catch (e) { console.warn('Leave attendance sync on approval failed:', e.message); }
-
-            // Update leave balance
-            try {
-              const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [plaLv.user_id]);
-              const lb = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === plaLv.leave_policy_id);
-              if (lb) {
-                const lbUpd = { ...lb, used: (lb.used || 0) + plaLv.total_days, pending_approval: Math.max((lb.pending_approval || 0) - plaLv.total_days, 0) };
-                await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
-              }
-            } catch {}
-          }
-          await notify(plaLv.user_id, { title: plaIsWfh ? 'WFH Request Approved' : 'Leave Approved', message: `Your ${plaIsWfh ? 'work from home' : 'leave'} request (${plaLv.start_date} – ${plaLv.end_date}) has been approved by ${plaActorName}.`, type: 'success', link: '/leave' });
-          return res.json({ success: true, status: 'approved' });
-        }
-      } else if (plaAction === 'reject') {
-        const upd = { ...plaLv, status: 'rejected', rejected_by: plaActorId, rejected_by_name: plaActorName, rejected_at: now, rejection_reason: plaNote || '', approval_history: [...(plaLv.approval_history || []), { action: 'rejected', by: plaActorId, by_name: plaActorName, at: now, note: plaNote || '' }] };
-        await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), plaRow.id]);
-        // Restore pending balance
-        try {
-          const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [plaLv.user_id]);
-          const lb = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === plaLv.leave_policy_id);
-          if (lb) {
-            const lbUpd = { ...lb, pending_approval: Math.max((lb.pending_approval || 0) - plaLv.total_days, 0), available: (lb.available || 0) + plaLv.total_days };
-            await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
-          }
-        } catch {}
-        await notify(plaLv.user_id, { title: 'Leave Rejected', message: `Your leave request (${plaLv.start_date} – ${plaLv.end_date}) has been rejected${plaNote ? ': ' + plaNote : ''}.`, type: 'error', link: '/leave' });
-        return res.json({ success: true, status: 'rejected' });
-      }
-      return res.json({ success: false, error: 'Unknown action' });
+      const result = await runLeaveAction(cu, plaLeaveId, plaAction, plaNote);
+      return res.status(result.httpStatus || 200).json(result.body);
     }
 
     case 'submitProbationReview': {

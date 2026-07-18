@@ -167,106 +167,32 @@ export default function LeaveManagement() {
       return;
     }
 
+    // Delegates entirely to processLeaveAction — this used to reimplement
+    // level-advancement, balance updates, and attendance-marking here
+    // client-side, which is how that logic drifted from the backend's own
+    // version (wrong Attendance status, no WFH handling, bulk actions not
+    // touching balance/attendance at all since they never shared this code).
+    // The backend now resolves the approval chain and authorization the
+    // same way canApproveLevel() above does, so nothing level/workflow-
+    // related needs to be sent from here.
     try {
-      const leave = selectedLeave;
-      const history = leave.approval_history || [];
-      const newHistoryEntry = {
-        level: leave.current_approval_level,
-        approver_id: user.id,
-        approver_name: user.full_name,
-        status: actionType === 'approve' ? 'approved' : 'rejected',
-        comments: comment,
-        timestamp: new Date().toISOString()
-      };
-
-      const totalLevels = leaveWorkflow?.steps?.length || 2;
-      const curLevel = leave.current_approval_level || 1;
-      if (actionType === 'approve') {
-        if (curLevel < totalLevels && !isAdmin) {
-          // Advance to the next approval level in the chain
-          await base44.entities.Leave.update(leave.id, {
-            current_approval_level: curLevel + 1,
-            approval_history: [...history, newHistoryEntry]
-          });
-          base44.functions.invoke('notifyLeaveStatusChange', { leave_id: leave.id, action: 'level1_approved', note: comment }).catch(() => {});
-          toast.success(`Level ${curLevel} approved. Sent to level ${curLevel + 1} of ${totalLevels} for ${curLevel + 1 === totalLevels ? 'final ' : ''}approval.`);
-        } else {
-          // Final approval
-          await base44.entities.Leave.update(leave.id, {
-            status: 'approved',
-            approved_by: user.id,
-            approved_date: new Date().toISOString(),
-            approval_history: [...history, newHistoryEntry]
-          });
-
-          // Update leave balance: move from pending to used, NO salary deduction
-          const currentYear = new Date().getFullYear();
-          const balRecs = await base44.entities.LeaveBalance.filter({
-            user_id: leave.user_id, leave_policy_id: leave.leave_policy_id, year: currentYear
-          });
-          if (balRecs.length > 0) {
-            const lb = balRecs[0];
-            await base44.entities.LeaveBalance.update(lb.id, {
-              used: (lb.used || 0) + leave.total_days,
-              pending_approval: Math.max((lb.pending_approval || 0) - leave.total_days, 0),
-              available: lb.available // available stays same — was already decremented at application time
-            });
-          }
-
-          // Auto-mark attendance as 'present' with leave_applied flag (no LOP deduction)
-          const start = new Date(leave.start_date);
-          const end = new Date(leave.end_date);
-          for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-            const dateStr = d.toISOString().split('T')[0];
-            const existing = await base44.entities.Attendance.filter({ user_id: leave.user_id, date: dateStr });
-            if (existing.length === 0) {
-              await base44.entities.Attendance.create({
-                user_id: leave.user_id, date: dateStr,
-                status: 'present', // present so no LOP
-                lop_applicable: false,
-                lop_deduction_days: 0,
-                auto_marked: true,
-                notes: `Approved leave (${leave.leave_policy_id})`
-              });
-            } else {
-              await base44.entities.Attendance.update(existing[0].id, {
-                status: 'present',
-                lop_applicable: false,
-                lop_deduction_days: 0,
-                auto_marked: true,
-                notes: `Approved leave (${leave.leave_policy_id})`
-              });
-            }
-          }
-          base44.functions.invoke('notifyLeaveStatusChange', { leave_id: leave.id, action: 'approved', note: comment }).catch(() => {});
-          toast.success('Leave fully approved. Days marked as present with leave.');
-        }
+      const res = await base44.functions.invoke('processLeaveAction', {
+        leave_id: selectedLeave.id,
+        action: actionType,
+        note: comment,
+      });
+      const d = res.data || res;
+      if (d?.success === false) {
+        toast.error(d.error || 'Action failed');
+        return;
+      }
+      if (d.status === 'level_approved') {
+        toast.success(`Level ${d.next_level - 1} approved. Sent to level ${d.next_level} of ${d.total_levels} for ${d.next_level === d.total_levels ? 'final ' : ''}approval.`);
+      } else if (d.status === 'approved') {
+        toast.success('Leave fully approved.');
       } else {
-        // Reject
-        await base44.entities.Leave.update(leave.id, {
-          status: 'rejected',
-          rejection_reason: comment,
-          approved_by: user.id,
-          approved_date: new Date().toISOString(),
-          approval_history: [...history, newHistoryEntry]
-        });
-
-        // Restore balance (pending → available)
-        const currentYear = new Date().getFullYear();
-        const balRecs = await base44.entities.LeaveBalance.filter({
-          user_id: leave.user_id, leave_policy_id: leave.leave_policy_id, year: currentYear
-        });
-        if (balRecs.length > 0) {
-          const lb = balRecs[0];
-          await base44.entities.LeaveBalance.update(lb.id, {
-            pending_approval: Math.max((lb.pending_approval || 0) - leave.total_days, 0),
-            available: (lb.available || 0) + leave.total_days
-          });
-        }
-        base44.functions.invoke('notifyLeaveStatusChange', { leave_id: leave.id, action: 'rejected', note: comment }).catch(() => {});
         toast.success('Leave rejected and balance restored.');
       }
-
       setSelectedLeave(null);
       setActionType(null);
       setComment('');
@@ -286,7 +212,17 @@ export default function LeaveManagement() {
         : { leave_ids: [...selectedIds], rejected_by: user?.id, reason: 'Bulk rejected by HR' };
       const res = await base44.functions.invoke(fn, payload);
       const r = res.data;
-      toast.success(`${action === 'approve' ? 'Approved' : 'Rejected'} ${r.approved || r.rejected} leave request(s).`);
+      const succeeded = r.approved ?? r.rejected ?? 0;
+      toast.success(`${action === 'approve' ? 'Approved' : 'Rejected'} ${succeeded} leave request(s).`);
+      // A multi-level pending request advances one level per bulk-approve
+      // call rather than fully completing in one shot — surface that so it
+      // doesn't look like nothing happened for those rows.
+      if (r.errors?.length) {
+        const notFinal = r.errors.filter(e => e.error?.startsWith('This request is at approval level'));
+        if (notFinal.length) toast.info(`${notFinal.length} request(s) need approval from a different approver at their current level — not affected by this action.`);
+        const other = r.errors.filter(e => !e.error?.startsWith('This request is at approval level'));
+        if (other.length) toast.error(`${other.length} request(s) failed: ${other[0].error}`);
+      }
       setSelectedIds(new Set());
       loadData();
     } catch (e) { toast.error('Bulk action failed: ' + e.message); }

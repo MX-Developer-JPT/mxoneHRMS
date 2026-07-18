@@ -101,7 +101,8 @@ export default function HRApplyOnBehalf({ employees, leavePolicies, loadData, us
         applied_on: new Date().toISOString(),
       });
 
-      // Update leave balance
+      // Update leave balance (balances[] is already year-scoped — loadBalances
+      // fetches with { year: currentYear }, so bal is the right year's row)
       if (bal) {
         await base44.entities.LeaveBalance.update(bal.id, {
           used: (bal.used || 0) + days,
@@ -109,15 +110,22 @@ export default function HRApplyOnBehalf({ employees, leavePolicies, loadData, us
         });
       }
 
-      // Auto-mark attendance
+      // Auto-mark attendance with status='leave' (not 'present') so this
+      // agrees with every other consumer of Attendance status — the report,
+      // muster, and payroll's day-tally all branch on the actual leave
+      // status, not just "was there any record". Skips a day that already
+      // has real check-in data rather than overwriting it.
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         const dateStr = d.toISOString().split('T')[0];
         const existing = await base44.entities.Attendance.filter({ user_id: selectedEmp, date: dateStr });
         if (existing.length === 0) {
           await base44.entities.Attendance.create({
-            user_id: selectedEmp, date: dateStr, status: 'present',
-            lop_applicable: false, lop_deduction_days: 0,
+            user_id: selectedEmp, date: dateStr, status: 'leave',
             auto_marked: true, notes: `Leave applied by HR (${policy?.code || ''})`,
+          });
+        } else if (!existing[0].check_in_time) {
+          await base44.entities.Attendance.update(existing[0].id, {
+            status: 'leave', auto_marked: true, notes: `Leave applied by HR (${policy?.code || ''})`,
           });
         }
       }
