@@ -3541,6 +3541,17 @@ router.post('/:name', async (req, res) => {
       const payrolls  = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2", [String(m), String(y)]));
       const payrollMap = Object.fromEntries(payrolls.map(pr => [pr.user_id, pr]));
 
+      // Off-cycle payments (referral/performance bonus etc.) approved or
+      // already paid for this payroll month — summed per employee per type.
+      const bonusRows = await all("SELECT user_id,data FROM entities WHERE type='Bonus' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2 AND data::jsonb->>'status' IN ('approved','paid')", [String(m), String(y)]);
+      const referralBonusByUser = {}, performanceBonusByUser = {};
+      for (const row of bonusRows) {
+        const b = JSON.parse(row.data);
+        const amt = Number(b.amount || 0);
+        if (b.bonus_type === 'referral') referralBonusByUser[row.user_id] = (referralBonusByUser[row.user_id] || 0) + amt;
+        else if (b.bonus_type === 'performance') performanceBonusByUser[row.user_id] = (performanceBonusByUser[row.user_id] || 0) + amt;
+      }
+
       // Build date-keyed attendance map — same structure the muster uses for day-by-day tally
       const attRows2 = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
       const attMapSS = {};   // user_id → dateStr → record
@@ -3632,17 +3643,13 @@ router.post('/:name', async (req, res) => {
         const basicFixed   = pr?.basic_salary      || (ss.basic_salary||0);
         const hraFixed     = pr?.hra               || (ss.hra||0);
         const convFixed    = pr?.conveyance        || (ss.conveyance||0);
-        const specialFixed = pr?.special_allowance || (ss.special_allowance||0);
-        const ltaFixed     = pr?.lta               || (ss.lta||0);
-        const grossFixed   = basicFixed + hraFixed + convFixed + specialFixed + ltaFixed;
+        const grossFixed   = basicFixed + hraFixed + convFixed;
 
         const proRate     = calendarDaysSS > 0 ? payDaysSS / calendarDaysSS : 0;
-        const basicEarned   = Math.round(basicFixed   * proRate);
-        const hraEarned     = Math.round(hraFixed     * proRate);
-        const convEarned    = Math.round(convFixed    * proRate);
-        const specialEarned = Math.round(specialFixed * proRate);
-        const ltaEarned      = Math.round(ltaFixed     * proRate);
-        const grossEarned = basicEarned + hraEarned + convEarned + specialEarned + ltaEarned;
+        const basicEarned = Math.round(basicFixed * proRate);
+        const hraEarned   = Math.round(hraFixed   * proRate);
+        const convEarned  = Math.round(convFixed  * proRate);
+        const grossEarned = basicEarned + hraEarned + convEarned;
 
         // Informational — how much of the fixed gross the LOP days cost.
         const lop = grossFixed - grossEarned;
@@ -3657,21 +3664,41 @@ router.post('/:name', async (req, res) => {
         const esiEmp  = pr?.deductions?.esi  ?? (basicFixed <= 21000 ? Math.round(basicEarned * 0.0075) : 0);
         const esiEmpr = pr?.employer_contributions?.esi ?? (basicFixed <= 21000 ? Math.round(basicEarned * 0.0325) : 0);
 
+        // ── Off-cycle: referral/performance bonus approved for this month,
+        // plus overtime pay computed from hours actually worked beyond the
+        // 8-hour shift baseline, at 2× the basic hourly rate (same formula
+        // as the standalone Overtime Management report).
+        const referralBonus    = referralBonusByUser[emp.user_id] || 0;
+        const performanceBonus = performanceBonusByUser[emp.user_id] || 0;
+        let overtimeHours = 0, overtimePay = 0;
+        if (hasAtt) {
+          const hourlyRate = (basicFixed / 26) / 8;
+          for (const { ds } of monthDates) {
+            const rec = attByDate[ds];
+            if (rec?.working_hours > 8) overtimeHours += rec.working_hours - 8;
+          }
+          overtimePay = Math.round(hourlyRate * 2 * overtimeHours);
+        }
+
         const totalDed = pfEmp + esiEmp;
-        const net = Math.max(0, grossEarned - totalDed);
+        const net = Math.max(0, grossEarned - totalDed) + referralBonus + performanceBonus + overtimePay;
 
         return {
           sno: idx + 1,
           code: emp.employee_code||'', name: emp.display_name||'',
+          gender: emp.gender||'', dob: emp.date_of_birth||'', doj: emp.date_of_joining||'',
+          empStatus: emp.employee_status||'', empType: emp.employment_type||'',
           dept: emp.department||'',    desig: emp.designation||'',
+          pan: emp.pan_number||'', pfNo: emp.pf_account_number||'', uan: emp.uan_number||'',
+          esiNo: emp.esi_number||'', aadhar: emp.aadhar_number||'',
           account: emp.bank_account_number||'', ifsc: emp.ifsc_code||'', bank: emp.bank_name||'',
           daysPresent:  daysPresent,
           daysHalfDay,
           daysAbsent:   totalLOPDays,
           effectiveDays,
           basicFixed, basicEarned, hraFixed, hraEarned, convFixed, convEarned,
-          specialFixed, specialEarned, ltaFixed, ltaEarned,
           grossFixed, grossEarned: pr?.gross_salary || grossEarned,
+          referralBonus, performanceBonus, overtimePay,
           pfEmp, pfEmpr, esiEmp, esiEmpr, lop, totalDed, net,
           status: pr ? (pr.status === 'paid' ? 'Paid' : 'Processed') : 'Pending',
         };
@@ -3690,8 +3717,9 @@ router.post('/:name', async (req, res) => {
 
       // Colour palette
       const C = { headerBg:'1A3C5E', headerFg:'FFFFFF', subBg:'2D6A9F', subFg:'FFFFFF',
-        earningBg:'E8F5E9', deductBg:'FFEBEE', sumBg:'FFF9C4', altRow:'F5F9FF',
+        earningBg:'E8F5E9', offCycleBg:'E3F2FD', deductBg:'FFEBEE', sumBg:'FFF9C4', altRow:'F5F9FF',
         processedFg:'1B5E20', pendingFg:'B71C1C', totalBg:'1A3C5E', totalFg:'FFFFFF' };
+      const titleCase = (s) => (s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
       const font = (bold=false, color='000000', size=10) => ({ name:'Arial', bold, color:{argb:`FF${color}`}, size });
       const fill = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
       const border = () => ({ top:{style:'thin',color:{argb:'FFD0D0D0'}}, left:{style:'thin',color:{argb:'FFD0D0D0'}}, bottom:{style:'thin',color:{argb:'FFD0D0D0'}}, right:{style:'thin',color:{argb:'FFD0D0D0'}} });
@@ -3700,13 +3728,23 @@ router.post('/:name', async (req, res) => {
       const cols = [
         { header:'S.No',           key:'sno',          width:5  },
         { header:'Emp Code',       key:'code',          width:10 },
-        { header:'Employee Name',  key:'name',          width:24 },
+        { header:'Employee Name',  key:'name',          width:22 },
+        { header:'Gender',         key:'gender',        width:9  },
+        { header:'DOB',            key:'dob',           width:12 },
+        { header:'Joining Date',   key:'doj',           width:12 },
+        { header:'Employee Status',key:'empStatus',     width:13 },
+        { header:'Employment Type',key:'empType',       width:14 },
         { header:'Department',     key:'dept',          width:16 },
         { header:'Designation',    key:'desig',         width:18 },
+        { header:'PAN Number',     key:'pan',           width:12 },
+        { header:'PF Number',      key:'pfNo',          width:14 },
+        { header:'UAN Number',     key:'uan',           width:14 },
+        { header:'ESI Number',     key:'esiNo',         width:14 },
+        { header:'Aadhar Number',  key:'aadhar',        width:14 },
         { header:'Account No',     key:'account',       width:16 },
         { header:'IFSC',           key:'ifsc',          width:12 },
         { header:'Bank',           key:'bank',          width:14 },
-        // ATTENDANCE (cols 9-12) — values match the attendance muster
+        // ATTENDANCE — values match the attendance muster
         { header:'Days Present',   key:'daysPresent',   width:10 },  // decimal: 22.5
         { header:'Half Days',      key:'daysHalfDay',   width:9  },  // integer: 1
         { header:'Absent Days',    key:'daysAbsent',    width:10 },  // decimal: 2.5 (= absent + half×0.5)
@@ -3718,20 +3756,20 @@ router.post('/:name', async (req, res) => {
         { header:'HRA Earned',            key:'hraEarned',     width:11 },
         { header:'Conveyance Fixed',      key:'convFixed',     width:13 },
         { header:'Conveyance Earned',     key:'convEarned',    width:13 },
-        { header:'Special Allow. Fixed',  key:'specialFixed',  width:14 },
-        { header:'Special Allow. Earned', key:'specialEarned', width:14 },
-        { header:'LTA Fixed',             key:'ltaFixed',      width:11 },
-        { header:'LTA Earned',            key:'ltaEarned',     width:11 },
         { header:'Gross Fixed',           key:'grossFixed',    width:13 },
         { header:'Gross Earned',          key:'grossEarned',   width:13 },
-        // DEDUCTIONS (cols 19-25)
+        // OFF-CYCLE PAYMENTS
+        { header:'Referral Bonus',    key:'referralBonus',    width:13 },
+        { header:'Performance Bonus', key:'performanceBonus', width:14 },
+        { header:'Overtime Pay',      key:'overtimePay',      width:13 },
+        // DEDUCTIONS
         { header:'PF (Emp 12%)',   key:'pfEmp',         width:12 },
         { header:'PF (Empr 13%)',  key:'pfEmpr',        width:12 },
         { header:'ESI (Emp 0.75%)',key:'esiEmp',        width:13 },
         { header:'ESI (Empr 3.25%)',key:'esiEmpr',      width:14 },
         { header:'LOP Deduct.',    key:'lop',           width:12 },
         { header:'Total Deduct.',  key:'totalDed',      width:13 },
-        // NET PAY (cols 26-27)
+        // NET PAY
         { header:'Net Salary',     key:'net',           width:13 },
         { header:'Status',         key:'status',        width:10 },
       ];
@@ -3759,9 +3797,10 @@ router.post('/:name', async (req, res) => {
 
       // Row 3: Section group headers
       const sectionHeaders = [
-        { label:'EMPLOYEE DETAILS', cols:8 },
+        { label:'EMPLOYEE DETAILS', cols:18 },
         { label:'ATTENDANCE',       cols:4 },
-        { label:'EARNINGS',         cols:12 },
+        { label:'EARNINGS',         cols:8 },
+        { label:'OFF-CYCLE PAYMENTS', cols:3 },
         { label:'DEDUCTIONS',       cols:6 },
         { label:'NET PAY',          cols:2 },
       ];
@@ -3793,10 +3832,12 @@ router.post('/:name', async (req, res) => {
         const rowNum = 5 + i;
         const isAlt = i % 2 === 1;
         const rowData = [
-          r.sno, r.code, r.name, r.dept, r.desig, r.account, r.ifsc, r.bank,
+          r.sno, r.code, r.name, r.gender, r.dob, r.doj, titleCase(r.empStatus), titleCase(r.empType),
+          r.dept, r.desig, r.pan, r.pfNo, r.uan, r.esiNo, r.aadhar, r.account, r.ifsc, r.bank,
           r.daysPresent, r.daysHalfDay, r.daysAbsent, r.effectiveDays,
           r.basicFixed, r.basicEarned, r.hraFixed, r.hraEarned, r.convFixed, r.convEarned,
-          r.specialFixed, r.specialEarned, r.ltaFixed, r.ltaEarned, r.grossFixed, r.grossEarned,
+          r.grossFixed, r.grossEarned,
+          r.referralBonus, r.performanceBonus, r.overtimePay,
           r.pfEmp, r.pfEmpr, r.esiEmp, r.esiEmpr, r.lop, r.totalDed, r.net,
           r.status,
         ];
@@ -3811,8 +3852,11 @@ router.post('/:name', async (req, res) => {
           if (isAlt) cell.fill = fill(C.altRow);
           // Colour-code sections
           const colKey = cols[ci]?.key;
-          if (['basicFixed','basicEarned','hraFixed','hraEarned','convFixed','convEarned','specialFixed','specialEarned','ltaFixed','ltaEarned','grossFixed','grossEarned'].includes(colKey)) {
+          if (['basicFixed','basicEarned','hraFixed','hraEarned','convFixed','convEarned','grossFixed','grossEarned'].includes(colKey)) {
             cell.fill = fill(C.earningBg);
+            cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' };
+          } else if (['referralBonus','performanceBonus','overtimePay'].includes(colKey)) {
+            cell.fill = fill(C.offCycleBg);
             cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' };
           } else if (['pfEmp','pfEmpr','esiEmp','esiEmpr','lop','totalDed'].includes(colKey)) {
             cell.fill = fill(C.deductBg);
@@ -3834,7 +3878,7 @@ router.post('/:name', async (req, res) => {
 
       // Totals row
       const totRow = ws.addRow([
-        '', 'TOTAL', '', '', '', '', '', '',
+        '', 'TOTAL', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
         dataRows.reduce((s,r)=>s+r.daysPresent,0),
         dataRows.reduce((s,r)=>s+r.daysHalfDay,0),
         dataRows.reduce((s,r)=>s+r.daysAbsent,0),
@@ -3842,9 +3886,10 @@ router.post('/:name', async (req, res) => {
         Math.round(dataRows.reduce((s,r)=>s+r.basicFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.basicEarned,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.hraFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.hraEarned,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.convFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.convEarned,0)),
-        Math.round(dataRows.reduce((s,r)=>s+r.specialFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.specialEarned,0)),
-        Math.round(dataRows.reduce((s,r)=>s+r.ltaFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.ltaEarned,0)),
         Math.round(totals.grossFixed), Math.round(totals.grossEarned),
+        Math.round(dataRows.reduce((s,r)=>s+r.referralBonus,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.performanceBonus,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.overtimePay,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.pfEmp,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.pfEmpr,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.esiEmp,0)),
