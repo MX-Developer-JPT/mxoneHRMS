@@ -1101,6 +1101,15 @@ router.post('/:name', async (req, res) => {
        per department, HR/admin managed) and SkillAssessment (one row per
        employee holding their ratings map, keyed by metric id). ── */
     const SKILL_RATING_LABELS = { 1: 'No Knowledge', 2: 'Can Work With Assistance', 3: 'Can Work Independently', 4: 'Can Train Others' };
+    // The Skill Grid's "departments" are shop-floor lines (e.g. "2W",
+    // "Packing Line") finer-grained than the org's actual Employee.department
+    // field, which only tracks the coarse "PRODUCTION" bucket for all of
+    // them. Map each fine-grained skill-grid department to the real
+    // Employee.department value(s) to query against, compared
+    // case-insensitively since the two systems don't share casing
+    // conventions (e.g. Skill Grid "Testing" vs Employee dept "TESTING").
+    const SKILL_GRID_DEPT_ALIAS = { '3w and ess': 'PRODUCTION', '2w': 'PRODUCTION', 'packing line': 'PRODUCTION', 'testing': 'TESTING' };
+    const resolveSkillGridEmpDept = (dept) => SKILL_GRID_DEPT_ALIAS[(dept || '').trim().toLowerCase()] || dept;
 
     case 'getSkillGridConfig': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
@@ -1149,10 +1158,12 @@ router.post('/:name', async (req, res) => {
       const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')", [gsmDept]);
       const metrics = metricRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.order || 0) - (b.order || 0));
 
-      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department'=$1", [gsmDept]);
+      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND LOWER(data::jsonb->>'department')=LOWER($1)", [resolveSkillGridEmpDept(gsmDept)]);
       const employees = empRows.map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
 
-      const assessRows = await all("SELECT user_id,data FROM entities WHERE type='SkillAssessment' AND user_id = ANY($1)", [employees.map(e => e.user_id)]);
+      const assessRows = employees.length
+        ? await all("SELECT user_id,data FROM entities WHERE type='SkillAssessment' AND user_id = ANY($1)", [employees.map(e => e.user_id)])
+        : [];
       const assessBy = Object.fromEntries(assessRows.map(r => [r.user_id, JSON.parse(r.data)]));
 
       const rows = employees.map(e => {
@@ -1194,7 +1205,7 @@ router.post('/:name', async (req, res) => {
 
       const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')", [esmDept]);
       const metrics = metricRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.order || 0) - (b.order || 0));
-      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department'=$1", [esmDept]);
+      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND LOWER(data::jsonb->>'department')=LOWER($1)", [resolveSkillGridEmpDept(esmDept)]);
       const employees = empRows.map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) })).sort((a, b) => (a.display_name || '').localeCompare(b.display_name || ''));
       const assessRows = await all("SELECT user_id,data FROM entities WHERE type='SkillAssessment' AND user_id = ANY($1)", [employees.map(e => e.user_id)]);
       const assessBy = Object.fromEntries(assessRows.map(r => [r.user_id, JSON.parse(r.data)]));
@@ -1317,11 +1328,15 @@ router.post('/:name', async (req, res) => {
       const { departments: seedDepts } = p;
       if (!Array.isArray(seedDepts) || !seedDepts.length) return res.json({ success: false, error: 'departments array required' });
 
+      // Normalize away punctuation/whitespace differences between the
+      // spreadsheet's codes (e.g. "MVE-00260") and the system's stored codes
+      // (e.g. "MVE00260") before comparing.
+      const normCode = (c) => (c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
       const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'");
       const empByCode = {};
       for (const r of empRows) {
         const e = JSON.parse(r.data);
-        if (e.employee_code) empByCode[e.employee_code.trim().toUpperCase()] = { user_id: r.user_id, ...e };
+        if (e.employee_code) empByCode[normCode(e.employee_code)] = { user_id: r.user_id, ...e };
       }
 
       const report = [];
@@ -1346,7 +1361,7 @@ router.post('/:name', async (req, res) => {
         let matched = 0;
         const unmatched = [];
         for (const se of (seedEmps || [])) {
-          const emp = empByCode[(se.employee_code || '').trim().toUpperCase()];
+          const emp = empByCode[normCode(se.employee_code)];
           if (!emp) { unmatched.push(se.employee_code || se.name); continue; }
           const ratings = {};
           for (const [mName, val] of Object.entries(se.ratings || {})) {
