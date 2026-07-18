@@ -375,6 +375,24 @@ async function hasRole(cu, roles) {
   } catch { return false; }
 }
 const HR_ROLES = ['hr', 'admin'];
+
+// Skill Grid: department-specific skill certification matrix (see the big
+// case block below for details). Declared at module scope, not inside the
+// switch body, because a switch statement is a single block — a `const`
+// written as a bare statement between `switch(...) {` and the first `case`
+// sits in that block's temporal dead zone for every case *except* one
+// reached by falling through from the very top, and an HTTP dispatch always
+// jumps straight to the matched case, so it would never actually execute.
+const SKILL_RATING_LABELS = { 1: 'No Knowledge', 2: 'Can Work With Assistance', 3: 'Can Work Independently', 4: 'Can Train Others' };
+// The Skill Grid's "departments" are shop-floor lines (e.g. "2W", "Packing
+// Line") finer-grained than the org's actual Employee.department field,
+// which only tracks the coarse "PRODUCTION" bucket for all of them. Map each
+// fine-grained skill-grid department to the real Employee.department
+// value(s) to query against, compared case-insensitively since the two
+// systems don't share casing conventions (Skill Grid "Testing" vs Employee
+// dept "TESTING").
+const SKILL_GRID_DEPT_ALIAS = { '3w and ess': 'PRODUCTION', '2w': 'PRODUCTION', 'packing line': 'PRODUCTION', 'testing': 'TESTING' };
+const resolveSkillGridEmpDept = (dept) => SKILL_GRID_DEPT_ALIAS[(dept || '').trim().toLowerCase()] || dept;
 // Job-application duplicate detection helpers — tolerant normalization so
 // "+91 98765-43210" and "9876543210" match, and email casing/whitespace
 // doesn't create false-negative duplicates.
@@ -1100,17 +1118,6 @@ router.post('/:name', async (req, res) => {
        Two entity types: SkillMetric (the configurable skill definitions
        per department, HR/admin managed) and SkillAssessment (one row per
        employee holding their ratings map, keyed by metric id). ── */
-    const SKILL_RATING_LABELS = { 1: 'No Knowledge', 2: 'Can Work With Assistance', 3: 'Can Work Independently', 4: 'Can Train Others' };
-    // The Skill Grid's "departments" are shop-floor lines (e.g. "2W",
-    // "Packing Line") finer-grained than the org's actual Employee.department
-    // field, which only tracks the coarse "PRODUCTION" bucket for all of
-    // them. Map each fine-grained skill-grid department to the real
-    // Employee.department value(s) to query against, compared
-    // case-insensitively since the two systems don't share casing
-    // conventions (e.g. Skill Grid "Testing" vs Employee dept "TESTING").
-    const SKILL_GRID_DEPT_ALIAS = { '3w and ess': 'PRODUCTION', '2w': 'PRODUCTION', 'packing line': 'PRODUCTION', 'testing': 'TESTING' };
-    const resolveSkillGridEmpDept = (dept) => SKILL_GRID_DEPT_ALIAS[(dept || '').trim().toLowerCase()] || dept;
-
     case 'getSkillGridConfig': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')");
