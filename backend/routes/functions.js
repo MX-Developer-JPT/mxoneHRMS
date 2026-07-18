@@ -375,6 +375,11 @@ async function hasRole(cu, roles) {
   } catch { return false; }
 }
 const HR_ROLES = ['hr', 'admin'];
+// Job-application duplicate detection helpers — tolerant normalization so
+// "+91 98765-43210" and "9876543210" match, and email casing/whitespace
+// doesn't create false-negative duplicates.
+const normalizeEmail = (e) => String(e || '').trim().toLowerCase();
+const normalizePhone = (ph) => String(ph || '').replace(/\D/g, '').slice(-10); // last 10 digits
 const MGR_ROLES = ['hr', 'admin', 'management', 'manager'];
 
 const parseEntities = (rows) => rows.map(r => JSON.parse(r.data));
@@ -6067,12 +6072,35 @@ ${contextBlock || 'No employee context available — answer from general policy 
     }
 
     /* ── Recruitment other ───────────────────────────── */
+    // A "duplicate" here means the same person (by email or phone) applying
+    // to the SAME job more than once — the unambiguous case (double-submit,
+    // came back and reapplied). Applying to a DIFFERENT job with the same
+    // email/phone is normal candidate behavior, not a duplicate, so job_id
+    // is always part of the match, never email/phone alone.
     case 'submitJobApplication': {
       const { jobId, job_id, candidateData, jobTitle, jobDepartment } = p;
+      const resolvedJobId = job_id || jobId;
+      const email = normalizeEmail(candidateData?.email);
+      const phone = normalizePhone(candidateData?.phone);
+
+      if (resolvedJobId && (email || phone)) {
+        const existingRows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'job_id'=$1", [resolvedJobId]);
+        const dup = existingRows
+          .map(r => ({ id: r.id, data: JSON.parse(r.data) }))
+          .find(r => (email && normalizeEmail(r.data.email) === email) || (phone && normalizePhone(r.data.phone) === phone));
+        if (dup) {
+          return res.json({
+            success: false, duplicate: true,
+            error: `You've already applied for this position on ${(dup.data.applied_date || '').slice(0, 10)}. Current status: ${(dup.data.status || 'applied').replace(/_/g, ' ')}.`,
+            existing_application_id: dup.id, existing_status: dup.data.status || 'applied',
+          });
+        }
+      }
+
       const id = uuidv4();
       const d = {
         id,
-        job_id: job_id || jobId,
+        job_id: resolvedJobId,
         position_applied: jobTitle,
         department: jobDepartment,
         ...(candidateData || {}),
@@ -6081,6 +6109,37 @@ ${contextBlock || 'No employee context available — answer from general policy 
       };
       await run("INSERT INTO entities(id,type,status,data) VALUES($1,'Candidate','applied',$2)", [id, JSON.stringify(d)]);
       return res.json({ success: true, application_id: id, candidate_id: id });
+    }
+
+    // HR-facing scan for duplicate applications that already exist in the
+    // system (submitJobApplication above only prevents NEW ones going
+    // forward) — groups Candidate rows by job_id + normalized email/phone,
+    // returns groups with more than one application so HR can review and
+    // clean them up (reject the extras, keep the right one).
+    case 'findDuplicateApplications': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const jobFilter = p?.job_id || null;
+      const sql = jobFilter
+        ? "SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'job_id'=$1"
+        : "SELECT id,data FROM entities WHERE type='Candidate'";
+      const rows = await all(sql, jobFilter ? [jobFilter] : []);
+      const candidates = rows.map(r => ({ id: r.id, ...JSON.parse(r.data) }));
+
+      const groups = {};
+      for (const c of candidates) {
+        const email = normalizeEmail(c.email);
+        const phone = normalizePhone(c.phone);
+        const key = `${c.job_id || ''}::${email || phone}`;
+        if (!email && !phone) continue;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(c);
+      }
+      const duplicateGroups = Object.values(groups)
+        .filter(g => g.length > 1)
+        .map(g => g.sort((a, b) => (a.applied_date || '').localeCompare(b.applied_date || '')))
+        .sort((a, b) => new Date(b[0].applied_date || 0) - new Date(a[0].applied_date || 0));
+
+      return res.json({ success: true, duplicate_group_count: duplicateGroups.length, total_duplicate_applications: duplicateGroups.reduce((s, g) => s + g.length, 0), groups: duplicateGroups });
     }
 
     case 'getPublishedJob': {

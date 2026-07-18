@@ -186,6 +186,20 @@ function JobDetailPage({ jobId, onBack }) {
         },
       });
 
+      // submitJobApplication returns success:false (not an HTTP error) for a
+      // detected duplicate — must be checked explicitly, since invoke()
+      // resolves normally for any 200 response regardless of `success`.
+      if (submitRes.data?.duplicate) {
+        toast.error(submitRes.data.error || "You've already applied for this position.");
+        setSubmitting(false);
+        return;
+      }
+      if (submitRes.data?.success === false) {
+        toast.error(submitRes.data.error || 'Failed to submit application');
+        setSubmitting(false);
+        return;
+      }
+
       if (resume_url && submitRes.data?.candidate_id) {
         base44.functions.invoke('parseResume', {
           candidate_id: submitRes.data.candidate_id, resume_url, auto_triggered: true

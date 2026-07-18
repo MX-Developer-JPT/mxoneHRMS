@@ -589,7 +589,26 @@ export default function Recruitment() {
   const [scoringIds, setScoringIds] = useState(new Set());
   const [sortByScore, setSortByScore] = useState(false);
 
+  // Duplicate-application review — existing applications only; new
+  // duplicate submissions are already blocked server-side
+  // (submitJobApplication), this surfaces ones that slipped in before that.
+  const [dupDialogOpen, setDupDialogOpen] = useState(false);
+  const [dupLoading, setDupLoading] = useState(false);
+  const [dupGroups, setDupGroups] = useState([]);
+
   useEffect(() => { loadData(); }, []);
+
+  const checkDuplicates = async () => {
+    setDupDialogOpen(true);
+    setDupLoading(true);
+    try {
+      const res = await base44.functions.invoke('findDuplicateApplications', {});
+      setDupGroups(res.data?.groups || []);
+    } catch (e) {
+      toast.error('Failed to check duplicates: ' + e.message);
+    }
+    setDupLoading(false);
+  };
 
   const loadData = async () => {
     try {
@@ -772,6 +791,9 @@ export default function Recruitment() {
                 <LayoutGrid className="w-4 h-4" />
               </Button>
             </div>
+            <Button variant="outline" size="sm" onClick={checkDuplicates}>
+              <Copy className="w-4 h-4 mr-1.5" /> Check Duplicates
+            </Button>
             <Dialog open={showForm} onOpenChange={setShowForm}>
             <DialogTrigger asChild>
               <Button className="bg-blue-600 hover:bg-blue-700">
@@ -1243,6 +1265,51 @@ export default function Recruitment() {
               onClose={() => setRejectCandidate(null)}
               onRefresh={loadData}
             />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={dupDialogOpen} onOpenChange={setDupDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Copy className="w-5 h-5 text-amber-600" /> Duplicate Applications
+            </DialogTitle>
+          </DialogHeader>
+          {dupLoading ? (
+            <div className="py-10 text-center text-gray-400"><Loader2 className="w-6 h-6 mx-auto animate-spin" /></div>
+          ) : dupGroups.length === 0 ? (
+            <p className="text-sm text-gray-500 py-6 text-center">No duplicate applications found — same email/phone applying to the same job more than once.</p>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-500">{dupGroups.length} group{dupGroups.length === 1 ? '' : 's'} of duplicate applications for the same job. Review and reject the extras via the candidate's card below.</p>
+              {dupGroups.map((group, gi) => (
+                <div key={gi} className="border rounded-lg p-3 bg-amber-50 border-amber-200">
+                  <p className="text-xs font-medium text-amber-800 mb-2">
+                    {group[0].full_name || group[0].email} — {group.length} applications for "{group[0].position_applied || group[0].job_id}"
+                  </p>
+                  <div className="space-y-1.5">
+                    {group.map(c => (
+                      <button
+                        key={c.id}
+                        onClick={() => { setDupDialogOpen(false); setSelectedCandidate(c); }}
+                        className="w-full text-left flex items-center justify-between gap-2 bg-white rounded-md px-3 py-2 border border-amber-100 hover:border-amber-300 text-sm"
+                      >
+                        <span className="flex items-center gap-2 min-w-0">
+                          <Mail className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                          <span className="truncate">{c.email}</span>
+                          {c.phone && <span className="text-gray-400 truncate">· {c.phone}</span>}
+                        </span>
+                        <span className="flex items-center gap-2 shrink-0">
+                          <Badge variant="outline" className="text-[10px]">{(c.status || 'applied').replace(/_/g, ' ')}</Badge>
+                          <span className="text-xs text-gray-400">{(c.applied_date || '').slice(0, 10)}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </DialogContent>
       </Dialog>
