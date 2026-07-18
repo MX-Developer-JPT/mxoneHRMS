@@ -3622,27 +3622,27 @@ router.post('/:name', async (req, res) => {
         const payDaysSS     = calendarDaysSS - totalLOPDays;
         const effectiveDays = calendarDaysSS;                 // show calendar days (e.g. 30 or 31)
 
-        // ── Earnings ── Fixed = full monthly CTC-configured amount, unprorated.
-        // Earned = fixed × (paid days ÷ calendar days) — what the employee
-        // actually gets this month once LOP is applied. The sheet previously
-        // showed Basic/HRA/Conveyance/Special as the FIXED amounts even when
-        // an employee had LOP days, with only a single opaque "LOP Deduct."
-        // line hinting at the gap — misleading, since the earnings columns
-        // didn't reflect what was actually earned. Every earnings column now
-        // shows the earned (attendance-prorated) amount; the fixed CTC gross
-        // is broken out separately for comparison.
+        // ── Earnings ── Fixed = the actual amount defined in the employee's
+        // salary structure, unprorated. Earned = fixed × (paid days ÷
+        // calendar days) — what's actually payable this month once
+        // attendance/LOP is applied. Every component is shown as a Fixed +
+        // Earned pair (matching the reference salary-sheet template) rather
+        // than only the fixed figure with a single opaque "LOP Deduct." line
+        // hinting at the gap.
         const basicFixed   = pr?.basic_salary      || (ss.basic_salary||0);
         const hraFixed     = pr?.hra               || (ss.hra||0);
         const convFixed    = pr?.conveyance        || (ss.conveyance||0);
         const specialFixed = pr?.special_allowance || (ss.special_allowance||0);
-        const grossFixed   = basicFixed + hraFixed + convFixed + specialFixed;
+        const ltaFixed     = pr?.lta               || (ss.lta||0);
+        const grossFixed   = basicFixed + hraFixed + convFixed + specialFixed + ltaFixed;
 
-        const proRate  = calendarDaysSS > 0 ? payDaysSS / calendarDaysSS : 0;
-        const basic    = Math.round(basicFixed   * proRate);
-        const hra      = Math.round(hraFixed     * proRate);
-        const conv     = Math.round(convFixed    * proRate);
-        const special  = Math.round(specialFixed * proRate);
-        const grossEarned = basic + hra + conv + special;
+        const proRate     = calendarDaysSS > 0 ? payDaysSS / calendarDaysSS : 0;
+        const basicEarned   = Math.round(basicFixed   * proRate);
+        const hraEarned     = Math.round(hraFixed     * proRate);
+        const convEarned    = Math.round(convFixed    * proRate);
+        const specialEarned = Math.round(specialFixed * proRate);
+        const ltaEarned      = Math.round(ltaFixed     * proRate);
+        const grossEarned = basicEarned + hraEarned + convEarned + specialEarned + ltaEarned;
 
         // Informational — how much of the fixed gross the LOP days cost.
         const lop = grossFixed - grossEarned;
@@ -3654,8 +3654,8 @@ router.post('/:name', async (req, res) => {
         const pfEmpr = pr?.employer_contributions?.pf   ?? Math.round(monthlyPFBaseSS * 0.13 * proRate);
 
         // ── ESI: eligibility on full monthly (fixed) basic; deduction on earned basic ─
-        const esiEmp  = pr?.deductions?.esi  ?? (basicFixed <= 21000 ? Math.round(basic * 0.0075) : 0);
-        const esiEmpr = pr?.employer_contributions?.esi ?? (basicFixed <= 21000 ? Math.round(basic * 0.0325) : 0);
+        const esiEmp  = pr?.deductions?.esi  ?? (basicFixed <= 21000 ? Math.round(basicEarned * 0.0075) : 0);
+        const esiEmpr = pr?.employer_contributions?.esi ?? (basicFixed <= 21000 ? Math.round(basicEarned * 0.0325) : 0);
 
         const totalDed = pfEmp + esiEmp;
         const net = Math.max(0, grossEarned - totalDed);
@@ -3669,7 +3669,9 @@ router.post('/:name', async (req, res) => {
           daysHalfDay,
           daysAbsent:   totalLOPDays,
           effectiveDays,
-          grossFixed, grossEarned: pr?.gross_salary || grossEarned, basic, hra, conv, special,
+          basicFixed, basicEarned, hraFixed, hraEarned, convFixed, convEarned,
+          specialFixed, specialEarned, ltaFixed, ltaEarned,
+          grossFixed, grossEarned: pr?.gross_salary || grossEarned,
           pfEmp, pfEmpr, esiEmp, esiEmpr, lop, totalDed, net,
           status: pr ? (pr.status === 'paid' ? 'Paid' : 'Processed') : 'Pending',
         };
@@ -3709,13 +3711,19 @@ router.post('/:name', async (req, res) => {
         { header:'Half Days',      key:'daysHalfDay',   width:9  },  // integer: 1
         { header:'Absent Days',    key:'daysAbsent',    width:10 },  // decimal: 2.5 (= absent + half×0.5)
         { header:'Eff. Days',      key:'effectiveDays', width:9  },  // 26 for all
-        // EARNINGS (cols 14-19)
-        { header:'Gross Fixed',    key:'grossFixed',    width:13 },
-        { header:'Gross Earned',   key:'grossEarned',   width:13 },
-        { header:'Basic',          key:'basic',         width:12 },
-        { header:'HRA',            key:'hra',           width:11 },
-        { header:'Conveyance',     key:'conv',          width:12 },
-        { header:'Special Allow.', key:'special',       width:13 },
+        // EARNINGS — every component as a Fixed/Earned pair
+        { header:'Basic Fixed',           key:'basicFixed',    width:12 },
+        { header:'Basic Earned',          key:'basicEarned',   width:12 },
+        { header:'HRA Fixed',             key:'hraFixed',      width:11 },
+        { header:'HRA Earned',            key:'hraEarned',     width:11 },
+        { header:'Conveyance Fixed',      key:'convFixed',     width:13 },
+        { header:'Conveyance Earned',     key:'convEarned',    width:13 },
+        { header:'Special Allow. Fixed',  key:'specialFixed',  width:14 },
+        { header:'Special Allow. Earned', key:'specialEarned', width:14 },
+        { header:'LTA Fixed',             key:'ltaFixed',      width:11 },
+        { header:'LTA Earned',            key:'ltaEarned',     width:11 },
+        { header:'Gross Fixed',           key:'grossFixed',    width:13 },
+        { header:'Gross Earned',          key:'grossEarned',   width:13 },
         // DEDUCTIONS (cols 19-25)
         { header:'PF (Emp 12%)',   key:'pfEmp',         width:12 },
         { header:'PF (Empr 13%)',  key:'pfEmpr',        width:12 },
@@ -3753,7 +3761,7 @@ router.post('/:name', async (req, res) => {
       const sectionHeaders = [
         { label:'EMPLOYEE DETAILS', cols:8 },
         { label:'ATTENDANCE',       cols:4 },
-        { label:'EARNINGS',         cols:6 },
+        { label:'EARNINGS',         cols:12 },
         { label:'DEDUCTIONS',       cols:6 },
         { label:'NET PAY',          cols:2 },
       ];
@@ -3787,7 +3795,8 @@ router.post('/:name', async (req, res) => {
         const rowData = [
           r.sno, r.code, r.name, r.dept, r.desig, r.account, r.ifsc, r.bank,
           r.daysPresent, r.daysHalfDay, r.daysAbsent, r.effectiveDays,
-          r.grossFixed, r.grossEarned, r.basic, r.hra, r.conv, r.special,
+          r.basicFixed, r.basicEarned, r.hraFixed, r.hraEarned, r.convFixed, r.convEarned,
+          r.specialFixed, r.specialEarned, r.ltaFixed, r.ltaEarned, r.grossFixed, r.grossEarned,
           r.pfEmp, r.pfEmpr, r.esiEmp, r.esiEmpr, r.lop, r.totalDed, r.net,
           r.status,
         ];
@@ -3802,7 +3811,7 @@ router.post('/:name', async (req, res) => {
           if (isAlt) cell.fill = fill(C.altRow);
           // Colour-code sections
           const colKey = cols[ci]?.key;
-          if (['grossFixed','grossEarned','basic','hra','conv','special'].includes(colKey)) {
+          if (['basicFixed','basicEarned','hraFixed','hraEarned','convFixed','convEarned','specialFixed','specialEarned','ltaFixed','ltaEarned','grossFixed','grossEarned'].includes(colKey)) {
             cell.fill = fill(C.earningBg);
             cell.numFmt = '#,##0'; cell.alignment = { horizontal:'right' };
           } else if (['pfEmp','pfEmpr','esiEmp','esiEmpr','lop','totalDed'].includes(colKey)) {
@@ -3830,7 +3839,12 @@ router.post('/:name', async (req, res) => {
         dataRows.reduce((s,r)=>s+r.daysHalfDay,0),
         dataRows.reduce((s,r)=>s+r.daysAbsent,0),
         '',
-        Math.round(totals.grossFixed), Math.round(totals.grossEarned), '', '', '', '',
+        Math.round(dataRows.reduce((s,r)=>s+r.basicFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.basicEarned,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.hraFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.hraEarned,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.convFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.convEarned,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.specialFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.specialEarned,0)),
+        Math.round(dataRows.reduce((s,r)=>s+r.ltaFixed,0)), Math.round(dataRows.reduce((s,r)=>s+r.ltaEarned,0)),
+        Math.round(totals.grossFixed), Math.round(totals.grossEarned),
         Math.round(dataRows.reduce((s,r)=>s+r.pfEmp,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.pfEmpr,0)),
         Math.round(dataRows.reduce((s,r)=>s+r.esiEmp,0)),
