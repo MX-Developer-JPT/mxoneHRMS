@@ -384,15 +384,6 @@ const HR_ROLES = ['hr', 'admin'];
 // reached by falling through from the very top, and an HTTP dispatch always
 // jumps straight to the matched case, so it would never actually execute.
 const SKILL_RATING_LABELS = { 1: 'No Knowledge', 2: 'Can Work With Assistance', 3: 'Can Work Independently', 4: 'Can Train Others' };
-// The Skill Grid's "departments" are shop-floor lines (e.g. "2W", "Packing
-// Line") finer-grained than the org's actual Employee.department field,
-// which only tracks the coarse "PRODUCTION" bucket for all of them. Map each
-// fine-grained skill-grid department to the real Employee.department
-// value(s) to query against, compared case-insensitively since the two
-// systems don't share casing conventions (Skill Grid "Testing" vs Employee
-// dept "TESTING").
-const SKILL_GRID_DEPT_ALIAS = { '3w and ess': 'PRODUCTION', '2w': 'PRODUCTION', 'packing line': 'PRODUCTION', 'testing': 'TESTING' };
-const resolveSkillGridEmpDept = (dept) => SKILL_GRID_DEPT_ALIAS[(dept || '').trim().toLowerCase()] || dept;
 // Job-application duplicate detection helpers — tolerant normalization so
 // "+91 98765-43210" and "9876543210" match, and email casing/whitespace
 // doesn't create false-negative duplicates.
@@ -1104,42 +1095,88 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true });
     }
 
-    /* ── Skill Matrix: department-specific skill certification grid ──
-       Modeled on a real shop-floor skill matrix (each department defines
-       its own set of skills, optionally grouped under categories — e.g.
-       Testing has "Cell Testing" and "Battery Testing" categories each
-       with several sub-skills, while some departments have a flat list
-       with no category grouping at all). Employees are rated 1-4 per
-       skill relevant to their department:
+    /* ── Skill Matrix ("Skill Grid"): department + sub-department skill
+       certification grid. Department is the org's real Employee.department
+       (Production, Testing, Sales, …). Sub-department is a finer "focus
+       area" within it (e.g. Production's "2W", "Packing Line", "3W and
+       ESS" lines) — optional; a department with no internal specialization
+       just uses metrics with sub_department=''. Metrics can additionally be
+       grouped under a category super-header within a sub-department (e.g.
+       Testing's "Cell Testing" / "Battery Testing"). Employees are
+       explicitly linked to a sub-department (Employee.skill_sub_department)
+       by HR rather than inferred, since org department alone is too coarse
+       to know which line/focus-area someone actually works — this also
+       lets a department-wide roster stay separate from any one focus
+       area's employees. Rated 1-4:
          1 = No Knowledge / Conceptual Knowledge
          2 = Can Work With Some Assistance
          3 = Can Work Independently
          4 = Can Train Others
-       Two entity types: SkillMetric (the configurable skill definitions
-       per department, HR/admin managed) and SkillAssessment (one row per
-       employee holding their ratings map, keyed by metric id). ── */
+       Two entity types: SkillMetric (metric definitions, HR/admin managed)
+       and SkillAssessment (one row per employee holding their ratings map,
+       keyed by metric id). ── */
     case 'getSkillGridConfig': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')");
-      const metrics = metricRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.department || '').localeCompare(b.department || '') || (a.order || 0) - (b.order || 0));
-      const departments = [...new Set(metrics.map(m => m.department).filter(Boolean))].sort();
-      return res.json({ success: true, metrics, departments, rating_labels: SKILL_RATING_LABELS });
+      const metrics = metricRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.department || '').localeCompare(b.department || '') || (a.sub_department || '').localeCompare(b.sub_department || '') || (a.order || 0) - (b.order || 0));
+
+      const empDeptRows = await all("SELECT data::jsonb->>'department' AS d FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department' IS NOT NULL AND data::jsonb->>'department' != ''");
+      const departments = [...new Set(empDeptRows.map(r => r.d))].sort();
+
+      const subDepartments = {};
+      for (const m of metrics) {
+        if (!m.sub_department) continue;
+        if (!subDepartments[m.department]) subDepartments[m.department] = [];
+        if (!subDepartments[m.department].includes(m.sub_department)) subDepartments[m.department].push(m.sub_department);
+      }
+      for (const key of Object.keys(subDepartments)) subDepartments[key].sort();
+
+      return res.json({ success: true, metrics, departments, sub_departments: subDepartments, rating_labels: SKILL_RATING_LABELS });
+    }
+
+    // Roster of a department's active employees plus their current
+    // sub-department (focus area) assignment, for the "manage roster" picker.
+    case 'getSkillGridDeptEmployees': {
+      if (!(await hasRole(cu, [...HR_ROLES, 'management']))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { department: gdeDept } = p;
+      if (!gdeDept) return res.json({ success: false, error: 'department required' });
+      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND LOWER(data::jsonb->>'department')=LOWER($1)", [gdeDept]);
+      const employees = empRows.map(r => { const e = JSON.parse(r.data); return { user_id: r.user_id, name: e.display_name || 'Employee', employee_code: e.employee_code || '', designation: e.designation || '', sub_department: e.skill_sub_department || '' }; })
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return res.json({ success: true, employees });
+    }
+
+    // Assign or clear a batch of employees' Skill Grid sub-department
+    // (focus area). Pass sub_department: '' to unassign.
+    case 'assignSkillGridSubDepartment': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { user_ids: asdUserIds, sub_department: asdSubDept } = p;
+      if (!Array.isArray(asdUserIds) || !asdUserIds.length) return res.json({ success: false, error: 'user_ids required' });
+      let updated = 0;
+      for (const uid of asdUserIds) {
+        const row = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
+        if (!row) continue;
+        const d = JSON.parse(row.data);
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...d, skill_sub_department: asdSubDept || '' }), row.id]);
+        updated++;
+      }
+      return res.json({ success: true, updated });
     }
 
     case 'saveSkillGridMetric': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
-      const { id: smId, department: smDept, category: smCat, name: smName, order: smOrder } = p;
+      const { id: smId, department: smDept, sub_department: smSubDept, category: smCat, name: smName, order: smOrder } = p;
       if (!smDept || !smName) return res.json({ success: false, error: 'department and name required' });
       if (smId) {
         const exRow = await one("SELECT id,data FROM entities WHERE type='SkillMetric' AND id=$1", [smId]);
         if (!exRow) return res.json({ success: false, error: 'Metric not found' });
         const ex = JSON.parse(exRow.data);
-        const upd = { ...ex, department: smDept, category: smCat || '', name: smName, order: Number(smOrder) || ex.order || 0 };
+        const upd = { ...ex, department: smDept, sub_department: smSubDept || '', category: smCat || '', name: smName, order: Number(smOrder) || ex.order || 0 };
         await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), exRow.id]);
         return res.json({ success: true, metric: upd });
       }
       const newId = uuidv4();
-      const metric = { id: newId, department: smDept, category: smCat || '', name: smName, order: Number(smOrder) || 0, is_active: true };
+      const metric = { id: newId, department: smDept, sub_department: smSubDept || '', category: smCat || '', name: smName, order: Number(smOrder) || 0, is_active: true };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SkillMetric',NULL,'active',$2)", [newId, JSON.stringify(metric)]);
       return res.json({ success: true, metric });
     }
@@ -1159,13 +1196,16 @@ router.post('/:name', async (req, res) => {
 
     case 'getSkillGrid': {
       if (!(await hasRole(cu, [...HR_ROLES, 'management']))) return res.status(403).json({ error: 'HR/Management access required' });
-      const { department: gsmDept } = p;
+      const { department: gsmDept, sub_department: gsmSubDept } = p;
       if (!gsmDept) return res.json({ success: false, error: 'department required' });
 
-      const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')", [gsmDept]);
+      const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND COALESCE(data::jsonb->>'sub_department','')=$2 AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')", [gsmDept, gsmSubDept || '']);
       const metrics = metricRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.order || 0) - (b.order || 0));
 
-      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND LOWER(data::jsonb->>'department')=LOWER($1)", [resolveSkillGridEmpDept(gsmDept)]);
+      const empQuery = gsmSubDept
+        ? "SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND LOWER(data::jsonb->>'department')=LOWER($1) AND data::jsonb->>'skill_sub_department'=$2"
+        : "SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND LOWER(data::jsonb->>'department')=LOWER($1)";
+      const empRows = await all(empQuery, gsmSubDept ? [gsmDept, gsmSubDept] : [gsmDept]);
       const employees = empRows.map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
 
       const assessRows = employees.length
@@ -1183,7 +1223,7 @@ router.post('/:name', async (req, res) => {
         };
       }).sort((a, b) => a.name.localeCompare(b.name));
 
-      return res.json({ success: true, department: gsmDept, metrics, employees: rows, rating_labels: SKILL_RATING_LABELS });
+      return res.json({ success: true, department: gsmDept, sub_department: gsmSubDept || '', metrics, employees: rows, rating_labels: SKILL_RATING_LABELS });
     }
 
     case 'saveSkillGridRating': {
@@ -1207,14 +1247,19 @@ router.post('/:name', async (req, res) => {
 
     case 'exportSkillGrid': {
       if (!(await hasRole(cu, [...HR_ROLES, 'management']))) return res.status(403).json({ error: 'HR/Management access required' });
-      const { department: esmDept } = p;
+      const { department: esmDept, sub_department: esmSubDept } = p;
       if (!esmDept) return res.json({ success: false, error: 'department required' });
 
-      const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')", [esmDept]);
+      const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND COALESCE(data::jsonb->>'sub_department','')=$2 AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')", [esmDept, esmSubDept || '']);
       const metrics = metricRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.order || 0) - (b.order || 0));
-      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND LOWER(data::jsonb->>'department')=LOWER($1)", [resolveSkillGridEmpDept(esmDept)]);
+      const empQueryX = esmSubDept
+        ? "SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND LOWER(data::jsonb->>'department')=LOWER($1) AND data::jsonb->>'skill_sub_department'=$2"
+        : "SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND LOWER(data::jsonb->>'department')=LOWER($1)";
+      const empRows = await all(empQueryX, esmSubDept ? [esmDept, esmSubDept] : [esmDept]);
       const employees = empRows.map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) })).sort((a, b) => (a.display_name || '').localeCompare(b.display_name || ''));
-      const assessRows = await all("SELECT user_id,data FROM entities WHERE type='SkillAssessment' AND user_id = ANY($1)", [employees.map(e => e.user_id)]);
+      const assessRows = employees.length
+        ? await all("SELECT user_id,data FROM entities WHERE type='SkillAssessment' AND user_id = ANY($1)", [employees.map(e => e.user_id)])
+        : [];
       const assessBy = Object.fromEntries(assessRows.map(r => [r.user_id, JSON.parse(r.data)]));
 
       // Group metrics by category (in first-seen order) — a metric with no
@@ -1238,10 +1283,12 @@ router.post('/:name', async (req, res) => {
       const fill = (hex) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + hex } });
       const thinBorder = { top: { style: 'thin', color: { argb: 'FFD1D5DB' } }, bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } }, left: { style: 'thin', color: { argb: 'FFD1D5DB' } }, right: { style: 'thin', color: { argb: 'FFD1D5DB' } } };
 
+      const titleLabel = esmSubDept ? `${esmDept} — ${esmSubDept}` : esmDept;
+
       // Row 1 — title
       ws.mergeCells(1, 1, 1, totalCols);
       const titleCell = ws.getCell(1, 1);
-      titleCell.value = `Skill Matrix — ${esmDept}`;
+      titleCell.value = `Skill Matrix — ${titleLabel}`;
       titleCell.font = { bold: true, size: 14, color: { argb: 'FF1E3A8A' }, name: 'Arial' };
       titleCell.alignment = { horizontal: 'left', vertical: 'middle' };
       ws.getRow(1).height = 24;
@@ -1319,17 +1366,67 @@ router.post('/:name', async (req, res) => {
       const buf = await wb.xlsx.writeBuffer();
       return res.json({
         success: true, base64: Buffer.from(buf).toString('base64'),
-        filename: `SkillMatrix_${esmDept.replace(/[^a-z0-9]/gi, '_')}.xlsx`,
+        filename: `SkillMatrix_${titleLabel.replace(/[^a-z0-9]/gi, '_')}.xlsx`,
         total_employees: employees.length, format: 'xlsx',
       });
     }
 
+    // One-time migration: the Skill Grid originally treated shop-floor lines
+    // (3W and ESS / 2W / Packing Line / Testing) AS departments in their own
+    // right. They're really sub-departments (focus areas) within the org's
+    // actual departments — this promotes each SkillMetric to the real
+    // department + the old name as sub_department, and best-effort assigns
+    // already-rated employees to that sub-department (majority metric group
+    // by rating count). Idempotent — skips metrics already migrated.
+    case 'migrateSkillGridSubDepartments': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const LEGACY_DEPT_MAP = { '3w and ess': { department: 'PRODUCTION', sub_department: '3W and ESS' }, '2w': { department: 'PRODUCTION', sub_department: '2W' }, 'packing line': { department: 'PRODUCTION', sub_department: 'Packing Line' }, 'testing': { department: 'TESTING', sub_department: 'Testing' } };
+
+      const metricRows = await all("SELECT id,data FROM entities WHERE type='SkillMetric'");
+      const metricIdToSubDept = {}; // migrated metric id -> sub_department, for the employee-assignment pass below
+      let metricsMigrated = 0;
+      for (const row of metricRows) {
+        const d = JSON.parse(row.data);
+        const mapping = LEGACY_DEPT_MAP[(d.department || '').trim().toLowerCase()];
+        if (!mapping) continue; // already a real department, or unrelated — leave as-is
+        const upd = { ...d, department: mapping.department, sub_department: d.sub_department || mapping.sub_department };
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), row.id]);
+        metricIdToSubDept[d.id] = upd.sub_department;
+        metricsMigrated++;
+      }
+
+      // Best-effort: assign each employee with existing ratings to whichever
+      // sub-department their rated metrics mostly belong to.
+      const assessRows = await all("SELECT user_id,data FROM entities WHERE type='SkillAssessment'");
+      let employeesAssigned = 0;
+      for (const row of assessRows) {
+        const a = JSON.parse(row.data);
+        const counts = {};
+        for (const metricId of Object.keys(a.ratings || {})) {
+          const sd = metricIdToSubDept[metricId];
+          if (sd) counts[sd] = (counts[sd] || 0) + 1;
+        }
+        const best = Object.entries(counts).sort((x, y) => y[1] - x[1])[0];
+        if (!best) continue;
+        const empRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [a.user_id]);
+        if (!empRow) continue;
+        const ed = JSON.parse(empRow.data);
+        if (ed.skill_sub_department) continue; // don't clobber a manual assignment already made
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...ed, skill_sub_department: best[0] }), empRow.id]);
+        employeesAssigned++;
+      }
+
+      return res.json({ success: true, metrics_migrated: metricsMigrated, employees_assigned: employeesAssigned });
+    }
+
     // One-time bulk import of the Skill Grid's metric definitions + historical
     // ratings from the source spreadsheet. Idempotent (safe to re-run):
-    // metrics are upserted by department+name, ratings by employee_code match.
-    // Employees whose code doesn't match any active Employee record are
-    // skipped and reported back rather than silently dropped, so HR can fix
-    // the mismatch (typo'd code, inactive employee, etc.) and re-run.
+    // metrics are upserted by department+sub_department+name, ratings by
+    // employee_code match. Employees whose code doesn't match any active
+    // Employee record are skipped and reported back rather than silently
+    // dropped, so HR can fix the mismatch (typo'd code, inactive employee,
+    // etc.) and re-run. Matched employees are also assigned to the
+    // sub-department so they show up in that focus area's roster.
     case 'seedSkillGridData': {
       if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
       const { departments: seedDepts } = p;
@@ -1348,7 +1445,7 @@ router.post('/:name', async (req, res) => {
 
       const report = [];
       for (const dept of seedDepts) {
-        const { name: deptName, categories, employees: seedEmps } = dept;
+        const { name: deptName, sub_department: deptSubDept, categories, employees: seedEmps } = dept;
         if (!deptName || !Array.isArray(categories)) continue;
 
         const metricIdByName = {};
@@ -1356,10 +1453,10 @@ router.post('/:name', async (req, res) => {
         for (const cat of categories) {
           for (const mName of (cat.metrics || [])) {
             order++;
-            const exRow = await one("SELECT id FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND data::jsonb->>'name'=$2", [deptName, mName]);
+            const exRow = await one("SELECT id FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND COALESCE(data::jsonb->>'sub_department','')=$2 AND data::jsonb->>'name'=$3", [deptName, deptSubDept || '', mName]);
             if (exRow) { metricIdByName[mName] = exRow.id; continue; }
             const mId = uuidv4();
-            const metric = { id: mId, department: deptName, category: cat.category || '', name: mName, order, is_active: true };
+            const metric = { id: mId, department: deptName, sub_department: deptSubDept || '', category: cat.category || '', name: mName, order, is_active: true };
             await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SkillMetric',NULL,'active',$2)", [mId, JSON.stringify(metric)]);
             metricIdByName[mName] = mId;
           }
@@ -1379,9 +1476,13 @@ router.post('/:name', async (req, res) => {
           const payload = { ...ex, user_id: emp.user_id, ratings: { ...(ex.ratings || {}), ...ratings }, working_stage: se.working_stage || ex.working_stage || '', updated_by: cu.id, updated_at: new Date().toISOString() };
           if (exRow) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(payload), exRow.id]);
           else { const naId = uuidv4(); await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SkillAssessment',$2,'active',$3)", [naId, emp.user_id, JSON.stringify({ id: naId, ...payload })]); }
+          if (deptSubDept && !emp.skill_sub_department) {
+            const empRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [emp.user_id]);
+            if (empRow) { const ed = JSON.parse(empRow.data); await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...ed, skill_sub_department: deptSubDept }), empRow.id]); }
+          }
           matched++;
         }
-        report.push({ department: deptName, metrics_created: Object.keys(metricIdByName).length, employees_matched: matched, employees_unmatched: unmatched });
+        report.push({ department: deptName, sub_department: deptSubDept || '', metrics_created: Object.keys(metricIdByName).length, employees_matched: matched, employees_unmatched: unmatched });
       }
       return res.json({ success: true, report });
     }
