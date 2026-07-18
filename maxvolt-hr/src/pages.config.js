@@ -121,6 +121,7 @@ const WorkflowBuilder = lazy(() => import('./pages/WorkflowBuilder'));
 const FieldDuty = lazy(() => import('./pages/FieldDuty'));
 const WorkforcePlanning = lazy(() => import('./pages/WorkforcePlanning'));
 const SkillMatrix = lazy(() => import('./pages/SkillMatrix'));
+const SkillGrid = lazy(() => import('./pages/SkillGrid'));
 const FeedbackSystem = lazy(() => import('./pages/FeedbackSystem'));
 const AttendanceNarrative = lazy(() => import('./pages/AttendanceNarrative'));
 const HRDigest = lazy(() => import('./pages/HRDigest'));
@@ -202,6 +203,7 @@ export const PAGES = {
     "FieldDuty": FieldDuty,
     "WorkforcePlanning": WorkforcePlanning,
     "SkillMatrix": SkillMatrix,
+    "SkillGrid": SkillGrid,
     "FeedbackSystem": FeedbackSystem,
     "AttendanceNarrative": AttendanceNarrative,
     "HRDigest": HRDigest,

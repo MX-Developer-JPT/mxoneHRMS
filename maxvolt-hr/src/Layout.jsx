@@ -12,7 +12,7 @@ import {
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
-  Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar, Camera, Loader2,
+  Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar, Camera, Loader2, LayoutGrid,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -99,6 +99,7 @@ const managementMenuGroups = [
     { name: 'Team Calendar',            icon: Calendar,        page: 'TeamCalendar' },
     { name: 'Org Chart',                icon: Network,         page: 'OrgChart' },
     { name: 'Talent Grid (9-Box)',      icon: Grid3x3,         page: 'TalentGrid' },
+    { name: 'Skill Grid',               icon: LayoutGrid,      page: 'SkillGrid' },
   ]},
   { label: 'AI Insights', items: [
     { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
@@ -209,6 +210,7 @@ const hrMenuGroups = [
     { name: 'Confirmation',            icon: UserCheck,       page: 'ConfirmationManagement' },
     { name: '360° Feedback',           icon: MessageSquare,   page: 'FeedbackSystem' },
     { name: 'Skill Matrix',            icon: Zap,             page: 'SkillMatrix' },
+    { name: 'Skill Grid',              icon: LayoutGrid,      page: 'SkillGrid' },
     { name: 'PMS Settings',            icon: Settings,        page: 'PMSConfiguration' },
   ]},
   { label: 'Learning & Development', items: [

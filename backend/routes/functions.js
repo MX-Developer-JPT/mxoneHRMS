@@ -1086,6 +1086,284 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true });
     }
 
+    /* ── Skill Matrix: department-specific skill certification grid ──
+       Modeled on a real shop-floor skill matrix (each department defines
+       its own set of skills, optionally grouped under categories — e.g.
+       Testing has "Cell Testing" and "Battery Testing" categories each
+       with several sub-skills, while some departments have a flat list
+       with no category grouping at all). Employees are rated 1-4 per
+       skill relevant to their department:
+         1 = No Knowledge / Conceptual Knowledge
+         2 = Can Work With Some Assistance
+         3 = Can Work Independently
+         4 = Can Train Others
+       Two entity types: SkillMetric (the configurable skill definitions
+       per department, HR/admin managed) and SkillAssessment (one row per
+       employee holding their ratings map, keyed by metric id). ── */
+    const SKILL_RATING_LABELS = { 1: 'No Knowledge', 2: 'Can Work With Assistance', 3: 'Can Work Independently', 4: 'Can Train Others' };
+
+    case 'getSkillGridConfig': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')");
+      const metrics = metricRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.department || '').localeCompare(b.department || '') || (a.order || 0) - (b.order || 0));
+      const departments = [...new Set(metrics.map(m => m.department).filter(Boolean))].sort();
+      return res.json({ success: true, metrics, departments, rating_labels: SKILL_RATING_LABELS });
+    }
+
+    case 'saveSkillGridMetric': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { id: smId, department: smDept, category: smCat, name: smName, order: smOrder } = p;
+      if (!smDept || !smName) return res.json({ success: false, error: 'department and name required' });
+      if (smId) {
+        const exRow = await one("SELECT id,data FROM entities WHERE type='SkillMetric' AND id=$1", [smId]);
+        if (!exRow) return res.json({ success: false, error: 'Metric not found' });
+        const ex = JSON.parse(exRow.data);
+        const upd = { ...ex, department: smDept, category: smCat || '', name: smName, order: Number(smOrder) || ex.order || 0 };
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), exRow.id]);
+        return res.json({ success: true, metric: upd });
+      }
+      const newId = uuidv4();
+      const metric = { id: newId, department: smDept, category: smCat || '', name: smName, order: Number(smOrder) || 0, is_active: true };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SkillMetric',NULL,'active',$2)", [newId, JSON.stringify(metric)]);
+      return res.json({ success: true, metric });
+    }
+
+    case 'deleteSkillGridMetric': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { id: dsmId } = p;
+      if (!dsmId) return res.json({ success: false, error: 'id required' });
+      // Soft-delete — keeps historical ratings against this metric intact
+      // (e.g. in old exports/audit trail) rather than orphaning them.
+      const row = await one("SELECT id,data FROM entities WHERE type='SkillMetric' AND id=$1", [dsmId]);
+      if (!row) return res.json({ success: false, error: 'Metric not found' });
+      const d = JSON.parse(row.data);
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...d, is_active: false }), row.id]);
+      return res.json({ success: true });
+    }
+
+    case 'getSkillGrid': {
+      if (!(await hasRole(cu, [...HR_ROLES, 'management']))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { department: gsmDept } = p;
+      if (!gsmDept) return res.json({ success: false, error: 'department required' });
+
+      const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')", [gsmDept]);
+      const metrics = metricRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.order || 0) - (b.order || 0));
+
+      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department'=$1", [gsmDept]);
+      const employees = empRows.map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
+
+      const assessRows = await all("SELECT user_id,data FROM entities WHERE type='SkillAssessment' AND user_id = ANY($1)", [employees.map(e => e.user_id)]);
+      const assessBy = Object.fromEntries(assessRows.map(r => [r.user_id, JSON.parse(r.data)]));
+
+      const rows = employees.map(e => {
+        const asmt = assessBy[e.user_id] || {};
+        return {
+          user_id: e.user_id, name: e.display_name || 'Employee', employee_code: e.employee_code || '',
+          designation: e.designation || '', date_of_joining: e.date_of_joining || null,
+          working_stage: asmt.working_stage || '',
+          ratings: asmt.ratings || {},
+        };
+      }).sort((a, b) => a.name.localeCompare(b.name));
+
+      return res.json({ success: true, department: gsmDept, metrics, employees: rows, rating_labels: SKILL_RATING_LABELS });
+    }
+
+    case 'saveSkillGridRating': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { user_id: srUid, metric_id: srMetricId, rating: srRating, working_stage: srStage } = p;
+      if (!srUid) return res.json({ success: false, error: 'user_id required' });
+      if (srMetricId && srRating != null && (srRating < 1 || srRating > 4)) return res.json({ success: false, error: 'rating must be 1-4' });
+
+      const exRow = await one("SELECT id,data FROM entities WHERE type='SkillAssessment' AND user_id=$1", [srUid]);
+      const ex = exRow ? JSON.parse(exRow.data) : { user_id: srUid, ratings: {} };
+      const ratings = { ...(ex.ratings || {}) };
+      if (srMetricId) {
+        if (srRating == null) delete ratings[srMetricId];
+        else ratings[srMetricId] = Number(srRating);
+      }
+      const payload = { ...ex, user_id: srUid, ratings, ...(srStage !== undefined ? { working_stage: srStage } : {}), updated_by: cu.id, updated_at: new Date().toISOString() };
+      if (exRow) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(payload), exRow.id]);
+      else { const naId = uuidv4(); await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SkillAssessment',$2,'active',$3)", [naId, srUid, JSON.stringify({ id: naId, ...payload })]); }
+      return res.json({ success: true, ratings });
+    }
+
+    case 'exportSkillGrid': {
+      if (!(await hasRole(cu, [...HR_ROLES, 'management']))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { department: esmDept } = p;
+      if (!esmDept) return res.json({ success: false, error: 'department required' });
+
+      const metricRows = await all("SELECT data FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND (data::jsonb->>'is_active' IS NULL OR data::jsonb->>'is_active'='true')", [esmDept]);
+      const metrics = metricRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.order || 0) - (b.order || 0));
+      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department'=$1", [esmDept]);
+      const employees = empRows.map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) })).sort((a, b) => (a.display_name || '').localeCompare(b.display_name || ''));
+      const assessRows = await all("SELECT user_id,data FROM entities WHERE type='SkillAssessment' AND user_id = ANY($1)", [employees.map(e => e.user_id)]);
+      const assessBy = Object.fromEntries(assessRows.map(r => [r.user_id, JSON.parse(r.data)]));
+
+      // Group metrics by category (in first-seen order) — a metric with no
+      // category renders as its own single-column group, matching how the
+      // source spreadsheet's flat-metric departments (no super-header row)
+      // looked next to its category-grouped ones.
+      const catOrder = [];
+      const byCat = {};
+      for (const m of metrics) {
+        const key = m.category || '';
+        if (!byCat[key]) { byCat[key] = []; catOrder.push(key); }
+        byCat[key].push(m);
+      }
+
+      const ExcelJSsk = await import('exceljs');
+      const wb = new ExcelJSsk.default.Workbook();
+      const ws = wb.addWorksheet('Skill Matrix', { views: [{ state: 'frozen', xSplit: 4, ySplit: 3 }] });
+
+      const INFO_COLS = 4; // S.No, Name, Employee Code, Designation
+      const totalCols = INFO_COLS + metrics.length;
+      const fill = (hex) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + hex } });
+      const thinBorder = { top: { style: 'thin', color: { argb: 'FFD1D5DB' } }, bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } }, left: { style: 'thin', color: { argb: 'FFD1D5DB' } }, right: { style: 'thin', color: { argb: 'FFD1D5DB' } } };
+
+      // Row 1 — title
+      ws.mergeCells(1, 1, 1, totalCols);
+      const titleCell = ws.getCell(1, 1);
+      titleCell.value = `Skill Matrix — ${esmDept}`;
+      titleCell.font = { bold: true, size: 14, color: { argb: 'FF1E3A8A' }, name: 'Arial' };
+      titleCell.alignment = { horizontal: 'left', vertical: 'middle' };
+      ws.getRow(1).height = 24;
+
+      // Row 2 — category super-headers (merged across their metric columns)
+      let col = INFO_COLS + 1;
+      for (const cat of catOrder) {
+        const span = byCat[cat].length;
+        if (cat) {
+          ws.mergeCells(2, col, 2, col + span - 1);
+          const c = ws.getCell(2, col);
+          c.value = cat;
+          c.font = { bold: true, color: { argb: 'FFFFFFFF' }, name: 'Arial', size: 10 };
+          c.fill = fill('1E40AF');
+          c.alignment = { horizontal: 'center', vertical: 'middle' };
+        }
+        col += span;
+      }
+
+      // Row 3 — column headers
+      const hRow = ws.getRow(3);
+      hRow.values = ['S.No.', 'Name', 'Employee Code', 'Designation', ...metrics.map(m => m.name)];
+      hRow.height = 40;
+      hRow.eachCell(c => {
+        c.font = { bold: true, color: { argb: 'FFFFFFFF' }, name: 'Arial', size: 9 };
+        c.fill = fill('2563EB');
+        c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        c.border = thinBorder;
+      });
+
+      // Rating -> fill color (red -> orange -> light green -> dark green)
+      const ratingFill = { 1: 'FCA5A5', 2: 'FDE68A', 3: 'BBF7D0', 4: '86EFAC' };
+
+      employees.forEach((emp, i) => {
+        const asmt = assessBy[emp.user_id] || {};
+        const ratings = asmt.ratings || {};
+        const row = ws.getRow(4 + i);
+        row.getCell(1).value = i + 1;
+        row.getCell(2).value = emp.display_name || '';
+        row.getCell(3).value = emp.employee_code || '';
+        row.getCell(4).value = emp.designation || '';
+        metrics.forEach((m, mi) => {
+          const cell = row.getCell(INFO_COLS + 1 + mi);
+          const r = ratings[m.id];
+          cell.value = r || '';
+          if (r) cell.fill = fill(ratingFill[r] || 'F3F4F6');
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        });
+        row.eachCell({ includeEmpty: true }, c => { c.border = thinBorder; c.font = { name: 'Arial', size: 9 }; });
+      });
+
+      // Legend
+      const legendStartRow = 4 + employees.length + 2;
+      ws.getCell(legendStartRow, 1).value = 'Rating scale:';
+      ws.getCell(legendStartRow, 1).font = { bold: true, name: 'Arial', size: 9 };
+      [1, 2, 3, 4].forEach((r, idx) => {
+        const rr = legendStartRow + 1 + idx;
+        const c1 = ws.getCell(rr, 1);
+        c1.value = r;
+        c1.fill = fill(ratingFill[r]);
+        c1.alignment = { horizontal: 'center' };
+        c1.font = { bold: true, name: 'Arial', size: 9 };
+        ws.mergeCells(rr, 2, rr, 4);
+        const c2 = ws.getCell(rr, 2);
+        c2.value = SKILL_RATING_LABELS[r];
+        c2.font = { name: 'Arial', size: 9 };
+      });
+
+      ws.getColumn(1).width = 6;
+      ws.getColumn(2).width = 22;
+      ws.getColumn(3).width = 16;
+      ws.getColumn(4).width = 20;
+      for (let i = 0; i < metrics.length; i++) ws.getColumn(INFO_COLS + 1 + i).width = 14;
+
+      const buf = await wb.xlsx.writeBuffer();
+      return res.json({
+        success: true, base64: Buffer.from(buf).toString('base64'),
+        filename: `SkillMatrix_${esmDept.replace(/[^a-z0-9]/gi, '_')}.xlsx`,
+        total_employees: employees.length, format: 'xlsx',
+      });
+    }
+
+    // One-time bulk import of the Skill Grid's metric definitions + historical
+    // ratings from the source spreadsheet. Idempotent (safe to re-run):
+    // metrics are upserted by department+name, ratings by employee_code match.
+    // Employees whose code doesn't match any active Employee record are
+    // skipped and reported back rather than silently dropped, so HR can fix
+    // the mismatch (typo'd code, inactive employee, etc.) and re-run.
+    case 'seedSkillGridData': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { departments: seedDepts } = p;
+      if (!Array.isArray(seedDepts) || !seedDepts.length) return res.json({ success: false, error: 'departments array required' });
+
+      const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'");
+      const empByCode = {};
+      for (const r of empRows) {
+        const e = JSON.parse(r.data);
+        if (e.employee_code) empByCode[e.employee_code.trim().toUpperCase()] = { user_id: r.user_id, ...e };
+      }
+
+      const report = [];
+      for (const dept of seedDepts) {
+        const { name: deptName, categories, employees: seedEmps } = dept;
+        if (!deptName || !Array.isArray(categories)) continue;
+
+        const metricIdByName = {};
+        let order = 0;
+        for (const cat of categories) {
+          for (const mName of (cat.metrics || [])) {
+            order++;
+            const exRow = await one("SELECT id FROM entities WHERE type='SkillMetric' AND data::jsonb->>'department'=$1 AND data::jsonb->>'name'=$2", [deptName, mName]);
+            if (exRow) { metricIdByName[mName] = exRow.id; continue; }
+            const mId = uuidv4();
+            const metric = { id: mId, department: deptName, category: cat.category || '', name: mName, order, is_active: true };
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SkillMetric',NULL,'active',$2)", [mId, JSON.stringify(metric)]);
+            metricIdByName[mName] = mId;
+          }
+        }
+
+        let matched = 0;
+        const unmatched = [];
+        for (const se of (seedEmps || [])) {
+          const emp = empByCode[(se.employee_code || '').trim().toUpperCase()];
+          if (!emp) { unmatched.push(se.employee_code || se.name); continue; }
+          const ratings = {};
+          for (const [mName, val] of Object.entries(se.ratings || {})) {
+            if (metricIdByName[mName]) ratings[metricIdByName[mName]] = Number(val);
+          }
+          const exRow = await one("SELECT id,data FROM entities WHERE type='SkillAssessment' AND user_id=$1", [emp.user_id]);
+          const ex = exRow ? JSON.parse(exRow.data) : { user_id: emp.user_id, ratings: {} };
+          const payload = { ...ex, user_id: emp.user_id, ratings: { ...(ex.ratings || {}), ...ratings }, working_stage: se.working_stage || ex.working_stage || '', updated_by: cu.id, updated_at: new Date().toISOString() };
+          if (exRow) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(payload), exRow.id]);
+          else { const naId = uuidv4(); await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SkillAssessment',$2,'active',$3)", [naId, emp.user_id, JSON.stringify({ id: naId, ...payload })]); }
+          matched++;
+        }
+        report.push({ department: deptName, metrics_created: Object.keys(metricIdByName).length, employees_matched: matched, employees_unmatched: unmatched });
+      }
+      return res.json({ success: true, report });
+    }
+
     /* ── Workflow Builder: configurable approval chains ── */
     case 'getApprovalWorkflows': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
@@ -6785,16 +7063,13 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'pending',$3)", [empId, user_id, JSON.stringify({ id: empId, user_id, display_name: full_name, email, employee_status: 'pending_onboarding', created_at: new Date().toISOString() })]);
       }
       try {
-        const smtpCfg = await one("SELECT value FROM settings WHERE key='smtp_config'");
-        if (smtpCfg?.value) {
-          const smtp = JSON.parse(smtpCfg.value);
-          if (smtp.host && smtp.user) {
-            const { default: nodemailer } = await import('nodemailer');
-            const t = nodemailer.createTransporter({ host: smtp.host, port: smtp.port||587, secure: smtp.port==465, auth: { user: smtp.user, pass: smtp.pass } });
-            await t.sendMail({ from: smtp.from||smtp.user, to: email, subject: 'Welcome to MaxVolt Energy HRMS',
-              html: `<div style="font-family:Arial,sans-serif;max-width:600px"><h2 style="color:#2563eb">Welcome, ${full_name}!</h2><p>Your account has been created on the MaxVolt Energy HR Management System.</p><p>Please complete your onboarding form. Your HR team will review and activate your account.</p></div>` });
-          }
-        }
+        // Routed through MaxVolt Mail (the centralized hub) like all other HRMS email.
+        await sendEmail({
+          to: email,
+          subject: 'Welcome to MaxVolt Energy HRMS',
+          html: `<div style="font-family:Arial,sans-serif;max-width:600px"><h2 style="color:#2563eb">Welcome, ${full_name}!</h2><p>Your account has been created on the MaxVolt Energy HR Management System.</p><p>Please complete your onboarding form. Your HR team will review and activate your account.</p></div>`,
+          meta: { type: 'welcome', user_id },
+        });
       } catch(e) { console.error('[welcome-email]', e.message); }
       return res.json({ success: true, message: 'Employee record initialized' });
     }
