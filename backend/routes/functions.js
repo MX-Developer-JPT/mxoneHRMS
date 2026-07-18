@@ -3697,7 +3697,7 @@ router.post('/:name', async (req, res) => {
           daysAbsent:   totalLOPDays,
           effectiveDays,
           basicFixed, basicEarned, hraFixed, hraEarned, convFixed, convEarned,
-          grossFixed, grossEarned: pr?.gross_salary || grossEarned,
+          grossFixed, grossEarned,
           referralBonus, performanceBonus, overtimePay,
           pfEmp, pfEmpr, esiEmp, esiEmpr, lop, totalDed, net,
           status: pr ? (pr.status === 'paid' ? 'Paid' : 'Processed') : 'Pending',
