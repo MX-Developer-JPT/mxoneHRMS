@@ -1707,6 +1707,19 @@ router.post('/:name', async (req, res) => {
         _reimbByUser[r.user_id].push({ rowId: r.id, ...rd });
       }
 
+      // Shifts — needed to know each employee's REAL working days, so the
+      // Sunday sandwich rule below only applies to employees whose shift
+      // actually has Sunday off, instead of assuming it for everyone.
+      const _payFallbackDays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const _payShiftCache = {};
+      let _payDefaultShift = { days: _payFallbackDays };
+      (await all("SELECT id,data FROM entities WHERE type='Shift'")).forEach(r => {
+        const s = JSON.parse(r.data);
+        _payShiftCache[r.id] = s;
+        if (s.is_default) _payDefaultShift = s;
+      });
+      const _payWeekdayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
       const attAllRows = await all(
         "SELECT user_id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
         [startDate, endDate]
@@ -1750,25 +1763,40 @@ router.post('/:name', async (req, res) => {
           return false;
         };
         const fmtDate = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        const _empShift = (emp.shift_id && _payShiftCache[emp.shift_id]) || _payDefaultShift;
+        const _empWorkingDays = Array.isArray(_empShift?.days) && _empShift.days.length ? _empShift.days : _payDefaultShift.days;
         let presentDays = 0, halfDays = 0, absentDays = 0;
         for (const { ds } of payMonthDates) {
           const [yr, mo, dy] = ds.split('-').map(Number);
-          if (new Date(yr, mo-1, dy).getDay() === 0) {
-            // Sunday: sandwich policy
+          const weekday = _payWeekdayNames[new Date(yr, mo-1, dy).getDay()];
+          const rec = attByDate[ds];
+          // Sandwich rule ONLY applies when Sunday is genuinely this
+          // employee's scheduled off day per their own Shift.days (was
+          // previously hardcoded for every employee regardless of shift) —
+          // AND only when there's no real attendance record for that Sunday
+          // itself. Previously this branch never even looked at attByDate[ds]
+          // for Sunday, so an employee who actually worked a scheduled
+          // Sunday (6-day-week shift) had that real "present" record
+          // silently thrown away and decided purely by Sat/Mon presence.
+          if (weekday === 'Sunday' && !_empWorkingDays.includes('Sunday') && !rec) {
             const satPresent = isMusterPresent(attByDate[fmtDate(new Date(yr, mo-1, dy-1))]);
             const monPresent = isMusterPresent(attByDate[fmtDate(new Date(yr, mo-1, dy+1))]);
             if (!satPresent && !monPresent) { absentDays++; }  // both sides absent → Sunday LOP
             else { presentDays++; }                             // protected → count as present
             continue;
           }
-          const rec = attByDate[ds];
           if (!rec) {
             absentDays++;                                      // no record on any weekday = absent
           } else {
             const s = rec.status;
             if (s === 'half_day')                                              { presentDays += 0.5; halfDays++; }
             else if (['present','late','on_duty','work_from_home'].includes(s)){ presentDays++; }
-            else if (['absent','lop'].includes(s))                             { absentDays += 1 + (rec.lop_deduction_days || 0); }
+            // short_attendance = worked LESS than half the shift (below even
+            // the half_day bar) — previously not handled here at all, so it
+            // fell through to the `rec.check_in_time` branch below and was
+            // paid as a FULL present day. Treated as LOP, consistent with
+            // it being explicitly below the partial-credit threshold.
+            else if (['absent','lop','short_attendance'].includes(s))         { absentDays += 1 + (rec.lop_deduction_days || 0); }
             else if (['week_off','holiday','leave','approved_leave'].includes(s)){ /* paid/off — no LOP */ }
             else if (rec.check_in_time)                                        { presentDays++; }
             else                                                               { absentDays++; }
@@ -1787,10 +1815,16 @@ router.post('/:name', async (req, res) => {
         const pf    = Math.round(monthlyPFBase * 0.12 * payDays / calendarDays);
         const empPF = Math.round(monthlyPFBase * 0.13 * payDays / calendarDays);
 
-        // ── ESI: eligibility on full monthly basic; deduction on earned basic ──────
-        const earnedBasicForESI = Math.round(basic * payDays / calendarDays);
-        const esi    = basic <= 21000 ? Math.round(earnedBasicForESI * 0.0075) : 0;
-        const empESI = basic <= 21000 ? Math.round(earnedBasicForESI * 0.0325) : 0;
+        // ── ESI: eligibility AND contribution are both on GROSS wages per the
+        // ESI Act, 1948 (basic + DA + HRA + all fixed cash allowances) — was
+        // previously checked/computed against `basic` alone, which wrongly
+        // included employees whose basic was under ₹21,000 but whose gross
+        // (the real statutory test) was well above it, and understated the
+        // deduction for everyone else by computing 0.75%/3.25% of basic
+        // instead of gross.
+        const earnedGrossForESI = Math.round(gross * payDays / calendarDays);
+        const esi    = gross <= 21000 ? Math.round(earnedGrossForESI * 0.0075) : 0;
+        const empESI = gross <= 21000 ? Math.round(earnedGrossForESI * 0.0325) : 0;
 
         // Bonus / VPP based on annual CTC
         const annualCTC = ss?.ctc || (gross * 12);
