@@ -3063,7 +3063,7 @@ router.post('/:name', async (req, res) => {
       const swMonthLabel = new Date(swY, swM-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
       let swEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
-      if (swDept && swDept !== 'all') swEmps = swEmps.filter(e => e.department === swDept);
+      if (swdDept && swdDept !== 'all') swEmps = swEmps.filter(e => e.department === swdDept);
       swEmps.sort((a, b) => (a.department||'').localeCompare(b.department||'') || (a.display_name||'').localeCompare(b.display_name||''));
 
       const swAttRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [swMonthStart, swMonthEnd]));
