@@ -7,7 +7,7 @@ import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession } from './attendancelog.js';
-import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions } from '../cron/attendanceAutomation.js';
+import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -4748,6 +4748,16 @@ router.post('/:name', async (req, res) => {
       const targetDate = p?.date || yesterdayIST;
       const result = await closeUnfinishedSessions(targetDate);
       return res.json({ success: true, closed: result.marked, date: result.date });
+    }
+
+    // Manual trigger for closeStaleOpenSessions (also runs automatically
+    // every 30 minutes — see server.js). Sweeps every past-day Attendance
+    // row still "in progress" regardless of which day it's from, unlike
+    // closeOpenSessions above which only targets one specific date.
+    case 'closeAllStaleOpenSessions': {
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'Forbidden' });
+      const result = await closeStaleOpenSessions();
+      return res.json({ success: true, ...result });
     }
 
     case 'markExemptEmployeesPresent': {

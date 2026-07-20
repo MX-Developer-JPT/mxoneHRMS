@@ -15,7 +15,7 @@ import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
 import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
-import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions } from './cron/attendanceAutomation.js';
+import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions } from './cron/attendanceAutomation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -224,5 +224,14 @@ cron.schedule('0 2 * * *', () => {
 // above, which runs once for the *previous* day.
 cron.schedule('*/30 * * * *', () => {
   closeStaleGeofenceSessions().catch(err => console.error('[geofence-safety-net] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Stale open-session safety net — every 30 minutes ─────────
+// Catches any check-in (biometric, selfie, or geofence) still "in progress"
+// on a past day — whether it was simply never processed by the 2 AM job, or
+// a late-arriving biometric sync batch reopened a day that job already
+// closed. See closeStaleOpenSessions for details.
+cron.schedule('*/30 * * * *', () => {
+  closeStaleOpenSessions().catch(err => console.error('[open-session-safety-net] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 

@@ -185,39 +185,49 @@ export function buildSessions(rawPunches) {
 
 /**
  * Given a day's raw punches, finalizes a still-open trailing session (an odd
- * final check-in with no matching check-out) by EXCLUDING it from the day's
- * totals entirely — not padding it to zero-duration, which would incorrectly
- * make the incomplete session's own check-in time look like the day's "Last
- * Out". The day's check-out time, total worked minutes, and status are all
- * derived purely from whatever sessions actually completed; the incomplete
- * trailing punch stays visible in raw_punches/sessions (so HR can still see
- * it happened, e.g. "Session 2: 8:56 PM IN, no OUT recorded") but doesn't
- * affect the calculation. If there were zero completed sessions that day,
- * this correctly bottoms out at zero worked minutes.
+ * final check-in with no matching check-out) by treating that check-in's own
+ * time as the final check-out — the day is over and no real check-out was
+ * ever recorded, so the last known activity IS the day's end. The synthetic
+ * check-out is offset by just over the dedup window (see DEDUP_THRESHOLD_MS)
+ * so buildSessions doesn't discard it as a duplicate of the check-in it's
+ * closing; the resulting session is effectively zero-duration and adds no
+ * working time. Earlier *completed* sessions that day are untouched.
  *
- * Example: Session 1 10:07 AM → 8:53 PM (10h46m, complete), Session 2 8:56
- * PM IN with no OUT. Result: check_out_time = 8:53 PM, total = 10h46m,
- * status computed from that — Present, not Absent just because a stray
- * extra check-in was never matched with a check-out.
+ * Example A — one session, never checked out: check-in 10:21 AM, no check-
+ * out. Result: check_out_time = 10:21 AM (+~1 min), total worked = 0 →
+ * status resolves to Absent (see computeStatusFromSessions).
+ * Example B — Session 1 10:07 AM → 8:53 PM (10h46m, complete), Session 2
+ * 8:56 PM IN with no OUT. Result: check_out_time = 8:56 PM (Session 2's own
+ * check-in), total = 10h46m from Session 1 only — Present, with "Last Out"
+ * correctly reflecting the later timestamp instead of reverting to Session
+ * 1's end.
  *
  * This is a FINALIZATION step, not a live/real-time one: only call this when
- * closing out a day that has actually ended (the nightly cron, historical
- * recalculation) — never for today's still-ongoing session, which needs to
- * stay genuinely open for check-out/geofence-exit detection and the Mark
- * Attendance UI to keep working correctly.
+ * closing out a day that has actually ended (the nightly/stale-session
+ * sweep, historical recalculation) — never for today's still-ongoing
+ * session, which needs to stay genuinely open for check-out/geofence-exit
+ * detection and the Mark Attendance UI to keep working correctly.
  */
 export function closeTrailingOpenSession(rawPunches) {
   const sd = buildSessions(rawPunches);
   if (!sd.is_in_progress) return sd; // already closed — nothing to finalize
-  const completed = buildSessions(sd.raw_punches.slice(0, -1)); // drop the trailing unmatched check-in
+  const lastPunch = sd.raw_punches[sd.raw_punches.length - 1];
+  // Offset by just over the dedup window so buildSessions doesn't discard
+  // this synthetic punch as a duplicate of the check-in it's closing — but
+  // that offset is a bookkeeping artifact, not real worked time, so the
+  // reported check-out time and this session's duration are corrected back
+  // to the true check-in instant / zero minutes below.
+  const syntheticOut = { time: new Date(new Date(lastPunch.time).getTime() + DEDUP_THRESHOLD_MS + 1).toISOString(), device_direction: 'OUT' };
+  const closed = buildSessions([...sd.raw_punches, syntheticOut]);
+  const lastIdx = closed.sessions.length - 1;
+  const lastSession = closed.sessions[lastIdx];
+  const realWorkedMinutes = closed.total_working_minutes - (lastSession.duration_minutes || 0);
   return {
-    ...sd, // keep the full raw_punches/sessions list — including the stray incomplete session — for visibility
-    is_in_progress: false,
-    total_working_minutes: completed.total_working_minutes,
-    total_break_minutes: completed.total_break_minutes,
-    working_hours: completed.working_hours,
-    break_hours: completed.break_hours,
-    check_out_time: completed.check_out_time,
+    ...closed,
+    check_out_time: lastPunch.time,
+    sessions: closed.sessions.map((s, i) => i === lastIdx ? { ...s, check_out: lastPunch.time, duration_minutes: 0 } : s),
+    total_working_minutes: realWorkedMinutes,
+    working_hours: Math.round(realWorkedMinutes / 60 * 100) / 100,
   };
 }
 

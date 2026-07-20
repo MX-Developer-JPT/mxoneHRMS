@@ -137,6 +137,63 @@ export async function closeUnfinishedSessions(targetDate) {
   return { date, checked: rows.length, marked };
 }
 
+// Sweep EVERY Attendance row still "in progress" whose date is before today
+// (IST), regardless of how many days old — not just yesterday's date like
+// closeUnfinishedSessions above. Two ways a stale session can end up here
+// beyond a single missed nightly run:
+//   1. It genuinely never got processed (server was mid-deploy at 2 AM the
+//      night it was due, so that date's one-shot window passed silently).
+//   2. It WAS closed by a previous run, but a late-arriving biometric sync
+//      batch (devices can queue and upload punches hours/days late) merged
+//      a fresh punch into the day afterward, silently reopening it — with
+//      no further nightly run ever revisiting that specific past date again.
+// Runs on the frequent cron (see server.js) so either case self-heals within
+// the run interval instead of staying stuck indefinitely.
+export async function closeStaleOpenSessions() {
+  const todayIST = istDateString(0);
+  const rows = await all(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'is_in_progress'='true' AND data::jsonb->>'date' < $1",
+    [todayIST]
+  );
+  if (rows.length === 0) return { checked: 0, marked: 0 };
+
+  const defaultShift = await getDefaultShift();
+  const empCache = {};
+  let marked = 0;
+
+  for (const row of rows) {
+    const d = JSON.parse(row.data);
+    if (d.status === 'regularised') continue;
+
+    let rawPunches = Array.isArray(d.raw_punches) && d.raw_punches.length ? d.raw_punches : [];
+    if (!rawPunches.length && d.check_in_time) {
+      rawPunches = [{ time: d.check_in_time, device_direction: 'IN' }];
+      if (d.check_out_time) rawPunches.push({ time: d.check_out_time, device_direction: 'OUT' });
+    }
+    if (!rawPunches.length) continue;
+
+    const currentSd = buildSessions(rawPunches);
+    if (!currentSd.is_in_progress) continue; // already fully checked out
+
+    if (!(d.user_id in empCache)) {
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
+      empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
+    }
+    const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+
+    const sessionData = closeTrailingOpenSession(rawPunches);
+    const statusResult = computeStatusFromSessions(sessionData, shift);
+    const updated = {
+      ...d, ...sessionData, ...statusResult,
+      auto_closed_at: new Date().toISOString(),
+      auto_closed_reason: 'Checked in but never checked out for a past day — the last recorded check-in was treated as the final check-out; status reflects hours actually worked in completed sessions.',
+    };
+    await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [statusResult.status, JSON.stringify(updated), row.id]);
+    marked++;
+  }
+  return { checked: rows.length, marked };
+}
+
 // Mid-day safety net for geofence-driven check-ins. Exit is normally detected
 // client-side (JS watcher or the native Android headless service) the moment
 // a phone reports leaving the radius — but if tracking silently dies after
