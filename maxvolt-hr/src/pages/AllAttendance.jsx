@@ -302,6 +302,28 @@ export default function AllAttendance() {
     } catch (e) { toast.error('Export error: ' + e.message); }
   };
 
+  const [exportingSwipe, setExportingSwipe] = useState(false);
+  const exportSwipeDetails = async () => {
+    const [yr, mo] = date.split('-').map(Number);
+    setExportingSwipe(true);
+    try {
+      toast.info('Generating swipe details…');
+      const res = await base44.functions.invoke('exportSwipeDetails', { month: mo, year: yr, department: deptFilter });
+      if (!res.data?.success) { toast.error(res.data?.error || 'Swipe details export failed'); return; }
+      const byteChars = atob(res.data.base64);
+      const byteNums = new Array(byteChars.length).fill(0).map((_, i) => byteChars.charCodeAt(i));
+      const blob = new Blob([new Uint8Array(byteNums)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.data.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Swipe details exported — ${res.data.total_employees} employees`);
+    } catch (e) { toast.error('Swipe details export error: ' + e.message); }
+    setExportingSwipe(false);
+  };
+
   const openEmployeeCalendar = async (emp, e) => {
     e?.stopPropagation();
     const now = new Date();
@@ -365,6 +387,9 @@ export default function AllAttendance() {
             </Button>
             <Button variant="outline" size="sm" onClick={exportDetailedReport} title="Export detailed report with session hours and overtime">
               <FileSpreadsheet className="w-4 h-4 mr-1" /> Report
+            </Button>
+            <Button variant="outline" size="sm" onClick={exportSwipeDetails} disabled={exportingSwipe} title="Export first check-in/last check-out, method (biometric/selfie/geofence) and locations for every day of the month">
+              {exportingSwipe ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Fingerprint className="w-4 h-4 mr-1" />} Swipe Details
             </Button>
             <div className="flex items-center gap-1.5">
               {silentRefreshing && <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" title="Refreshing…" />}

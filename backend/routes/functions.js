@@ -3047,6 +3047,156 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`Attendance_Muster_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
     }
 
+    // Swipe-detail register: one row per employee per calendar day, showing
+    // the day's first check-in / last check-out, how it was captured
+    // (Biometric / Geofence / Selfie / Manual — same precedence as the
+    // frontend's lib/attendanceSource.js so the two views never disagree),
+    // and the check-in/check-out location for selfie or geofence days
+    // (biometric has no location signal to show).
+    case 'exportSwipeDetails': {
+      const { month, year, department: swdDept } = p;
+      if (!month || !year) return res.json({ success: false, error: 'month and year required' });
+      const swM = parseInt(month), swY = parseInt(year);
+      const swMonthStart = `${swY}-${String(swM).padStart(2,'0')}-01`;
+      const swDaysInMonth = new Date(swY, swM, 0).getDate();
+      const swMonthEnd = `${swY}-${String(swM).padStart(2,'0')}-${String(swDaysInMonth).padStart(2,'0')}`;
+      const swMonthLabel = new Date(swY, swM-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+
+      let swEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      if (swDept && swDept !== 'all') swEmps = swEmps.filter(e => e.department === swDept);
+      swEmps.sort((a, b) => (a.department||'').localeCompare(b.department||'') || (a.display_name||'').localeCompare(b.display_name||''));
+
+      const swAttRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [swMonthStart, swMonthEnd]));
+      const swAttMap = {};
+      for (const a of swAttRows) {
+        if (!swAttMap[a.user_id]) swAttMap[a.user_id] = {};
+        swAttMap[a.user_id][String(a.date).slice(0,10)] = a;
+      }
+
+      // Same precedence as maxvolt-hr/src/lib/attendanceSource.js:
+      // biometric > geofence > selfie > manual.
+      const swMethod = (rec) => {
+        if (!rec) return '';
+        if (rec.biometric_synced) return 'Biometric';
+        if (rec.auto_geofence || rec.auto_geofence_checkout) return 'Geofence';
+        if (rec.check_in_selfie_url || rec.check_out_selfie_url) return 'Selfie';
+        if (rec.check_in_time || rec.check_out_time) return 'Manual';
+        return '';
+      };
+      const swLocation = (loc) => {
+        if (!loc) return '';
+        if (typeof loc === 'string') return loc;
+        if (loc.location_address) return loc.location_address;
+        if (loc.address) return loc.address;
+        if (loc.latitude != null && loc.longitude != null) return `${Number(loc.latitude).toFixed(5)}, ${Number(loc.longitude).toFixed(5)}`;
+        return '';
+      };
+      const swFmtTime = (iso) => {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+      };
+      const swWeekdayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+      const ExcelJSsw = await import('exceljs');
+      const wbSw = new ExcelJSsw.default.Workbook();
+      wbSw.creator = 'Maxvolt One'; wbSw.created = new Date();
+      const wsSw = wbSw.addWorksheet('Swipe Details', { views: [{ state:'frozen', xSplit:0, ySplit:4 }] });
+
+      const swF  = (bold=false, col='1A1A1A', sz=9) => ({ name:'Calibri', bold, color:{argb:'FF'+col}, size:sz });
+      const swFl = (hex) => ({ type:'pattern', pattern:'solid', fgColor:{argb:'FF'+hex} });
+      const swBd = () => ({ top:{style:'thin',color:{argb:'FFD1D5DB'}}, left:{style:'thin',color:{argb:'FFD1D5DB'}}, bottom:{style:'thin',color:{argb:'FFD1D5DB'}}, right:{style:'thin',color:{argb:'FFD1D5DB'}} });
+      const swCtr = { horizontal:'center', vertical:'middle' };
+      const swLft = { horizontal:'left', vertical:'middle', indent:1 };
+      const METHOD_COLOR = { 'Biometric':'DCFCE7', 'Geofence':'E0E7FF', 'Selfie':'DBEAFE', 'Manual':'F3F4F6', '':'FFFFFF' };
+      const METHOD_TEXT  = { 'Biometric':'166534', 'Geofence':'3730A3', 'Selfie':'1E40AF', 'Manual':'4B5563', '':'9CA3AF' };
+      const STATUS_COLOR = { present:'DCFCE7', late:'FEF3C7', absent:'FEE2E2', half_day:'FEF3C7', leave:'DBEAFE', holiday:'EDE9FE', week_off:'F3F4F6', on_duty:'CCFBF1', work_from_home:'E0E7FF' };
+
+      const cols = [
+        { header:'S.No', width:6 }, { header:'Emp Code', width:11 }, { header:'Employee Name', width:22 },
+        { header:'Department', width:16 }, { header:'Designation', width:18 },
+        { header:'Date', width:12 }, { header:'Day', width:10 },
+        { header:'First Check-in', width:14 }, { header:'Last Check-out', width:14 },
+        { header:'Total Hours', width:11 }, { header:'Method', width:12 },
+        { header:'Check-in Location', width:32 }, { header:'Check-out Location', width:32 },
+        { header:'Status', width:12 },
+      ];
+      cols.forEach((c, i) => { wsSw.getColumn(i+1).width = c.width; });
+
+      // Row 1 — title
+      wsSw.mergeCells(1,1,1,cols.length);
+      Object.assign(wsSw.getCell(1,1), { value:`ATTENDANCE SWIPE DETAILS — ${swMonthLabel.toUpperCase()}`, font:swF(true,'FFFFFF',13), fill:swFl('1A3C5E'), alignment:swCtr });
+      wsSw.getRow(1).height = 28;
+
+      // Row 2 — meta
+      wsSw.mergeCells(2,1,2,cols.length);
+      Object.assign(wsSw.getCell(2,1), { value:`Maxvolt Energy Industries Limited  |  Period: ${swMonthLabel}  |  Employees: ${swEmps.length}  |  Generated: ${new Date().toLocaleDateString('en-IN')}`, font:swF(false,'475569',8), fill:swFl('F8FAFC'), alignment:swLft, border:swBd() });
+      wsSw.getRow(2).height = 16;
+
+      // Row 3 — legend
+      wsSw.mergeCells(3,1,3,cols.length);
+      Object.assign(wsSw.getCell(3,1), { value:'Method reflects how the day was punched — Biometric device sync, Geofence auto check-in/out, Selfie check-in/out, or Manual/regularised entry. Location shown for Selfie and Geofence days only.', font:swF(false,'1E40AF',8), fill:swFl('EFF6FF'), alignment:swLft, border:swBd() });
+      wsSw.getRow(3).height = 15;
+
+      // Row 4 — column headers
+      const swHdrRow = wsSw.getRow(4);
+      cols.forEach((c, i) => { swHdrRow.getCell(i+1).value = c.header; });
+      swHdrRow.height = 20;
+      swHdrRow.eachCell(cell => Object.assign(cell, { font:swF(true,'FFFFFF',9), fill:swFl('1E40AF'), alignment:{ horizontal:'center', vertical:'middle', wrapText:true }, border:swBd() }));
+
+      let swRowNum = 5;
+      let swEmpAlt = false;
+      for (const emp of swEmps) {
+        const empRecs = swAttMap[emp.user_id] || {};
+        const rowBg = swEmpAlt ? 'F5F9FF' : 'FFFFFF';
+        swEmpAlt = !swEmpAlt;
+
+        for (let d = 1; d <= swDaysInMonth; d++) {
+          const ds = `${swY}-${String(swM).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+          const rec = empRecs[ds];
+          const weekday = swWeekdayNames[new Date(swY, swM-1, d).getDay()];
+          const method = swMethod(rec);
+          const status = rec?.status || (rec ? '' : 'absent');
+
+          const row = wsSw.getRow(swRowNum++);
+          const vals = [
+            swRowNum - 5, emp.employee_code||'', emp.display_name||'', emp.department||'', emp.designation||'',
+            ds, weekday, swFmtTime(rec?.check_in_time), swFmtTime(rec?.check_out_time),
+            rec?.working_hours || '', method,
+            (method==='Selfie'||method==='Geofence') ? swLocation(rec?.check_in_location) : '',
+            (method==='Selfie'||method==='Geofence') ? swLocation(rec?.check_out_location) : '',
+            status ? status.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) : '',
+          ];
+          vals.forEach((v, ci) => { row.getCell(ci+1).value = v; });
+          row.height = 16;
+          row.eachCell({ includeEmpty:true }, (cell, ci) => {
+            cell.font = swF(false, '374151', 8);
+            cell.border = swBd();
+            cell.fill = swFl(rowBg);
+            if (ci <= 5) cell.alignment = swLft;
+            else cell.alignment = swCtr;
+          });
+          if (method) {
+            const mc = row.getCell(11);
+            mc.font = swF(true, METHOD_TEXT[method], 8);
+            mc.fill = swFl(METHOD_COLOR[method]);
+          }
+          if (status && STATUS_COLOR[status]) {
+            const sc = row.getCell(14);
+            sc.fill = swFl(STATUS_COLOR[status]);
+          }
+        }
+      }
+
+      const swBuf = await wbSw.xlsx.writeBuffer();
+      return res.json({
+        success: true, base64: Buffer.from(swBuf).toString('base64'),
+        filename: `Swipe_Details_${swMonthLabel.replace(' ','_')}.xlsx`,
+        total_employees: swEmps.length, total_rows: swRowNum - 5, format: 'xlsx',
+      });
+    }
+
     /* ── Bulk Document Download (ZIP) ───────────────────── */
     case 'bulkDownloadDocuments': {
       const { user_ids, document_types } = body;
