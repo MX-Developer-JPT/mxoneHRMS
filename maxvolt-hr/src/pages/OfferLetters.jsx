@@ -461,7 +461,7 @@ export default function OfferLetters() {
   };
 
   const copyAcceptLink = (c) => {
-    const base = 'https://hr.maxvolt-one.co.in';
+    const base = 'https://maxone.maxvoltenergy.com';
     if (c.offer_accept_token) {
       navigator.clipboard.writeText(`${base}/offer-accept/${c.offer_accept_token}`);
       toast.success('Acceptance link copied!');

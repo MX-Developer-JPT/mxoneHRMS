@@ -4065,7 +4065,7 @@ router.post('/:name', async (req, res) => {
     /* ── API Key Management (for external attendance push) ─ */
     case 'getAttendanceApiInfo': {
       const key = (await one("SELECT value FROM settings WHERE key='attendance_api_key'"))?.value || null;
-      const baseUrl = process.env.APP_URL || (process.env.NODE_ENV === 'production' ? 'https://your-app.up.railway.app' : `http://localhost:${process.env.PORT || 3001}`);
+      const baseUrl = process.env.APP_URL || (process.env.NODE_ENV === 'production' ? 'https://maxone.maxvoltenergy.com' : `http://localhost:${process.env.PORT || 3001}`);
       return res.json({
         success: true,
         api_key: key,
@@ -6165,7 +6165,7 @@ Return ONLY a valid JSON object (no markdown):
       const validTillStr = validTill.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
       const fmtIN       = n => Number(n || 0).toLocaleString('en-IN');
 
-      const appBase = process.env.APP_URL || 'https://hr.maxvolt-one.co.in';
+      const appBase = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
       const acceptLink = `${appBase}/offer-accept/${acceptToken}`;
 
       // PF deduction row always shown (all employees); ESI shown when applicable
@@ -6395,7 +6395,7 @@ Return ONLY a valid JSON object (no markdown):
       const cand = JSON.parse(cRow.data);
       if (!cand.email) return res.json({ success: false, error: 'Candidate has no email' });
 
-      const appBase = process.env.APP_URL || 'https://hr.maxvolt-one.co.in';
+      const appBase = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
       const registerLink = `${appBase}/register`;
 
       await sendEmail({

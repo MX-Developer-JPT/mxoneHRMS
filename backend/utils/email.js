@@ -1,8 +1,13 @@
 import { one } from '../db.js';
 
-// Brevo is the sole email provider. Key is server-side only — never exposed to frontend.
-// Set BREVO_API_KEY in Railway environment variables.
-const BREVO_KEY = process.env.BREVO_API_KEY || '';
+// ── MaxVolt Mail integration ───────────────────────────────
+// All HRMS email now flows through MaxVolt Mail — the centralized email hub —
+// instead of a third-party provider. MaxVolt Mail queues, retries, tracks, logs,
+// and reports on every message. Configure via environment variables:
+//   MAXVOLT_MAIL_URL      base URL of the MaxVolt Mail server (e.g. http://mail.local:3000)
+//   MAXVOLT_MAIL_API_KEY  this application's API key (MaxVolt Mail → Applications → generate)
+const MAIL_BASE = (process.env.MAXVOLT_MAIL_URL || 'http://localhost:3000').replace(/\/+$/, '');
+const MAIL_KEY  = process.env.MAXVOLT_MAIL_API_KEY || '';
 
 async function getSetting(key, fallback = '') {
   try {
@@ -17,72 +22,82 @@ async function getFromAddress() {
   return from.includes('@') ? from : 'Maxvolt HR <noreply@maxvoltenergy.com>';
 }
 
-async function brevoRequest(path, body) {
-  const res = await fetch(`https://api.brevo.com/v3${path}`, {
-    method:  body ? 'POST' : 'GET',
-    headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json' },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+async function mailRequest(path, body) {
+  if (!MAIL_KEY) throw new Error('MAXVOLT_MAIL_API_KEY is not set');
+  const res = await fetch(`${MAIL_BASE}${path}`, {
+    method:  'POST',
+    headers: { Authorization: `Bearer ${MAIL_KEY}`, 'Content-Type': 'application/json' },
+    body:    JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || `Brevo error ${res.status}`);
+  if (!res.ok) throw new Error(data.message || data.error || `MaxVolt Mail error ${res.status}`);
   return data;
 }
 
-function parseFrom(fromStr) {
-  const fallbackName  = 'Maxvolt HR';
-  const fallbackEmail = 'noreply@maxvoltenergy.com';
-  if (!fromStr) return { name: fallbackName, email: fallbackEmail };
-  const match = fromStr.match(/^(.*?)\s*<([^>]+)>$/);
-  if (match) return { name: match[1].trim() || fallbackName, email: match[2].trim() };
-  if (fromStr.includes('@')) return { name: fallbackName, email: fromStr.trim() };
-  return { name: fallbackName, email: fallbackEmail };
-}
-
-// ── Public API ─────────────────────────────────────────────
+// ── Public API (signatures unchanged) ──────────────────────
 
 export async function verifyEmail() {
   try {
-    await brevoRequest('/account');
-    return { ok: true, provider: 'brevo' };
+    if (!MAIL_KEY) return { ok: false, provider: 'maxvolt-mail', error: 'MAXVOLT_MAIL_API_KEY is not set' };
+    // Authenticated probe: a valid key returns 404 for a non-existent id, an
+    // invalid key returns 401. Any non-401 response confirms connectivity + auth.
+    const res = await fetch(`${MAIL_BASE}/api/v1/emails/0`, {
+      headers: { Authorization: `Bearer ${MAIL_KEY}` },
+    });
+    if (res.status === 401) return { ok: false, provider: 'maxvolt-mail', error: 'Invalid API key' };
+    return { ok: true, provider: 'maxvolt-mail' };
   } catch (e) {
-    return { ok: false, provider: 'brevo', error: `Brevo: ${e.message}` };
+    return { ok: false, provider: 'maxvolt-mail', error: `MaxVolt Mail: ${e.message}` };
   }
 }
 
-// attachments: [{ filename: 'file.pdf', content: Buffer }]
+// attachments: [{ filename, content: Buffer | base64 string, contentType? }]
 // cc: string email or array of strings
-export async function sendEmail({ to, cc, subject, html, text, attachments }) {
-  const fromStr     = await getFromAddress();
-  const { name, email } = parseFrom(fromStr);
-  const toArr = Array.isArray(to) ? to.map(e => ({ email: e })) : [{ email: to }];
-  const body = {
-    sender:      { name, email },
-    to:          toArr,
-    subject,
-    htmlContent: html,
-    textContent: text,
-  };
-  if (cc) {
-    const ccList = Array.isArray(cc) ? cc : cc.split(',').map(s => s.trim()).filter(Boolean);
-    if (ccList.length) body.cc = ccList.map(e => ({ email: e }));
-  }
-  if (attachments?.length) {
-    body.attachment = attachments.map(a => ({
-      name:    a.filename,
-      content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : a.content,
+// to: string email or array of strings (one MaxVolt Mail message per recipient)
+// Optional passthrough fields: meta, dedupeKey, priority, scheduledAt.
+export async function sendEmail({ to, cc, subject, html, text, attachments, meta, dedupeKey, priority, scheduledAt }) {
+  const from = await getFromAddress();
+  const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
+  if (!recipients.length) throw new Error('sendEmail: "to" is required');
+
+  const ccStr = Array.isArray(cc) ? cc.filter(Boolean).join(',') : (cc || undefined);
+
+  const mappedAttachments = (attachments || [])
+    .filter(a => a && a.content)
+    .map(a => ({
+      filename:     a.filename,
+      contentType:  a.contentType,
+      contentBase64: Buffer.isBuffer(a.content) ? a.content.toString('base64') : String(a.content),
     }));
+
+  // MaxVolt Mail addresses one recipient per message so each is tracked
+  // independently; send one request per recipient.
+  let last;
+  for (const rcpt of recipients) {
+    last = await mailRequest('/api/v1/emails', {
+      from,
+      to:          rcpt,
+      cc:          ccStr,
+      subject,
+      html,
+      text,
+      attachments: mappedAttachments.length ? mappedAttachments : undefined,
+      meta:        { source: 'hrms', ...(meta || {}) },
+      dedupeKey,
+      priority,
+      scheduledAt,
+    });
   }
-  const data = await brevoRequest('/smtp/email', body);
-  return { success: true, messageId: data.messageId, provider: 'brevo' };
+  return { success: true, messageId: String(last?.id ?? ''), provider: 'maxvolt-mail' };
 }
 
 export async function getEmailConfig() {
   const from = await getSetting('SMTP_FROM', '');
-  return { provider: 'brevo', from };
+  return { provider: 'maxvolt-mail', from, url: MAIL_BASE };
 }
 
 // ── Shared email chrome ────────────────────────────────────
-const APP_URL  = process.env.APP_URL || 'https://hr.maxvolt-one.co.in';
+const APP_URL  = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
 const LOGO_URL = `${APP_URL}/favicon.svg`;
 
 function emailHeader(title, accentColor = '#344055') {

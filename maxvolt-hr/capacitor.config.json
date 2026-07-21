@@ -4,7 +4,7 @@
   "webDir": "dist",
   "backgroundColor": "#F2F2F7",
   "server": {
-    "url": "https://hr.maxvolt-one.co.in",
+    "url": "https://maxone.maxvoltenergy.com",
     "androidScheme": "https",
     "cleartext": false
   },

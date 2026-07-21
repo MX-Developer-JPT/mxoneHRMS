@@ -56,7 +56,7 @@ export default function BusinessCardAdmin() {
   };
 
   const getCardUrl = (card) => {
-    return `https://maxvolt-one.co.in/PublicBusinessCard?slug=${card.unique_slug}`;
+    return `https://maxone.maxvoltenergy.com/PublicBusinessCard?slug=${card.unique_slug}`;
   };
 
   const filtered = cards.filter(c =>
