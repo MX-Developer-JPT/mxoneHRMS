@@ -19,7 +19,7 @@ async function getSetting(key, fallback = '') {
 
 async function getFromAddress() {
   const from = await getSetting('SMTP_FROM', '');
-  return from.includes('@') ? from : 'Maxvolt HR <noreply@maxvoltenergy.com>';
+  return from.includes('@') ? from : 'Maxvolt HR <no-reply@maxvoltenergy.com>';
 }
 
 async function mailRequest(path, body) {
