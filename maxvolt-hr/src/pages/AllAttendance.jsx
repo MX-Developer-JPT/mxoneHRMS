@@ -696,11 +696,25 @@ export default function AllAttendance() {
                                   <MapPin className="w-3 h-3" /> Geofence
                                 </span>
                               );
-                              if (method.key === 'selfie') return (
-                                <span className="inline-flex items-center gap-0.5 text-xs text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                                  <Camera className="w-3 h-3" /> Selfie
-                                </span>
-                              );
+                              if (method.key === 'selfie') {
+                                const selfieUrl = record.check_in_selfie_url || record.check_out_selfie_url;
+                                const loc = record.check_in_location || record.check_out_location;
+                                const locLabel = loc?.location_address || loc?.address || (loc?.latitude != null ? `${Number(loc.latitude).toFixed(4)}, ${Number(loc.longitude).toFixed(4)}` : '');
+                                return (
+                                  <span
+                                    title={locLabel ? `Selfie — ${locLabel}` : 'Selfie'}
+                                    className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200"
+                                  >
+                                    {selfieUrl ? (
+                                      <img src={selfieUrl} alt="Selfie" className="w-4 h-4 rounded-full object-cover border border-blue-300" />
+                                    ) : (
+                                      <Camera className="w-3 h-3" />
+                                    )}
+                                    Selfie
+                                    {locLabel && <><MapPin className="w-3 h-3 ml-0.5" /><span className="max-w-[140px] truncate">{locLabel}</span></>}
+                                  </span>
+                                );
+                              }
                               return null;
                             })()}
                             {(record.late_arrival || record.late_minutes > 0) && (record.late_arrival_minutes || record.late_minutes) > 0 && (
