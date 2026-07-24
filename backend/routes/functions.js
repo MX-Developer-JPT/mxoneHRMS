@@ -8579,10 +8579,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       let sclDocUrl = null;
       if (pdfBuffer) {
         try {
-          const { isR2Configured, buildKey, putToR2, presignGet } = await import('../utils/r2.js');
-          if (isR2Configured()) {
+          const { isBucketConfigured, buildKey, putToBucket, presignGet } = await import('../utils/bucket.js');
+          if (isBucketConfigured()) {
             const r2Key = buildKey(`letters/${sclDocId}`, '.pdf');
-            await putToR2(r2Key, pdfBuffer, 'application/pdf');
+            await putToBucket(r2Key, pdfBuffer, 'application/pdf');
             sclDocUrl = await presignGet(r2Key, {
               expiresIn: 31536000,
               filename: `${label.replace(/\s+/g,'_')}_${empName.replace(/\s+/g,'_')}.pdf`,
@@ -10106,10 +10106,10 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         // Upload to R2 for viewable document_url
         if (pdfBuffer) {
           try {
-            const { isR2Configured, buildKey, putToR2, presignGet } = await import('../utils/r2.js');
-            if (isR2Configured()) {
+            const { isBucketConfigured, buildKey, putToBucket, presignGet } = await import('../utils/bucket.js');
+            if (isBucketConfigured()) {
               const r2Key = buildKey(`letters/${docId}`, '.pdf');
-              await putToR2(r2Key, pdfBuffer, 'application/pdf');
+              await putToBucket(r2Key, pdfBuffer, 'application/pdf');
               aslDocUrl = await presignGet(r2Key, { expiresIn: 31536000, filename: `${label.replace(/\s+/g,'_')}.pdf` });
             }
           } catch (r2Err) { console.warn('[approveAndSendLetter] R2 upload failed:', r2Err.message); }
@@ -10173,10 +10173,10 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       let sldDocUrl = null;
       try {
         const pdfBuf = await buildLetterPdf(label, ref || '', letter_content);
-        const { isR2Configured, buildKey, putToR2, presignGet } = await import('../utils/r2.js');
-        if (pdfBuf && isR2Configured()) {
+        const { isBucketConfigured, buildKey, putToBucket, presignGet } = await import('../utils/bucket.js');
+        if (pdfBuf && isBucketConfigured()) {
           const r2Key = buildKey(`letters/${docId}`, '.pdf');
-          await putToR2(r2Key, pdfBuf, 'application/pdf');
+          await putToBucket(r2Key, pdfBuf, 'application/pdf');
           sldDocUrl = await presignGet(r2Key, { expiresIn: 31536000, filename: `${label.replace(/\s+/g,'_')}.pdf` });
         }
       } catch (pdfErr) { console.warn('[saveLetterAsDocument] PDF/R2 failed:', pdfErr.message); }

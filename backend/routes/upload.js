@@ -5,15 +5,19 @@ import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { one, run } from '../db.js';
 import { JWT_SECRET } from './auth.js';
-import { isR2Configured, buildKey, putToR2, presignGet } from '../utils/r2.js';
+import { isBucketConfigured, buildKey, putToBucket, presignGet as presignBucketGet } from '../utils/bucket.js';
+import { presignGet as presignR2Get } from '../utils/r2.js';
 
 const router = Router();
 
 // Storage priority:
-//   1. Cloudflare R2 (private bucket + signed URLs) — preferred for documents
+//   1. Railway Bucket (private, S3-compatible + signed URLs) — preferred for documents
 //   2. Cloudinary (if configured)
 //   3. PostgreSQL bytes — always-available persistent fallback
 // All three survive Railway redeploys (unlike the ephemeral container disk).
+// Cloudflare R2 was the primary store before switching to Railway Bucket —
+// utils/r2.js is kept import-only (read/presign) so files uploaded before
+// the switch (storage='r2' rows) still resolve.
 const USE_CLOUDINARY = !!(process.env.CLOUDINARY_URL || (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY));
 
 const memUpload = multer({
@@ -39,7 +43,7 @@ async function uploadToCloudinary(buffer, originalname) {
   });
 }
 
-if (isR2Configured()) console.log('✓ File uploads → Cloudflare R2 (private bucket, signed URLs)');
+if (isBucketConfigured()) console.log('✓ File uploads → Railway Bucket (private, signed URLs)');
 else if (USE_CLOUDINARY) console.log('✓ File uploads → Cloudinary');
 else console.log('✓ File uploads → PostgreSQL (persistent across redeploys)');
 
@@ -61,18 +65,18 @@ router.post('/', memUpload.single('file'), async (req, res) => {
   const uploader = optionalUser(req)?.id || null;
 
   try {
-    // 1. Cloudflare R2 (private) — store object, keep only a key reference in DB
-    if (isR2Configured()) {
+    // 1. Railway Bucket (private) — store object, keep only a key reference in DB
+    if (isBucketConfigured()) {
       try {
         const key = buildKey(id, ext);
-        await putToR2(key, req.file.buffer, mime);
+        await putToBucket(key, req.file.buffer, mime);
         await run(
-          "INSERT INTO files(id, filename, mime, size, storage, r2_key, uploaded_by) VALUES($1,$2,$3,$4,'r2',$5,$6)",
+          "INSERT INTO files(id, filename, mime, size, storage, r2_key, uploaded_by) VALUES($1,$2,$3,$4,'railway',$5,$6)",
           [id, req.file.originalname || `${id}${ext}`, mime, req.file.size, key, uploader]
         );
         return res.json({ file_url: `/api/upload/file/${id}${ext}`, filename: req.file.originalname, size: req.file.size });
-      } catch (r2Err) {
-        console.warn('[upload] R2 failed, falling back:', r2Err.message);
+      } catch (bucketErr) {
+        console.warn('[upload] Railway Bucket failed, falling back:', bucketErr.message);
       }
     }
 
@@ -108,8 +112,16 @@ router.get('/file/:id', async (req, res) => {
     const row = await one("SELECT filename, mime, data, storage, r2_key FROM files WHERE id=$1", [id]);
     if (!row) return res.status(404).json({ error: 'File not found' });
 
+    // r2_key holds the object key regardless of which bucket provider stored
+    // it — storage tells us which presigner to use. 'railway' is anything
+    // uploaded after the Railway Bucket switch; 'r2' is anything uploaded
+    // before it, still served straight from R2.
+    if (row.storage === 'railway' && row.r2_key) {
+      const url = await presignBucketGet(row.r2_key, { expiresIn: 3600, filename: row.filename });
+      return res.redirect(302, url);
+    }
     if (row.storage === 'r2' && row.r2_key) {
-      const url = await presignGet(row.r2_key, { expiresIn: 3600, filename: row.filename });
+      const url = await presignR2Get(row.r2_key, { expiresIn: 3600, filename: row.filename });
       return res.redirect(302, url);
     }
 
