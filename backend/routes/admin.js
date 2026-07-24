@@ -268,12 +268,6 @@ router.post('/smtp-settings', async (req, res) => {
   res.json({ success: true });
 });
 
-// ── Email: verify SMTP config ──────────────────────────────
-router.get('/email-status', async (_req, res) => {
-  const result = await verifyEmail();
-  res.json(result);
-});
-
 // ── Email: verify Brevo connection ────────────────────────
 router.get('/email-status', async (_req, res) => {
   res.json(await verifyEmail());
