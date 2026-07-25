@@ -142,6 +142,62 @@ const managementMenuGroups = [
   ]},
 ];
 
+// Middle management — scoped to their own team (Employee.reporting_manager_id
+// === them). Deliberately a trimmed-down version of managementMenuGroups:
+// drops org-wide-only sections (full Recruitment pipeline, org-wide Talent
+// Grid / Skill Grid, AskMax AI, Recruitment Analytics) that a line manager
+// has no authorization for and that the backend doesn't team-scope. Every
+// item kept here is backed by real reporting_manager_id-based enforcement
+// server-side, not just hidden in the UI.
+const managerMenuGroups = [
+  { label: 'Overview', items: [
+    { name: 'Dashboard',                icon: LayoutDashboard, page: 'Dashboard' },
+    { name: 'Team MIS',                 icon: PieChart,        page: 'MISDashboard' },
+  ]},
+  { label: 'My Team', items: [
+    { name: 'My Team',                  icon: Users,           page: 'Employees' },
+    { name: 'Team Attendance',          icon: BarChart3,       page: 'AllAttendance' },
+    { name: 'Leave Approvals',          icon: FileText,        page: 'LeaveManagement' },
+    { name: 'Regularisation Approvals', icon: Clock,           page: 'RegularisationApproval' },
+    { name: 'Expense Approvals',        icon: DollarSign,      page: 'Approvals' },
+    { name: 'Gate Pass Approvals',      icon: ShieldCheck,     page: 'GatePassApproval' },
+    { name: 'Comp-Off Approvals',       icon: CalendarPlus,    page: 'CompOff' },
+    { name: 'Confirmation',             icon: UserCheck,       page: 'ConfirmationManagement' },
+    { name: 'Team Calendar',            icon: Calendar,        page: 'TeamCalendar' },
+  ]},
+  { label: 'Team Insights', items: [
+    { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
+  ]},
+  { label: 'My Attendance', items: [
+    { name: 'Mark Attendance',          icon: Clock,           page: 'MarkAttendance' },
+    { name: 'My Attendance',            icon: Calendar,        page: 'AttendanceHistory' },
+    { name: 'Regularisation',           icon: Clock,           page: 'AttendanceRegularisation' },
+    { name: 'Field Duty',               icon: Route,           page: 'FieldDuty' },
+  ]},
+  { label: 'My Work', items: [
+    { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
+    { name: 'My Payslips',              icon: CreditCard,      page: 'Payslips' },
+    { name: 'My Documents',             icon: FolderOpen,      page: 'Documents' },
+    { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
+    { name: 'My Performance',           icon: Target,          page: 'PerformanceManagement' },
+    { name: 'My Training',              icon: GraduationCap,   page: 'MyTraining' },
+    { name: 'My Insurance',             icon: Shield,          page: 'MyInsurance' },
+    { name: 'My Assets',                icon: Laptop,          page: 'MyAssets' },
+    { name: 'My Exit',                  icon: LogOut,          page: 'MyExit' },
+  ]},
+  { label: 'Engagement', items: [
+    { name: 'Announcements',            icon: Bell,            page: 'Announcements' },
+    { name: 'Helpdesk',                 icon: HelpCircle,      page: 'Helpdesk' },
+    { name: 'Recognition',              icon: Award,           page: 'Recognition' },
+    { name: 'Pulse Surveys',            icon: ClipboardList,   page: 'PulseSurveys' },
+    { name: 'Employee Portal',          icon: Users,           page: 'EmployeeEngagementPortal' },
+  ]},
+  { label: 'Account', items: [
+    { name: 'My Profile',               icon: User2,           page: 'Profile' },
+    { name: 'App Settings',             icon: SlidersHorizontal, page: 'AppSettings' },
+  ]},
+];
+
 const hrMenuGroups = [
   { label: 'Overview', items: [
     { name: 'Dashboard',               icon: LayoutDashboard, page: 'Dashboard' },
@@ -548,16 +604,21 @@ export default function Layout({ children, currentPageName }) {
   }
 
   const isHR         = userRole === 'hr'         || userRole === 'admin'      || user.role === 'hr'    || user.role === 'admin';
-  const isManagement = userRole === 'management'  || userRole === 'manager'    || user.role === 'management' || user.role === 'manager';
+  // Top-level management (director/CEO/MD) — org-wide, unchanged. Kept as a
+  // distinct flag from isManager below: 'manager' is scoped middle
+  // management (their own team only), never lumped in with this anymore.
+  const isTopManagement = userRole === 'management' || user.role === 'management';
+  const isManager     = userRole === 'manager'    || user.role === 'manager';
   const isGateAdmin  = userRole === 'gate_admin'  || user.role === 'gate_admin';
   const isITDept     = employeeDepartment?.toLowerCase() === 'it';
 
   const isAdmin = user.role === 'admin';
 
   let menuGroups = employeeMenuGroups;
-  if (isHR)              menuGroups = hrMenuGroups;
-  else if (isManagement) menuGroups = managementMenuGroups;
-  else if (isGateAdmin)  menuGroups = gateAdminMenuGroups;
+  if (isHR)                 menuGroups = hrMenuGroups;
+  else if (isTopManagement) menuGroups = managementMenuGroups;
+  else if (isManager)       menuGroups = managerMenuGroups;
+  else if (isGateAdmin)     menuGroups = gateAdminMenuGroups;
   if (isITDept && !isHR) {
     menuGroups = [...menuGroups, { label: 'IT', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
   }
@@ -593,7 +654,7 @@ export default function Layout({ children, currentPageName }) {
         { label: 'Attendance',icon: Clock,            page: 'AllAttendance',path: '/AllAttendance' },
         { label: 'Leaves',    icon: FileText,         page: 'LeaveManagement', path: '/LeaveManagement' },
       ]
-    : isManagement
+    : (isTopManagement || isManager)
     ? [
         { label: 'Home',      icon: LayoutDashboard, page: 'Dashboard',    path: '/Dashboard' },
         { label: 'My Team',   icon: Users,            page: 'Employees',    path: '/Employees' },

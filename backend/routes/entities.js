@@ -51,6 +51,43 @@ async function checkRegularisationLimit(res, type, data) {
   return true;
 }
 
+function getCurrentUser(req) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return null;
+  try { return jwt.verify(token, JWT_SECRET); } catch { return null; }
+}
+
+// GatePass, Reimbursement and AttendanceRegularisation have no dedicated
+// approve/reject action of their own (unlike Leave/CompOff, which go through
+// runLeaveAction/decideCompOff in routes/functions.js) — approval happens by
+// PATCHing status straight through this generic entity route, which
+// previously had NO authorization check at all: any authenticated user could
+// approve/reject any employee's request for any of these three types.
+// Restricts an approved/rejected status change to: HR/admin/management
+// (unrestricted), or a 'manager' role approving only their own direct
+// report's request (Employee.reporting_manager_id === approver's id).
+const APPROVAL_SCOPED_TYPES = new Set(['GatePass', 'Reimbursement', 'AttendanceRegularisation']);
+async function checkApprovalAuthorization(req, res, type, current, newStatus) {
+  if (!APPROVAL_SCOPED_TYPES.has(type)) return true;
+  if (!newStatus || !['approved', 'rejected'].includes(newStatus) || newStatus === current.status) return true;
+
+  const cu = getCurrentUser(req);
+  if (!cu) { res.status(401).json({ error: 'Unauthorized' }); return false; }
+
+  const uRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
+  const role = uRow?.custom_role || uRow?.role || cu.custom_role || cu.role;
+  if (['hr', 'admin', 'management'].includes(role)) return true;
+
+  if (role === 'manager') {
+    const targetUserId = current.user_id;
+    const empRow = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [targetUserId]);
+    if (empRow?.mgr === cu.id) return true;
+  }
+
+  res.status(403).json({ error: 'Access denied — not authorized to approve this request' });
+  return false;
+}
+
 // Work-From-Home requests are submitted as a Leave with is_wfh/leave_type
 // set client-side (Leave.jsx only shows the WFH option when the employee's
 // wfh_eligible flag is set) — enforce that same rule server-side too, since
@@ -314,6 +351,7 @@ router.patch('/:type/:id', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Not found' });
 
   const current = JSON.parse(row.data);
+  if (!(await checkApprovalAuthorization(req, res, type, current, req.body.status))) return;
   const updated = { ...current, ...req.body, id };
 
   await run(

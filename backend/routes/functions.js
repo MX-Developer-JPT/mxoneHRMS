@@ -389,7 +389,44 @@ const SKILL_RATING_LABELS = { 1: 'No Knowledge', 2: 'Can Work With Assistance', 
 // doesn't create false-negative duplicates.
 const normalizeEmail = (e) => String(e || '').trim().toLowerCase();
 const normalizePhone = (ph) => String(ph || '').replace(/\D/g, '').slice(-10); // last 10 digits
-const MGR_ROLES = ['hr', 'admin', 'management', 'manager'];
+// Org-wide-and-above roles. 'manager' is deliberately NOT included here —
+// unlike 'management' (top-level: director/CEO/MD, unrestricted org access),
+// 'manager' is scoped middle-management: their own direct reports only, via
+// canAccessEmployee()/getScopedUserIds() below, never the whole org. Any
+// case that legitimately needs "HR or top management" access (org settings,
+// letter generation, workforce-wide analytics) should keep using MGR_ROLES
+// as-is; anything a manager should see a *team-scoped slice* of needs the
+// explicit scoping helpers instead of just adding 'manager' back in here.
+const MGR_ROLES = ['hr', 'admin', 'management'];
+
+// Single-target authorization: may `cu` view/act on data belonging to
+// `targetUserId`? HR/admin/management: unrestricted. manager: only their own
+// direct reports (Employee.reporting_manager_id === cu.id). Everyone else:
+// only themselves.
+async function canAccessEmployee(cu, targetUserId) {
+  if (!cu) return false;
+  if (await hasRole(cu, MGR_ROLES)) return true;
+  if (targetUserId === cu.id) return true;
+  if (await hasRole(cu, ['manager'])) {
+    const row = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [targetUserId]);
+    return row?.mgr === cu.id;
+  }
+  return false;
+}
+
+// Bulk scoping for list/report endpoints. Returns null to mean "no
+// restriction — full org" (HR/admin/management), or an array of user_ids the
+// caller may see (a manager's direct reports; a plain employee gets just
+// themselves).
+async function getScopedUserIds(cu) {
+  if (!cu) return [];
+  if (await hasRole(cu, MGR_ROLES)) return null;
+  if (await hasRole(cu, ['manager'])) {
+    const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'reporting_manager_id'=$1", [cu.id]);
+    return rows.map(r => r.user_id);
+  }
+  return [cu.id];
+}
 
 const parseEntities = (rows) => rows.map(r => JSON.parse(r.data));
 
@@ -1994,9 +2031,15 @@ router.post('/:name', async (req, res) => {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const rates = await getFieldRates();
       const isMgmtUser = await hasRole(cu, MGR_ROLES);
+      const isTeamManager = !isMgmtUser && await hasRole(cu, ['manager']);
       let rows;
       if (p.scope === 'all' && isMgmtUser) {
         rows = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' ORDER BY created_at DESC LIMIT 300");
+      } else if (p.scope === 'all' && isTeamManager) {
+        const teamIds = await getScopedUserIds(cu); // manager's own reports
+        rows = teamIds.length
+          ? await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND user_id=ANY($1) ORDER BY created_at DESC LIMIT 300", [teamIds])
+          : [];
       } else {
         rows = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND user_id=$1 ORDER BY created_at DESC LIMIT 100", [cu.id]);
       }
@@ -2008,7 +2051,7 @@ router.post('/:name', async (req, res) => {
         const { points, ...rest } = d;
         return { ...rest, employee: empBy[r.user_id] || {}, trail_points: (points || []).length };
       });
-      return res.json({ success: true, trips, rates, is_hr: isMgmtUser, can_manage: isMgmtUser });
+      return res.json({ success: true, trips, rates, is_hr: isMgmtUser, can_manage: isMgmtUser || isTeamManager });
     }
 
     case 'setFieldRate': {
@@ -2033,7 +2076,7 @@ router.post('/:name', async (req, res) => {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { user_id, period_type, period_date } = p;
       const targetUid = user_id && user_id !== cu.id ? user_id : cu.id;
-      if (targetUid !== cu.id && !(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required to preview another employee\'s form' });
+      if (targetUid !== cu.id && !(await canAccessEmployee(cu, targetUid))) return res.status(403).json({ error: 'Access denied — not your report' });
       const built = await buildFieldReimbursementForm(targetUid, period_type, period_date);
       if (built.error) return res.json({ success: false, error: built.error });
       return res.json({ success: true, ...built });
@@ -2043,7 +2086,7 @@ router.post('/:name', async (req, res) => {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { user_id, period_type, period_date, meal_allowance_total } = p;
       const targetUid = user_id && user_id !== cu.id ? user_id : cu.id;
-      if (targetUid !== cu.id && !(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required to submit on another employee\'s behalf' });
+      if (targetUid !== cu.id && !(await canAccessEmployee(cu, targetUid))) return res.status(403).json({ error: 'Access denied — not your report' });
       const built = await buildFieldReimbursementForm(targetUid, period_type, period_date);
       if (built.error) return res.json({ success: false, error: built.error });
       if (!built.rows.length) return res.json({ success: false, error: 'No unclaimed completed trips in this period' });
@@ -2088,7 +2131,7 @@ router.post('/:name', async (req, res) => {
       const rbRow = await one("SELECT data FROM entities WHERE id=$1 AND type='Reimbursement'", [claim_id]);
       if (!rbRow) return res.json({ success: false, error: 'Claim not found' });
       const rb = JSON.parse(rbRow.data);
-      if (rb.user_id !== cu.id && !(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'Access denied' });
+      if (rb.user_id !== cu.id && !(await canAccessEmployee(cu, rb.user_id))) return res.status(403).json({ error: 'Access denied' });
       if (!Array.isArray(rb.field_trip_ids) || !rb.field_trip_ids.length) return res.json({ success: false, error: 'This claim was not generated from Field Duty trips' });
 
       const rates = await getFieldRates();
@@ -4187,7 +4230,15 @@ router.post('/:name', async (req, res) => {
 
     /* ── Attendance ───────────────────────────────────── */
     case 'getAllAttendance': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { date, user_id: uid, date_from, date_to } = p;
+      if (uid && !(await canAccessEmployee(cu, uid))) return res.status(403).json({ error: 'Access denied' });
+      // A manager only ever sees their own direct reports — never a
+      // requested user_id outside that set, and never the whole org when no
+      // user_id is given. null means unrestricted (HR/admin/management).
+      const scopedIds = await getScopedUserIds(cu);
+      if (scopedIds && !scopedIds.length) return res.json({ records: [] });
+
       // SQL-level date filtering for performance
       let query = "SELECT data FROM entities WHERE type='Attendance'";
       const params = [];
@@ -4198,7 +4249,8 @@ router.post('/:name', async (req, res) => {
         if (date_to)   { query += ` AND data::jsonb->>'date'<=$${params.length+1}`; params.push(date_to); }
       }
       const rows = await all(query, params);
-      const allRecords = rows.map(r => JSON.parse(r.data));
+      let allRecords = rows.map(r => JSON.parse(r.data));
+      if (scopedIds) allRecords = allRecords.filter(r => scopedIds.includes(r.user_id));
 
       // Deduplicate per (user_id, date): prefer biometric records over auto-absent records.
       // markAbsentEmployees can create a duplicate absent record when the biometric record's
@@ -7110,29 +7162,51 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
     /* ── MIS & Reporting ─────────────────────────────── */
     case 'getMISData': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      // null = unrestricted (HR/admin/management). An array = a manager's
+      // direct reports only — every headcount/attendance/leave/performance
+      // query below is filtered to it. Org-financial sections that don't map
+      // to "my team" (recruitment pipeline, asset inventory, payroll cost,
+      // helpdesk tickets, exits) are simply omitted for a scoped caller
+      // rather than showing company-wide figures under a "team MIS" label.
+      const scopedIds = await getScopedUserIds(cu);
+
       const today      = new Date().toISOString().slice(0, 10);
       const now        = new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
       const yr12Ago    = new Date(now.getFullYear() - 1, now.getMonth(), 1).toISOString().slice(0, 10);
 
       // ── Core headcount ──────────────────────────────────────────────────────
-      const totalActive  = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'")).c;
-      const presentToday = (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [today])).c;
+      const totalActive  = scopedIds
+        ? scopedIds.length
+        : (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'")).c;
+      const presentToday = scopedIds
+        ? (scopedIds.length ? (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL AND user_id=ANY($2)", [today, scopedIds])).c : 0)
+        : (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [today])).c;
       const absentToday  = Math.max(0, totalActive - presentToday);
-      const newJoineesThisMonth = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1", [monthStart])).c;
-      const exitedLast12m = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND data::jsonb->>'last_working_date' >= $1", [yr12Ago])).c;
+      const newJoineesThisMonth = scopedIds
+        ? (scopedIds.length ? (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1 AND user_id=ANY($2)", [monthStart, scopedIds])).c : 0)
+        : (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1", [monthStart])).c;
+      const exitedLast12m = scopedIds
+        ? (scopedIds.length ? (await one("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND data::jsonb->>'last_working_date' >= $1 AND user_id=ANY($2)", [yr12Ago, scopedIds])).c : 0)
+        : (await one("SELECT COUNT(*) as c FROM entities WHERE type='Exit' AND data::jsonb->>'last_working_date' >= $1", [yr12Ago])).c;
       const attritionRate = totalActive > 0 ? parseFloat(((exitedLast12m / totalActive) * 100).toFixed(1)) : 0;
 
       // ── Leave ───────────────────────────────────────────────────────────────
-      const pendingLeaveRequests = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'")).c;
-      const activeLeaves         = (await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date' <= $1 AND data::jsonb->>'end_date' >= $2", [today, today])).c;
+      const pendingLeaveRequests = scopedIds
+        ? (scopedIds.length ? (await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending' AND user_id=ANY($1)", [scopedIds])).c : 0)
+        : (await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='pending'")).c;
+      const activeLeaves         = scopedIds
+        ? (scopedIds.length ? (await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date' <= $1 AND data::jsonb->>'end_date' >= $2 AND user_id=ANY($3)", [today, today, scopedIds])).c : 0)
+        : (await one("SELECT COUNT(*) as c FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date' <= $1 AND data::jsonb->>'end_date' >= $2", [today, today])).c;
 
-      // ── Payroll ─────────────────────────────────────────────────────────────
-      const payrollRows      = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'year'=$1 AND data::jsonb->>'month'=$2", [now.getFullYear(), now.getMonth()+1]));
+      // ── Payroll / Recruitment / Reimbursements / Helpdesk / Assets / Exits —
+      // org-wide financial/operational sections, not meaningfully "my team"
+      // scoped; blank out for a manager rather than leak company-wide figures.
+      const payrollRows      = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'year'=$1 AND data::jsonb->>'month'=$2", [now.getFullYear(), now.getMonth()+1]));
       const totalPayrollCost = payrollRows.reduce((s, r) => s + (r.net_salary || 0), 0);
 
-      // ── Recruitment ─────────────────────────────────────────────────────────
-      const allCandidates = parseEntities(await all("SELECT data FROM entities WHERE type='Candidate'"));
+      const allCandidates = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Candidate'"));
       const recruitment = {
         totalCandidates: allCandidates.length,
         hired:      allCandidates.filter(c => ['hired','joined'].includes(c.status)).length,
@@ -7142,24 +7216,23 @@ ${contextBlock || 'No employee context available — answer from general policy 
         hiringBySource: Object.entries(allCandidates.reduce((acc, c) => { const src = c.source || 'Direct'; acc[src] = (acc[src]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
       };
 
-      // ── Reimbursements ──────────────────────────────────────────────────────
-      const allReimb = parseEntities(await all("SELECT data FROM entities WHERE type='Reimbursement'"));
+      const allReimb = scopedIds
+        ? (scopedIds.length ? parseEntities(await all("SELECT data FROM entities WHERE type='Reimbursement' AND user_id=ANY($1)", [scopedIds])) : [])
+        : parseEntities(await all("SELECT data FROM entities WHERE type='Reimbursement'"));
       const reimbursements = {
         total:   allReimb.reduce((s, r) => s + (r.amount || 0), 0),
         pending: allReimb.filter(r => r.status === 'pending').reduce((s, r) => s + (r.amount || 0), 0),
         byCategory: Object.entries(allReimb.reduce((acc, r) => { const t = r.expense_type || 'Other'; acc[t] = (acc[t]||0)+(r.amount||0); return acc; }, {})).map(([name, amount]) => ({ name, amount })),
       };
 
-      // ── Helpdesk ────────────────────────────────────────────────────────────
-      const allTickets = parseEntities(await all("SELECT data FROM entities WHERE type='Ticket'"));
+      const allTickets = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Ticket'"));
       const tickets = {
         openTickets:     allTickets.filter(t => t.status === 'open').length,
         resolvedTickets: allTickets.filter(t => ['resolved','closed'].includes(t.status)).length,
         byCategory: Object.entries(allTickets.reduce((acc, t) => { const c = t.category||'General'; acc[c]=(acc[c]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
       };
 
-      // ── Assets ──────────────────────────────────────────────────────────────
-      const allAssets = parseEntities(await all("SELECT data FROM entities WHERE type='Asset'"));
+      const allAssets = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Asset'"));
       const assets = {
         total:        allAssets.length,
         assigned:     allAssets.filter(a => a.status === 'assigned').length,
@@ -7172,8 +7245,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
         byType: Object.entries(allAssets.reduce((acc, a) => { const t = a.asset_type||a.category||'Other'; acc[t]=(acc[t]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
       };
 
-      // ── Exits ───────────────────────────────────────────────────────────────
-      const allExits = parseEntities(await all("SELECT data FROM entities WHERE type='Exit'"));
+      const allExits = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Exit'"));
       const exits = {
         total:     allExits.length,
         pending:   allExits.filter(e => !['completed','fnf_done'].includes(e.status)).length,
@@ -7186,24 +7258,33 @@ ${contextBlock || 'No employee context available — answer from general policy 
       for (let i = 6; i >= 0; i--) {
         const d = new Date(); d.setDate(d.getDate() - i);
         const dateStr = d.toISOString().slice(0, 10);
-        const present = (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [dateStr])).c;
+        const present = scopedIds
+          ? (scopedIds.length ? (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL AND user_id=ANY($2)", [dateStr, scopedIds])).c : 0)
+          : (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [dateStr])).c;
         attendanceTrends.push({ date: dateStr, day: d.toLocaleDateString('en-IN',{weekday:'short'}), present, absent: Math.max(0, totalActive - present) });
       }
 
       // ── Department breakdown ────────────────────────────────────────────────
-      const allEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const allEmps = scopedIds
+        ? (scopedIds.length ? parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' AND user_id=ANY($1)", [scopedIds])) : [])
+        : parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
       const departmentBreakdown = Object.entries(allEmps.reduce((acc, e) => { const d = e.department||'Unknown'; acc[d]=(acc[d]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count }));
 
       // ── Biometric / attendance stats ────────────────────────────────────────
-      const attLogs      = parseEntities(await all("SELECT data FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'punch_date' >= $1", [monthStart]));
-      const attThisMonth = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1", [monthStart]));
+      const attLogsRaw    = parseEntities(await all("SELECT data FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'punch_date' >= $1", [monthStart]));
+      const attLogs       = scopedIds ? attLogsRaw.filter(l => scopedIds.includes(l.user_id)) : attLogsRaw;
+      const attThisMonth  = scopedIds
+        ? (scopedIds.length ? parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND user_id=ANY($2)", [monthStart, scopedIds])) : [])
+        : parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1", [monthStart]));
       const workedRecs   = attThisMonth.filter(a => a.working_hours > 0);
       const avgWorkingHours   = workedRecs.length > 0 ? parseFloat((workedRecs.reduce((s,a)=>s+(a.working_hours||0),0)/workedRecs.length).toFixed(1)) : 0;
       const biometricSyncedCount = attLogs.length;
       const avgDailyPunches      = biometricSyncedCount > 0 && totalActive > 0 ? parseFloat((biometricSyncedCount / totalActive / 20).toFixed(1)) : 0;
 
       // ── Performance rating distribution ─────────────────────────────────────
-      const allReviews = parseEntities(await all("SELECT data FROM entities WHERE type='PerformanceReview'"));
+      const allReviews = scopedIds
+        ? (scopedIds.length ? parseEntities(await all("SELECT data FROM entities WHERE type='PerformanceReview' AND user_id=ANY($1)", [scopedIds])) : [])
+        : parseEntities(await all("SELECT data FROM entities WHERE type='PerformanceReview'"));
       const ratingDist = Object.entries(allReviews.reduce((acc, r) => { const rt = r.rating||'Pending'; acc[rt]=(acc[rt]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count }));
 
       // ── Metrics (camelCase — consumed by MetricCard via m.xxx) ──────────────
@@ -7217,8 +7298,10 @@ ${contextBlock || 'No employee context available — answer from general policy 
       return res.json({
         metrics, recruitment, reimbursements, tickets, assets, exits,
         attendanceTrends, departmentBreakdown, ratingDist,
+        team_scoped: !!scopedIds,
         insights: [], leaveTrend: [], headcountGrowth: [], attritionTrend: [], payrollTrend: [],
         salarByDept: (() => {
+          if (scopedIds) return []; // payroll figures are org-financial, not team MIS
           const empDeptMap = {};
           allEmps.forEach(e => { if (e.user_id) empDeptMap[e.user_id] = e.department || 'Unknown'; });
           const deptSalary = {};
@@ -8343,7 +8426,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'submitProbationReview': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { employee_user_id: sprEmpUid, action: sprAction, extended_until: sprExtUntil, manager_scores: sprScores, manager_comments: sprMgrComments } = p;
+      if (!(await canAccessEmployee(cu, sprEmpUid))) return res.status(403).json({ error: 'Access denied — not your report' });
       const sprEmpRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [sprEmpUid]);
       if (!sprEmpRow) return res.json({ success: false, error: 'Employee not found' });
       const sprEmp = JSON.parse(sprEmpRow.data);
@@ -8375,7 +8460,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'getProbationReviews': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { status: gprStatus, employee_user_id: gprEmpUid } = p;
+      if (gprEmpUid && !(await canAccessEmployee(cu, gprEmpUid))) return res.status(403).json({ error: 'Access denied' });
       let gprSql = "SELECT data FROM entities WHERE type='ProbationReview'";
       const gprP = [];
       if (gprStatus) { gprSql += ` AND data::jsonb->>'status'=$${gprP.push(gprStatus)}`; }
@@ -8383,14 +8470,23 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       gprSql += " ORDER BY created_at DESC";
       const gprUserMap = {};
       (await all("SELECT id,full_name FROM users")).forEach(u => { gprUserMap[u.id] = u.full_name; });
-      const gprReviews = (await all(gprSql, gprP)).map(r => {
+      let gprReviews = (await all(gprSql, gprP)).map(r => {
         const d = JSON.parse(r.data);
         return { ...d, employee_full_name: gprUserMap[d.user_id] || d.employee_name };
       });
+      // Not already scoped by a specific employee_user_id lookup above —
+      // apply the caller's own team scope. null = unrestricted (HR/admin/
+      // management); manager only sees reviews for their own reports or
+      // that they personally submitted; anyone else sees only their own.
+      if (!gprEmpUid) {
+        const gprScopedIds = await getScopedUserIds(cu);
+        if (gprScopedIds) gprReviews = gprReviews.filter(r => gprScopedIds.includes(r.user_id) || r.manager_id === cu.id);
+      }
       return res.json({ success: true, reviews: gprReviews });
     }
 
     case 'processProbationHRReview': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { review_id: phrRevId, hr_action: phrAction, hr_comments: phrComments } = p;
       const phrRow = await one("SELECT id,data FROM entities WHERE type='ProbationReview' AND id=$1", [phrRevId]);
       if (!phrRow) return res.json({ success: false, error: 'Review not found' });
@@ -8415,6 +8511,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'processProbationManagementApproval': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { review_id: pmaRevId, final_action: pmaFinalAction, management_comments: pmaMgmtComments, extended_until: pmaExtUntil } = p;
       const pmaRow = await one("SELECT id,data FROM entities WHERE type='ProbationReview' AND id=$1", [pmaRevId]);
       if (!pmaRow) return res.json({ success: false, error: 'Review not found' });
@@ -8443,6 +8540,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'hrInitiateConfirmation': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { employee_user_id: hicEmpUid, action: hicAction, extended_until: hicExtUntil, scores: hicScores, comments: hicComments } = p;
       const hicEmpRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [hicEmpUid]);
       if (!hicEmpRow) return res.json({ success: false, error: 'Employee not found' });
@@ -8476,6 +8574,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'sendConfirmationLetter': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { review_id: sclRevId } = p;
       if (!sclRevId) return res.json({ success: false, error: 'review_id required' });
 
@@ -8974,15 +9073,17 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     /* ── Attrition Risk (predictive) ─────────────────── */
     case 'getAttritionRisk': {
-      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'Manager/HR access required' });
+      if (!(await hasRole(cu, [...MGR_ROLES, 'manager']))) return res.status(403).json({ error: 'Manager/HR access required' });
+      const arScopedIds = await getScopedUserIds(cu); // null = org-wide (HR/admin/management); array = manager's own reports
       const now = new Date();
       const today = now.toISOString().slice(0, 10);
       const d90 = new Date(now.getTime() - 90 * 864e5).toISOString().slice(0, 10);
       const d60 = new Date(now.getTime() - 60 * 864e5).toISOString().slice(0, 10);
 
       // Batch-load everything once (avoid N+1)
-      const employees = (await all("SELECT id,user_id,data,created_at FROM entities WHERE type='Employee' AND status='active'"))
+      let employees = (await all("SELECT id,user_id,data,created_at FROM entities WHERE type='Employee' AND status='active'"))
         .map(r => ({ ...JSON.parse(r.data), _id: r.id, _created: r.created_at }));
+      if (arScopedIds) employees = employees.filter(e => arScopedIds.includes(e.user_id));
       const exits = (await all("SELECT user_id FROM entities WHERE type='Exit'")).map(r => r.user_id);
       const exitedSet = new Set(exits.filter(Boolean));
 
@@ -9097,9 +9198,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'getRetentionPlan': {
-      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'Manager/HR access required' });
+      if (!(await hasRole(cu, [...MGR_ROLES, 'manager']))) return res.status(403).json({ error: 'Manager/HR access required' });
       const ruid = p.user_id;
       if (!ruid) return res.json({ success: false, error: 'user_id required' });
+      if (!(await canAccessEmployee(cu, ruid))) return res.status(403).json({ error: 'Access denied — not your report' });
       const rEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [ruid]);
       const rEmp = rEmpRow ? JSON.parse(rEmpRow.data) : {};
       const factors = Array.isArray(p.factors) ? p.factors : [];
@@ -10223,13 +10325,23 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
 
     /* ── HR Reports ─────────────────────────────────── */
     case 'generateReport': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { report_type, from_date, to_date, department } = p;
       const now   = new Date();
       const fd    = from_date || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
       const td    = to_date   || now.toISOString().slice(0, 10);
-      const byDept = (rows) => department && department !== 'all'
-        ? rows.filter(e => e.department === department)
-        : rows;
+      // null = unrestricted (HR/admin/management, honours the department
+      // filter param as before). An array = a manager's direct reports —
+      // every report type below is scoped to it regardless of what
+      // department the caller requested (a manager doesn't get to pick a
+      // different department, only ever their own team).
+      const scopedIds = await getScopedUserIds(cu);
+      const byScope = (rows, userField = 'user_id') => {
+        let r = scopedIds ? rows.filter(row => scopedIds.includes(row[userField])) : rows;
+        if (department && department !== 'all') r = r.filter(row => row.department === department);
+        return r;
+      };
+      const byDept = byScope; // alias — every existing byDept() call site is now also scope-checked
 
       switch (report_type) {
 
@@ -10310,9 +10422,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
               const d = `${r.year}-${String(r.month||1).padStart(2,'0')}-01`;
               return d >= fd && d <= td;
             });
-          const filtered = department && department !== 'all'
-            ? payRows.filter(r => r.department === department)
-            : payRows;
+          const filtered = byScope(payRows);
           filtered.sort((a, b) => (a.year - b.year) || (a.month - b.month) || (a.employee_code||'').localeCompare(b.employee_code||''));
           return res.json({
             report_type,
@@ -10398,9 +10508,9 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
           const assets = parseEntities(await all("SELECT data FROM entities WHERE type='Asset' AND data::jsonb->>'status'='assigned'"));
           const emps   = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
           const empMap = Object.fromEntries(emps.map(e => [e.user_id, e]));
-          const filtered = department && department !== 'all'
-            ? assets.filter(a => empMap[a.assigned_to]?.department === department)
-            : assets;
+          let filtered = assets;
+          if (scopedIds) filtered = filtered.filter(a => scopedIds.includes(a.assigned_to));
+          if (department && department !== 'all') filtered = filtered.filter(a => empMap[a.assigned_to]?.department === department);
           return res.json({
             report_type,
             columns: ['Asset ID','Asset Name','Type','Brand','Serial No','Assigned To','Department','Assigned Date','Expected Return'],

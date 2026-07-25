@@ -52,8 +52,10 @@ export default function Employees() {
       let updatedEmpRecords = await base44.entities.Employee.list('-created_date', 500);
 
       const userRole = currentUser.custom_role || currentUser.role;
-      if (userRole === 'manager' || userRole === 'management') {
-        // Show employees where this user is set as reporting manager
+      // Only 'manager' (scoped middle management) is restricted to their own
+      // direct reports here — 'management' (top-level: director/CEO/MD) sees
+      // the full org, same as HR/admin.
+      if (userRole === 'manager') {
         updatedEmpRecords = updatedEmpRecords.filter(e => e.reporting_manager_id === currentUser.id);
       }
 

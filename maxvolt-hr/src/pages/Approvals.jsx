@@ -58,9 +58,12 @@ export default function Approvals() {
       } catch { /* workflows unavailable — use built-in flows */ }
       setWorkflows(wfMap);
 
-      // Employees store reporting_manager_email (not reporting_manager_id), so match by email
+      // reporting_manager_id is the canonical field (resolved server-side from
+      // reporting_manager_email at import time) — match on id first, falling
+      // back to email for any record where that resolution hasn't run yet.
       const directReportUserIds = empRecords
-        .filter(e => e.reporting_manager_email && e.reporting_manager_email.toLowerCase() === (currentUser.email || '').toLowerCase())
+        .filter(e => e.reporting_manager_id === currentUser.id ||
+          (e.reporting_manager_email && e.reporting_manager_email.toLowerCase() === (currentUser.email || '').toLowerCase()))
         .map(e => e.user_id);
 
       let leaves = await base44.entities.Leave.filter({ status: 'pending' }, '-created_date');
