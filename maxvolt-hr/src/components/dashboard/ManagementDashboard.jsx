@@ -36,7 +36,7 @@ export default function ManagementDashboard({ user }) {
     const today = format(new Date(), 'yyyy-MM-dd');
 
     const [employees, usersResp, leaves, reimbursements, regularisations, announcements, teamAssets, teamTrainings] = await Promise.all([
-      base44.entities.Employee.filter({ reporting_manager_email: user.email }).catch(() => []),
+      base44.entities.Employee.filter({ reporting_manager_id: user.id }).catch(() => []),
       base44.functions.invoke('getAllUsers', {}).catch(() => ({ data: { users: [] } })),
       base44.entities.Leave.filter({ status: 'pending' }).catch(() => []),
       base44.entities.Reimbursement.filter({ status: 'pending' }).catch(() => []),
