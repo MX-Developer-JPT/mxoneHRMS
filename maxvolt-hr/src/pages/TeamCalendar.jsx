@@ -47,9 +47,14 @@ export default function TeamCalendar() {
       const month = currentMonth.getMonth() + 1;
       const year = currentMonth.getFullYear();
       const role = currentUser?.custom_role || currentUser?.role;
-      const isManager = role === 'management' || role === 'manager';
+      // Only 'manager' passes manager_id (scoping the backend to their own
+      // team) — 'management' (top-level) omits it entirely and gets the
+      // full-org calendar, same as HR. Previously conflated, which wrongly
+      // narrowed top-level management down to their own (usually empty)
+      // direct-reports list.
+      const isTeamManagerOnly = role === 'manager';
       const params = { month, year };
-      if (isManager && currentUser?.id) params.manager_id = currentUser.id;
+      if (isTeamManagerOnly && currentUser?.id) params.manager_id = currentUser.id;
       const response = await base44.functions.invoke('getTeamCalendar', params);
       const d = response?.data || response;
       if (d?.success) {

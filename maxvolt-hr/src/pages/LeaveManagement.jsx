@@ -99,9 +99,13 @@ export default function LeaveManagement() {
       let requests = await base44.entities.Leave.list('-created_date', 500);
 
       const isHR = ['hr', 'admin'].includes(currentUser.role) || ['hr', 'admin'].includes(currentUser.custom_role);
-      const isManager = ['manager', 'management'].includes(currentUser.role) || ['manager', 'management'].includes(currentUser.custom_role);
+      // Only 'manager' (scoped middle management) is restricted to direct
+      // reports here — 'management' (top-level) sees the full org, same as
+      // HR/admin. Previously conflated with 'manager', which wrongly hid
+      // org-wide pending requests from top-level management users.
+      const isTeamManagerOnly = currentUser.role === 'manager' || currentUser.custom_role === 'manager';
 
-      if (isManager && !isHR) {
+      if (isTeamManagerOnly && !isHR) {
         // Manager sees only leaves from their direct reports
         const subordinates = empRecords.filter(e => e.reporting_manager_id === currentUser.id);
         const subUserIds = new Set(subordinates.map(e => e.user_id));

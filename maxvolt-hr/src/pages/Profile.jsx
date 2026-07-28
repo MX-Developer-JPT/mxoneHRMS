@@ -15,7 +15,8 @@ import { safeDate } from '@/lib/dateUtils';
 const roleLabels = {
   admin: { label: 'Administrator', color: 'bg-red-100 text-red-800', access: 'Full system access' },
   hr: { label: 'HR Manager', color: 'bg-purple-100 text-purple-800', access: 'HR, Payroll, Recruitment, Compliance' },
-  management: { label: 'Management', color: 'bg-blue-100 text-blue-800', access: 'Team management, Reports, Approvals' },
+  management: { label: 'Management', color: 'bg-blue-100 text-blue-800', access: 'Organization-wide management, Reports, Approvals' },
+  manager: { label: 'Manager', color: 'bg-teal-100 text-teal-800', access: 'Team attendance, approvals, confirmation and reports for your reports' },
   employee: { label: 'Employee', color: 'bg-green-100 text-green-800', access: 'Attendance, Leave, Payslips, Helpdesk' },
   user: { label: 'Employee', color: 'bg-green-100 text-green-800', access: 'Attendance, Leave, Payslips, Helpdesk' },
   gate_admin: { label: 'Gate Administrator', color: 'bg-blue-100 text-blue-800', access: 'Gate pass management — mark employee out/in' },
@@ -136,7 +137,7 @@ export default function Profile() {
 
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
 
-  const roleInfo = roleLabels[user?.role] || roleLabels['employee'];
+  const roleInfo = roleLabels[user?.custom_role] || roleLabels[user?.role] || roleLabels['employee'];
   const tenure = employee?.date_of_joining
     ? (() => {
         const months = differenceInMonths(new Date(), new Date(employee.date_of_joining));

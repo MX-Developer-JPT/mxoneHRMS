@@ -661,6 +661,11 @@ export default function Layout({ children, currentPageName }) {
         { label: 'Attendance',icon: Clock,            page: 'MarkAttendance',path: '/MarkAttendance' },
         { label: 'Leave',     icon: FileText,         page: 'Leave',        path: '/Leave' },
       ]
+    : isGateAdmin
+    ? [
+        { label: 'Gate Admin', icon: ShieldCheck,     page: 'GateAdminDashboard', path: '/GateAdminDashboard' },
+        { label: 'Profile',    icon: User2,            page: 'GateAdminProfile',  path: '/GateAdminProfile' },
+      ]
     : [
         { label: 'Home',      icon: LayoutDashboard, page: 'Dashboard',    path: '/Dashboard' },
         { label: 'Attendance',icon: Clock,            page: 'MarkAttendance',path: '/MarkAttendance' },

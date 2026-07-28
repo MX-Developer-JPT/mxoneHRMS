@@ -5407,7 +5407,9 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'processRegularisation': {
-      const { regularisation_id, action, comment = '', role = 'manager' } = p;
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { regularisation_id, action } = p;
+      const comment = p.comment || '';
       if (!regularisation_id || !action) return res.status(400).json({ error: 'regularisation_id and action required' });
 
       const row = await one("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND id=$1", [regularisation_id]);
@@ -5417,10 +5419,17 @@ router.post('/:name', async (req, res) => {
       let newStatus = reg.status;
       const update  = { updated_at: new Date().toISOString() };
 
-      // admin / hr / management can fully approve (→ completed); manager does step-1 only
-      const isFullApprover = ['hr', 'admin', 'management'].includes(role);
+      // admin / hr / management can fully approve (→ completed); manager does
+      // step-1 only, and only for their own direct report. Previously this
+      // trusted a client-supplied `role` param outright — any authenticated
+      // caller could pass role:'management' and fully approve/complete
+      // anyone's request. Now derived entirely from the server's own
+      // knowledge of the caller's actual role and team.
+      const isFullApprover = await hasRole(cu, MGR_ROLES);
+      const isTeamManager  = !isFullApprover && await hasRole(cu, ['manager']) && await canAccessEmployee(cu, reg.user_id);
+      if (!isFullApprover && !isTeamManager) return res.status(403).json({ error: 'Access denied — not authorized to act on this request' });
 
-      if (!isFullApprover && role === 'manager') {
+      if (isTeamManager) {
         if (action === 'approve') {
           newStatus = 'manager_approved';
           update.manager_approved_at = new Date().toISOString();
@@ -7360,7 +7369,14 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'getTeamCalendar': {
+      if (!(await hasRole(cu, [...MGR_ROLES, 'manager']))) return res.status(403).json({ error: 'Manager/HR access required' });
       const { month, year, manager_id } = p;
+      // A manager may only ever request their OWN team's calendar — without
+      // this, any caller could pass an arbitrary manager_id and see that
+      // manager's team's leave/attendance data.
+      if (manager_id && manager_id !== cu.id && !(await hasRole(cu, MGR_ROLES))) {
+        return res.status(403).json({ error: 'Access denied — not your team' });
+      }
       const m = parseInt(month) || new Date().getMonth() + 1;
       const y = parseInt(year)  || new Date().getFullYear();
       const monthStart = `${y}-${String(m).padStart(2,'0')}-01`;

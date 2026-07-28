@@ -93,8 +93,12 @@ export default function ExitManagement() {
       const isDeptClearance = clearanceDeptKw.some(kw => myDept.includes(kw));
 
       let filtered = allExits;
-      if (!isHR) {
-        if (role === 'management' || role === 'manager') {
+      // 'management' (top-level) sees the full org, same as HR — only
+      // 'manager' (scoped middle management) is restricted to their own
+      // reports' exits (plus anything already in dept-clearance stages,
+      // which they may need to action regardless of reporting line).
+      if (!isHR && role !== 'management') {
+        if (role === 'manager') {
           const reporteeIds = allEmps.filter(e => e.reporting_manager_id === me.id).map(e => e.user_id);
           filtered = allExits.filter(e => reporteeIds.includes(e.user_id) || ['clearance_pending','clearance_done'].includes(e.status));
         } else if (isDeptClearance) {
