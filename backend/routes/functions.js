@@ -7,6 +7,7 @@ import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession } from './attendancelog.js';
+import { cacheInvalidate } from './entities.js';
 import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
@@ -751,6 +752,7 @@ router.post('/:name', async (req, res) => {
     case 'updateUserDetails': {
       // Called from UserRoleManagement.jsx with { userId, userUpdates, employeeUpdates }
       // Also supports legacy flat params for backward compat
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
       const uid = p.userId || p.user_id || cu?.id;
       if (!uid) return res.status(400).json({ error: 'userId required' });
 
@@ -796,9 +798,79 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'updateUserRole': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
       const { user_id, role, custom_role } = p;
       await run("UPDATE users SET role=$1,custom_role=$2 WHERE id=$3", [role, custom_role||role, user_id]);
       return res.json({ success: true });
+    }
+
+    case 'bulkReassignReportingManager': {
+      // Admin/HR tool: reassign every active employee in a department to a
+      // new reporting manager in one shot (UserRoleManagement.jsx).
+      if (!(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'Admin/HR access required' });
+      const { department, new_manager_user_id } = p;
+      if (!department || !new_manager_user_id) return res.json({ success: false, error: 'department and new_manager_user_id are required' });
+
+      const rows = await all("SELECT id, user_id, data FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department'=$1", [department]);
+      let updated = 0;
+      for (const row of rows) {
+        if (row.user_id === new_manager_user_id) continue; // never make someone their own manager
+        const d = JSON.parse(row.data);
+        d.reporting_manager_id = new_manager_user_id;
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(d), row.id]);
+        updated++;
+      }
+      if (updated > 0) cacheInvalidate('Employee');
+
+      // The new manager now has direct reports — make sure their role can
+      // actually see/approve for their team (manager role scoping requires it).
+      const nm = await one("SELECT role, custom_role FROM users WHERE id=$1", [new_manager_user_id]);
+      let promotedManager = false;
+      if (nm && !['admin', 'hr', 'management', 'manager'].includes(nm.custom_role || nm.role)) {
+        await run("UPDATE users SET custom_role='manager' WHERE id=$1", [new_manager_user_id]);
+        promotedManager = true;
+      }
+
+      return res.json({ success: true, updated, promoted_manager: promotedManager });
+    }
+
+    case 'bulkConvertManagementToManager': {
+      // Admin tool: keep 'management' (org-wide/unrestricted) on only a
+      // hand-picked set of users; everyone else currently holding
+      // 'management' gets scoped down to 'manager'. Also sweeps every active
+      // Employee's reporting_manager_id and makes sure whoever is someone's
+      // reporting manager holds at least 'manager' role, so team-scoped
+      // visibility/approval actually works for them.
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const keepIds = new Set(Array.isArray(p.keep_management_user_ids) ? p.keep_management_user_ids : []);
+
+      const mgmtUsers = await all("SELECT id, role, custom_role FROM users WHERE role='management' OR custom_role='management'");
+      let converted = 0;
+      for (const u of mgmtUsers) {
+        if (keepIds.has(u.id)) continue;
+        await run("UPDATE users SET role=CASE WHEN role='management' THEN 'manager' ELSE role END, custom_role='manager' WHERE id=$1", [u.id]);
+        converted++;
+      }
+
+      const mgrIdRows = await all(`
+        SELECT DISTINCT data::jsonb->>'reporting_manager_id' AS mgr
+        FROM entities
+        WHERE type='Employee' AND status='active'
+          AND data::jsonb->>'reporting_manager_id' IS NOT NULL AND data::jsonb->>'reporting_manager_id' <> ''
+      `);
+      let promoted = 0;
+      for (const row of mgrIdRows) {
+        const mgrId = row.mgr;
+        if (!mgrId || keepIds.has(mgrId)) continue;
+        const u = await one("SELECT role, custom_role FROM users WHERE id=$1", [mgrId]);
+        if (!u) continue;
+        const eff = u.custom_role || u.role;
+        if (['admin', 'hr', 'management', 'manager'].includes(eff)) continue;
+        await run("UPDATE users SET custom_role='manager' WHERE id=$1", [mgrId]);
+        promoted++;
+      }
+
+      return res.json({ success: true, converted, promoted, kept_management: keepIds.size });
     }
 
     case 'linkUserToEmployee': {

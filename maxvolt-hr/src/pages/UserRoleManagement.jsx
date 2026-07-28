@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Users, Search, Shield, Pencil, ChevronsUpDown } from 'lucide-react';
+import { Users, Search, Shield, Pencil, ChevronsUpDown, Check, ArrowRightLeft, UserCog, AlertTriangle } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
@@ -40,6 +40,18 @@ export default function UserRoleManagement() {
   const [employees, setEmployees] = useState({});
   const [managerOpen, setManagerOpen] = useState(false);
   const [departments, setDepartments] = useState([]);
+
+  // Bulk: reassign reporting manager for a whole department
+  const [bulkDept, setBulkDept] = useState('');
+  const [bulkManagerId, setBulkManagerId] = useState('');
+  const [bulkManagerOpen, setBulkManagerOpen] = useState(false);
+  const [bulkApplying, setBulkApplying] = useState(false);
+
+  // Bulk: convert 'management' role to scoped 'manager', except chosen users
+  const [keepManagementIds, setKeepManagementIds] = useState(new Set());
+  const [roleCleanupApplying, setRoleCleanupApplying] = useState(false);
+
+  const [confirmAction, setConfirmAction] = useState(null); // { title, description, onConfirm }
 
   useEffect(() => { loadUsers(); }, []);
 
@@ -131,6 +143,82 @@ export default function UserRoleManagement() {
     }
   };
 
+  const employeeList = Object.values(employees);
+  const bulkAffectedEmployees = bulkDept ? employeeList.filter(e => e.department === bulkDept) : [];
+  const managementUsers = users.filter(u => (u.custom_role || u.role) === 'management');
+
+  const toggleKeepManagement = (id) => {
+    setKeepManagementIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const runBulkReassign = async () => {
+    setBulkApplying(true);
+    try {
+      const res = await base44.functions.invoke('bulkReassignReportingManager', {
+        department: bulkDept,
+        new_manager_user_id: bulkManagerId,
+      });
+      if (res.data?.success) {
+        toast.success(`Reassigned ${res.data.updated} employee(s) in "${bulkDept}"${res.data.promoted_manager ? ' — new manager granted Manager role' : ''}`);
+        setBulkDept('');
+        setBulkManagerId('');
+        await loadUsers();
+      } else {
+        toast.error(res.data?.error || 'Failed to reassign reporting manager');
+      }
+    } catch (error) {
+      toast.error('Failed to reassign reporting manager');
+    } finally {
+      setBulkApplying(false);
+      setConfirmAction(null);
+    }
+  };
+
+  const handleBulkReassignClick = () => {
+    if (!bulkDept || !bulkManagerId) { toast.error('Select a department and a new reporting manager'); return; }
+    const newManagerName = employeeList.find(e => e.user_id === bulkManagerId)?.display_name || 'the selected employee';
+    setConfirmAction({
+      title: 'Reassign Reporting Manager',
+      description: `This will set "${newManagerName}" as the reporting manager for all ${bulkAffectedEmployees.length} active employee(s) in "${bulkDept}". Continue?`,
+      onConfirm: runBulkReassign,
+    });
+  };
+
+  const runConvertManagement = async () => {
+    setRoleCleanupApplying(true);
+    try {
+      const res = await base44.functions.invoke('bulkConvertManagementToManager', {
+        keep_management_user_ids: Array.from(keepManagementIds),
+      });
+      if (res.data?.success) {
+        toast.success(`${res.data.converted} converted to Manager, ${res.data.promoted} team lead(s) auto-promoted to Manager, ${res.data.kept_management} kept as Management`);
+        setKeepManagementIds(new Set());
+        await loadUsers();
+      } else {
+        toast.error(res.data?.error || 'Failed to convert roles');
+      }
+    } catch (error) {
+      toast.error('Failed to convert roles');
+    } finally {
+      setRoleCleanupApplying(false);
+      setConfirmAction(null);
+    }
+  };
+
+  const handleConvertManagementClick = () => {
+    const toConvert = managementUsers.length - keepManagementIds.size;
+    if (toConvert <= 0) { toast.error('Nothing to convert — every Management user is checked to stay Management'); return; }
+    setConfirmAction({
+      title: 'Convert Management to Manager',
+      description: `${keepManagementIds.size} user(s) will stay Management. ${toConvert} user(s) will be converted to Manager (scoped to their own team only). Any other user who is someone's reporting manager will also be promoted to Manager. Continue?`,
+      onConfirm: runConvertManagement,
+    });
+  };
+
   if (currentUser?.role !== 'admin') {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
@@ -192,6 +280,107 @@ export default function UserRoleManagement() {
               </CardContent>
             </Card>
           ))}
+        </div>
+
+        {/* Bulk Admin Tools */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <ArrowRightLeft className="w-4 h-4 text-blue-600" /> Bulk Reassign Reporting Manager
+              </CardTitle>
+              <p className="text-xs text-gray-500 pt-1">Change the reporting manager for every active employee in a department in one go.</p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-2">
+                <Label>Department</Label>
+                <Select value={bulkDept} onValueChange={v => { setBulkDept(v); setBulkManagerId(''); }}>
+                  <SelectTrigger><SelectValue placeholder="Select department" /></SelectTrigger>
+                  <SelectContent>
+                    {departments.map(d => (
+                      <SelectItem key={d.id} value={d.name}>{d.name} ({d.code})</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {bulkDept && <p className="text-xs text-gray-500">{bulkAffectedEmployees.length} active employee(s) in this department</p>}
+              </div>
+
+              <div className="space-y-2">
+                <Label>New Reporting Manager</Label>
+                <Popover open={bulkManagerOpen} onOpenChange={setBulkManagerOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" disabled={!bulkDept} className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed">
+                      <span className={bulkManagerId ? 'text-foreground' : 'text-muted-foreground'}>
+                        {bulkManagerId ? (employeeList.find(e => e.user_id === bulkManagerId)?.display_name || bulkManagerId) : 'Select employee...'}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[300px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search employee..." />
+                      <CommandList>
+                        <CommandEmpty>No employee found.</CommandEmpty>
+                        <CommandGroup>
+                          {employeeList.map(e => (
+                            <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.designation || ''}`} onSelect={() => { setBulkManagerId(e.user_id); setBulkManagerOpen(false); }}>
+                              <Check className={`mr-2 h-4 w-4 ${bulkManagerId === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                              {e.display_name || e.user_id} {e.designation ? `· ${e.designation}` : ''}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+              <Button className="w-full" disabled={!bulkDept || !bulkManagerId || bulkApplying} onClick={handleBulkReassignClick}>
+                Reassign All in Department
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <UserCog className="w-4 h-4 text-blue-600" /> Convert Management to Manager
+              </CardTitle>
+              <p className="text-xs text-gray-500 pt-1">Check who should stay org-wide Management. Everyone else converts to Manager, scoped to their own team.</p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {managementUsers.length === 0 ? (
+                <p className="text-sm text-gray-500 py-4 text-center">No users currently hold the Management role.</p>
+              ) : (
+                <>
+                  <div className="max-h-56 overflow-y-auto border rounded-lg divide-y">
+                    {managementUsers.map(u => {
+                      const emp = employees[u.id];
+                      const keep = keepManagementIds.has(u.id);
+                      return (
+                        <label key={u.id} className="flex items-center gap-3 p-2 cursor-pointer hover:bg-muted/50">
+                          <input type="checkbox" checked={keep} onChange={() => toggleKeepManagement(u.id)} className="rounded" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium truncate">{emp?.display_name || u.full_name}</p>
+                            <p className="text-xs text-gray-500 truncate">{u.email}{emp?.department ? ` · ${emp.department}` : ''}</p>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-gray-500">{keepManagementIds.size} stay Management · {managementUsers.length - keepManagementIds.size} convert to Manager</span>
+                    {keepManagementIds.size !== 5 && (
+                      <span className="flex items-center gap-1 text-amber-600"><AlertTriangle className="w-3 h-3" /> Expected 5</span>
+                    )}
+                  </div>
+                  <Button className="w-full" variant="destructive" disabled={roleCleanupApplying} onClick={handleConvertManagementClick}>
+                    Convert Unchecked to Manager
+                  </Button>
+                </>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
         {/* Users Grid */}
@@ -348,6 +537,20 @@ export default function UserRoleManagement() {
             <Button variant="outline" onClick={() => setEditUser(null)}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm Dialog for bulk admin actions */}
+      <Dialog open={!!confirmAction} onOpenChange={(open) => !open && !bulkApplying && !roleCleanupApplying && setConfirmAction(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>{confirmAction?.title}</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">{confirmAction?.description}</p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" disabled={bulkApplying || roleCleanupApplying} onClick={() => setConfirmAction(null)}>Cancel</Button>
+            <Button variant="destructive" disabled={bulkApplying || roleCleanupApplying} onClick={() => confirmAction?.onConfirm()}>
+              {(bulkApplying || roleCleanupApplying) ? 'Applying...' : 'Confirm'}
             </Button>
           </div>
         </DialogContent>

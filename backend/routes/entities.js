@@ -194,6 +194,7 @@ function cacheInvalidate(type) {
     if (k.startsWith(type + ':')) _cache.delete(k);
   }
 }
+export { cacheInvalidate };
 
 /* ── SQL ORDER BY + LIMIT builder ─────────────────────────── */
 // Pushes sorting and limiting into the database query so the server
