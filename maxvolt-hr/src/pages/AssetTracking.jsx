@@ -735,6 +735,19 @@ export default function AssetTracking() {
     setImportResults(null);
   };
 
+  const handleDownloadTemplate = () => {
+    const headers = ['asset_name', 'asset_type_name', 'serial_number', 'model_number', 'condition', 'purchase_date', 'purchase_cost', 'warranty_expiry', 'notes'];
+    const sampleTypeNames = assetTypes.length > 0
+      ? assetTypes.slice(0, 3).map(t => t.name)
+      : ['Laptop', 'Monitor', 'Chair'];
+    const rows = [
+      { asset_name: 'Dell Latitude 5420', asset_type_name: sampleTypeNames[0] || 'Laptop', serial_number: 'SN-LAP-001', model_number: 'Latitude 5420', condition: 'good', purchase_date: '2024-01-15', purchase_cost: 65000, warranty_expiry: '2027-01-15', notes: 'Sample entry - replace with real data' },
+      { asset_name: 'Dell 24" Monitor', asset_type_name: sampleTypeNames[1] || sampleTypeNames[0] || 'Monitor', serial_number: 'SN-MON-002', model_number: 'P2422H', condition: 'new', purchase_date: '2024-03-10', purchase_cost: 12000, warranty_expiry: '2027-03-10', notes: 'Sample entry - replace with real data' },
+      { asset_name: 'Office Chair', asset_type_name: sampleTypeNames[2] || sampleTypeNames[0] || 'Chair', serial_number: 'SN-CHR-003', model_number: 'ErgoPro', condition: 'fair', purchase_date: '2023-11-20', purchase_cost: 8500, warranty_expiry: '2025-11-20', notes: 'Sample entry - replace with real data' },
+    ];
+    exportToCSV('Asset_Import_Template.csv', headers, rows);
+  };
+
   // --- Bulk Export ---
   const exportToCSV = (filename, headers, rows) => {
     const escape = (v) => `"${String(v || '').replace(/"/g, '""')}"`;
@@ -1393,6 +1406,9 @@ export default function AssetTracking() {
                   </span>
                   <span className="block mt-1 text-xs">Asset types must already exist in the system.</span>
                 </p>
+                <Button type="button" variant="outline" size="sm" className="w-full" onClick={handleDownloadTemplate}>
+                  <Download className="w-4 h-4 mr-2" /> Download Template (with sample entries)
+                </Button>
                 <div className="border-2 border-dashed rounded-lg p-6 text-center">
                   {importFile ? (
                     <div className="space-y-2">
