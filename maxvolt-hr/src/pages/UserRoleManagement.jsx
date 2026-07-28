@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Users, Search, Shield, Pencil, ChevronsUpDown, Check, ArrowRightLeft, UserCog, AlertTriangle } from 'lucide-react';
+import { Users, Search, Shield, Pencil, ChevronsUpDown, Check, ArrowRightLeft, UserCog, AlertTriangle, Wrench } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
@@ -52,6 +52,9 @@ export default function UserRoleManagement() {
   const [roleCleanupApplying, setRoleCleanupApplying] = useState(false);
 
   const [confirmAction, setConfirmAction] = useState(null); // { title, description, onConfirm }
+
+  // One-time repair: backfill reporting_manager_id from legacy reporting_manager_email
+  const [backfillRunning, setBackfillRunning] = useState(false);
 
   useEffect(() => { loadUsers(); }, []);
 
@@ -219,6 +222,23 @@ export default function UserRoleManagement() {
     });
   };
 
+  const runBackfill = async () => {
+    setBackfillRunning(true);
+    try {
+      const res = await base44.functions.invoke('backfillReportingManagerIds', {});
+      if (res.data?.success) {
+        toast.success(`Linked ${res.data.wired} employee(s) to their manager · ${res.data.promoted_managers} manager(s) granted Manager role · ${res.data.not_found} manager email(s) not found`);
+        await loadUsers();
+      } else {
+        toast.error(res.data?.error || 'Backfill failed');
+      }
+    } catch (error) {
+      toast.error('Backfill failed');
+    } finally {
+      setBackfillRunning(false);
+    }
+  };
+
   if (currentUser?.role !== 'admin') {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
@@ -281,6 +301,26 @@ export default function UserRoleManagement() {
             </Card>
           ))}
         </div>
+
+        {/* One-time data repair */}
+        <Card className="mb-6 border-amber-200 bg-amber-50">
+          <CardContent className="pt-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <Wrench className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-amber-900">Repair Reporting-Manager Links</p>
+                <p className="text-xs text-amber-800/80 mt-0.5">
+                  Some older employee records only recorded their manager by email (legacy import), never by ID — those employees are invisible
+                  on their manager's dashboard and don't count toward that manager's approval scope. Run this once to link them by ID and
+                  auto-grant Manager role to anyone this reveals as a reporting manager. Safe to re-run; already-linked records are skipped.
+                </p>
+              </div>
+            </div>
+            <Button variant="outline" className="border-amber-300 shrink-0" disabled={backfillRunning} onClick={runBackfill}>
+              {backfillRunning ? 'Running...' : 'Run Repair'}
+            </Button>
+          </CardContent>
+        </Card>
 
         {/* Bulk Admin Tools */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">

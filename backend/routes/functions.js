@@ -873,6 +873,41 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, converted, promoted, kept_management: keepIds.size });
     }
 
+    case 'backfillReportingManagerIds': {
+      // Data-hygiene sweep: some Employee records only ever got
+      // reporting_manager_email wired (legacy CSV import path, or a row
+      // whose manager didn't exist as a user yet at import time) and never
+      // got reporting_manager_id set. Every manager-scoping check
+      // (getScopedUserIds, canAccessEmployee) and the manager dashboard key
+      // off reporting_manager_id only, so those employees are invisible to
+      // their manager until this is backfilled.
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const rows = await all(`
+        SELECT id, data FROM entities
+        WHERE type='Employee' AND status='active'
+          AND data::jsonb->>'reporting_manager_email' IS NOT NULL AND data::jsonb->>'reporting_manager_email' <> ''
+          AND (data::jsonb->>'reporting_manager_id' IS NULL OR data::jsonb->>'reporting_manager_id' = '')
+      `);
+      let wired = 0, notFound = 0, promoted = 0;
+      for (const row of rows) {
+        const d = JSON.parse(row.data);
+        const email = (d.reporting_manager_email || '').toLowerCase().trim();
+        if (!email) continue;
+        const mgr = await one("SELECT id, role, custom_role FROM users WHERE LOWER(email)=$1", [email]);
+        if (!mgr) { notFound++; continue; }
+        d.reporting_manager_id = mgr.id;
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(d), row.id]);
+        wired++;
+        const eff = mgr.custom_role || mgr.role;
+        if (!['admin', 'hr', 'management', 'manager'].includes(eff)) {
+          await run("UPDATE users SET custom_role='manager' WHERE id=$1", [mgr.id]);
+          promoted++;
+        }
+      }
+      if (wired > 0) cacheInvalidate('Employee');
+      return res.json({ success: true, wired, not_found: notFound, promoted_managers: promoted });
+    }
+
     case 'linkUserToEmployee': {
       const { user_id, employee_id } = p;
       const row = await one("SELECT data FROM entities WHERE type='Employee' AND id=$1", [employee_id]);
