@@ -258,6 +258,123 @@
   .dark .min-h-screen.bg-gradient-to-br { background: hsl(var(--background)) !important; }
 }
 
+/* ── Dark mode overrides, part 2 — accent families and gray/slate
+   shades not covered above. The block above only rescued the 8 accent
+   colors and gray shades that happened to be common when it was written;
+   any page using pink/rose/cyan/emerald/amber/violet/sky/lime/fuchsia, or
+   a gray/slate shade darker than -300 / lighter than -400, fell through
+   and stayed light-mode-only — this is what caused the "some elements
+   light, some dark" mixed look. Same HSL-recipe as above: -50/-100
+   backgrounds stay dark and low-saturation, -600/-700 text stays vibrant
+   for legibility on a dark surface. */
+@layer base {
+  /* Additional accent backgrounds */
+  .dark .bg-pink-50     { background-color: hsl(330 35% 11%) !important; }
+  .dark .bg-pink-100    { background-color: hsl(330 38% 15%) !important; }
+  .dark .bg-rose-50     { background-color: hsl(350 35% 11%) !important; }
+  .dark .bg-rose-100    { background-color: hsl(350 38% 15%) !important; }
+  .dark .bg-cyan-50     { background-color: hsl(189 35% 10%) !important; }
+  .dark .bg-cyan-100    { background-color: hsl(189 38% 14%) !important; }
+  .dark .bg-emerald-50  { background-color: hsl(152 35% 10%) !important; }
+  .dark .bg-emerald-100 { background-color: hsl(152 38% 14%) !important; }
+  .dark .bg-amber-50    { background-color: hsl(38  35% 10%) !important; }
+  .dark .bg-amber-100   { background-color: hsl(38  38% 14%) !important; }
+  .dark .bg-violet-50   { background-color: hsl(258 35% 12%) !important; }
+  .dark .bg-violet-100  { background-color: hsl(258 38% 16%) !important; }
+  .dark .bg-sky-50      { background-color: hsl(199 35% 10%) !important; }
+  .dark .bg-sky-100     { background-color: hsl(199 38% 14%) !important; }
+  .dark .bg-lime-50     { background-color: hsl(84  30% 10%) !important; }
+  .dark .bg-lime-100    { background-color: hsl(84  33% 14%) !important; }
+  .dark .bg-fuchsia-50  { background-color: hsl(292 35% 12%) !important; }
+  .dark .bg-fuchsia-100 { background-color: hsl(292 38% 16%) !important; }
+
+  /* Additional accent text — stay vibrant, matching the pattern of the
+     green/red/yellow/blue/indigo/purple set above */
+  .dark .text-pink-600     { color: hsl(330 80% 72%) !important; }
+  .dark .text-pink-700     { color: hsl(330 75% 66%) !important; }
+  .dark .text-rose-600     { color: hsl(350 85% 68%) !important; }
+  .dark .text-rose-700     { color: hsl(350 80% 62%) !important; }
+  .dark .text-cyan-600     { color: hsl(189 85% 62%) !important; }
+  .dark .text-cyan-700     { color: hsl(189 80% 56%) !important; }
+  .dark .text-emerald-600  { color: hsl(152 65% 52%) !important; }
+  .dark .text-emerald-700  { color: hsl(152 62% 46%) !important; }
+  .dark .text-amber-600    { color: hsl(38  90% 62%) !important; }
+  .dark .text-amber-700    { color: hsl(38  85% 56%) !important; }
+  .dark .text-violet-600   { color: hsl(258 85% 76%) !important; }
+  .dark .text-violet-700   { color: hsl(258 80% 70%) !important; }
+  .dark .text-sky-600      { color: hsl(199 90% 66%) !important; }
+  .dark .text-sky-700      { color: hsl(199 85% 60%) !important; }
+  .dark .text-lime-600     { color: hsl(84  70% 58%) !important; }
+  .dark .text-lime-700     { color: hsl(84  65% 52%) !important; }
+  .dark .text-fuchsia-600  { color: hsl(292 85% 76%) !important; }
+  .dark .text-fuchsia-700  { color: hsl(292 80% 70%) !important; }
+  .dark .text-teal-600     { color: hsl(175 65% 52%) !important; }
+  .dark .text-teal-700     { color: hsl(175 62% 46%) !important; }
+
+  /* Additional accent borders — badge/alert pattern is usually
+     bg-{color}-50 + border-{color}-200, so every family above needs its
+     -200 border covered too */
+  .dark .border-pink-200     { border-color: hsl(330 30% 22%) !important; }
+  .dark .border-rose-200     { border-color: hsl(350 30% 22%) !important; }
+  .dark .border-cyan-200     { border-color: hsl(189 30% 20%) !important; }
+  .dark .border-emerald-200  { border-color: hsl(152 30% 20%) !important; }
+  .dark .border-amber-200    { border-color: hsl(38  30% 20%) !important; }
+  .dark .border-violet-200   { border-color: hsl(258 30% 24%) !important; }
+  .dark .border-sky-200      { border-color: hsl(199 30% 20%) !important; }
+  .dark .border-lime-200     { border-color: hsl(84  28% 20%) !important; }
+  .dark .border-fuchsia-200  { border-color: hsl(292 30% 24%) !important; }
+  .dark .border-green-200    { border-color: hsl(142 30% 20%) !important; }
+  .dark .border-red-200      { border-color: hsl(3   30% 22%) !important; }
+  .dark .border-yellow-200   { border-color: hsl(45  30% 20%) !important; }
+  .dark .border-blue-200     { border-color: hsl(211 30% 22%) !important; }
+  .dark .border-indigo-200   { border-color: hsl(245 30% 24%) !important; }
+  .dark .border-purple-200   { border-color: hsl(262 30% 24%) !important; }
+  .dark .border-orange-200   { border-color: hsl(25  30% 20%) !important; }
+  .dark .border-teal-200     { border-color: hsl(175 30% 20%) !important; }
+
+  /* Gray/slate shades darker than -300 (used for icons/secondary text on
+     light-styled cards) and lighter than -400 (used for text on dark-
+     styled panels) — both ends were previously uncovered */
+  .dark .bg-gray-400   { background-color: hsl(240 3% 30%) !important; }
+  .dark .bg-gray-500   { background-color: hsl(240 3% 26%) !important; }
+  .dark .bg-gray-600   { background-color: hsl(240 3% 22%) !important; }
+  .dark .bg-gray-700   { background-color: hsl(240 3% 18%) !important; }
+  .dark .bg-gray-800   { background-color: hsl(240 3% 13%) !important; }
+  .dark .bg-gray-900   { background-color: hsl(240 3%  9%) !important; }
+  .dark .bg-slate-300  { background-color: hsl(240 3% 20%) !important; }
+  .dark .bg-slate-400  { background-color: hsl(240 3% 26%) !important; }
+  .dark .bg-slate-500  { background-color: hsl(240 3% 30%) !important; }
+  .dark .bg-slate-600  { background-color: hsl(240 3% 22%) !important; }
+  .dark .bg-slate-700  { background-color: hsl(240 3% 16%) !important; }
+
+  .dark .border-gray-300  { border-color: hsl(240 3% 24%) !important; }
+  .dark .border-gray-400  { border-color: hsl(240 3% 30%) !important; }
+  .dark .border-gray-500  { border-color: hsl(240 3% 36%) !important; }
+  .dark .border-slate-400 { border-color: hsl(240 3% 30%) !important; }
+  .dark .border-slate-500 { border-color: hsl(240 3% 36%) !important; }
+
+  .dark .text-gray-100  { color: hsl(0   0% 96%)  !important; }
+  .dark .text-gray-200  { color: hsl(240 4% 92%)  !important; }
+  .dark .text-gray-300  { color: hsl(240 4% 82%)  !important; }
+  .dark .text-slate-100 { color: hsl(0   0% 96%)  !important; }
+  .dark .text-slate-200 { color: hsl(240 4% 92%)  !important; }
+  .dark .text-slate-300 { color: hsl(240 4% 82%)  !important; }
+
+  .dark .divide-gray-300  { border-color: hsl(240 3% 24%) !important; }
+  .dark .divide-slate-100 { border-color: hsl(240 3% 16%) !important; }
+  .dark .divide-slate-200 { border-color: hsl(240 3% 20%) !important; }
+
+  /* More hover states — same families as the badge backgrounds above */
+  .dark .hover\:bg-gray-200:hover    { background-color: hsl(240 3% 18%) !important; }
+  .dark .hover\:bg-white:hover       { background-color: hsl(240 3% 14%) !important; }
+  .dark .hover\:bg-blue-50:hover     { background-color: hsl(211 30% 14%) !important; }
+  .dark .hover\:bg-amber-50:hover    { background-color: hsl(38  30% 13%) !important; }
+  .dark .hover\:bg-green-50:hover    { background-color: hsl(142 30% 13%) !important; }
+  .dark .hover\:bg-red-50:hover      { background-color: hsl(3   30% 14%) !important; }
+  .dark .hover\:text-gray-800:hover  { color: hsl(240 6% 88%) !important; }
+  .dark .hover\:text-gray-900:hover  { color: hsl(0   0% 100%) !important; }
+}
+
 /* ── Keyframes ──────────────────────────────────────────────── */
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(12px); }
