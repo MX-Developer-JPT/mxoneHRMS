@@ -2665,6 +2665,79 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, marked: result.marked, skipped: Math.max(result.checked - result.marked, 0), date: result.date, message: `Marked ${result.marked} employees absent for ${result.date}` });
     }
 
+    case 'repairSyntheticAttendancePunches': {
+      // One-time data repair for a bug in closeTrailingOpenSession
+      // (attendancelog.js): its synthetic "finalize the day" bookkeeping
+      // punch — offset by an EXACT, deterministic 60001ms from the real
+      // punch it closes — used to leak into the persisted raw_punches array
+      // instead of staying display-only. When a late biometric sync later
+      // merged a genuine punch into the same day, it paired against that
+      // fake punch instead of the real one, permanently splitting one
+      // continuous work session into two fake ~1-minute sessions with a
+      // bogus multi-hour "break" between them. The bug itself is already
+      // fixed going forward; this repairs Attendance rows written before
+      // that fix by stripping any punch that sits EXACTLY 60001ms after the
+      // punch before it (a gap real biometric hardware cannot produce to
+      // the millisecond) and recomputing sessions/status from what's left.
+      if (!(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'Admin/HR access required' });
+      const SYNTHETIC_OFFSET_MS = 60001;
+      const rows = await all("SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'auto_closed_at' IS NOT NULL");
+      const defShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'='true' OR data::jsonb->>'is_default'='1') LIMIT 1");
+      const defaultShift = defShiftRow ? JSON.parse(defShiftRow.data) : { start_time: '09:00', end_time: '18:00', working_hours: 9, grace_period_minutes: 15 };
+      const empCache = {};
+      const shiftCache = {};
+      const todayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      let scanned = 0, repaired = 0, punchesStripped = 0;
+
+      for (const row of rows) {
+        scanned++;
+        const d = JSON.parse(row.data);
+        const punches = Array.isArray(d.raw_punches) ? d.raw_punches : [];
+        if (punches.length < 2) continue;
+
+        const sorted = [...punches]
+          .map(pu => ({ ...pu, time: String(pu.time).trim().replace(' ', 'T') }))
+          .sort((a, b) => a.time.localeCompare(b.time));
+        const cleaned = [];
+        let stripped = 0;
+        for (const pu of sorted) {
+          const prev = cleaned[cleaned.length - 1];
+          if (prev && (new Date(pu.time).getTime() - new Date(prev.time).getTime()) === SYNTHETIC_OFFSET_MS) {
+            stripped++;
+            continue;
+          }
+          cleaned.push(pu);
+        }
+        if (stripped === 0) continue;
+        punchesStripped += stripped;
+
+        if (!(d.user_id in empCache)) {
+          const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
+          empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
+        }
+        const emp = empCache[d.user_id];
+        let shift = defaultShift;
+        if (emp?.shift_id) {
+          if (!(emp.shift_id in shiftCache)) {
+            const sRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]);
+            shiftCache[emp.shift_id] = sRow ? JSON.parse(sRow.data) : defaultShift;
+          }
+          shift = shiftCache[emp.shift_id];
+        }
+
+        const sessionData = d.date && d.date < todayIST ? closeTrailingOpenSession(cleaned) : buildSessions(cleaned);
+        const statusResult = computeStatusFromSessions(sessionData, shift);
+        const updated = {
+          ...d, ...sessionData, ...statusResult,
+          repaired_at: new Date().toISOString(),
+          repair_reason: `Stripped ${stripped} synthetic punch(es) left over from a stale-session auto-close bug.`,
+        };
+        await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [statusResult.status, JSON.stringify(updated), row.id]);
+        repaired++;
+      }
+      return res.json({ success: true, scanned, repaired, punches_stripped: punchesStripped, message: `Scanned ${scanned} auto-closed record(s), repaired ${repaired} with ${punchesStripped} synthetic punch(es) removed.` });
+    }
+
     case 'generatePayslip': {
       const { payroll_id } = p;
       const pRow = await one("SELECT data FROM entities WHERE type='Payroll' AND id=$1", [payroll_id]);

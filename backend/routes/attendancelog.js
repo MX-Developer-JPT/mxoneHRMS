@@ -224,8 +224,22 @@ export function closeTrailingOpenSession(rawPunches) {
   const realWorkedMinutes = closed.total_working_minutes - (lastSession.duration_minutes || 0);
   return {
     ...closed,
+    // IMPORTANT: raw_punches/punch_count must stay the REAL punches only —
+    // the synthetic punch above is a display-only bookkeeping artifact for
+    // finalizing today's summary fields, never something to persist. If it
+    // leaks into the saved raw_punches (as it did before this fix, via the
+    // `...closed` spread above), the next time a late biometric sync merges
+    // a genuine later punch for the same day, it pairs against this fake
+    // punch instead of the real one — permanently splitting one continuous
+    // work session into two fake ~1-minute sessions with a bogus multi-hour
+    // "break" between them, which then gets closed the same broken way
+    // again on the next punch. See closeStaleOpenSessions in
+    // cron/attendanceAutomation.js, which is what calls this on merge.
+    raw_punches: sd.raw_punches,
+    punch_count: sd.raw_punches.length,
     check_out_time: lastPunch.time,
     sessions: closed.sessions.map((s, i) => i === lastIdx ? { ...s, check_out: lastPunch.time, duration_minutes: 0 } : s),
+    punch_sessions: closed.punch_sessions.map((s, i) => i === lastIdx ? { ...s, punch_out: lastPunch.time, duration_hours: 0 } : s),
     total_working_minutes: realWorkedMinutes,
     working_hours: Math.round(realWorkedMinutes / 60 * 100) / 100,
   };

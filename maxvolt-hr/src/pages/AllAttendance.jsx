@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, MapPin, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, BarChart3, CalendarDays, List, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, MapPin, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, BarChart3, CalendarDays, List, ChevronLeft, ChevronRight, Loader2, Wrench } from 'lucide-react';
 import { getAttendanceMethod, getGeofenceDetail } from '@/lib/attendanceSource';
 import { format } from 'date-fns';
 import { safeTime } from '@/lib/dateUtils';
@@ -92,6 +92,7 @@ export default function AllAttendance() {
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [collapsedDepts, setCollapsedDepts] = useState({});
   const [markingAbsent, setMarkingAbsent] = useState(false);
+  const [repairingSessions, setRepairingSessions] = useState(false);
   const [viewMode, setViewMode] = useState('list'); // 'list' | 'calendar'
   const [calMonthRecords, setCalMonthRecords] = useState([]); // all records for the month (calendar view)
   const [silentRefreshing, setSilentRefreshing] = useState(false);
@@ -259,6 +260,23 @@ export default function AllAttendance() {
     setMarkingAbsent(false);
   };
 
+  const handleRepairSessions = async () => {
+    if (!window.confirm('Scan all auto-closed attendance records and strip synthetic "ghost" checkout punches left over from a past bug (late biometric syncs splitting one work session into fake 1-minute sessions with a bogus break)? This is safe to run any time.')) return;
+    setRepairingSessions(true);
+    try {
+      const res = await base44.functions.invoke('repairSyntheticAttendancePunches', {});
+      if (res.data?.success) {
+        toast.success(res.data.message || `Repaired ${res.data.repaired} record(s)`);
+        loadData();
+      } else {
+        toast.error(res.data?.error || 'Repair failed');
+      }
+    } catch (e) {
+      toast.error('Error: ' + e.message);
+    }
+    setRepairingSessions(false);
+  };
+
   const exportToExcel = async () => {
     const [yr, mo] = date.split('-').map(Number);
     try {
@@ -381,6 +399,9 @@ export default function AllAttendance() {
             <BiometricSyncStatus />
             <Button variant="outline" size="sm" onClick={handleMarkAbsent} disabled={markingAbsent} title="Mark employees without attendance as Absent">
               <UserX className="w-4 h-4 mr-1" /> {markingAbsent ? 'Marking...' : 'Mark Absent'}
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleRepairSessions} disabled={repairingSessions} title="Fix records with fake 1-minute sessions/bogus breaks caused by late biometric syncs">
+              {repairingSessions ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Wrench className="w-4 h-4 mr-1" />} {repairingSessions ? 'Repairing...' : 'Repair Sessions'}
             </Button>
             <Button variant="outline" size="sm" onClick={exportToExcel} title="Export Attendance Muster (monthly summary)">
               <Download className="w-4 h-4 mr-1" /> Muster
@@ -626,11 +647,12 @@ export default function AllAttendance() {
                       return (
                         <div
                           key={record.id}
-                          className={`flex flex-wrap items-center justify-between gap-x-4 gap-y-2 p-3 rounded-lg border bg-white hover:shadow-sm transition-shadow ${!record._virtual ? 'cursor-pointer' : ''}`}
+                          className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-lg border bg-white hover:shadow-sm transition-shadow ${!record._virtual ? 'cursor-pointer' : ''}`}
                           onClick={() => !record._virtual && setSelectedRecord(record)}
                         >
-                          {/* Left: avatar + name */}
-                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                          {/* Left: avatar + name — always its own full-width row on mobile so it
+                              can never be squeezed out by however many/few chips follow */}
+                          <div className="flex items-center gap-3 min-w-0 sm:flex-1">
                             <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                               <span className="text-blue-600 font-semibold text-sm">{name.charAt(0).toUpperCase()}</span>
                             </div>
@@ -640,21 +662,24 @@ export default function AllAttendance() {
                             </div>
                           </div>
 
-                          {/* Center: First In / Last Out — always shown as dedicated block */}
-                          <div className="flex items-center gap-4 shrink-0">
-                            <div className="text-center min-w-[64px]">
-                              <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none mb-0.5">First In</p>
-                              <p className={`text-sm font-semibold ${firstIn ? 'text-green-700' : 'text-gray-300'}`}>
-                                {firstIn ? safeTime(firstIn) : '—'}
-                              </p>
+                          {/* Everything else wraps together as its own group, on its own
+                              row on mobile, so it never steals space from the name above */}
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:shrink-0">
+                            {/* First In / Last Out — always shown as dedicated block */}
+                            <div className="flex items-center gap-4 shrink-0">
+                              <div className="text-center min-w-[64px]">
+                                <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none mb-0.5">First In</p>
+                                <p className={`text-sm font-semibold ${firstIn ? 'text-green-700' : 'text-gray-300'}`}>
+                                  {firstIn ? safeTime(firstIn) : '—'}
+                                </p>
+                              </div>
+                              <div className="text-center min-w-[64px]">
+                                <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none mb-0.5">Last Out</p>
+                                <p className={`text-sm font-semibold ${lastOut ? 'text-red-600' : (record.is_in_progress || record.status === 'in_progress') ? 'text-green-500' : 'text-gray-300'}`}>
+                                  {lastOut ? safeTime(lastOut) : (record.is_in_progress || record.status === 'in_progress') ? '● Active' : '—'}
+                                </p>
+                              </div>
                             </div>
-                            <div className="text-center min-w-[64px]">
-                              <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none mb-0.5">Last Out</p>
-                              <p className={`text-sm font-semibold ${lastOut ? 'text-red-600' : (record.is_in_progress || record.status === 'in_progress') ? 'text-green-500' : 'text-gray-300'}`}>
-                                {lastOut ? safeTime(lastOut) : (record.is_in_progress || record.status === 'in_progress') ? '● Active' : '—'}
-                              </p>
-                            </div>
-                          </div>
 
                           {/* Right: chips */}
                           <div className="flex flex-wrap items-center gap-2">
@@ -737,6 +762,7 @@ export default function AllAttendance() {
                             <Badge className={`text-xs border ${STATUS_COLORS[displayStatus] || 'bg-gray-100 text-gray-700'}`}>
                               {displayStatus.replace('_', ' ')}
                             </Badge>
+                          </div>
                           </div>
                         </div>
                       );
