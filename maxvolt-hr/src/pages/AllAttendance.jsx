@@ -647,12 +647,15 @@ export default function AllAttendance() {
                       return (
                         <div
                           key={record.id}
-                          className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-lg border bg-white hover:shadow-sm transition-shadow ${!record._virtual ? 'cursor-pointer' : ''}`}
+                          className={`grid grid-cols-1 sm:grid-cols-[minmax(160px,240px)_1fr] gap-3 p-3 rounded-lg border bg-white hover:shadow-sm transition-shadow ${!record._virtual ? 'cursor-pointer' : ''}`}
                           onClick={() => !record._virtual && setSelectedRecord(record)}
                         >
-                          {/* Left: avatar + name — always its own full-width row on mobile so it
-                              can never be squeezed out by however many/few chips follow */}
-                          <div className="flex items-center gap-3 min-w-0 sm:flex-1">
+                          {/* Name column — a hard grid track, not a flex sibling, so it can
+                              never be squeezed or overlapped no matter how many chips the
+                              other column ends up wrapping (multi-session rows previously
+                              overlapped the name entirely once there were enough chips to
+                              overflow a shared flex line). */}
+                          <div className="flex items-center gap-3 min-w-0">
                             <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                               <span className="text-blue-600 font-semibold text-sm">{name.charAt(0).toUpperCase()}</span>
                             </div>
@@ -662,9 +665,10 @@ export default function AllAttendance() {
                             </div>
                           </div>
 
-                          {/* Everything else wraps together as its own group, on its own
-                              row on mobile, so it never steals space from the name above */}
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:shrink-0">
+                          {/* Everything else — its own grid column, free to wrap onto as
+                              many internal lines as it needs without ever touching the
+                              name column's space. */}
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 min-w-0">
                             {/* First In / Last Out — always shown as dedicated block */}
                             <div className="flex items-center gap-4 shrink-0">
                               <div className="text-center min-w-[64px]">
