@@ -6,6 +6,8 @@ import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
 import { spawn, execSync } from 'child_process';
 import cron from 'node-cron';
+import helmet from 'helmet';
+import { wafGuard, globalLimiter, authLimiter } from './middleware/waf.js';
 import authRouter           from './routes/auth.js';
 import entitiesRouter       from './routes/entities.js';
 import functionsRouter      from './routes/functions.js';
@@ -143,7 +145,26 @@ async function autoSeed() {
 
 bootstrapFromEnv().then(() => autoSeed()).catch(() => {});
 
+// Railway terminates TLS and proxies every request through its own edge —
+// without this, req.ip / X-Forwarded-For is ignored and express-rate-limit
+// below would see every client as the same IP (Railway's proxy), either
+// rate-limiting all users together or not identifying abusers at all.
+app.set('trust proxy', 1);
+
+// CORS first, so a blocked/rate-limited response still carries CORS headers
+// — otherwise a cross-origin caller (local dev, the mobile app) would see an
+// opaque CORS failure instead of the actual 403/429 error.
 app.use(cors({ origin: true, credentials: true }));
+
+// Security headers. CSP/COEP are left off for now — this SPA's exact
+// script/style/image origins haven't been audited yet, and a strict CSP
+// applied blind would break the app rather than protect it; the other
+// headers (X-Content-Type-Options, X-Frame-Options, HSTS, etc.) are safe
+// defaults with no such risk.
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+app.use(wafGuard);
+app.use(globalLimiter);
+
 app.use(express.json({ limit: '50mb' }));
 const UPLOADS_DIR = process.env.NODE_ENV === 'production'
   ? '/app/uploads'
@@ -160,7 +181,7 @@ app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
   res.json({ id: _req.params.id, public_settings: { auth_required: true, google_auth_enabled: false }, app_name: 'Maxvolt One' });
 });
 
-app.use('/api/auth',            authRouter);
+app.use('/api/auth',            authLimiter, authRouter);
 app.use('/api/entities',        entitiesRouter);
 app.use('/api/functions',       functionsRouter);
 app.use('/api/upload',          uploadRouter);
