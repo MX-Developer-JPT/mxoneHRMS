@@ -196,6 +196,41 @@ function cacheInvalidate(type) {
 }
 export { cacheInvalidate };
 
+/* ── Notification helpers ─────────────────────────────────── */
+// Fire-and-forget: writes one notifications row + push per recipient.
+async function notifyMany(userIds, { title, message, type = 'info', link = '' }) {
+  const ids = [...new Set((userIds || []).filter(Boolean))];
+  for (const uid of ids) {
+    try {
+      await run(
+        `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
+        [uuidv4(), uid, title, message, type, link || null]
+      );
+      sendPushToUser(uid, { title, message, type, link });
+    } catch (e) { console.error('[notif] notifyMany error:', e.message); }
+  }
+}
+
+async function getHrAdminUserIds() {
+  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('hr','admin')");
+  return rows.map(r => r.id);
+}
+
+// Announcement audience: 'all' (or unset) → every active employee;
+// otherwise every active employee in one of target_departments.
+async function getAnnouncementAudienceUserIds(data) {
+  const depts = Array.isArray(data.target_departments) ? data.target_departments : [];
+  if ((data.target_audience || 'all') === 'all' || depts.length === 0) {
+    const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
+    return rows.map(r => r.user_id).filter(Boolean);
+  }
+  const rows = await all(
+    "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department' = ANY($1)",
+    [depts]
+  );
+  return rows.map(r => r.user_id).filter(Boolean);
+}
+
 /* ── SQL ORDER BY + LIMIT builder ─────────────────────────── */
 // Pushes sorting and limiting into the database query so the server
 // never loads thousands of rows just to slice them in JavaScript.
@@ -340,6 +375,48 @@ router.post('/:type', async (req, res) => {
     } catch(ne) { console.error('[notif] post-create hook error:', ne.message); }
   })();
 
+  // Broadcast / support-inbox notifications on creation (fire and forget)
+  (async () => {
+    try {
+      if (type === 'Announcement' && data.status === 'published') {
+        const audience = await getAnnouncementAudienceUserIds(data);
+        await notifyMany(audience, {
+          title: `📢 ${data.title || 'New Announcement'}`,
+          message: (data.content || '').slice(0, 180),
+          type: 'info',
+          link: '/Announcements',
+        });
+      } else if (type === 'JobRequisition') {
+        if (data.status === 'pending_manager_approval' && data.hiring_manager_id) {
+          await notifyMany([data.hiring_manager_id], {
+            title: 'Job Requisition Awaiting Your Approval',
+            message: `A requisition for ${data.number_of_positions || 1} × ${data.title || 'position'} (${data.department || ''}) needs your approval.`,
+            type: 'info', link: '/JobRequisitions',
+          });
+        } else if (data.status === 'pending_hr_approval') {
+          await notifyMany(await getHrAdminUserIds(), {
+            title: 'Job Requisition Awaiting HR Approval',
+            message: `A requisition for ${data.number_of_positions || 1} × ${data.title || 'position'} (${data.department || ''}) needs HR approval.`,
+            type: 'info', link: '/JobRequisitions',
+          });
+        }
+      } else if (type === 'Ticket') {
+        await notifyMany(await getHrAdminUserIds(), {
+          title: 'New Helpdesk Ticket',
+          message: `${data.subject || 'A new ticket'} (${data.priority || 'medium'} priority) was raised.`,
+          type: data.priority === 'high' || data.priority === 'urgent' ? 'warning' : 'info',
+          link: '/Helpdesk',
+        });
+      } else if (type === 'POSHRecord') {
+        await notifyMany(await getHrAdminUserIds(), {
+          title: 'New POSH Record Logged',
+          message: `A new ${(data.record_type || 'POSH').replace(/_/g,' ')} record was logged and needs review.`,
+          type: 'warning', link: '/POSHCompliance',
+        });
+      }
+    } catch (ne) { console.error('[notif] post-create broadcast hook error:', ne.message); }
+  })();
+
   cacheInvalidate(type);
   res.status(201).json(parseRow(row));
 });
@@ -409,6 +486,80 @@ router.patch('/:type/:id', async (req, res) => {
       } catch (e) { console.error('[approval-notify] error:', e.message); }
     })();
   }
+
+  // Broadcast / workflow-step notifications on update (fire and forget)
+  (async () => {
+    try {
+      if (type === 'Announcement' && req.body.status === 'published' && current.status !== 'published') {
+        const audience = await getAnnouncementAudienceUserIds(updated);
+        await notifyMany(audience, {
+          title: `📢 ${updated.title || 'New Announcement'}`,
+          message: (updated.content || '').slice(0, 180),
+          type: 'info', link: '/Announcements',
+        });
+      } else if (type === 'JobRequisition') {
+        const posLabel = `${updated.number_of_positions || 1} × ${updated.title || 'position'} (${updated.department || ''})`;
+        if (req.body.manager_approval_status === 'approved' && current.manager_approval_status !== 'approved') {
+          await notifyMany(await getHrAdminUserIds(), {
+            title: 'Job Requisition Awaiting HR Approval',
+            message: `${posLabel} was approved by the hiring manager and needs HR approval.`,
+            type: 'info', link: '/JobRequisitions',
+          });
+        }
+        if (req.body.manager_approval_status === 'rejected' && current.manager_approval_status !== 'rejected') {
+          await notifyMany([updated.requested_by].filter(Boolean), {
+            title: 'Job Requisition Rejected',
+            message: `${posLabel} was rejected by the hiring manager${updated.manager_rejection_reason ? ` — ${updated.manager_rejection_reason}` : '.'}`,
+            type: 'warning', link: '/JobRequisitions',
+          });
+        }
+        if (req.body.hr_approval_status === 'approved' && current.hr_approval_status !== 'approved') {
+          await notifyMany([updated.requested_by, updated.hiring_manager_id].filter(Boolean), {
+            title: 'Job Requisition Approved',
+            message: `${posLabel} was approved by HR. Generate & approve the JD to publish it.`,
+            type: 'success', link: '/JobRequisitions',
+          });
+        }
+        if (req.body.hr_approval_status === 'rejected' && current.hr_approval_status !== 'rejected') {
+          await notifyMany([updated.requested_by, updated.hiring_manager_id].filter(Boolean), {
+            title: 'Job Requisition Rejected',
+            message: `${posLabel} was rejected by HR${updated.rejection_reason ? ` — ${updated.rejection_reason}` : '.'}`,
+            type: 'warning', link: '/JobRequisitions',
+          });
+        }
+        if (req.body.status === 'published' && current.status !== 'published') {
+          await notifyMany([updated.requested_by, updated.hiring_manager_id].filter(Boolean), {
+            title: 'Job Requisition Published',
+            message: `${posLabel} is now live and accepting applications.`,
+            type: 'success', link: '/JobRequisitions',
+          });
+        }
+      } else if (type === 'Ticket') {
+        if (req.body.assigned_to && req.body.assigned_to !== current.assigned_to) {
+          await notifyMany([req.body.assigned_to], {
+            title: 'Helpdesk Ticket Assigned to You',
+            message: `${updated.subject || 'A ticket'} was assigned to you.`,
+            type: 'info', link: '/Helpdesk',
+          });
+        }
+        if (req.body.status && ['resolved', 'closed'].includes(req.body.status) && !['resolved', 'closed'].includes(current.status) && updated.user_id) {
+          await notifyMany([updated.user_id], {
+            title: `Ticket ${req.body.status === 'resolved' ? 'Resolved' : 'Closed'}`,
+            message: `${updated.subject || 'Your ticket'} was marked ${req.body.status}.`,
+            type: 'success', link: '/Helpdesk',
+          });
+        }
+      } else if (type === 'Asset') {
+        if (req.body.assigned_to_user_id && req.body.assigned_to_user_id !== current.assigned_to_user_id) {
+          await notifyMany([req.body.assigned_to_user_id], {
+            title: 'Asset Assigned to You',
+            message: `${updated.asset_name || 'An asset'} (${updated.asset_id || ''}) has been assigned to you.`,
+            type: 'info', link: '/AssetTracking',
+          });
+        }
+      }
+    } catch (ne) { console.error('[notif] post-update broadcast hook error:', ne.message); }
+  })();
 
   cacheInvalidate(type);
   res.json(parseRow(newRow));

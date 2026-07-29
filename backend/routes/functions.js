@@ -4267,6 +4267,7 @@ router.post('/:name', async (req, res) => {
               <p style="color:#999;font-size:12px;margin-top:20px">This is an auto-generated email. For queries, contact HR.</p>
             </div>`
           });
+          notify(pr.user_id, { title: 'Payslip Available', message: `Your payslip for ${monLabel} has been generated and emailed to you.`, type: 'success', link: '/Payslips' });
           sent++;
         } catch (e) {
           failed++;
@@ -7159,6 +7160,11 @@ ${contextBlock || 'No employee context available — answer from general policy 
           trainer, location: loc
         });
         try { await sendEmail({ to: uRow.email, ...tpl }); sent++; } catch {}
+        notify(uid, {
+          title: 'Training Scheduled',
+          message: `You've been enrolled in "${training_title}" (${start_date || ''} – ${end_date || ''}).`,
+          type: 'info', link: '/MyTraining',
+        });
       }
       return res.json({ success:true, sent, message:`Notified ${sent} participants` });
     }
@@ -9425,6 +9431,9 @@ Return ONLY valid JSON (no markdown):
       if (!sRow) return res.json({ success: false, error: 'Survey not found' });
       const sd = { ...JSON.parse(sRow.data), status: 'closed', closed_at: new Date().toISOString() };
       await run("UPDATE entities SET status='closed', data=$1 WHERE id=$2", [JSON.stringify(sd), survey_id]);
+      if (sd.created_by) {
+        notify(sd.created_by, { title: 'Survey Closed', message: `"${sd.title || 'Your survey'}" is now closed. Results are ready to view.`, type: 'info', link: '/PulseSurveys' });
+      }
       return res.json({ success: true });
     }
 
