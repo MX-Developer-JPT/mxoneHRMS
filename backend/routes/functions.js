@@ -6039,24 +6039,52 @@ router.post('/:name', async (req, res) => {
       const { candidate_id, resume_url } = p;
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       const cand = cRow ? JSON.parse(cRow.data) : {};
+      const fileUrl = resume_url || cand.resume_url || '';
 
-      const prompt = `You are an expert resume parser. Based on the following candidate profile information, generate a detailed parsed resume JSON. Be realistic and infer reasonable details.
+      // Actually read the uploaded resume file's text before asking the AI to
+      // parse it — previously this prompt never looked at the file at all and
+      // just asked the AI to "infer reasonable details" from the candidate's
+      // own form submission, which produces plausible-looking but fabricated
+      // skills/education/projects. Real file text (when extractable) is now
+      // the authoritative source; form fields are only a fallback.
+      let resumeText = '';
+      let extractionMethod = 'form_inference';
+      let extractionError = '';
+      if (fileUrl) {
+        try {
+          const fileRes = await fetch(fileUrl);
+          if (fileRes.ok) {
+            const buf = Buffer.from(await fileRes.arrayBuffer());
+            const lowerUrl = fileUrl.toLowerCase();
+            const contentType = fileRes.headers.get('content-type') || '';
+            if (lowerUrl.endsWith('.pdf') || contentType.includes('pdf')) {
+              const { PDFParse } = await import('pdf-parse');
+              const parser = new PDFParse({ data: new Uint8Array(buf) });
+              const textResult = await parser.getText();
+              await parser.destroy();
+              resumeText = (textResult.text || '').trim();
+            } else if (lowerUrl.endsWith('.docx') || contentType.includes('officedocument.wordprocessingml')) {
+              const mammoth = (await import('mammoth')).default;
+              const result = await mammoth.extractRawText({ buffer: buf });
+              resumeText = (result.value || '').trim();
+            } else {
+              extractionError = 'Unsupported resume file format for text extraction (only PDF and DOCX are supported)';
+            }
+            if (resumeText) extractionMethod = 'file_text';
+            else if (!extractionError) extractionError = 'Resume file contained no extractable text (likely a scanned/image-only document)';
+          } else {
+            extractionError = `Could not download resume file (HTTP ${fileRes.status})`;
+          }
+        } catch (e) {
+          extractionError = `Resume text extraction failed: ${e.message}`;
+          console.error('[parseResume] file extraction failed:', e.message);
+        }
+      } else {
+        extractionError = 'No resume file on record';
+      }
 
-Candidate Profile:
-Name: ${cand.full_name || cand.name || 'Not provided'}
-Position Applied: ${cand.position_applied || 'Not specified'}
-Department: ${cand.department || 'Not specified'}
-Experience Years: ${cand.experience_years || 'Not specified'}
-Current Company: ${cand.current_company || 'Not specified'}
-Current CTC: ${cand.current_ctc ? '₹' + cand.current_ctc : 'Not specified'}
-Expected CTC: ${cand.expected_ctc ? '₹' + cand.expected_ctc : 'Not specified'}
-Notice Period: ${cand.notice_period || 'Not specified'}
-Source: ${cand.source || 'Not specified'}
-Email: ${cand.email || 'Not specified'}
-Phone: ${cand.phone || 'Not specified'}
-
-Return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
-{
+      const resumeExcerpt = resumeText.slice(0, 12000);
+      const jsonSchema = `{
   "resume_headline": "one-line professional headline",
   "professional_summary": "2-3 sentence professional summary",
   "current_location": "city",
@@ -6088,6 +6116,40 @@ Return ONLY a valid JSON object (no markdown, no explanation) with these exact f
   "keyword_density_flag": false
 }`;
 
+      const prompt = resumeExcerpt
+        ? `You are an expert resume parser. Extract structured data from the ACTUAL resume text below — every field must be grounded in this text, do not invent skills, employers, or projects that aren't present in it. Use the candidate's submitted profile only to fill genuinely missing contact/location fields.
+
+RESUME TEXT:
+"""
+${resumeExcerpt}
+"""
+
+Submitted profile (context only — the resume text above is authoritative for skills/experience/education):
+Name: ${cand.full_name || cand.name || 'Not provided'}
+Position Applied: ${cand.position_applied || 'Not specified'}
+Email: ${cand.email || 'Not specified'}
+Phone: ${cand.phone || 'Not specified'}
+
+Return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
+${jsonSchema}`
+        : `No resume file text could be extracted (${extractionError}), so this is a best-effort inference from the candidate's submitted profile only — be conservative and set fields you cannot reasonably infer to null or empty arrays rather than fabricating specifics.
+
+Candidate Profile:
+Name: ${cand.full_name || cand.name || 'Not provided'}
+Position Applied: ${cand.position_applied || 'Not specified'}
+Department: ${cand.department || 'Not specified'}
+Experience Years: ${cand.experience_years || 'Not specified'}
+Current Company: ${cand.current_company || 'Not specified'}
+Current CTC: ${cand.current_ctc ? '₹' + cand.current_ctc : 'Not specified'}
+Expected CTC: ${cand.expected_ctc ? '₹' + cand.expected_ctc : 'Not specified'}
+Notice Period: ${cand.notice_period || 'Not specified'}
+Source: ${cand.source || 'Not specified'}
+Email: ${cand.email || 'Not specified'}
+Phone: ${cand.phone || 'Not specified'}
+
+Return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
+${jsonSchema}`;
+
       let parsed;
       try {
         parsed = await callAI(prompt, { json: true });
@@ -6101,9 +6163,11 @@ Return ONLY a valid JSON object (no markdown, no explanation) with these exact f
       const parsedData = {
         id: parsedId,
         candidate_id,
-        resume_url,
+        resume_url: fileUrl,
         parse_status: 'completed',
         parsed_at: new Date().toISOString(),
+        extraction_method: extractionMethod,
+        extraction_note: extractionMethod === 'form_inference' ? extractionError : '',
         ...parsed,
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ParsedResume',$2,'completed',$3)", [parsedId, candidate_id, JSON.stringify(parsedData)]);
@@ -6115,7 +6179,7 @@ Return ONLY a valid JSON object (no markdown, no explanation) with these exact f
       }
 
       const skills_extracted = (parsed.primary_skills?.length||0) + (parsed.secondary_skills?.length||0) + (parsed.tools_and_platforms?.length||0);
-      return res.json({ success:true, parsed_resume_id:parsedId, skills_extracted });
+      return res.json({ success:true, parsed_resume_id:parsedId, skills_extracted, extraction_method: extractionMethod });
     }
 
     case 'scoreAndSummariseCv': {
@@ -6230,6 +6294,33 @@ Return ONLY a valid JSON object (no markdown):
       }
 
       return res.json({ success:true, data: result });
+    }
+
+    /* ── Candidate reminders ─────────────────────────── */
+    case 'setCandidateReminder': {
+      const { candidate_id, remind_at, note } = p;
+      if (!candidate_id || !remind_at) return res.json({ success: false, error: 'candidate_id and remind_at are required' });
+      const remId = uuidv4();
+      const data = { id: remId, candidate_id, remind_at, note: note || '', created_by: cu?.id, created_at: new Date().toISOString() };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'CandidateReminder',$2,'pending',$3)", [remId, cu?.id, JSON.stringify(data)]);
+      return res.json({ success: true, id: remId });
+    }
+
+    case 'getCandidateReminders': {
+      const { candidate_id } = p;
+      if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
+      const rows = await all("SELECT data FROM entities WHERE type='CandidateReminder' AND data::jsonb->>'candidate_id'=$1 ORDER BY created_at DESC", [candidate_id]);
+      return res.json({ success: true, reminders: rows.map(r => JSON.parse(r.data)) });
+    }
+
+    case 'cancelCandidateReminder': {
+      const { reminder_id } = p;
+      if (!reminder_id) return res.json({ success: false, error: 'reminder_id required' });
+      const remRow = await one("SELECT data FROM entities WHERE id=$1 AND type='CandidateReminder'", [reminder_id]);
+      if (!remRow) return res.json({ success: false, error: 'Reminder not found' });
+      const remData = { ...JSON.parse(remRow.data), status: 'cancelled' };
+      await run("UPDATE entities SET status='cancelled', data=$1 WHERE id=$2", [JSON.stringify(remData), reminder_id]);
+      return res.json({ success: true });
     }
 
     /* ── Offer Letter ────────────────────────────────── */
@@ -11304,6 +11395,40 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
         requisition_health: reqHealth.slice(0, 30),
         offer_breakdown: { offered: totalOffers, accepted, declined, joined, pending: totalOffers - accepted - declined },
       });
+    }
+
+    case 'getRecruitmentInsights': {
+      // Takes the same summary data the client already fetched from
+      // getRecruitmentMIS and asks the AI to write short, specific,
+      // numbers-grounded observations from it — the narrative-insights
+      // panel RecruitmentAnalytics.jsx was missing (charts/tables only).
+      const { kpis, stage_funnel, stage_conversions, by_source, by_department, requisition_health, offer_breakdown, period_days } = p;
+      if (!kpis) return res.json({ success: false, error: 'kpis required' });
+
+      const prompt = `You are a sharp recruiting operations analyst. Write 3-6 short, specific insights based ONLY on the data below — cite real numbers from the data, no generic advice.
+
+PERIOD: last ${period_days || 180} days
+
+KPIs: ${JSON.stringify(kpis)}
+Stage funnel (cumulative counts at/past each stage): ${JSON.stringify(stage_funnel)}
+Stage-to-stage conversion rates: ${JSON.stringify(stage_conversions)}
+By source: ${JSON.stringify(by_source)}
+By department: ${JSON.stringify(by_department)}
+Oldest open requisitions (top 5, by days_open): ${JSON.stringify((requisition_health || []).slice(0, 5))}
+Offer breakdown: ${JSON.stringify(offer_breakdown)}
+
+Return ONLY a valid JSON object (no markdown) with an "insights" array. Each insight must have:
+- "type": one of "positive", "warning", "critical", "info"
+- "title": short title (5-8 words)
+- "detail": one sentence citing a specific number from the data
+- "action": one sentence recommended action, or "" if purely informational
+
+Rank critical issues first, then warnings, then positives/info. Max 6 insights.`;
+
+      let result;
+      try { result = await callAI(prompt, { json: true }); }
+      catch (e) { return res.json({ success: false, error: e.message, insights: [] }); }
+      return res.json({ success: true, insights: result?.insights || [] });
     }
 
     case 'saveInterviewScorecard': {

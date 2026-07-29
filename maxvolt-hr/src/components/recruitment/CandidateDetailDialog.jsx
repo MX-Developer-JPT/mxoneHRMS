@@ -3,7 +3,9 @@ import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Sparkles, Loader2, FileText, Mail, Phone, Building2, DollarSign, Clock } from 'lucide-react';
+import { Sparkles, Loader2, FileText, Mail, Phone, Building2, DollarSign, Clock, Bell, X } from 'lucide-react';
+import { Textarea } from "@/components/ui/textarea";
+import { toast } from 'sonner';
 import ResumeParsePanel from './ResumeParsePanel';
 import CvViewerModal from './CvViewerModal';
 
@@ -12,8 +14,47 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
   const [scoring, setScoring] = useState(false);
   const [localCandidate, setLocalCandidate] = useState(candidate);
   const [showCv, setShowCv] = useState(false);
+  const [reminders, setReminders] = useState([]);
+  const [showReminderForm, setShowReminderForm] = useState(false);
+  const [remindAt, setRemindAt] = useState('');
+  const [remindNote, setRemindNote] = useState('');
+  const [savingReminder, setSavingReminder] = useState(false);
 
-  useEffect(() => { setLocalCandidate(candidate); setAiResult(null); }, [candidate]);
+  useEffect(() => { setLocalCandidate(candidate); setAiResult(null); setShowReminderForm(false); if (candidate?.id) loadReminders(candidate.id); }, [candidate]);
+
+  const loadReminders = async (candidateId) => {
+    try {
+      const res = await base44.functions.invoke('getCandidateReminders', { candidate_id: candidateId });
+      setReminders((res.data?.reminders || []).filter(r => r.status === 'pending'));
+    } catch { setReminders([]); }
+  };
+
+  const handleSetReminder = async () => {
+    if (!remindAt) { toast.error('Pick a date and time'); return; }
+    setSavingReminder(true);
+    try {
+      const res = await base44.functions.invoke('setCandidateReminder', {
+        candidate_id: localCandidate.id,
+        remind_at: new Date(remindAt).toISOString(),
+        note: remindNote,
+      });
+      if (res.data?.success) {
+        toast.success('Reminder set');
+        setShowReminderForm(false); setRemindAt(''); setRemindNote('');
+        loadReminders(localCandidate.id);
+      } else {
+        toast.error(res.data?.error || 'Failed to set reminder');
+      }
+    } catch (e) { toast.error(e.message); }
+    setSavingReminder(false);
+  };
+
+  const handleCancelReminder = async (reminderId) => {
+    try {
+      await base44.functions.invoke('cancelCandidateReminder', { reminder_id: reminderId });
+      loadReminders(localCandidate.id);
+    } catch (e) { toast.error(e.message); }
+  };
 
   if (!localCandidate) return null;
 
@@ -98,7 +139,43 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
                   {scoring ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Analysing...</> : <><Sparkles className="w-4 h-4 mr-2" />AI Score CV</>}
                 </Button>
               )}
+              <Button variant="outline" size="sm" onClick={() => setShowReminderForm(v => !v)}>
+                <Bell className="w-4 h-4 mr-2" /> Remind
+              </Button>
             </div>
+
+            {/* Reminder form + list */}
+            {showReminderForm && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+                <input
+                  type="datetime-local"
+                  value={remindAt}
+                  onChange={e => setRemindAt(e.target.value)}
+                  className="w-full text-sm border rounded-md px-2 py-1.5"
+                />
+                <Textarea placeholder="What should this reminder say? (optional)" rows={2} value={remindNote} onChange={e => setRemindNote(e.target.value)} className="text-sm" />
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={handleSetReminder} disabled={savingReminder}>
+                    {savingReminder ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Bell className="w-3.5 h-3.5 mr-1.5" />} Set Reminder
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setShowReminderForm(false)}>Cancel</Button>
+                </div>
+              </div>
+            )}
+            {reminders.length > 0 && (
+              <div className="space-y-1.5">
+                {reminders.map(r => (
+                  <div key={r.id} className="flex items-center justify-between gap-2 bg-amber-50 border border-amber-100 rounded-md px-2.5 py-1.5 text-xs">
+                    <div className="flex items-center gap-1.5 text-amber-800 min-w-0">
+                      <Bell className="w-3 h-3 flex-shrink-0" />
+                      <span className="font-medium flex-shrink-0">{new Date(r.remind_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</span>
+                      {r.note && <span className="text-amber-600 truncate">— {r.note}</span>}
+                    </div>
+                    <button onClick={() => handleCancelReminder(r.id)} className="text-amber-400 hover:text-amber-700 flex-shrink-0"><X className="w-3.5 h-3.5" /></button>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Resume Parse Panel */}
             <ResumeParsePanel

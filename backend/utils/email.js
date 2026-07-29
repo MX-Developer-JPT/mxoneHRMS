@@ -166,6 +166,21 @@ export const emailTemplates = {
     ),
   }),
 
+  candidateRejection: ({ candidateName, position }) => ({
+    subject: `Update on your application — ${position} at Maxvolt Energy`,
+    html: wrap(
+      emailHeader('Application Update', '#475569'),
+      emailBody(`
+        <p>Dear <strong>${candidateName}</strong>,</p>
+        <p>Thank you for your interest in the <strong>${position}</strong> position at Maxvolt Energy Industries Limited, and for the time you invested in your application.</p>
+        <p>After careful consideration, we have decided to move forward with other candidates whose profile more closely matches our current requirements for this role. This decision is not a reflection of your overall qualifications.</p>
+        <p>We will keep your profile on file and encourage you to apply for future openings that match your skills and experience.</p>
+        <p>We wish you the very best in your career search.</p>
+      `),
+      emailFooter()
+    ),
+  }),
+
   payslip: ({ employeeName, month, year, payslipHtml }) => ({
     subject: `Your Payslip — ${month} ${year} | Maxvolt Energy`,
     html: wrap(

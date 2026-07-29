@@ -11,8 +11,15 @@ import {
 import {
   Loader2, TrendingUp, Users, Briefcase, Target, CheckCircle2, Send,
   Clock, BarChart3, ArrowRight, ArrowDown, AlertTriangle, Star,
-  Building2, Filter, Calendar, UserCheck, Zap, Award
+  Building2, Filter, Calendar, UserCheck, Zap, Award, Sparkles, AlertOctagon, Info
 } from 'lucide-react';
+
+const INSIGHT_STYLES = {
+  critical: { icon: AlertOctagon, bg: 'bg-red-50 border-red-200', text: 'text-red-700', iconColor: 'text-red-500' },
+  warning:  { icon: AlertTriangle, bg: 'bg-amber-50 border-amber-200', text: 'text-amber-700', iconColor: 'text-amber-500' },
+  positive: { icon: CheckCircle2, bg: 'bg-green-50 border-green-200', text: 'text-green-700', iconColor: 'text-green-500' },
+  info:     { icon: Info, bg: 'bg-blue-50 border-blue-200', text: 'text-blue-700', iconColor: 'text-blue-500' },
+};
 
 const STAGE_LABELS = {
   applied:              'Applied',
@@ -94,19 +101,45 @@ export default function RecruitmentAnalytics() {
   const [data, setData]         = useState(null);
   const [days, setDays]         = useState('180');
   const [activeTab, setActiveTab] = useState('overview');
+  const [insights, setInsights] = useState(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
 
   useEffect(() => { loadData(); }, [days]);
 
   const loadData = async () => {
     setLoading(true);
+    setInsights(null);
     try {
       const result = await base44.functions.invoke('getRecruitmentMIS', { days: Number(days) });
-      setData(result?.data || result);
+      const mis = result?.data || result;
+      setData(mis);
+      loadInsights(mis);
     } catch (e) {
       toast.error('Failed to load recruitment data');
       setData(null);
     }
     setLoading(false);
+  };
+
+  const loadInsights = async (mis) => {
+    if (!mis?.kpis) return;
+    setInsightsLoading(true);
+    try {
+      const res = await base44.functions.invoke('getRecruitmentInsights', {
+        kpis: mis.kpis,
+        stage_funnel: mis.stage_funnel,
+        stage_conversions: mis.stage_conversions,
+        by_source: mis.by_source,
+        by_department: mis.by_department,
+        requisition_health: mis.requisition_health,
+        offer_breakdown: mis.offer_breakdown,
+        period_days: mis.period_days,
+      });
+      setInsights(res?.data?.insights || []);
+    } catch (e) {
+      setInsights([]);
+    }
+    setInsightsLoading(false);
   };
 
   const kpis      = data?.kpis || {};
@@ -181,6 +214,42 @@ export default function RecruitmentAnalytics() {
           <KpiCard icon={CheckCircle2} label="Offer Accept Rate" value={`${kpis.offer_accept_rate ?? 0}%`}  color="green" />
           <KpiCard icon={UserCheck}    label="Joined"            value={kpis.joined ?? '—'}                 color="green" sub={`${pct(kpis.joined, kpis.total_candidates)}% of applicants`} />
         </div>
+
+        {/* AI Insights */}
+        {(insightsLoading || insights?.length > 0) && (
+          <Card className="border-indigo-200 bg-gradient-to-r from-indigo-50/60 to-purple-50/60">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-indigo-600" /> AI Insights
+                {insightsLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {insightsLoading && !insights ? (
+                <p className="text-sm text-gray-400">Analyzing hiring data…</p>
+              ) : (
+                <div className="grid md:grid-cols-2 gap-2.5">
+                  {insights.map((ins, i) => {
+                    const style = INSIGHT_STYLES[ins.type] || INSIGHT_STYLES.info;
+                    const Icon = style.icon;
+                    return (
+                      <div key={i} className={`rounded-lg border px-3 py-2.5 ${style.bg}`}>
+                        <div className="flex items-start gap-2">
+                          <Icon className={`w-4 h-4 mt-0.5 flex-shrink-0 ${style.iconColor}`} />
+                          <div className="min-w-0">
+                            <p className={`text-sm font-semibold ${style.text}`}>{ins.title}</p>
+                            <p className="text-xs text-gray-600 mt-0.5">{ins.detail}</p>
+                            {ins.action && <p className="text-xs text-gray-500 mt-1 italic">→ {ins.action}</p>}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Tabs */}
         <div className="flex gap-1 border-b overflow-x-auto">

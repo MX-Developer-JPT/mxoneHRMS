@@ -115,6 +115,11 @@ export default function ResumeParsePanel({ candidate, onParsed }) {
               <CheckCircle2 className="w-3 h-3 mr-1" /> Parsed
             </Badge>
           )}
+          {isParsed && parsedData.extraction_method === 'form_inference' && (
+            <Badge title={parsedData.extraction_note || 'Resume file text could not be read — this is inferred from the application form only'} className="bg-amber-100 text-amber-700 text-xs">
+              <AlertTriangle className="w-3 h-3 mr-1" /> Inferred, not from file
+            </Badge>
+          )}
           {isFailed && (
             <Badge className="bg-red-100 text-red-700 text-xs">
               <AlertCircle className="w-3 h-3 mr-1" /> Failed

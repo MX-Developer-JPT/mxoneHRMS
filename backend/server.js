@@ -16,6 +16,7 @@ import attendanceLogRouter  from './routes/attendancelog.js';
 import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
 import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions } from './cron/attendanceAutomation.js';
+import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -233,5 +234,18 @@ cron.schedule('*/30 * * * *', () => {
 // closed. See closeStaleOpenSessions for details.
 cron.schedule('*/30 * * * *', () => {
   closeStaleOpenSessions().catch(err => console.error('[open-session-safety-net] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Candidate reminders — every 15 minutes ───────────────────
+// Fires any "remind me about this candidate" reminder that's now due.
+cron.schedule('*/15 * * * *', () => {
+  sendDueCandidateReminders().catch(err => console.error('[candidate-reminders] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Recruitment pipeline stall check — daily at 9:00 AM IST ──
+// Flags candidates stuck in a stage too long and requisitions aging
+// without new candidates; re-alerts at most once a week per item.
+cron.schedule('0 9 * * *', () => {
+  checkStalePipeline().catch(err => console.error('[recruitment-stall-check] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 

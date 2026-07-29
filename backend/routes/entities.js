@@ -557,6 +557,15 @@ router.patch('/:type/:id', async (req, res) => {
             type: 'info', link: '/AssetTracking',
           });
         }
+      } else if (type === 'Candidate' && req.body.status === 'rejected' && current.status !== 'rejected' && updated.email) {
+        // Candidates aren't app users — there's no in-app notification target,
+        // only email. Previously a rejection only changed the status field
+        // silently; the candidate never heard back at all.
+        const tpl = emailTemplates.candidateRejection({
+          candidateName: updated.full_name || 'Applicant',
+          position: updated.position_applied || 'the role',
+        });
+        sendEmail({ to: updated.email, ...tpl }).catch(e => console.error('[email] Candidate rejection notification failed:', e.message));
       }
     } catch (ne) { console.error('[notif] post-update broadcast hook error:', ne.message); }
   })();
