@@ -107,6 +107,29 @@ function htmlLetterToPdfContent(html) {
     rem = rem.trimStart();
     if (!rem) break;
 
+    // ANNEXURE BOX — a <div class="mx-annexure-box"> marks a self-contained
+    // "closed box" section (the bordered salary-annexure page). A CSS border
+    // on a <div> has no pdfmake equivalent when the div is just flattened
+    // into the surrounding flow — the border silently disappears and the
+    // content can split across pages with no visual box at all. Instead we
+    // recursively parse everything inside the marker and re-wrap it as a
+    // single-cell pdfmake table with a real border and a forced page break,
+    // so it always renders as one bordered box on its own page. Assumes no
+    // nested <div> inside the marker (true for every caller today), so the
+    // first matching </div> is the real closing tag.
+    const box = rem.match(/^<div[^>]*class=["']mx-annexure-box["'][^>]*>([\s\S]*?)<\/div>/i);
+    if (box) {
+      const innerNodes = htmlLetterToPdfContent(box[1]);
+      nodes.push({
+        pageBreak: 'before',
+        table: { widths: ['*'], body: [[{ stack: innerNodes, margin: [10, 10, 10, 10] }]] },
+        layout: { hLineWidth: () => 2, vLineWidth: () => 2, hLineColor: () => '#111111', vLineColor: () => '#111111' },
+        margin: [0, 0, 0, 10],
+      });
+      rem = rem.slice(box[0].length);
+      continue;
+    }
+
     // TABLE — handles <td> and <th> cells, and colspan (pdfmake needs an
     // explicit colSpan on the spanning cell plus {} filler cells for the
     // columns it swallows, or its layout engine throws mid-render and the
@@ -6908,41 +6931,15 @@ Return ONLY a valid JSON object (no markdown):
   <li>Last 3 months salary slips &amp; 6 months bank statement.</li>
 </ul>`;
 
-      const salaryRows = [
-        basic   && ['Basic Pay',                              basic,   basic * 12],
-        hra     && ['House Rent Allowance (HRA)',             hra,     hra * 12],
-        conv    && ['Conveyance Allowance',                   conv,    conv * 12],
-        special && ['Special Allowance',                      special, special * 12],
-        otherAl && ['Other Allowance',                        otherAl, otherAl * 12],
-        gross   && ['<strong>Gross Monthly</strong>',         gross,   gross * 12],
-        pfEmp   && ['Less: PF – Employee (12%)',              pfEmp,   pfEmp * 12],
-        net     && ['<strong>Net Monthly Take-Home</strong>', net,     net * 12],
-      ].filter(Boolean);
-
-      const salaryTable = salaryRows.length ? `
-<div style="margin-top:36px;page-break-before:always;">
-<p style="text-align:center;font-weight:bold;font-size:15px;margin:0 0 2px;">Annexure – A</p>
-<p style="text-align:center;font-size:14px;margin:0 0 14px;">Salary Structure</p>
-<table style="width:100%;border-collapse:collapse;font-size:13px;">
-  <thead><tr style="background:#222;color:#fff;">
-    <th style="padding:8px 12px;text-align:left;font-weight:normal;">Component</th>
-    <th style="padding:8px 12px;text-align:right;font-weight:normal;">Monthly (₹)</th>
-    <th style="padding:8px 12px;text-align:right;font-weight:normal;">Annual (₹)</th>
-  </tr></thead>
-  <tbody>${salaryRows.map(([label, m, a], i) =>
-    `<tr style="background:${i % 2 === 0 ? '#f7f7f7' : '#fff'};">
-      <td style="padding:7px 12px;border-bottom:1px solid #ddd;">${label}</td>
-      <td style="padding:7px 12px;text-align:right;border-bottom:1px solid #ddd;">${fmt(m)}</td>
-      <td style="padding:7px 12px;text-align:right;border-bottom:1px solid #ddd;">${fmt(a)}</td>
-    </tr>`).join('')}
-  </tbody>
-</table>
-<p style="margin:10px 0 2px;font-size:12px;">* Annual CTC: <strong>${overrideAnnualCTC ? fmt(overrideAnnualCTC) + '/-' : '[____]'}</strong></p>
-<p style="font-size:12px;margin:2px 0;">* TDS deducted as per applicable provisions. Gross salary is subject to TDS.</p>
-<p style="font-size:12px;margin:2px 0;">* Statutory benefits (PF, ESI, Gratuity, Bonus) as per applicable labour laws.</p>
-</div>` : '';
-
       const joinDate = extra.joining_date || doj;
+      // Renders ISO/date-picker strings ("2026-07-31") as prose ("31 July
+      // 2026") to match the rest of the letter; falls back to the raw value
+      // for anything that isn't a parseable date (e.g. '[Date of Joining]').
+      const fmtDate = (d) => {
+        if (!d) return d;
+        const parsed = new Date(d);
+        return isNaN(parsed) ? d : parsed.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+      };
 
       // Full employer-side breakdown (PF employer, ESI, medical, bonus/VPP) —
       // same formulas already used by sendOfferLetter — needed to reproduce
@@ -6976,12 +6973,11 @@ Return ONLY a valid JSON object (no markdown):
         const tr = (label, m, bold) => m == null ? '' : `<tr><td style="padding:4px 8px;border:1px solid #999;${bold ? 'font-weight:bold;' : ''}">${label}</td><td style="padding:4px 8px;border:1px solid #999;text-align:right;${bold ? 'font-weight:bold;' : ''}">${Number(m * 12).toLocaleString('en-IN')}</td><td style="padding:4px 8px;border:1px solid #999;text-align:right;${bold ? 'font-weight:bold;' : ''}">${Number(m).toLocaleString('en-IN')}</td></tr>`;
         const sec = label => `<tr><td colspan="3" style="padding:3px 8px;border:1px solid #999;font-weight:bold;text-decoration:underline;">${label}</td></tr>`;
         return `
-<div style="margin-top:36px;page-break-before:always;">
-<div style="border:2px solid #111;padding:18px 22px;">
+<div class="mx-annexure-box" style="page-break-before:always;border:2px solid #111;padding:18px 22px;">
   <p style="text-align:center;font-weight:bold;font-size:13px;margin:0;">M/S MAXVOLT ENERGY INDUSTRIES LIMITED</p>
   <p style="text-align:center;font-size:11.5px;margin:2px 0 0;">E-82, Bulandshahr Road Industrial Area</p>
   <p style="text-align:center;font-size:11.5px;margin:0 0 14px;">Ghaziabad, UP - 201009</p>
-  ${rows.map(([l, v]) => `<p style="margin:0 0 2px;"><span style="font-weight:bold;display:inline-block;width:170px;">${l}</span><span style="font-weight:bold;">${v}</span></p>`).join('')}
+  ${rows.map(([l, v]) => `<p style="margin:0 0 2px;"><span style="font-weight:bold;display:inline-block;width:170px;">${l}:</span><span style="font-weight:bold;"> ${v}</span></p>`).join('')}
   <p style="text-align:center;font-style:italic;font-weight:bold;text-decoration:underline;margin:14px 0 10px;">${heading}${subheading ? ' — ' + subheading : ''}</p>
   <table style="width:100%;border-collapse:collapse;font-size:12px;">
     <thead><tr style="background:#e5e5e5;"><th style="padding:5px 8px;border:1px solid #999;text-align:left;">Salary Head</th><th style="padding:5px 8px;border:1px solid #999;text-align:right;">Annually</th><th style="padding:5px 8px;border:1px solid #999;text-align:right;">Monthly</th></tr></thead>
@@ -7007,7 +7003,6 @@ Return ONLY a valid JSON object (no markdown):
       ${tr('Annually CTC (A+C)', grossA + contribM, true)}
     </tbody>
   </table>
-</div>
 </div>`;
       };
 
@@ -7122,7 +7117,7 @@ ${sealHtml()}
 <p style="margin:0 0 2px;">Date:</p>
 <p style="margin:0 0 20px;">Signature:</p>
 <p style="text-align:center;font-weight:bold;">(Confidential)</p>
-${buildMeilSalaryBox({ heading: 'APPOINTMENT LETTER', subheading: 'Annexure – A', rows: [['Employee Name', empName], ['Date of Joining', joinDate]], ctcAnnual: overrideAnnualCTC })}`);
+${buildMeilSalaryBox({ heading: 'APPOINTMENT LETTER', subheading: 'Annexure – A', rows: [['Employee Name', empName], ['Date of Joining', fmtDate(joinDate)]], ctcAnnual: overrideAnnualCTC })}`);
         },
 
         confirmation: () => wrap(`
@@ -7172,7 +7167,7 @@ ${sealHtml()}
           const effDate = extra.effective_date || '[Effective Date]';
           const annexureBox = buildMeilSalaryBox({
             heading: 'SALARY INCREMENT LETTER',
-            rows: [['Employee Name', empName], ['Date of Increment', effDate]],
+            rows: [['Employee Name', empName], ['Date of Increment', fmtDate(effDate)]],
             ctcAnnual: newCTC,
           });
           return wrap(`
@@ -7224,7 +7219,7 @@ ${P('We congratulate you on this well-deserved promotion and wish you continued 
 ${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory')}
 <p style="margin:64px 0 6px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>
 <p>Name: _________________________________</p>
-${buildMeilSalaryBox({ heading: 'PROMOTION LETTER', subheading: 'Annexure – A', rows: [['Employee Name', empName], ['Date of Promotion', effDate]], ctcAnnual: overrideAnnualCTC })}`);
+${buildMeilSalaryBox({ heading: 'PROMOTION LETTER', subheading: 'Annexure – A', rows: [['Employee Name', empName], ['Date of Promotion', fmtDate(effDate)]], ctcAnnual: overrideAnnualCTC })}`);
         },
 
         salary_revision: () => {
@@ -7253,13 +7248,11 @@ ${buildMeilSalaryBox({ heading: 'PROMOTION LETTER', subheading: 'Annexure – A'
           ].filter(Boolean);
 
           const revTable = revRows.length ? `
-<div style="margin-top:24px;page-break-before:always;">
-<p style="text-align:center;font-weight:bold;font-size:15px;margin:0 0 2px;">Annexure – A</p>
-<p style="text-align:center;font-size:14px;margin:0 0 14px;">Salary Revision &ndash; Comparative Statement</p>
-<div style="border:2px solid #111;padding:18px 22px;">
+<div class="mx-annexure-box" style="page-break-before:always;border:2px solid #111;padding:18px 22px;">
 <p style="text-align:center;font-weight:bold;font-size:13px;margin:0;">M/S MAXVOLT ENERGY INDUSTRIES LIMITED</p>
 <p style="text-align:center;font-size:11.5px;margin:2px 0 0;">E-82, Bulandshahr Road Industrial Area</p>
 <p style="text-align:center;font-size:11.5px;margin:0 0 14px;">Ghaziabad, UP - 201009</p>
+<p style="text-align:center;font-style:italic;font-weight:bold;text-decoration:underline;margin:14px 0 10px;">SALARY REVISION LETTER &mdash; Annexure &ldquo;A&rdquo;</p>
 <table style="width:100%;border-collapse:collapse;font-size:12px;">
   <thead><tr style="background:#e5e5e5;">
     <th style="padding:5px 8px;border:1px solid #999;text-align:left;">Component</th>
@@ -7278,7 +7271,6 @@ ${buildMeilSalaryBox({ heading: 'PROMOTION LETTER', subheading: 'Annexure – A'
 </table>
 <p style="margin:10px 0 2px;font-size:12px;">* Previous Annual CTC: <strong>${oldAnnualCTC ? fmt(oldAnnualCTC) + '/-' : '[____]'}</strong> &nbsp;|&nbsp; Revised Annual CTC: <strong>${newCTC ? fmt(newCTC) + '/-' : overrideAnnualCTC ? fmt(overrideAnnualCTC) + '/-' : '[____]'}</strong></p>
 <p style="font-size:12px;margin:2px 0;">* TDS deducted as per applicable provisions. * Statutory benefits as per applicable labour laws.</p>
-</div>
 </div>` : '';
 
           return wrap(`
