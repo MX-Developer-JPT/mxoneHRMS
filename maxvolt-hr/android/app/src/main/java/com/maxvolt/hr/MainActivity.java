@@ -3,12 +3,23 @@ package com.maxvolt.hr;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.os.Build;
+import androidx.core.view.WindowCompat;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Explicit edge-to-edge opt-in. Android 15+ (API 35, this app's compile/
+        // target SDK is 36) enforces edge-to-edge regardless and no longer allows
+        // opting out — without this explicit call, whether Capacitor's own
+        // internal handling applies it before the WebView's first paint is
+        // implementation-dependent, which is what Play Console's "edge-to-edge
+        // may not display for all users" check is flagging. Calling it directly
+        // here removes that ambiguity — the frontend already handles the
+        // resulting insets throughout via env(safe-area-inset-top/bottom)
+        // (see Layout.jsx, Login.jsx, GateAdminLayout.jsx).
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         createNotificationChannels();
     }
 

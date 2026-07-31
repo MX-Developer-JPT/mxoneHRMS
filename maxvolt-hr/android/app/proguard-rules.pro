@@ -12,6 +12,26 @@
 #   public *;
 #}
 
+# ── Capacitor / Firebase safety net ──────────────────────────
+# Capacitor plugins call into native methods reflectively via
+# @CapacitorPlugin/@PluginMethod annotations — R8 must not strip or
+# rename these or the JS-to-native bridge breaks silently at runtime.
+# Each Capacitor/community plugin AAR ships its own consumer-rules.pro
+# that Gradle merges automatically, but this is a deliberate belt-and-
+# suspenders net for the core bridge + the plugins this app actually
+# uses (background geolocation, Firebase messaging) in case any one of
+# them is missing/incomplete consumer rules.
+-keep class com.getcapacitor.** { *; }
+-keep @com.getcapacitor.annotation.CapacitorPlugin class * { *; }
+-keepclassmembers class * {
+    @com.getcapacitor.annotation.PermissionCallback <methods>;
+    @com.getcapacitor.PluginMethod <methods>;
+}
+-keep class com.google.firebase.** { *; }
+-keep class com.google.android.gms.** { *; }
+-dontwarn com.google.firebase.**
+-dontwarn com.google.android.gms.**
+
 # Uncomment this to preserve the line number information for
 # debugging stack traces.
 #-keepattributes SourceFile,LineNumberTable
