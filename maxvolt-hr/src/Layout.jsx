@@ -881,7 +881,7 @@ export default function Layout({ children, currentPageName }) {
               // visual-viewport inset so the sheet sits flush to the true
               // bottom of the screen.
               bottom: 'var(--vv-bottom-inset, 0px)',
-              background: 'rgba(242,242,247,0.96)',
+              background: theme === 'dark' ? 'rgba(28,28,30,0.96)' : 'rgba(242,242,247,0.96)',
               backdropFilter: 'saturate(180%) blur(40px)',
               WebkitBackdropFilter: 'saturate(180%) blur(40px)',
               maxHeight: '85dvh',
@@ -894,18 +894,18 @@ export default function Layout({ children, currentPageName }) {
             </div>
 
             {/* Sheet header */}
-            <div className="flex-shrink-0 flex items-center justify-between px-5 py-2 border-b border-[#E0E0E5]/80">
+            <div className="flex-shrink-0 flex items-center justify-between px-5 py-2 border-b border-[#E0E0E5]/80 dark:border-white/10">
               <div className="flex items-center gap-2.5">
                 <Avatar name={displayName} role={userRole} size="sm" />
                 <div>
-                  <p className="font-semibold text-[14px] text-[#1D1D1F] leading-tight">{displayName}</p>
-                  <p className="text-[11px] text-[#6E6E73] capitalize">{userRole?.replace(/_/g, ' ')}</p>
+                  <p className="font-semibold text-[14px] text-[#1D1D1F] dark:text-white leading-tight">{displayName}</p>
+                  <p className="text-[11px] text-[#6E6E73] dark:text-[#8E8E93] capitalize">{userRole?.replace(/_/g, ' ')}</p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-                  className="w-9 h-9 rounded-full bg-[#E5E5EA] flex items-center justify-center"
+                  className="w-9 h-9 rounded-full bg-[#E5E5EA] dark:bg-white/10 flex items-center justify-center"
                   aria-label="Toggle theme"
                 >
                   {theme === 'dark'
@@ -915,16 +915,16 @@ export default function Layout({ children, currentPageName }) {
                 </button>
                 <button
                   onClick={() => { setMoreSheetOpen(false); setSheetSearch(''); }}
-                  className="w-9 h-9 rounded-full bg-[#E5E5EA] flex items-center justify-center"
+                  className="w-9 h-9 rounded-full bg-[#E5E5EA] dark:bg-white/10 flex items-center justify-center"
                   aria-label="Close"
                 >
-                  <X className="w-4 h-4 text-[#6E6E73]" />
+                  <X className="w-4 h-4 text-[#6E6E73] dark:text-[#8E8E93]" />
                 </button>
               </div>
             </div>
 
             {/* Sheet search */}
-            <div className="flex-shrink-0 px-4 py-2 border-b border-[#E0E0E5]/80">
+            <div className="flex-shrink-0 px-4 py-2 border-b border-[#E0E0E5]/80 dark:border-white/10">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8E8E93]" />
                 <input
@@ -932,7 +932,7 @@ export default function Layout({ children, currentPageName }) {
                   value={sheetSearch}
                   onChange={e => setSheetSearch(e.target.value)}
                   placeholder="Search menu…"
-                  className="w-full pl-9 pr-3 py-2 text-[14px] rounded-xl bg-[#E5E5EA]/60 border-none outline-none text-[#1D1D1F] placeholder-[#8E8E93] focus:ring-1 focus:ring-[#007AFF]/30"
+                  className="w-full pl-9 pr-3 py-2 text-[14px] rounded-xl bg-[#E5E5EA]/60 dark:bg-white/5 border-none outline-none text-[#1D1D1F] dark:text-white placeholder-[#8E8E93] focus:ring-1 focus:ring-[#007AFF]/30"
                 />
               </div>
             </div>
@@ -960,13 +960,13 @@ export default function Layout({ children, currentPageName }) {
                             transition-colors duration-150
                             ${isActive
                               ? 'bg-[#007AFF]/10 text-[#007AFF]'
-                              : 'text-[#1D1D1F] hover:bg-[#E5E5EA]/60'
+                              : 'text-[#1D1D1F] dark:text-white hover:bg-[#E5E5EA]/60 dark:hover:bg-white/5'
                             }
                           `}
                           style={{ minHeight: 48 }}
                         >
-                          <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${isActive ? 'bg-[#007AFF]' : 'bg-[#E5E5EA]'}`}>
-                            <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-[#6E6E73]'}`} />
+                          <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${isActive ? 'bg-[#007AFF]' : 'bg-[#E5E5EA] dark:bg-white/5'}`}>
+                            <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-[#6E6E73] dark:text-[#8E8E93]'}`} />
                           </div>
                           <span className="flex-1">{item.name}</span>
                           {isActive && <div className="w-2 h-2 rounded-full bg-[#007AFF]" />}
@@ -982,7 +982,7 @@ export default function Layout({ children, currentPageName }) {
             </nav>
 
             {/* Sheet footer — flex-shrink-0 keeps Sign out + policy links pinned */}
-            <div className="flex-shrink-0 px-3 py-2 border-t border-[#E0E0E5]/80">
+            <div className="flex-shrink-0 px-3 py-2 border-t border-[#E0E0E5]/80 dark:border-white/10">
               <button
                 onClick={handleLogout}
                 className="w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-medium text-[#FF3B30] hover:bg-[#FF3B30]/8 transition-colors"
