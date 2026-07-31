@@ -6344,80 +6344,52 @@ Return ONLY a valid JSON object (no markdown):
       const todayDate     = new Date().toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' });
       const offerRef      = `MEIL/HR/OL/${new Date().getFullYear()}/${String(Math.floor(Math.random()*9000)+1000)}`;
 
+      const offerValidTill = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+      const jDateStr2 = jDate ? new Date(jDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }) : 'As mutually agreed';
+
       const letterHtml = `
-<div style="font-family:Arial,sans-serif;font-size:11px;color:#1a1a1a;line-height:1.6;">
-  <div style="text-align:right;margin-bottom:14px;">
-    <strong>Ref:</strong> ${offerRef}<br/>
-    <strong>Date:</strong> ${todayDate}
-  </div>
-
-  <p style="margin-bottom:10px;">To,<br/>
-  <strong>${name}</strong><br/>
-  ${cand.address || cand.email || ''}</p>
-
-  <p style="font-weight:bold;text-align:center;font-size:13px;text-decoration:underline;margin:14px 0;">
-    APPOINTMENT LETTER / OFFER OF EMPLOYMENT
-  </p>
-
-  <p>Dear <strong>${name}</strong>,</p>
-
-  <p>We are pleased to offer you the position of <strong>${position}</strong> in the <strong>${dept}</strong> department at <strong>Maxvolt Energy Industries Limited</strong>, subject to the terms and conditions stated herein.</p>
-
-  <table style="width:100%;border-collapse:collapse;margin:14px 0;font-size:10.5px;">
-    <tr style="background:#f9f9f9;">
-      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;width:40%;">Designation</td>
-      <td style="padding:5px 8px;border:1px solid #ddd;">${position}</td>
-    </tr>
+<div style="font-family:Arial,sans-serif;font-size:13.5px;color:#111;line-height:1.75;max-width:700px;">
+  <p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 22px;">OFFER LETTER</p>
+  <p style="margin:0 0 20px;">${todayDate}</p>
+  <p style="margin:0 0 12px;">Dear <strong>${name}</strong>,</p>
+  <p style="font-weight:bold;margin:0 0 10px;">Congratulation!!</p>
+  <p style="margin:0 0 12px;"><strong>Subject:</strong> Offer to the Post of <strong>${position}</strong>.</p>
+  <p style="margin:0 0 12px;text-align:justify;">We are pleased to offer you the position of <strong>${position}</strong> in the <strong>${dept} Department</strong> in <strong>${workLocation}</strong> location with MaxVolt Energy Industries Limited.</p>
+  <p style="margin:0 0 12px;text-align:justify;">We trust that your knowledge, skills and experience will be among our most valuable assets. As discussed, and agreed with you, you will be eligible to receive the following beginning on your joining date:</p>
+  <ul style="margin:0 0 14px 24px;line-height:1.85;">
+    <li>Salary: Annual CTC- INR ${annualCTC.toLocaleString('en-IN')} /-</li>
+    <li>Date of Joining: ${jDateStr2}</li>
+    <li>Documentation: ${jDateStr2}</li>
+  </ul>
+  <p style="margin:0 0 12px;text-align:justify;">This offer letter is valid until <strong>${offerValidTill}</strong>. Please send a signed copy of this letter indicating your acceptance to join and a resignation acceptance letter from your current employer to our HR.</p>
+  <p style="margin:0 0 12px;text-align:justify;">The joining formalities and induction will be carried out in our ${workLocation} office. Please submit the following documents to HR at the time of your joining:</p>
+  <ul style="margin:0 0 14px 24px;line-height:1.85;">
+    <li>Proof of address &amp; ID (Local &amp; Permanent).</li>
+    <li>Five color recent passport-size photos (Not older than three months)</li>
+    <li>Photocopies of your 10th,12th certificate &amp; highest degree certificates,</li>
+    <li>Offer, Appointment &amp; Increment Letters (Past3)</li>
+    <li>Proof of work experience &ndash; Experience / relieving letter (Past3)</li>
+    <li>Last 3 months salary slips &amp; 6 months bank statement.</li>
+    <li>Proof of address &amp; ID (Local &amp; Permanent).</li>
+  </ul>
+  <p style="margin:0 0 24px;">We look forward to welcome you aboard. Sincerely,</p>
+  <p style="text-align:center;font-weight:bold;margin:0 0 24px;">(Confidential)</p>
+  <table style="width:100%;border-collapse:collapse;">
     <tr>
-      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Department</td>
-      <td style="padding:5px 8px;border:1px solid #ddd;">${dept}</td>
-    </tr>
-    <tr style="background:#f9f9f9;">
-      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Date of Joining</td>
-      <td style="padding:5px 8px;border:1px solid #ddd;">${jDate ? new Date(jDate).toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' }) : 'As mutually agreed'}</td>
-    </tr>
-    <tr>
-      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Reporting To</td>
-      <td style="padding:5px 8px;border:1px solid #ddd;">${reportingTo}</td>
-    </tr>
-    <tr style="background:#f9f9f9;">
-      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Work Location</td>
-      <td style="padding:5px 8px;border:1px solid #ddd;">${workLocation}</td>
-    </tr>
-    <tr>
-      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Annual CTC</td>
-      <td style="padding:5px 8px;border:1px solid #ddd;">₹${annualCTC.toLocaleString('en-IN')} per annum</td>
-    </tr>
-    <tr style="background:#f9f9f9;">
-      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Monthly Gross</td>
-      <td style="padding:5px 8px;border:1px solid #ddd;">₹${monthlyCTC.toLocaleString('en-IN')} per month</td>
-    </tr>
-    <tr>
-      <td style="padding:5px 8px;border:1px solid #ddd;font-weight:bold;">Probation Period</td>
-      <td style="padding:5px 8px;border:1px solid #ddd;">${probation} months</td>
+      <td style="width:50%;vertical-align:top;padding-right:20px;">
+        <p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
+        <p style="margin:34px 0 2px;">Manager &ndash; HR_______________________</p>
+        <p style="margin:0 0 2px;">Date:</p>
+        <p style="margin:0;">Signature:</p>
+      </td>
+      <td style="width:50%;vertical-align:top;">
+        <p style="margin:0 0 2px;font-weight:bold;">I accept the offer on the terms and conditions as described in this letter</p>
+        <p style="margin:34px 0 2px;">Employee Name__________________________</p>
+        <p style="margin:0 0 2px;">Date:</p>
+        <p style="margin:0;">Signature:</p>
+      </td>
     </tr>
   </table>
-
-  <p><strong>Terms and Conditions:</strong></p>
-  <ol style="padding-left:18px;margin:8px 0;">
-    <li>Your employment will be subject to the rules and regulations of the company, as may be amended from time to time.</li>
-    <li>During the probation period, either party may terminate the contract by giving 7 days' written notice. After confirmation, 1 month's notice is required from both parties.</li>
-    <li>You will not engage in any business activity that is in conflict with the interests of the company.</li>
-    <li>You are required to maintain the confidentiality of company information during and after employment.</li>
-    <li>This offer is conditional upon successful verification of your educational qualifications, previous employment records, and medical fitness.</li>
-    <li>Please confirm your acceptance of this offer by signing and returning a copy of this letter within <strong>7 days</strong> of receipt.</li>
-  </ol>
-
-  <p style="margin-top:14px;">We look forward to welcoming you to the Maxvolt Energy family and are confident that your skills and experience will be a valuable addition to our team.</p>
-
-  <div style="margin-top:40px;display:flex;justify-content:space-between;">
-    <div>
-      <p style="border-top:1px solid #333;padding-top:5px;min-width:180px;">Authorised Signatory<br/><strong>For Maxvolt Energy Industries Limited</strong></p>
-    </div>
-    <div>
-      <p style="border-top:1px solid #333;padding-top:5px;min-width:180px;">Candidate Acceptance<br/><strong>${name}</strong><br/>Date: _______________</p>
-    </div>
-  </div>
 </div>`;
 
       // Update candidate status to 'offered'
@@ -6782,7 +6754,7 @@ Return ONLY a valid JSON object (no markdown):
       const annualCTC = ss.annualCTC || (ss.grossMonthly ? Math.round(ss.grossMonthly * 12) : 0);
 
       const todayDate = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
-      const refPrefix = { confirmation: 'CONF', experience: 'EXP', relieving: 'REL', appointment: 'APPT', salary_revision: 'SAL', address_proof: 'ADDR', warning: 'WARN', promotion: 'PROMO' }[letterType] || 'LTR';
+      const refPrefix = { confirmation: 'CONF', experience: 'EXP', relieving: 'REL', appointment: 'APPT', salary_revision: 'SAL', increment: 'INC', address_proof: 'ADDR', warning: 'WARN', promotion: 'PROMO' }[letterType] || 'LTR';
       const ref = `MEIL/HR/${refPrefix}/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
 
       const empName    = emp.display_name || uRow?.full_name || '[Employee Name]';
@@ -6866,94 +6838,255 @@ Return ONLY a valid JSON object (no markdown):
 
       const joinDate = extra.joining_date || doj;
 
+      // Full employer-side breakdown (PF employer, ESI, medical, bonus/VPP) —
+      // same formulas already used by sendOfferLetter — needed to reproduce
+      // the "M/S MAXVOLT ENERGY INDUSTRIES LIMITED" bordered salary-annexure
+      // box exactly as it appears on the reference Offer/Increment letters.
+      const buildMeilBreakdown = (basicM, ctcAnnual) => {
+        const PF_CEIL = 15000, ESI_CEIL = 21000;
+        const pfBase = Math.min(basicM || 0, PF_CEIL);
+        const pfEmpM = Math.round(pfBase * 0.12);
+        const pfEmployerM = Math.round(pfBase * 0.13);
+        const isESI = basicM > 0 && basicM <= ESI_CEIL;
+        const esiEmpM = isESI ? Math.round(basicM * 0.0075) : 0;
+        const esiEmployerM = isESI ? Math.round(basicM * 0.0325) : 0;
+        const medicalM = Number(extra.medical_contribution) || 0;
+        let bonusM, bonusType;
+        if (!ctcAnnual) { bonusM = 0; bonusType = 'Bonus'; }
+        else if (ctcAnnual <= 1000000) { bonusM = Math.round(basicM * 0.0833); bonusType = 'Bonus'; }
+        else { const vp = ctcAnnual <= 1500000 ? 0.05 : ctcAnnual <= 2000000 ? 0.08 : ctcAnnual <= 2500000 ? 0.12 : 0.15; bonusM = Math.round(ctcAnnual * vp / 12); bonusType = 'Bonus'; }
+        return { pfEmpM, pfEmployerM, isESI, esiEmpM, esiEmployerM, medicalM, bonusM, bonusType };
+      };
+
+      // The bordered "M/S MAXVOLT ENERGY INDUSTRIES LIMITED" salary box used
+      // on page 2 of the Offer Letter and the Annexure "A" of the Increment
+      // Letter — same visual structure, different heading/subheading text.
+      const buildMeilSalaryBox = ({ heading, subheading, rows, ctcAnnual }) => {
+        const bd = buildMeilBreakdown(basic, ctcAnnual);
+        const grossA = basic + hra + conv + special + otherAl;
+        const totalDedM = bd.pfEmpM + bd.esiEmpM;
+        const netM = grossA - totalDedM;
+        const contribM = bd.pfEmployerM + bd.esiEmployerM + bd.medicalM + bd.bonusM;
+        const tr = (label, m, bold) => m == null ? '' : `<tr><td style="padding:4px 8px;border:1px solid #999;${bold ? 'font-weight:bold;' : ''}">${label}</td><td style="padding:4px 8px;border:1px solid #999;text-align:right;${bold ? 'font-weight:bold;' : ''}">${Number(m * 12).toLocaleString('en-IN')}</td><td style="padding:4px 8px;border:1px solid #999;text-align:right;${bold ? 'font-weight:bold;' : ''}">${Number(m).toLocaleString('en-IN')}</td></tr>`;
+        const sec = label => `<tr><td colspan="3" style="padding:3px 8px;border:1px solid #999;font-weight:bold;text-decoration:underline;">${label}</td></tr>`;
+        return `
+<div style="margin-top:36px;page-break-before:always;">
+<div style="border:2px solid #111;padding:18px 22px;">
+  <p style="text-align:center;font-weight:bold;font-size:13px;margin:0;">M/S MAXVOLT ENERGY INDUSTRIES LIMITED</p>
+  <p style="text-align:center;font-size:11.5px;margin:2px 0 0;">E-82, Bulandshahr Road Industrial Area</p>
+  <p style="text-align:center;font-size:11.5px;margin:0 0 14px;">Ghaziabad, UP - 201009</p>
+  ${rows.map(([l, v]) => `<p style="margin:0 0 2px;"><span style="font-weight:bold;display:inline-block;width:170px;">${l}</span><span style="font-weight:bold;">${v}</span></p>`).join('')}
+  <p style="text-align:center;font-style:italic;font-weight:bold;text-decoration:underline;margin:14px 0 10px;">${heading}${subheading ? ' — ' + subheading : ''}</p>
+  <table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:#e5e5e5;"><th style="padding:5px 8px;border:1px solid #999;text-align:left;">Salary Head</th><th style="padding:5px 8px;border:1px solid #999;text-align:right;">Annually</th><th style="padding:5px 8px;border:1px solid #999;text-align:right;">Monthly</th></tr></thead>
+    <tbody>
+      ${sec('Earnings')}
+      ${tr('Basic', basic)}
+      ${tr('HRA', hra)}
+      ${tr('Conveyance', conv)}
+      ${tr('Special Allowance', special)}
+      ${tr('Other Allowance', otherAl)}
+      ${tr('Total Gross Salary (A)', grossA, true)}
+      ${sec('Deduction')}
+      ${tr('PF Employee Contribution', bd.pfEmpM)}
+      ${tr('ESI Employee Contribution', bd.isESI ? bd.esiEmpM : 0)}
+      ${tr('Total Deduction (B)', totalDedM, true)}
+      ${tr('Total Net Salary(A-B)', netM, true)}
+      ${sec('Contribution')}
+      ${tr('PF Employer Contribution', bd.pfEmployerM)}
+      ${tr('ESI Employer Contribution', bd.isESI ? bd.esiEmployerM : 0)}
+      ${tr('Medical', bd.medicalM)}
+      ${tr('Bonus', bd.bonusM)}
+      ${tr('Total Contribution (C)', contribM, true)}
+      ${tr('Annually CTC (A+C)', grossA + contribM, true)}
+    </tbody>
+  </table>
+</div>
+</div>`;
+      };
+
       const templateLetters = {
 
-        appointment: () => wrap(`
-<p style="font-weight:bold;font-size:12px;margin:0 0 16px;">PRIVATE &amp; STRICTLY CONFIDENTIAL</p>
-<p style="margin:0 0 4px;">${todayDate}</p>
+        appointment: () => {
+          const hodTitle = `Head of Department - ${department}`;
+          const LI = t => `<p style="margin:0 0 10px;text-align:justify;padding-left:22px;">${t}</p>`;
+          return wrap(`
+<p style="text-align:center;font-weight:bold;font-style:italic;font-size:13px;text-decoration:underline;margin:0 0 20px;">PRIVATE &amp; STRICTLY CONFIDENTIAL</p>
+<p style="margin:0 0 4px;">Date: - ${todayDate}</p>
 <p style="margin:0 0 20px;">To ${sal} ${empName},</p>
-<p style="text-align:center;font-weight:bold;font-size:17px;letter-spacing:2px;text-decoration:underline;margin:0 0 6px;">APPOINTMENT LETTER</p>
-<p style="text-align:right;font-size:12px;color:#555;margin:0 0 24px;"><strong>Ref:</strong> ${ref}</p>
+<p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 24px;">APPOINTMENT LETTER</p>
 ${P(`Dear ${sal} ${empName},`)}
-${P(`With reference to your application and subsequent interview with us, we are pleased to appoint you as <strong>${designation}</strong> in <strong>${department}</strong> in Our Company <strong>Maxvolt Energy Industries Limited</strong>, on the following terms and conditions:`)}
-${P(`<strong>Date of joining:</strong> ${joinDate}`)}
-${P(`Your employment with Our Company shall be effective from <strong>${joinDate}</strong>. This offer shall automatically stand revoked in the event of your not joining the Company on or before the date mentioned under this letter.`)}
-${H('Employment:')}
-${P('Your position is a full-time employment with Our Company and you shall devote yourself exclusively to the business and vision of Our Company. You will not take up any other work for remuneration (part time or otherwise) or work in an advisory capacity, or be interested directly or indirectly, in any other trade or business during your employment with Our Company, without permission in writing of Our Company.')}
-${P('Your employment with Our Company is subject to you being medically fit. You may be required to undergo a medical examination, if desired by Our Company. You shall be entitled to such Leaves in accordance with the Leave policy of the Company.')}
-${P('This letter of appointment is based on the information furnished in your application for employment and during the interviews you had with us. If, at any time in future, it comes to light that any of this information is incorrect or any relevant information has been withheld, then your employment is liable to be terminated without notice.')}
-${P('During your employment, you must devote your full time and professional abilities exclusively to the company’s business. You are prohibited from participating in any other employment, consulting, or commercial activity — whether for profit or not — without prior written permission, particularly if it creates a conflict of interest or impacts your productivity.')}
-${H('Place of Posting and Transfer:')}
-${P(`Your initial posting will be at <strong>${location}</strong>. However, your employment may be transferred, at the sole discretion of Our Company, to any department / section, location, associate, sister concern or subsidiary, at any place in India or abroad, whether existing today or which may come up in future. Your remuneration will depend on the place of posting and may vary based on decision of the Management.`)}
-${H('Probation:')}
-${P('You will be on probation for a period of <strong>Six months</strong> from the date of your joining. Subject to your efficiency, punctuality, conduct, maintenance of discipline and in accordance with the performance criteria as decided by the management / Our Company, being found satisfactory, your confirmation will be communicated to you in writing or can be extended beyond 6 (Six) months at the discretion of the management / Our Company.')}
-${P('During the probation period, you are entitled to avail <strong>03 Casual Leave</strong> on pro rata basis. Approval for Casual Leave must be sought from your reporting manager in advance.')}
-${H('Compensation:')}
-${P(`Your annual CTC will be as detailed in <strong>Annexure – A</strong> as annexed to this letter <strong>INR ${overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The Salary shall be payable on a monthly basis and arrears within 7th day of each calendar month.`)}
-${P('All payments shall be made in accordance with the relevant policies of Our Company in effect from time to time, including payroll practices, and shall be subject to income tax deductions at source, as applicable.')}
-${P('Statutory benefits such as Provident Fund, Employees’ State Insurance (ESI), Gratuity, Bonus and any other applicable benefits shall be governed by and provided in accordance with the applicable provisions of the prevailing labor laws in force in India.')}
-${H('Performance of Duties:')}
-${P('You shall be assigned with all the duties and responsibilities by your Head of Department from time to time. You shall, at all times, carry out the duties and responsibilities assigned to you faithfully and diligently, endeavouring to the best of your ability to protect and promote the interests of Our Company.')}
-${P('You are expected to attend office during the working hours / shifts as may be decided by the Company. The Company practices a minimum of <strong>48-hour workweek</strong> for all staff and management employees. You shall strictly refrain from using any of Our Company resources for personal use.')}
-${H('Confidentiality:')}
-${P('During the course of your employment with Our Company, you may have access to confidential / proprietary information about Our Company, its clients, its business transactions, and associated companies. You will not during the course of your employment with the company or at any time thereafter divulge or disclose to any person whomsoever, or make any use of any information or knowledge obtained by you during your employment as to the business or affairs of Our Company. Your salary details are strictly confidential; any breach will invite disciplinary action and may result in termination of your services.')}
-${H('Intellectual Property:')}
-${P('You agree to assign to the Company any and all rights, title and interest, including but not limited to copyrights, trade secrets and proprietary rights to the inventions, information, materials, products, software, programs, websites, databases and deliverables developed or acquired during your employment with Our Company. You agree to abide by the Intellectual Property Policy and procedures of Our Company.')}
-${H('Termination:')}
-${P('During the period of probation, Our Company may at any time terminate your employment by giving <strong>15 Days</strong> written notice to you, whereas you may terminate the employment by giving a notice of <strong>15 Days</strong> in writing to Our Company.')}
-${P('Upon confirmation, either party may at any time terminate the employment, without cause, by giving in writing to the other party a notice period of <strong>30 Days</strong>. The payment of salary during such notice period would be on the basis of cost to Our Company.')}
-${P('The full and final settlement of the employee’s salary account is done after <strong>45 days</strong> of the employee’s last working day of services. The company will provide full and final settlement only in the condition that the employee has served Maxvolt Energy Industries Limited with the notice period mentioned in appointment letter.')}
-${H('Non-Solicitation:')}
-${P('During your employment with Our Company and for a period of <strong>3 (Three) months</strong> thereafter, you shall not, directly or indirectly, induce, persuade or endeavour to induce any person who was an employee of Our Company to leave the employment of Our Company, nor carry on, engage in or be concerned or interested in any business or activity which competes with the business and activities of Our Company.')}
-${P('You are required to sign and submit a copy of this letter of appointment as a token of your acceptance of our terms and conditions, failing which this letter of appointment will be treated as withdrawn. Please submit the following documents on your joining date:')}
+${P(`With reference to your application and subsequent interview with us, we are pleased to appoint you as <strong>${designation}</strong> in Our Company <strong>Maxvolt Energy Industries Limited</strong>, on the following terms and conditions:`)}
+${H('1. Date of joining:')}
+${P(`Your employment with Our Company shall be effective from <strong>${joinDate}</strong>.`)}
+${P('This offer shall automatically stand revoked in the event of your not joining the Company on or before the date mentioned under this letter.')}
+${H('2. Employment:')}
+${LI('(a) Your position is a full-time employment with Our Company and you shall devote yourself exclusively to the business and vision of Our Company. You will not take up any other work for remuneration (part time or otherwise) or work in an advisory capacity, or be interested directly or indirectly, in any other trade or business during your employment with Our Company, without permission in writing of Our Company.')}
+${LI('(b) Your employment with Our Company is subject to you being medically fit. You may be required to undergo a medical examination certificate, if desired by Our Company.')}
+${LI('(c) You shall be entitled to such Leaves in accordance with the Leave policy of the Company.')}
+${LI('(d) This letter of appointment/employment is based on the information furnished in your application for employment and during the interviews you had with us. If, at any time in future, it comes to light that any of this information is incorrect or any relevant information has been withheld, then your employment is liable to be terminated without notice.')}
+${H('3. Place of Posting and Transfer:')}
+${P(`Your initial posting will be at <strong>${location}</strong>.`)}
+${P('However, your employment may be transferred, at the sole discretion of Our Company, in such other capacity as Our Company may determine, to any department / section, location, associate, sister concern or subsidiary, at any place in India or abroad, whether existing today or which may come up in future. Your remuneration will depend on the place of posting and may vary based on decision of the Management.')}
+${H('4. Probation:')}
+${LI('(a) You will be on probation for period of <strong>Six months</strong> from the date of your joining. Subject to your efficiency, punctuality, conduct, maintenance of discipline and in accordance with the &ldquo;performance criteria&rdquo; as decided by the management/ Our Company, being found satisfactory, your confirmation will be communicated to you in writing or can be extended beyond 6(Six) months on the discretion of the management/Our Company.')}
+${LI('(b) During the probation period, you are entitled to avail 01 Casual Leave per month. Approval for Casual Leave must be sought from your reporting manager in advance. This ensures proper planning and coordination within the team.')}
+${H('5. Compensation:')}
+${LI(`(a) Your annual CTC will be as detailed in Annexure &ndash; A as annexed to this letter INR <strong>${overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The Salary shall be payable on a monthly basis in arrears on the 10th day of each calendar month.`)}
+${LI('(b) In addition to the Salary, per Our Company&rsquo;s discretion and incentive policy announced from time to time, you may also be entitled to a monthly performance-based performance incentive. This incentive payout, if payable, shall be based on actual performance over and above there should as per Our Company&rsquo;s incentive policy announced from time to time.')}
+${LI('(c) All payments as mentioned under this Section 5 shall be made in accordance with the relevant policies of Our Company in effect from time to time, including payroll practices, and shall be subject to income tax deductions at source, as applicable. All requirements under Indian tax laws, including tax compliance and filing of tax returns, assessment etc. of your personal income, shall be fulfilled by you.')}
+${H('6. Performance of duties:')}
+${LI(`(a) You shall be assigned with all the duties and responsibilities by your <strong>${hodTitle}</strong> from time to time.`)}
+${LI('(b) You shall, at all times, be required to carry out the duties and responsibilities assigned to you by the Company, faithfully and diligently and in compliance with the established policies and procedures, endeavoring to the best of your ability to protect and promote the interests of Our Company.')}
+${LI('(c) You are required to utilize the office premises and company assets assigned to you solely for the purpose of performing the services for which you have been appointed.')}
+${LI('(d) You are expected to attend office, except when traveling on business, during the working hours/shifts as may be decided by the Company. The Company practices a minimum of 48-hour workweek for all staff and management employees. Actual work timings and shifts may vary from time to time based on business and customer service requirements.')}
+${LI('(e) You shall strictly restrain to use any of Our Company resources for personal use. This includes usage of computer resources, information, internet service, and working time of the company for any personal use.')}
+${LI('(f) You will be required to comply with all such rules and regulations as the Company may frame from time to time.')}
+${H('7. Confidentiality')}
+${P('During the course of your employment with Our Company, you may have access to confidential/proprietary information about Our Company, its clients, its business transactions, and associated companies. You will not during the course of your employment with the company or at any time there after divulge or disclose to any person whomsoever, make any use whatsoever for your own purpose or for any other purpose other than that of the company, of any information or knowledge obtained by you during your employment as to the business or affairs of Our Company. In case of any breach of this section, Our Company shall be entitled to immediately terminate your employment, in addition to any other remedy/action that may be available to Our Company at law.')}
+${P('You agree and acknowledge that, upon request of Our Company or upon termination of your employment, as the case may be, you will return to our Company all Confidential Information including but not limited to all documents, data, plans, specifications, disks or computer media, as well as any duplicates or backups made therein, in whatever form or medium belonging to and/or acquired by you during your employment with Our Company.')}
+${H('8. Intellectual Property')}
+${P('You agree to assign to the Company any and all rights, title and interest, including, but not limited to, copyrights, trade secrets and proprietary rights to the Inventions, information, materials, products, software, programs, websites, databases and deliverables developed or acquired during your employment with Our Company. You agree to abide by the Intellectual Property Policy and procedures of Our Company.')}
+${H('9. Termination')}
+${LI('(a) During the period of probation, Our Company may at any time terminate your employment by giving 15 Days written notice to you, whereas you may terminate the employment by giving a notice of 15 Days in writing to Our Company. You may alternatively, exercise the option of exiting the employment of Our Company by payment of salary in lieu of notice periods per the terms and conditions of this employment letter and policies/procedures of Our company. The payment of salary during such notice period would be on the basis of cost to Our Company.')}
+${LI('(b) Upon confirmation, either party may at any time terminate the employment, without cause by giving in writing to the other party a notice period of 30 Days You may alternatively, exercise the option of buying out your notice period per the terms and conditions of this employment letter. The payment of salary during such notice period would be on the basis of cost to Our Company.')}
+${LI('(c) It is agreed between the Parties that where you exercise the option for buyout or where the notice period is not served, the amount payable for such buyout or the amount recoverable from you for not serving notice, shall be on the basis of cost to company.')}
+${LI('(d) You understand and agree that any unauthorized absence or absence without permission from duty for a continuous period of 2(two) days would make you lose your lien (i.e., claim) on employment. In such case your employment shall automatically come to an end without any notice of termination or notice pay. However, Our Company at its sole discretion may condone your unauthorized absence as aforesaid.')}
+${LI('(e) If your employment is terminated due to poor performance, Maxvolt Energy Industries Limited. holds within its discretion the right to provide no notice period.')}
+${LI('(f) The full and final settlement of the employee&rsquo;s salary account is been done after 45 days of the employee&rsquo;s last working day of services. The company will provide full and final settlement only in the condition that the employee has served Maxvolt Energy Industries Limited. with the notice period mentioned in appointment letter and worked fruitfully during the notice been served and has facilitated in the smooth transition. Employee&rsquo;s last salary and other benefits will be provided once the employee has been issued clearance letter from HR &amp; Administration department, IT, Accounts and the Reporting D&eacute;partement.')}
+${LI('(g) You understand that you will be governed by the code of conduct laid down by Our company and if there is any breach of the same or non-conformance of contractual obligations or with the terms and conditions laid down in this employment letter, your service can be terminated without any notice; notwithstanding any other terms and conditions stipulated herein the company reserves the right to invoke other legal remedies as it deems fit to protect its legitimate interest.')}
+${LI('(h) You understand and agree that upon termination of your employment, your full and final settlement (if any) shall be done in accordance with the policies and procedures of Our Company and subject to your return of Confidential Information to Our Company as stated above.')}
+${H('10. Representation:')}
+${P('You represent that you are not subject to any covenants or restrictions as a result of any prior employment or association that would be violated by the execution or performance of this appointment letter/order. You agree to hold us harmless and indemnify the Company from and against all loss, cost and expense, including attorney&rsquo;s fees, incurred by the Company arising from, through or under any claims, by any third party that the execution and/or performance of this appointment constitutes a violation of any prior covenants and restrictions to which you may be a subject.')}
+${H('11. Restrictive Covenants:')}
+${P('In recognition of the fact that the company is engaged in a service providing business involving business relationships with its customers, the success of which business is due to continuation of such relationships, the Employee does hereby covenant and agrees as follows:')}
+${P('During the term of employment and for a period of Thirty-Six (36) months after termination of employment, the Employee shall not:')}
+<p style="font-weight:bold;text-decoration:underline;margin:14px 0 6px;">Non-Disclosure:</p>
+${LI('(i) Publicize, announce or otherwise trade upon the existence of a business relationship between the company and the Employee; Without affecting the generality of the foregoing, it is hereby informed to you that the following information is always strictly confidential and exclusive property of the Company:')}
+${LI('(j) Names and contact details (including telephone numbers, email id&rsquo;s, fax numbers, websites, postal address) of the Company&rsquo;s Client(s) and all employees / officers / directors / partners / associates of the said Client(s).')}
+${LI('(k) Names and contact details (including telephone numbers, email id&rsquo;s, fax numbers, websites, postal address) of any Client(s) of the Company&rsquo;s Client(s) and all employees / officers / directors / partners / associates of the said Client(s) of the Company&rsquo;s Client(s).')}
+${LI('(l) Any data / software / information / intellectual property provided by either the Company or the Company&rsquo;s Client(s) or a client of the Company&rsquo;s Client(s) or by any person(s) acting on behalf of the foregoing.')}
+${LI('(m) By accepting this Offer, you accept in unequivocal terms your acceptance of the rights of the Company in respect of the exclusive property mentioned herein above and request the Company to entrust the said property to you in good faith based upon the assurances of keeping the trust and never committing any breach of trust.')}
+${LI('(n) As part of the job, you will be given or handle or come in contact with different types of data and information. Unless specifically authorized to do so, any information or data will not be disclosed or shared or transferred to any person / organization or used in any way (other than as specifically authorized). It is to be clearly understood by you that all information handled by you will be considered as confidential unless specified otherwise in writing. Any violation of this clause will invite severe civil and criminal liabilities for which you will be solely responsible.')}
+${LI('(o) In case any breach of trust is committed in respect of any part of the aforesaid entrusted property (by misusing the same or by converting it to your or any third person&rsquo;s use or by doing any action that ill enable misappropriation or unauthorized use of the said Property by you or by any third person), such an act will amount to a criminal breach of trust as defined under section 405 of Indian Penal Code, 1860 (IPC) and as punishable under section 406 and 408 of IPC.')}
+${LI('(p) In case of any misuse / misappropriation / unauthorized disclosure / violation of confidentiality of any part or whole of the aforesaid property, the Company will also have a right to proceed against you under the relevant provisions of The Information Technology Act, 2000 and other laws as applicable from time to time.')}
+${LI('(q) Disclose, disseminate, publish, reproduce, copy or duplicate to any extent, any proprietary information belonging to the company and/or any client or customer of the company, or provide to any person, firm, corporation, or any other entity, such proprietary information or use of any proprietary information for his/her own or another&rsquo;s benefit, or allow any other person or entity to use such proprietary information;')}
+${LI('(r) Due to the proprietary nature of our products, all employees are expected to maintain the highest level of confidentiality and will be required to sign an agreement not to discuss or disclose any company information.')}
+${LI('(s) Your salary details are confidential; failure to do so will invite disciplinary action and may even result in the termination of your services.')}
+${LI('(t) All documents, plans, drawings, prints, trade secrets, technical information, reports, statements, correspondence etc., written or unwritten and also information and instructions that pass through you or come to your knowledge shall be treated as confidential. You shall not utilize them for your own use or disclose to other persons during or after your employment.')}
+${LI('(u) During the course of employment with the Company, you will acquire, gain, generate, gather and develop knowledge of and be given access to business information about products activities, know &ndash; how, methods or refinements and business plans and business secrets and other information concerning the products / business of the Company, hereinafter called the &ldquo;SECRETS&rdquo;. You will be liable for prosecution for damages for divulgence, sharing or parting any of such information during course of employment and on cessation for at least 3 years period.')}
+${LI('(v) While you are in employment of the company, you may be given or handed over company&rsquo;s property and / or equipment for official use and you shall take care of them including their upkeep. On cessation of employment with the Company, you shall return all documents, books, papers relating to the affairs of the Company, purchased with the Company&rsquo;s money, which may have come to you, and also any property of the Company in your possession.')}
+${LI('(w) It is a condition of your employment that you do not use, divulge or disclose to any person (and that includes a business of any sort) any confidential commercial or confidential technical information relating to the business, finances or affairs of the Company including but not limited to names of clients, client&rsquo;s projects, fee, commission and / or hourly rate information, reports, records, project memoranda, work notes, operating methods and procedures, software and computer technology and data generated in connection therewith, plans for future development and the like and any or all business records.')}
+${LI('(x) This restriction continues indefinitely after your employment has ended but does not apply to information you have to disclose in the course of your employment.')}
+${H('12. New Intellectual Property Rights:')}
+${P('You and we understand that during your employment with us, you may discover or create Intellectual Property. You therefore agree that Intellectual Property created by you during tenure of your employment belongs to Company and you hereby assign, without limitation, all those rights and interests to the Company.')}
+${P('You also agree and confirm that if you are involved in any way with the creation or improvement or discovery of Intellectual Property you will:')}
+${LI('(a) do your utmost to ensure that the Company acquires or retains those rights;')}
+${LI('(b) tell us reasonably soon after any such creation or discovery;')}
+${LI('(c) provide to us whatever full specification description text or drawings as are together necessary to enable the Intellectual Property to be registered or protected by the Company;')}
+${LI('(d) do whatever we consider to be necessary or desirable to enable the Intellectual Property to be transferred in the name of the Company or otherwise to secure ownership by the Company;')}
+${P('The provisions of this paragraph shall continue indefinitely after the termination of this contract in respect of Intellectual Property made whilst you were an employee of the Company and shall be binding upon you and your legal heirs and representatives.')}
+${H('13. Reasonableness:')}
+${P('You acknowledge that the covenants and restrictions contained in this appointment letter are fair and reasonable and are subject to separate negotiation.')}
+${H('14. Non-Solicitation')}
+${P('During your employment with Our Company and for a period of 3 (Three) months thereafter, either by yourself of through any person, directly or indirectly in your own capacity or in the capacity of a partner, proprietor, agent, advisor, representative or other constituents, whether on your own or jointly with others, engage in a business same as or similar to that of Our Company or do any of the following acts:')}
+${LI('(a) Induce, persuade, endeavor to induce, any person who was an employee of or any other affiliates of our Company, to leave the employment of, or cease to provide services to Our Company.')}
+${LI('(b) Accept into employment, or otherwise engage or use the services of any person, who is, on the date of the termination of his employment, or was at any time in the 6(six) months preceding such date, an employee or consultant of, or under contract of services to the Company.')}
+${LI('(c) approach, solicit or deal with, in competition with the Company or any Person, that at any time during the 6(six) months immediately preceding such date:')}
+<p style="margin:0 0 8px;padding-left:44px;">i. Was a customer, client, distributor, agent or supplier of the Company with whom he had personal contact on behalf of the Company</p>
+<p style="margin:0 0 8px;padding-left:44px;">ii. Was a customer, client, distributor, agent or supplier of the Company with whom employees reporting to him or under his direct control had personal contact on behalf of the Company, or</p>
+<p style="margin:0 0 10px;padding-left:44px;">iii. Was a person with whom the Company had business dealings (whether or not personally involving you).</p>
+${LI('(d) Carry on, engage in or be concerned or interested in, any business or activity which competes with the business and activities of Our Company and/or its affiliates.')}
+${P('This appointment is subject to the condition that you indemnify and also certify that all the information (like educational qualifications, work experience, salary drawn and all other information) supplied by you to company. to get an employment with company. is accurate and nothing has been given untrue. If it is later found that you had supplied inaccurate/ untrue information, then company. reserves the right to terminate you without any notice. Further, in such an event, you shall be responsible to pay company. for all financial expense and damage incurred by company. in your training and or dislocation of customer project, and direct, indirect and consequential costs. You shall also not claim any compensation from company. in the above circumstance.')}
+${P('This document will succeed all the earlier documents issued to you, if any, and the previous terms of employment agreed shall be treated null and void. If in case there is any policy updates then, a copy of that shall be available with HR department and can be demanded in written for the same by the employee.')}
+${P('The above terms and conditions are based on the company&rsquo;s policy, procedures and other rules currently applicable in India and are subject to amendments and adjustments from time to time. In all matter including those not specifically covered here such as traveling, retirement, etc. you will be governed by the rules of Our Company as shall be in force from time to time.')}
+${P('You are required to sign and submit a copy of this letter of appointment/employment as a token of your acceptance of our terms and conditions, failing which this letter of appointment will be treated as withdrawn.')}
+${P('The relieving / resignation acceptance letter from your previous organization has to be submitted on your joining Our Company, along with the following documents within 5 (five) days from the date of this letter:')}
 ${docList}
 ${P('We welcome you to our organization and look forward to your contribution to the growth of the organization and yourself.')}
-${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory')}
-<p style="margin:64px 0 6px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>
-<p>Name: _________________________________</p>
-${salaryTable}`),
+${P('Yours faithfully,')}
+<p style="margin:44px 0 6px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
+<p style="margin:34px 0 2px;">Manager &ndash; HR_______________________</p>
+<p style="margin:0 0 2px;">Date:</p>
+<p style="margin:0 0 24px;">Signature:</p>
+<p style="margin:0 0 4px;">I accept the offer on the terms and conditions as described in this letter</p>
+<p style="margin:0 0 2px;">Employee Name_________________________________</p>
+<p style="margin:0 0 2px;">Date:</p>
+<p style="margin:0 0 20px;">Signature:</p>
+<p style="text-align:center;font-weight:bold;">(Confidential)</p>
+${salaryTable}`);
+        },
 
         confirmation: () => wrap(`
-<p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 22px;">Letter of Confirmation</p>
-<p style="margin:0 0 4px;">${todayDate}</p>
-<p style="margin:0 0 22px;font-size:12px;color:#555;"><strong>Ref:</strong> ${ref}</p>
+<p style="text-align:center;font-weight:bold;font-size:17px;margin:0 0 22px;">Letter of Confirmation</p>
+<p style="margin:0 0 22px;">${todayDate}</p>
 ${P(`Dear ${sal} ${empName},`)}
 <p style="font-weight:bold;margin:0 0 10px;">Congratulation!!</p>
-${P(`<strong>Subject: Service Confirmation Letter to the Designation of ‘${designation}’</strong>`)}
-${P('Following completion of your six months’ probation period at Maxvolt Energy Industries Limited. We have reviewed your performance and found the same to be satisfactory.')}
-${P(`In view of the above, we are pleased to inform you that you have been confirmed to the position of <strong>‘${designation}’</strong> at Maxvolt Energy Industries Limited with effect from <strong>${extra.effective_date || '[Effective Date]'}</strong>.`)}
-${P('Your salary will be reviewed every 12 months from the date of joining or as decided by company and increases will be based upon satisfactory performance in the position.')}
+${P(`<strong>Subject</strong>: Service Confirmation Letter to the Designation of &ldquo;${designation}&rdquo;`)}
+${P('Following completion of your six months&rsquo; probation period at Maxvolt Energy Industries Limited. We have reviewed your performance and found the same to be satisfactory.')}
+${P(`In view of the above, we are pleased to inform you that you have been confirmed to the position of &ldquo;<strong>${designation}</strong>&rdquo; at Maxvolt Energy Industries Limited with effect from <strong>${extra.effective_date || '[Effective Date]'}</strong>. Your salary will be reviewed every 12 months from the date of joining or as decided by company and increases will be based upon satisfactory performance in the position.`)}
 ${P('All other terms and conditions of your appointment will remain the same except the following.')}
-${H('Notice Period –')}
-${P('Either party may at any time terminate the employment, without cause by giving in writing to the other party a notice period of <strong>30 Days</strong>. You may alternatively, exercise the option of buying out your notice period per the terms and conditions of this employment letter. The payment of salary during such notice period would be on the basis of cost to Our Company.')}
-${H('Leave Credit –')}
-${P(`As a gesture of appreciation for your hard work and dedication, we are pleased to inform you that you are now eligible to earn and take advantage of annual leave benefits. Starting <strong>${extra.effective_date || '[Effective Date]'}</strong>, you will be entitled to accrue and utilize earned leave days as per our company’s leave policy. We believe that providing earned leave is a valuable component of our commitment to the well-being and work-life balance of our employees. We encourage you to plan and utilize your earned leave in a manner that supports your personal and professional needs.`)}
-${H('Salary Settlement (Full &amp; Final) –')}
-${P('The full and final settlement of the employee’s salary account is done after <strong>45 days</strong> of the employee’s last working day of services. The company will provide full and final settlement only in the condition that the employee has served Maxvolt Energy Industries Limited with the notice period mentioned in appointment letter and worked fruitfully during the notice been served and has facilitated in the smooth transition. Employee’s last salary and other benefits will be provided once the employee has been issued clearance letter from HR, IT, Accounts &amp; Administration department.')}
-${P('Please signify your acceptance to terms and conditions, mentioned above &amp; in company’s policy handbook, by signing this letter and returning it to me at an earliest convenient time.')}
-${P('In case you have any queries, do not hesitate to reach your manager / supervisor / HR Department.')}
+<p style="margin:0 0 12px;text-align:justify;"><span style="font-weight:bold;">Notice Period</span> &ndash; Either party may at any time terminate the employment, without cause by giving in writing to the other party a notice period of 30 Days You may alternatively, exercise the option of buying out your notice period per the terms and conditions of this employment letter. The payment of salary during such notice period would be on the basis of cost to Our Company.</p>
+<p style="margin:0 0 12px;text-align:justify;"><span style="font-weight:bold;">Leave Credit</span> &ndash; As a gesture of appreciation for your hard work and dedication, we are pleased to inform you that you are now eligible to earn and take advantage of annual leave benefits. Starting <strong>${extra.effective_date || '[Effective Date]'}</strong>, you will be entitled to accrue and utilize earned leave days as per our company&rsquo;s leave policy. We believe that providing earned leave is a valuable component of our commitment to the well-being and work-life balance of our employees. We encourage you to. plan and utilize your earned leave in a manner that supports your personal and professional needs.</p>
+<p style="margin:0 0 12px;text-align:justify;"><span style="font-weight:bold;">Salary Settlement (Full &amp; Final)</span> - The full and final settlement of the employee&rsquo;s salary account is been done after 45 days of the employee&rsquo;s last working day of services. The company will provide full and final settlement only in the condition that the employee has served Maxvolt Energy Industries Ltd. with the notice period mentioned in appointment letter and worked fruitfully during the notice been served and has facilitated in the smooth transition. Employee&rsquo;s last salary and other benefits will be provided once the employee has been issued clearance letter from HR, IT, Accounts &amp; Administration department.</p>
+${P('Please signify your acceptance to terms and conditions, mentioned above &amp; in company&rsquo;s policy handbook, by signing this letter and returning it to me at an earliest convenient time.')}
+${P('In case you have any queries, do not hesitate to reach your manager/supervisor/HR Department.')}
 ${P('Maxvolt Energy Industries Limited, congratulates you on your confirmation and wishes you well in your position.')}
-${sig('Sincerely,', 'HR Head', 'Maxvolt Energy Industries Limited')}
-<p style="margin-top:52px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>`),
+<p style="margin:20px 0 2px;">Sincerely,</p>
+<p style="margin:44px 0 2px;">HR Head</p>
+<p style="margin:0 0 24px;font-weight:bold;">Maxvolt Energy Industries Limited</p>`),
 
         relieving: () => wrap(`
-<p style="text-align:center;font-weight:bold;font-size:17px;letter-spacing:1px;text-decoration:underline;margin:0 0 22px;">RELIEVING CUM EXPERIENCE LETTER</p>
+<p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 22px;">RELIEVING CUM EXPERIENCE LETTER</p>
 <p style="margin:0 0 4px;">${todayDate}</p>
-<p style="margin:0 0 22px;font-size:12px;color:#555;"><strong>Ref:</strong> ${ref}</p>
-${P('<strong>Subject: Relieving Cum Experience Letter</strong>')}
+${P('<strong>Subject: -</strong> Relieving Cum Experience Letter')}
+${P(`Dear ${empName.split(' ')[0]},`)}
+${P(`This is to certify that you have been relieved from the services of <strong>MaxVolt Energy Industries Limited</strong> with effect from the close of business on <strong>${extra.last_working_day || '[Last Working Date]'}</strong>. Your Full &amp; Final Settlement has been processed and settled.`)}
+${P('Please note your Basic Information as maintained in the HR records at the time of your separation is as follows')}
+<p style="margin:0 0 2px;"><strong>Name:</strong> ${empName}</p>
+<p style="margin:0 0 2px;"><strong>Employee Code:</strong> ${empCode}</p>
+<p style="margin:0 0 2px;"><strong>Period Served:</strong> From ${doj} to ${extra.last_working_day || '[Last Working Date]'}</p>
+<p style="margin:0 0 2px;"><strong>Last Designation Held:</strong> ${designation}</p>
+<p style="margin:0 0 18px;"><strong>Department:</strong> ${department}</p>
+${P(`During your tenure with the Company, you served as ${designation} in the ${department} Department. You performed your assigned responsibilities diligently, and we appreciate your contributions to the organization.`)}
+${P('We sincerely thank you for your contributions to the organization and wish you continued success in all your future endeavors.')}
+<p style="margin:16px 0 2px;">Warm Regards,</p>
+<p style="margin:44px 0 2px;font-weight:bold;">MaxVolt Energy Industries Limited</p>
+<p style="margin:0 0 20px;">(Authorized Signatory)</p>`),
+
+        increment: () => {
+          const oldCTC = Number(extra.old_annual_ctc) || annualCTC || 0;
+          const newCTC = Number(extra.revised_annual_ctc) || overrideAnnualCTC || 0;
+          const effDate = extra.effective_date || '[Effective Date]';
+          const annexureBox = buildMeilSalaryBox({
+            heading: 'SALARY INCREMENT LETTER',
+            rows: [['Employee Name', empName], ['Date of Increment', effDate]],
+            ctcAnnual: newCTC,
+          });
+          return wrap(`
+<p style="text-align:right;margin:0 0 4px;">Dated: - ${todayDate}</p>
+<p style="text-align:center;font-weight:bold;font-size:17px;margin:0 0 22px;">INCREMENT LETTER</p>
+<p style="margin:0 0 2px;">To,</p>
+<p style="margin:0 0 2px;font-weight:bold;">${sal} ${empName}</p>
+<p style="margin:0 0 2px;">Employee Code: -${empCode}</p>
+<p style="margin:0 0 18px;">Department: - ${department}</p>
+${P('<strong>Subject: -</strong> Salary Increment Letter')}
 ${P(`Dear ${sal} ${empName},`)}
-${P(`This is to inform you that you hereby stand relieved from the services of MaxVolt Energy Industries Limited, in the closing hours of <strong>${extra.last_working_day || '[Last Working Date]'}</strong>. Your full and final account has been processed and settled.`)}
-${P('Please note your Basic Information as maintained in the HR records at the time of your separation is as follows:')}
-<table style="margin:8px 0 20px;font-size:13.5px;border-collapse:collapse;">
-  <tr><td style="padding:6px 20px 6px 0;font-weight:bold;">Name:</td><td style="padding:6px 0;">${empName}</td></tr>
-  <tr><td style="padding:6px 20px 6px 0;font-weight:bold;">Employee Code:</td><td style="padding:6px 0;">${empCode}</td></tr>
-  <tr><td style="padding:6px 20px 6px 0;font-weight:bold;">Period Served:</td><td style="padding:6px 0;">From <strong>${doj}</strong> To <strong>${extra.last_working_day || '[Last Working Date]'}</strong></td></tr>
-  <tr><td style="padding:6px 20px 6px 0;font-weight:bold;">Last Designation Held:</td><td style="padding:6px 0;">${designation}</td></tr>
-  <tr><td style="padding:6px 20px 6px 0;font-weight:bold;">Department:</td><td style="padding:6px 0;">${department}</td></tr>
-</table>
-${P('We wish you all the best in all your future endeavors.')}
-${sig('Warm Regards,', 'MaxVolt Energy Industries Limited', '(Authorized Signatory)')}
-<p style="margin-top:52px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>`),
+<p style="font-weight:bold;margin:0 0 10px;">Congratulation!!</p>
+${P(`In recognition of your performance and contribution to the organization, we are pleased to inform you that the company has decided to revise your Annual CTC from INR <strong>${oldCTC ? Number(oldCTC).toLocaleString('en-IN') : '[____]'}</strong> /- to INR <strong>${newCTC ? Number(newCTC).toLocaleString('en-IN') : '[____]'}</strong> /- per annum. This revision shall be effective from <strong>${effDate}</strong>.`)}
+${P(`Your revised compensation and benefits structure are enclosed in Annexure &ldquo;A&rdquo; dated <strong>${effDate}</strong>.`)}
+${P('We would like to take this opportunity to express our appreciation for your valuable contribution to the organization and hope that you will continue to strive for better results. We are confident that you will continue to carry out your responsibilities with dedication and sincerity.')}
+${P('In case of any queries, please feel free to contact the HR Department.')}
+${P('Maxvolt Energy Industries Limited congratulates you on your salary revision and wishes you continued success for the future. &ldquo;We are excited to see you take on new challenges and reach even greater heights in your career with us.&rdquo;')}
+<p style="margin:0 0 24px;font-weight:bold;">Thank You!</p>
+<p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
+<p style="margin:44px 0 20px;">AGM HR</p>
+<p style="text-align:center;font-weight:bold;">(Confidential)</p>
+${annexureBox}
+<p style="margin-top:14px;font-size:11.5px;">Remarks:</p>
+<p style="font-size:11.5px;">TDS is applicable as per the Income Tax slab and is computed based on the gross salary payout. The liability can be reduced upon submission of tax-saving documents, depending on the chosen tax regime.</p>
+<p style="text-align:center;font-weight:bold;">(Confidential)</p>`);
+        },
 
         promotion: () => {
           const newDesig = extra.new_designation || '[New Designation]';
@@ -10480,7 +10613,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
 
       const LETTER_LABELS = {
-        appointment: 'Appointment Letter', confirmation: 'Confirmation Letter',
+        appointment: 'Appointment Letter', confirmation: 'Confirmation Letter', increment: 'Increment Letter',
         promotion: 'Promotion Letter', salary_revision: 'Salary Revision Letter',
         experience: 'Experience Certificate', relieving: 'Relieving Letter',
         address_proof: 'Employment / Address Proof', warning: 'Warning Letter',
@@ -10558,7 +10691,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
 
       const LETTER_LABELS = {
-        appointment: 'Appointment Letter', confirmation: 'Confirmation Letter',
+        appointment: 'Appointment Letter', confirmation: 'Confirmation Letter', increment: 'Increment Letter',
         promotion: 'Promotion Letter', salary_revision: 'Salary Revision Letter',
         experience: 'Experience Certificate', relieving: 'Relieving Letter',
         address_proof: 'Employment / Address Proof', warning: 'Warning Letter',

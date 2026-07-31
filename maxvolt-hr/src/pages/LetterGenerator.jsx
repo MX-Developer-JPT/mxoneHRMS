@@ -19,10 +19,11 @@ import { safeDate } from '@/lib/dateUtils';
 const LETTER_TYPES = [
   { key: 'appointment',     label: 'Appointment Letter',      fields: [{ k: 'joining_date', label: 'Joining Date', type: 'date' }] },
   { key: 'confirmation',    label: 'Confirmation Letter',     fields: [{ k: 'effective_date', label: 'Confirmation Effective Date', type: 'date' }] },
+  { key: 'increment',       label: 'Increment Letter',        fields: [{ k: 'old_annual_ctc', label: 'Previous Annual CTC (₹)', type: 'number' }, { k: 'revised_annual_ctc', label: 'Revised Annual CTC (₹)', type: 'number' }, { k: 'effective_date', label: 'Effective Date', type: 'date' }] },
   { key: 'promotion',       label: 'Promotion Letter',        fields: [{ k: 'new_designation', label: 'New Designation' }, { k: 'effective_date', label: 'Effective Date', type: 'date' }] },
   { key: 'salary_revision', label: 'Salary Revision Letter',  fields: [{ k: 'revised_annual_ctc', label: 'Revised Annual CTC (₹)', type: 'number' }, { k: 'effective_date', label: 'Effective Date', type: 'date' }] },
   { key: 'experience',      label: 'Experience Certificate',  fields: [{ k: 'last_working_day', label: 'Last Working Day (if separated)', type: 'date' }] },
-  { key: 'relieving',       label: 'Relieving Letter',        fields: [{ k: 'last_working_day', label: 'Last Working Day', type: 'date' }, { k: 'resignation_date', label: 'Resignation Date', type: 'date' }] },
+  { key: 'relieving',       label: 'Relieving Cum Experience Letter', fields: [{ k: 'last_working_day', label: 'Last Working Day', type: 'date' }, { k: 'resignation_date', label: 'Resignation Date', type: 'date' }] },
   { key: 'address_proof',   label: 'Employment / Address Proof', fields: [{ k: 'addressed_to', label: 'Addressed To (e.g., Bank/Embassy)' }, { k: 'purpose', label: 'Purpose' }] },
   { key: 'warning',         label: 'Warning Letter',          fields: [{ k: 'subject', label: 'Subject' }, { k: 'details', label: 'Issue Details', type: 'textarea' }] },
 ];
@@ -618,7 +619,7 @@ export default function LetterGenerator() {
               </div>
 
               {/* CTC Breakdown for relevant letter types */}
-              {['appointment', 'promotion', 'salary_revision'].includes(letterType) && (
+              {['appointment', 'promotion', 'salary_revision', 'increment'].includes(letterType) && (
                 <CTCBreakdownPanel value={ctcOverride} onChange={setCtcOverride} employee={selectedEmp} />
               )}
 
