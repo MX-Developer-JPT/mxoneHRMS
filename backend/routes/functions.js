@@ -151,11 +151,15 @@ function htmlLetterToPdfContent(html) {
       continue;
     }
 
-    // SEAL marker
-    const seal = rem.match(/^<div[^>]*class=["']mx-seal["'][^>]*>\s*<\/div>/i);
-    if (seal) {
+    // SEAL marker — either an <img class="mx-seal" .../> (real stamp) or an
+    // empty <div class="mx-seal"></div> (vector-ring fallback), both emitted
+    // by the same sealHtml() helper depending on whether the stamp asset
+    // exists on disk.
+    const sealImg = rem.match(/^<img[^>]*class=["']mx-seal["'][^>]*\/?>/i);
+    const sealDiv = !sealImg && rem.match(/^<div[^>]*class=["']mx-seal["'][^>]*>\s*<\/div>/i);
+    if (sealImg || sealDiv) {
       nodes.push(letterSealNode());
-      rem = rem.slice(seal[0].length);
+      rem = rem.slice((sealImg || sealDiv)[0].length);
       continue;
     }
 
@@ -256,13 +260,26 @@ function makeLetterheadChrome(logoDataUrl) {
   return { headerFn, footerFn };
 }
 
-/* ── Shared: a round company-seal placeholder for the signature area —
-   drawn with pdfmake vector primitives (no image asset required), styled
-   to sit under "For Maxvolt Energy Industries Limited" / "Manager – HR"
-   the way a physical stamp would. Swap for a real scanned seal image by
-   passing one via `images.seal` and replacing this with an `image` node
-   if/when an actual stamp scan is added to backend/assets/. ── */
+/* ── Shared: load + cache the company stamp/seal as a data URL ── */
+let _stampDataUrlCache;
+function getStampDataUrl() {
+  if (_stampDataUrlCache !== undefined) return _stampDataUrlCache;
+  const { readFileSync, existsSync } = _require('fs');
+  const stampPath = join(__dirname, '../assets/company-stamp.png');
+  _stampDataUrlCache = existsSync(stampPath)
+    ? `data:image/png;base64,${readFileSync(stampPath).toString('base64')}`
+    : null;
+  return _stampDataUrlCache;
+}
+
+/* ── Shared: the company seal/stamp node for the signature area — renders
+   the actual scanned stamp image (backend/assets/company-stamp.png) when
+   present, registered as `images.stamp` by whichever docDef uses it; falls
+   back to a plain vector ring so a missing asset never crashes rendering. ── */
 function letterSealNode() {
+  if (getStampDataUrl()) {
+    return { image: 'stamp', width: 108, margin: [0, 4, 0, 4], opacity: 0.92 };
+  }
   const r = 40, cx = r + 6, cy = r + 6;
   return {
     margin: [0, 6, 0, 6],
@@ -278,6 +295,7 @@ function letterSealNode() {
 /* ── Shared: build Maxvolt letterhead PDF with parsed HTML content ── */
 async function buildLetterPdf(label, ref, htmlContent) {
   const logoDataUrl = getLogoDataUrl();
+  const stampDataUrl = getStampDataUrl();
   const content = htmlLetterToPdfContent(htmlContent);
   const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
 
@@ -286,7 +304,10 @@ async function buildLetterPdf(label, ref, htmlContent) {
     pageMargins: [50, 100, 50, 110],
     header: headerFn,
     footer: footerFn,
-    ...(logoDataUrl ? { images: { logo: logoDataUrl } } : {}),
+    images: {
+      ...(logoDataUrl ? { logo: logoDataUrl } : {}),
+      ...(stampDataUrl ? { stamp: stampDataUrl } : {}),
+    },
     content,
     defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.6 },
   };
@@ -302,6 +323,7 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
     try {
       const printer = getPdfPrinter();
       const logoDataUrl = getLogoDataUrl();
+      const stampDataUrl = getStampDataUrl();
       const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
       const L  = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       const GRAY = '#d9d9d9', BLUE = '#1d4ed8';
@@ -335,7 +357,10 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
         pageSize:    'A4',
         pageMargins: [40, 100, 40, 110],
         header: headerFn,
-        ...(logoDataUrl ? { images: { logo: logoDataUrl } } : {}),
+        images: {
+          ...(logoDataUrl ? { logo: logoDataUrl } : {}),
+          ...(stampDataUrl ? { stamp: stampDataUrl } : {}),
+        },
         defaultStyle:{ font:'Roboto', fontSize:10 },
 
         content: [
@@ -390,7 +415,7 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
 
           {
             columns: [
-              { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'HR Manager', bold:true, fontSize:10 },{ text:'Maxvolt Energy Industries Limited', fontSize:9 }] },
+              { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'HR Manager', bold:true, fontSize:10 },{ text:'Maxvolt Energy Industries Limited', fontSize:9 }, ...(stampDataUrl ? [{ image:'stamp', width:96, margin:[0,6,0,0], opacity:0.92 }] : [])] },
               { width:'*', text:'' },
               { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'Employee Signature', bold:true, fontSize:10 },{ text:candidateName||'', fontSize:9 }] },
             ],
@@ -6452,7 +6477,9 @@ Return ONLY a valid JSON object (no markdown):
     <tr>
       <td style="width:50%;vertical-align:top;padding-right:20px;">
         <p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
-        <div style="width:84px;height:84px;border:2.5px double #1d4ed8;border-radius:50%;margin:10px 0 -78px 4px;"></div>
+        ${getStampDataUrl()
+          ? `<img src="${getStampDataUrl()}" style="width:84px;margin:6px 0 -66px 4px;opacity:0.92;" alt="Company Seal" />`
+          : `<div style="width:84px;height:84px;border:2.5px double #1d4ed8;border-radius:50%;margin:10px 0 -78px 4px;"></div>`}
         <p style="margin:34px 0 2px;">Manager &ndash; HR_______________________</p>
         <p style="margin:0 0 2px;">Date:</p>
         <p style="margin:0;">Signature:</p>
@@ -6861,7 +6888,10 @@ Return ONLY a valid JSON object (no markdown):
       const wrap = body => `<div style="font-family:Arial,sans-serif;font-size:13.5px;line-height:1.75;color:#111;max-width:700px;">${body}</div>`;
       const P    = t   => `<p style="margin:0 0 12px;text-align:justify;">${t}</p>`;
       const H    = t   => `<p style="margin:18px 0 6px;font-weight:bold;">${t}</p>`;
-      const sealHtml = () => `<div class="mx-seal" style="float:left;width:104px;height:104px;border:2.5px double #1d4ed8;border-radius:50%;margin:10px 16px 10px 0;"></div>`;
+      const stampUrl = getStampDataUrl();
+      const sealHtml = () => stampUrl
+        ? `<img class="mx-seal" src="${stampUrl}" style="float:left;width:104px;margin:6px 16px 6px 0;opacity:0.92;" alt="Company Seal" />`
+        : `<div class="mx-seal" style="float:left;width:104px;height:104px;border:2.5px double #1d4ed8;border-radius:50%;margin:10px 16px 10px 0;"></div>`;
       const sig  = (close, _defaultSigner, role) => {
         const nameBlock = chosenSignatory
           ? `<p style="margin:4px 0 2px;font-weight:bold;">${chosenSignatory}</p><p style="margin:0;font-size:12px;color:#555;">For Maxvolt Energy Industries Limited</p>`
