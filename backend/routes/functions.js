@@ -107,19 +107,45 @@ function htmlLetterToPdfContent(html) {
     rem = rem.trimStart();
     if (!rem) break;
 
-    // TABLE
+    // TABLE — handles <td> and <th> cells, and colspan (pdfmake needs an
+    // explicit colSpan on the spanning cell plus {} filler cells for the
+    // columns it swallows, or its layout engine throws mid-render and the
+    // whole PDF silently fails — this is what broke section-divider rows
+    // like sec('Earnings') in the boxed salary-annexure tables).
     const tbl = rem.match(/^<table[^>]*>([\s\S]*?)<\/table>/i);
     if (tbl) {
       const rows = [];
+      let hasBorder = false, maxCols = 0;
       for (const [, rowHtml] of tbl[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
         const cells = [];
-        for (const [, cellHtml] of rowHtml.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)) {
-          cells.push({ text: parseInline(cellHtml.trim()), margin: [0, 3, 12, 3], fontSize: 10.5 });
+        for (const [, tag, attrs, cellHtml] of rowHtml.matchAll(/<(td|th)([^>]*)>([\s\S]*?)<\/\1>/gi)) {
+          const colspanM = attrs.match(/colspan\s*=\s*["']?(\d+)/i);
+          const span = colspanM ? Math.max(1, parseInt(colspanM[1], 10)) : 1;
+          const isHeader = tag.toLowerCase() === 'th';
+          const isBold = isHeader || /font-weight\s*:\s*bold/i.test(attrs);
+          const alignM = attrs.match(/text-align\s*:\s*(left|right|center)/i);
+          const bgM = attrs.match(/background(?:-color)?\s*:\s*(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)/);
+          if (/border\s*:/i.test(attrs)) hasBorder = true;
+          const cell = { text: parseInline(cellHtml.trim()), margin: [4, 3, 4, 3], fontSize: 10.5 };
+          if (isBold) cell.bold = true;
+          if (alignM) cell.alignment = alignM[1].toLowerCase();
+          if (bgM) cell.fillColor = bgM[1];
+          if (span > 1) cell.colSpan = span;
+          cells.push(cell);
+          for (let i = 1; i < span; i++) cells.push({});
         }
-        if (cells.length) rows.push(cells);
+        if (cells.length) { rows.push(cells); maxCols = Math.max(maxCols, cells.length); }
       }
-      if (rows.length) {
-        nodes.push({ table: { widths: rows[0].map((_, i) => i === 0 ? 'auto' : '*'), body: rows }, layout: 'noBorders', margin: [0, 6, 0, 10] });
+      if (rows.length && maxCols > 0) {
+        for (const row of rows) { while (row.length < maxCols) row.push({}); }
+        const widths = Array.from({ length: maxCols }, (_, i) => i === 0 ? 'auto' : '*');
+        nodes.push({
+          table: { widths, body: rows },
+          layout: hasBorder
+            ? { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#999', vLineColor: () => '#999' }
+            : 'noBorders',
+          margin: [0, 6, 0, 10],
+        });
       }
       rem = rem.slice(tbl[0].length);
       continue;
