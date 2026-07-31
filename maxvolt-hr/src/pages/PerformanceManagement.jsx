@@ -553,7 +553,8 @@ function ReviewCard({ review, user, userMap, isManager, isHR, onSubmitSelf, onSu
               <div className="flex flex-wrap gap-2">
                 {[
                   { key: 'promotion', label: 'Promotion Letter', recommended: !!review.promotion_recommended },
-                  { key: 'salary_revision', label: 'Salary Revision Letter', recommended: review.salary_revision_percentage > 0 },
+                  { key: 'increment', label: 'Increment Letter', recommended: review.salary_revision_percentage > 0 },
+                  { key: 'salary_revision', label: 'Salary Revision Letter', recommended: false },
                   { key: 'confirmation', label: 'Confirmation Letter', recommended: false },
                   { key: 'warning', label: 'Warning Letter', recommended: false },
                 ].map(t => (

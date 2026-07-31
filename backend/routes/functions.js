@@ -67,8 +67,12 @@ function renderPdf(docDef) {
 /* ── Shared: parse HTML letter content into pdfmake content nodes ── */
 function htmlLetterToPdfContent(html) {
   const decode = s => s
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    .replace(/&ldquo;/g, '“').replace(/&rdquo;/g, '”')
+    .replace(/&lsquo;/g, '‘').replace(/&rsquo;/g, '’')
+    .replace(/&ndash;/g, '–').replace(/&mdash;/g, '—')
+    .replace(/&eacute;/g, 'é')
+    .replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 
   const stripTags = s => s.replace(/<[^>]*>/g, '');
 
@@ -121,6 +125,14 @@ function htmlLetterToPdfContent(html) {
       continue;
     }
 
+    // SEAL marker
+    const seal = rem.match(/^<div[^>]*class=["']mx-seal["'][^>]*>\s*<\/div>/i);
+    if (seal) {
+      nodes.push(letterSealNode());
+      rem = rem.slice(seal[0].length);
+      continue;
+    }
+
     // UL
     const ul = rem.match(/^<ul[^>]*>([\s\S]*?)<\/ul>/i);
     if (ul) {
@@ -162,54 +174,86 @@ function htmlLetterToPdfContent(html) {
   return nodes;
 }
 
-/* ── Shared: build Maxvolt letterhead PDF with parsed HTML content ── */
-async function buildLetterPdf(label, ref, htmlContent) {
+/* ── Shared: load + cache the Maxvolt logo as a data URL ── */
+let _logoDataUrlCache;
+function getLogoDataUrl() {
+  if (_logoDataUrlCache !== undefined) return _logoDataUrlCache;
   const { readFileSync, existsSync } = _require('fs');
   const logoPath = join(__dirname, '../assets/maxvolt-logo.jpg');
-  const logoDataUrl = existsSync(logoPath)
+  _logoDataUrlCache = existsSync(logoPath)
     ? `data:image/jpeg;base64,${readFileSync(logoPath).toString('base64')}`
     : null;
+  return _logoDataUrlCache;
+}
 
-  const content = htmlLetterToPdfContent(htmlContent);
-
-  const headerFn = (currentPage, pageCount, pageSize) => {
+/* ── Shared: the branded header (orange bars + logo) and footer (orange
+   bars + company name + 3-column address block) used on EVERY generated
+   PDF — the offer letter, every HR letter, and the standalone salary-
+   structure PDF all call this so the branding can never drift between
+   them. Also draws a light circular "seal placeholder" ring in the
+   signature area of the LAST page only, via `stampFn` — see its call
+   sites for where that's positioned per document. ── */
+function makeLetterheadChrome(logoDataUrl) {
+  const bar = (pageSize) => {
     const W = pageSize.width;
     const seg1 = W * (1.6 / 6), seg2 = W * (3.6 / 6), seg3 = W * (0.8 / 6);
-    const orangeBar = { canvas: [
+    return { canvas: [
       { type: 'rect', x: 0,          y: 0, w: seg1, h: 12, color: '#e87722' },
       { type: 'rect', x: seg1,       y: 0, w: seg2, h: 12, color: '#f4a83a' },
       { type: 'rect', x: seg1 + seg2, y: 0, w: seg3, h: 12, color: '#e87722' },
     ]};
+  };
+
+  const headerFn = (currentPage, pageCount, pageSize) => {
     const logoRow = logoDataUrl
       ? { image: 'logo', width: 120, margin: [36, 10, 0, 6] }
       : { text: 'Maxvolt Energy Industries Limited', fontSize: 14, bold: true, color: '#1e3a5f', margin: [36, 10, 0, 6] };
-    return { stack: [orangeBar, logoRow] };
+    return { stack: [bar(pageSize), logoRow] };
   };
 
-  const footerFn = (currentPage, pageCount, pageSize) => {
-    const W = pageSize.width;
-    const seg1 = W * (1.6 / 6), seg2 = W * (3.6 / 6), seg3 = W * (0.8 / 6);
-    const orangeBar = { canvas: [
-      { type: 'rect', x: 0,          y: 0, w: seg1, h: 12, color: '#e87722' },
-      { type: 'rect', x: seg1,       y: 0, w: seg2, h: 12, color: '#f4a83a' },
-      { type: 'rect', x: seg1 + seg2, y: 0, w: seg3, h: 12, color: '#e87722' },
-    ]};
-    return {
-      stack: [
-        { text: 'Maxvolt Energy Industries Limited', alignment: 'center', fontSize: 10, bold: true, color: '#e87722', margin: [36, 6, 36, 4] },
-        {
-          columns: [
-            { text: [{ text: 'Head Office\n', bold: true, fontSize: 7.5 }, { text: 'E-82 Bulandshahr Road Industrial Area,\nGhaziabad, Uttar Pradesh – 201009\nCIN No. L40106DL2019PLC349854', fontSize: 7 }], margin: [36, 0, 10, 0], color: '#333' },
-            { text: [{ text: 'Registered Office\n', bold: true, fontSize: 7.5 }, { text: 'F-108, Plot No. 1 F/F United Plaza,\nCommunity Centre, Karkardooma,\nNew Delhi – 110092', fontSize: 7 }], margin: [10, 0, 10, 0], color: '#333' },
-            { text: [{ text: 'Contact Details\n', bold: true, fontSize: 7.5 }, { text: 'Phone +91 120 4291595\nEmail: info@maxvoltenergy.com\nWeb: www.maxvoltenergy.com', fontSize: 7 }], margin: [10, 0, 36, 0], color: '#333' },
-          ],
-          columnGap: 0,
-          margin: [0, 2, 0, 5],
-        },
-        orangeBar,
+  const footerFn = (currentPage, pageCount, pageSize) => ({
+    stack: [
+      { text: 'Maxvolt Energy Industries Limited', alignment: 'center', fontSize: 10, bold: true, color: '#e87722', margin: [36, 6, 36, 4] },
+      {
+        columns: [
+          { text: [{ text: 'Head Office\n', bold: true, fontSize: 7.5 }, { text: 'E-82 Bulandshahr Road Industrial Area,\nGhaziabad, Uttar Pradesh – 201009\nCIN No. L40106DL2019PLC349854', fontSize: 7 }], margin: [36, 0, 10, 0], color: '#333' },
+          { text: [{ text: 'Registered Office\n', bold: true, fontSize: 7.5 }, { text: 'F-108, Plot No. 1 F/F United Plaza,\nCommunity Centre, Karkardooma,\nNew Delhi – 110092', fontSize: 7 }], margin: [10, 0, 10, 0], color: '#333' },
+          { text: [{ text: 'Contact Details\n', bold: true, fontSize: 7.5 }, { text: 'Phone +91 120 4291595\nEmail: info@maxvoltenergy.com\nWeb: www.maxvoltenergy.com', fontSize: 7 }], margin: [10, 0, 36, 0], color: '#333' },
+        ],
+        columnGap: 0,
+        margin: [0, 2, 0, 5],
+      },
+      bar(pageSize),
+    ],
+  });
+
+  return { headerFn, footerFn };
+}
+
+/* ── Shared: a round company-seal placeholder for the signature area —
+   drawn with pdfmake vector primitives (no image asset required), styled
+   to sit under "For Maxvolt Energy Industries Limited" / "Manager – HR"
+   the way a physical stamp would. Swap for a real scanned seal image by
+   passing one via `images.seal` and replacing this with an `image` node
+   if/when an actual stamp scan is added to backend/assets/. ── */
+function letterSealNode() {
+  const r = 40, cx = r + 6, cy = r + 6;
+  return {
+    margin: [0, 6, 0, 6],
+    stack: [{
+      canvas: [
+        { type: 'ellipse', x: cx, y: cy, r1: r,      r2: r,      lineColor: '#1d4ed8', lineWidth: 1.6 },
+        { type: 'ellipse', x: cx, y: cy, r1: r - 4,  r2: r - 4,  lineColor: '#1d4ed8', lineWidth: 0.7 },
       ],
-    };
+    }],
   };
+}
+
+/* ── Shared: build Maxvolt letterhead PDF with parsed HTML content ── */
+async function buildLetterPdf(label, ref, htmlContent) {
+  const logoDataUrl = getLogoDataUrl();
+  const content = htmlLetterToPdfContent(htmlContent);
+  const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
 
   const docDef = {
     pageSize: 'A4',
@@ -231,6 +275,8 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
   return new Promise((resolve, reject) => {
     try {
       const printer = getPdfPrinter();
+      const logoDataUrl = getLogoDataUrl();
+      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
       const L  = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       const GRAY = '#d9d9d9', BLUE = '#1d4ed8';
 
@@ -261,7 +307,9 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
 
       const docDef = {
         pageSize:    'A4',
-        pageMargins: [40, 50, 40, 80],
+        pageMargins: [40, 100, 40, 110],
+        header: headerFn,
+        ...(logoDataUrl ? { images: { logo: logoDataUrl } } : {}),
         defaultStyle:{ font:'Roboto', fontSize:10 },
 
         content: [
@@ -6378,6 +6426,7 @@ Return ONLY a valid JSON object (no markdown):
     <tr>
       <td style="width:50%;vertical-align:top;padding-right:20px;">
         <p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
+        <div style="width:84px;height:84px;border:2.5px double #1d4ed8;border-radius:50%;margin:10px 0 -78px 4px;"></div>
         <p style="margin:34px 0 2px;">Manager &ndash; HR_______________________</p>
         <p style="margin:0 0 2px;">Date:</p>
         <p style="margin:0;">Signature:</p>
@@ -6786,11 +6835,12 @@ Return ONLY a valid JSON object (no markdown):
       const wrap = body => `<div style="font-family:Arial,sans-serif;font-size:13.5px;line-height:1.75;color:#111;max-width:700px;">${body}</div>`;
       const P    = t   => `<p style="margin:0 0 12px;text-align:justify;">${t}</p>`;
       const H    = t   => `<p style="margin:18px 0 6px;font-weight:bold;">${t}</p>`;
+      const sealHtml = () => `<div class="mx-seal" style="float:left;width:104px;height:104px;border:2.5px double #1d4ed8;border-radius:50%;margin:10px 16px 10px 0;"></div>`;
       const sig  = (close, _defaultSigner, role) => {
         const nameBlock = chosenSignatory
           ? `<p style="margin:4px 0 2px;font-weight:bold;">${chosenSignatory}</p><p style="margin:0;font-size:12px;color:#555;">For Maxvolt Energy Industries Limited</p>`
           : `<p style="margin:54px 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>${role ? `<p style="margin:0;">${role}</p>` : ''}`;
-        return `<p style="margin:36px 0 0;">${close}</p>${nameBlock}`;
+        return `<p style="margin:36px 0 0;">${close}</p>${sealHtml()}${nameBlock}<div style="clear:both;"></div>`;
       };
 
       const docList = `<ul style="margin:6px 0 14px 24px;line-height:1.85;">
@@ -7005,16 +7055,18 @@ ${P('The relieving / resignation acceptance letter from your previous organizati
 ${docList}
 ${P('We welcome you to our organization and look forward to your contribution to the growth of the organization and yourself.')}
 ${P('Yours faithfully,')}
+${sealHtml()}
 <p style="margin:44px 0 6px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
 <p style="margin:34px 0 2px;">Manager &ndash; HR_______________________</p>
 <p style="margin:0 0 2px;">Date:</p>
 <p style="margin:0 0 24px;">Signature:</p>
+<div style="clear:both;"></div>
 <p style="margin:0 0 4px;">I accept the offer on the terms and conditions as described in this letter</p>
 <p style="margin:0 0 2px;">Employee Name_________________________________</p>
 <p style="margin:0 0 2px;">Date:</p>
 <p style="margin:0 0 20px;">Signature:</p>
 <p style="text-align:center;font-weight:bold;">(Confidential)</p>
-${salaryTable}`);
+${buildMeilSalaryBox({ heading: 'APPOINTMENT LETTER', subheading: 'Annexure – A', rows: [['Employee Name', empName], ['Date of Joining', joinDate]], ctcAnnual: overrideAnnualCTC })}`);
         },
 
         confirmation: () => wrap(`
@@ -7033,8 +7085,10 @@ ${P('Please signify your acceptance to terms and conditions, mentioned above &am
 ${P('In case you have any queries, do not hesitate to reach your manager/supervisor/HR Department.')}
 ${P('Maxvolt Energy Industries Limited, congratulates you on your confirmation and wishes you well in your position.')}
 <p style="margin:20px 0 2px;">Sincerely,</p>
+${sealHtml()}
 <p style="margin:44px 0 2px;">HR Head</p>
-<p style="margin:0 0 24px;font-weight:bold;">Maxvolt Energy Industries Limited</p>`),
+<p style="margin:0 0 24px;font-weight:bold;">Maxvolt Energy Industries Limited</p>
+<div style="clear:both;"></div>`),
 
         relieving: () => wrap(`
 <p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 22px;">RELIEVING CUM EXPERIENCE LETTER</p>
@@ -7051,8 +7105,10 @@ ${P('Please note your Basic Information as maintained in the HR records at the t
 ${P(`During your tenure with the Company, you served as ${designation} in the ${department} Department. You performed your assigned responsibilities diligently, and we appreciate your contributions to the organization.`)}
 ${P('We sincerely thank you for your contributions to the organization and wish you continued success in all your future endeavors.')}
 <p style="margin:16px 0 2px;">Warm Regards,</p>
+${sealHtml()}
 <p style="margin:44px 0 2px;font-weight:bold;">MaxVolt Energy Industries Limited</p>
-<p style="margin:0 0 20px;">(Authorized Signatory)</p>`),
+<p style="margin:0 0 20px;">(Authorized Signatory)</p>
+<div style="clear:both;"></div>`),
 
         increment: () => {
           const oldCTC = Number(extra.old_annual_ctc) || annualCTC || 0;
@@ -7079,8 +7135,10 @@ ${P('We would like to take this opportunity to express our appreciation for your
 ${P('In case of any queries, please feel free to contact the HR Department.')}
 ${P('Maxvolt Energy Industries Limited congratulates you on your salary revision and wishes you continued success for the future. &ldquo;We are excited to see you take on new challenges and reach even greater heights in your career with us.&rdquo;')}
 <p style="margin:0 0 24px;font-weight:bold;">Thank You!</p>
+${sealHtml()}
 <p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
 <p style="margin:44px 0 20px;">AGM HR</p>
+<div style="clear:both;"></div>
 <p style="text-align:center;font-weight:bold;">(Confidential)</p>
 ${annexureBox}
 <p style="margin-top:14px;font-size:11.5px;">Remarks:</p>
@@ -7110,7 +7168,7 @@ ${P('We congratulate you on this well-deserved promotion and wish you continued 
 ${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory')}
 <p style="margin:64px 0 6px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>
 <p>Name: _________________________________</p>
-${salaryTable}`);
+${buildMeilSalaryBox({ heading: 'PROMOTION LETTER', subheading: 'Annexure – A', rows: [['Employee Name', empName], ['Date of Promotion', effDate]], ctcAnnual: overrideAnnualCTC })}`);
         },
 
         salary_revision: () => {
@@ -7139,26 +7197,32 @@ ${salaryTable}`);
           ].filter(Boolean);
 
           const revTable = revRows.length ? `
-<div style="margin-top:20px;">
-<p style="font-weight:bold;margin:0 0 8px;">Salary Revision – Comparative Statement</p>
-<table style="width:100%;border-collapse:collapse;font-size:13px;">
-  <thead><tr style="background:#222;color:#fff;">
-    <th style="padding:8px 12px;text-align:left;font-weight:normal;">Component</th>
-    <th style="padding:8px 12px;text-align:right;font-weight:normal;">Previous Monthly (₹)</th>
-    <th style="padding:8px 12px;text-align:right;font-weight:normal;">Revised Monthly (₹)</th>
-    <th style="padding:8px 12px;text-align:right;font-weight:normal;">Revised Annual (₹)</th>
+<div style="margin-top:24px;page-break-before:always;">
+<p style="text-align:center;font-weight:bold;font-size:15px;margin:0 0 2px;">Annexure – A</p>
+<p style="text-align:center;font-size:14px;margin:0 0 14px;">Salary Revision &ndash; Comparative Statement</p>
+<div style="border:2px solid #111;padding:18px 22px;">
+<p style="text-align:center;font-weight:bold;font-size:13px;margin:0;">M/S MAXVOLT ENERGY INDUSTRIES LIMITED</p>
+<p style="text-align:center;font-size:11.5px;margin:2px 0 0;">E-82, Bulandshahr Road Industrial Area</p>
+<p style="text-align:center;font-size:11.5px;margin:0 0 14px;">Ghaziabad, UP - 201009</p>
+<table style="width:100%;border-collapse:collapse;font-size:12px;">
+  <thead><tr style="background:#e5e5e5;">
+    <th style="padding:5px 8px;border:1px solid #999;text-align:left;">Component</th>
+    <th style="padding:5px 8px;border:1px solid #999;text-align:right;">Previous Monthly (₹)</th>
+    <th style="padding:5px 8px;border:1px solid #999;text-align:right;">Revised Monthly (₹)</th>
+    <th style="padding:5px 8px;border:1px solid #999;text-align:right;">Revised Annual (₹)</th>
   </tr></thead>
-  <tbody>${revRows.map(([label, old, nw, ann], i) =>
-    `<tr style="background:${i % 2 === 0 ? '#f7f7f7' : '#fff'};">
-      <td style="padding:7px 12px;border-bottom:1px solid #ddd;">${label}</td>
-      <td style="padding:7px 12px;text-align:right;border-bottom:1px solid #ddd;">${old ? fmt(old) : '—'}</td>
-      <td style="padding:7px 12px;text-align:right;border-bottom:1px solid #ddd;">${nw ? fmt(nw) : '—'}</td>
-      <td style="padding:7px 12px;text-align:right;border-bottom:1px solid #ddd;">${ann ? fmt(ann) : '—'}</td>
+  <tbody>${revRows.map(([label, old, nw, ann]) =>
+    `<tr>
+      <td style="padding:4px 8px;border:1px solid #999;">${label}</td>
+      <td style="padding:4px 8px;border:1px solid #999;text-align:right;">${old ? fmt(old) : '—'}</td>
+      <td style="padding:4px 8px;border:1px solid #999;text-align:right;">${nw ? fmt(nw) : '—'}</td>
+      <td style="padding:4px 8px;border:1px solid #999;text-align:right;">${ann ? fmt(ann) : '—'}</td>
     </tr>`).join('')}
   </tbody>
 </table>
 <p style="margin:10px 0 2px;font-size:12px;">* Previous Annual CTC: <strong>${oldAnnualCTC ? fmt(oldAnnualCTC) + '/-' : '[____]'}</strong> &nbsp;|&nbsp; Revised Annual CTC: <strong>${newCTC ? fmt(newCTC) + '/-' : overrideAnnualCTC ? fmt(overrideAnnualCTC) + '/-' : '[____]'}</strong></p>
 <p style="font-size:12px;margin:2px 0;">* TDS deducted as per applicable provisions. * Statutory benefits as per applicable labour laws.</p>
+</div>
 </div>` : '';
 
           return wrap(`
@@ -7169,12 +7233,12 @@ ${salaryTable}`);
 <p style="text-align:right;font-size:12px;color:#555;margin:0 0 24px;"><strong>Ref:</strong> ${ref}</p>
 ${P(`Dear ${sal} ${empName},`)}
 ${P('We are pleased to inform you that the Management has reviewed your performance and contribution to <strong>Maxvolt Energy Industries Limited</strong> and has decided to revise your compensation.')}
-${P(`Effective <strong>${effDate}</strong>, your revised annual CTC will be <strong>INR ${newCTC ? Number(newCTC).toLocaleString('en-IN') : overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The detailed salary breakup is as follows:`)}
-${revTable}
+${P(`Effective <strong>${effDate}</strong>, your revised annual CTC will be <strong>INR ${newCTC ? Number(newCTC).toLocaleString('en-IN') : overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The detailed salary breakup is enclosed in <strong>Annexure &ldquo;A&rdquo;</strong>.`)}
 ${P('All other terms and conditions of your employment remain unchanged. Your salary is strictly confidential and any disclosure will invite disciplinary action.')}
 ${P('Please sign and return a copy of this letter as acknowledgement of the revised compensation.')}
 ${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory')}
-<p style="margin:64px 0 6px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>`);
+<p style="margin:64px 0 6px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>
+${revTable}`);
         },
 
         experience: () => wrap(`
