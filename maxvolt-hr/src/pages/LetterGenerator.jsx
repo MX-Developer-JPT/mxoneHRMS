@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, Save, CheckCircle2, Send, Users, ChevronDown, ChevronUp, History, ExternalLink, Link2
+  FileSignature, Search, Sparkles, Printer, Copy, RefreshCw, FileText, Save, CheckCircle2, Send, Users, ChevronDown, ChevronUp, History, ExternalLink, Link2, TrendingUp
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
@@ -251,11 +251,37 @@ const CTC_FIELDS = [
 
 function CTCBreakdownPanel({ value, onChange, employee }) {
   const [open, setOpen] = useState(false);
+  const [calculating, setCalculating] = useState(false);
 
   const fmt = n => n ? '₹' + Number(n).toLocaleString('en-IN') : '';
   const computedGross = CTC_FIELDS.reduce((s, f) => s + (Number(value[f.k]) || 0), 0);
   const pf = value.basic ? Math.round(Number(value.basic) * 0.12) : 0;
   const net = computedGross ? computedGross - pf : 0;
+
+  // Same Basic/HRA/Conveyance/PF/ESI/Bonus formulas the Salary Structure
+  // page uses — computed server-side (calcSalaryBreakdown) so both stay in
+  // sync off one source of truth instead of duplicating the math here.
+  const autoCalculate = async () => {
+    const ctc = Number(value.annual_ctc);
+    if (!ctc || ctc <= 0) { toast.error('Enter an Annual CTC first'); return; }
+    setCalculating(true);
+    try {
+      const res = await base44.functions.invoke('calcSalaryBreakdown', { annual_ctc: ctc });
+      const d = res.data || res;
+      if (d.success && d.breakdown) {
+        const b = d.breakdown;
+        onChange({
+          ...value,
+          basic: Math.round(b.basic_salary),
+          hra: Math.round(b.hra),
+          conveyance: Math.round(b.conveyance),
+          special_allowance: Math.round(b.special_allowance || 0),
+          other_allowance: 0,
+        });
+      } else toast.error(d.error || 'Calculation failed');
+    } catch (e) { toast.error('Error: ' + e.message); }
+    setCalculating(false);
+  };
 
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -266,12 +292,18 @@ function CTCBreakdownPanel({ value, onChange, employee }) {
       </button>
       {open && (
         <div className="p-3 space-y-2 bg-white">
-          <p className="text-xs text-gray-500">Leave blank to use salary structure on file. Fill to override for this letter.</p>
+          <p className="text-xs text-gray-500">Leave blank to use salary structure on file. Fill to override for this letter, or auto-calculate from CTC and adjust as needed.</p>
           <div className="grid grid-cols-2 gap-2">
-            <div className="col-span-2">
-              <Label className="text-xs">Annual CTC (₹)</Label>
-              <Input type="number" className="mt-1 h-8 text-sm" placeholder="e.g. 600000"
-                value={value.annual_ctc || ''} onChange={e => onChange({ ...value, annual_ctc: e.target.value })} />
+            <div className="col-span-2 flex items-end gap-2">
+              <div className="flex-1">
+                <Label className="text-xs">Annual CTC (₹)</Label>
+                <Input type="number" className="mt-1 h-8 text-sm" placeholder="e.g. 600000"
+                  value={value.annual_ctc || ''} onChange={e => onChange({ ...value, annual_ctc: e.target.value })} />
+              </div>
+              <Button type="button" size="sm" variant="outline" className="h-8 text-xs whitespace-nowrap"
+                disabled={calculating} onClick={autoCalculate}>
+                {calculating ? 'Calculating…' : 'Auto-calculate'}
+              </Button>
             </div>
             {CTC_FIELDS.map(f => (
               <div key={f.k}>
@@ -399,6 +431,7 @@ export default function LetterGenerator() {
         setEditMode(false);
         setSaved(false);
         setApproveSent(false);
+        setStructureUpdated(false);
       } else toast.error(d.error || 'Generation failed');
     } catch (e) { toast.error('Error: ' + e.message); }
     setGenerating(false);
@@ -490,6 +523,40 @@ export default function LetterGenerator() {
       }
     } catch (e) { toast.error(e.message); }
     setApproveSending(false);
+  };
+
+  // Explicit, HR-confirmed action — does NOT run automatically when the
+  // letter is generated or edited, so previewing/regenerating a letter
+  // never silently rewrites the employee's official salary history. Only
+  // available for the letter types that actually carry a new CTC.
+  const SALARY_UPDATING_TYPES = ['increment', 'promotion', 'salary_revision'];
+  const [updatingStructure, setUpdatingStructure] = useState(false);
+  const [structureUpdated, setStructureUpdated] = useState(false);
+
+  const updateSalaryStructure = async () => {
+    if (!selectedEmp) return;
+    const annualCtc = Number(extra.revised_annual_ctc || ctcOverride.annual_ctc);
+    if (!annualCtc || annualCtc <= 0) {
+      toast.error('Enter the revised Annual CTC (in the letter fields or CTC Breakdown panel) first');
+      return;
+    }
+    setUpdatingStructure(true);
+    try {
+      const res = await base44.functions.invoke('updateSalaryStructureFromLetter', {
+        user_id: selectedEmp.user_id,
+        annual_ctc: annualCtc,
+        effective_date: extra.effective_date || new Date().toISOString().slice(0, 10),
+        letter_type: letterType,
+        reason: `${meta?.label || 'Letter'} — Ref ${ref}`,
+        ...(Object.keys(ctcOverride).some(k => ctcOverride[k]) ? { component_override: ctcOverride } : {}),
+      });
+      const d = res.data || res;
+      if (d.success) {
+        setStructureUpdated(true);
+        toast.success(`Salary Structure updated for ${selectedEmp.display_name}`);
+      } else toast.error(d.error || 'Failed to update Salary Structure');
+    } catch (e) { toast.error('Error: ' + e.message); }
+    setUpdatingStructure(false);
   };
 
   return (
@@ -674,6 +741,14 @@ export default function LetterGenerator() {
                       <Button size="sm" onClick={printLetter} className="bg-indigo-600 hover:bg-indigo-700 text-white">
                         <Printer className="w-3.5 h-3.5 mr-1" /> Print / PDF
                       </Button>
+                      {SALARY_UPDATING_TYPES.includes(letterType) && (
+                        <Button size="sm" onClick={updateSalaryStructure} disabled={updatingStructure || structureUpdated}
+                          className={structureUpdated ? 'bg-green-700 hover:bg-green-700 text-white' : 'bg-amber-600 hover:bg-amber-700 text-white'}
+                          title="Creates a new active Salary Structure version for this employee using the revised CTC — review the numbers before confirming.">
+                          {updatingStructure ? <RefreshCw className="w-3.5 h-3.5 mr-1 animate-spin" /> : structureUpdated ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <TrendingUp className="w-3.5 h-3.5 mr-1" />}
+                          {structureUpdated ? 'Salary Structure Updated' : 'Update Salary Structure'}
+                        </Button>
+                      )}
                     </div>
                   </div>
                   {editMode ? (

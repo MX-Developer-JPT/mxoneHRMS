@@ -315,6 +315,76 @@ function letterSealNode() {
   };
 }
 
+/* ── Shared: derive Bonus/VPP per policy — same tiers used everywhere a
+   salary structure is built (Salary Structure page, offer letter, HR
+   letters). Kept as the one place this table lives. ── */
+function calcBonusVPP(annualCTC, basicAnnual) {
+  if (annualCTC <= 1000000) {
+    return { amount: Math.round(basicAnnual * 0.0833 / 12), type: 'Bonus (8.33% of Basic)' };
+  }
+  let vppPct;
+  if (annualCTC <= 1500000) vppPct = 0.05;
+  else if (annualCTC <= 2000000) vppPct = 0.08;
+  else if (annualCTC <= 2500000) vppPct = 0.12;
+  else vppPct = 0.15;
+  const slab = annualCTC <= 1500000 ? '10-15L' : annualCTC <= 2000000 ? '15-20L' : annualCTC <= 2500000 ? '20-25L' : '25L+';
+  return { amount: Math.round(annualCTC * vppPct / 12), type: `VPP (${Math.round(vppPct * 100)}% of CTC – ${slab} slab)` };
+}
+
+/* ── Shared: derive a full monthly salary structure from an annual CTC.
+   Basic = 50% of CTC, HRA = 40% of Basic, Conveyance = balance to close
+   the gross; PF/ESI on the same ceilings as payroll processing. This is
+   the single source of truth for the calculation — the Salary Structure
+   page, the offer letter, and the Letter Generator's CTC panel all call
+   this (via the `calcSalaryBreakdown` function-invoke case below) instead
+   of keeping their own copies of the PF/ESI/bonus formulas in sync by hand. ── */
+function calcSalaryBreakdown(annualCTC, medicalContribution = 0, ceilings = {}) {
+  if (!annualCTC || annualCTC <= 0) return null;
+  const PF_CEILING = ceilings.pf_ceiling || 15000;
+  const ESI_CEILING_MONTHLY = ceilings.esi_wage_ceiling || 21000;
+
+  const basicAnnual = annualCTC * 0.5;
+  const hraAnnual = basicAnnual * 0.4;
+  const basicM = basicAnnual / 12;
+
+  const bonus = calcBonusVPP(annualCTC, basicAnnual);
+  const bonusAnnual = bonus.amount * 12;
+
+  const pfBase = Math.min(basicM, PF_CEILING);
+  const employeePF = Math.round(pfBase * 0.12);
+  const employerPF = Math.round(pfBase * 0.13);
+
+  const isESIApplicable = basicM <= ESI_CEILING_MONTHLY;
+  const employeeESI = isESIApplicable ? Math.round(basicM * 0.0075) : 0;
+  const employerESI = isESIApplicable ? Math.round(basicM * 0.0325) : 0;
+
+  const totalContribAnnual = (employerPF * 12) + (employerESI * 12) + bonusAnnual + (medicalContribution * 12);
+  const grossAnnual = annualCTC - totalContribAnnual;
+  const grossM = grossAnnual / 12;
+  const conveyanceM = Math.max(grossM - basicM - (hraAnnual / 12), 0);
+  const totalDeductions = employeePF + employeeESI;
+
+  return {
+    basic_salary: basicM,
+    hra: hraAnnual / 12,
+    conveyance: conveyanceM,
+    lta: 0,
+    special_allowance: 0,
+    performance_bonus: bonus.amount,
+    bonusVPPType: bonus.type,
+    grossMonthly: grossM,
+    pf_contribution: employeePF,
+    employer_pf_contribution: employerPF,
+    esi_contribution: employeeESI,
+    employer_esi_contribution: employerESI,
+    medical_contribution: medicalContribution,
+    totalDeductions,
+    netMonthly: grossM - totalDeductions,
+    annualCTC,
+    isESIApplicable,
+  };
+}
+
 /* ── Shared: build Maxvolt letterhead PDF with parsed HTML content ── */
 async function buildLetterPdf(label, ref, htmlContent) {
   const logoDataUrl = getLogoDataUrl();
@@ -6874,9 +6944,9 @@ Return ONLY a valid JSON object (no markdown):
       const emp = JSON.parse(empRow.data);
       const uRow = await one("SELECT email,full_name FROM users WHERE id=$1", [letterUid]);
 
-      const ssRow = await one("SELECT data,created_at FROM entities WHERE type='SalaryStructure' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [letterUid]);
+      const ssRow = await one("SELECT data,created_at FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1", [letterUid]);
       const ss = ssRow ? JSON.parse(ssRow.data) : {};
-      const annualCTC = ss.annualCTC || (ss.grossMonthly ? Math.round(ss.grossMonthly * 12) : 0);
+      const annualCTC = ss.ctc || ss.annualCTC || (ss.grossMonthly ? Math.round(ss.grossMonthly * 12) : 0);
 
       const todayDate = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
       const refPrefix = { confirmation: 'CONF', experience: 'EXP', relieving: 'REL', appointment: 'APPT', salary_revision: 'SAL', increment: 'INC', address_proof: 'ADDR', warning: 'WARN', promotion: 'PROMO' }[letterType] || 'LTR';
@@ -6896,7 +6966,7 @@ Return ONLY a valid JSON object (no markdown):
       const fmt = n => n ? '₹' + Number(n).toLocaleString('en-IN') : '[____]';
       // Allow HR to override CTC components via extra.ctc_override
       const ctcOvr  = extra.ctc_override || {};
-      const basic   = Number(ctcOvr.basic)             || ss.basic || 0;
+      const basic   = Number(ctcOvr.basic)             || ss.basic_salary || ss.basic || 0;
       const hra     = Number(ctcOvr.hra)               || ss.hra || 0;
       const conv    = Number(ctcOvr.conveyance)        || ss.conveyance || 0;
       const special = Number(ctcOvr.special_allowance) || ss.special_allowance || 0;
@@ -7333,6 +7403,82 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
       }
 
       return res.json({ success: true, letter, ref, letter_type: letterType, isHtml });
+    }
+
+    /* ── Salary breakdown calculator — shared by Salary Structure page and
+       the Letter Generator's CTC panel so both auto-derive Basic/HRA/
+       Conveyance/PF/ESI/Bonus from an annual CTC using the exact same
+       formulas as payroll. Read-only: does not touch SalaryStructure. ── */
+    case 'calcSalaryBreakdown': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const annualCTC = Number(p.annual_ctc) || 0;
+      const medicalContribution = Number(p.medical_contribution) || 0;
+      if (annualCTC <= 0) return res.json({ success: false, error: 'annual_ctc is required' });
+
+      const cfgRow = await one("SELECT data FROM entities WHERE type='PayrollConfiguration' ORDER BY created_at DESC LIMIT 1", []);
+      const cfg = cfgRow ? JSON.parse(cfgRow.data) : {};
+      const breakdown = calcSalaryBreakdown(annualCTC, medicalContribution, { pf_ceiling: cfg.pf_ceiling, esi_wage_ceiling: cfg.esi_wage_ceiling });
+      return res.json({ success: true, breakdown });
+    }
+
+    /* ── Version the employee's SalaryStructure from an increment/promotion/
+       salary_revision letter — explicit HR-confirmed action (NOT run
+       automatically on letter generation/preview, to avoid polluting salary
+       history from repeated edits). Deactivates the prior active row and
+       inserts a new one, mirroring the versioning pattern already used by
+       the Excel salary-structure import. ── */
+    case 'updateSalaryStructureFromLetter': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const targetUid = p.user_id;
+      const annualCTC = Number(p.annual_ctc) || 0;
+      const effectiveFrom = p.effective_date || new Date().toISOString().slice(0, 10);
+      const reason = p.reason || 'Salary revision';
+      const letterType = p.letter_type || '';
+      if (!targetUid || annualCTC <= 0) return res.json({ success: false, error: 'user_id and a positive annual_ctc are required' });
+
+      const cfgRow = await one("SELECT data FROM entities WHERE type='PayrollConfiguration' ORDER BY created_at DESC LIMIT 1", []);
+      const cfg = cfgRow ? JSON.parse(cfgRow.data) : {};
+      const auto = calcSalaryBreakdown(annualCTC, Number(p.medical_contribution) || 0, { pf_ceiling: cfg.pf_ceiling, esi_wage_ceiling: cfg.esi_wage_ceiling });
+      if (!auto) return res.json({ success: false, error: 'Could not compute salary breakdown' });
+
+      // HR-entered component overrides (from the same ctc_override panel used
+      // for letter generation) win over the auto-calculated values.
+      const ovr = p.component_override || {};
+      const structure = {
+        id: uuidv4(),
+        user_id: targetUid,
+        effective_from: effectiveFrom,
+        ctc: annualCTC,
+        is_manual_override: Object.keys(ovr).length > 0,
+        basic_salary: Number(ovr.basic) || auto.basic_salary,
+        hra: Number(ovr.hra) || auto.hra,
+        conveyance: Number(ovr.conveyance) || auto.conveyance,
+        lta: 0,
+        special_allowance: Number(ovr.special_allowance) || auto.special_allowance,
+        performance_bonus: auto.performance_bonus,
+        pf_contribution: auto.pf_contribution,
+        employer_pf_contribution: auto.employer_pf_contribution,
+        esi_contribution: auto.esi_contribution,
+        employer_esi_contribution: auto.employer_esi_contribution,
+        medical_contribution: auto.medical_contribution,
+        status: 'active',
+        approved_by: cu.id,
+        revision_reason: `${letterType ? `${letterType} — ` : ''}${reason}`,
+        source: 'letter_generator',
+      };
+
+      await run(
+        `INSERT INTO entities (id, type, user_id, status, is_active, data)
+         VALUES ($1,'SalaryStructure',$2,'active',1,$3)`,
+        [structure.id, targetUid, JSON.stringify(structure)]
+      );
+      await run(
+        `UPDATE entities SET status='inactive', updated_at=NOW()::TEXT
+         WHERE type='SalaryStructure' AND user_id=$1 AND status='active' AND id != $2`,
+        [targetUid, structure.id]
+      );
+
+      return res.json({ success: true, salary_structure_id: structure.id });
     }
 
     /* ── AI: HR Assistant ────────────────────────────── */
