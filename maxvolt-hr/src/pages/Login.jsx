@@ -35,8 +35,8 @@ export default function Login() {
     >
       {/* Background gradient blobs */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden>
-        <div className="absolute -top-32 -right-32 w-72 h-72 rounded-full bg-indigo-600/10 dark:bg-indigo-500/8 blur-3xl" />
-        <div className="absolute -bottom-32 -left-32 w-72 h-72 rounded-full bg-violet-600/10 dark:bg-violet-500/8 blur-3xl" />
+        <div className="absolute -top-32 -right-32 w-72 h-72 rounded-full bg-indigo-600/10 dark:bg-indigo-500/10 blur-3xl" />
+        <div className="absolute -bottom-32 -left-32 w-72 h-72 rounded-full bg-violet-600/10 dark:bg-violet-500/10 blur-3xl" />
       </div>
 
       {/* Theme toggle */}

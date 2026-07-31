@@ -355,7 +355,7 @@ function NavItem({ item, isActive, onClick }) {
         transition-all duration-150 select-none group
         ${isActive
           ? 'bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/15 dark:text-[#0A84FF]'
-          : 'text-[#6E6E73] dark:text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-white/6 hover:text-[#1D1D1F] dark:hover:text-white'
+          : 'text-[#6E6E73] dark:text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-white/5 hover:text-[#1D1D1F] dark:hover:text-white'
         }
       `}
     >
@@ -737,7 +737,7 @@ export default function Layout({ children, currentPageName }) {
 
         {/* User card */}
         <div className="px-3 py-3 border-b border-[#E0E0E5] dark:border-[#38383A]">
-          <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl bg-[#F2F2F7] dark:bg-white/6">
+          <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl bg-[#F2F2F7] dark:bg-white/5">
             <Avatar name={displayName} role={userRole} />
             <div className="flex-1 min-w-0">
               <p className="font-semibold text-[13px] text-[#1D1D1F] dark:text-white truncate leading-tight">{displayName}</p>
@@ -757,7 +757,7 @@ export default function Layout({ children, currentPageName }) {
               value={menuSearch}
               onChange={e => setMenuSearch(e.target.value)}
               placeholder="Search menu…"
-              className="w-full pl-7 pr-3 py-1.5 text-[12.5px] rounded-lg bg-[#F2F2F7] dark:bg-white/6 border-none outline-none text-[#1D1D1F] dark:text-white placeholder-[#8E8E93] focus:ring-1 focus:ring-[#007AFF]/30"
+              className="w-full pl-7 pr-3 py-1.5 text-[12.5px] rounded-lg bg-[#F2F2F7] dark:bg-white/5 border-none outline-none text-[#1D1D1F] dark:text-white placeholder-[#8E8E93] focus:ring-1 focus:ring-[#007AFF]/30"
             />
           </div>
         </div>
@@ -794,7 +794,7 @@ export default function Layout({ children, currentPageName }) {
           </div>
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="w-full flex items-center gap-2.5 px-3 py-[9px] rounded-xl text-[13.5px] font-medium text-[#6E6E73] dark:text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-white/6 hover:text-[#1D1D1F] dark:hover:text-white transition-colors"
+            className="w-full flex items-center gap-2.5 px-3 py-[9px] rounded-xl text-[13.5px] font-medium text-[#6E6E73] dark:text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-white/5 hover:text-[#1D1D1F] dark:hover:text-white transition-colors"
           >
             {theme === 'dark'
               ? <><Sun  className="w-4 h-4 flex-shrink-0 text-[#FF9500]" /><span>Light Mode</span></>

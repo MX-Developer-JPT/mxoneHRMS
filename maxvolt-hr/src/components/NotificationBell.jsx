@@ -70,7 +70,7 @@ export default function NotificationBell({ placement = 'header' }) {
     <div className="relative" ref={ref}>
       <button
         onClick={() => { setOpen(!open); if (!open) load(); }}
-        className="relative flex items-center justify-center w-9 h-9 rounded-xl text-[#6E6E73] dark:text-white/70 hover:text-[#1D1D1F] dark:hover:text-white hover:bg-black/6 dark:hover:bg-white/10 transition-colors"
+        className="relative flex items-center justify-center w-9 h-9 rounded-xl text-[#6E6E73] dark:text-white/70 hover:text-[#1D1D1F] dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
         aria-label="Notifications"
       >
         <Bell className="w-4 h-4" />
@@ -87,7 +87,7 @@ export default function NotificationBell({ placement = 'header' }) {
             ? 'left-full bottom-0 ml-3'
             : 'right-0 top-full mt-2'
         }`}>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-white/8">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-white/10">
             <span className="font-semibold text-sm text-slate-900 dark:text-white">Notifications</span>
             {unread > 0 && (
               <button onClick={markAllRead} className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline">
