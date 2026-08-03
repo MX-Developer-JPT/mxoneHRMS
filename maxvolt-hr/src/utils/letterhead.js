@@ -3,7 +3,9 @@
  * Matches the official letterhead format exactly.
  */
 
-const LOGO_URL = (typeof window !== 'undefined' ? window.location.origin : '') + '/maxvolt-logo.jpg?v=6';
+// The orange letterhead logo — used only on generated letters/documents,
+// not the same asset as the app-wide maxvolt-logo.jpg shown elsewhere.
+const LOGO_URL = (typeof window !== 'undefined' ? window.location.origin : '') + '/maxvolt-logo-letterhead.png?v=1';
 
 export function letterheadStyles() {
   return `

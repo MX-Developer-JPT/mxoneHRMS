@@ -227,14 +227,17 @@ function htmlLetterToPdfContent(html) {
   return nodes;
 }
 
-/* ── Shared: load + cache the Maxvolt logo as a data URL ── */
+/* ── Shared: load + cache the Maxvolt logo as a data URL — the orange
+   letterhead logo (backend/assets/maxvolt-logo-letterhead.png), used only
+   on generated letter/document PDFs. Not the same asset as the app-wide
+   maxvolt-logo.jpg shown on Login/Register/OnboardingForm/etc. ── */
 let _logoDataUrlCache;
 function getLogoDataUrl() {
   if (_logoDataUrlCache !== undefined) return _logoDataUrlCache;
   const { readFileSync, existsSync } = _require('fs');
-  const logoPath = join(__dirname, '../assets/maxvolt-logo.jpg');
+  const logoPath = join(__dirname, '../assets/maxvolt-logo-letterhead.png');
   _logoDataUrlCache = existsSync(logoPath)
-    ? `data:image/jpeg;base64,${readFileSync(logoPath).toString('base64')}`
+    ? `data:image/png;base64,${readFileSync(logoPath).toString('base64')}`
     : null;
   return _logoDataUrlCache;
 }

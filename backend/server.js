@@ -200,7 +200,7 @@ if (process.env.NODE_ENV === 'production') {
   // bit us once already. Short-cache + revalidate these specifically instead.
   const SHORT_CACHE_FILES = new Set([
     'favicon.ico', 'favicon.svg', 'favicon-96x96.png', 'apple-touch-icon.png',
-    'maxvolt-logo.jpg', 'manifest.json',
+    'maxvolt-logo.jpg', 'maxvolt-logo-letterhead.png', 'company-stamp.png', 'manifest.json',
   ]);
   app.use(express.static(frontendDist, {
     maxAge: '1y',
