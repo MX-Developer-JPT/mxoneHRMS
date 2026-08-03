@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,9 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Zap, Loader2, Users } from 'lucide-react';
+import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Zap, Loader2, Users, Download, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import * as XLSX from 'xlsx';
 import { safeDate } from '@/lib/dateUtils';
 import LeavePolicyManager from '../components/leave/LeavePolicyManager';
 import LeaveAllocationPanel from '../components/leave/LeaveAllocationPanel';
@@ -67,6 +68,8 @@ export default function LeaveManagement() {
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [leaveBalances, setLeaveBalances] = useState({}); // { userId_policyId: LeaveBalance }
   const [leaveWorkflow, setLeaveWorkflow] = useState(null); // configurable chain from Workflow Builder
+  const [importingBalances, setImportingBalances] = useState(false);
+  const balanceFileInputRef = useRef(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -233,6 +236,63 @@ export default function LeaveManagement() {
     setBulkProcessing(false);
   };
 
+  // Template columns are the active LeavePolicy codes (CL/SL/EL/...) so the
+  // import can key strictly on leave_policy_id server-side — the same
+  // identifier every other leave-balance read/write path already uses.
+  // Prefilled with each employee's CURRENT total_allocated so the sheet
+  // doubles as an editable export of what's on file today, not a blank form.
+  const downloadBalanceTemplate = () => {
+    const activeEmployees = employees.filter(e => e.status !== 'resigned' && e.status !== 'terminated');
+    const currentYear = new Date().getFullYear();
+    const header = ['Employee Code', 'Employee Name', 'Department', 'Designation', ...leavePolicies.map(p => p.code)];
+    const rows = activeEmployees.map(emp => {
+      const row = [emp.employee_code || '', emp.display_name || '', emp.department || '', emp.designation || ''];
+      leavePolicies.forEach(p => {
+        const bal = leaveBalances[`${emp.user_id}_${p.id}`];
+        row.push(bal?.total_allocated ?? '');
+      });
+      return row;
+    });
+    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    ws['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 18 }, { wch: 20 }, ...leavePolicies.map(() => ({ wch: 8 }))];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Leave Balances');
+    XLSX.writeFile(wb, `Leave_Balance_Template_${currentYear}.xlsx`);
+  };
+
+  const handleImportBalances = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImportingBalances(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const parsed = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const rows = parsed
+        .map(r => {
+          const row = { employee_code: String(r['Employee Code'] || '').trim() };
+          leavePolicies.forEach(p => { if (r[p.code] !== undefined && r[p.code] !== '') row[p.code] = r[p.code]; });
+          return row;
+        })
+        .filter(r => r.employee_code);
+
+      if (!rows.length) { toast.error('No valid rows found — check the Employee Code column'); setImportingBalances(false); return; }
+
+      const res = await base44.functions.invoke('importLeaveBalances', { rows, year: new Date().getFullYear() });
+      const d = res.data || res;
+      if (d.success) {
+        toast.success(`Leave balances updated — ${d.created} created, ${d.updated} updated${d.skipped ? `, ${d.skipped} skipped` : ''}`);
+        if (d.errors?.length) toast.warning(`${d.errors.length} issue(s) — first: ${d.errors[0].error}`);
+        loadData();
+      } else toast.error(d.error || 'Import failed');
+    } catch (err) {
+      toast.error('Import failed: ' + err.message);
+    }
+    setImportingBalances(false);
+    e.target.value = '';
+  };
+
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
 
   const filteredRequests = leaveRequests.filter(l => {
@@ -268,12 +328,24 @@ export default function LeaveManagement() {
           {isHR && (
             <TabsContent value="balances">
               <Card>
-                <CardHeader>
+                <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Users className="w-4 h-4" /> Employee Leave Balances — {new Date().getFullYear()}
                   </CardTitle>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={downloadBalanceTemplate}>
+                      <Download className="w-3.5 h-3.5 mr-1" /> Download Template
+                    </Button>
+                    <input ref={balanceFileInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportBalances} />
+                    <Button size="sm" onClick={() => balanceFileInputRef.current?.click()} disabled={importingBalances}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                      {importingBalances ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Upload className="w-3.5 h-3.5 mr-1" />}
+                      {importingBalances ? 'Importing…' : 'Import Balances'}
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent>
+                  <p className="text-xs text-gray-500 mb-3">Download the template to get every active employee with their current balances pre-filled, edit the leave-type columns (e.g. CL/SL/EL), then re-upload to update balances in bulk. Existing used/pending days are preserved — only the total allocation changes.</p>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>

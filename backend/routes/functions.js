@@ -1208,6 +1208,65 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, accrued });
     }
 
+    /* ── Bulk leave-balance import — HR fills in a per-employee, per-policy
+       spreadsheet (built from the same LeavePolicy codes shown on the
+       Employee Balances tab) and this SETS total_allocated for each
+       user_id+leave_policy_id+year cell. Rows are keyed by leave policy
+       CODE (e.g. "CL"/"SL"/"EL"), not free-text header matching, so it
+       stays compatible with every other place LeaveBalance is read/written
+       (validateLeaveApplication, processLeaveAction, accrueLeaveBalances
+       above) — all of those key strictly on leave_policy_id. `used` and
+       `pending_approval` are preserved from the existing row (never reset
+       by an import) so `available` reflects real remaining balance rather
+       than wiping out days already taken or awaiting approval. ── */
+    case 'importLeaveBalances': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const rows = Array.isArray(p.rows) ? p.rows : [];
+      const year = Number(p.year) || new Date().getFullYear();
+      if (!rows.length) return res.json({ success: false, error: 'No rows to import' });
+
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'"));
+      const empByCode = new Map(employees.filter(e => e.employee_code).map(e => [String(e.employee_code).trim().toUpperCase(), e]));
+      const policies  = parseEntities(await all("SELECT data FROM entities WHERE type='LeavePolicy' AND is_active=1"));
+      const policyByCode = new Map(policies.filter(pl => pl.code).map(pl => [String(pl.code).trim().toUpperCase(), pl]));
+
+      let created = 0, updated = 0, skipped = 0;
+      const errors = [];
+
+      for (const [i, row] of rows.entries()) {
+        const code = String(row.employee_code || '').trim().toUpperCase();
+        const emp = empByCode.get(code);
+        if (!emp || !emp.user_id) { skipped++; errors.push({ row: i + 2, error: `Employee code "${row.employee_code || ''}" not found` }); continue; }
+
+        for (const [policyCode, policy] of policyByCode) {
+          const raw = row[policyCode];
+          if (raw === undefined || raw === null || raw === '') continue;
+          const value = Number(raw);
+          if (isNaN(value) || value < 0) { errors.push({ row: i + 2, error: `${emp.employee_code}: invalid ${policyCode} value "${raw}"` }); continue; }
+
+          const existingRow = await one(
+            "SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data::jsonb->>'leave_policy_id'=$2 AND (data::jsonb->>'year')::int=$3",
+            [emp.user_id, policy.id, year]
+          );
+          if (existingRow) {
+            const existing = JSON.parse(existingRow.data);
+            const used = existing.used || 0;
+            const pending = existing.pending_approval || 0;
+            const merged = { ...existing, total_allocated: value, available: Math.max(value - used - pending, 0) };
+            await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(merged), existingRow.id]);
+            updated++;
+          } else {
+            const id = uuidv4();
+            const d = { id, user_id: emp.user_id, leave_policy_id: policy.id, year, total_allocated: value, accrued_this_year: 0, used: 0, pending_approval: 0, available: value, carried_forward: 0 };
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [id, emp.user_id, JSON.stringify(d)]);
+            created++;
+          }
+        }
+      }
+
+      return res.json({ success: true, created, updated, skipped, errors });
+    }
+
     /* ── Comp-Off: earn leave for working on Sundays/holidays ── */
     case 'requestCompOff': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
