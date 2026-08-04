@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Clock, Users, Edit, Trash2, Upload, FileSpreadsheet, CheckCircle2, AlertCircle, Building2 } from 'lucide-react';
+import { Plus, Clock, Users, Edit, Trash2, Upload, FileSpreadsheet, CheckCircle2, AlertCircle, Building2, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function ShiftManagement() {
@@ -24,6 +24,7 @@ export default function ShiftManagement() {
   const [showDeptDialog, setShowDeptDialog] = useState(false);
   const [deptAssignments, setDeptAssignments] = useState({});
   const [deptAssigning, setDeptAssigning] = useState(false);
+  const [employeeSearch, setEmployeeSearch] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     start_time: '',
@@ -208,6 +209,16 @@ export default function ShiftManagement() {
   const getEmployeeCountForShift = (shiftId) => {
     return employees.filter(e => e.shift_id === shiftId).length;
   };
+
+  const activeEmployees = employees.filter(e => e.status === 'active');
+  const searchQ = employeeSearch.trim().toLowerCase();
+  const filteredEmployees = searchQ
+    ? activeEmployees.filter(emp => {
+        const shiftName = shifts.find(s => s.id === emp.shift_id)?.name || '';
+        return [emp.display_name, emp.user?.full_name, emp.employee_code, emp.department, emp.designation, shiftName]
+          .some(v => (v || '').toLowerCase().includes(searchQ));
+      })
+    : activeEmployees;
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -468,12 +479,17 @@ export default function ShiftManagement() {
         </div>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-3">
             <CardTitle>Assign Shifts to Employees</CardTitle>
+            <div className="relative w-full sm:w-72">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Input className="pl-9" placeholder="Search name, code, department, shift…"
+                value={employeeSearch} onChange={(e) => setEmployeeSearch(e.target.value)} />
+            </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {employees.filter(e => e.status === 'active').map(emp => (
+              {filteredEmployees.map(emp => (
                 <div key={emp.id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 border rounded-lg gap-3 bg-white hover:bg-gray-50 transition-colors">
                   <div className="flex-1">
                     <div className="flex items-center gap-3">
@@ -509,10 +525,10 @@ export default function ShiftManagement() {
                   </Select>
                 </div>
               ))}
-              {employees.filter(e => e.status === 'active').length === 0 && (
+              {filteredEmployees.length === 0 && (
                 <div className="text-center py-8 text-gray-500">
                   <Users className="w-12 h-12 mx-auto text-gray-400 mb-2" />
-                  <p>No active employees found</p>
+                  <p>{activeEmployees.length === 0 ? 'No active employees found' : `No employees match "${employeeSearch}"`}</p>
                 </div>
               )}
             </div>

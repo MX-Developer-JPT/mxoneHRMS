@@ -3,7 +3,7 @@
 // 2. Employees who checked in but never checked out before 2 AM the next day → marked absent.
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
-import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession } from '../routes/attendancelog.js';
+import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours } from '../routes/attendancelog.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -33,7 +33,10 @@ export async function markMissingAttendanceAsAbsent(targetDate) {
   const date = targetDate || istDateString(-1);
   const weekday = WEEKDAY_NAMES[new Date(date + 'T00:00:00Z').getUTCDay()];
 
-  const holidayRow = await one("SELECT id FROM entities WHERE type='Holiday' AND data::jsonb->>'date'=$1", [date]);
+  // A half-day holiday is still a (partially) working day — only a FULL
+  // holiday skips absence-marking entirely, otherwise nobody who simply
+  // never showed up on a half day would ever get flagged.
+  const holidayRow = await one("SELECT id FROM entities WHERE type='Holiday' AND data::jsonb->>'date'=$1 AND data::jsonb->>'is_half_day' IS DISTINCT FROM 'true'", [date]);
   if (holidayRow) return { date, checked: 0, marked: 0, reason: 'company holiday' };
 
   const employees = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
@@ -123,9 +126,10 @@ export async function closeUnfinishedSessions(targetDate) {
       empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
     }
     const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+    const halfDayHours = await getHalfDayOverrideHours(date, shift);
 
     const sessionData = closeTrailingOpenSession(rawPunches);
-    const statusResult = computeStatusFromSessions(sessionData, shift);
+    const statusResult = computeStatusFromSessions(sessionData, shift, halfDayHours);
     const updated = {
       ...d, ...sessionData, ...statusResult,
       auto_closed_at: new Date().toISOString(),
@@ -180,9 +184,10 @@ export async function closeStaleOpenSessions() {
       empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
     }
     const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+    const halfDayHours = await getHalfDayOverrideHours(d.date, shift);
 
     const sessionData = closeTrailingOpenSession(rawPunches);
-    const statusResult = computeStatusFromSessions(sessionData, shift);
+    const statusResult = computeStatusFromSessions(sessionData, shift, halfDayHours);
     const updated = {
       ...d, ...sessionData, ...statusResult,
       auto_closed_at: new Date().toISOString(),
@@ -246,10 +251,11 @@ export async function closeStaleGeofenceSessions() {
       empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
     }
     const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+    const halfDayHours = await getHalfDayOverrideHours(date, shift);
 
     const rawPunches = [...(d.raw_punches || []), { time: nowIso, device_direction: 'OUT' }];
     const sessionData = buildSessions(rawPunches);
-    const statusResult = computeStatusFromSessions(sessionData, shift);
+    const statusResult = computeStatusFromSessions(sessionData, shift, halfDayHours);
     const updated = {
       ...d, ...sessionData, ...statusResult,
       auto_closed_at: nowIso,

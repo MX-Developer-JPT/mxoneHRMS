@@ -78,7 +78,7 @@ function MonthCalendar({ year, month, holidays, workingDayOverrides, onDayClick,
                 </span>
                 <div className="flex gap-0.5 flex-wrap justify-center mt-0.5">
                   {dayHolidays.map((h, i) => (
-                    <div key={i} className={`w-1.5 h-1.5 rounded-full ${typeDotsColors[h.type]}`} title={h.name} />
+                    <div key={i} className={`w-1.5 h-1.5 rounded-full ${typeDotsColors[h.type]} ${h.is_half_day ? 'ring-1 ring-offset-1 ring-amber-500' : ''}`} title={h.is_half_day ? `${h.name} (Half Day)` : h.name} />
                   ))}
                   {isWeekend && isWorkingOverride && <div className="w-1.5 h-1.5 rounded-full bg-green-500" title="Working" />}
                 </div>
@@ -117,7 +117,9 @@ export default function HolidayCalendar() {
     type: 'public',
     year: new Date().getFullYear(),
     description: '',
-    applicable_departments: []
+    applicable_departments: [],
+    is_half_day: false,
+    half_day_hours: ''
   });
 
   useEffect(() => {
@@ -193,7 +195,11 @@ export default function HolidayCalendar() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const holidayData = { ...formData, year: new Date(formData.date).getFullYear() };
+      const holidayData = {
+        ...formData,
+        year: new Date(formData.date).getFullYear(),
+        half_day_hours: formData.is_half_day && formData.half_day_hours ? Number(formData.half_day_hours) : null,
+      };
       if (editingHoliday) {
         await base44.entities.Holiday.update(editingHoliday.id, holidayData);
         toast.success('Holiday updated successfully');
@@ -203,7 +209,7 @@ export default function HolidayCalendar() {
       }
       setShowForm(false);
       setEditingHoliday(null);
-      setFormData({ name: '', date: '', type: 'public', year: new Date().getFullYear(), description: '', applicable_departments: [] });
+      setFormData({ name: '', date: '', type: 'public', year: new Date().getFullYear(), description: '', applicable_departments: [], is_half_day: false, half_day_hours: '' });
       loadData();
     } catch (error) {
       toast.error('Failed to save holiday');
@@ -230,7 +236,9 @@ export default function HolidayCalendar() {
       type: holiday.type,
       year: holiday.year,
       description: holiday.description || '',
-      applicable_departments: holiday.applicable_departments || []
+      applicable_departments: holiday.applicable_departments || [],
+      is_half_day: !!holiday.is_half_day,
+      half_day_hours: holiday.half_day_hours || ''
     });
     setSelectedDayHolidays(null);
     setShowForm(true);
@@ -291,7 +299,7 @@ export default function HolidayCalendar() {
               setShowForm(open);
               if (!open) {
                 setEditingHoliday(null);
-                setFormData({ name: '', date: '', type: 'public', year: new Date().getFullYear(), description: '', applicable_departments: [] });
+                setFormData({ name: '', date: '', type: 'public', year: new Date().getFullYear(), description: '', applicable_departments: [], is_half_day: false, half_day_hours: '' });
               }
             }}>
               <DialogTrigger asChild>
@@ -333,6 +341,31 @@ export default function HolidayCalendar() {
                         <SelectItem value="optional">Optional Holiday</SelectItem>
                       </SelectContent>
                     </Select>
+                  </div>
+                  <div className="border rounded-md p-3 bg-amber-50 border-amber-200 space-y-2">
+                    <label className="flex items-center gap-2 text-sm font-medium text-amber-900 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.is_half_day}
+                        onChange={(e) => setFormData({ ...formData, is_half_day: e.target.checked })}
+                        className="rounded"
+                      />
+                      Mark as Half Day
+                    </label>
+                    <p className="text-xs text-amber-700">
+                      Office closes early on this date. Employees who work the reduced hours are marked <strong>present</strong> instead of half-day/short-attendance. Absence marking still applies if nobody shows up at all.
+                    </p>
+                    {formData.is_half_day && (
+                      <div>
+                        <Label className="text-xs">Required Hours <span className="text-gray-400 font-normal">(optional — defaults to half the employee's normal shift hours)</span></Label>
+                        <Input
+                          type="number" step="0.5" min="0" className="mt-1 h-8"
+                          placeholder="e.g. 4.5"
+                          value={formData.half_day_hours}
+                          onChange={(e) => setFormData({ ...formData, half_day_hours: e.target.value })}
+                        />
+                      </div>
+                    )}
                   </div>
                   {formData.type !== 'public' && allDepartments.length > 0 && (
                     <div>
@@ -478,6 +511,7 @@ export default function HolidayCalendar() {
                             <div className="flex items-center gap-2 mb-1">
                               <p className="font-semibold text-sm">{holiday.name}</p>
                               <Badge className={typeColors[holiday.type]} style={{ fontSize: '10px' }}>{holiday.type.toUpperCase()}</Badge>
+                              {holiday.is_half_day && <Badge className="bg-amber-100 text-amber-800" style={{ fontSize: '10px' }}>HALF DAY{holiday.half_day_hours ? ` · ${holiday.half_day_hours}h` : ''}</Badge>}
                             </div>
                             <p className="text-xs text-gray-600">{safeDate(holiday.date, 'EEEE, MMMM d, yyyy')}</p>
                             {holiday.description && <p className="text-xs text-gray-500 mt-1">{holiday.description}</p>}
@@ -519,6 +553,7 @@ export default function HolidayCalendar() {
                     <div className="flex items-center gap-2 mb-1">
                       <p className="font-semibold">{holiday.name}</p>
                       <Badge className={typeColors[holiday.type]} style={{ fontSize: '10px' }}>{holiday.type.toUpperCase()}</Badge>
+                      {holiday.is_half_day && <Badge className="bg-amber-100 text-amber-800" style={{ fontSize: '10px' }}>HALF DAY{holiday.half_day_hours ? ` · ${holiday.half_day_hours}h` : ''}</Badge>}
                     </div>
                     {holiday.description && <p className="text-xs text-gray-500">{holiday.description}</p>}
                     <div className="flex gap-2 mt-2">

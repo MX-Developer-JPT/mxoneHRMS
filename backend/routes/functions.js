@@ -6,7 +6,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
-import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession } from './attendancelog.js';
+import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours } from './attendancelog.js';
 import { cacheInvalidate } from './entities.js';
 import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
@@ -2215,7 +2215,8 @@ router.post('/:name', async (req, res) => {
         const shRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [ngEmp.shift_id]);
         if (shRow) shift = JSON.parse(shRow.data);
       }
-      const statusResult = computeStatusFromSessions(sessionData, shift);
+      const ngHalfDayHours = await getHalfDayOverrideHours(evDate, shift);
+      const statusResult = computeStatusFromSessions(sessionData, shift, ngHalfDayHours);
       const { status } = statusResult;
 
       const locPayload = { latitude: Number(latitude) || null, longitude: Number(longitude) || null, accuracy: Number(accuracy) || null, location_address: ngFence?.name || location_name || 'Geofence' };
@@ -2289,7 +2290,8 @@ router.post('/:name', async (req, res) => {
         const saShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [saEmp.shift_id]);
         if (saShiftRow) saShift = JSON.parse(saShiftRow.data);
       }
-      const saStatusResult = computeStatusFromSessions(saSessionData, saShift);
+      const saHalfDayHours = await getHalfDayOverrideHours(saToday, saShift);
+      const saStatusResult = computeStatusFromSessions(saSessionData, saShift, saHalfDayHours);
 
       const saId = saAtt?.id || uuidv4();
       const saAttData = {
@@ -5313,6 +5315,7 @@ router.post('/:name', async (req, res) => {
         "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
         [monthStart, monthEnd]
       );
+      const halfDayMap = await getHalfDayHolidayMap(monthStart, monthEnd);
 
       let processedCount = 0, skippedRegularised = 0, skippedNoPunches = 0;
       const preview = [];
@@ -5333,7 +5336,8 @@ router.post('/:name', async (req, res) => {
         const shiftId = empShiftMap[d.user_id];
         const shift = (shiftId && shiftMap[shiftId]) || defaultShift;
         const sd = buildSessions(punches);
-        const statusResult = computeStatusFromSessions(sd, shift);
+        const halfDayHours = resolveHalfDayHours(halfDayMap, d.date, shift);
+        const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
         const { status } = statusResult;
 
         if (dry_run) {
@@ -5583,8 +5587,9 @@ router.post('/:name', async (req, res) => {
 
         // Build sessions from ISO punch list
         const rawPunches = punches.map(p2 => ({ time: p2.iso, device_direction: p2.type === 'in' ? 'IN' : 'OUT' }));
+        const halfDayHoursS = await getHalfDayOverrideHours(date, shiftS);
         const sd = buildSessions(rawPunches);
-        const statusResult = computeStatusFromSessions(sd, shiftS);
+        const statusResult = computeStatusFromSessions(sd, shiftS, halfDayHoursS);
         const { status } = statusResult;
 
         const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [userId, date]);
@@ -5598,7 +5603,7 @@ router.post('/:name', async (req, res) => {
             .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
           mergedPunches.sort((a, b) => a.time.localeCompare(b.time));
           const sdMerged = buildSessions(mergedPunches);
-          const mergedResult = computeStatusFromSessions(sdMerged, shiftS);
+          const mergedResult = computeStatusFromSessions(sdMerged, shiftS, halfDayHoursS);
           const { status: mergedStatus } = mergedResult;
 
           const updated = {
@@ -6013,11 +6018,12 @@ router.post('/:name', async (req, res) => {
       };
 
       let status = 'absent', working_hours = 0, late_minutes = 0, overtime_minutes = 0, early_departure_minutes = 0;
+      const halfDayHoursCA = await getHalfDayOverrideHours(attData.date || date, shift);
 
       // Prefer raw_punches path (canonical sessions) when available
       if (attData.raw_punches && attData.raw_punches.length > 0) {
         const sd = buildSessions(attData.raw_punches);
-        const result = computeStatusFromSessions(sd, shift);
+        const result = computeStatusFromSessions(sd, shift, halfDayHoursCA);
         status = result.status;
         late_minutes = result.late_minutes || 0;
         overtime_minutes = result.overtime_minutes || 0;

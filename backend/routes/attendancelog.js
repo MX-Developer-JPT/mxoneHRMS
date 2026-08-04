@@ -245,6 +245,48 @@ export function closeTrailingOpenSession(rawPunches) {
   };
 }
 
+// Looks up whether `date` is a Holiday marked as a half working day (set from
+// the Holiday Calendar page) and, if so, the reduced hours that should count
+// as a full "present" day. Returns null on an ordinary day/full holiday, so
+// callers can tell "no override" apart from "override of 0".
+export async function getHalfDayOverrideHours(date, shift) {
+  const row = await one(
+    "SELECT data FROM entities WHERE type='Holiday' AND data::jsonb->>'date'=$1 AND data::jsonb->>'is_half_day'='true' LIMIT 1",
+    [date]
+  );
+  if (!row) return null;
+  const holiday = JSON.parse(row.data);
+  const configured = Number(holiday.half_day_hours);
+  if (configured > 0) return configured;
+  return Number(shift.working_hours || 9) / 2;
+}
+
+// Batch version of the above for bulk processors that touch many dates in
+// one run (a single query instead of one per row/date). Returns a
+// Map<date, configuredHours|null> — null meaning "half day, but use the
+// employee's own shift.working_hours/2" since half_day_hours wasn't set.
+// Use resolveHalfDayHours() to turn a map lookup + a specific shift into the
+// same effectiveShiftHours value getHalfDayOverrideHours() would return.
+export async function getHalfDayHolidayMap(fromDate, toDate) {
+  const rows = await all(
+    "SELECT data FROM entities WHERE type='Holiday' AND data::jsonb->>'is_half_day'='true' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
+    [fromDate, toDate]
+  );
+  const map = new Map();
+  for (const row of rows) {
+    const holiday = JSON.parse(row.data);
+    const configured = Number(holiday.half_day_hours);
+    map.set(holiday.date, configured > 0 ? configured : null);
+  }
+  return map;
+}
+
+export function resolveHalfDayHours(halfDayMap, date, shift) {
+  if (!halfDayMap.has(date)) return null;
+  const configured = halfDayMap.get(date);
+  return configured > 0 ? configured : Number(shift.working_hours || 9) / 2;
+}
+
 /**
  * Derive attendance status + late/early/overtime figures from session summary + shift config.
  *
@@ -252,8 +294,14 @@ export function closeTrailingOpenSession(rawPunches) {
  * early_departure(_minutes) — last check-out vs shift end - grace (only once the day is
  * complete, i.e. not still in_progress — an open session isn't "early" yet).
  * overtime_minutes — last check-out beyond shift end + grace.
+ *
+ * `effectiveShiftHours` — optional override for the hours a "full" day
+ * requires, used when the day is a Holiday-Calendar half-day (see
+ * getHalfDayOverrideHours above): someone who worked the shorter half-day
+ * hours is "present" for the day, not flagged half_day/short_attendance
+ * against the shift's normal full-day length.
  */
-export function computeStatusFromSessions(sessionData, shift) {
+export function computeStatusFromSessions(sessionData, shift, effectiveShiftHours) {
   const toMins    = (t) => { const [h, m] = String(t || '00:00').split(':').map(Number); return h * 60 + m; };
   const isoToMins = (iso) => toMins(iso ? iso.slice(11, 16) : null);
 
@@ -261,7 +309,7 @@ export function computeStatusFromSessions(sessionData, shift) {
   const shiftStart = toMins(shift.start_time || '09:00');
   const shiftEnd   = toMins(shift.end_time   || '18:00');
   const grace      = Number(shift.grace_period_minutes || 15);
-  const shiftHours = Number(shift.working_hours || 9);
+  const shiftHours = effectiveShiftHours > 0 ? Number(effectiveShiftHours) : Number(shift.working_hours || 9);
 
   let status = 'present', late_minutes = 0, early_departure_minutes = 0, overtime_minutes = 0;
 
@@ -408,12 +456,13 @@ async function processRecord(record) {
   );
 
   const shift = await getShift(empData);
+  const halfDayHours = await getHalfDayOverrideHours(punchDate, shift);
   const newPunch = { time: punchIso, device_direction: direction };
 
   if (!row) {
     // First punch of the day — create new Attendance record
     const sd = buildSessions([newPunch]);
-    const statusResult = computeStatusFromSessions(sd, shift);
+    const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
     const { status } = statusResult;
     const id = uuidv4();
     const attData = {
@@ -463,7 +512,7 @@ async function processRecord(record) {
   const mergedPunches  = alreadyPresent ? existingPunches : [...existingPunches, newPunch];
 
   const sd = buildSessions(mergedPunches);
-  const statusResult = computeStatusFromSessions(sd, shift);
+  const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
   const { status } = statusResult;
 
   const updated = {
