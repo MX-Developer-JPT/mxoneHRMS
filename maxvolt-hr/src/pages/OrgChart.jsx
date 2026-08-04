@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
 import { base44 } from '@/api/base44Client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -46,7 +48,7 @@ function accentFor(dept) {
   return DEPT_ACCENTS[dept];
 }
 
-function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, cardRef }) {
+function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, cardRef, hidePhotos }) {
   return (
     <div
       ref={cardRef}
@@ -55,8 +57,8 @@ function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, c
       title={hasKids ? `View ${node.name}'s team` : node.name}
     >
       <div className="p-3 flex flex-col items-center text-center gap-1.5">
-        {node.profile_picture_url ? (
-          <img src={node.profile_picture_url} alt={node.name} className="w-12 h-12 rounded-full object-cover shadow" />
+        {node.profile_picture_url && !hidePhotos ? (
+          <img src={node.profile_picture_url} alt={node.name} className="w-12 h-12 rounded-full object-cover shadow" crossOrigin="anonymous" />
         ) : (
           <div className={`w-12 h-12 rounded-full ${colorFor(node.name)} text-white flex items-center justify-center text-sm font-bold shrink-0`}>
             {initials(node.name)}
@@ -91,7 +93,7 @@ function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, c
 // to that bar — built with two half-width border segments per child (left
 // half connects to the previous sibling, right half to the next) so no
 // background-colour-matching hacks are needed for light/dark mode.
-function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs, isSibling }) {
+function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs, isSibling, hidePhotos }) {
   const hasKids = node.children.length > 0;
   const isCollapsed = collapsed.has(node.user_id);
   const isMatch = matchSet.has(node.user_id);
@@ -106,6 +108,7 @@ function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs
         onToggle={toggle}
         onFocus={onFocus}
         cardRef={isMatch ? (el) => { if (el) nodeRefs.current[node.user_id] = el; } : undefined}
+        hidePhotos={hidePhotos}
       />
       {hasKids && !isCollapsed && (
         <>
@@ -116,7 +119,7 @@ function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs
                 {i > 0 && <div className="absolute top-0 left-0 w-1/2 h-0.5 bg-gray-300 dark:bg-gray-600" />}
                 {i < node.children.length - 1 && <div className="absolute top-0 right-0 w-1/2 h-0.5 bg-gray-300 dark:bg-gray-600" />}
                 <div className="absolute top-0 left-1/2 -translate-x-1/2 w-0.5 h-6 bg-gray-300 dark:bg-gray-600" />
-                <ChartNode node={child} depth={depth + 1} collapsed={collapsed} toggle={toggle} matchSet={matchSet} onFocus={onFocus} nodeRefs={nodeRefs} isSibling />
+                <ChartNode node={child} depth={depth + 1} collapsed={collapsed} toggle={toggle} matchSet={matchSet} onFocus={onFocus} nodeRefs={nodeRefs} isSibling hidePhotos={hidePhotos} />
               </div>
             ))}
           </div>
@@ -195,6 +198,12 @@ export default function OrgChart() {
   const [focusedId, setFocusedId] = useState(null); // drill-down: view just this person's team
   const [zoom, setZoom] = useState(1);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  // While exporting, profile photos are swapped for initials avatars —
+  // html2canvas taints its whole output canvas the moment it touches a
+  // cross-origin image with no CORS headers, which silently breaks the
+  // PDF (addImage/toDataURL throws) for the entire org, not just the one
+  // photo. Initials avatars are plain CSS, never a network image.
+  const [pdfExportMode, setPdfExportMode] = useState(false);
   const nodeRefs = useRef({});
   const chartRef = useRef(null);
 
@@ -312,15 +321,18 @@ export default function OrgChart() {
     setFocusedId(null);
     setCollapsed(new Set());
     setZoom(1);
+    setPdfExportMode(true);
     try {
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
       await new Promise(r => setTimeout(r, 300)); // let a large (~250-node) expansion finish reflowing
       const el = chartRef.current;
       if (!el) throw new Error('Chart not ready');
+      // No cross-origin <img> should remain once pdfExportMode swapped every
+      // card to its initials avatar, but confirm rather than assume — a
+      // leftover image is exactly what silently taints the whole canvas.
       const images = Array.from(el.querySelectorAll('img'));
-      await Promise.all(images.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = img.onerror = res; })));
+      if (images.length) throw new Error(`${images.length} photo(s) still present — refresh and try again`);
 
-      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')]);
       const isDark = document.documentElement.classList.contains('dark');
       const bg = isDark ? '#0b0b0d' : '#ffffff';
       const canvas = await html2canvas(el, { scale: 2, backgroundColor: bg, useCORS: true });
@@ -358,6 +370,7 @@ export default function OrgChart() {
       setCollapsed(prevCollapsed);
       setZoom(prevZoom);
       setFocusedId(prevFocusedId);
+      setPdfExportMode(false);
       setDownloadingPdf(false);
     }
   };
@@ -497,7 +510,7 @@ export default function OrgChart() {
           <div className="overflow-auto pb-8 pt-2 max-h-[75vh]" onWheel={handleWheel}>
             <div ref={chartRef} className="min-w-max flex justify-center gap-10" style={{ zoom }}>
               {displayRoots.map(r => (
-                <ChartNode key={r.user_id} node={r} depth={0} collapsed={effectiveCollapsed} toggle={toggle} matchSet={matchSet} onFocus={focus} nodeRefs={nodeRefs} />
+                <ChartNode key={r.user_id} node={r} depth={0} collapsed={effectiveCollapsed} toggle={toggle} matchSet={matchSet} onFocus={focus} nodeRefs={nodeRefs} hidePhotos={pdfExportMode} />
               ))}
             </div>
           </div>
