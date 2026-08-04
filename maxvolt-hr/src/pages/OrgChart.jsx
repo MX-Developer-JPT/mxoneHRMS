@@ -1,11 +1,18 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import html2canvas from 'html2canvas';
+// html2canvas-pro, not plain html2canvas — the original can't parse the
+// `rgb(r g b / var(--tw-bg-opacity))` colour syntax Tailwind 3.4 emits for
+// every utility class (bg-white, border colours, etc.), and silently
+// renders anything it can't parse as solid black. That turned every card
+// in the exported PDF into a black box. -pro is a maintained fork with
+// modern CSS colour-function support (this exact case, oklch, color-mix).
+import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
+import * as XLSX from 'xlsx';
 import { base44 } from '@/api/base44Client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut, Download, Loader2, Building2, Crown } from 'lucide-react';
+import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut, Download, Loader2, Building2, Crown, FileSpreadsheet } from 'lucide-react';
 import { toast } from 'sonner';
 
 const AVATAR_COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-emerald-500', 'bg-orange-500', 'bg-pink-500', 'bg-teal-500', 'bg-indigo-500', 'bg-rose-500'];
@@ -384,7 +391,10 @@ export default function OrgChart() {
             tctx.fillStyle = bg; tctx.fillRect(0, 0, TILE_W, TILE_H);
             tctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
             if (page > 0) pdf.addPage([TILE_W, TILE_H], 'landscape');
-            pdf.addImage(tile.toDataURL('image/png'), 'PNG', 0, 0, TILE_W, TILE_H);
+            // JPEG, not PNG — a full-company export can be 100+ pages, and
+            // PNG's lossless encoding of a mostly-flat-colour chart made the
+            // file hundreds of MB. Quality 0.85 is visually lossless here.
+            pdf.addImage(tile.toDataURL('image/jpeg', 0.85), 'JPEG', 0, 0, TILE_W, TILE_H);
             pdf.setFontSize(10);
             pdf.setTextColor(isDark ? 200 : 90);
             pdf.text(`${pdfTitle} — generated ${dateStr} — page ${page + 1} of ${totalPages}`, 12, TILE_H - 10);
@@ -404,6 +414,35 @@ export default function OrgChart() {
       setPdfExportMode(false);
       setDownloadingPdf(false);
     }
+  };
+
+  // A plain tabular export of whichever view is open — doesn't depend on
+  // html2canvas/browser rendering at all, so it's a reliable fallback
+  // regardless of how large or unusually-shaped the visual chart is.
+  const downloadExcel = () => {
+    if (!activeRoots.length) return;
+    const rows = [];
+    const walk = (node, level, managerName) => {
+      rows.push({
+        Level: level + 1,
+        'Employee Name': '  '.repeat(level) + node.name,
+        Designation: node.designation || '',
+        Department: node.department || '',
+        'Employee Code': node.employee_code || '',
+        'Reports To': managerName || '',
+        'Team Size': countDescendants(node),
+      });
+      node.children.forEach(c => walk(c, level + 1, node.name));
+    };
+    activeRoots.forEach(r => walk(r, 0, ''));
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [{ wch: 7 }, { wch: 34 }, { wch: 24 }, { wch: 20 }, { wch: 14 }, { wch: 24 }, { wch: 10 }];
+    const wb = XLSX.utils.book_new();
+    const sheetTitle = selectedDept === '__ALL__' ? 'Full Company' : selectedDept;
+    XLSX.utils.book_append_sheet(wb, ws, sheetTitle.slice(0, 31));
+    const fileLabel = selectedDept === '__ALL__' ? 'full-company' : (selectedDept || 'org').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    XLSX.writeFile(wb, `org-chart-${fileLabel}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   const deptSearch = selectedDept ? '' : search.trim().toLowerCase();
@@ -442,10 +481,15 @@ export default function OrgChart() {
           )}
           <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></Button>
           {selectedDept !== null && (
-            <Button variant="outline" size="sm" onClick={downloadPdf} disabled={downloadingPdf || loading || activeRoots.length === 0} title="Download this chart as a multi-page PDF">
-              {downloadingPdf ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}
-              {downloadingPdf ? 'Generating…' : 'Download PDF'}
-            </Button>
+            <>
+              <Button variant="outline" size="sm" onClick={downloadPdf} disabled={downloadingPdf || loading || activeRoots.length === 0} title="Download this chart as a multi-page PDF">
+                {downloadingPdf ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}
+                {downloadingPdf ? 'Generating…' : 'Download PDF'}
+              </Button>
+              <Button variant="outline" size="sm" onClick={downloadExcel} disabled={loading || activeRoots.length === 0} title="Export this hierarchy as a spreadsheet — a plain-text fallback that always renders correctly">
+                <FileSpreadsheet className="w-4 h-4 mr-1" /> Export Excel
+              </Button>
+            </>
           )}
         </div>
       </div>
