@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import * as XLSX from 'xlsx';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -659,9 +660,127 @@ export default function AssetTracking() {
   };
 
   // --- Bulk Import ---
+  // Parses arbitrary multi-sheet asset registers (e.g. the real "IT Assets
+  // Details.xlsx" master — separate sheets per category like "Owned V5
+  // Laptops", "Rented Desktops", "Switch Hub", "Mouse details", each with
+  // its own slightly different column layout) as well as the single-sheet
+  // template this page generates itself. Every sheet in the workbook is
+  // scanned; a sheet with no recognizable header row is skipped rather than
+  // failing the whole import.
   const handleImportFileSelect = (e) => {
     const f = e.target.files?.[0];
     if (f) setImportFile(f);
+  };
+
+  const norm = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/\.+$/g, '');
+
+  // field key -> normalized header aliases this column could be labelled.
+  // Includes both the human sheet headers ("Serial No.") and this page's
+  // own legacy CSV template headers ("serial_number") for backward compat.
+  const IMPORT_ALIASES = {
+    personName: ['name'],
+    designation: ['designation'],
+    department: ['department'],
+    category: ['system', 'assest', 'asset', 'asset type', 'asset_type_name', 'asset type name', 'category'],
+    usageState: ['used/sphare', 'used/spare'],
+    location: ['location', 'address'],
+    quantity: ['quantity', 'count'],
+    serial: ['serial number', 'serial no', 'serial_number', 'serialno', 'serial no.'],
+    spec: ['specification', 'model', 'model number', 'model_number', 'spec', 'lan port', 'port/gb'],
+    productId: ['product id', 'product_id'],
+    ownership: ['ownership'],
+    letterIssued: ['letter issued'],
+    putToDate: ['put to date', 'put to use', 'purchase_date', 'purchase date'],
+    handoverDate: ['handover date', 'assignment_date', 'assignment date'],
+    assetNameLegacy: ['asset_name', 'asset name'],
+    purchaseCost: ['purchase_cost', 'purchase cost'],
+    warrantyExpiry: ['warranty_expiry', 'warranty expiry'],
+    notesCol: ['notes', 'remarks', 'remark'],
+    condition: ['condition'],
+  };
+
+  // Scans the first 10 rows of a sheet for the header row — the one whose
+  // cells match the most alias groups — and returns a field->columnIndex
+  // map. Returns null if fewer than 2 fields are recognizable (not an
+  // asset-register-shaped sheet).
+  const detectHeaderRow = (rawRows) => {
+    let best = null;
+    for (let r = 0; r < Math.min(10, rawRows.length); r++) {
+      const row = rawRows[r] || [];
+      const colMap = {};
+      row.forEach((cell, c) => {
+        const h = norm(cell);
+        if (!h) return;
+        for (const [field, aliases] of Object.entries(IMPORT_ALIASES)) {
+          if (colMap[field] !== undefined) continue;
+          if (aliases.some(a => h === a || h.includes(a))) colMap[field] = c;
+        }
+      });
+      const matched = Object.keys(colMap).length;
+      if (matched >= 2 && (!best || matched > best.matched)) best = { rowIdx: r, colMap, matched };
+    }
+    return best;
+  };
+
+  // "Owned V5 Laptops" -> "V5 Laptops", "Switch Hub" -> "Switch Hub" — used
+  // as the asset category for sheets with no per-row System/Category column.
+  const sheetCategoryHint = (sheetName) => sheetName.replace(/^\s*(owned|rented)\s+/i, '').trim() || sheetName;
+
+  const excelSerialToDate = (v) => {
+    if (v instanceof Date) return isNaN(v) ? '' : v.toISOString().slice(0, 10);
+    if (typeof v === 'number' && v > 20000 && v < 60000) {
+      const d = new Date(Date.UTC(1899, 11, 30) + v * 86400000);
+      return isNaN(d) ? '' : d.toISOString().slice(0, 10);
+    }
+    return String(v || '').trim();
+  };
+
+  const parseWorkbookToRows = (wb) => {
+    const parsed = [];
+    for (const sheetName of wb.SheetNames) {
+      const ws = wb.Sheets[sheetName];
+      const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+      const header = detectHeaderRow(rawRows);
+      if (!header) continue;
+      const { rowIdx, colMap } = header;
+      const get = (field, row) => (colMap[field] !== undefined ? row[colMap[field]] : '');
+
+      for (let r = rowIdx + 1; r < rawRows.length; r++) {
+        const row = rawRows[r] || [];
+        if (!row.some(c => String(c ?? '').trim() !== '')) continue; // fully blank row
+
+        const personName  = String(get('personName', row) || '').trim();
+        const serial       = String(get('serial', row) || '').trim();
+        const legacyName   = String(get('assetNameLegacy', row) || '').trim();
+        const categoryRaw  = String(get('category', row) || '').trim();
+        if (!personName && !serial && !legacyName && !categoryRaw) continue; // nothing usable on this row
+
+        parsed.push({
+          sheetName,
+          personName,
+          hasCategoryColumn: !!categoryRaw,
+          designation: String(get('designation', row) || '').trim(),
+          department: String(get('department', row) || '').trim(),
+          category: categoryRaw || sheetCategoryHint(sheetName),
+          usageState: String(get('usageState', row) || '').trim(),
+          location: String(get('location', row) || '').trim(),
+          quantity: Math.max(1, Math.min(50, parseInt(get('quantity', row)) || 1)),
+          serial,
+          spec: String(get('spec', row) || '').trim(),
+          productId: String(get('productId', row) || '').trim(),
+          ownership: String(get('ownership', row) || '').trim(),
+          letterIssued: String(get('letterIssued', row) || '').trim(),
+          purchaseDate: excelSerialToDate(get('putToDate', row)),
+          assignmentDate: excelSerialToDate(get('handoverDate', row)),
+          assetNameLegacy: legacyName,
+          purchaseCost: parseFloat(get('purchaseCost', row)) || 0,
+          warrantyExpiry: excelSerialToDate(get('warrantyExpiry', row)),
+          notes: String(get('notesCol', row) || '').trim(),
+          condition: String(get('condition', row) || '').trim(),
+        });
+      }
+    }
+    return parsed;
   };
 
   const handleImport = async () => {
@@ -669,64 +788,115 @@ export default function AssetTracking() {
     setImporting(true);
     setImportResults(null);
     try {
-      const { file_url } = await base44.integrations.Core.UploadFile({ file: importFile });
-      const result = await base44.integrations.Core.ExtractDataFromUploadedFile({
-        file_url,
-        json_schema: {
-          type: 'object',
-          properties: {
-            output: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  asset_name: { type: 'string' },
-                  asset_type_name: { type: 'string' },
-                  serial_number: { type: 'string' },
-                  model_number: { type: 'string' },
-                  condition: { type: 'string' },
-                  purchase_date: { type: 'string' },
-                  purchase_cost: { type: 'number' },
-                  warranty_expiry: { type: 'string' },
-                  notes: { type: 'string' },
-                },
-              },
-            },
-          },
-        },
-      });
-      const records = result.output || [];
-      if (records.length === 0) {
-        setImportResults({ success: 0, errors: ['No asset records found in file.'] });
+      const buf = await importFile.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+      const rows = parseWorkbookToRows(wb);
+      if (rows.length === 0) {
+        setImportResults({ success: 0, errors: ['No recognizable asset rows found in any sheet. Expected columns like Name, Department, System/Category, Serial Number.'] });
+        setImporting(false);
         return;
       }
+
+      // Local mutable copies so newly auto-created asset types / generated
+      // asset IDs are visible to later rows in the same import, without
+      // waiting for a full loadData() round-trip after every row.
+      const localTypes = [...assetTypes];
+      const usedCodes = new Set(localTypes.map(t => (t.code || '').toUpperCase()));
+      const idCounters = {}; // prefix -> next number
+      localTypes.forEach(t => {
+        assets.filter(a => a.asset_type_id === t.id).forEach(a => {
+          const n = parseInt(String(a.asset_id || '').replace(`${t.code}-`, '')) || 0;
+          idCounters[t.code] = Math.max(idCounters[t.code] || 0, n);
+        });
+      });
+
+      const genCode = (name) => {
+        let base = name.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'AST';
+        let code = base, n = 1;
+        while (usedCodes.has(code)) code = `${base}${++n}`;
+        usedCodes.add(code);
+        return code;
+      };
+
+      const findOrCreateType = async (categoryName) => {
+        const clean = categoryName.trim().replace(/\s+/g, ' ');
+        let type = localTypes.find(t => t.name?.toLowerCase() === clean.toLowerCase());
+        if (type) return type;
+        const code = genCode(clean);
+        const created = await base44.entities.AssetType.create({ name: clean, code, icon: 'other', description: 'Auto-created during bulk import', is_active: true });
+        localTypes.push(created);
+        return created;
+      };
+
+      const nextAssetId = (type) => {
+        const n = (idCounters[type.code] || 0) + 1;
+        idCounters[type.code] = n;
+        return `${type.code}-${String(n).padStart(3, '0')}`;
+      };
+
       let success = 0;
       const errors = [];
-      for (const row of records) {
+
+      for (const row of rows) {
         try {
-          const type = assetTypes.find(t => t.name?.toLowerCase() === (row.asset_type_name || '').toLowerCase());
-          if (!type) { errors.push(`Unknown asset type "${row.asset_type_name}" for "${row.asset_name}"`); continue; }
-          const data = {
-            asset_name: row.asset_name,
-            asset_type_id: type.id,
-            asset_type_name: type.name,
-            serial_number: row.serial_number || '',
-            model_number: row.model_number || '',
-            condition: ['new', 'good', 'fair', 'poor', 'damaged'].includes(row.condition?.toLowerCase()) ? row.condition.toLowerCase() : 'good',
-            purchase_date: row.purchase_date || '',
-            purchase_cost: parseFloat(row.purchase_cost) || 0,
-            warranty_expiry: row.warranty_expiry || '',
-            notes: row.notes || '',
-            status: 'available',
-          };
-          data.asset_id = generateAssetId(type.id);
-          await base44.entities.Asset.create(data);
-          success++;
-        } catch (e) { errors.push(`${row.asset_name}: ${e.message}`); }
+          const emp = row.personName
+            ? employees.find(e => e.display_name?.trim().toLowerCase() === row.personName.toLowerCase())
+            : null;
+          // See baseName below for why an unmatched Name on a column-less
+          // sheet is treated as the item label rather than the category.
+          const effectiveCategory = (!emp && !row.hasCategoryColumn && row.personName) ? row.personName : row.category;
+          const type = await findOrCreateType(effectiveCategory);
+
+          const noteParts = [];
+          if (row.ownership) noteParts.push(`Ownership: ${row.ownership}`);
+          if (row.usageState) noteParts.push(`Status: ${row.usageState}`);
+          if (row.productId) noteParts.push(`Product ID: ${row.productId}`);
+          if (row.letterIssued) noteParts.push(`Letter Issued: ${row.letterIssued}`);
+          if (!emp && row.personName) noteParts.push(`Recorded name: ${row.personName}`);
+          if (row.designation && !emp) noteParts.push(`Designation: ${row.designation}`);
+          if (row.location) noteParts.push(`Location: ${row.location}`);
+          if (row.notes) noteParts.push(row.notes);
+          noteParts.push(`Imported from "${row.sheetName}" sheet`);
+
+          // When a sheet has no explicit category/System column, "Name" is
+          // sometimes the item label itself (e.g. "Pendrive", "D-Link") on
+          // sheets of mixed IT accessories, not a person — and no employee
+          // will ever match those. Prefer that label over the generic
+          // sheet-name fallback so "Pendrive" doesn't get filed as a
+          // type named after the worksheet tab.
+          const baseName = row.assetNameLegacy
+            || [effectiveCategory, row.spec].filter(Boolean).join(' - ')
+            || effectiveCategory;
+
+          for (let i = 0; i < row.quantity; i++) {
+            const data = {
+              asset_name: row.quantity > 1 ? `${baseName} (${i + 1}/${row.quantity})` : baseName,
+              asset_type_id: type.id,
+              asset_type_name: type.name,
+              serial_number: row.quantity > 1 && row.serial ? `${row.serial}-${i + 1}` : row.serial,
+              model_number: row.spec || '',
+              condition: ['new', 'good', 'fair', 'poor', 'damaged'].includes(row.condition.toLowerCase()) ? row.condition.toLowerCase() : 'good',
+              purchase_date: row.purchaseDate || '',
+              purchase_cost: row.purchaseCost || 0,
+              warranty_expiry: row.warrantyExpiry || '',
+              notes: noteParts.join(' | '),
+              status: emp ? 'assigned' : 'available',
+              ...(emp ? { assigned_to_user_id: emp.user_id, assignment_date: row.assignmentDate || row.purchaseDate || '' } : {}),
+            };
+            data.asset_id = nextAssetId(type);
+            await base44.entities.Asset.create(data);
+            success++;
+          }
+        } catch (e) {
+          errors.push(`${row.sheetName} — ${row.personName || row.category}: ${e.message}`);
+        }
       }
+
       setImportResults({ success, errors });
       if (success > 0) loadData();
-    } catch (err) { setImportResults({ success: 0, errors: [err.message || 'Import failed'] }); }
+    } catch (err) {
+      setImportResults({ success: 0, errors: [err.message || 'Import failed'] });
+    }
     setImporting(false);
   };
 
@@ -1395,16 +1565,16 @@ export default function AssetTracking() {
       {/* Import Dialog */}
       <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
         <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Import Assets from CSV</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Import Assets</DialogTitle></DialogHeader>
           <div className="space-y-4">
             {!importResults ? (
               <>
                 <p className="text-sm text-muted-foreground">
-                  Upload a CSV or Excel file with asset details. The file should have columns like:
+                  Upload a CSV or Excel file with asset details, or the exact real IT-assets register (multi-sheet, one tab per category — laptops, desktops, printers, switches, etc.). Every sheet is scanned; recognized columns include:
                   <span className="block mt-1 text-xs font-mono text-foreground/70">
-                    asset_name, asset_type_name, serial_number, model_number, condition, purchase_date, purchase_cost, warranty_expiry, notes
+                    Name, Designation, Department, System/Category, Location, Serial Number, Specification, Ownership, Put To Date, Handover Date
                   </span>
-                  <span className="block mt-1 text-xs">Asset types must already exist in the system.</span>
+                  <span className="block mt-1 text-xs">Asset types are matched by name and auto-created if missing. A Name that matches an existing employee assigns the asset to them.</span>
                 </p>
                 <Button type="button" variant="outline" size="sm" className="w-full" onClick={handleDownloadTemplate}>
                   <Download className="w-4 h-4 mr-2" /> Download Template (with sample entries)
