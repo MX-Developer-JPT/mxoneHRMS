@@ -335,33 +335,64 @@ export default function OrgChart() {
 
       const isDark = document.documentElement.classList.contains('dark');
       const bg = isDark ? '#0b0b0d' : '#ffffff';
-      const canvas = await html2canvas(el, { scale: 2, backgroundColor: bg, useCORS: true });
+
+      // Capture each root's subtree as its own canvas rather than the whole
+      // chartRef in one shot. A "Full Company" export with several dozen
+      // orphaned/root-level employees (broken or missing manager links)
+      // renders as that many separate trees side-by-side — a single capture
+      // of the lot is easily tens of thousands of pixels wide. Real browsers
+      // cap canvas dimensions (commonly ~16384px or ~268M px² total); past
+      // that limit html2canvas returns a canvas that still *reports* the
+      // requested width/height but whose pixels are blank, which silently
+      // produced a many-page PDF of nothing rather than a visible error.
+      // Capturing per-root keeps each canvas bounded by one manager's team.
+      const MAX_CANVAS_AREA = 16000 * 16000;
+      const rootEls = Array.from(el.children);
+      if (!rootEls.length) throw new Error('Nothing to export');
 
       const TILE_W = 1600, TILE_H = 1000; // px per PDF page, landscape poster tiles
-      const cols = Math.ceil(canvas.width / TILE_W);
-      const rows = Math.ceil(canvas.height / TILE_H);
       const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [TILE_W, TILE_H] });
       const dateStr = new Date().toLocaleDateString('en-IN');
+      const pdfTitle = selectedDept === '__ALL__' ? 'Organisation Chart — Full Company' : `Organisation Chart — ${selectedDept} Department`;
+
+      // First pass: capture every root and count total tiles up front, so
+      // the "page X of Y" footer is accurate without a second render pass.
+      const captures = [];
+      let skipped = 0;
+      for (const rootEl of rootEls) {
+        const canvas = await html2canvas(rootEl, { scale: 2, backgroundColor: bg, useCORS: true });
+        if (canvas.width * canvas.height === 0) continue;
+        if (canvas.width * canvas.height > MAX_CANVAS_AREA) { skipped++; continue; }
+        captures.push(canvas);
+      }
+      if (!captures.length) throw new Error('Nothing captured — try a smaller view (a single department) instead of the full company');
+
+      const totalPages = captures.reduce((sum, c) => sum + Math.ceil(c.width / TILE_W) * Math.ceil(c.height / TILE_H), 0);
+
       let page = 0;
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const sx = c * TILE_W, sy = r * TILE_H;
-          const sw = Math.min(TILE_W, canvas.width - sx);
-          const sh = Math.min(TILE_H, canvas.height - sy);
-          const tile = document.createElement('canvas');
-          tile.width = TILE_W; tile.height = TILE_H;
-          const tctx = tile.getContext('2d');
-          tctx.fillStyle = bg; tctx.fillRect(0, 0, TILE_W, TILE_H);
-          tctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
-          if (page > 0) pdf.addPage([TILE_W, TILE_H], 'landscape');
-          pdf.addImage(tile.toDataURL('image/png'), 'PNG', 0, 0, TILE_W, TILE_H);
-          pdf.setFontSize(10);
-          pdf.setTextColor(isDark ? 200 : 90);
-          const pdfTitle = selectedDept === '__ALL__' ? 'Organisation Chart — Full Company' : `Organisation Chart — ${selectedDept} Department`;
-          pdf.text(`${pdfTitle} — generated ${dateStr} — page ${page + 1} of ${rows * cols}`, 12, TILE_H - 10);
-          page++;
+      for (const canvas of captures) {
+        const cols = Math.ceil(canvas.width / TILE_W);
+        const rows = Math.ceil(canvas.height / TILE_H);
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const sx = c * TILE_W, sy = r * TILE_H;
+            const sw = Math.min(TILE_W, canvas.width - sx);
+            const sh = Math.min(TILE_H, canvas.height - sy);
+            const tile = document.createElement('canvas');
+            tile.width = TILE_W; tile.height = TILE_H;
+            const tctx = tile.getContext('2d');
+            tctx.fillStyle = bg; tctx.fillRect(0, 0, TILE_W, TILE_H);
+            tctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+            if (page > 0) pdf.addPage([TILE_W, TILE_H], 'landscape');
+            pdf.addImage(tile.toDataURL('image/png'), 'PNG', 0, 0, TILE_W, TILE_H);
+            pdf.setFontSize(10);
+            pdf.setTextColor(isDark ? 200 : 90);
+            pdf.text(`${pdfTitle} — generated ${dateStr} — page ${page + 1} of ${totalPages}`, 12, TILE_H - 10);
+            page++;
+          }
         }
       }
+      if (skipped > 0) toast.warning(`${skipped} team(s) were too large to render and were left out of the PDF — try exporting that department separately.`);
       const fileLabel = selectedDept === '__ALL__' ? 'full-company' : (selectedDept || 'org').toLowerCase().replace(/[^a-z0-9]+/g, '-');
       pdf.save(`org-chart-${fileLabel}-${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (e) {
