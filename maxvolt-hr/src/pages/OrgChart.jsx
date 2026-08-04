@@ -3,7 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut, Download, Loader2 } from 'lucide-react';
+import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut, Download, Loader2, Building2, Crown } from 'lucide-react';
 import { toast } from 'sonner';
 
 const AVATAR_COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-emerald-500', 'bg-orange-500', 'bg-pink-500', 'bg-teal-500', 'bg-indigo-500', 'bg-rose-500'];
@@ -126,6 +126,51 @@ function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs
   );
 }
 
+// Builds a reporting-manager tree from any subset of employees (the full
+// roster, or just one department's members). A node's manager is only
+// linked as its parent if the manager is ALSO in the given list — so a
+// department-scoped call naturally roots the tree at whoever's manager
+// falls outside the department, instead of pulling in people from other
+// departments just to complete the chain up to a shared executive.
+function buildOrgTree(employeeList) {
+  const byId = {};
+  employeeList.forEach(e => { byId[e.user_id] = { ...e, children: [] }; });
+  // Detects whether attaching `id` under `mgrId` would create a cycle in the
+  // reporting chain (e.g. corrupted/imported data where A reports to B who,
+  // through some chain, reports back to A). Without this check such a cycle
+  // makes the recursive tree walks below (countDescendants, sortRec) recurse
+  // forever and silently crash the chart's render.
+  //
+  // Only a chain that loops back to `id` itself disqualifies this edge. A
+  // cycle further up the chain that never reaches `id` is unrelated to this
+  // employee — real orgs commonly funnel many people through the same
+  // senior chain, so `seen` re-triggering there must NOT disqualify every
+  // employee downstream of it (that previously mass-orphaned ~150 people
+  // whose chain merely passed near one unrelated bad edge).
+  const createsCycle = (id, mgrId) => {
+    let cur = byId[mgrId];
+    const seen = new Set();
+    while (cur) {
+      if (cur.user_id === id) return true;
+      if (seen.has(cur.user_id)) return false; // unrelated cycle further up — safe to attach here
+      seen.add(cur.user_id);
+      cur = cur.reporting_manager_id ? byId[cur.reporting_manager_id] : null;
+    }
+    return false;
+  };
+  const roots = [];
+  let orphanCount = 0;
+  employeeList.forEach(e => {
+    const node = byId[e.user_id];
+    const mgr = e.reporting_manager_id && byId[e.reporting_manager_id];
+    if (mgr && e.reporting_manager_id !== e.user_id && !createsCycle(e.user_id, e.reporting_manager_id)) mgr.children.push(node);
+    else { roots.push(node); if (e.reporting_manager_id) orphanCount++; }
+  });
+  const sortRec = (nodes) => { nodes.sort((a, b) => countDescendants(b) - countDescendants(a) || a.name.localeCompare(b.name)); nodes.forEach(n => sortRec(n.children)); };
+  sortRec(roots);
+  return { roots, orphanCount };
+}
+
 class ChartErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
   static getDerivedStateFromError(error) { return { error }; }
@@ -177,69 +222,65 @@ export default function OrgChart() {
     setLoading(false);
   };
 
-  const { roots, orphanCount } = useMemo(() => {
-    const byId = {};
-    employees.forEach(e => { byId[e.user_id] = { ...e, children: [] }; });
-    // Detects whether attaching `id` under `mgrId` would create a cycle in the
-    // reporting chain (e.g. corrupted/imported data where A reports to B who,
-    // through some chain, reports back to A). Without this check such a cycle
-    // makes the recursive tree walks below (countDescendants, sortRec) recurse
-    // forever and silently crash the chart's render.
-    //
-    // Only a chain that loops back to `id` itself disqualifies this edge. A
-    // cycle further up the chain that never reaches `id` is unrelated to this
-    // employee — real orgs commonly funnel many people through the same
-    // senior chain, so `seen` re-triggering there must NOT disqualify every
-    // employee downstream of it (that previously mass-orphaned ~150 people
-    // whose chain merely passed near one unrelated bad edge).
-    const createsCycle = (id, mgrId) => {
-      let cur = byId[mgrId];
-      const seen = new Set();
-      while (cur) {
-        if (cur.user_id === id) return true;
-        if (seen.has(cur.user_id)) return false; // unrelated cycle further up — safe to attach here
-        seen.add(cur.user_id);
-        cur = cur.reporting_manager_id ? byId[cur.reporting_manager_id] : null;
-      }
-      return false;
-    };
-    const roots = [];
-    let orphanCount = 0;
+  // The org-wide tree — used by "View Full Organisation" and by the PDF
+  // export, which always exports everything regardless of which department
+  // (if any) is currently being viewed.
+  const { roots, orphanCount } = useMemo(() => buildOrgTree(employees), [employees]);
+
+  // Department is the primary navigation: group employees by department,
+  // build each one's own scoped tree (rooted at whoever's manager falls
+  // outside that department), and surface a "head" card per department —
+  // the root with the most reports, i.e. the most senior person visible
+  // from inside that department's own hierarchy.
+  const deptGroups = useMemo(() => {
+    const byDept = {};
     employees.forEach(e => {
-      const node = byId[e.user_id];
-      const mgr = e.reporting_manager_id && byId[e.reporting_manager_id];
-      if (mgr && e.reporting_manager_id !== e.user_id && !createsCycle(e.user_id, e.reporting_manager_id)) mgr.children.push(node);
-      else { roots.push(node); if (e.reporting_manager_id) orphanCount++; }
+      const d = e.department || 'Unassigned';
+      (byDept[d] ||= []).push(e);
     });
-    const sortRec = (nodes) => { nodes.sort((a, b) => countDescendants(b) - countDescendants(a) || a.name.localeCompare(b.name)); nodes.forEach(n => sortRec(n.children)); };
-    sortRec(roots);
-    return { roots, orphanCount };
+    return Object.entries(byDept).map(([dept, emps]) => {
+      const { roots: deptRoots } = buildOrgTree(emps);
+      const head = [...deptRoots].sort((a, b) => countDescendants(b) - countDescendants(a))[0] || emps[0];
+      return { dept, count: emps.length, head, roots: deptRoots };
+    }).sort((a, b) => b.count - a.count || a.dept.localeCompare(b.dept));
   }, [employees]);
+
+  // null = browsing the department grid. '__ALL__' = full-org tree
+  // (today's original whole-company view). Any other string = that
+  // department's scoped tree.
+  const [selectedDept, setSelectedDept] = useState(null);
+  const activeGroup = selectedDept === '__ALL__' ? null : deptGroups.find(g => g.dept === selectedDept);
+  const activeEmployees = selectedDept === '__ALL__' ? employees : (activeGroup ? employees.filter(e => (e.department || 'Unassigned') === selectedDept) : []);
+  const activeRoots = selectedDept === '__ALL__' ? roots : (activeGroup ? activeGroup.roots : []);
+
+  const openDept = (dept) => { setSelectedDept(dept); setCollapsed(new Set()); setFocusedId(null); setSearch(''); };
+  const backToDepartments = () => { setSelectedDept(null); setCollapsed(new Set()); setFocusedId(null); setSearch(''); };
 
   const matchSet = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return new Set();
-    return new Set(employees.filter(e =>
+    if (!q || !selectedDept) return new Set();
+    return new Set(activeEmployees.filter(e =>
       e.name.toLowerCase().includes(q) || (e.designation || '').toLowerCase().includes(q) ||
       (e.department || '').toLowerCase().includes(q) || (e.employee_code || '').toLowerCase().includes(q)
     ).map(e => e.user_id));
-  }, [employees, search]);
+  }, [activeEmployees, search, selectedDept]);
 
-  // First render of a freshly-loaded tree: show roots + their direct reports
-  // only, collapse everyone below that. A ~250-person org fully expanded at
-  // once is unreadable — this gives a top-down starting point to drill from.
+  // Deck-selection change (entering a department, or switching to the full
+  // org view): show roots + their direct reports only, collapse everyone
+  // below that. A large tree fully expanded at once is unreadable — this
+  // gives a top-down starting point to drill from.
   useEffect(() => {
-    if (!roots.length) return;
+    if (!activeRoots.length) return;
     const toCollapse = new Set();
     const walk = (node, depth) => {
       if (depth === 1) { toCollapse.add(node.user_id); return; }
       node.children.forEach(c => walk(c, depth + 1));
     };
-    roots.forEach(r => walk(r, 0));
+    activeRoots.forEach(r => walk(r, 0));
     setCollapsed(toCollapse);
-  }, [roots]);
+  }, [activeRoots]);
 
-  const searchForcedOpen = useMemo(() => (matchSet.size ? collectAncestorIds(roots, matchSet) : new Set()), [roots, matchSet]);
+  const searchForcedOpen = useMemo(() => (matchSet.size ? collectAncestorIds(activeRoots, matchSet) : new Set()), [activeRoots, matchSet]);
   const effectiveCollapsed = useMemo(() => {
     if (!searchForcedOpen.size) return collapsed;
     const next = new Set(collapsed);
@@ -257,13 +298,14 @@ export default function OrgChart() {
   const toggle = (id) => setCollapsed(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const focus = (node) => { if (node.children.length) setFocusedId(node.user_id); };
-  const focusResult = focusedId ? findNodeAndTrail(roots, focusedId) : null;
-  const displayRoots = focusResult ? [focusResult.node] : roots;
+  const focusResult = focusedId ? findNodeAndTrail(activeRoots, focusedId) : null;
+  const displayRoots = focusResult ? [focusResult.node] : activeRoots;
 
-  // Exports the full org chart (not just a drilled-down subteam, even if
-  // one is currently focused) as a multi-page landscape PDF — tiled like a
+  // Exports whichever tree is currently open — the full organisation, or a
+  // single department — not just a drilled-down subteam even if one is
+  // currently focused, as a multi-page landscape PDF tiled like a
   // poster/Gantt-chart printout rather than shrunk to fit one page, since a
-  // ~250-person tree at readable card size is far wider/taller than A4.
+  // large tree at readable card size is far wider/taller than A4.
   const downloadPdf = async () => {
     setDownloadingPdf(true);
     const prevCollapsed = collapsed, prevZoom = zoom, prevFocusedId = focusedId;
@@ -303,11 +345,13 @@ export default function OrgChart() {
           pdf.addImage(tile.toDataURL('image/png'), 'PNG', 0, 0, TILE_W, TILE_H);
           pdf.setFontSize(10);
           pdf.setTextColor(isDark ? 200 : 90);
-          pdf.text(`Organisation Chart — generated ${dateStr} — page ${page + 1} of ${rows * cols}`, 12, TILE_H - 10);
+          const pdfTitle = selectedDept === '__ALL__' ? 'Organisation Chart — Full Company' : `Organisation Chart — ${selectedDept} Department`;
+          pdf.text(`${pdfTitle} — generated ${dateStr} — page ${page + 1} of ${rows * cols}`, 12, TILE_H - 10);
           page++;
         }
       }
-      pdf.save(`org-chart-${new Date().toISOString().slice(0, 10)}.pdf`);
+      const fileLabel = selectedDept === '__ALL__' ? 'full-company' : (selectedDept || 'org').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      pdf.save(`org-chart-${fileLabel}-${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (e) {
       toast.error('Failed to generate PDF: ' + e.message);
     } finally {
@@ -318,62 +362,138 @@ export default function OrgChart() {
     }
   };
 
+  const deptSearch = selectedDept ? '' : search.trim().toLowerCase();
+  const visibleDeptGroups = deptSearch
+    ? deptGroups.filter(g => g.dept.toLowerCase().includes(deptSearch))
+    : deptGroups;
+
   return (
     <div className="p-4 md:p-6 space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-            <Network className="w-6 h-6 text-violet-600" /> Organisation Chart
+            <Network className="w-6 h-6 text-violet-600" />
+            {selectedDept === null ? 'Organisation Chart' : selectedDept === '__ALL__' ? 'Organisation Chart — Full Company' : `${selectedDept} Department`}
           </h1>
-          <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">{employees.length} active employees · reporting hierarchy from employee records{orphanCount > 0 ? ` · ${orphanCount} with a manager not in the system (shown at top level)` : ''}</p>
+          <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">
+            {selectedDept === null
+              ? `${employees.length} active employees across ${deptGroups.length} department${deptGroups.length === 1 ? '' : 's'} — pick a department to see its hierarchy`
+              : `${activeEmployees.length} employees · reporting hierarchy${orphanCount > 0 && selectedDept === '__ALL__' ? ` · ${orphanCount} with a manager not in the system (shown at top level)` : ''}`}
+          </p>
         </div>
         <div className="flex gap-2 items-center flex-wrap">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <Input className="pl-9 w-56" placeholder="Search name, role, dept…" value={search} onChange={e => setSearch(e.target.value)} />
+            <Input className="pl-9 w-56" placeholder={selectedDept ? 'Search name, role…' : 'Search department…'} value={search} onChange={e => setSearch(e.target.value)} />
           </div>
-          <Button variant="outline" size="sm" onClick={() => setCollapsed(new Set())}><Maximize2 className="w-4 h-4 mr-1" /> Expand All</Button>
-          <div className="flex items-center border rounded-md">
-            <Button variant="ghost" size="sm" className="h-8 px-2 rounded-r-none" onClick={zoomOut} disabled={zoom <= 0.4} title="Zoom out"><ZoomOut className="w-4 h-4" /></Button>
-            <button onClick={zoomReset} className="text-xs w-11 text-center text-gray-500 dark:text-gray-400 hover:text-violet-600" title="Reset zoom">{Math.round(zoom * 100)}%</button>
-            <Button variant="ghost" size="sm" className="h-8 px-2 rounded-l-none" onClick={zoomIn} disabled={zoom >= 1.5} title="Zoom in"><ZoomIn className="w-4 h-4" /></Button>
-          </div>
+          {selectedDept !== null && (
+            <>
+              <Button variant="outline" size="sm" onClick={() => setCollapsed(new Set())}><Maximize2 className="w-4 h-4 mr-1" /> Expand All</Button>
+              <div className="flex items-center border rounded-md">
+                <Button variant="ghost" size="sm" className="h-8 px-2 rounded-r-none" onClick={zoomOut} disabled={zoom <= 0.4} title="Zoom out"><ZoomOut className="w-4 h-4" /></Button>
+                <button onClick={zoomReset} className="text-xs w-11 text-center text-gray-500 dark:text-gray-400 hover:text-violet-600" title="Reset zoom">{Math.round(zoom * 100)}%</button>
+                <Button variant="ghost" size="sm" className="h-8 px-2 rounded-l-none" onClick={zoomIn} disabled={zoom >= 1.5} title="Zoom in"><ZoomIn className="w-4 h-4" /></Button>
+              </div>
+            </>
+          )}
           <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></Button>
-          <Button variant="outline" size="sm" onClick={downloadPdf} disabled={downloadingPdf || loading || roots.length === 0} title="Download the full chart as a multi-page PDF">
-            {downloadingPdf ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}
-            {downloadingPdf ? 'Generating…' : 'Download PDF'}
-          </Button>
+          {selectedDept !== null && (
+            <Button variant="outline" size="sm" onClick={downloadPdf} disabled={downloadingPdf || loading || activeRoots.length === 0} title="Download this chart as a multi-page PDF">
+              {downloadingPdf ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}
+              {downloadingPdf ? 'Generating…' : 'Download PDF'}
+            </Button>
+          )}
         </div>
       </div>
 
-      {focusResult && (
+      {/* Breadcrumb: Departments › [Dept] › drilled-down person trail */}
+      {selectedDept !== null && (
         <div className="flex items-center gap-1.5 flex-wrap text-sm bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-900 rounded-lg px-3 py-2">
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900/40" onClick={() => setFocusedId(null)}>
-            <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900/40" onClick={backToDepartments}>
+            <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Departments
           </Button>
           <button onClick={() => setFocusedId(null)} className="flex items-center gap-1 text-gray-400 hover:text-violet-700 dark:hover:text-violet-300 shrink-0">
-            <Home className="w-3.5 h-3.5" /> Full org
+            <Home className="w-3.5 h-3.5" /> {selectedDept === '__ALL__' ? 'Full company' : selectedDept}
           </button>
-          {focusResult.trail.map(t => (
+          {focusResult && focusResult.trail.map(t => (
             <React.Fragment key={t.user_id}>
               <ChevronRight className="w-3.5 h-3.5 text-gray-300 shrink-0" />
               <button onClick={() => setFocusedId(t.user_id)} className="text-gray-500 dark:text-gray-400 hover:text-violet-700 dark:hover:text-violet-300 truncate max-w-[140px]">{t.name}</button>
             </React.Fragment>
           ))}
-          <ChevronRight className="w-3.5 h-3.5 text-gray-300 shrink-0" />
-          <span className="font-semibold text-violet-800 dark:text-violet-200 truncate max-w-[160px]">{focusResult.node.name}</span>
+          {focusResult && (
+            <>
+              <ChevronRight className="w-3.5 h-3.5 text-gray-300 shrink-0" />
+              <span className="font-semibold text-violet-800 dark:text-violet-200 truncate max-w-[160px]">{focusResult.node.name}</span>
+            </>
+          )}
         </div>
       )}
 
       {loading ? (
         <div className="text-center py-16 text-gray-400"><RefreshCw className="w-6 h-6 mx-auto animate-spin" /></div>
-      ) : roots.length === 0 ? (
+      ) : selectedDept === null ? (
+        deptGroups.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <Network className="w-10 h-10 mx-auto mb-2 text-gray-300" />
+            No employees found. Set reporting managers on employee records to build the chart.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <button onClick={() => openDept('__ALL__')}
+              className="w-full flex items-center justify-between px-4 py-3 rounded-xl border border-dashed border-violet-300 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-950/20 hover:bg-violet-100/60 dark:hover:bg-violet-900/30 transition-colors text-left">
+              <span className="flex items-center gap-2 text-sm font-medium text-violet-700 dark:text-violet-300">
+                <Network className="w-4 h-4" /> View entire company hierarchy (all departments together)
+              </span>
+              <ChevronRight className="w-4 h-4 text-violet-400" />
+            </button>
+
+            {visibleDeptGroups.length === 0 ? (
+              <p className="text-center text-gray-400 py-10">No departments match "{search}"</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {visibleDeptGroups.map(g => (
+                  <button key={g.dept} onClick={() => openDept(g.dept)}
+                    className={`relative text-left bg-white dark:bg-[#1c1c1e] rounded-xl border border-t-4 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all p-4 ${accentFor(g.dept)}`}>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                        <Building2 className="w-3.5 h-3.5" /> Department
+                      </span>
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 text-gray-500">
+                        <Users className="w-2.5 h-2.5 mr-0.5" />{g.count}
+                      </Badge>
+                    </div>
+                    <p className="font-semibold text-gray-800 dark:text-gray-100 text-base mb-3">{g.dept}</p>
+                    {g.head && (
+                      <div className="flex items-center gap-2 pt-3 border-t border-gray-100 dark:border-gray-800">
+                        {g.head.profile_picture_url ? (
+                          <img src={g.head.profile_picture_url} alt={g.head.name} className="w-8 h-8 rounded-full object-cover shadow" />
+                        ) : (
+                          <div className={`w-8 h-8 rounded-full ${colorFor(g.head.name)} text-white flex items-center justify-center text-xs font-bold shrink-0`}>
+                            {initials(g.head.name)}
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate flex items-center gap-1">
+                            <Crown className="w-3 h-3 text-amber-500 shrink-0" /> {g.head.name}
+                          </p>
+                          <p className="text-[11px] text-gray-400 truncate">{g.head.designation || 'Department Head'}</p>
+                        </div>
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      ) : activeRoots.length === 0 ? (
         <div className="text-center py-16 text-gray-400">
           <Network className="w-10 h-10 mx-auto mb-2 text-gray-300" />
-          No employees found. Set reporting managers on employee records to build the chart.
+          No employees found in this view.
         </div>
       ) : (
-        <ChartErrorBoundary key={displayRoots.map(r => r.user_id).join(',')}>
+        <ChartErrorBoundary key={`${selectedDept}:${displayRoots.map(r => r.user_id).join(',')}`}>
           <div className="overflow-auto pb-8 pt-2 max-h-[75vh]" onWheel={handleWheel}>
             <div ref={chartRef} className="min-w-max flex justify-center gap-10" style={{ zoom }}>
               {displayRoots.map(r => (
