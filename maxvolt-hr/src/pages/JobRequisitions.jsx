@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { base44 } from '@/api/base44Client';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,7 +15,8 @@ import { format } from 'date-fns';
 import {
   Plus, Briefcase, Check, X, Eye, Printer, Loader2,
   Clock, CheckCircle2, XCircle, ChevronRight, Globe, Copy,
-  Sparkles, Edit3, FileCheck, Users, CalendarClock, XOctagon, Filter
+  Sparkles, Edit3, FileCheck, Users, CalendarClock, XOctagon, Filter,
+  Download, Upload
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -72,6 +74,8 @@ export default function JobRequisitions() {
   // JD workflow state
   const [jdDialog, setJdDialog] = useState(null); // req for JD editing
   const [editedJD, setEditedJD] = useState('');
+  const [importing, setImporting] = useState(false);
+  const importFileRef = useRef(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -336,6 +340,7 @@ Return ONLY the job description content as plain text with clear section headers
   const isManagement = ['management', 'hr', 'admin'].includes(user?.role) || ['management', 'hr', 'admin'].includes(user?.custom_role);
   const userRole = user?.custom_role || user?.role;
   const isManagementOnly = userRole === 'management';
+  const isAdmin = user?.role === 'admin' || user?.custom_role === 'admin';
 
   // Can create: HR, admin, management
   const canCreate = isManagement;
@@ -359,6 +364,66 @@ Return ONLY the job description content as plain text with clear section headers
       if (viewRequisition?.id === req.id) setViewRequisition(prev => ({ ...prev, status: 'closed', is_published: false }));
       toast.success('Position closed');
     } catch { toast.error('Failed to close position'); }
+  };
+
+  // Admin-only: bulk-backfill existing job requisitions from a spreadsheet.
+  const TEMPLATE_HEADERS = [
+    'Position Title', 'Department', 'Employment Type', 'Number of Positions',
+    'Experience Required', 'Location', 'Salary Range Min', 'Salary Range Max',
+    'Target Hire Date', 'Priority', 'Status', 'Required Skills', 'Job Description / Notes',
+  ];
+  const downloadRequisitionTemplate = () => {
+    const sample = [
+      'Senior Backend Engineer', departments[0]?.name || 'Engineering', 'full_time', 2,
+      '3-5 years', locations[0]?.name || 'Ghaziabad', 800000, 1200000,
+      '2026-09-30', 'high', 'published', 'Node.js, PostgreSQL, AWS', 'Backfilled from existing open position',
+    ];
+    const ws = XLSX.utils.aoa_to_sheet([TEMPLATE_HEADERS, sample]);
+    ws['!cols'] = TEMPLATE_HEADERS.map(() => ({ wch: 20 }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Job Requisitions');
+    XLSX.writeFile(wb, 'Job_Requisition_Import_Template.xlsx');
+  };
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const parsed = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const rows = parsed.map(r => ({
+        position_title: r['Position Title'],
+        department: r['Department'],
+        employment_type: String(r['Employment Type'] || '').trim().toLowerCase().replace(/\s+/g, '_'),
+        number_of_positions: r['Number of Positions'],
+        experience_required: r['Experience Required'],
+        location: r['Location'],
+        salary_range_min: r['Salary Range Min'],
+        salary_range_max: r['Salary Range Max'],
+        target_hire_date: r['Target Hire Date'],
+        priority: String(r['Priority'] || '').trim().toLowerCase(),
+        status: String(r['Status'] || '').trim().toLowerCase().replace(/\s+/g, '_'),
+        required_skills: r['Required Skills'],
+        job_description: r['Job Description / Notes'],
+      })).filter(r => r.position_title && r.department);
+
+      if (!rows.length) { toast.error('No valid rows found — check Position Title and Department columns'); setImporting(false); return; }
+
+      const res = await base44.functions.invoke('importJobRequisitions', { rows });
+      const d = res.data || res;
+      if (d.success) {
+        toast.success(d.message || `Imported ${d.created} requisition(s)`);
+        if (d.errors?.length) toast.warning(`${d.errors.length} issue(s) — first: ${d.errors[0].error}`);
+        loadData();
+      } else toast.error(d.error || 'Import failed');
+    } catch (err) {
+      toast.error('Import failed: ' + err.message);
+    }
+    setImporting(false);
+    e.target.value = '';
   };
 
   const filtered = requisitions.filter(r => {
@@ -389,11 +454,26 @@ Return ONLY the job description content as plain text with clear section headers
             <h1 className="text-2xl font-bold text-gray-900">Job Requisitions</h1>
             <p className="text-gray-500 text-sm mt-1">Manage hiring requests through an approval & JD workflow</p>
           </div>
-          {canCreate && (
-            <Button onClick={() => setShowForm(true)} className="bg-blue-600 hover:bg-blue-700">
-              <Plus className="w-4 h-4 mr-2" /> New Requisition
-            </Button>
-          )}
+          <div className="flex gap-2 flex-wrap">
+            {isAdmin && (
+              <>
+                <Button variant="outline" onClick={downloadRequisitionTemplate} title="Download an Excel template for bulk-importing existing job requisitions">
+                  <Download className="w-4 h-4 mr-2" /> Download Template
+                </Button>
+                <input ref={importFileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportFile} />
+                <Button variant="outline" disabled={importing} onClick={() => importFileRef.current?.click()}
+                  className="border-emerald-300 text-emerald-700 hover:bg-emerald-50">
+                  {importing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
+                  {importing ? 'Importing…' : 'Import Requisitions'}
+                </Button>
+              </>
+            )}
+            {canCreate && (
+              <Button onClick={() => setShowForm(true)} className="bg-blue-600 hover:bg-blue-700">
+                <Plus className="w-4 h-4 mr-2" /> New Requisition
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Stats */}

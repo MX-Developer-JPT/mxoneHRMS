@@ -2904,6 +2904,80 @@ router.post('/:name', async (req, res) => {
       });
     }
 
+    /* ── Bulk-import existing Job Requisitions from Excel — admin-only, since
+       this backfills records straight into whatever status the sheet says
+       (bypassing the normal manager→HR approval chain), unlike creating a
+       requisition through the UI which always starts a fresh approval flow. ── */
+    case 'importJobRequisitions': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const rows = Array.isArray(p.rows) ? p.rows : [];
+      if (!rows.length) return res.json({ success: false, error: 'No rows to import' });
+
+      const deptRows = await all("SELECT data FROM entities WHERE type='Department'");
+      const knownDepts = new Set(deptRows.map(r => JSON.parse(r.data).name).filter(Boolean));
+
+      const VALID_STATUSES = new Set(['draft', 'pending_manager_approval', 'pending_hr_approval', 'manager_rejected', 'hr_rejected', 'approved', 'published', 'on_hold', 'closed', 'cancelled']);
+      const VALID_TYPES = new Set(['full_time', 'part_time', 'contract', 'intern']);
+      const VALID_PRIORITIES = new Set(['low', 'medium', 'high', 'urgent']);
+
+      let created = 0, skipped = 0;
+      const errors = [];
+
+      for (const [i, row] of rows.entries()) {
+        const position_title = String(row.position_title || '').trim();
+        const department = String(row.department || '').trim();
+        if (!position_title || !department) { skipped++; errors.push({ row: i + 2, error: 'Position Title and Department are required' }); continue; }
+        if (knownDepts.size && !knownDepts.has(department)) { errors.push({ row: i + 2, error: `Department "${department}" not found in Department Management — imported anyway` }); }
+
+        const employment_type = VALID_TYPES.has(String(row.employment_type || '').trim()) ? row.employment_type.trim() : 'full_time';
+        const priority = VALID_PRIORITIES.has(String(row.priority || '').trim()) ? row.priority.trim() : 'medium';
+        const statusRaw = String(row.status || '').trim();
+        const status = VALID_STATUSES.has(statusRaw) ? statusRaw : 'approved';
+        const isTerminalApproved = ['approved', 'published', 'on_hold', 'closed'].includes(status);
+
+        const id = uuidv4();
+        const now = new Date().toISOString();
+        const skillsRaw = row.required_skills;
+        const required_skills = Array.isArray(skillsRaw) ? skillsRaw
+          : String(skillsRaw || '').split(',').map(s => s.trim()).filter(Boolean);
+
+        const reqData = {
+          id, position_title, department, employment_type,
+          number_of_positions: parseInt(row.number_of_positions) || 1,
+          job_description: row.job_description || row.notes || '',
+          required_skills,
+          experience_required: row.experience_required || '',
+          salary_range_min: parseFloat(row.salary_range_min) || 0,
+          salary_range_max: parseFloat(row.salary_range_max) || 0,
+          location: row.location || '',
+          target_hire_date: row.target_hire_date || '',
+          priority, status,
+          jd_status: 'not_generated',
+          requested_by: cu.id,
+          requested_by_role: 'admin',
+          // Backfilled records skip the live approval workflow entirely —
+          // mark both stages approved (when the sheet says the position is
+          // past that stage) so the UI doesn't show it stuck "pending" for
+          // a requisition that, in reality, was approved long ago.
+          manager_approval_status: isTerminalApproved ? 'approved' : 'pending',
+          hr_approval_status: isTerminalApproved ? 'approved' : 'pending',
+          ...(isTerminalApproved ? { approved_by: cu.id, approved_date: now } : {}),
+          is_published: status === 'published',
+          ...(status === 'published' ? { published_date: now } : {}),
+          source: 'excel_import',
+          created_at: now,
+        };
+
+        await run(
+          "INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,'JobRequisition',$2,$3,1,$4)",
+          [id, null, status, JSON.stringify(reqData)]
+        );
+        created++;
+      }
+
+      return res.json({ success: true, created, skipped, errors, message: `Imported ${created} job requisition(s).${skipped ? ` ${skipped} skipped.` : ''}` });
+    }
+
     case 'markAbsentEmployees': {
       // Was its own separate, independent implementation from the nightly
       // cron's markMissingAttendanceAsAbsent — critically, WITHOUT that
