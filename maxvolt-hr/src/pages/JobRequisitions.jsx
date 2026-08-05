@@ -341,9 +341,17 @@ Return ONLY the job description content as plain text with clear section headers
   const userRole = user?.custom_role || user?.role;
   const isManagementOnly = userRole === 'management';
   const isAdmin = user?.role === 'admin' || user?.custom_role === 'admin';
+  const isRecruiter = userRole === 'recruiter';
 
-  // Can create: HR, admin, management
-  const canCreate = isManagement;
+  // Can create: HR, admin, management, recruiter (recruiters raise
+  // requisitions same as HR — still goes through manager/HR approval,
+  // creating one doesn't grant approval authority).
+  const canCreate = isManagement || isRecruiter;
+  // JD authoring/publishing/scheduling is an operational recruiting task,
+  // not an approval decision — recruiters get this without needing final
+  // approve/reject authority on the requisition itself (canHRAct below
+  // stays HR/admin-only).
+  const canRecruiterOps = isHR || isRecruiter;
 
   const handleExtendDate = async () => {
     if (!extendDate || !extendDialog) return;
@@ -532,8 +540,8 @@ Return ONLY the job description content as plain text with clear section headers
                   const canManagerAct = isManagerForReq && req.status === 'pending_manager_approval';
                   // Management-created → HR approves. HR-created → hiring manager approves
                   const canHRAct = isHR && req.status === 'pending_hr_approval';
-                  const canPublish = isHR && req.status === 'approved';
-                  const canManageJD = (isHR || isManagerForReq) && ['approved', 'published'].includes(req.status);
+                  const canPublish = canRecruiterOps && req.status === 'approved';
+                  const canManageJD = (canRecruiterOps || isManagerForReq) && ['approved', 'published'].includes(req.status);
 
                   return (
                     <div key={req.id} className="p-5 hover:bg-gray-50 transition-colors">
@@ -621,13 +629,13 @@ Return ONLY the job description content as plain text with clear section headers
                               <Copy className="w-3 h-3 mr-1" /> Copy Link
                             </Button>
                           )}
-                          {isHR && ['approved', 'published'].includes(req.status) && (
+                          {canRecruiterOps && ['approved', 'published'].includes(req.status) && (
                             <Button size="sm" variant="outline" className="border-amber-300 text-amber-700 hover:bg-amber-50"
                               onClick={() => { setExtendDialog(req); setExtendDate(req.target_hire_date || ''); }}>
                               <CalendarClock className="w-3 h-3 mr-1" /> Extend Date
                             </Button>
                           )}
-                          {isHR && ['approved', 'published', 'on_hold'].includes(req.status) && (
+                          {canRecruiterOps && ['approved', 'published', 'on_hold'].includes(req.status) && (
                             <Button size="sm" variant="outline" className="border-red-300 text-red-700 hover:bg-red-50"
                               onClick={() => handleClosePosition(req)}>
                               <XOctagon className="w-3 h-3 mr-1" /> Close

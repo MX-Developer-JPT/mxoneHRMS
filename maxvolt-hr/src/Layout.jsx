@@ -307,6 +307,48 @@ const hrMenuGroups = [
   ]},
 ];
 
+// Recruiter — scoped to the recruitment pipeline (job requisitions,
+// candidates, interviews, offer letters, recruitment analytics) plus the
+// standard employee self-service sections every role gets (attendance,
+// leave, payslips, profile). No employee-management, payroll, or other
+// HR-only sections — those stay HR/admin/management-only.
+const recruiterMenuGroups = [
+  { label: 'Overview', items: [
+    { name: 'Dashboard',                icon: LayoutDashboard, page: 'Dashboard' },
+  ]},
+  { label: 'Recruitment', items: [
+    { name: 'Job Requisitions',         icon: Briefcase,       page: 'JobRequisitions' },
+    { name: 'Candidates',               icon: UserPlus,        page: 'Recruitment' },
+    { name: 'Interviews',               icon: Calendar,        page: 'InterviewManagement' },
+    { name: 'Offer Letters',            icon: FileSignature,   page: 'OfferLetters' },
+    { name: 'Recruitment Analytics',    icon: BarChart3,       page: 'RecruitmentAnalytics' },
+  ]},
+  { label: 'My Attendance', items: [
+    { name: 'Mark Attendance',          icon: Clock,           page: 'MarkAttendance' },
+    { name: 'My Attendance',            icon: Calendar,        page: 'AttendanceHistory' },
+    { name: 'Regularisation',           icon: Clock,           page: 'AttendanceRegularisation' },
+  ]},
+  { label: 'My Work', items: [
+    { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
+    { name: 'My Payslips',              icon: CreditCard,      page: 'Payslips' },
+    { name: 'My Documents',             icon: FolderOpen,      page: 'Documents' },
+    { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
+    { name: 'My Performance',           icon: Target,          page: 'PerformanceManagement' },
+    { name: 'My Insurance',             icon: Shield,          page: 'MyInsurance' },
+    { name: 'My Assets',                icon: Laptop,          page: 'MyAssets' },
+    { name: 'My Exit',                  icon: LogOut,          page: 'MyExit' },
+  ]},
+  { label: 'Engagement', items: [
+    { name: 'Announcements',            icon: Bell,            page: 'Announcements' },
+    { name: 'Helpdesk',                 icon: HelpCircle,      page: 'Helpdesk' },
+    { name: 'Employee Portal',          icon: Users,           page: 'EmployeeEngagementPortal' },
+  ]},
+  { label: 'Account', items: [
+    { name: 'My Profile',               icon: User2,           page: 'Profile' },
+    { name: 'App Settings',             icon: SlidersHorizontal, page: 'AppSettings' },
+  ]},
+];
+
 const gateAdminMenuGroups = [
   { label: '', items: [
     { name: 'Gate Admin', icon: ShieldCheck, page: 'GateAdminDashboard' },
@@ -323,6 +365,7 @@ function Avatar({ name, role, size = 'md' }) {
     management: 'bg-[#34C759]',   // Apple green
     manager:    'bg-[#34C759]',
     gate_admin: 'bg-[#FF9500]',   // Apple orange
+    recruiter:  'bg-[#FF2D55]',   // Apple pink
   };
   const bg   = colors[role] || 'bg-[#8E8E93]';
   const dims  = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-9 h-9 text-sm';
@@ -610,6 +653,7 @@ export default function Layout({ children, currentPageName }) {
   const isTopManagement = userRole === 'management' || user.role === 'management';
   const isManager     = userRole === 'manager'    || user.role === 'manager';
   const isGateAdmin  = userRole === 'gate_admin'  || user.role === 'gate_admin';
+  const isRecruiter  = userRole === 'recruiter'   || user.role === 'recruiter';
   const isITDept     = employeeDepartment?.toLowerCase() === 'it';
 
   const isAdmin = user.role === 'admin';
@@ -618,6 +662,7 @@ export default function Layout({ children, currentPageName }) {
   if (isHR)                 menuGroups = hrMenuGroups;
   else if (isTopManagement) menuGroups = managementMenuGroups;
   else if (isManager)       menuGroups = managerMenuGroups;
+  else if (isRecruiter)     menuGroups = recruiterMenuGroups;
   else if (isGateAdmin)     menuGroups = gateAdminMenuGroups;
   if (isITDept && !isHR) {
     menuGroups = [...menuGroups, { label: 'IT', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
@@ -660,6 +705,13 @@ export default function Layout({ children, currentPageName }) {
         { label: 'My Team',   icon: Users,            page: 'Employees',    path: '/Employees' },
         { label: 'Attendance',icon: Clock,            page: 'MarkAttendance',path: '/MarkAttendance' },
         { label: 'Leave',     icon: FileText,         page: 'Leave',        path: '/Leave' },
+      ]
+    : isRecruiter
+    ? [
+        { label: 'Home',       icon: LayoutDashboard, page: 'Dashboard',          path: '/Dashboard' },
+        { label: 'Requisitions', icon: Briefcase,     page: 'JobRequisitions',    path: '/JobRequisitions' },
+        { label: 'Candidates', icon: UserPlus,        page: 'Recruitment',        path: '/Recruitment' },
+        { label: 'Interviews', icon: Calendar,        page: 'InterviewManagement',path: '/InterviewManagement' },
       ]
     : isGateAdmin
     ? [

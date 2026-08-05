@@ -13,7 +13,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 
-const ROLES = ['admin', 'hr', 'management', 'manager', 'employee', 'user', 'onboarding_pending', 'gate_admin'];
+const ROLES = ['admin', 'hr', 'management', 'manager', 'recruiter', 'employee', 'user', 'onboarding_pending', 'gate_admin'];
 
 const DESIGNATION_TIERS = ['executive', 'senior_executive', 'territory_manager', 'manager', 'general_manager', 'director'];
 
@@ -26,6 +26,7 @@ const ROLE_COLORS = {
   user: 'bg-gray-100 text-gray-800',
   onboarding_pending: 'bg-yellow-100 text-yellow-800',
   gate_admin: 'bg-orange-100 text-orange-800',
+  recruiter: 'bg-pink-100 text-pink-800',
 };
 
 export default function UserRoleManagement() {
