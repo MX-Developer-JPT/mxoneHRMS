@@ -3,7 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Sparkles, Loader2, FileText, Mail, Phone, Building2, DollarSign, Clock, Bell, X } from 'lucide-react';
+import { Sparkles, Loader2, FileText, Mail, Phone, Building2, Briefcase, DollarSign, Clock, Bell, X } from 'lucide-react';
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from 'sonner';
 import ResumeParsePanel from './ResumeParsePanel';
@@ -115,12 +115,23 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
           </DialogHeader>
 
           <div className="space-y-4">
+            {/* Applied position — most important context, shown up top */}
+            <div className="flex items-center gap-3 flex-wrap bg-blue-50 rounded-lg px-3 py-2">
+              <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-blue-700">
+                <Briefcase className="w-4 h-4" /> {localCandidate.position_applied || 'Position not specified'}
+              </span>
+              {localCandidate.department && (
+                <span className="inline-flex items-center gap-1.5 text-sm text-gray-700">
+                  <Building2 className="w-4 h-4" /> {localCandidate.department}
+                </span>
+              )}
+            </div>
+
             {/* Basic Info */}
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="flex items-center gap-2 text-gray-600 min-w-0"><Mail className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.email}</span></div>
               <div className="flex items-center gap-2 text-gray-600 min-w-0"><Phone className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.phone}</span></div>
-              <div className="flex items-center gap-2 text-gray-600 min-w-0"><FileText className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.position_applied}</span></div>
-              {localCandidate.current_company && <div className="flex items-center gap-2 text-gray-600 min-w-0"><Building2 className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.current_company}</span></div>}
+              {localCandidate.current_company && <div className="flex items-center gap-2 text-gray-600 min-w-0"><FileText className="w-4 h-4 flex-shrink-0" /><span className="truncate">Current: {localCandidate.current_company}</span></div>}
               <div className="flex items-center gap-2 text-gray-600 min-w-0"><Clock className="w-4 h-4 flex-shrink-0" /><span className="truncate">{localCandidate.experience_years} yrs exp · {localCandidate.notice_period || 0} days notice</span></div>
               <div className="flex items-center gap-2 text-gray-600 min-w-0"><DollarSign className="w-4 h-4 flex-shrink-0" /><span className="truncate">Expected: ₹{localCandidate.expected_ctc?.toLocaleString() || '—'}</span></div>
             </div>

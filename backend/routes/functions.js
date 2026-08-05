@@ -1432,7 +1432,14 @@ router.post('/:name', async (req, res) => {
     /* ── Org Chart: reporting hierarchy tree ─────────── */
     case 'getOrgChart': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      // HR/admin/recruiter are operators of the app, not employees — exclude
+      // them from the org chart, which should reflect the actual workforce.
+      const operatorIds = new Set(
+        (await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('admin','hr','recruiter')"))
+          .map(u => u.id)
+      );
       const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'"))
+        .filter(r => !operatorIds.has(r.user_id))
         .map(r => { const d = JSON.parse(r.data); return {
           user_id: r.user_id, name: d.display_name || 'Employee', employee_code: d.employee_code || '',
           designation: d.designation || '', department: d.department || '',
@@ -3228,10 +3235,11 @@ router.post('/:name', async (req, res) => {
             else if (s === 'half_day') { cell = 'HD'; totalPresent += 0.5; }
             else if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home') {
               cell = s === 'late' ? 'L*' : (s === 'on_duty' ? 'OD' : s === 'work_from_home' ? 'WFH' : 'P');
+              if (cell === 'P' && rec.regularised) cell = 'PR';
               totalPresent++;
             }
             else if (s === 'absent') { cell = 'A'; totalAbsent++; }
-            else if (rec.check_in_time) { cell = 'P'; totalPresent++; }
+            else if (rec.check_in_time) { cell = rec.regularised ? 'PR' : 'P'; totalPresent++; }
             else { cell = 'A'; totalAbsent++; }
 
             totalWorkingMins += workedMins;
@@ -3263,6 +3271,7 @@ router.post('/:name', async (req, res) => {
 
       const dayStatusColor = (cell) => {
         if (cell === 'P') return 'C8E6C9';
+        if (cell === 'PR') return 'D8B4FE';
         if (cell === 'L*') return 'FFF9C4';
         if (cell === 'A') return 'FFCDD2';
         if (cell === 'L') return 'B3E5FC';
@@ -3290,7 +3299,7 @@ router.post('/:name', async (req, res) => {
       wsAR.getCell('A2').fill = arFill('2D6A9F');
       wsAR.getCell('A2').alignment = { vertical:'middle' };
       wsAR.mergeCells(2, 7, 2, totalInfoCols);
-      wsAR.getCell(2, 7).value = 'P=Present  L*=Late  A=Absent  L=Leave  H=Holiday  HD=Half Day  OD=On Duty  WFH=Work from Home  OFF=Week Off';
+      wsAR.getCell(2, 7).value = 'P=Present  PR=Present (Regularised)  L*=Late  A=Absent  L=Leave  H=Holiday  HD=Half Day  OD=On Duty  WFH=Work from Home  OFF=Week Off';
       wsAR.getCell(2, 7).font = arFont(false, 'FFFFFF', 8);
       wsAR.getCell(2, 7).fill = arFill('2D6A9F');
       wsAR.getCell(2, 7).alignment = { vertical:'middle' };
@@ -3470,12 +3479,12 @@ router.post('/:name', async (req, res) => {
         // closeUnfinishedSessions) still has check_in_time set, so hasIn
         // would otherwise wrongly report this employee as Present.
         if (s === 'absent')    return 'A';
-        if (hasIn || s === 'present') return 'P';
+        if (hasIn || s === 'present') return rec.regularised ? 'PR' : 'P';
         return 'A';
       };
 
       const mStatusFill = (code) => {
-        const map = { 'P':'22C55E','P*':'F97316','A':'EF4444','WO':'D1D5DB','PH':'A78BFA','L':'60A5FA','OD':'14B8A6','HD':'FBBF24','SA':'FB923C' };
+        const map = { 'P':'22C55E','P*':'F97316','PR':'8B5CF6','A':'EF4444','WO':'D1D5DB','PH':'A78BFA','L':'60A5FA','OD':'14B8A6','HD':'FBBF24','SA':'FB923C' };
         return map[code] || 'F3F4F6';
       };
       const mTextDark = (code) => ['WO','HD','SA'].includes(code) ? '1F2937' : 'FFFFFF';
@@ -3510,7 +3519,7 @@ router.post('/:name', async (req, res) => {
       Object.assign(r2.getCell(1), { font:mF(false,'475569',8), fill:mFl('F8FAFC'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
       // Row 3 — legend
-      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   A = Absent   HD = Half Day   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   SA = Short Attendance']);
+      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   PR = Present (Regularised)   A = Absent   HD = Half Day   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   SA = Short Attendance']);
       r3.height = 15; wsM.mergeCells(3,1,3,totCols);
       Object.assign(r3.getCell(1), { font:mF(false,'1E40AF',8), fill:mFl('EFF6FF'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
@@ -5943,11 +5952,53 @@ router.post('/:name', async (req, res) => {
       const isTeamManager  = !isFullApprover && await hasRole(cu, ['manager']) && await canAccessEmployee(cu, reg.user_id);
       if (!isFullApprover && !isTeamManager) return res.status(403).json({ error: 'Access denied — not authorized to act on this request' });
 
+      // Marks the actual Attendance record for reg.date as present (or the
+      // specific requested status) once the reporting manager has approved
+      // the request — the employee shouldn't sit "absent" for a day their
+      // manager has already vouched for while a secondary HR review is
+      // pending. Idempotent: safe to call again on later full-approver sign-off.
+      async function applyRegularisationToAttendance() {
+        try {
+          const attRow = await one(
+            "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
+          , [reg.user_id, reg.date]);
+
+          if (attRow) {
+            const att = JSON.parse(attRow.data);
+            const updAtt = {
+              ...att,
+              status: reg.requested_status || 'present',
+              regularised: true,
+              regularisation_id,
+              check_in_time:  reg.requested_check_in  || att.check_in_time,
+              check_out_time: reg.requested_check_out || att.check_out_time,
+            };
+            await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [updAtt.status, JSON.stringify(updAtt), attRow.id]);
+          } else {
+            // Create attendance record if it doesn't exist
+            const newAttId = uuidv4();
+            const newAtt = {
+              id: newAttId,
+              user_id: reg.user_id,
+              date: reg.date,
+              status: reg.requested_status || 'present',
+              regularised: true,
+              regularisation_id,
+              check_in_time:  reg.requested_check_in  || null,
+              check_out_time: reg.requested_check_out || null,
+              created_at: new Date().toISOString(),
+            };
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [newAttId, reg.user_id, JSON.stringify(newAtt)]);
+          }
+        } catch (e) { console.warn('Attendance update on regularisation approval failed:', e.message); }
+      }
+
       if (isTeamManager) {
         if (action === 'approve') {
           newStatus = 'manager_approved';
           update.manager_approved_at = new Date().toISOString();
           update.manager_comment = comment;
+          await applyRegularisationToAttendance();
         } else if (action === 'reject') {
           newStatus = 'rejected';
           update.manager_comment = comment;
@@ -5961,42 +6012,7 @@ router.post('/:name', async (req, res) => {
           newStatus = 'completed';
           update.hr_approved_at = new Date().toISOString();
           update.hr_comment = comment;
-
-          // Update the actual Attendance record for that date
-          try {
-            const attRow = await one(
-              "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
-            , [reg.user_id, reg.date]);
-
-            if (attRow) {
-              const att = JSON.parse(attRow.data);
-              const updAtt = {
-                ...att,
-                status: reg.requested_status || 'present',
-                regularised: true,
-                regularisation_id,
-                check_in_time:  reg.requested_check_in  || att.check_in_time,
-                check_out_time: reg.requested_check_out || att.check_out_time,
-              };
-              await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [updAtt.status, JSON.stringify(updAtt), attRow.id]);
-            } else {
-              // Create attendance record if it doesn't exist
-              const newAttId = uuidv4();
-              const newAtt = {
-                id: newAttId,
-                user_id: reg.user_id,
-                date: reg.date,
-                status: reg.requested_status || 'present',
-                regularised: true,
-                regularisation_id,
-                check_in_time:  reg.requested_check_in  || null,
-                check_out_time: reg.requested_check_out || null,
-                created_at: new Date().toISOString(),
-              };
-              await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [newAttId, reg.user_id, JSON.stringify(newAtt)]);
-            }
-          } catch (e) { console.warn('Attendance update on regularisation approval failed:', e.message); }
-
+          await applyRegularisationToAttendance();
         } else if (action === 'reject') {
           newStatus = 'rejected';
           update.hr_comment = comment;

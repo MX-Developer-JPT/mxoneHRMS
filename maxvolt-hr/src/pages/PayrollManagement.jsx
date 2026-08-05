@@ -48,6 +48,10 @@ export default function PayrollManagement() {
         base44.functions.invoke('getAllUsers', {}),
       ]);
       const users = usersResp.data?.users || [];
+      // NOTE: payroll intentionally still includes HR/admin/recruiter — they
+      // are operators of the app for org-chart/directory/headcount purposes,
+      // but they are still paid employees of the company and must run
+      // through payroll like anyone else.
       const enrichedEmps = empRecords.map(emp => ({
         ...emp,
         _user: users.find(u => u.id === emp.user_id),

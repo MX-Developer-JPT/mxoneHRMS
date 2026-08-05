@@ -286,6 +286,9 @@ export default function SalaryStructureManagement() {
         PF_CEILING = cfg.pf_ceiling || 15000;
         ESI_CEILING_MONTHLY = cfg.esi_wage_ceiling || 21000;
       }
+      // NOTE: salary structures intentionally still include HR/admin/recruiter
+      // — they're operators of the app for org-chart/directory/headcount
+      // purposes, but still paid employees who need a salary structure.
       const enriched = empRecords.map(e => ({ ...e, user: users.find(u => u.id === e.user_id) }));
       setSalaryStructures(structures);
       setEmployees(enriched);

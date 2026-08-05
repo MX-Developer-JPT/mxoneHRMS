@@ -63,9 +63,12 @@ export default function OnboardingApproval() {
         base44.entities.AppLocation.list(),
       ]);
       
+      // Reporting manager dropdown must include every manager/management
+      // user (not just top-level management) so any new hire can be
+      // assigned to the person who will actually manage them.
       const managementUsers = allUsers.filter(u => {
         const userRole = u.custom_role || u.role;
-        return ['management', 'admin', 'hr'].includes(userRole);
+        return ['manager', 'management', 'admin', 'hr'].includes(userRole);
       });
 
       setPendingUsers(pending);

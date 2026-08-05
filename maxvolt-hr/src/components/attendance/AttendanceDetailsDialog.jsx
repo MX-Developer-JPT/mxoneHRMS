@@ -97,6 +97,11 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                 <Badge className={statusColors[record.status] || 'bg-gray-100 text-gray-700'}>
                   {(record.status || '').replace(/_/g, ' ').toUpperCase()}
                 </Badge>
+                {record.regularised && (
+                  <Badge className="bg-violet-100 text-violet-800 border border-violet-200" title="Marked present after regularisation approval">
+                    Regularised
+                  </Badge>
+                )}
                 {isWorking && (
                   <Badge className="bg-green-50 text-green-700 border border-green-300 flex items-center gap-1">
                     <Activity className="w-3 h-3" /> Currently Working

@@ -48,11 +48,14 @@ export default function ShiftManagement() {
       const usersResponse = await base44.functions.invoke('getAllUsers', {});
       const allUsers = usersResponse.data.users;
       
+      // NOTE: shift assignment intentionally still includes HR/admin/recruiter
+      // — they're operators of the app for org-chart/directory/headcount
+      // purposes, but still need a shift assigned for attendance calculation.
       const enrichedEmps = empsData.map(emp => ({
         ...emp,
         user: allUsers.find(u => u.id === emp.user_id)
       }));
-      
+
       setShifts(shiftsData);
       setEmployees(enrichedEmps);
     } catch (error) {

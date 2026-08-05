@@ -42,7 +42,7 @@ export default function HRDashboard({ user }) {
     const monthEnd = format(endOfMonth(new Date()), 'yyyy-MM-dd');
 
     const [
-      usersResp, employees, attendanceResp,
+      usersResp, employeesRaw, attendanceResp,
       pendingLeaves, pendingReimbursements, pendingRegularisations,
       openTickets, candidates, announcements, payrolls, leavePolicies,
       assets, exits, complianceDeadlines, jobReqs
@@ -69,6 +69,10 @@ export default function HRDashboard({ user }) {
 
     const userMap = {};
     allUsers.forEach(u => { userMap[u.id] = u; });
+
+    // HR/admin/recruiter are operators of the app, not employees — exclude
+    // them from headcount, attendance rate, and department breakdowns.
+    const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
 
     const empMap = {};
     employees.forEach(e => { empMap[e.user_id] = e; });

@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from 'sonner';
-import { Plus, UserPlus, Briefcase, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy, ChevronsUpDown, Check, ClipboardCheck, ThumbsDown, LayoutGrid, List, Calendar, MessageSquare, Filter } from 'lucide-react';
+import { Plus, UserPlus, Briefcase, Building2, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy, ChevronsUpDown, Check, ClipboardCheck, ThumbsDown, LayoutGrid, List, Calendar, MessageSquare, Filter } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { openLetterheadPrintWindow } from '@/utils/letterhead';
@@ -1049,7 +1049,10 @@ export default function Recruitment() {
                         <div key={c.id} className="bg-white rounded-lg p-2.5 shadow-sm border cursor-pointer hover:shadow-md transition-shadow"
                           onClick={() => setSelectedCandidate(c)}>
                           <p className="text-xs font-semibold text-gray-800 truncate">{c.full_name}</p>
-                          <p className="text-xs text-gray-500 truncate">{c.position_applied}</p>
+                          <p className="text-xs text-blue-700 font-medium truncate">{c.position_applied || jobRequisitions.find(j => j.id === c.job_id)?.position_title || '—'}</p>
+                          {(c.department || jobRequisitions.find(j => j.id === c.job_id)?.department) && (
+                            <p className="text-xs text-gray-500 truncate">{c.department || jobRequisitions.find(j => j.id === c.job_id)?.department}</p>
+                          )}
                           {c.expected_ctc > 0 && <p className="text-xs text-gray-400 mt-1">₹{(c.expected_ctc / 100000).toFixed(1)}L</p>}
                           <div className="flex gap-1 mt-1.5">
                             {stage.key === 'interview_scheduled' && (
@@ -1098,7 +1101,18 @@ export default function Recruitment() {
                         </div>
                         <div>
                           <p className="font-semibold">{candidate.full_name}</p>
-                          <p className="text-sm text-gray-600">{candidate.position_applied}</p>
+                          <div className="flex items-center gap-3 flex-wrap mt-0.5">
+                            <span className="inline-flex items-center gap-1 text-sm font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded">
+                              <Briefcase className="w-3 h-3" />
+                              {candidate.position_applied || jobRequisitions.find(j => j.id === candidate.job_id)?.position_title || 'Position not specified'}
+                            </span>
+                            {(candidate.department || jobRequisitions.find(j => j.id === candidate.job_id)?.department) && (
+                              <span className="inline-flex items-center gap-1 text-sm text-gray-600">
+                                <Building2 className="w-3 h-3" />
+                                {candidate.department || jobRequisitions.find(j => j.id === candidate.job_id)?.department}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <Badge className={STATUS_COLORS[candidate.status] || 'bg-gray-100 text-gray-700'}>
                           {candidate.status.replace(/_/g, ' ').toUpperCase()}

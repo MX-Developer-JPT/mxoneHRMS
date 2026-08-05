@@ -35,7 +35,7 @@ export default function ManagementDashboard({ user }) {
   const loadData = async () => {
     const today = format(new Date(), 'yyyy-MM-dd');
 
-    const [employees, usersResp, leaves, reimbursements, regularisations, announcements, teamAssets, teamTrainings] = await Promise.all([
+    const [employeesRaw, usersResp, leaves, reimbursements, regularisations, announcements, teamAssets, teamTrainings] = await Promise.all([
       base44.entities.Employee.filter({ reporting_manager_id: user.id }).catch(() => []),
       base44.functions.invoke('getAllUsers', {}).catch(() => ({ data: { users: [] } })),
       base44.entities.Leave.filter({ status: 'pending' }).catch(() => []),
@@ -49,6 +49,9 @@ export default function ManagementDashboard({ user }) {
     const allUsers = usersResp?.data?.users || [];
     const userMap = {};
     allUsers.forEach(u => { userMap[u.id] = u; });
+
+    // HR/admin/recruiter are operators of the app, not employees.
+    const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
 
     const teamIds = employees.map(e => e.user_id);
 

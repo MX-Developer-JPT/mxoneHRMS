@@ -94,6 +94,11 @@ export default function AssetTracking() {
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [invSearch, setInvSearch] = useState('');
+  // user_ids of HR/admin/recruiter accounts — excluded from "assign to
+  // employee" pickers since they're operators of the app, not employees.
+  // NOT used to filter already-assigned asset name lookups (getEmployeeName).
+  const [operatorUserIds, setOperatorUserIds] = useState(new Set());
   const [filterStatus, setFilterStatus] = useState('all');
   const [selectedTypeId, setSelectedTypeId] = useState(null);
   const [activeTab, setActiveTab] = useState('inventory');
@@ -137,16 +142,20 @@ export default function AssetTracking() {
 
   const loadData = async () => {
     try {
-      const [assetData, typeData, empData, logsData, activityData] = await Promise.all([
+      const [assetData, typeData, empData, logsData, activityData, users] = await Promise.all([
         base44.entities.Asset.list('-created_date', 1000),
         base44.entities.AssetType.filter({ is_active: true }, 'name'),
         base44.entities.Employee.list(),
         base44.entities.MaintenanceLog.list('-created_date', 500),
         base44.entities.AssetActivityLog.list('-created_date', 200),
+        base44.entities.User.list().catch(() => []),
       ]);
       setAssets(assetData);
       setAssetTypes(typeData);
       setEmployees(empData);
+      const roleMap = {};
+      users.forEach(u => { roleMap[u.id] = u.custom_role || u.role; });
+      setOperatorUserIds(new Set(empData.filter(e => ['admin', 'hr', 'recruiter'].includes(roleMap[e.user_id])).map(e => e.user_id)));
       setMaintenanceLogs(logsData);
       setActivityLogs(activityData);
     } catch (err) { console.error(err); }
@@ -1035,14 +1044,34 @@ export default function AssetTracking() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-lg">Inventory</CardTitle>
+            <div className="relative mt-2">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Input
+                className="pl-9"
+                placeholder="Search assets by name, ID, serial number, or assigned employee..."
+                value={invSearch}
+                onChange={e => setInvSearch(e.target.value)}
+              />
+            </div>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-              {assetTypes.map(type => {
+              {assetTypes.filter(type => {
+                if (!invSearch.trim()) return true;
+                const s = invSearch.toLowerCase();
+                if (type.name?.toLowerCase().includes(s) || type.code?.toLowerCase().includes(s)) return true;
+                const group = groupedAssets[type.id];
+                return (group?.assets || []).some(a =>
+                  a.asset_name?.toLowerCase().includes(s) ||
+                  a.asset_id?.toLowerCase().includes(s) ||
+                  a.serial_number?.toLowerCase().includes(s) ||
+                  getEmployeeName(a.assigned_to_user_id)?.toLowerCase().includes(s)
+                );
+              }).map(type => {
                 const group = groupedAssets[type.id] || { total: 0, available: 0, assigned: 0, underRepair: 0, assets: [] };
                 const Icon = getTypeIcon(type.icon);
                 return (
-                  <Card key={type.id} className="hover:shadow-md transition-shadow cursor-pointer border" onClick={() => { setSelectedTypeId(type.id); setFilterStatus('all'); setSearch(''); }}>
+                  <Card key={type.id} className="hover:shadow-md transition-shadow cursor-pointer border" onClick={() => { setSelectedTypeId(type.id); setFilterStatus('all'); setSearch(invSearch); }}>
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
@@ -1212,7 +1241,7 @@ export default function AssetTracking() {
                           <CommandItem value="common asset" onSelect={() => { setBulkEmployeeId('__common__'); setBulkEmpOpen(false); }}>
                             <Check className={`mr-2 h-4 w-4 ${bulkEmployeeId === '__common__' ? 'opacity-100' : 'opacity-0'}`} /> 📦 Common Asset
                           </CommandItem>
-                          {employees.filter(e => e.status === 'active').map(e => (
+                          {employees.filter(e => e.status === 'active' && !operatorUserIds.has(e.user_id)).map(e => (
                             <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { setBulkEmployeeId(e.user_id); setBulkEmpOpen(false); }}>
                               <Check className={`mr-2 h-4 w-4 ${bulkEmployeeId === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
                               {e.display_name} ({e.employee_code})
@@ -1298,7 +1327,7 @@ export default function AssetTracking() {
                                     <CommandItem value="common asset" onSelect={() => { handleAssignEmployee(asset, '__common__'); setAssetAssignOpen(prev => ({ ...prev, [asset.id]: false })); }}>
                                       📦 Common Asset
                                     </CommandItem>
-                                    {employees.filter(e => e.status === 'active').map(e => (
+                                    {employees.filter(e => e.status === 'active' && !operatorUserIds.has(e.user_id)).map(e => (
                                       <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { handleAssignEmployee(asset, e.user_id); setAssetAssignOpen(prev => ({ ...prev, [asset.id]: false })); }}>
                                         {e.display_name}
                                       </CommandItem>
@@ -1439,7 +1468,7 @@ export default function AssetTracking() {
                           <CommandItem value="common asset shared" onSelect={() => { setAssetForm({...assetForm, assigned_to_user_id: '__common__', status: 'assigned'}); setAssetDialogEmpOpen(false); }}>
                             <Check className={`mr-2 h-4 w-4 ${assetForm.assigned_to_user_id === '__common__' ? 'opacity-100' : 'opacity-0'}`} /> 📦 Common Asset (Shared)
                           </CommandItem>
-                          {employees.filter(e => e.status === 'active').map(e => (
+                          {employees.filter(e => e.status === 'active' && !operatorUserIds.has(e.user_id)).map(e => (
                             <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { setAssetForm({...assetForm, assigned_to_user_id: e.user_id, status: 'assigned'}); setAssetDialogEmpOpen(false); }}>
                               <Check className={`mr-2 h-4 w-4 ${assetForm.assigned_to_user_id === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
                               {e.display_name} ({e.employee_code})

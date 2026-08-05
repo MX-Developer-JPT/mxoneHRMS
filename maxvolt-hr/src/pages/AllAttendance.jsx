@@ -766,6 +766,11 @@ export default function AllAttendance() {
                             <Badge className={`text-xs border ${STATUS_COLORS[displayStatus] || 'bg-gray-100 text-gray-700'}`}>
                               {displayStatus.replace('_', ' ')}
                             </Badge>
+                            {record.regularised && (
+                              <Badge className="text-xs bg-violet-100 text-violet-800 border border-violet-200" title="Marked present after regularisation approval">
+                                Regularised
+                              </Badge>
+                            )}
                           </div>
                           </div>
                         </div>
@@ -868,9 +873,10 @@ export default function AllAttendance() {
                             return (
                               <div
                                 key={di}
-                                className={`border rounded text-center py-1 px-0.5 text-[10px] font-medium leading-tight ${isFuture ? 'bg-gray-50 border-gray-100 text-gray-300' : colorClass} ${isToday ? 'ring-1 ring-blue-500' : ''}`}
-                                title={rec ? `${status?.replace(/_/g,' ')}${checkIn ? ` · In: ${safeTime(checkIn)}` : ''}${checkOut ? ` · Out: ${safeTime(checkOut)}` : ''}${hours ? ` · ${hours.toFixed(1)}h` : ''}` : ''}
+                                className={`relative border rounded text-center py-1 px-0.5 text-[10px] font-medium leading-tight ${isFuture ? 'bg-gray-50 border-gray-100 text-gray-300' : colorClass} ${isToday ? 'ring-1 ring-blue-500' : ''}`}
+                                title={rec ? `${status?.replace(/_/g,' ')}${rec.regularised ? ' (Regularised)' : ''}${checkIn ? ` · In: ${safeTime(checkIn)}` : ''}${checkOut ? ` · Out: ${safeTime(checkOut)}` : ''}${hours ? ` · ${hours.toFixed(1)}h` : ''}` : ''}
                               >
+                                {rec?.regularised && <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-violet-500" />}
                                 <div className={`font-bold text-[11px] ${isToday ? 'text-blue-600' : di === 0 ? 'text-red-400' : ''}`}>{d}</div>
                                 <div>{status ? (statusLabel[status] || status.slice(0,2).toUpperCase()) : (isFuture ? '' : '—')}</div>
                                 {hours > 0 && <div className="text-[9px] opacity-70">{hours.toFixed(1)}h</div>}
@@ -886,6 +892,9 @@ export default function AllAttendance() {
                       {[['P','bg-green-100 text-green-700','Present'],['A','bg-red-100 text-red-700','Absent'],['L','bg-blue-100 text-blue-700','Leave'],['HD','bg-yellow-100 text-yellow-700','Half Day'],['WFH','bg-cyan-100 text-cyan-700','WFH'],['OD','bg-teal-100 text-teal-700','On Duty']].map(([code, cls, label]) => (
                         <span key={code} className={`px-1.5 py-0.5 rounded border ${cls}`}>{code} {label}</span>
                       ))}
+                      <span className="px-1.5 py-0.5 rounded border bg-violet-50 text-violet-700 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-violet-500" /> Regularised
+                      </span>
                     </div>
 
                     {/* Summary */}

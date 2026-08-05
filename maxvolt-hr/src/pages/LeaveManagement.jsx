@@ -87,7 +87,9 @@ export default function LeaveManagement() {
       const empUserRec = empRecords.find(e => e.user_id === currentUser.id);
       setUserEmployee(empUserRec);
 
-      // Use display_name directly from Employee — no User.list() needed
+      // NOTE: leave balances intentionally still include HR/admin/recruiter —
+      // they're operators of the app for org-chart/directory/headcount
+      // purposes, but still take leave and need entitlement/balance tracking.
       setEmployees(empRecords);
 
       // Build a map: userId_policyId → balance for quick lookup

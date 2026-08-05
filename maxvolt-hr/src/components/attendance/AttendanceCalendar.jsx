@@ -87,13 +87,20 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
                 key={day.toISOString()}
                 onClick={() => onDayClick && attendance && onDayClick(day, attendance)}
                 className={`
-                  p-3 rounded-lg border-2 transition-all hover:shadow-md
+                  relative p-3 rounded-lg border-2 transition-all hover:shadow-md
                   ${config ? config.color : 'bg-white border-gray-200 hover:bg-gray-50'}
                 `}
               >
+                {attendance?.regularised && (
+                  <span
+                    className="absolute top-1 right-1 w-2 h-2 rounded-full bg-violet-500"
+                    title="Marked present after regularisation approval"
+                  />
+                )}
                 <div className="text-sm font-semibold">{format(day, 'd')}</div>
                 {Icon && <Icon className="w-4 h-4 mx-auto mt-1" />}
                 {isApprovedLeaveDay && <div className="text-xs mt-0.5 font-bold text-teal-700">L</div>}
+                {attendance?.regularised && <div className="text-[10px] mt-0.5 font-bold text-violet-700">Regularised</div>}
                 {attendance?.working_hours > 0 && !isApprovedLeaveDay && (
                   <div className="text-xs mt-1 font-medium">{attendance.working_hours.toFixed(1)}h</div>
                 )}
