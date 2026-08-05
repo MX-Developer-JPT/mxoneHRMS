@@ -2173,7 +2173,7 @@ router.post('/:name', async (req, res) => {
 
       const ngAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, evDate]);
       const ngAtt = ngAttRow ? JSON.parse(ngAttRow.data) : null;
-      if (ngAtt?.status === 'regularised') return res.json({ success: false, error: 'This day has been manually regularised by HR — geofence events are ignored' });
+      if (ngAtt?.status === 'regularised' || ngAtt?.regularised) return res.json({ success: false, error: 'This day has been manually regularised by HR — geofence events are ignored' });
 
       // Multi-session model: geofence punches share the same raw_punches timeline used by
       // biometric sync, so a day can have session 1 (walked in, walked out for lunch),
@@ -2272,7 +2272,7 @@ router.post('/:name', async (req, res) => {
 
       const saAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, saToday]);
       const saAtt = saAttRow ? JSON.parse(saAttRow.data) : null;
-      if (saAtt?.status === 'regularised') return res.json({ success: false, error: 'This day has been manually regularised by HR — selfie punches are ignored' });
+      if (saAtt?.status === 'regularised' || saAtt?.regularised) return res.json({ success: false, error: 'This day has been manually regularised by HR — selfie punches are ignored' });
 
       let saRawPunches = saAtt?.raw_punches ? [...saAtt.raw_punches] : [];
       if (!saRawPunches.length && saAtt?.check_in_time) {
@@ -4791,7 +4791,7 @@ router.post('/:name', async (req, res) => {
           (r.auto_geofence || r.auto_geofence_checkout ? 8 : 0) +
           (r.check_in_time    ? 4 : 0) +
           (r.status !== 'absent' && r.status !== 'auto_marked' ? 2 : 0) +
-          (r.status === 'regularised' ? 1 : 0);
+          (r.status === 'regularised' || r.regularised ? 1 : 0);
         if (score(rec) > score(prev)) best[key] = rec;
       }
       return res.json({ records: Object.values(best) });
@@ -5289,7 +5289,7 @@ router.post('/:name', async (req, res) => {
         const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1", [userId, date]);
         if (existing) {
           const d = JSON.parse(existing.data);
-          if (d.status === 'regularised') { skipped++; continue; }
+          if (d.status === 'regularised' || d.regularised) { skipped++; continue; }
           const upd = { ...d, biometric_synced: true, employee_code: empData.employee_code || empCode || d.employee_code, ...sd, ...statusResult };
           await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [status, JSON.stringify(upd), existing.id]);
           updated++;
@@ -5406,7 +5406,7 @@ router.post('/:name', async (req, res) => {
 
       for (const row of attRows) {
         const d = JSON.parse(row.data);
-        if (d.status === 'regularised') { skippedRegularised++; continue; }
+        if (d.status === 'regularised' || d.regularised) { skippedRegularised++; continue; }
 
         // Build raw punches: use stored raw_punches or synthesise from check_in/check_out
         let punches = d.raw_punches && d.raw_punches.length > 0 ? d.raw_punches : null;
@@ -5678,7 +5678,7 @@ router.post('/:name', async (req, res) => {
         const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [userId, date]);
         if (existing) {
           const d = JSON.parse(existing.data);
-          if (d.status === 'regularised') continue;
+          if (d.status === 'regularised' || d.regularised) continue;
 
           // Merge raw_punches: combine existing + new, then rebuild
           const prevPunches = d.raw_punches || [];
@@ -5888,7 +5888,7 @@ router.post('/:name', async (req, res) => {
             const existAtt = existingAttMap[attKey];
 
             if (existAtt) {
-              if (existAtt.data.status === 'regularised') continue;
+              if (existAtt.data.status === 'regularised' || existAtt.data.regularised) continue;
               const prevPunches = existAtt.data.raw_punches || [];
               const merged = [...prevPunches, ...uniquePunches]
                 .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
@@ -5938,6 +5938,11 @@ router.post('/:name', async (req, res) => {
       const row = await one("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND id=$1", [regularisation_id]);
       if (!row) return res.status(404).json({ error: 'Regularisation request not found' });
       const reg = JSON.parse(row.data);
+      // The record's date field is `attendance_date` (set at submission in
+      // AttendanceRegularisation.jsx) — not `date`. Reading `reg.date` here
+      // silently matched no Attendance row, so approvals never actually
+      // updated attendance.
+      const regDate = (reg.attendance_date || reg.date || '').split('T')[0];
 
       let newStatus = reg.status;
       const update  = { updated_at: new Date().toISOString() };
@@ -5961,7 +5966,7 @@ router.post('/:name', async (req, res) => {
         try {
           const attRow = await one(
             "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
-          , [reg.user_id, reg.date]);
+          , [reg.user_id, regDate]);
 
           if (attRow) {
             const att = JSON.parse(attRow.data);
@@ -5980,7 +5985,7 @@ router.post('/:name', async (req, res) => {
             const newAtt = {
               id: newAttId,
               user_id: reg.user_id,
-              date: reg.date,
+              date: regDate,
               status: reg.requested_status || 'present',
               regularised: true,
               regularisation_id,
@@ -6026,7 +6031,7 @@ router.post('/:name', async (req, res) => {
       // In-app notification to employee
       await notify(reg.user_id, {
         title: `Regularisation ${newStatus === 'completed' ? 'Approved' : newStatus === 'rejected' ? 'Rejected' : 'Updated'}`,
-        message: `Your regularisation request for ${reg.date} has been ${newStatus.replace('_', ' ')}.${comment ? ' Comment: ' + comment : ''}`,
+        message: `Your regularisation request for ${regDate} has been ${newStatus.replace('_', ' ')}.${comment ? ' Comment: ' + comment : ''}`,
         type: newStatus === 'completed' ? 'success' : newStatus === 'rejected' ? 'error' : 'info',
         link: '/AttendanceRegularisation',
       });
@@ -6034,7 +6039,7 @@ router.post('/:name', async (req, res) => {
       // Notify HR when manager has approved and it now awaits final HR approval
       if (newStatus === 'manager_approved') {
         const hrRowsReg = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
-        for (const hr of hrRowsReg) await notify(hr.id, { title: 'Regularisation Awaiting Final Approval', message: `A regularisation request for ${reg.date} has been approved by the manager and requires your final approval.`, type: 'info', link: '/RegularisationApproval' });
+        for (const hr of hrRowsReg) await notify(hr.id, { title: 'Regularisation Awaiting Final Approval', message: `A regularisation request for ${regDate} has been approved by the manager and requires your final approval.`, type: 'info', link: '/RegularisationApproval' });
       }
 
       return res.json({ success: true, status: newStatus });
@@ -6056,9 +6061,15 @@ router.post('/:name', async (req, res) => {
       let fixed = 0, checked = 0;
       for (const reg of approvedRegs) {
         checked++;
+        // Record's date field is `attendance_date`, not `date` — this was
+        // the actual bug: reading `reg.date` (always undefined) meant the
+        // Attendance lookup below never matched, so approved requests never
+        // got their attendance updated at all, regardless of timing.
+        const regDate = (reg.attendance_date || reg.date || '').split('T')[0];
+        if (!regDate) continue;
         const attRow = await one(
           "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
-        , [reg.user_id, reg.date]);
+        , [reg.user_id, regDate]);
 
         if (attRow) {
           const att = JSON.parse(attRow.data);
@@ -6078,7 +6089,7 @@ router.post('/:name', async (req, res) => {
           const newAtt = {
             id: newAttId,
             user_id: reg.user_id,
-            date: reg.date,
+            date: regDate,
             status: reg.requested_status || 'present',
             regularised: true,
             regularisation_id: reg.id,
