@@ -51,7 +51,7 @@ export default function ManagementDashboard({ user }) {
     allUsers.forEach(u => { userMap[u.id] = u; });
 
     // HR/admin/recruiter are operators of the app, not employees.
-    const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
+    const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
 
     const teamIds = employees.map(e => e.user_id);
 

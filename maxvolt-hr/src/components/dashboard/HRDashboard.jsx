@@ -72,7 +72,7 @@ export default function HRDashboard({ user }) {
 
     // HR/admin/recruiter are operators of the app, not employees — exclude
     // them from headcount, attendance rate, and department breakdowns.
-    const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
+    const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
 
     const empMap = {};
     employees.forEach(e => { empMap[e.user_id] = e; });

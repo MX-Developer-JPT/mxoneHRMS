@@ -155,7 +155,7 @@ export default function AssetTracking() {
       setEmployees(empData);
       const roleMap = {};
       users.forEach(u => { roleMap[u.id] = u.custom_role || u.role; });
-      setOperatorUserIds(new Set(empData.filter(e => ['admin', 'hr', 'recruiter'].includes(roleMap[e.user_id])).map(e => e.user_id)));
+      setOperatorUserIds(new Set(empData.filter(e => ['admin', 'hr', 'recruiter', 'gate_admin'].includes(roleMap[e.user_id])).map(e => e.user_id)));
       setMaintenanceLogs(logsData);
       setActivityLogs(activityData);
     } catch (err) { console.error(err); }

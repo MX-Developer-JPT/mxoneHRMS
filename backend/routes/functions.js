@@ -1435,7 +1435,7 @@ router.post('/:name', async (req, res) => {
       // HR/admin/recruiter are operators of the app, not employees — exclude
       // them from the org chart, which should reflect the actual workforce.
       const operatorIds = new Set(
-        (await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('admin','hr','recruiter')"))
+        (await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('admin','hr','recruiter','gate_admin')"))
           .map(u => u.id)
       );
       const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'"))
@@ -6038,6 +6038,60 @@ router.post('/:name', async (req, res) => {
       }
 
       return res.json({ success: true, status: newStatus });
+    }
+
+    /* ── One-time/idempotent repair: regularisation requests that were
+       manager/HR-approved BEFORE the attendance-sync fix shipped never got
+       their Attendance record updated, so the employee still shows absent
+       despite an approved request. Re-applies the same present-marking
+       logic processRegularisation now does at approval time. Safe to call
+       repeatedly — skips anything already marked regularised. ── */
+    case 'backfillRegularisedAttendance': {
+      if (!(await hasRole(cu, [...HR_ROLES, 'management']))) return res.status(403).json({ error: 'HR/Management access required' });
+
+      const approvedRegs = (await all(
+        "SELECT id, data FROM entities WHERE type='AttendanceRegularisation' AND status IN ('manager_approved','completed')"
+      )).map(r => ({ id: r.id, ...JSON.parse(r.data) }));
+
+      let fixed = 0, checked = 0;
+      for (const reg of approvedRegs) {
+        checked++;
+        const attRow = await one(
+          "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
+        , [reg.user_id, reg.date]);
+
+        if (attRow) {
+          const att = JSON.parse(attRow.data);
+          if (att.regularised) continue; // already applied
+          const updAtt = {
+            ...att,
+            status: reg.requested_status || 'present',
+            regularised: true,
+            regularisation_id: reg.id,
+            check_in_time:  reg.requested_check_in  || att.check_in_time,
+            check_out_time: reg.requested_check_out || att.check_out_time,
+          };
+          await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [updAtt.status, JSON.stringify(updAtt), attRow.id]);
+          fixed++;
+        } else {
+          const newAttId = uuidv4();
+          const newAtt = {
+            id: newAttId,
+            user_id: reg.user_id,
+            date: reg.date,
+            status: reg.requested_status || 'present',
+            regularised: true,
+            regularisation_id: reg.id,
+            check_in_time:  reg.requested_check_in  || null,
+            check_out_time: reg.requested_check_out || null,
+            created_at: new Date().toISOString(),
+          };
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [newAttId, reg.user_id, JSON.stringify(newAtt)]);
+          fixed++;
+        }
+      }
+
+      return res.json({ success: true, checked, fixed });
     }
 
     case 'calculateLOP': {

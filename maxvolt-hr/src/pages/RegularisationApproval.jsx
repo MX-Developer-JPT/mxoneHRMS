@@ -75,6 +75,19 @@ export default function RegularisationApproval() {
       setEmployees(empRecords);
       setDepartments(deptRecords);
       setUsers([]);
+
+      // One-time self-heal: requests approved before the attendance-sync fix
+      // shipped never got their Attendance record updated, so the employee
+      // still shows absent despite an approved request. Runs silently and
+      // is idempotent (skips anything already regularised), so it's safe to
+      // fire on every HR/admin/management page load.
+      if (isHR) {
+        base44.functions.invoke('backfillRegularisedAttendance', {}).then(r => {
+          if (r?.data?.fixed > 0) {
+            toast.success(`Synced ${r.data.fixed} previously-approved regularisation${r.data.fixed === 1 ? '' : 's'} to attendance`);
+          }
+        }).catch(() => {});
+      }
     } catch (e) { console.error(e); }
     setLoading(false);
   };

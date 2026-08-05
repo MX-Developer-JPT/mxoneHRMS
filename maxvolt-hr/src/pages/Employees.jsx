@@ -70,7 +70,7 @@ export default function Employees() {
         })
         // HR/admin/recruiter are operators of the app, not employees — the
         // directory should only list the actual workforce.
-        .filter(emp => !['admin', 'hr', 'recruiter'].includes(emp.user?.custom_role || emp.user?.role));
+        .filter(emp => !['admin', 'hr', 'recruiter', 'gate_admin'].includes(emp.user?.custom_role || emp.user?.role));
 
       setEmployees(enrichedEmps);
       setFilteredEmployees(enrichedEmps);
