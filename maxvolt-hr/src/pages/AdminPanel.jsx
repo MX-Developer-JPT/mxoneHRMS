@@ -11,7 +11,7 @@ import {
   ChevronLeft, ChevronRight, Eye, Key, AlertTriangle, X, Check,
   BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2,
   Bot, Sparkles, ExternalLink, Zap, Fingerprint, Copy, RotateCcw, Globe, Code2,
-  ScrollText, Clock, Download, Settings2, ChevronsUpDown
+  ScrollText, Clock, Download, Settings2, ChevronsUpDown, CalendarClock
 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -1490,6 +1490,285 @@ function AttendanceImportTab() {
   );
 }
 
+// ── Manual Attendance Tab ───────────────────────────────────
+// Admin-only: mark any employee present for any day with an explicit
+// check-in/out time, or correct the check-in/out time (or status) of an
+// existing record for any day — a search bar to find the employee, a
+// calendar to pick the day (colour-coded by that day's current status).
+const MA_MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const MA_STATUS_COLORS = {
+  present: 'bg-green-100 text-green-800 border-green-300',
+  late: 'bg-amber-100 text-amber-800 border-amber-300',
+  half_day: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+  short_attendance: 'bg-orange-100 text-orange-800 border-orange-300',
+  absent: 'bg-red-100 text-red-800 border-red-300',
+  leave: 'bg-blue-100 text-blue-800 border-blue-300',
+  holiday: 'bg-purple-100 text-purple-800 border-purple-300',
+  week_off: 'bg-gray-100 text-gray-600 border-gray-300',
+  on_duty: 'bg-teal-100 text-teal-800 border-teal-300',
+  work_from_home: 'bg-cyan-100 text-cyan-800 border-cyan-300',
+};
+const MA_STATUS_OPTIONS = ['present', 'half_day', 'leave', 'absent', 'holiday', 'week_off', 'on_duty', 'work_from_home'];
+
+function ManualAttendanceTab() {
+  const [employees, setEmployees] = useState([]);
+  const [loadingEmps, setLoadingEmps] = useState(true);
+  const [empSearch, setEmpSearch] = useState('');
+  const [selectedEmp, setSelectedEmp] = useState(null);
+
+  const [calMonth, setCalMonth] = useState(new Date().getMonth() + 1);
+  const [calYear, setCalYear] = useState(new Date().getFullYear());
+  const [monthRecords, setMonthRecords] = useState([]);
+  const [loadingCal, setLoadingCal] = useState(false);
+
+  const [editDate, setEditDate] = useState(null); // 'YYYY-MM-DD' currently being edited
+  const [form, setForm] = useState({ check_in_time: '', check_out_time: '', status: 'present', notes: '' });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      setLoadingEmps(true);
+      try {
+        const [emps, usersResp] = await Promise.all([
+          base44.entities.Employee.list('-created_date', 1000),
+          base44.functions.invoke('getAllUsers', {}),
+        ]);
+        const users = usersResp.data?.users || [];
+        const userMap = Object.fromEntries(users.map(u => [u.id, u]));
+        setEmployees(emps.map(e => ({ ...e, user: userMap[e.user_id] })));
+      } catch (e) {
+        toast.error('Failed to load employees: ' + e.message);
+      }
+      setLoadingEmps(false);
+    })();
+  }, []);
+
+  const loadMonth = useCallback(async () => {
+    if (!selectedEmp) return;
+    setLoadingCal(true);
+    try {
+      const res = await base44.functions.invoke('adminGetEmployeeMonthAttendance', { user_id: selectedEmp.user_id, month: calMonth, year: calYear });
+      if (res.data?.success) setMonthRecords(res.data.records || []);
+      else toast.error(res.data?.error || 'Failed to load attendance');
+    } catch (e) {
+      toast.error('Failed to load attendance: ' + e.message);
+    }
+    setLoadingCal(false);
+  }, [selectedEmp, calMonth, calYear]);
+
+  useEffect(() => { loadMonth(); }, [loadMonth]);
+
+  const filteredEmps = employees.filter(e => {
+    const q = empSearch.trim().toLowerCase();
+    if (!q) return false; // don't dump the whole company — search first
+    return (e.display_name || e.user?.full_name || '').toLowerCase().includes(q)
+      || (e.employee_code || '').toLowerCase().includes(q)
+      || (e.department || '').toLowerCase().includes(q)
+      || (e.user?.email || '').toLowerCase().includes(q);
+  }).slice(0, 20);
+
+  const recByDate = Object.fromEntries(monthRecords.map(r => [r.date?.slice(0, 10), r]));
+  const daysInMonth = new Date(calYear, calMonth, 0).getDate();
+  const firstDow = new Date(calYear, calMonth - 1, 1).getDay();
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const openEditor = (dateStr) => {
+    const rec = recByDate[dateStr];
+    setEditDate(dateStr);
+    setForm({
+      check_in_time: rec?.check_in_time ? safeDateHM(rec.check_in_time) : '',
+      check_out_time: rec?.check_out_time ? safeDateHM(rec.check_out_time) : '',
+      status: rec?.status && MA_STATUS_OPTIONS.includes(rec.status) ? rec.status : 'present',
+      notes: rec?.notes || '',
+    });
+  };
+
+  function safeDateHM(iso) {
+    // Times are stored as IST digits marked UTC (app-wide convention) —
+    // reading getUTCHours/Minutes back out gives the original IST clock time.
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  }
+
+  const handleSave = async () => {
+    if (!selectedEmp || !editDate) return;
+    if (!form.check_in_time && form.status === 'present') {
+      toast.error('Provide a check-in time, or choose a status like Leave/Absent that needs no punch time');
+      return;
+    }
+    setSaving(true);
+    try {
+      const isPunchStatus = ['present', 'half_day', 'on_duty', 'work_from_home'].includes(form.status);
+      const res = await base44.functions.invoke('adminSetAttendance', {
+        user_id: selectedEmp.user_id,
+        date: editDate,
+        check_in_time: isPunchStatus ? (form.check_in_time || undefined) : undefined,
+        check_out_time: isPunchStatus ? (form.check_out_time || undefined) : undefined,
+        status: isPunchStatus && form.check_in_time ? undefined : form.status, // let punches drive status when both are given
+        notes: form.notes || undefined,
+      });
+      if (res.data?.success) {
+        toast.success(`Attendance saved for ${selectedEmp.display_name || selectedEmp.user?.full_name} — ${editDate}`);
+        setEditDate(null);
+        loadMonth();
+      } else {
+        toast.error(res.data?.error || 'Failed to save');
+      }
+    } catch (e) {
+      toast.error('Failed to save: ' + e.message);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-base font-semibold">Manual Attendance (Admin Only)</h2>
+        <p className="text-xs text-muted-foreground mt-1">
+          Mark any employee present for a specific day with an exact check-in/check-out time, or correct an existing
+          punch time — for any employee, any date. This bypasses the normal biometric/geofence/selfie flow.
+        </p>
+      </div>
+
+      {/* Employee search */}
+      <div className="relative max-w-md">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+        <Input
+          className="pl-8 h-9 text-sm"
+          placeholder="Search employee by name, code, department, or email…"
+          value={empSearch}
+          onChange={e => { setEmpSearch(e.target.value); setSelectedEmp(null); }}
+        />
+        {loadingEmps && <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+      </div>
+
+      {empSearch.trim() && !selectedEmp && (
+        <div className="border rounded-lg max-w-md divide-y max-h-64 overflow-y-auto">
+          {filteredEmps.length === 0 ? (
+            <p className="text-xs text-muted-foreground p-3">No employees match "{empSearch}"</p>
+          ) : filteredEmps.map(e => (
+            <button
+              key={e.id}
+              onClick={() => { setSelectedEmp(e); setEmpSearch(''); }}
+              className="w-full text-left px-3 py-2 hover:bg-muted/50 text-sm flex items-center justify-between"
+            >
+              <span>
+                <span className="font-medium">{e.display_name || e.user?.full_name}</span>
+                <span className="text-muted-foreground"> · {e.employee_code} · {e.department || '—'}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {selectedEmp && (
+        <div className="border rounded-lg p-4 space-y-4 max-w-3xl">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <p className="font-semibold text-sm">{selectedEmp.display_name || selectedEmp.user?.full_name}</p>
+              <p className="text-xs text-muted-foreground">{selectedEmp.employee_code} · {selectedEmp.department || '—'} · {selectedEmp.user?.email}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => { setSelectedEmp(null); setMonthRecords([]); }}>
+              <X className="w-3.5 h-3.5 mr-1" /> Change Employee
+            </Button>
+          </div>
+
+          {/* Calendar month nav */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => { if (calMonth === 1) { setCalMonth(12); setCalYear(y => y - 1); } else setCalMonth(m => m - 1); }}>
+                <ChevronLeft className="w-4 h-4" />
+              </Button>
+              <span className="text-sm font-medium w-36 text-center">{MA_MONTH_NAMES[calMonth - 1]} {calYear}</span>
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => { if (calMonth === 12) { setCalMonth(1); setCalYear(y => y + 1); } else setCalMonth(m => m + 1); }}>
+                <ChevronRight className="w-4 h-4" />
+              </Button>
+            </div>
+            {loadingCal && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+          </div>
+
+          {/* Calendar grid */}
+          <div className="grid grid-cols-7 gap-1.5">
+            {['S','M','T','W','T','F','S'].map((d, i) => (
+              <div key={i} className="text-center text-[10px] font-semibold text-muted-foreground py-1">{d}</div>
+            ))}
+            {Array.from({ length: firstDow }).map((_, i) => <div key={`e${i}`} />)}
+            {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(d => {
+              const dateStr = `${calYear}-${String(calMonth).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+              const rec = recByDate[dateStr];
+              const colorClass = rec ? (MA_STATUS_COLORS[rec.status] || 'bg-gray-50 border-gray-200 text-gray-600') : 'bg-white border-gray-200 text-gray-400';
+              return (
+                <button
+                  key={d}
+                  onClick={() => openEditor(dateStr)}
+                  className={`relative border rounded-md py-1.5 text-[11px] font-medium hover:ring-2 hover:ring-primary/40 transition-shadow ${colorClass} ${dateStr === todayStr ? 'ring-1 ring-primary' : ''}`}
+                  title={rec ? `${rec.status?.replace(/_/g, ' ')}${rec.admin_marked ? ' (admin edited)' : ''}` : 'No record — click to mark'}
+                >
+                  {d}
+                  {rec?.admin_marked && <span className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-primary" />}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-wrap gap-2 text-[10px]">
+            {Object.entries(MA_STATUS_COLORS).map(([status, cls]) => (
+              <span key={status} className={`px-1.5 py-0.5 rounded border ${cls}`}>{status.replace(/_/g, ' ')}</span>
+            ))}
+          </div>
+
+          {/* Edit panel */}
+          {editDate && (
+            <div className="border-t pt-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold">Editing {editDate}</p>
+                <button onClick={() => setEditDate(null)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+              </div>
+
+              <div className="grid sm:grid-cols-3 gap-3">
+                <div>
+                  <Label className="text-xs">Status</Label>
+                  <Select value={form.status} onValueChange={v => setForm(f => ({ ...f, status: v }))}>
+                    <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {MA_STATUS_OPTIONS.map(s => <SelectItem key={s} value={s}>{s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Check-In Time</Label>
+                  <Input type="time" className="h-9 text-sm mt-1" value={form.check_in_time} onChange={e => setForm(f => ({ ...f, check_in_time: e.target.value }))} />
+                </div>
+                <div>
+                  <Label className="text-xs">Check-Out Time</Label>
+                  <Input type="time" className="h-9 text-sm mt-1" value={form.check_out_time} onChange={e => setForm(f => ({ ...f, check_out_time: e.target.value }))} />
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-xs">Notes (optional)</Label>
+                <Input className="h-9 text-sm mt-1" placeholder="Reason for manual edit…" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value.slice(0, 200) }))} />
+              </div>
+
+              <p className="text-[11px] text-muted-foreground">
+                {['present', 'half_day', 'on_duty', 'work_from_home'].includes(form.status)
+                  ? 'A check-in time is required for this status; check-out is optional (leaves the day in progress). Status shown on save reflects computed lateness/half-day rules unless it differs from what you picked.'
+                  : 'This status needs no punch time — check-in/out fields will be ignored.'}
+              </p>
+
+              <Button onClick={handleSave} disabled={saving} className="w-full sm:w-auto">
+                {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
+                {saving ? 'Saving…' : 'Save Attendance'}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Maintenance Tab ────────────────────────────────────────
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const prevMonth = () => { const now = new Date(); return now.getMonth() === 0 ? 12 : now.getMonth(); };
@@ -1972,6 +2251,7 @@ export default function AdminPanel() {
     { id: 'users',      label: 'User Management',    icon: UserCog  },
     { id: 'emp',        label: 'Employee Attrs',     icon: Settings2 },
     { id: 'att_import', label: 'Attendance Import',  icon: Download },
+    { id: 'att_manual', label: 'Manual Attendance',  icon: CalendarClock },
     { id: 'stats',      label: 'Statistics',         icon: BarChart3 },
     { id: 'email',      label: 'Email Settings',     icon: Mail },
     { id: 'ai',         label: 'AI Settings',        icon: Bot },
@@ -2011,6 +2291,7 @@ export default function AdminPanel() {
       {tab === 'users'      && <UsersTab />}
       {tab === 'emp'        && <EmployeeAttrsTab />}
       {tab === 'att_import' && <AttendanceImportTab />}
+      {tab === 'att_manual' && <ManualAttendanceTab />}
       {tab === 'email'      && <EmailTab />}
       {tab === 'ai'         && <AITab />}
       {tab === 'api'        && <ApiIntegrationTab />}

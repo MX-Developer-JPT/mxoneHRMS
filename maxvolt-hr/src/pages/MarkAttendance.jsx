@@ -521,7 +521,15 @@ export default function MarkAttendance() {
 
   const isCheckedIn = todayAttendance && todayAttendance.check_in_time && !todayAttendance.check_out_time;
   const isCheckedOut = todayAttendance && todayAttendance.check_out_time;
-  const canCheckIn = !todayAttendance;
+  // A same-day Attendance record can already exist with no check_in_time —
+  // e.g. a holiday/week_off/leave/absent placeholder, or a stray record from
+  // a failed sync — and canCheckIn used to require todayAttendance to be
+  // completely absent, so those employees got no Check In button at all
+  // (not checked-in, not checked-out, nothing to click). The backend
+  // (markSelfieAttendance) already merges into any existing same-day record
+  // via the raw_punches engine, so the only real gate here is "no check-in
+  // recorded yet".
+  const canCheckIn = !todayAttendance || !todayAttendance.check_in_time;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">

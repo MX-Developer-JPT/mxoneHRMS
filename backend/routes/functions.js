@@ -2320,6 +2320,83 @@ router.post('/:name', async (req, res) => {
       });
     }
 
+    /* ── Admin: mark/edit any employee's attendance for any date ──
+       Admin-only. Two uses: mark someone present with a given check-in/out
+       time (creates the record if none exists), or correct the check-in/out
+       time of an existing record for any day, for any employee. Punch times
+       run through the same buildSessions/computeStatusFromSessions engine
+       every other attendance source uses, so status/working_hours stay
+       consistent with the rest of the app — except an explicit `status`
+       override always wins (e.g. marking a day 'leave'/'absent' with no
+       punches at all). Unlike the self-service endpoints above, this does
+       NOT skip an already-regularised day — an explicit admin edit is
+       allowed to override anything. ── */
+    case 'adminSetAttendance': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { user_id: asUserId, date: asDate, check_in_time: asCheckIn, check_out_time: asCheckOut, status: asOverrideStatus, notes: asNotes } = p;
+      if (!asUserId || !asDate) return res.json({ success: false, error: 'user_id and date required' });
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(asDate)) return res.json({ success: false, error: 'date must be YYYY-MM-DD' });
+      if (!asCheckIn && !asOverrideStatus) return res.json({ success: false, error: 'Provide a check-in time or a status' });
+
+      const asEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [asUserId]);
+      if (!asEmpRow) return res.json({ success: false, error: 'Employee not found' });
+      const asEmp = JSON.parse(asEmpRow.data);
+
+      let asShift = { start_time: '09:00', end_time: '18:00', working_hours: 8, grace_period_minutes: 15 };
+      if (asEmp.shift_id) {
+        const asShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [asEmp.shift_id]);
+        if (asShiftRow) asShift = JSON.parse(asShiftRow.data);
+      }
+
+      const asAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [asUserId, asDate]);
+      const asAtt = asAttRow ? JSON.parse(asAttRow.data) : null;
+
+      let asSessionData, asStatusResult;
+      if (asCheckIn) {
+        const asRawPunches = [{ time: `${asDate}T${asCheckIn}:00.000Z`, device_direction: 'IN' }];
+        if (asCheckOut) asRawPunches.push({ time: `${asDate}T${asCheckOut}:00.000Z`, device_direction: 'OUT' });
+        asSessionData = buildSessions(asRawPunches);
+        const asHalfDayHours = await getHalfDayOverrideHours(asDate, asShift);
+        asStatusResult = computeStatusFromSessions(asSessionData, asShift, asHalfDayHours);
+      } else {
+        // Status-only override (leave/absent/holiday/week_off) — no punches.
+        asSessionData = { raw_punches: [], check_in_time: null, check_out_time: null, working_hours: 0, session_count: 0, is_in_progress: false };
+        asStatusResult = { status: asOverrideStatus };
+      }
+      const asFinalStatus = asOverrideStatus || asStatusResult.status;
+
+      const asId = asAtt?.id || uuidv4();
+      const asAttData = {
+        ...(asAtt || {}), id: asId, user_id: asUserId, date: asDate,
+        ...asSessionData,
+        status: asFinalStatus,
+        shift_id: asEmp.shift_id || null,
+        admin_marked: true,
+        admin_edited_by: cu.id,
+        admin_edited_at: new Date().toISOString(),
+        ...(asNotes ? { notes: asNotes.slice(0, 200) } : {}),
+      };
+      if (asAttRow) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(asAttData), asFinalStatus, asAttRow.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [asId, asUserId, asFinalStatus, JSON.stringify(asAttData)]);
+
+      return res.json({ success: true, attendance: asAttData });
+    }
+
+    /* ── Admin: fetch a month's attendance for one employee — powers the
+       calendar view in the Admin Panel's manual attendance editor. ── */
+    case 'adminGetEmployeeMonthAttendance': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { user_id: agUserId, month: agMonth, year: agYear } = p;
+      if (!agUserId || !agMonth || !agYear) return res.json({ success: false, error: 'user_id, month, year required' });
+      const agStart = `${agYear}-${String(agMonth).padStart(2, '0')}-01`;
+      const agEnd = new Date(agYear, agMonth, 0).toISOString().slice(0, 10);
+      const records = parseEntities(await all(
+        "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' >= $2 AND data::jsonb->>'date' <= $3",
+        [agUserId, agStart, agEnd]
+      ));
+      return res.json({ success: true, records });
+    }
+
     /* ── Field Duty: GPS distance tracking for out-duty staff ── */
     case 'startFieldTrip': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
