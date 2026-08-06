@@ -4020,9 +4020,20 @@ router.post('/:name', async (req, res) => {
       const lft = { horizontal:'left', vertical:'middle' };
       const rgt = { horizontal:'right', vertical:'middle' };
 
-      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' ORDER BY data::jsonb->>'department', data::jsonb->>'display_name'"));
-      const users     = await all("SELECT id, email, display_name, full_name FROM users");
+      const users     = await all("SELECT id, email, display_name, full_name, role, custom_role FROM users");
       const userMap   = Object.fromEntries(users.map(u => [u.id, u]));
+      // HR/admin/recruiter/gate_admin are operators of the app, not
+      // employees — excluded here to match the Employee Directory page.
+      const OPERATOR_ROLES_DIR = ['admin', 'hr', 'recruiter', 'gate_admin'];
+      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' ORDER BY data::jsonb->>'department', data::jsonb->>'display_name'"))
+        .filter(e => !OPERATOR_ROLES_DIR.includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
+      const empByUserId = Object.fromEntries(employees.map(e => [e.user_id, e]));
+      const managerName = (mgrId) => {
+        if (!mgrId) return '';
+        const mgrEmp = empByUserId[mgrId];
+        const mgrUser = userMap[mgrId];
+        return mgrEmp?.display_name || mgrUser?.display_name || mgrUser?.full_name || '';
+      };
       const ssRows    = parseEntities(await all("SELECT data FROM entities WHERE type='SalaryStructure' AND status='active'"));
       const ssMap = {};
       for (const s of ssRows) { if (s.user_id && !ssMap[s.user_id]) ssMap[s.user_id] = s; }
@@ -4040,6 +4051,7 @@ router.post('/:name', async (req, res) => {
         { h:'Date of Joining',  k:'doj',       w:13, bg:'1565C0', sec:'' },
         { h:'Confirmation Date',k:'confDate',  w:15, bg:'1565C0', sec:'' },
         { h:'Work Location',    k:'loc',       w:14, bg:'1565C0', sec:'' },
+        { h:'Reporting Manager',k:'mgr',       w:22, bg:'1565C0', sec:'' },
         { h:'Email',            k:'email',     w:24, bg:'2E7D32', sec:'CONTACT' },
         { h:'Phone',            k:'phone',     w:13, bg:'2E7D32', sec:'' },
         { h:'Personal Email',   k:'persEmail', w:24, bg:'2E7D32', sec:'' },
@@ -4075,7 +4087,7 @@ router.post('/:name', async (req, res) => {
       // Section headers row 3
       const dirSections = [
         { label:'IDENTITY', cols:3, bg:'1A3C5E' },
-        { label:'EMPLOYMENT DETAILS', cols:7, bg:'1565C0' },
+        { label:'EMPLOYMENT DETAILS', cols:8, bg:'1565C0' },
         { label:'CONTACT', cols:3, bg:'2E7D32' },
         { label:'PERSONAL', cols:5, bg:'00695C' },
         { label:'EMERGENCY CONTACT', cols:3, bg:'4E342E' },
@@ -4099,7 +4111,7 @@ router.post('/:name', async (req, res) => {
       const statusFill = { probation:'FFA500', confirmation:'1B5E20', trainee:'1565C0', active:'1B5E20' };
 
       // Data rows
-      const sectionFills = ['EBF5FB','EBF5FB','EBF5FB','E8F5E9','E8F5E9','E8F5E9','F3E5F5','F3E5F5','F3E5F5','F3E5F5','F3E5F5','F3F0FF','F3F0FF','F3F0FF','F3F0FF','F3F0FF','F3F0FF','E3F2FD','E3F2FD','E3F2FD','E3F2FD','FFF3E0','FFF3E0','FFF3E0','FFF3E0','FFF3E0','FFF3E0','E8EAF6','E8EAF6','E8EAF6','E8EAF6'];
+      const sectionFills = ['EBF5FB','EBF5FB','EBF5FB','E8F5E9','E8F5E9','E8F5E9','F3E5F5','F3E5F5','F3E5F5','F3E5F5','F3E5F5','F3E5F5','F3F0FF','F3F0FF','F3F0FF','F3F0FF','F3F0FF','F3F0FF','E3F2FD','E3F2FD','E3F2FD','E3F2FD','FFF3E0','FFF3E0','FFF3E0','FFF3E0','FFF3E0','FFF3E0','E8EAF6','E8EAF6','E8EAF6','E8EAF6'];
       employees.forEach((emp, idx) => {
         const user  = userMap[emp.user_id] || {};
         const isAlt = idx % 2 === 1;
@@ -4107,6 +4119,7 @@ router.post('/:name', async (req, res) => {
           idx+1, emp.employee_code||'', emp.display_name||user.display_name||user.full_name||'',
           emp.department||'', emp.designation||'', emp.employee_status||'', emp.employment_type||'',
           emp.date_of_joining||'', emp.employee_confirmation_date||'', emp.work_location||'',
+          managerName(emp.reporting_manager_id),
           user.email||'', emp.phone||'', emp.personal_email||'',
           emp.date_of_birth||'', emp.gender||'', emp.blood_group||'', emp.father_spouse_name||'', emp.address||'',
           emp.emergency_contact?.name||'', emp.emergency_contact?.phone||'', emp.emergency_contact?.relationship||'',
@@ -4238,6 +4251,155 @@ router.post('/:name', async (req, res) => {
 
       const buf2 = await wb.xlsx.writeBuffer();
       return res.json({ success:true, base64:Buffer.from(buf2).toString('base64'), filename:`Employee_Directory_${new Date().toISOString().slice(0,10)}.xlsx`, total:employees.length });
+    }
+
+    /* ── Department Directory Export (styled Excel) ──────
+       Sheet 1: one row per department — head, headcount, OT flag.
+       Sheet 2: full roster grouped under a banner row per department,
+       each employee's reporting manager resolved by name. ── */
+    case 'exportDepartments': {
+      const ExcelJSD = (await import('exceljs')).default;
+      const wbD = new ExcelJSD.Workbook();
+      wbD.creator = 'Maxvolt One';
+
+      const dFnt = (bold=false,color='000000',size=10) => ({ name:'Arial', bold, color:{argb:`FF${color}`}, size });
+      const dFl  = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
+      const dBd  = () => ({ top:{style:'thin',color:{argb:'FFD5D5D5'}}, left:{style:'thin',color:{argb:'FFD5D5D5'}}, bottom:{style:'thin',color:{argb:'FFD5D5D5'}}, right:{style:'thin',color:{argb:'FFD5D5D5'}} });
+      const dCtr = { horizontal:'center', vertical:'middle' };
+      const dLft = { horizontal:'left', vertical:'middle' };
+
+      const deptRows  = parseEntities(await all("SELECT data FROM entities WHERE type='Department' ORDER BY data::jsonb->>'name'"));
+      const dUsers     = await all("SELECT id, email, display_name, full_name, role, custom_role FROM users");
+      const dUserMap   = Object.fromEntries(dUsers.map(u => [u.id, u]));
+      const OPERATOR_ROLES_D = ['admin', 'hr', 'recruiter', 'gate_admin'];
+      const dEmployees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' ORDER BY data::jsonb->>'department', data::jsonb->>'display_name'"))
+        .filter(e => !OPERATOR_ROLES_D.includes(dUserMap[e.user_id]?.custom_role || dUserMap[e.user_id]?.role));
+      const dEmpByUserId = Object.fromEntries(dEmployees.map(e => [e.user_id, e]));
+      const dManagerName = (mgrId) => {
+        if (!mgrId) return '—';
+        const mgrEmp = dEmpByUserId[mgrId];
+        const mgrUser = dUserMap[mgrId];
+        return mgrEmp?.display_name || mgrUser?.display_name || mgrUser?.full_name || '—';
+      };
+      const headName = (headUserId) => {
+        if (!headUserId) return 'Not Assigned';
+        const headEmp = dEmpByUserId[headUserId];
+        const headUser = dUserMap[headUserId];
+        return headEmp?.display_name || headUser?.display_name || headUser?.full_name || 'Not Assigned';
+      };
+
+      // ── Sheet 1: Department Overview ─────────────────────
+      const wsD1 = wbD.addWorksheet('Department Overview', { views:[{ state:'frozen', xSplit:0, ySplit:3 }] });
+      const deptCols = [
+        { h:'S.No',              w:6  },
+        { h:'Department Name',   w:26 },
+        { h:'Code',              w:10 },
+        { h:'Department Head',   w:24 },
+        { h:'Head Email',        w:26 },
+        { h:'Total Employees',   w:14 },
+        { h:'OT Applicable',     w:13 },
+        { h:'Description',       w:36 },
+      ];
+      deptCols.forEach((c,i) => { wsD1.getColumn(i+1).width = c.w; });
+
+      wsD1.mergeCells(1,1,1,deptCols.length);
+      Object.assign(wsD1.getCell('A1'), { value:'DEPARTMENT DIRECTORY   |   Maxvolt Energy Industries Limited', font:dFnt(true,'FFFFFF',14), fill:dFl('1A3C5E'), alignment:dCtr });
+      wsD1.getRow(1).height = 32;
+      wsD1.mergeCells(2,1,2,deptCols.length);
+      Object.assign(wsD1.getCell('A2'), { value:`Generated: ${new Date().toLocaleString('en-IN')}   |   Total Departments: ${deptRows.length}   |   Total Employees: ${dEmployees.length}`, font:dFnt(false,'FFFFFF',9), fill:dFl('2D6A9F'), alignment:dLft });
+      wsD1.getRow(2).height = 18;
+
+      const hRowD1 = wsD1.getRow(3);
+      hRowD1.height = 22;
+      deptCols.forEach((c,i) => Object.assign(hRowD1.getCell(i+1), { value:c.h, font:dFnt(true,'FFFFFF',9), fill:dFl('1565C0'), alignment:{ ...dCtr, wrapText:true }, border:dBd() }));
+
+      deptRows.forEach((dept, idx) => {
+        const deptEmpCount = dEmployees.filter(e => e.department === dept.name).length;
+        const isAlt = idx % 2 === 1;
+        const row = [ idx+1, dept.name||'', dept.code||'', headName(dept.head_user_id), dept.head_user_id ? (dUserMap[dept.head_user_id]?.email||'') : '', deptEmpCount, dept.ot_applicable ? 'Yes' : 'No', dept.description||'' ];
+        const wsRow = wsD1.getRow(4 + idx);
+        wsRow.height = 18;
+        row.forEach((val, ci) => {
+          const cell = wsRow.getCell(ci+1);
+          cell.value = val; cell.border = dBd(); cell.font = dFnt(false,'222222',9);
+          cell.fill = dFl(isAlt ? 'EBF5FB' : 'FFFFFF');
+          cell.alignment = (ci === 0 || ci === 5) ? dCtr : dLft;
+          if (ci === 6) { cell.alignment = dCtr; cell.font = dFnt(true, dept.ot_applicable ? '1B5E20' : '999999', 9); }
+        });
+      });
+
+      // ── Sheet 2: Department Rosters ───────────────────────
+      const wsD2 = wbD.addWorksheet('Department Rosters', { views:[{ state:'frozen', xSplit:0, ySplit:2 }] });
+      const rosterCols = [
+        { h:'S.No',              w:6  },
+        { h:'Emp Code',          w:11 },
+        { h:'Full Name',         w:24 },
+        { h:'Designation',       w:20 },
+        { h:'Reporting Manager', w:22 },
+        { h:'Email',             w:26 },
+        { h:'Phone',             w:13 },
+        { h:'Date of Joining',   w:14 },
+      ];
+      rosterCols.forEach((c,i) => { wsD2.getColumn(i+1).width = c.w; });
+      wsD2.mergeCells(1,1,1,rosterCols.length);
+      Object.assign(wsD2.getCell('A1'), { value:'DEPARTMENT ROSTERS   |   Maxvolt Energy Industries Limited', font:dFnt(true,'FFFFFF',14), fill:dFl('1A3C5E'), alignment:dCtr });
+      wsD2.getRow(1).height = 32;
+      wsD2.mergeCells(2,1,2,rosterCols.length);
+      Object.assign(wsD2.getCell('A2'), { value:`Generated: ${new Date().toLocaleString('en-IN')}`, font:dFnt(false,'FFFFFF',9), fill:dFl('2D6A9F'), alignment:dLft });
+      wsD2.getRow(2).height = 18;
+
+      let rRow = 3;
+      const deptNamesInOrder = [...deptRows.map(d => d.name), ...(() => {
+        const known = new Set(deptRows.map(d => d.name));
+        return [...new Set(dEmployees.map(e => e.department).filter(d => d && !known.has(d)))].sort();
+      })()];
+
+      for (const deptName of deptNamesInOrder) {
+        const dept = deptRows.find(d => d.name === deptName);
+        const deptEmps = dEmployees.filter(e => e.department === deptName);
+
+        // Department banner row
+        wsD2.mergeCells(rRow,1,rRow,rosterCols.length);
+        Object.assign(wsD2.getCell(rRow,1), {
+          value: `${deptName}   |   Head: ${dept ? headName(dept.head_user_id) : 'Not Assigned'}   |   ${deptEmps.length} employee${deptEmps.length===1?'':'s'}`,
+          font: dFnt(true,'FFFFFF',10.5), fill: dFl('1565C0'), alignment: dLft, border: dBd(),
+        });
+        wsD2.getRow(rRow).height = 22;
+        rRow++;
+
+        // Column header row for this department's roster
+        rosterCols.forEach((c,i) => Object.assign(wsD2.getRow(rRow).getCell(i+1), { value:c.h, font:dFnt(true,'FFFFFF',9), fill:dFl('4E7AB5'), alignment:{ ...dCtr, wrapText:true }, border:dBd() }));
+        wsD2.getRow(rRow).height = 18;
+        rRow++;
+
+        if (deptEmps.length === 0) {
+          wsD2.mergeCells(rRow,1,rRow,rosterCols.length);
+          Object.assign(wsD2.getCell(rRow,1), { value:'No employees currently assigned to this department', font:dFnt(false,'888888',9), alignment:dCtr, border:dBd(), fill:dFl('FAFAFA') });
+          wsD2.getRow(rRow).height = 16;
+          rRow++;
+        } else {
+          deptEmps.forEach((emp, idx) => {
+            const eUser = dUserMap[emp.user_id] || {};
+            const isAlt = idx % 2 === 1;
+            const row = [ idx+1, emp.employee_code||'', emp.display_name||eUser.display_name||eUser.full_name||'', emp.designation||'', dManagerName(emp.reporting_manager_id), eUser.email||'', emp.phone||'', emp.date_of_joining||'' ];
+            const wsRow = wsD2.getRow(rRow);
+            wsRow.height = 16;
+            row.forEach((val, ci) => {
+              const cell = wsRow.getCell(ci+1);
+              cell.value = val; cell.border = dBd(); cell.font = dFnt(false,'222222',9);
+              cell.fill = dFl(isAlt ? 'F3F8FF' : 'FFFFFF');
+              cell.alignment = (ci === 0) ? dCtr : dLft;
+            });
+            rRow++;
+          });
+        }
+
+        // Spacer row between departments
+        rRow++;
+      }
+
+      const bufD = await wbD.xlsx.writeBuffer();
+      return res.json({ success:true, base64:Buffer.from(bufD).toString('base64'), filename:`Department_Directory_${new Date().toISOString().slice(0,10)}.xlsx`, total_departments:deptRows.length, total_employees:dEmployees.length });
     }
 
     /* ── Salary Sheet Export (styled Excel) ─────────────── */

@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Building2, Users, Clock, Upload, FileSpreadsheet, CheckCircle2, AlertCircle, ChevronsUpDown, Check } from 'lucide-react';
+import { Plus, Building2, Users, Clock, Upload, Download, FileSpreadsheet, CheckCircle2, AlertCircle, ChevronsUpDown, Check } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Switch } from "@/components/ui/switch";
@@ -29,6 +29,7 @@ export default function DepartmentManagement() {
   const [loading, setLoading] = useState(true);
   const [showManageEmployees, setShowManageEmployees] = useState(false);
   const [selectedDepartment, setSelectedDepartment] = useState(null);
+  const [exportingDepts, setExportingDepts] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -157,6 +158,29 @@ export default function DepartmentManagement() {
     reader.readAsArrayBuffer(file);
   };
 
+  const handleExportDepartments = async () => {
+    setExportingDepts(true);
+    try {
+      const res = await base44.functions.invoke('exportDepartments', {});
+      const d = res.data;
+      if (d?.base64) {
+        const bin = atob(d.base64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = d.filename || 'Department_Directory.xlsx'; a.click();
+        URL.revokeObjectURL(url);
+        toast.success(`Exported ${d.total_departments} department(s), ${d.total_employees} employee(s)`);
+      } else {
+        toast.error('Export failed');
+      }
+    } catch (err) {
+      toast.error('Export error: ' + err.message);
+    }
+    setExportingDepts(false);
+  };
+
   const handleImportDepts = async () => {
     if (importRows.length === 0) return;
     setImporting(true);
@@ -188,7 +212,10 @@ export default function DepartmentManagement() {
             <h1 className="text-2xl md:text-3xl font-bold">Department Management</h1>
             <p className="text-gray-600 mt-1 text-sm md:text-base">Create and manage departments</p>
           </div>
-          <div className="flex gap-2 w-full sm:w-auto">
+          <div className="flex gap-2 w-full sm:w-auto flex-wrap">
+            <Button variant="outline" className="w-full sm:w-auto" onClick={handleExportDepartments} disabled={exportingDepts}>
+              <Download className="w-4 h-4 mr-2" /> {exportingDepts ? 'Exporting...' : 'Export Department List'}
+            </Button>
             {/* Import departments + assignments dialog */}
             <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
               <DialogTrigger asChild>
