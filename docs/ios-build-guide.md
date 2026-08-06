@@ -138,20 +138,46 @@ source file, and the password you chose is `IOS_DIST_CERT_PASSWORD`.
 ## 6. Convert files to base64
 
 GitHub Secrets only accept text, so the certificate and profile (both
-binary files) need to be base64-encoded first. In Git Bash, from the
-`~/ios-cert` folder:
+binary files) need to be base64-encoded first.
+
+**First — check the real filename of your provisioning profile.** Apple
+names the downloaded file after whatever you typed as the Profile Name in
+step 5.7, not literally `profile.mobileprovision` — e.g. it might be
+`Maxvolt_One.mobileprovision`. Run `ls` in your `~/ios-cert` folder and use
+the exact name you see.
+
+**On a Mac**, the built-in `base64` is BSD-style and does **not** support
+the `-w` flag — using it produces a silently empty output file. Use `-i`
+(input) / `-o` (output) instead:
 
 ```bash
-base64 -w 0 distribution.p12 > distribution.p12.base64.txt
-base64 -w 0 profile.mobileprovision > profile.mobileprovision.base64.txt
+cd ~/ios-cert
+base64 -i distribution.p12 -o distribution.p12.base64.txt
+base64 -i Maxvolt_One.mobileprovision -o profile.mobileprovision.base64.txt   # use YOUR real filename
 ```
 
-(The `.mobileprovision` file downloaded in step 5 might have a different
-exact filename — check what's in your folder and adjust the command.)
+**On Windows (Git Bash)**, the GNU version is used instead, which needs `-w 0`:
 
-Each `.txt` file now contains one long line of text — that's what you paste
-into GitHub in the next step. **Never commit these files or paste them
-anywhere public** — they're equivalent to a password.
+```bash
+cd ~/ios-cert
+base64 -w 0 distribution.p12 > distribution.p12.base64.txt
+base64 -w 0 Maxvolt_One.mobileprovision > profile.mobileprovision.base64.txt   # use YOUR real filename
+```
+
+**Sanity-check before moving on** — an empty output file is the single most
+common failure point here. Confirm both files have real content:
+
+```bash
+ls -la *.base64.txt
+```
+
+Neither should show `0` bytes. If one does, the *source* file (the `.p12`
+or `.mobileprovision`) was itself empty or missing — check that first with
+`ls -la distribution.p12` and `ls -la *.mobileprovision`.
+
+Each `.txt` file now contains the encoded certificate/profile — that's what
+you paste into GitHub in the next step. **Never commit these files or paste
+them anywhere public** — they're equivalent to a password.
 
 ---
 
@@ -195,7 +221,11 @@ TestFlight automatically, you need an **App Store Connect API Key**:
      `APPSTORE_API_ISSUER_ID`.
 5. Click **Download API Key** — **you can only download this once ever**,
    so save it immediately. It's a file named like `AuthKey_A1B2C3D4E5.p8`.
-6. Base64-encode it the same way as before:
+6. Base64-encode it the same way as step 6 above — on a Mac:
+   ```bash
+   base64 -i AuthKey_A1B2C3D4E5.p8 -o apikey.base64.txt
+   ```
+   on Windows (Git Bash):
    ```bash
    base64 -w 0 AuthKey_A1B2C3D4E5.p8 > apikey.base64.txt
    ```
@@ -261,10 +291,11 @@ auto-upload — it's the only fully Windows-only path.
 
 | Symptom | Likely cause / fix |
 |---|---|
+| `distribution.p12.base64.txt` / `profile.mobileprovision.base64.txt` is empty | On a Mac, `base64 -w 0` silently fails (BSD `base64` doesn't have `-w`) — use `base64 -i infile -o outfile` instead. Also confirm the *source* file itself isn't 0 bytes first: `ls -la distribution.p12 *.mobileprovision`. |
 | `No signing certificate "iOS Distribution" found` | The `.p12` or its password is wrong, or wasn't imported correctly. Double-check `IOS_DIST_CERT_PASSWORD` matches exactly what you set in step 4.3. |
 | `Provisioning profile doesn't match the entitlements` | The profile in step 5 wasn't built against the same App ID/certificate, or push entitlements changed since the App ID was registered — regenerate the profile after fixing capabilities. |
 | `No profiles for 'com.maxvolt.hr' were found` | `IOS_PROVISIONING_PROFILE_NAME` doesn't exactly match the profile name from step 5.7 (check for typos/extra spaces). |
-| Workflow fails at "Import signing certificate" step | One of the base64 secrets is malformed — re-run the `base64 -w 0` command and make sure you copied the *entire* single-line output, no line breaks. |
+| Workflow fails at "Import signing certificate" step | One of the base64 secrets is malformed — re-run the base64 command for your OS (see step 6) and make sure you copied the *entire* output, exactly as produced. |
 | TestFlight upload fails with an authentication error | `APPSTORE_API_KEY_ID` / `APPSTORE_API_ISSUER_ID` swapped, or the API key's access role is too low — regenerate it with **App Manager** or **Admin** access. |
 | Build succeeds but app crashes immediately on device | Usually unrelated to signing — check the app's own runtime logs (Xcode's Console app on a real Mac, or ask for a debug build instead). |
 

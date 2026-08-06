@@ -77,8 +77,10 @@ jobs:
           CERT_PATH="$RUNNER_TEMP/dist_cert.p12"
           PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
 
-          echo -n "$CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
-          echo -n "$PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+          # macOS's base64 is BSD-style — it takes -D to decode, not GNU's
+          # --decode (which errors out silently on this runner).
+          echo -n "$CERT_P12_BASE64" | base64 -D -o "$CERT_PATH"
+          echo -n "$PROFILE_BASE64" | base64 -D -o "$PROFILE_PATH"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -163,7 +165,7 @@ jobs:
         run: |
           set -e
           mkdir -p ~/.appstoreconnect/private_keys
-          echo -n "$APPSTORE_API_KEY_BASE64" | base64 --decode -o ~/.appstoreconnect/private_keys/AuthKey_${APPSTORE_API_KEY_ID}.p8
+          echo -n "$APPSTORE_API_KEY_BASE64" | base64 -D -o ~/.appstoreconnect/private_keys/AuthKey_${APPSTORE_API_KEY_ID}.p8
           IPA_PATH=$(ls build/ipa/*.ipa | head -n1)
           xcrun altool --upload-app -f "$IPA_PATH" -t ios \
             --apiKey "$APPSTORE_API_KEY_ID" --apiIssuer "$APPSTORE_API_ISSUER_ID"
