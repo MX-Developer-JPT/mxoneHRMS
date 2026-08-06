@@ -1,18 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-// html2canvas-pro, not plain html2canvas — the original can't parse the
-// `rgb(r g b / var(--tw-bg-opacity))` colour syntax Tailwind 3.4 emits for
-// every utility class (bg-white, border colours, etc.), and silently
-// renders anything it can't parse as solid black. That turned every card
-// in the exported PDF into a black box. -pro is a maintained fork with
-// modern CSS colour-function support (this exact case, oklch, color-mix).
-import html2canvas from 'html2canvas-pro';
-import { jsPDF } from 'jspdf';
 import * as XLSX from 'xlsx';
 import { base44 } from '@/api/base44Client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut, Download, Loader2, Building2, Crown, FileSpreadsheet } from 'lucide-react';
+import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut, Building2, Crown, FileSpreadsheet } from 'lucide-react';
 import { toast } from 'sonner';
 
 const AVATAR_COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-emerald-500', 'bg-orange-500', 'bg-pink-500', 'bg-teal-500', 'bg-indigo-500', 'bg-rose-500'];
@@ -55,7 +47,7 @@ function accentFor(dept) {
   return DEPT_ACCENTS[dept];
 }
 
-function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, cardRef, hidePhotos }) {
+function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, cardRef }) {
   return (
     <div
       ref={cardRef}
@@ -64,8 +56,8 @@ function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, c
       title={hasKids ? `View ${node.name}'s team` : node.name}
     >
       <div className="p-3 flex flex-col items-center text-center gap-1.5">
-        {node.profile_picture_url && !hidePhotos ? (
-          <img src={node.profile_picture_url} alt={node.name} className="w-12 h-12 rounded-full object-cover shadow" crossOrigin="anonymous" />
+        {node.profile_picture_url ? (
+          <img src={node.profile_picture_url} alt={node.name} className="w-12 h-12 rounded-full object-cover shadow" />
         ) : (
           <div className={`w-12 h-12 rounded-full ${colorFor(node.name)} text-white flex items-center justify-center text-sm font-bold shrink-0`}>
             {initials(node.name)}
@@ -100,7 +92,7 @@ function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, c
 // to that bar — built with two half-width border segments per child (left
 // half connects to the previous sibling, right half to the next) so no
 // background-colour-matching hacks are needed for light/dark mode.
-function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs, isSibling, hidePhotos }) {
+function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs, isSibling }) {
   const hasKids = node.children.length > 0;
   const isCollapsed = collapsed.has(node.user_id);
   const isMatch = matchSet.has(node.user_id);
@@ -115,7 +107,6 @@ function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs
         onToggle={toggle}
         onFocus={onFocus}
         cardRef={isMatch ? (el) => { if (el) nodeRefs.current[node.user_id] = el; } : undefined}
-        hidePhotos={hidePhotos}
       />
       {hasKids && !isCollapsed && (
         <>
@@ -126,7 +117,7 @@ function ChartNode({ node, depth, collapsed, toggle, matchSet, onFocus, nodeRefs
                 {i > 0 && <div className="absolute top-0 left-0 w-1/2 h-0.5 bg-gray-300 dark:bg-gray-600" />}
                 {i < node.children.length - 1 && <div className="absolute top-0 right-0 w-1/2 h-0.5 bg-gray-300 dark:bg-gray-600" />}
                 <div className="absolute top-0 left-1/2 -translate-x-1/2 w-0.5 h-6 bg-gray-300 dark:bg-gray-600" />
-                <ChartNode node={child} depth={depth + 1} collapsed={collapsed} toggle={toggle} matchSet={matchSet} onFocus={onFocus} nodeRefs={nodeRefs} isSibling hidePhotos={hidePhotos} />
+                <ChartNode node={child} depth={depth + 1} collapsed={collapsed} toggle={toggle} matchSet={matchSet} onFocus={onFocus} nodeRefs={nodeRefs} isSibling />
               </div>
             ))}
           </div>
@@ -204,13 +195,6 @@ export default function OrgChart() {
   const [collapsed, setCollapsed] = useState(new Set());
   const [focusedId, setFocusedId] = useState(null); // drill-down: view just this person's team
   const [zoom, setZoom] = useState(1);
-  const [downloadingPdf, setDownloadingPdf] = useState(false);
-  // While exporting, profile photos are swapped for initials avatars —
-  // html2canvas taints its whole output canvas the moment it touches a
-  // cross-origin image with no CORS headers, which silently breaks the
-  // PDF (addImage/toDataURL throws) for the entire org, not just the one
-  // photo. Initials avatars are plain CSS, never a network image.
-  const [pdfExportMode, setPdfExportMode] = useState(false);
   const nodeRefs = useRef({});
   const chartRef = useRef(null);
 
@@ -317,108 +301,7 @@ export default function OrgChart() {
   const focusResult = focusedId ? findNodeAndTrail(activeRoots, focusedId) : null;
   const displayRoots = focusResult ? [focusResult.node] : activeRoots;
 
-  // Exports whichever tree is currently open — the full organisation, or a
-  // single department — not just a drilled-down subteam even if one is
-  // currently focused, as a multi-page landscape PDF tiled like a
-  // poster/Gantt-chart printout rather than shrunk to fit one page, since a
-  // large tree at readable card size is far wider/taller than A4.
-  const downloadPdf = async () => {
-    setDownloadingPdf(true);
-    const prevCollapsed = collapsed, prevZoom = zoom, prevFocusedId = focusedId;
-    setFocusedId(null);
-    setCollapsed(new Set());
-    setZoom(1);
-    setPdfExportMode(true);
-    try {
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-      await new Promise(r => setTimeout(r, 300)); // let a large (~250-node) expansion finish reflowing
-      const el = chartRef.current;
-      if (!el) throw new Error('Chart not ready');
-      // No cross-origin <img> should remain once pdfExportMode swapped every
-      // card to its initials avatar, but confirm rather than assume — a
-      // leftover image is exactly what silently taints the whole canvas.
-      const images = Array.from(el.querySelectorAll('img'));
-      if (images.length) throw new Error(`${images.length} photo(s) still present — refresh and try again`);
-
-      const isDark = document.documentElement.classList.contains('dark');
-      const bg = isDark ? '#0b0b0d' : '#ffffff';
-
-      // Capture each root's subtree as its own canvas rather than the whole
-      // chartRef in one shot. A "Full Company" export with several dozen
-      // orphaned/root-level employees (broken or missing manager links)
-      // renders as that many separate trees side-by-side — a single capture
-      // of the lot is easily tens of thousands of pixels wide. Real browsers
-      // cap canvas dimensions (commonly ~16384px or ~268M px² total); past
-      // that limit html2canvas returns a canvas that still *reports* the
-      // requested width/height but whose pixels are blank, which silently
-      // produced a many-page PDF of nothing rather than a visible error.
-      // Capturing per-root keeps each canvas bounded by one manager's team.
-      const MAX_CANVAS_AREA = 16000 * 16000;
-      const rootEls = Array.from(el.children);
-      if (!rootEls.length) throw new Error('Nothing to export');
-
-      const TILE_W = 1600, TILE_H = 1000; // px per PDF page, landscape poster tiles
-      const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [TILE_W, TILE_H] });
-      const dateStr = new Date().toLocaleDateString('en-IN');
-      const pdfTitle = selectedDept === '__ALL__' ? 'Organisation Chart — Full Company' : `Organisation Chart — ${selectedDept} Department`;
-
-      // First pass: capture every root and count total tiles up front, so
-      // the "page X of Y" footer is accurate without a second render pass.
-      const captures = [];
-      let skipped = 0;
-      for (const rootEl of rootEls) {
-        const canvas = await html2canvas(rootEl, { scale: 2, backgroundColor: bg, useCORS: true });
-        if (canvas.width * canvas.height === 0) continue;
-        if (canvas.width * canvas.height > MAX_CANVAS_AREA) { skipped++; continue; }
-        captures.push(canvas);
-      }
-      if (!captures.length) throw new Error('Nothing captured — try a smaller view (a single department) instead of the full company');
-
-      const totalPages = captures.reduce((sum, c) => sum + Math.ceil(c.width / TILE_W) * Math.ceil(c.height / TILE_H), 0);
-
-      let page = 0;
-      for (const canvas of captures) {
-        const cols = Math.ceil(canvas.width / TILE_W);
-        const rows = Math.ceil(canvas.height / TILE_H);
-        for (let r = 0; r < rows; r++) {
-          for (let c = 0; c < cols; c++) {
-            const sx = c * TILE_W, sy = r * TILE_H;
-            const sw = Math.min(TILE_W, canvas.width - sx);
-            const sh = Math.min(TILE_H, canvas.height - sy);
-            const tile = document.createElement('canvas');
-            tile.width = TILE_W; tile.height = TILE_H;
-            const tctx = tile.getContext('2d');
-            tctx.fillStyle = bg; tctx.fillRect(0, 0, TILE_W, TILE_H);
-            tctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
-            if (page > 0) pdf.addPage([TILE_W, TILE_H], 'landscape');
-            // JPEG, not PNG — a full-company export can be 100+ pages, and
-            // PNG's lossless encoding of a mostly-flat-colour chart made the
-            // file hundreds of MB. Quality 0.85 is visually lossless here.
-            pdf.addImage(tile.toDataURL('image/jpeg', 0.85), 'JPEG', 0, 0, TILE_W, TILE_H);
-            pdf.setFontSize(10);
-            pdf.setTextColor(isDark ? 200 : 90);
-            pdf.text(`${pdfTitle} — generated ${dateStr} — page ${page + 1} of ${totalPages}`, 12, TILE_H - 10);
-            page++;
-          }
-        }
-      }
-      if (skipped > 0) toast.warning(`${skipped} team(s) were too large to render and were left out of the PDF — try exporting that department separately.`);
-      const fileLabel = selectedDept === '__ALL__' ? 'full-company' : (selectedDept || 'org').toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      pdf.save(`org-chart-${fileLabel}-${new Date().toISOString().slice(0, 10)}.pdf`);
-    } catch (e) {
-      toast.error('Failed to generate PDF: ' + e.message);
-    } finally {
-      setCollapsed(prevCollapsed);
-      setZoom(prevZoom);
-      setFocusedId(prevFocusedId);
-      setPdfExportMode(false);
-      setDownloadingPdf(false);
-    }
-  };
-
-  // A plain tabular export of whichever view is open — doesn't depend on
-  // html2canvas/browser rendering at all, so it's a reliable fallback
-  // regardless of how large or unusually-shaped the visual chart is.
+  // A plain tabular export of whichever view is open.
   const downloadExcel = () => {
     if (!activeRoots.length) return;
     const rows = [];
@@ -481,15 +364,9 @@ export default function OrgChart() {
           )}
           <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></Button>
           {selectedDept !== null && (
-            <>
-              <Button variant="outline" size="sm" onClick={downloadPdf} disabled={downloadingPdf || loading || activeRoots.length === 0} title="Download this chart as a multi-page PDF">
-                {downloadingPdf ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}
-                {downloadingPdf ? 'Generating…' : 'Download PDF'}
-              </Button>
-              <Button variant="outline" size="sm" onClick={downloadExcel} disabled={loading || activeRoots.length === 0} title="Export this hierarchy as a spreadsheet — a plain-text fallback that always renders correctly">
-                <FileSpreadsheet className="w-4 h-4 mr-1" /> Export Excel
-              </Button>
-            </>
+            <Button variant="outline" size="sm" onClick={downloadExcel} disabled={loading || activeRoots.length === 0} title="Export this hierarchy as a spreadsheet">
+              <FileSpreadsheet className="w-4 h-4 mr-1" /> Export Excel
+            </Button>
           )}
         </div>
       </div>
@@ -585,7 +462,7 @@ export default function OrgChart() {
           <div className="overflow-auto pb-8 pt-2 max-h-[75vh]" onWheel={handleWheel}>
             <div ref={chartRef} className="min-w-max flex justify-center gap-10" style={{ zoom }}>
               {displayRoots.map(r => (
-                <ChartNode key={r.user_id} node={r} depth={0} collapsed={effectiveCollapsed} toggle={toggle} matchSet={matchSet} onFocus={focus} nodeRefs={nodeRefs} hidePhotos={pdfExportMode} />
+                <ChartNode key={r.user_id} node={r} depth={0} collapsed={effectiveCollapsed} toggle={toggle} matchSet={matchSet} onFocus={focus} nodeRefs={nodeRefs} />
               ))}
             </div>
           </div>
