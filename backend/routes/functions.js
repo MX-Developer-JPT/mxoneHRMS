@@ -647,6 +647,170 @@ async function notify(userId, { title, message, type = 'info', link = '' }) {
   } catch {}
 }
 
+// Downloads a resume file and extracts its raw text — PDF via pdf-parse,
+// DOCX via mammoth. No AI involved here, just the file read; returns
+// whatever text it found (or an explanation of why it couldn't). Shared by
+// performResumeParse (below) and anything else that needs the raw text
+// without the full AI-parse-and-persist flow.
+async function extractResumeText(fileUrl) {
+  let resumeText = '';
+  let extractionError = '';
+  if (!fileUrl) return { resumeText, extractionError: 'No resume file on record' };
+  try {
+    const fileRes = await fetch(fileUrl);
+    if (fileRes.ok) {
+      const buf = Buffer.from(await fileRes.arrayBuffer());
+      const lowerUrl = fileUrl.toLowerCase();
+      const contentType = fileRes.headers.get('content-type') || '';
+      if (lowerUrl.endsWith('.pdf') || contentType.includes('pdf')) {
+        const { PDFParse } = await import('pdf-parse');
+        const parser = new PDFParse({ data: new Uint8Array(buf) });
+        const textResult = await parser.getText();
+        await parser.destroy();
+        resumeText = (textResult.text || '').trim();
+      } else if (lowerUrl.endsWith('.docx') || contentType.includes('officedocument.wordprocessingml')) {
+        const mammoth = (await import('mammoth')).default;
+        const result = await mammoth.extractRawText({ buffer: buf });
+        resumeText = (result.value || '').trim();
+      } else {
+        extractionError = 'Unsupported resume file format for text extraction (only PDF and DOCX are supported)';
+      }
+      if (!resumeText && !extractionError) extractionError = 'Resume file contained no extractable text (likely a scanned/image-only document)';
+    } else {
+      extractionError = `Could not download resume file (HTTP ${fileRes.status})`;
+    }
+  } catch (e) {
+    extractionError = `Resume text extraction failed: ${e.message}`;
+    console.error('[extractResumeText] failed:', e.message);
+  }
+  return { resumeText, extractionError };
+}
+
+// Reads the candidate's actual resume file, has the AI extract structured
+// data GROUNDED IN THAT TEXT (not guessed from the application form), and
+// persists it as a ParsedResume entity linked via candidate.parsed_resume_id.
+// This is the single source of truth for "what does this candidate's CV
+// actually say" — used by case 'parseResume' (explicit user action) AND by
+// case 'scoreCandidate' (auto-parses on first score if not already parsed),
+// so scoring is never CV-blind the way it silently used to be.
+async function performResumeParse(candidate_id, resume_url, candData) {
+  const cand = candData || {};
+  const fileUrl = resume_url || cand.resume_url || '';
+  const { resumeText, extractionError } = await extractResumeText(fileUrl);
+  const extractionMethod = resumeText ? 'file_text' : 'form_inference';
+
+  const resumeExcerpt = resumeText.slice(0, 12000);
+  const jsonSchema = `{
+  "resume_headline": "one-line professional headline",
+  "professional_summary": "2-3 sentence professional summary",
+  "current_location": "city",
+  "preferred_location": "city or 'Open to relocation'",
+  "total_experience_years": number,
+  "relevant_experience_years": number,
+  "notice_period_days": number (0 for immediate, 30/60/90 for others),
+  "current_designation": "job title",
+  "current_company": "company name",
+  "previous_companies": ["company1", "company2"],
+  "previous_designations": ["title1", "title2"],
+  "primary_skills": ["skill1", "skill2", "skill3"],
+  "secondary_skills": ["skill1", "skill2"],
+  "tools_and_platforms": ["tool1", "tool2"],
+  "certifications": ["cert1"],
+  "degree": "degree name",
+  "university": "university name",
+  "specialization": "field",
+  "passing_year": 2018,
+  "gpa_percentage": "75%",
+  "projects": [{"name": "project", "description": "desc", "technologies": "tech stack"}],
+  "achievements": ["achievement1", "achievement2"],
+  "linkedin_url": null,
+  "github_url": null,
+  "portfolio_url": null,
+  "ats_score": number (0-100),
+  "profile_completeness_score": number (0-100),
+  "ats_issues": ["issue1"],
+  "keyword_density_flag": false
+}`;
+
+  const prompt = resumeExcerpt
+    ? `You are an expert resume parser. Extract structured data from the ACTUAL resume text below — every field must be grounded in this text, do not invent skills, employers, or projects that aren't present in it. Use the candidate's submitted profile only to fill genuinely missing contact/location fields.
+
+RESUME TEXT:
+"""
+${resumeExcerpt}
+"""
+
+Submitted profile (context only — the resume text above is authoritative for skills/experience/education):
+Name: ${cand.full_name || cand.name || 'Not provided'}
+Position Applied: ${cand.position_applied || 'Not specified'}
+Email: ${cand.email || 'Not specified'}
+Phone: ${cand.phone || 'Not specified'}
+
+Return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
+${jsonSchema}`
+    : `No resume file text could be extracted (${extractionError}), so this is a best-effort inference from the candidate's submitted profile only — be conservative and set fields you cannot reasonably infer to null or empty arrays rather than fabricating specifics.
+
+Candidate Profile:
+Name: ${cand.full_name || cand.name || 'Not provided'}
+Position Applied: ${cand.position_applied || 'Not specified'}
+Department: ${cand.department || 'Not specified'}
+Experience Years: ${cand.experience_years || 'Not specified'}
+Current Company: ${cand.current_company || 'Not specified'}
+Current CTC: ${cand.current_ctc ? '₹' + cand.current_ctc : 'Not specified'}
+Expected CTC: ${cand.expected_ctc ? '₹' + cand.expected_ctc : 'Not specified'}
+Notice Period: ${cand.notice_period || 'Not specified'}
+Source: ${cand.source || 'Not specified'}
+Email: ${cand.email || 'Not specified'}
+Phone: ${cand.phone || 'Not specified'}
+
+Return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
+${jsonSchema}`;
+
+  let parsed;
+  try {
+    parsed = await callAI(prompt, { json: true });
+  } catch (e) {
+    return { success: false, error: `AI parsing failed: ${e.message}` };
+  }
+  if (!parsed) return { success: false, error: 'AI returned invalid JSON' };
+
+  const parsedId = uuidv4();
+  const parsedData = {
+    id: parsedId,
+    candidate_id,
+    resume_url: fileUrl,
+    parse_status: 'completed',
+    parsed_at: new Date().toISOString(),
+    extraction_method: extractionMethod,
+    extraction_note: extractionMethod === 'form_inference' ? extractionError : '',
+    ...parsed,
+  };
+  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ParsedResume',$2,'completed',$3)", [parsedId, candidate_id, JSON.stringify(parsedData)]);
+
+  // Link parsed resume to candidate, and mirror skills/education onto the
+  // Candidate record itself — these fields exist on Candidate but nothing
+  // ever populated them before, which is exactly why scoring against them
+  // silently scored against "Not specified" every time. Re-fetch fresh
+  // (rather than trust the possibly-stale candData param) so this doesn't
+  // clobber any change made elsewhere while extraction/AI-parsing ran.
+  const skillsList = [...(parsed.primary_skills || []), ...(parsed.secondary_skills || [])];
+  const educationStr = [parsed.degree, parsed.specialization, parsed.university].filter(Boolean).join(', ');
+  const freshCandRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+  if (freshCandRow) {
+    const freshCand = JSON.parse(freshCandRow.data);
+    const updCand = {
+      ...freshCand,
+      parsed_resume_id: parsedId,
+      ...(skillsList.length ? { skills: skillsList } : {}),
+      ...(educationStr ? { education: educationStr } : {}),
+    };
+    await run("UPDATE entities SET data=$1 WHERE type='Candidate' AND id=$2", [JSON.stringify(updCand), candidate_id]);
+  }
+
+  const skills_extracted = skillsList.length + (parsed.tools_and_platforms?.length || 0);
+  return { success: true, parsedId, parsedData, skills_extracted, extraction_method: extractionMethod };
+}
+
 // The SINGLE source of truth for leave approval — advances/finalizes one
 // Leave request. Used by case 'processLeaveAction' (single approve/reject
 // from the Leave Requests page) AND by bulk approve/reject, so both share
@@ -6693,161 +6857,50 @@ router.post('/:name', async (req, res) => {
       const { candidate_id, resume_url } = p;
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       const cand = cRow ? JSON.parse(cRow.data) : {};
-      const fileUrl = resume_url || cand.resume_url || '';
 
-      // Actually read the uploaded resume file's text before asking the AI to
-      // parse it — previously this prompt never looked at the file at all and
-      // just asked the AI to "infer reasonable details" from the candidate's
-      // own form submission, which produces plausible-looking but fabricated
-      // skills/education/projects. Real file text (when extractable) is now
-      // the authoritative source; form fields are only a fallback.
-      let resumeText = '';
-      let extractionMethod = 'form_inference';
-      let extractionError = '';
-      if (fileUrl) {
-        try {
-          const fileRes = await fetch(fileUrl);
-          if (fileRes.ok) {
-            const buf = Buffer.from(await fileRes.arrayBuffer());
-            const lowerUrl = fileUrl.toLowerCase();
-            const contentType = fileRes.headers.get('content-type') || '';
-            if (lowerUrl.endsWith('.pdf') || contentType.includes('pdf')) {
-              const { PDFParse } = await import('pdf-parse');
-              const parser = new PDFParse({ data: new Uint8Array(buf) });
-              const textResult = await parser.getText();
-              await parser.destroy();
-              resumeText = (textResult.text || '').trim();
-            } else if (lowerUrl.endsWith('.docx') || contentType.includes('officedocument.wordprocessingml')) {
-              const mammoth = (await import('mammoth')).default;
-              const result = await mammoth.extractRawText({ buffer: buf });
-              resumeText = (result.value || '').trim();
-            } else {
-              extractionError = 'Unsupported resume file format for text extraction (only PDF and DOCX are supported)';
-            }
-            if (resumeText) extractionMethod = 'file_text';
-            else if (!extractionError) extractionError = 'Resume file contained no extractable text (likely a scanned/image-only document)';
-          } else {
-            extractionError = `Could not download resume file (HTTP ${fileRes.status})`;
-          }
-        } catch (e) {
-          extractionError = `Resume text extraction failed: ${e.message}`;
-          console.error('[parseResume] file extraction failed:', e.message);
-        }
-      } else {
-        extractionError = 'No resume file on record';
-      }
-
-      const resumeExcerpt = resumeText.slice(0, 12000);
-      const jsonSchema = `{
-  "resume_headline": "one-line professional headline",
-  "professional_summary": "2-3 sentence professional summary",
-  "current_location": "city",
-  "preferred_location": "city or 'Open to relocation'",
-  "total_experience_years": number,
-  "relevant_experience_years": number,
-  "notice_period_days": number (0 for immediate, 30/60/90 for others),
-  "current_designation": "job title",
-  "current_company": "company name",
-  "previous_companies": ["company1", "company2"],
-  "previous_designations": ["title1", "title2"],
-  "primary_skills": ["skill1", "skill2", "skill3"],
-  "secondary_skills": ["skill1", "skill2"],
-  "tools_and_platforms": ["tool1", "tool2"],
-  "certifications": ["cert1"],
-  "degree": "degree name",
-  "university": "university name",
-  "specialization": "field",
-  "passing_year": 2018,
-  "gpa_percentage": "75%",
-  "projects": [{"name": "project", "description": "desc", "technologies": "tech stack"}],
-  "achievements": ["achievement1", "achievement2"],
-  "linkedin_url": null,
-  "github_url": null,
-  "portfolio_url": null,
-  "ats_score": number (0-100),
-  "profile_completeness_score": number (0-100),
-  "ats_issues": ["issue1"],
-  "keyword_density_flag": false
-}`;
-
-      const prompt = resumeExcerpt
-        ? `You are an expert resume parser. Extract structured data from the ACTUAL resume text below — every field must be grounded in this text, do not invent skills, employers, or projects that aren't present in it. Use the candidate's submitted profile only to fill genuinely missing contact/location fields.
-
-RESUME TEXT:
-"""
-${resumeExcerpt}
-"""
-
-Submitted profile (context only — the resume text above is authoritative for skills/experience/education):
-Name: ${cand.full_name || cand.name || 'Not provided'}
-Position Applied: ${cand.position_applied || 'Not specified'}
-Email: ${cand.email || 'Not specified'}
-Phone: ${cand.phone || 'Not specified'}
-
-Return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
-${jsonSchema}`
-        : `No resume file text could be extracted (${extractionError}), so this is a best-effort inference from the candidate's submitted profile only — be conservative and set fields you cannot reasonably infer to null or empty arrays rather than fabricating specifics.
-
-Candidate Profile:
-Name: ${cand.full_name || cand.name || 'Not provided'}
-Position Applied: ${cand.position_applied || 'Not specified'}
-Department: ${cand.department || 'Not specified'}
-Experience Years: ${cand.experience_years || 'Not specified'}
-Current Company: ${cand.current_company || 'Not specified'}
-Current CTC: ${cand.current_ctc ? '₹' + cand.current_ctc : 'Not specified'}
-Expected CTC: ${cand.expected_ctc ? '₹' + cand.expected_ctc : 'Not specified'}
-Notice Period: ${cand.notice_period || 'Not specified'}
-Source: ${cand.source || 'Not specified'}
-Email: ${cand.email || 'Not specified'}
-Phone: ${cand.phone || 'Not specified'}
-
-Return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
-${jsonSchema}`;
-
-      let parsed;
-      try {
-        parsed = await callAI(prompt, { json: true });
-      } catch(e) {
-        return res.json({ success:false, error:`AI parsing failed: ${e.message}` });
-      }
-
-      if (!parsed) return res.json({ success:false, error:'AI returned invalid JSON' });
-
-      const parsedId = uuidv4();
-      const parsedData = {
-        id: parsedId,
-        candidate_id,
-        resume_url: fileUrl,
-        parse_status: 'completed',
-        parsed_at: new Date().toISOString(),
-        extraction_method: extractionMethod,
-        extraction_note: extractionMethod === 'form_inference' ? extractionError : '',
-        ...parsed,
-      };
-      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ParsedResume',$2,'completed',$3)", [parsedId, candidate_id, JSON.stringify(parsedData)]);
-
-      // Link parsed resume to candidate
-      if (cRow) {
-        const updCand = { ...cand, parsed_resume_id: parsedId };
-        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(updCand), candidate_id]);
-      }
-
-      const skills_extracted = (parsed.primary_skills?.length||0) + (parsed.secondary_skills?.length||0) + (parsed.tools_and_platforms?.length||0);
-      return res.json({ success:true, parsed_resume_id:parsedId, skills_extracted, extraction_method: extractionMethod });
+      const result = await performResumeParse(candidate_id, resume_url, cand);
+      if (!result.success) return res.json({ success: false, error: result.error });
+      return res.json({ success: true, parsed_resume_id: result.parsedId, skills_extracted: result.skills_extracted, extraction_method: result.extraction_method });
     }
 
     case 'scoreAndSummariseCv': {
       const { candidate_id, position_applied, department, experience_years, current_company, current_ctc, expected_ctc, notice_period } = p;
 
+      // Same fix as scoreCandidate: ground this in the actual resume text
+      // when one is on file, instead of only ever looking at the handful of
+      // form fields the caller happened to pass in.
+      let parsedResume = null;
+      let cand = null;
+      if (candidate_id) {
+        const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+        if (cRow) {
+          cand = JSON.parse(cRow.data);
+          if (cand.parsed_resume_id) {
+            const prRow = await one("SELECT data FROM entities WHERE type='ParsedResume' AND id=$1", [cand.parsed_resume_id]);
+            if (prRow) parsedResume = JSON.parse(prRow.data);
+          }
+          if (!parsedResume && cand.resume_url) {
+            const parseResult = await performResumeParse(candidate_id, cand.resume_url, cand);
+            if (parseResult.success) parsedResume = parseResult.parsedData;
+          }
+        }
+      }
+      const resumeGrounded = parsedResume?.extraction_method === 'file_text';
+      const skills = resumeGrounded ? [...(parsedResume.primary_skills || []), ...(parsedResume.secondary_skills || []), ...(parsedResume.tools_and_platforms || [])] : [];
+      const education = resumeGrounded ? [parsedResume.degree, parsedResume.specialization, parsedResume.university].filter(Boolean).join(', ') : '';
+
       const prompt = `You are an expert HR recruiter. Analyse this candidate profile and provide a comprehensive CV score and summary.
 
 Position Applied: ${position_applied || 'General'}
 Department: ${department || 'Not specified'}
-Experience: ${experience_years || 0} years
-Current Company: ${current_company || 'Not specified'}
+Experience: ${(resumeGrounded && parsedResume.total_experience_years != null) ? parsedResume.total_experience_years : (experience_years || 0)} years
+Current Company: ${(resumeGrounded ? parsedResume.current_company : current_company) || 'Not specified'}
 Current CTC: ${current_ctc ? '₹' + current_ctc : 'Not specified'}
 Expected CTC: ${expected_ctc ? '₹' + expected_ctc : 'Not specified'}
 Notice Period: ${notice_period || 'Not specified'}
+${resumeGrounded ? `Skills: ${skills.length ? skills.join(', ') : 'Not specified'}
+Education: ${education || 'Not specified'}
+${parsedResume.professional_summary ? `Resume Summary: ${parsedResume.professional_summary}` : ''}` : `\nNote: ${candidate_id ? "This candidate's resume could not be read (no file on record, unsupported format, or extraction failure) — score conservatively off the application form only and flag this in the summary." : 'No candidate record was supplied — scoring off the given fields only.'}`}
 
 Return ONLY a valid JSON object (no markdown) with:
 {
@@ -6865,6 +6918,7 @@ Return ONLY a valid JSON object (no markdown) with:
       catch(e) { return res.json({ success:false, error:`AI failed: ${e.message}` }); }
 
       if (!result) return res.json({ success:false, error:'AI returned invalid response' });
+      result.resume_grounded = resumeGrounded;
       return res.json({ success:true, result });
     }
 
@@ -6873,8 +6927,45 @@ Return ONLY a valid JSON object (no markdown) with:
       const { candidate_id, job_requisition_id } = p;
       const cRow  = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       const jdRow = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [job_requisition_id]);
-      const cand  = cRow  ? JSON.parse(cRow.data)  : {};
-      const jd    = jdRow ? JSON.parse(jdRow.data) : {};
+      if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
+      let cand  = JSON.parse(cRow.data);
+      const jd  = jdRow ? JSON.parse(jdRow.data) : {};
+
+      // This used to score against cand.skills/cand.education — fields
+      // nothing in the app ever wrote, so they were always "Not specified"
+      // and the CV itself was never read at all. Now: reuse an existing
+      // ParsedResume if one exists (it's already grounded in the real file
+      // text), or parse the resume now if it hasn't been parsed yet, so
+      // scoring is never CV-blind.
+      let parsedResume = null;
+      if (cand.parsed_resume_id) {
+        const prRow = await one("SELECT data FROM entities WHERE type='ParsedResume' AND id=$1", [cand.parsed_resume_id]);
+        if (prRow) parsedResume = JSON.parse(prRow.data);
+      }
+      if (!parsedResume && cand.resume_url) {
+        const parseResult = await performResumeParse(candidate_id, cand.resume_url, cand);
+        if (parseResult.success) {
+          parsedResume = parseResult.parsedData;
+          // performResumeParse already persisted parsed_resume_id/skills/education
+          // onto the Candidate row — reload so this response reflects it too.
+          const freshRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+          if (freshRow) cand = JSON.parse(freshRow.data);
+        }
+        // If parsing fails (e.g. unsupported file, download error), fall
+        // through and score off form fields — same as before, just no
+        // longer silently pretending the CV was read when it wasn't.
+      }
+
+      const resumeGrounded = parsedResume?.extraction_method === 'file_text';
+      const candidateSkills = resumeGrounded
+        ? [...(parsedResume.primary_skills || []), ...(parsedResume.secondary_skills || []), ...(parsedResume.tools_and_platforms || [])]
+        : (Array.isArray(cand.skills) ? cand.skills : (cand.skills ? [cand.skills] : []));
+      const candidateEducation = resumeGrounded
+        ? [parsedResume.degree, parsedResume.specialization, parsedResume.university].filter(Boolean).join(', ')
+        : (cand.education || '');
+      const candidateExperience = resumeGrounded && parsedResume.total_experience_years != null
+        ? parsedResume.total_experience_years
+        : (cand.experience_years || 0);
 
       const prompt = `You are an expert technical recruiter. Score this candidate against the job requisition using weighted criteria.
 
@@ -6887,14 +6978,18 @@ Salary Range: ₹${jd.salary_range_min||0} – ₹${jd.salary_range_max||0} per 
 Employment Type: ${jd.employment_type || 'Not specified'}
 Location: ${jd.location || 'Not specified'}
 
-CANDIDATE:
+CANDIDATE (${resumeGrounded ? 'from their actual resume' : 'from application form only — resume text unavailable, see note below'}):
 Name: ${cand.full_name || cand.name || 'Not specified'}
-Experience: ${cand.experience_years || 0} years
-Current Company: ${cand.current_company || 'Not specified'}
-Skills: ${Array.isArray(cand.skills) ? cand.skills.join(', ') : cand.skills || 'Not specified'}
+Experience: ${candidateExperience} years
+Current Company: ${(resumeGrounded ? parsedResume.current_company : cand.current_company) || 'Not specified'}
+Current Designation: ${resumeGrounded ? (parsedResume.current_designation || 'Not specified') : 'Not specified'}
+Skills: ${candidateSkills.length ? candidateSkills.join(', ') : 'Not specified'}
+Certifications: ${resumeGrounded && parsedResume.certifications?.length ? parsedResume.certifications.join(', ') : 'Not specified'}
 Expected CTC: ${cand.expected_ctc ? '₹' + cand.expected_ctc : 'Not specified'}
-Notice Period: ${cand.notice_period || 'Not specified'}
-Education: ${cand.education || 'Not specified'}
+Notice Period: ${cand.notice_period || (resumeGrounded ? parsedResume.notice_period_days : null) || 'Not specified'}
+Education: ${candidateEducation || 'Not specified'}
+${resumeGrounded && parsedResume.professional_summary ? `Resume Summary: ${parsedResume.professional_summary}` : ''}
+${!resumeGrounded ? `\nNote: ${cand.resume_url ? 'The resume file could not be read (unsupported format or extraction failure) — score conservatively and flag this in the summary.' : 'This candidate has no resume file on record — score conservatively and flag this in the summary.'}` : ''}
 
 Score using these weights: Skills Match (35%), Experience (25%), Salary Fit (15%), Notice Period (10%), Education (15%).
 
@@ -6920,6 +7015,10 @@ Return ONLY a valid JSON object (no markdown):
       catch(e) { return res.json({ success:false, error:`AI scoring failed: ${e.message}` }); }
 
       if (!result) return res.json({ success:false, error:'AI returned invalid response' });
+      // Surface whether this score is actually grounded in the CV text, so
+      // the UI can show a clear "read from resume" vs "form only" badge
+      // instead of implying every score is equally CV-based.
+      result.resume_grounded = resumeGrounded;
 
       // Persist the score as a CandidateScore entity (upsert by candidate + requisition)
       // so rankings survive page reload and power the leaderboard.
@@ -6939,10 +7038,8 @@ Return ONLY a valid JSON object (no markdown):
           await run("INSERT INTO entities(id,type,status,data) VALUES($1,'CandidateScore','active',$2)", [scoreId, JSON.stringify(scoreData)]);
         }
         // Mirror a quick summary onto the candidate record for at-a-glance display
-        if (cRow) {
-          const updCand = { ...cand, ai_score: result.overall_score, ai_recommendation: result.recommendation, ai_scored_at: scoredAt };
-          await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE type='Candidate' AND id=$2", [JSON.stringify(updCand), candidate_id]);
-        }
+        const updCand = { ...cand, ai_score: result.overall_score, ai_recommendation: result.recommendation, ai_scored_at: scoredAt };
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE type='Candidate' AND id=$2", [JSON.stringify(updCand), candidate_id]);
       } catch (persistErr) {
         console.warn('[scoreCandidate] persist failed:', persistErr.message);
       }

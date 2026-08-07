@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Sparkles, FileText, Star, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader2, Sparkles, FileText, FileWarning, Star, ChevronDown, ChevronUp } from 'lucide-react';
 import { toast } from 'sonner';
 
 const SCORE_COLOR = (score) => {
@@ -36,6 +36,7 @@ function CandidateScoreCard({ candidate, requisition }) {
           gaps:               raw.gaps || raw.missing_skills || [],
           score_justification: `Skills: ${raw.skills_score || '?'}/100 · Experience: ${raw.experience_score || '?'}/100 · Salary: ${raw.salary_score || '?'}/100`,
           recommendation:     raw.recommendation,
+          resume_grounded:    !!raw.resume_grounded,
         };
       } else {
         const res = await base44.functions.invoke('scoreAndSummariseCv', {
@@ -55,6 +56,7 @@ function CandidateScoreCard({ candidate, requisition }) {
           gaps:               raw.areas_for_improvement || [],
           score_justification:[raw.experience_assessment, raw.compensation_analysis].filter(Boolean).join(' '),
           recommendation:     raw.recommendation,
+          resume_grounded:    !!raw.resume_grounded,
         };
       }
       setResult(d);
@@ -85,6 +87,15 @@ function CandidateScoreCard({ candidate, requisition }) {
               </Badge>
               {result.recommendation && (
                 <Badge variant="outline" className="text-xs">{result.recommendation}</Badge>
+              )}
+              {result.resume_grounded ? (
+                <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5" title="This score was generated from the candidate's actual resume text">
+                  <FileText className="w-3 h-3" /> Read from resume
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5" title="No readable resume file was found — this score is based on the application form only">
+                  <FileWarning className="w-3 h-3" /> Form only
+                </span>
               )}
             </>
           )}

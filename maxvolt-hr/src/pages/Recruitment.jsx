@@ -330,6 +330,7 @@ function AiScoreSection({ candidate }) {
         gaps:               d.areas_for_improvement || [],
         score_justification:[d.experience_assessment, d.compensation_analysis].filter(Boolean).join(' '),
         recommendation:     d.recommendation,
+        resume_grounded:    !!d.resume_grounded,
       });
       setExpanded(true);
     } catch (err) {
@@ -350,6 +351,15 @@ function AiScoreSection({ candidate }) {
               <Badge variant="outline" className="text-xs">
                 {result.recommendation}
               </Badge>
+            )}
+            {result.resume_grounded ? (
+              <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5" title="This score was generated from the candidate's actual resume text">
+                Read from resume
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5" title="No readable resume file was found — this score is based on the application form only">
+                Form only — no CV read
+              </span>
             )}
           </>
         )}

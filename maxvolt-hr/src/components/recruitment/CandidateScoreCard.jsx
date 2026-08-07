@@ -1,6 +1,6 @@
 import React from 'react';
 import { Badge } from "@/components/ui/badge";
-import { Sparkles, CheckCircle2, XCircle, PlusCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import { Sparkles, CheckCircle2, XCircle, PlusCircle, ChevronDown, ChevronUp, FileText, FileWarning } from 'lucide-react';
 import { useState } from 'react';
 
 const SCORE_COLOR = (score) => {
@@ -59,6 +59,15 @@ export default function CandidateScoreCard({ scoreData, jobTitle }) {
           <Badge className={`text-xs border ${RECO_COLOR(scoreData.recommendation)}`}>
             {scoreData.recommendation}
           </Badge>
+          {scoreData.resume_grounded ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5" title="This score was generated from the candidate's actual resume text">
+              <FileText className="w-3 h-3" /> Read from resume
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5" title="No readable resume file was found — this score is based on the application form only">
+              <FileWarning className="w-3 h-3" /> Form only — no CV read
+            </span>
+          )}
         </div>
         {expanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
       </div>
