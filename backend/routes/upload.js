@@ -20,6 +20,14 @@ const router = Router();
 // the switch (storage='r2' rows) still resolve.
 const USE_CLOUDINARY = !!(process.env.CLOUDINARY_URL || (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY));
 
+// file_url must be absolute — it gets fetched two ways that both need a real
+// scheme+host: server-side (Node's fetch has no browser base-URL to resolve
+// a relative path against, e.g. when the recruitment CV parser downloads a
+// resume to extract text) and via Google's public Docs-viewer proxy (which
+// needs a URL it can reach over the open internet, not a path relative to
+// this app). A bare `/api/upload/file/<id>` silently broke both.
+const APP_BASE = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '');
+
 const memUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB
@@ -74,7 +82,7 @@ router.post('/', memUpload.single('file'), async (req, res) => {
           "INSERT INTO files(id, filename, mime, size, storage, r2_key, uploaded_by) VALUES($1,$2,$3,$4,'railway',$5,$6)",
           [id, req.file.originalname || `${id}${ext}`, mime, req.file.size, key, uploader]
         );
-        return res.json({ file_url: `/api/upload/file/${id}${ext}`, filename: req.file.originalname, size: req.file.size });
+        return res.json({ file_url: `${APP_BASE}/api/upload/file/${id}${ext}`, filename: req.file.originalname, size: req.file.size });
       } catch (bucketErr) {
         console.warn('[upload] Railway Bucket failed, falling back:', bucketErr.message);
       }

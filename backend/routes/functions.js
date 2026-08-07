@@ -656,8 +656,14 @@ async function extractResumeText(fileUrl) {
   let resumeText = '';
   let extractionError = '';
   if (!fileUrl) return { resumeText, extractionError: 'No resume file on record' };
+  // Older/legacy resume_url values were stored as a bare relative path
+  // (/api/upload/file/<id>.pdf) — Node's fetch has no browser base-URL to
+  // resolve that against and just throws. Normalize to absolute so both old
+  // and newly-uploaded (already-absolute) URLs work.
+  const APP_BASE = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '');
+  const absoluteUrl = /^https?:\/\//i.test(fileUrl) ? fileUrl : `${APP_BASE}${fileUrl.startsWith('/') ? '' : '/'}${fileUrl}`;
   try {
-    const fileRes = await fetch(fileUrl);
+    const fileRes = await fetch(absoluteUrl);
     if (fileRes.ok) {
       const buf = Buffer.from(await fileRes.arrayBuffer());
       const lowerUrl = fileUrl.toLowerCase();
