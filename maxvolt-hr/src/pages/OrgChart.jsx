@@ -3,7 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut, Building2, Crown, FileSpreadsheet } from 'lucide-react';
+import { Network, Search, RefreshCw, ChevronDown, ChevronRight, Users, ArrowLeft, Home, Maximize2, ZoomIn, ZoomOut, Building2, Crown, FileSpreadsheet, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const AVATAR_COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-emerald-500', 'bg-orange-500', 'bg-pink-500', 'bg-teal-500', 'bg-indigo-500', 'bg-rose-500'];
@@ -194,6 +194,7 @@ export default function OrgChart() {
   const [collapsed, setCollapsed] = useState(new Set());
   const [focusedId, setFocusedId] = useState(null); // drill-down: view just this person's team
   const [zoom, setZoom] = useState(1);
+  const [exporting, setExporting] = useState(false);
   const nodeRefs = useRef({});
   const chartRef = useRef(null);
 
@@ -309,8 +310,21 @@ export default function OrgChart() {
   const maxTreeDepth = (node, d = 1) => node.children.length ? Math.max(...node.children.map(c => maxTreeDepth(c, d + 1))) : d;
 
   const downloadExcel = async () => {
-    if (!employees.length) return;
-    const ExcelJS = (await import('exceljs')).default;
+    if (!employees.length || exporting) return;
+    setExporting(true);
+    try {
+      await buildAndSaveOrgWorkbook();
+    } catch (e) {
+      console.error('Org chart export failed:', e);
+      toast.error('Export failed: ' + (e?.message || 'unknown error'));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const buildAndSaveOrgWorkbook = async () => {
+    const ExcelJSModule = await import('exceljs');
+    const ExcelJS = ExcelJSModule.default || ExcelJSModule;
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Maxvolt HR';
     wb.created = new Date();
@@ -394,8 +408,13 @@ export default function OrgChart() {
     const a = document.createElement('a');
     a.href = url;
     a.download = `org-chart-department-breakdown-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    // Some browsers (notably Firefox) silently no-op a .click() on an anchor
+    // that was never attached to the DOM — append/remove around the click.
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast.success('Org chart exported');
   };
 
   const deptSearch = selectedDept ? '' : search.trim().toLowerCase();
@@ -433,8 +452,8 @@ export default function OrgChart() {
             </>
           )}
           <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></Button>
-          <Button variant="outline" size="sm" onClick={downloadExcel} disabled={loading || employees.length === 0} title="Export the full department-wise org structure as a spreadsheet">
-            <FileSpreadsheet className="w-4 h-4 mr-1" /> Export Excel
+          <Button variant="outline" size="sm" onClick={downloadExcel} disabled={loading || exporting || employees.length === 0} title="Export the full department-wise org structure as a spreadsheet">
+            {exporting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <FileSpreadsheet className="w-4 h-4 mr-1" />} {exporting ? 'Exporting…' : 'Export Excel'}
           </Button>
         </div>
       </div>
