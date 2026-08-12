@@ -352,7 +352,7 @@ export default function MyExit() {
                       <p className="font-semibold text-green-700">Exit interview submitted</p>
                     </div>
                     {/* Ratings display */}
-                    <div className="grid grid-cols-5 gap-2 mb-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
                       {[['Work Exp','work_experience_rating'],['Management','management_rating'],['Culture','culture_rating'],['Compensation','compensation_rating'],['Work-Life','work_life_balance_rating']].map(([label, key]) => {
                         const rating = exitRecord.exit_interview?.[key];
                         return (
@@ -373,7 +373,7 @@ export default function MyExit() {
                       </div>
 
                       {/* Ratings */}
-                      <div className="grid grid-cols-5 gap-2">
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                         {[['Work Exp','work_experience_rating'],['Management','management_rating'],['Culture','culture_rating'],['Compensation','compensation_rating'],['Work-Life','work_life_balance_rating']].map(([label, key]) => (
                           <div key={key}>
                             <Label className="text-xs">{label}</Label>

@@ -25,6 +25,7 @@ import ProfilePage from './pages/Profile';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
 import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption, requestBackgroundLocationIfNeeded } from '@/lib/geofenceBackground';
+import { syncStatusBarTheme, initKeyboardAvoidance } from '@/lib/nativeChrome';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
@@ -413,7 +414,7 @@ function NavItem({ item, isActive, onClick }) {
 export default function Layout({ children, currentPageName }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, resolvedTheme } = useTheme();
 
   const [user,                setUser]               = useState(null);
   const [showGeoDisclosure,   setShowGeoDisclosure]  = useState(false);
@@ -463,6 +464,13 @@ export default function Layout({ children, currentPageName }) {
   }, [currentPageName]);
 
   useEffect(() => { loadUser(); }, []);
+
+  // Native chrome: keep the status bar in sync with the in-app theme toggle,
+  // and scroll a focused input clear of the on-screen keyboard. Both are
+  // no-ops on web/PWA (guarded inside nativeChrome.js) — only native builds
+  // have the underlying Capacitor plugins to act on.
+  useEffect(() => { initKeyboardAvoidance(); }, []);
+  useEffect(() => { syncStatusBarTheme(resolvedTheme); }, [resolvedTheme]);
 
   // Shared by the initial login-time attempt and the app-resume retry below.
   // startBackgroundGeofence() itself already no-ops if a watcher is already

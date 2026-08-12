@@ -248,7 +248,11 @@ export default function TrainingDetail() {
 
         {/* Enrollments */}
         <TabsContent value="enrollments">
-          <div className="space-y-2">
+          {/* 5 data columns (one with two buttons) don't fit a 375px screen —
+              scroll horizontally instead of cramming, same as every other
+              tabular view in the app. */}
+          <div className="overflow-x-auto">
+          <div className="space-y-2 min-w-[640px]">
             <div className="grid grid-cols-5 gap-2 px-3 text-xs font-semibold text-gray-500 uppercase">
               <span>Employee</span><span>Session</span><span>Type</span><span>Status</span><span>Actions</span>
             </div>
@@ -287,6 +291,7 @@ export default function TrainingDetail() {
               );
             })}
             {enrollments.length === 0 && <p className="text-center text-gray-400 py-10">No enrollments yet.</p>}
+          </div>
           </div>
         </TabsContent>
 

@@ -481,7 +481,7 @@ export default function LeaveManagement() {
               <CardContent>
                 <div className="space-y-3">
                   {isHR && filteredRequests.some(l => l.status === 'pending') && (
-                    <div className="flex items-center gap-2 pb-2 border-b">
+                    <label className="flex items-center gap-2 pb-2 border-b py-2 -my-2 cursor-pointer">
                       <input type="checkbox" className="w-4 h-4"
                         checked={filteredRequests.filter(l=>l.status==='pending').every(l=>selectedIds.has(l.id))}
                         onChange={e => {
@@ -489,7 +489,7 @@ export default function LeaveManagement() {
                           setSelectedIds(e.target.checked ? new Set(pending) : new Set());
                         }} />
                       <span className="text-xs text-gray-500">Select all pending</span>
-                    </div>
+                    </label>
                   )}
 
                   {filteredRequests.map(leave => {
@@ -501,9 +501,11 @@ export default function LeaveManagement() {
                       <div key={leave.id} className={`border rounded-lg p-4 ${selectedIds.has(leave.id) ? 'border-blue-400 bg-blue-50' : canAct ? 'border-blue-200 bg-blue-50/30' : ''}`}>
                         <div className="flex flex-wrap justify-between items-start gap-4">
                           {isHR && leave.status === 'pending' && (
-                            <input type="checkbox" className="w-4 h-4 mt-1 flex-shrink-0"
-                              checked={selectedIds.has(leave.id)}
-                              onChange={e => { const s = new Set(selectedIds); e.target.checked ? s.add(leave.id) : s.delete(leave.id); setSelectedIds(s); }} />
+                            <label className="p-2.5 -m-2.5 -mr-1 flex-shrink-0 cursor-pointer">
+                              <input type="checkbox" className="w-4 h-4 block"
+                                checked={selectedIds.has(leave.id)}
+                                onChange={e => { const s = new Set(selectedIds); e.target.checked ? s.add(leave.id) : s.delete(leave.id); setSelectedIds(s); }} />
+                            </label>
                           )}
                           <div className="flex-1">
                             <div className="flex items-center gap-3 mb-2">
