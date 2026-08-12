@@ -128,6 +128,7 @@ export default function AssetTracking() {
   const [bulkAssigning, setBulkAssigning] = useState(false);
   const [assetForm, setAssetForm] = useState({
     asset_name: '', asset_type_id: '', serial_number: '', model_number: '',
+    specification: '', accessories: '',
     assigned_to_user_id: '', assignment_date: '', return_date: '',
     condition: 'good', purchase_date: '', purchase_cost: '',
     warranty_expiry: '', status: 'available', notes: '',
@@ -290,6 +291,7 @@ export default function AssetTracking() {
     const autoId = typeId ? generateAssetId(typeId) : '';
     setAssetForm({
       asset_name: '', asset_type_id: typeId || '', serial_number: '', model_number: '',
+      specification: '', accessories: '',
       assigned_to_user_id: '', assignment_date: '', return_date: '',
       condition: 'good', purchase_date: '', purchase_cost: '',
       warranty_expiry: '', status: 'available', notes: '',
@@ -304,6 +306,7 @@ export default function AssetTracking() {
     setAssetForm({
       asset_name: asset.asset_name || '', asset_type_id: asset.asset_type_id || '',
       serial_number: asset.serial_number || '', model_number: asset.model_number || '',
+      specification: asset.specification || '', accessories: asset.accessories || '',
       assigned_to_user_id: asset.assigned_to_user_id || '', assignment_date: asset.assignment_date || '',
       return_date: asset.return_date || '', condition: asset.condition || 'good',
       purchase_date: asset.purchase_date || '', purchase_cost: asset.purchase_cost || '',
@@ -449,139 +452,150 @@ export default function AssetTracking() {
       toast.success(`${selectedAssets.length} asset(s) assigned to ${emp.display_name}`);
       // Print combined letterhead
       const updatedAssets = selectedAssets.map(a => ({ ...a, assigned_to_user_id: bulkEmployeeId, status: 'assigned', assignment_date: today }));
-      openLetterheadPrintWindow(`Asset Letter - ${emp.display_name}`, buildAssetLetterContent(emp, updatedAssets), '', false);
+      openLetterheadPrintWindow(`Assets Handover - ${emp.display_name}`, buildAssetLetterContent(emp, updatedAssets), '', false);
       clearBulkSelection();
       loadData();
     } catch (err) { toast.error('Error assigning assets'); }
     setBulkAssigning(false);
   };
 
+  // Matches the official "Assets Handover" letter format exactly (company
+  // template — logo/footer chrome comes from the shared letterhead, this
+  // supplies the body: date, salutation, subject, the two intro paragraphs,
+  // an asset table with Serial No./Quantity/Item/Accessories/Remarks
+  // columns, the seven numbered guideline sections, and the Issue by/
+  // Received by signature block).
   const buildAssetLetterContent = (emp, assetList) => {
     const empName = emp?.display_name || '—';
-    const empCode = emp?.employee_code || '—';
     const empDept = emp?.department || '—';
     const empDesg = emp?.designation || '—';
-    const empDOJ = emp?.date_of_joining ? format(parseISO(emp.date_of_joining), 'dd MMMM yyyy') : '—';
-    const empDOB = emp?.date_of_birth ? format(parseISO(emp.date_of_birth), 'dd MMMM yyyy') : '—';
+    const salutation = (emp?.gender || '').toLowerCase() === 'female' ? 'Ms.' : 'Mr.';
     const plural = assetList.length > 1;
+    const stampUrl = (typeof window !== 'undefined' ? window.location.origin : '') + '/company-stamp.png';
 
     const assetRows = assetList.map(asset => {
       const typeName = asset.asset_type_name || getTypeName(asset.asset_type_id);
+      const serialBlock = [
+        `Device Name – ${asset.asset_name || '—'}`,
+        asset.specification ? asset.specification : null,
+        `Device ID – ${asset.asset_id || '—'}`,
+        `Model Number – ${asset.model_number || '—'}`,
+        `Serial Number – ${asset.serial_number || '—'}`,
+      ].filter(Boolean).join('<br>');
       return `
         <tr>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.asset_id || '—'}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.asset_name}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${typeName}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.model_number || '—'}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.serial_number || '—'}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.condition?.toUpperCase()}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.is_temporary ? '<span style="color:#e87722;font-weight:600;">⏳ Temporary</span>' : 'Permanent'}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.assignment_date ? format(parseISO(asset.assignment_date), 'dd MMM yyyy') : '—'}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.return_date ? format(parseISO(asset.return_date), 'dd MMM yyyy') : 'Open-ended'}</td>
+          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;">${serialBlock}</td>
+          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;text-align:center;">1</td>
+          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;">${typeName}</td>
+          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;">${asset.accessories || '—'}</td>
+          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;">${asset.notes || '—'}</td>
         </tr>`;
     }).join('');
-
-    const tempAssets = assetList.filter(a => a.is_temporary);
-    const tempNote = tempAssets.length > 0 ? `
-      <p style="font-size:10px;color:#e87722;margin-top:12px;padding:8px;background:#fff8f0;border:1px solid #f4a83a;border-radius:4px;">
-        ⚠️ Temporary Asset(s): ${tempAssets.map(a => `${a.asset_name} (${a.asset_id}) - ${a.temporary_reason || 'Temporary replacement'}`).join('; ')}.
-        These assets must be returned once the original device is restored or the specified period ends.
-      </p>` : '';
 
     // Show the employee's actual captured signature once they've digitally
     // signed & acknowledged (AssetCheckoutDialog) instead of a blank line.
     const sigAsset = assetList.find(a => a.signature_url);
-    const signatureBlock = sigAsset
-      ? `<img src="${sigAsset.signature_url}" style="height:50px;max-width:150px;object-fit:contain;margin:0 auto 4px;display:block;" />`
-      : `<div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>`;
-    const signedNote = sigAsset?.signed_at
-      ? `<p style="color:#888;font-size:9px;">Signed ${format(parseISO(sigAsset.signed_at), 'dd MMM yyyy, hh:mm a')}</p>` : '';
+    const receivedSignature = sigAsset
+      ? `<img src="${sigAsset.signature_url}" style="height:44px;max-width:150px;object-fit:contain;margin:0 auto 4px;display:block;" />`
+      : '';
 
     return `
-      <div style="margin-bottom:20px;">
-        <h2 style="font-size:20px;font-weight:bold;color:#e87722;margin:0 0 2px;">Asset ${plural ? 'Assignment' : 'Assignment'} Letter</h2>
-        <div style="font-size:10px;text-align:right;color:#888;margin-bottom:12px;border-bottom:1px solid #f4a83a;padding-bottom:6px;">
-          Ref: MAXVOLT/ASSET/${format(new Date(), 'yyyyMMdd')}-${empCode} &nbsp;|&nbsp; Date: ${format(new Date(), 'dd MMMM yyyy')}
-        </div>
+      <h1 style="font-size:22px;font-weight:bold;text-align:center;margin:0 0 18px;">Assets Handover</h1>
 
-        <p style="font-size:11px;margin-bottom:12px;line-height:1.5;">
-          This letter confirms that the following company-owned asset${plural ? 's have' : ' has'} been issued to the below-named employee. The employee acknowledges receipt and agrees to the terms and conditions outlined herein.
-        </p>
+      <p style="font-size:11px;margin-bottom:14px;">${format(new Date(), 'd-MMM-yyyy')}</p>
 
-        <!-- Employee Details -->
-        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:14px;">
-          <tr>
-            <td style="padding:5px 10px;border:1px solid #ddd;background:#f8fafc;width:140px;font-weight:600;">Employee Name</td>
-            <td style="padding:5px 10px;border:1px solid #ddd;">${empName}</td>
-            <td style="padding:5px 10px;border:1px solid #ddd;background:#f8fafc;width:140px;font-weight:600;">Employee Code</td>
-            <td style="padding:5px 10px;border:1px solid #ddd;">${empCode}</td>
+      <p style="font-size:11px;margin-bottom:2px;"><strong>Dear ${salutation} ${empName}</strong></p>
+      <p style="font-size:11px;font-weight:bold;margin-bottom:12px;">Subject: Assets Handover Letter</p>
+
+      <p style="font-size:11px;margin-bottom:12px;line-height:1.6;">
+        I hope this letter finds you in good health and high spirits. We are pleased to inform you that, as part of your role with
+        <strong>"MAXVOLT ENERGY INDUSTRIES LIMITED"</strong>, you are entrusted with company assets, mentioned in this letter, to support you
+        in your responsibilities. It is crucial for both your professional success and the company's operational efficiency that these
+        assets are managed responsibly.
+      </p>
+
+      <p style="font-size:11px;margin-bottom:14px;line-height:1.6;">
+        Following asset${plural ? 's have' : ' has'} been handed-over to <strong>${salutation} ${empName}</strong> "${empDesg}" -${empDept}- for official
+        use purpose only. The sole ownership will remain with <strong>"Maxvolt Energy Industries Limited"</strong>
+      </p>
+
+      <table style="width:100%;border-collapse:collapse;font-size:10.5px;margin-bottom:16px;">
+        <thead>
+          <tr style="background:#f8fafc;">
+            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Serial No.</th>
+            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Quantity</th>
+            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Item</th>
+            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Accessories</th>
+            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Remarks</th>
           </tr>
-          <tr>
-            <td style="padding:5px 10px;border:1px solid #ddd;background:#f8fafc;font-weight:600;">Designation</td>
-            <td style="padding:5px 10px;border:1px solid #ddd;">${empDesg}</td>
-            <td style="padding:5px 10px;border:1px solid #ddd;background:#f8fafc;font-weight:600;">Department</td>
-            <td style="padding:5px 10px;border:1px solid #ddd;">${empDept}</td>
-          </tr>
-          <tr>
-            <td style="padding:5px 10px;border:1px solid #ddd;background:#f8fafc;font-weight:600;">Date of Joining</td>
-            <td style="padding:5px 10px;border:1px solid #ddd;">${empDOJ}</td>
-            <td style="padding:5px 10px;border:1px solid #ddd;background:#f8fafc;font-weight:600;">Date of Birth</td>
-            <td style="padding:5px 10px;border:1px solid #ddd;">${empDOB}</td>
-          </tr>
-        </table>
+        </thead>
+        <tbody>${assetRows}</tbody>
+      </table>
 
-        <!-- Asset Details -->
-        <p style="font-size:11px;font-weight:600;margin-bottom:6px;color:#e87722;">Asset${plural ? 's' : ''} Issued:</p>
-        <table style="width:100%;border-collapse:collapse;font-size:10px;margin-bottom:14px;">
-          <thead>
-            <tr style="background:#f8fafc;">
-              <th style="padding:5px 8px;border:1px solid #ddd;text-align:left;">Asset ID</th>
-              <th style="padding:5px 8px;border:1px solid #ddd;text-align:left;">Name/Model</th>
-              <th style="padding:5px 8px;border:1px solid #ddd;text-align:left;">Type</th>
-              <th style="padding:5px 8px;border:1px solid #ddd;text-align:left;">Model No.</th>
-              <th style="padding:5px 8px;border:1px solid #ddd;text-align:left;">Serial No.</th>
-              <th style="padding:5px 8px;border:1px solid #ddd;text-align:left;">Condition</th>
-              <th style="padding:5px 8px;border:1px solid #ddd;text-align:left;">Type</th>
-              <th style="padding:5px 8px;border:1px solid #ddd;text-align:left;">Issued On</th>
-              <th style="padding:5px 8px;border:1px solid #ddd;text-align:left;">Return By</th>
-            </tr>
-          </thead>
-          <tbody>${assetRows}</tbody>
-        </table>
-        ${tempNote}
+      <p style="font-size:11px;margin-bottom:10px;line-height:1.6;">
+        The following rules and guidelines are provided to ensure a smooth asset handover process and to outline the responsibilities
+        associated with the care and use of these assets:
+      </p>
 
-        <!-- Terms & Conditions -->
-        <div style="border:1px solid #ddd;border-radius:4px;padding:12px;margin-bottom:14px;background:#fafafa;">
-          <p style="font-size:11px;font-weight:700;margin-bottom:8px;color:#333;">Terms &amp; Conditions</p>
-          <ol style="font-size:9px;margin:0;padding-left:16px;line-height:1.6;color:#444;">
-            <li>The asset${plural ? 's' : ''} ${plural ? 'are' : 'is'} the sole property of <strong>Maxvolt Energy Industries Limited</strong> and must be returned upon request, resignation, termination, or end of assignment.</li>
-            <li>The employee is responsible for the safekeeping and proper use of the asset${plural ? 's' : ''}. Any loss, theft, or damage must be reported to HR/IT immediately.</li>
-            <li>Damage beyond normal wear and tear will be assessed, and the cost of repair/replacement may be recovered from the employee's salary or final settlement as per company policy.</li>
-            <li>Unauthorized transfer, sale, or lending of company assets to third parties is strictly prohibited.</li>
-            <li>${plural ? 'These assets are' : 'This asset is'} to be used exclusively for official business purposes of the company.</li>
-            <li>The employee must allow periodic inspection of the asset${plural ? 's' : ''} by authorized company personnel.</li>
-            <li>Software installed on company-provided devices must comply with the company's IT &amp; Software Usage Policy.</li>
-            <li>Temporary assets must be returned on or before the specified return date or once the original asset is restored from repair.</li>
-            <li>Upon separation, the employee must return all company assets. Non-return may result in deduction from the Full &amp; Final settlement.</li>
-          </ol>
+      <ol style="font-size:10.5px;margin:0 0 14px;padding-left:18px;line-height:1.6;">
+        <li style="font-weight:bold;margin-bottom:4px;">Condition and Inspection:
+          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+            <li>Upon receiving the assets, please inspect them carefully to ensure they are in proper working condition.</li>
+            <li>Report any discrepancies or issues promptly to the HR Department.</li>
+          </ul>
+        </li>
+        <li style="font-weight:bold;margin-bottom:4px;">Documentation:
+          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+            <li>Sign the Asset Handover Form attached to this letter, acknowledging receipt of the specified assets.</li>
+            <li>Keep a copy of the signed form for your records.</li>
+          </ul>
+        </li>
+        <li style="font-weight:bold;margin-bottom:4px;">Use and Care:
+          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+            <li>Use the provided assets exclusively for work-related purposes.</li>
+            <li>Exercise caution to prevent damage or loss.</li>
+            <li>Report any loss, damage, or malfunction immediately to the HR - Department</li>
+          </ul>
+        </li>
+        <li style="font-weight:bold;margin-bottom:4px;">Security and Confidentiality:
+          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+            <li>Safeguard assets and information stored on them to maintain the confidentiality and security of company data.</li>
+          </ul>
+        </li>
+        <li style="font-weight:bold;margin-bottom:4px;">Return of Assets:
+          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+            <li>Return the assets promptly upon termination of your employment or upon request by the company.</li>
+          </ul>
+        </li>
+        <li style="font-weight:bold;margin-bottom:4px;">Penalties for Non-Compliance:
+          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+            <li>Failure to adhere to the guidelines may result in disciplinary action, including but not limited to verbal/written warnings, suspension, or termination.</li>
+            <li>Any intentional damage or misuse may result in financial penalties to cover repair or replacement costs.</li>
+          </ul>
+        </li>
+        <li style="font-weight:bold;">Contact Person:
+          <ul style="font-weight:normal;margin:2px 0 0;padding-left:18px;">
+            <li>For any questions or concerns regarding the assets, please contact HR – Department/HOD.</li>
+          </ul>
+        </li>
+      </ol>
+
+      <p style="font-size:11px;margin-bottom:28px;line-height:1.6;">
+        We trust that you will handle these assets with the utmost care and responsibility. Your cooperation in adhering to these
+        guidelines is essential to maintaining a smooth and effective workflow.
+      </p>
+
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;font-size:11px;">
+        <div>
+          <p style="margin-bottom:6px;">Sincerely,</p>
+          <img src="${stampUrl}" style="width:84px;opacity:0.92;display:block;margin-bottom:2px;" onerror="this.style.display='none'" />
+          <p>Issue by</p>
+          <p style="font-weight:600;">HR Manager</p>
         </div>
-
-        <div style="display:flex;justify-content:space-between;margin-top:40px;font-size:10px;">
-          <div style="text-align:center;">
-            ${signatureBlock}
-            <p style="font-weight:600;">Employee Signature</p>
-            <p style="color:#888;font-size:9px;">(${empName})</p>
-            ${signedNote}
-          </div>
-          <div style="text-align:center;">
-            <div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>
-            <p style="font-weight:600;">Authorized Signatory</p>
-            <p style="color:#888;font-size:9px;">HR / IT Department</p>
-          </div>
-        </div>
-
-        <div style="margin-top:24px;font-size:9px;text-align:center;color:#888;border-top:1px solid #e5e7eb;padding-top:8px;">
-          Maxvolt Energy Industries Limited — Asset Management | ${sigAsset ? 'Digitally signed and acknowledged by the employee.' : 'This is a computer-generated document and does not require a physical signature.'}
+        <div style="text-align:center;">
+          <p style="margin-bottom:6px;">Received by</p>
+          ${receivedSignature}
+          <p style="font-weight:600;">${salutation} ${empName}</p>
         </div>
       </div>`;
   };
@@ -665,7 +679,7 @@ export default function AssetTracking() {
   const handlePrintLetter = (asset) => {
     const emp = getEmployee(asset.assigned_to_user_id);
     if (!emp) { toast.error('Employee record not found'); return; }
-    openLetterheadPrintWindow(`Asset Letter - ${asset.asset_name}`, buildAssetLetterContent(emp, [asset]), '', false);
+    openLetterheadPrintWindow(`Assets Handover - ${asset.asset_name}`, buildAssetLetterContent(emp, [asset]), '', false);
   };
 
   // --- Bulk Import ---
@@ -977,7 +991,7 @@ export default function AssetTracking() {
     if (!emp) { toast.error('Employee record not found'); return; }
     const empAssets = assets.filter(a => a.assigned_to_user_id === userId && ACTIVE_ASSIGNMENT_STATUSES.includes(a.status));
     if (empAssets.length === 0) { toast.error('No assets assigned to this employee'); return; }
-    openLetterheadPrintWindow(`Asset Letter - ${emp.display_name}`, buildAssetLetterContent(emp, empAssets), '', false);
+    openLetterheadPrintWindow(`Assets Handover - ${emp.display_name}`, buildAssetLetterContent(emp, empAssets), '', false);
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin" /></div>;
@@ -1438,6 +1452,8 @@ export default function AssetTracking() {
               <div><Label>Asset ID</Label><Input value={assetForm.asset_id} onChange={e => setAssetForm({...assetForm, asset_id: e.target.value})} placeholder="Auto-generated" /></div>
               <div><Label>Model Number</Label><Input value={assetForm.model_number} onChange={e => setAssetForm({...assetForm, model_number: e.target.value})} placeholder="e.g., P127F" /></div>
               <div><Label>Serial Number</Label><Input value={assetForm.serial_number} onChange={e => setAssetForm({...assetForm, serial_number: e.target.value})} /></div>
+              <div><Label>Specification</Label><Input value={assetForm.specification} onChange={e => setAssetForm({...assetForm, specification: e.target.value})} placeholder="e.g., i5-1245U, 16GB RAM" /></div>
+              <div><Label>Accessories</Label><Input value={assetForm.accessories} onChange={e => setAssetForm({...assetForm, accessories: e.target.value})} placeholder="e.g., Adaptor, mouse, bag" /></div>
               <div><Label>Condition</Label>
                 <Select value={assetForm.condition} onValueChange={v => setAssetForm({...assetForm, condition: v})}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
