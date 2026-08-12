@@ -9065,7 +9065,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       // Phase 1: bulk pre-load existing employees BY EMPLOYEE CODE (primary key per spec §1/§7)
       const allCodes = validRows.map(r => r.code);
       const existingEmpRows = allCodes.length
-        ? await all("SELECT id, user_id, data FROM entities WHERE type='Employee' AND data->>'employee_code' = ANY($1)", [allCodes])
+        ? await all("SELECT id, user_id, data FROM entities WHERE type='Employee' AND data::jsonb->>'employee_code' = ANY($1)", [allCodes])
         : [];
       const existingEmpByCode = new Map();
       for (const e of existingEmpRows) {
@@ -9341,7 +9341,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         if (needsWiring.length) {
           const wireCodes = needsWiring.map(v => v.code);
           const wireEmpRows = await all(
-            "SELECT id, data FROM entities WHERE type='Employee' AND data->>'employee_code' = ANY($1)",
+            "SELECT id, data FROM entities WHERE type='Employee' AND data::jsonb->>'employee_code' = ANY($1)",
             [wireCodes]
           );
           const needsWiringByCode = new Map(needsWiring.map(v => [v.code, v]));
