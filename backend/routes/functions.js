@@ -8802,6 +8802,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'importEmployeeData': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
       const { fileUrl, mode = 'validate' } = p;
       if (!fileUrl) return res.json({ success: false, error: 'fileUrl is required' });
 
@@ -8896,183 +8897,246 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         return isNaN(d.getTime()) ? '' : d.toISOString().slice(0,10);
       };
 
-      const profiles  = parseSheet('Employee_Profile');
-      const salaries  = parseSheet('Salary_Structure (2)');
+      const profiles = parseSheet('Employee_Profile');
+      // Real-world source files may or may not have the "(2)" suffix on this sheet name.
+      let salaries = parseSheet('Salary_Structure');
+      if (!salaries.length) salaries = parseSheet('Salary_Structure (2)');
       const statutory = parseSheet('Statutory_Info');
       const bankSheet = parseSheet('Bank_Details');
-      const leaveCL   = parseSheet('Leave_Balances');
-      const leaveEL   = parseSheet('Leave_Balances (2)');
+      // Leave balance sheets are optional — not every source file carries them.
+      const leaveCL = parseSheet('Leave_Balances');
+      const leaveEL = parseSheet('Leave_Balances (2)');
 
       if (!profiles.length) return res.json({ success: false, error: 'Employee_Profile sheet is empty or missing' });
 
       // ── Lookup maps ────────────────────────────────────────────────────────
       // Salary_Structure keyed by EMPLOYEE ID (= employee_code, e.g. MVE00002)
       const salByCode = {};
-      const salByName = {};
       for (const r of salaries) {
         const code = String(r['employee_id'] || r['employee_code'] || r['emp_id'] || r['emp_code'] || '').trim().toUpperCase();
-        const name = String(r['employee_name'] || r['full_name'] || r['name'] || '').trim().toLowerCase();
         if (code) salByCode[code] = r;
-        if (name) salByName[name] = r;
       }
 
-      // Statutory_Info keyed by personal_email
+      // Statutory_Info keyed by personal_email (only reliable join key on this sheet)
       const statByEmail = {};
-      for (const r of statutory)
-        statByEmail[String(r['personal_email'] || '').toLowerCase()] = r;
+      for (const r of statutory) {
+        const em = String(r['personal_email'] || '').toLowerCase().trim();
+        if (em) statByEmail[em] = r;
+      }
 
-      // Bank_Details keyed by employee_code (most reliable key)
+      // Bank_Details keyed by employee_code (reliable — has both employee_code and personal_email)
       const bankByCode = {};
-      // Also build code → work-email map: the "personal_email" column in Bank_Details
-      // actually contains work/company emails (e.g. vishal@maxvoltenergy.com).
-      // Leave_Balances are keyed by those same work emails, so we use this to cross-link.
-      const codeToWorkEmail = {};
       for (const r of bankSheet) {
         const code = String(r['employee_code'] || '').trim().toUpperCase();
-        const wem  = String(r['personal_email'] || '').toLowerCase();
-        if (code) { bankByCode[code] = r; if (wem) codeToWorkEmail[code] = wem; }
+        if (code) bankByCode[code] = r;
       }
 
-      // Leave balances keyed by email (work or personal)
+      // Leave balances keyed by personal_email, if the sheet(s) exist
       const leaveByEmail = {};
       for (const r of [...leaveCL, ...leaveEL]) {
-        const em = String(r['personal_email'] || '').toLowerCase();
+        const em = String(r['personal_email'] || '').toLowerCase().trim();
+        if (!em) continue;
         if (!leaveByEmail[em]) leaveByEmail[em] = [];
         leaveByEmail[em].push(r);
       }
 
       const DEFAULT_PASSWORD = 'Maxvolt@1234';
-      const errors = [], warnings = [];
+      const normWs = (s) => String(s || '').trim().replace(/\s+/g, ' ');
+      const todayStr = new Date().toISOString().slice(0, 10); // date-only, per spec §6
 
-      // ── Validate all profiles ──────────────────────────────────────────────
-      const validated = profiles.map((row, idx) => {
-        const rowNum = idx + 2;
-        const email  = String(row['personal_email'] || '').toLowerCase().trim();
-        const name   = String(row['full_name'] || '').trim();
-        const code   = String(row['employee_code'] || '').trim().toUpperCase();
+      // ── Pass 1: parse + validate each row, detect in-file duplicates ───────
+      const errors = [];         // { row, code, field, message } — hard failures, row is skipped entirely
+      const warnings = [];       // { row, code, message } — soft issues, row still imported
+      const seenCodes = new Map();  // code(upper) → first rowNum
+      const seenEmails = new Map(); // email(lower) → first rowNum
 
-        if (!email) errors.push({ row: rowNum, field: 'personal_email', message: `Row ${rowNum}: Email is missing` });
-        if (!name)  errors.push({ row: rowNum, field: 'full_name',      message: `Row ${rowNum}: Name is missing` });
-        if (!code)  errors.push({ row: rowNum, field: 'employee_code',  message: `Row ${rowNum}: Employee code is missing` });
+      const parsedRows = profiles.map((row, idx) => {
+        const rowNum = idx + 2; // account for header row
+        const code  = String(row['employee_code'] || '').trim().toUpperCase();
+        const name  = String(row['full_name'] || '').trim();
+        const email = String(row['official_email'] || '').toLowerCase().trim();
+        const department  = normWs(row['department']);
+        const designation = normWs(row['designation']);
+        const designationTier = normWs(row['designation_tier']).toLowerCase();
+        const dateOfJoining = parseDate(row['date_of_joining']);
+        const rawStatus = String(row['employee_status'] || row['status'] || '').toLowerCase().trim();
+        const confirmDateRaw = row['employee_confirmation_date'];
+        const confirmDateParsed = parseDate(confirmDateRaw);
+        const confirmDateInvalid = !!(confirmDateRaw && String(confirmDateRaw).trim() && !confirmDateParsed);
 
-        const sal  = salByCode[code] || salByName[name.toLowerCase()] || null;
-        const stat = statByEmail[email] || null;
-        const bank = bankByCode[code] || null;
-        // Leave_Balances use work email; fall back to personal email
-        const workEmail = codeToWorkEmail[code] || '';
-        const leave = leaveByEmail[workEmail] || leaveByEmail[email] || [];
+        const rowErrors = [];
+        if (!code) rowErrors.push('Missing Employee ID');
+        if (!name) rowErrors.push('Missing employee name');
+        if (!department) rowErrors.push('Missing department');
+        if (!designation) rowErrors.push('Missing designation');
+        if (!dateOfJoining) rowErrors.push('Missing/invalid date of joining');
+        if (confirmDateInvalid) rowErrors.push(`Invalid Employee Confirmation Date value: "${confirmDateRaw}"`);
+        if (rawStatus && !['probation', 'confirmation', 'trainee'].includes(rawStatus)) {
+          rowErrors.push(`Invalid Employee Status value: "${row['employee_status']}"`);
+        }
 
-        if (!sal)        warnings.push({ row: rowNum, message: `${name} (${code}): No salary data — payroll needs manual entry` });
-        if (!bank && !sal?.bank_account) warnings.push({ row: rowNum, message: `${name} (${code}): No bank details found` });
-        if (!leave.length) warnings.push({ row: rowNum, message: `${name} (${code}): No leave balances found` });
+        if (code) {
+          if (seenCodes.has(code)) rowErrors.push(`Duplicate Employee ID in file (also row ${seenCodes.get(code)})`);
+          else seenCodes.set(code, rowNum);
+        }
+        if (email) {
+          if (seenEmails.has(email)) rowErrors.push(`Duplicate email in file (also row ${seenEmails.get(email)})`);
+          else seenEmails.set(email, rowNum);
+        }
+
+        // ── Automatic Probation → Confirmation logic (spec §5/§6) ──────────
+        let employeeStatus = ['probation', 'confirmation', 'trainee'].includes(rawStatus) ? rawStatus : 'probation';
+        let autoConfirmed = false;
+        if (employeeStatus === 'probation' && confirmDateParsed && confirmDateParsed <= todayStr) {
+          employeeStatus = 'confirmation';
+          autoConfirmed = true;
+        }
+
+        if (rowErrors.length) {
+          for (const msg of rowErrors) errors.push({ row: rowNum, code, name, message: `Row ${rowNum} (${code || name || 'unknown'}): ${msg}` });
+        }
+
+        const sal  = code ? (salByCode[code] || null) : null;
+        const stat = email ? (statByEmail[email] || null) : null;
+        const bank = code ? (bankByCode[code] || null) : null;
+        const leave = email ? (leaveByEmail[email] || []) : [];
+        if (!sal) warnings.push({ row: rowNum, code, message: `${name} (${code}): No salary data found` });
+        if (!bank && !sal?.bank_account) warnings.push({ row: rowNum, code, message: `${name} (${code}): No bank details found` });
 
         return {
-          rowNum, email, name, code,
-          department:              row['department']               || '',
-          designation:             row['designation']              || '',
-          designation_tier:        row['designation_tier']         || '',
-          employee_status:         row['employee_status'] || row['status'] || 'active',
-          work_location:           row['work_location']            || '',
-          date_of_joining:         parseDate(row['date_of_joining']),
-          confirmation_date:       parseDate(row['employee_confirmation_date']),
-          date_of_birth:           parseDate(row['date_of_birth']),
-          gender:                  row['gender']                   || '',
-          phone:                   cleanInt(row['phone'])          || '',
-          blood_group:             row['blood_group']              || '',
-          employment_type:         row['employment_type']          || 'full_time',
-          father_spouse_name:      row['father_spouse_name']       || '',
-          reporting_manager_email: row['reporting_manager_email']  || '',
-          address:                 row['address']                  || '',
-          is_attendance_exempt: row['is_attendance_exempt'] === 'True' || row['is_attendance_exempt'] === 'true',
+          rowNum, code, name, email,
+          department, designation, designation_tier: designationTier,
+          employee_status: employeeStatus,
+          employee_status_from_file: rawStatus || null,
+          auto_confirmed: autoConfirmed,
+          work_location: normWs(row['work_location']),
+          date_of_joining: dateOfJoining,
+          employee_confirmation_date: confirmDateParsed,
+          date_of_birth: parseDate(row['date_of_birth']),
+          gender: String(row['gender'] || '').toLowerCase().trim(),
+          phone: cleanInt(row['phone']) || '',
+          blood_group: normWs(row['blood_group']),
+          employment_type: normWs(row['employment_type']) || 'full_time',
+          father_spouse_name: normWs(row['father_spouse_name']),
+          reporting_manager_email: String(row['reporting_manager_email'] || '').toLowerCase().trim(),
+          address: normWs(row['Address'] || row['address']),
+          is_attendance_exempt: String(row['is_attendance_exempt']).toLowerCase() === 'true',
+          status: normWs(row['status']) || 'active',
           sal, stat, bank, leave,
-          valid: !errors.find(e => e.row === rowNum),
+          valid: rowErrors.length === 0,
         };
       });
+
+      const validRows = parsedRows.filter(r => r.valid);
+      const skippedRows = parsedRows.filter(r => !r.valid);
 
       if (mode === 'validate') {
         return res.json({
           success: true,
           total_employees: profiles.length,
+          valid_count: validRows.length,
+          invalid_count: skippedRows.length,
+          probation_to_confirmation_count: validRows.filter(r => r.auto_confirmed).length,
           salary_structure: salaries,
-          leave_balances: [...leaveCL, ...leaveEL],
-          insurance_policies: [],
           errors, warnings,
-          employees: validated.slice(0, 20).map(r => ({
+          employees: validRows.slice(0, 20).map(r => ({
             name: r.name, code: r.code, email: r.email,
             department: r.department, designation: r.designation,
             date_of_joining: r.date_of_joining,
+            employee_status: r.employee_status, auto_confirmed: r.auto_confirmed,
             has_salary: !!r.sal, has_bank: !!(r.bank || r.sal?.bank_account),
             has_statutory: !!(r.stat || r.sal?.pan), leave_records: r.leave.length,
           })),
         });
       }
 
-      // ── Import mode — bulk optimised (O(10) DB calls total, not O(N×10)) ──
-      const results = [];
+      // ── Import mode — bulk optimised (O(10) DB calls total, not O(N×code)) ──
       const hash = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
       const toNum = (v) => { const n = parseFloat(String(v || '0').replace(/,/g, '')); return isNaN(n) ? 0 : n; };
       const now = new Date().toISOString();
 
-      // Phase 1: bulk pre-load existing users
-      const allEmails = validated.filter(v => v.valid).map(v => v.email.toLowerCase());
-      const existingUserRows = allEmails.length
-        ? await all("SELECT id, email, role FROM users WHERE LOWER(email) = ANY($1)", [allEmails])
+      // Phase 1: bulk pre-load existing employees BY EMPLOYEE CODE (primary key per spec §1/§7)
+      const allCodes = validRows.map(r => r.code);
+      const existingEmpRows = allCodes.length
+        ? await all("SELECT id, user_id, data FROM entities WHERE type='Employee' AND data->>'employee_code' = ANY($1)", [allCodes])
         : [];
-      const existingUserMap = Object.fromEntries(existingUserRows.map(u => [u.email.toLowerCase(), u]));
+      const existingEmpByCode = new Map();
+      for (const e of existingEmpRows) {
+        try {
+          const d = JSON.parse(e.data);
+          const c = String(d.employee_code || '').trim().toUpperCase();
+          if (c) existingEmpByCode.set(c, { id: e.id, userId: e.user_id, data: d });
+        } catch { /* skip unparsable row */ }
+      }
 
-      // Phase 2: resolve/generate userId for each valid row
-      const userIdMap = {}; // email → userId
-      const newUserRows = []; // [id, email, hash, name]
-      for (const row of validated) {
-        if (!row.valid) { results.push({ name: row.name, code: row.code, status: 'skipped', reason: 'Validation error' }); continue; }
-        const existing = existingUserMap[row.email.toLowerCase()];
-        if (existing) {
-          userIdMap[row.email] = existing.id;
+      // Phase 2: bulk pre-load users — by id (for existing employees) and by email (for new-employee dupe checks)
+      const existingUserIds = [...new Set([...existingEmpByCode.values()].map(e => e.userId).filter(Boolean))];
+      const allEmails = validRows.map(r => r.email).filter(Boolean);
+      const [usersByIdRows, usersByEmailRows] = await Promise.all([
+        existingUserIds.length ? all("SELECT id, email, full_name FROM users WHERE id = ANY($1)", [existingUserIds]) : [],
+        allEmails.length ? all("SELECT id, email, full_name FROM users WHERE LOWER(email) = ANY($1)", [allEmails]) : [],
+      ]);
+      const userByIdMap = Object.fromEntries(usersByIdRows.map(u => [u.id, u]));
+      const userByEmailMap = Object.fromEntries(usersByEmailRows.map(u => [u.email.toLowerCase(), u]));
+
+      // Phase 3: decide per-row action — create / update / no-change / error — entirely in memory
+      const newUserRows = [];   // [id, email, hash, name]
+      const userEmailUpdates = []; // [id, newEmail, newName]  — only when linked user info actually changed
+      const empInserts = [];    // [id, userId, dataJson]
+      const empUpdates = [];    // [dataJson, entityId]
+      const salInserts = [];    // [id, userId, dataJson]
+      const bankInserts = [];   // [id, userId, dataJson]
+
+      let newEmployeesCount = 0, updatedEmployeesCount = 0, noChangeCount = 0;
+      let newUserAccountsCount = 0, syncedUserAccountsCount = 0;
+      let autoConfirmedCount = 0;
+      const rowResults = [];
+      const importErrors = [...errors];
+
+      for (const row of skippedRows) {
+        rowResults.push({ code: row.code, name: row.name, status: 'error', reason: 'Validation failed — see errors list' });
+      }
+
+      for (const row of validRows) {
+        const existingEmp = existingEmpByCode.get(row.code);
+
+        // Determine/attach a user account for this row
+        let userId, isNewUser = false, userAction = 'unchanged';
+        if (existingEmp && existingEmp.userId) {
+          userId = existingEmp.userId;
+          const u = userByIdMap[userId];
+          if (u && row.email && row.email !== (u.email || '').toLowerCase()) {
+            const conflict = userByEmailMap[row.email];
+            if (conflict && conflict.id !== userId) {
+              importErrors.push({ row: row.rowNum, code: row.code, message: `Row ${row.rowNum} (${row.code}): official_email "${row.email}" already belongs to a different user account — email not updated` });
+            } else {
+              userEmailUpdates.push([userId, row.email, row.name || u.full_name]);
+              userAction = 'synced';
+            }
+          } else if (u && row.name && row.name !== u.full_name) {
+            userEmailUpdates.push([userId, u.email, row.name]);
+            userAction = 'synced';
+          }
         } else {
-          const uid = uuidv4();
-          userIdMap[row.email] = uid;
-          newUserRows.push([uid, row.email, hash, row.name]);
+          // No existing Employee for this code — either link to a pre-existing user by email, or create new
+          const existingUser = row.email ? userByEmailMap[row.email] : null;
+          if (existingUser) {
+            userId = existingUser.id;
+          } else {
+            if (!row.email) {
+              importErrors.push({ row: row.rowNum, code: row.code, message: `Row ${row.rowNum} (${row.code}): Missing official_email — cannot create user account` });
+              rowResults.push({ code: row.code, name: row.name, status: 'error', reason: 'Missing email — cannot create user account' });
+              continue;
+            }
+            userId = uuidv4();
+            newUserRows.push([userId, row.email, hash, row.name]);
+            isNewUser = true;
+            userAction = 'created';
+          }
         }
-      }
 
-      // Bulk INSERT new users (100 rows per batch — 4 cols × 100 = 400 params)
-      const USER_BATCH = 100;
-      for (let i = 0; i < newUserRows.length; i += USER_BATCH) {
-        const batch = newUserRows.slice(i, i + USER_BATCH);
-        const ph = batch.map((_, ri) => `($${ri*4+1},$${ri*4+2},$${ri*4+3},$${ri*4+4},'employee','employee',TRUE)`).join(',');
-        await run(`INSERT INTO users(id,email,password,full_name,role,custom_role,must_change_password) VALUES ${ph} ON CONFLICT(email) DO NOTHING`, batch.flat());
-      }
-
-      // Phase 3: bulk load all existing entity data for these users (4 queries in parallel)
-      const allUserIds = Object.values(userIdMap).filter(Boolean);
-      const [existingEmpRows, existingSalRows, existingBankRows, existingLeaveRows] = allUserIds.length
-        ? await Promise.all([
-            all("SELECT user_id, id, data FROM entities WHERE type='Employee' AND user_id = ANY($1)", [allUserIds]),
-            all("SELECT user_id FROM entities WHERE type='SalaryStructure' AND user_id = ANY($1) AND status='active'", [allUserIds]),
-            all("SELECT user_id FROM entities WHERE type='BankDetails' AND user_id = ANY($1)", [allUserIds]),
-            all("SELECT user_id, data FROM entities WHERE type='LeaveBalance' AND user_id = ANY($1)", [allUserIds]),
-          ])
-        : [[], [], [], []];
-
-      const existingEmpMap  = Object.fromEntries(existingEmpRows.map(e => [e.user_id, { id: e.id, data: JSON.parse(e.data) }]));
-      const existingSalSet  = new Set(existingSalRows.map(r => r.user_id));
-      const existingBankSet = new Set(existingBankRows.map(r => r.user_id));
-      const existingLeaveSet = new Set(existingLeaveRows.map(r => {
-        try { const d = JSON.parse(r.data); return `${r.user_id}:${d.leave_policy_code}:${d.year}`; } catch { return ''; }
-      }));
-
-      // Phase 4: compute all inserts/updates in-memory (zero DB calls)
-      const empInserts   = []; // [id, userId, dataJson]
-      const empUpdates   = []; // [dataJson, entityId]
-      const salInserts   = []; // [id, userId, dataJson]
-      const bankInserts  = []; // [id, userId, dataJson]
-      const leaveInserts = []; // [id, userId, dataJson]
-
-      for (const row of validated) {
-        if (!row.valid) continue;
-        const userId = userIdMap[row.email];
-        if (!userId) continue;
-        const isNewUser = !existingUserMap[row.email.toLowerCase()];
+        if (userAction === 'created') newUserAccountsCount++;
+        else if (userAction === 'synced') syncedUserAccountsCount++;
 
         const sal  = row.sal  || {};
         const stat = row.stat || {};
@@ -9082,129 +9146,157 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const pfNumber     = stat['pf_account_number'] || sal['pf_number']  || '';
         const esiNumber    = cleanInt(stat['esi_number']    || sal['esi_number'] || '');
 
-        // Employee entity
-        const existingEmp = existingEmpMap[userId];
+        const newFields = {
+          employee_code: row.code,
+          full_name: row.name, display_name: row.name,
+          official_email: row.email,
+          department: row.department, designation: row.designation,
+          designation_tier: row.designation_tier,
+          employee_status: row.employee_status,
+          work_location: row.work_location,
+          date_of_joining: row.date_of_joining,
+          date_of_birth: row.date_of_birth,
+          // Written under all three names seen elsewhere in the codebase so dependent
+          // features (OnboardingApproval, HRDashboard's Probation Overdue alert) stay in sync.
+          employee_confirmation_date: row.employee_confirmation_date,
+          confirmation_date: row.employee_confirmation_date,
+          probation_end_date: row.employee_confirmation_date,
+          gender: row.gender, phone: row.phone,
+          blood_group: row.blood_group,
+          employment_type: row.employment_type,
+          father_spouse_name: row.father_spouse_name,
+          reporting_manager_email: row.reporting_manager_email,
+          address: row.address,
+          is_attendance_exempt: row.is_attendance_exempt,
+          status: row.status,
+        };
+        if (panNumber) newFields.pan_number = panNumber;
+        if (aadharNumber) newFields.aadhar_number = aadharNumber;
+        if (uanNumber) newFields.uan_number = uanNumber;
+        if (pfNumber) newFields.pf_account_number = pfNumber;
+        if (esiNumber) newFields.esi_number = esiNumber;
+
         let empId;
         if (existingEmp) {
           empId = existingEmp.id;
           const ex = existingEmp.data;
-          empUpdates.push([JSON.stringify({
-            ...ex,
-            employee_code: row.code || ex.employee_code,
-            full_name: row.name || ex.full_name, display_name: row.name || ex.display_name,
-            department: row.department || ex.department,
-            designation: row.designation || ex.designation,
-            designation_tier: row.designation_tier || ex.designation_tier,
-            employee_status: row.employee_status || ex.employee_status,
-            work_location: row.work_location || ex.work_location,
-            date_of_joining: row.date_of_joining || ex.date_of_joining,
-            date_of_birth: row.date_of_birth || ex.date_of_birth,
-            confirmation_date: row.confirmation_date || ex.confirmation_date,
-            gender: row.gender || ex.gender, phone: row.phone || ex.phone,
-            blood_group: row.blood_group || ex.blood_group,
-            employment_type: row.employment_type || ex.employment_type,
-            father_spouse_name: row.father_spouse_name || ex.father_spouse_name,
-            reporting_manager_email: row.reporting_manager_email || ex.reporting_manager_email,
-            address: row.address || ex.address,
-            is_attendance_exempt: row.is_attendance_exempt,
-            pan_number: panNumber || ex.pan_number, aadhar_number: aadharNumber || ex.aadhar_number,
-            uan_number: uanNumber || ex.uan_number, pf_account_number: pfNumber || ex.pf_account_number,
-            esi_number: esiNumber || ex.esi_number,
-          }), empId]);
+          // Never downgrade Confirmation → Probation from a stale file value (spec §5)
+          if (ex.employee_status === 'confirmation' && newFields.employee_status === 'probation') {
+            newFields.employee_status = 'confirmation';
+          }
+          // Don't overwrite valid existing values with blanks from the file (spec §2)
+          const merged = { ...ex };
+          let changed = false;
+          for (const [k, v] of Object.entries(newFields)) {
+            if (v === '' || v === null || v === undefined) continue; // blank in file → keep existing
+            if (merged[k] !== v) { merged[k] = v; changed = true; }
+          }
+          if (changed) {
+            empUpdates.push([JSON.stringify(merged), empId]);
+            updatedEmployeesCount++;
+            rowResults.push({ code: row.code, name: row.name, status: 'updated', email: row.email });
+          } else {
+            noChangeCount++;
+            rowResults.push({ code: row.code, name: row.name, status: 'no_change', email: row.email });
+          }
         } else {
           empId = uuidv4();
           empInserts.push([empId, userId, JSON.stringify({
-            id: empId, user_id: userId,
-            employee_code: row.code, full_name: row.name, display_name: row.name,
-            department: row.department, designation: row.designation,
-            designation_tier: row.designation_tier, employee_status: row.employee_status,
-            work_location: row.work_location, date_of_joining: row.date_of_joining,
-            date_of_birth: row.date_of_birth, confirmation_date: row.confirmation_date,
-            gender: row.gender, phone: row.phone, blood_group: row.blood_group,
-            employment_type: row.employment_type, father_spouse_name: row.father_spouse_name,
-            reporting_manager_email: row.reporting_manager_email, address: row.address,
-            is_attendance_exempt: row.is_attendance_exempt,
-            pan_number: panNumber, aadhar_number: aadharNumber,
-            uan_number: uanNumber, pf_account_number: pfNumber, esi_number: esiNumber,
-            status: 'active', created_at: now,
+            id: empId, user_id: userId, ...newFields,
+            status: newFields.status || 'active', created_at: now,
           })]);
+          newEmployeesCount++;
+          rowResults.push({ code: row.code, name: row.name, status: 'created', email: row.email });
         }
 
-        // Salary structure
-        if (row.sal && !existingSalSet.has(userId)) {
+        if (row.auto_confirmed) autoConfirmedCount++;
+
+        // Salary structure — create-only enrichment, never overwrites existing payroll data
+        if (row.sal && userId) {
           const s = row.sal;
           const salId = uuidv4();
           const effectiveFrom = row.date_of_joining || parseDate(s['joining_date']) || now.slice(0, 10);
-          salInserts.push([salId, userId, JSON.stringify({
-            id: salId, user_id: userId, employee_id: empId, employee_code: row.code,
-            employee_name: row.name, effective_from: effectiveFrom,
-            basic_monthly:        toNum(s['basic_salary']),
-            hra_monthly:          toNum(s['hra']),
-            conveyance_monthly:   toNum(s['conveyance']),
-            car_fuel_maintenance: toNum(s['car_fuel_maintenance']),
-            health_and_wellness:  toNum(s['health_and_wellness']),
-            hard_furnishing:      toNum(s['hard_furnishing']),
-            pf_employee:          toNum(s['provident_fund']),
-            medical_insurance:    toNum(s['medical_insurance']),
-            admin_charge:         toNum(s['admin_charge']),
-            vpp_deduction:        toNum(s['vpp_deduction']),
-            ctc_bonus:            toNum(s['ctc_bonus']),
-            esi_employer:         toNum(s['esi_employer']),
-            nps_employee:         toNum(s['nps_employee']),
-            car_lease:            toNum(s['car_lease']),
-            total_ctc:            toNum(s['totalctc']),
-            status: 'active', created_at: now,
-          })]);
+          salInserts.push({ userId, empId, code: row.code, name: row.name, effectiveFrom, s, salId });
         }
 
-        // Bank details
+        // Bank details — create-only enrichment
         const bk = row.bank || {};
         const accountNum = cleanInt(bk['account_number'] || sal['bank_account'] || '');
         const ifscCode   = bk['ifsc_code']  || sal['ifsc_code'] || '';
         const bankName   = bk['bank_name']  || sal['bank']      || '';
         const branchName = bk['branch']     || '';
-        if (accountNum && ifscCode && !existingBankSet.has(userId)) {
-          const bankId = uuidv4();
-          bankInserts.push([bankId, userId, JSON.stringify({
-            id: bankId, user_id: userId, employee_id: empId,
-            account_number: accountNum, ifsc_code: ifscCode,
-            bank_name: bankName, branch: branchName,
-            account_type: 'savings', is_primary: true, created_at: now,
-          })]);
+        if (accountNum && ifscCode && userId) {
+          bankInserts.push({ userId, empId, accountNum, ifscCode, bankName, branchName });
         }
-
-        // Leave balances
-        for (const lb of row.leave) {
-          const policy = lb['leave_policy_code'] || '';
-          const year   = cleanInt(lb['year'] || String(new Date().getFullYear()));
-          if (!policy) continue;
-          const leaveKey = `${userId}:${policy}:${year}`;
-          if (existingLeaveSet.has(leaveKey)) continue;
-          existingLeaveSet.add(leaveKey); // prevent duplicates within the same import
-          const lbId = uuidv4();
-          leaveInserts.push([lbId, userId, JSON.stringify({
-            id: lbId, user_id: userId, employee_id: empId,
-            leave_policy_code: policy, year,
-            total_allocated:    parseFloat(lb['total_allocated'])   || 0,
-            accrued_this_year:  parseFloat(lb['accrued_this_year']) || 0,
-            used:               parseFloat(lb['used'])              || 0,
-            carried_forward:    parseFloat(lb['carried_forward'])   || 0,
-            last_accrual_month: cleanInt(lb['last_accrual_month'])  || '',
-            last_accrual_year:  cleanInt(lb['last_accrual_year'])   || '',
-            created_at: now,
-          })]);
-        }
-
-        results.push(isNewUser
-          ? { name: row.name, code: row.code, status: 'created', email: row.email,
-              has_salary: !!row.sal, has_bank: !!(accountNum && ifscCode), leave_records: row.leave.length }
-          : { name: row.name, code: row.code, status: 'existing_user', email: row.email });
       }
 
-      // Phase 5: bulk execute — multi-row INSERTs + parallel UPDATEs
-      const ENT_BATCH  = 100; // 3 cols × 100 = 300 params, well within PG limit
-      const UPDT_BATCH = 50;
+      // Bulk INSERT new users
+      const USER_BATCH = 100;
+      for (let i = 0; i < newUserRows.length; i += USER_BATCH) {
+        const batch = newUserRows.slice(i, i + USER_BATCH);
+        const ph = batch.map((_, ri) => `($${ri*4+1},$${ri*4+2},$${ri*4+3},$${ri*4+4},'employee','employee',TRUE)`).join(',');
+        await run(`INSERT INTO users(id,email,password,full_name,role,custom_role,must_change_password) VALUES ${ph} ON CONFLICT(email) DO NOTHING`, batch.flat());
+      }
 
+      // Sync linked user info (email/name) for existing employees — never touches password
+      for (const [uid, newEmail, newName] of userEmailUpdates) {
+        await run("UPDATE users SET email=$1, full_name=$2 WHERE id=$3", [newEmail, newName, uid]);
+      }
+
+      // Bulk-load which of these users already have SalaryStructure/BankDetails, to avoid dupes on re-import
+      const salBankUserIds = [...new Set([...salInserts, ...bankInserts].map(r => r.userId))];
+      const [existingSalRows, existingBankRows] = salBankUserIds.length
+        ? await Promise.all([
+            all("SELECT user_id FROM entities WHERE type='SalaryStructure' AND user_id = ANY($1) AND status='active'", [salBankUserIds]),
+            all("SELECT user_id FROM entities WHERE type='BankDetails' AND user_id = ANY($1)", [salBankUserIds]),
+          ])
+        : [[], []];
+      const existingSalSet  = new Set(existingSalRows.map(r => r.user_id));
+      const existingBankSet = new Set(existingBankRows.map(r => r.user_id));
+
+      const salInsertRows = [];
+      for (const r of salInserts) {
+        if (existingSalSet.has(r.userId)) continue;
+        existingSalSet.add(r.userId);
+        const s = r.s;
+        salInsertRows.push([r.salId, r.userId, JSON.stringify({
+          id: r.salId, user_id: r.userId, employee_id: r.empId, employee_code: r.code,
+          employee_name: r.name, effective_from: r.effectiveFrom,
+          basic_monthly:        toNum(s['basic_salary']),
+          hra_monthly:          toNum(s['hra']),
+          conveyance_monthly:   toNum(s['conveyance']),
+          car_fuel_maintenance: toNum(s['car_fuel_maintenance']),
+          health_and_wellness:  toNum(s['health_and_wellness']),
+          hard_furnishing:      toNum(s['hard_furnishing']),
+          pf_employee:          toNum(s['provident_fund']),
+          medical_insurance:    toNum(s['medical_insurance']),
+          admin_charge:         toNum(s['admin_charge']),
+          vpp_deduction:        toNum(s['vpp_deduction']),
+          ctc_bonus:            toNum(s['ctc_bonus']),
+          esi_employer:         toNum(s['esi_employer']),
+          nps_employee:         toNum(s['nps_employee']),
+          car_lease:            toNum(s['car_lease']),
+          total_ctc:            toNum(s['totalctc']),
+          status: 'active', created_at: now,
+        })]);
+      }
+
+      const bankInsertRows = [];
+      for (const r of bankInserts) {
+        if (existingBankSet.has(r.userId)) continue;
+        existingBankSet.add(r.userId);
+        const bankId = uuidv4();
+        bankInsertRows.push([bankId, r.userId, JSON.stringify({
+          id: bankId, user_id: r.userId, employee_id: r.empId,
+          account_number: r.accountNum, ifsc_code: r.ifscCode,
+          bank_name: r.bankName, branch: r.branchName,
+          account_type: 'savings', is_primary: true, created_at: now,
+        })]);
+      }
+
+      // Bulk execute — multi-row INSERTs + parallel UPDATEs
+      const ENT_BATCH  = 100;
+      const UPDT_BATCH = 50;
       const bulkInsertEntities = async (type, rows) => {
         for (let i = 0; i < rows.length; i += ENT_BATCH) {
           const batch = rows.slice(i, i + ENT_BATCH);
@@ -9222,55 +9314,70 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
       await Promise.all([
         bulkInsertEntities('Employee', empInserts),
-        bulkInsertEntities('SalaryStructure', salInserts),
-        bulkInsertEntities('BankDetails', bankInserts),
-        bulkInsertEntities('LeaveBalance', leaveInserts),
+        bulkInsertEntities('SalaryStructure', salInsertRows),
+        bulkInsertEntities('BankDetails', bankInsertRows),
         bulkUpdateEntities(empUpdates),
       ]);
 
-      // Phase 6: post-import — promote managers & wire reporting_manager_id (bulk)
+      // Post-import — promote managers & wire reporting_manager_id (bulk, adapted from prior logic)
       let managersPromoted = 0;
-      const mgrEmails = [...new Set(validated.map(v => (v.reporting_manager_email || '').toLowerCase().trim()).filter(Boolean))];
+      const mgrEmails = [...new Set(validRows.map(v => v.reporting_manager_email).filter(Boolean))];
       if (mgrEmails.length) {
         const mgrResults = await Promise.all(mgrEmails.map(e =>
           run("UPDATE users SET role='management', custom_role='management' WHERE LOWER(email)=$1 AND role IN ('employee','onboarding_pending')", [e])
         ));
         managersPromoted = mgrResults.reduce((s, r) => s + (r.rowCount || 0), 0);
-      }
 
-      // Wire reporting_manager_id — one query for all managers, one for all employees
-      if (mgrEmails.length) {
         const mgrUserRows = await all("SELECT id, LOWER(email) AS email FROM users WHERE LOWER(email) = ANY($1)", [mgrEmails]);
         const mgrUserMap  = Object.fromEntries(mgrUserRows.map(u => [u.email, u.id]));
-        const needsWiring = validated.filter(v => v.valid && v.reporting_manager_email);
+        const needsWiring = validRows.filter(v => v.reporting_manager_email);
         if (needsWiring.length) {
-          const wireEmails = needsWiring.map(v => v.email.toLowerCase());
+          const wireCodes = needsWiring.map(v => v.code);
           const wireEmpRows = await all(
-            "SELECT e.id, e.data, LOWER(u.email) AS email FROM entities e JOIN users u ON u.id=e.user_id WHERE e.type='Employee' AND LOWER(u.email) = ANY($1)",
-            [wireEmails]
+            "SELECT id, data FROM entities WHERE type='Employee' AND data->>'employee_code' = ANY($1)",
+            [wireCodes]
           );
-          const needsWiringByEmail = new Map(needsWiring.map(v => [v.email.toLowerCase(), v]));
+          const needsWiringByCode = new Map(needsWiring.map(v => [v.code, v]));
           const wireUpdates = [];
           for (const empRow of wireEmpRows) {
-            const vRow = needsWiringByEmail.get(empRow.email);
-            if (!vRow) continue;
-            const mgrId = mgrUserMap[(vRow.reporting_manager_email || '').toLowerCase().trim()];
-            if (!mgrId) continue;
             const ed = JSON.parse(empRow.data);
-            if (ed.reporting_manager_id === mgrId) continue;
+            const vRow = needsWiringByCode.get(String(ed.employee_code || '').toUpperCase());
+            if (!vRow) continue;
+            const mgrId = mgrUserMap[vRow.reporting_manager_email];
+            if (!mgrId || ed.reporting_manager_id === mgrId) continue;
             wireUpdates.push([JSON.stringify({ ...ed, reporting_manager_id: mgrId }), empRow.id]);
           }
           await bulkUpdateEntities(wireUpdates);
         }
       }
 
-      const created  = results.filter(r => r.status === 'created').length;
-      const existing = results.filter(r => r.status === 'existing_user').length;
-      const failed   = results.filter(r => r.status === 'error').length;
-      return res.json({ success: true, created, existing, failed, total: validated.length, results,
+      const duplicatesDetected = errors.filter(e => /Duplicate/.test(e.message)).length;
+      const validationFailures = errors.length;
+
+      return res.json({
+        success: true,
+        // Legacy-shaped fields kept for the existing frontend Results screen
+        created: newEmployeesCount, existing: updatedEmployeesCount + noChangeCount,
+        failed: skippedRows.length, total: profiles.length, results: rowResults,
         managers_promoted: managersPromoted,
         default_password: DEFAULT_PASSWORD,
-        message: `Imported ${created} new employees (${existing} already existed, ${failed} errors). ${managersPromoted} managers auto-promoted to management role. Default password: ${DEFAULT_PASSWORD}` });
+        // Detailed 9-point import summary (spec §9)
+        summary: {
+          total_records_processed: profiles.length,
+          new_employees_created: newEmployeesCount,
+          existing_employees_updated: updatedEmployeesCount,
+          employees_no_change: noChangeCount,
+          probation_to_confirmation_count: autoConfirmedCount,
+          new_user_accounts_created: newUserAccountsCount,
+          existing_user_accounts_synchronised: syncedUserAccountsCount,
+          duplicate_records_detected: duplicatesDetected,
+          validation_failures: validationFailures,
+          records_skipped: skippedRows.length,
+          managers_promoted: managersPromoted,
+        },
+        errors: importErrors, warnings,
+        message: `Processed ${profiles.length} records: ${newEmployeesCount} new, ${updatedEmployeesCount} updated, ${noChangeCount} unchanged, ${autoConfirmedCount} auto-confirmed from probation, ${skippedRows.length} skipped. Default password for new accounts: ${DEFAULT_PASSWORD}`,
+      });
     }
 
     case 'updateEmployeeConfirmation': {

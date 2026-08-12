@@ -32,8 +32,8 @@ export default function ValidationSummary({ errors, warnings }) {
             <div className="divide-y divide-red-100 max-h-52 overflow-y-auto">
               {errors.map((e, i) => (
                 <div key={i} className="px-3 py-2 bg-white text-sm flex items-start gap-2">
-                  <Badge variant="destructive" className="text-xs shrink-0">{e.sheet} row {e.row}</Badge>
-                  <span className="text-gray-700"><strong>{e.field}:</strong> {e.msg}</span>
+                  <Badge variant="destructive" className="text-xs shrink-0">{e.code || e.sheet || `row ${e.row}`}</Badge>
+                  <span className="text-gray-700">{e.message || (e.field ? `${e.field}: ${e.msg}` : e.msg)}</span>
                 </div>
               ))}
             </div>
@@ -49,8 +49,8 @@ export default function ValidationSummary({ errors, warnings }) {
           <div className="divide-y divide-yellow-100 max-h-40 overflow-y-auto">
             {warnings.map((w, i) => (
               <div key={i} className="px-3 py-2 bg-white text-sm flex items-start gap-2">
-                <Badge className="bg-yellow-100 text-yellow-800 border-yellow-200 text-xs shrink-0">{w.sheet} row {w.row}</Badge>
-                <span className="text-gray-600">{w.msg}</span>
+                <Badge className="bg-yellow-100 text-yellow-800 border-yellow-200 text-xs shrink-0">{w.code || w.sheet || `row ${w.row}`}</Badge>
+                <span className="text-gray-600">{w.message || w.msg}</span>
               </div>
             ))}
           </div>

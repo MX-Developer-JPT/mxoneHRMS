@@ -124,7 +124,44 @@ export default function ImportEmployees() {
                 <span className="font-medium text-gray-700">{preview.total_employees}</span> employees found
               </div>
             </div>
+            <div className="flex flex-wrap gap-3 text-sm">
+              <span className="px-3 py-1 rounded-full bg-green-50 text-green-700 border border-green-100">{preview.valid_count ?? 0} valid</span>
+              <span className="px-3 py-1 rounded-full bg-red-50 text-red-700 border border-red-100">{preview.invalid_count ?? 0} invalid</span>
+              <span className="px-3 py-1 rounded-full bg-purple-50 text-purple-700 border border-purple-100">{preview.probation_to_confirmation_count ?? 0} will auto-confirm (probation → confirmation)</span>
+            </div>
             <ValidationSummary errors={preview.errors || []} warnings={preview.warnings || []} />
+            {preview.employees?.length > 0 && (
+              <div className="border rounded-lg overflow-hidden">
+                <div className="px-4 py-2 bg-gray-50 text-sm font-medium text-gray-800">Employee Preview (first {preview.employees.length} of {preview.valid_count ?? preview.total_employees})</div>
+                <div className="overflow-x-auto max-h-64">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-gray-100">
+                        <th className="px-2 py-1 text-left text-gray-500 font-medium">Code</th>
+                        <th className="px-2 py-1 text-left text-gray-500 font-medium">Name</th>
+                        <th className="px-2 py-1 text-left text-gray-500 font-medium">Email</th>
+                        <th className="px-2 py-1 text-left text-gray-500 font-medium">Department</th>
+                        <th className="px-2 py-1 text-left text-gray-500 font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {preview.employees.map((e, i) => (
+                        <tr key={i} className="border-t hover:bg-gray-50">
+                          <td className="px-2 py-1">{e.code}</td>
+                          <td className="px-2 py-1">{e.name}</td>
+                          <td className="px-2 py-1">{e.email}</td>
+                          <td className="px-2 py-1">{e.department}</td>
+                          <td className="px-2 py-1">
+                            {e.employee_status}
+                            {e.auto_confirmed && <span className="ml-1 text-purple-600">(auto)</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
             <PreviewTable preview={preview} />
             <div className="flex justify-between pt-2">
               <Button variant="outline" onClick={reset} className="gap-2">
@@ -175,29 +212,60 @@ export default function ImportEmployees() {
               <h2 className="text-lg font-semibold text-gray-800">Import Complete</h2>
               <Button variant="outline" onClick={reset} size="sm">Start New Import</Button>
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="bg-green-50 border border-green-100 rounded-lg p-4 text-center">
-                <p className="text-2xl font-bold text-green-700">{importResults.created || 0}</p>
-                <p className="text-xs text-green-600 mt-1">Accounts Created</p>
-              </div>
-              <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 text-center">
-                <p className="text-2xl font-bold text-blue-700">{importResults.existing || 0}</p>
-                <p className="text-xs text-blue-600 mt-1">Already Existed</p>
-              </div>
-              <div className="bg-red-50 border border-red-100 rounded-lg p-4 text-center">
-                <p className="text-2xl font-bold text-red-700">{importResults.failed || 0}</p>
-                <p className="text-xs text-red-600 mt-1">Errors</p>
-              </div>
-            </div>
+            {(() => {
+              const s = importResults.summary || {};
+              const metrics = [
+                { label: 'Total Processed', value: s.total_records_processed ?? importResults.total ?? 0, color: 'gray' },
+                { label: 'New Employees Created', value: s.new_employees_created ?? importResults.created ?? 0, color: 'green' },
+                { label: 'Existing Employees Updated', value: s.existing_employees_updated ?? 0, color: 'blue' },
+                { label: 'No Changes Needed', value: s.employees_no_change ?? 0, color: 'gray' },
+                { label: 'Probation → Confirmation', value: s.probation_to_confirmation_count ?? 0, color: 'purple' },
+                { label: 'New User Accounts', value: s.new_user_accounts_created ?? 0, color: 'green' },
+                { label: 'User Accounts Synced', value: s.existing_user_accounts_synchronised ?? 0, color: 'blue' },
+                { label: 'Duplicates Detected', value: s.duplicate_records_detected ?? 0, color: 'amber' },
+                { label: 'Validation Failures', value: s.validation_failures ?? 0, color: 'red' },
+                { label: 'Records Skipped', value: s.records_skipped ?? importResults.failed ?? 0, color: 'red' },
+              ];
+              const colorClasses = {
+                gray: 'bg-gray-50 border-gray-100 text-gray-700',
+                green: 'bg-green-50 border-green-100 text-green-700',
+                blue: 'bg-blue-50 border-blue-100 text-blue-700',
+                purple: 'bg-purple-50 border-purple-100 text-purple-700',
+                amber: 'bg-amber-50 border-amber-100 text-amber-700',
+                red: 'bg-red-50 border-red-100 text-red-700',
+              };
+              return (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {metrics.map((m) => (
+                    <div key={m.label} className={`border rounded-lg p-4 text-center ${colorClasses[m.color]}`}>
+                      <p className="text-2xl font-bold">{m.value}</p>
+                      <p className="text-xs mt-1">{m.label}</p>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
               <p className="text-sm font-semibold text-amber-800">Share with employees:</p>
               <p className="text-sm text-amber-700 mt-1">Login URL: <strong>{window.location.origin}/login</strong></p>
               <p className="text-sm text-amber-700">Default Password: <strong className="font-mono">Maxvolt@1234</strong></p>
               <p className="text-xs text-amber-600 mt-1">Each employee will be prompted to set their own password on first login.</p>
             </div>
+            {(importResults.errors || []).length > 0 && (
+              <div>
+                <p className="text-sm font-medium text-red-700 mb-2">Errors ({importResults.errors.length}):</p>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {importResults.errors.map((e, i) => (
+                    <div key={i} className="text-xs text-red-700 bg-red-50 border border-red-100 rounded px-3 py-1.5">
+                      {e.message || `Row ${e.row}: ${e.field || ''}`}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {(importResults.results || []).filter(r => r.status === 'error').length > 0 && (
               <div>
-                <p className="text-sm font-medium text-red-700 mb-2">Errors:</p>
+                <p className="text-sm font-medium text-red-700 mb-2">Skipped rows:</p>
                 <div className="space-y-1 max-h-48 overflow-y-auto">
                   {(importResults.results || []).filter(r => r.status === 'error').map((r, i) => (
                     <div key={i} className="text-xs text-red-700 bg-red-50 border border-red-100 rounded px-3 py-1.5">
