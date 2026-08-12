@@ -9556,16 +9556,20 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         await run("UPDATE users SET email=$1, full_name=$2 WHERE id=$3", [newEmail, newName, uid]);
       }
 
-      // Bulk-load which of these users already have SalaryStructure/BankDetails, to avoid dupes on re-import
+      // Bulk-load which of these users already have SalaryStructure/BankDetails.
+      // SalaryStructure stays create-only (payroll-sensitive, out of scope for
+      // this import). BankDetails, however, needs full data so it can be
+      // diff-updated like the Employee record — otherwise a changed bank
+      // account in the file would silently never reach existing employees.
       const salBankUserIds = [...new Set([...salInserts, ...bankInserts].map(r => r.userId))];
       const [existingSalRows, existingBankRows] = salBankUserIds.length
         ? await Promise.all([
             all("SELECT user_id FROM entities WHERE type='SalaryStructure' AND user_id = ANY($1) AND status='active'", [salBankUserIds]),
-            all("SELECT user_id FROM entities WHERE type='BankDetails' AND user_id = ANY($1)", [salBankUserIds]),
+            all("SELECT id, user_id, data FROM entities WHERE type='BankDetails' AND user_id = ANY($1)", [salBankUserIds]),
           ])
         : [[], []];
       const existingSalSet  = new Set(existingSalRows.map(r => r.user_id));
-      const existingBankSet = new Set(existingBankRows.map(r => r.user_id));
+      const existingBankByUser = new Map(existingBankRows.map(r => [r.user_id, { id: r.id, data: JSON.parse(r.data) }]));
 
       const salInsertRows = [];
       for (const r of salInserts) {
@@ -9595,16 +9599,30 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       }
 
       const bankInsertRows = [];
+      const bankUpdateRows = [];
+      let bankCreated = 0, bankUpdated = 0, bankUnchanged = 0;
       for (const r of bankInserts) {
-        if (existingBankSet.has(r.userId)) continue;
-        existingBankSet.add(r.userId);
-        const bankId = uuidv4();
-        bankInsertRows.push([bankId, r.userId, JSON.stringify({
-          id: bankId, user_id: r.userId, employee_id: r.empId,
-          account_number: r.accountNum, ifsc_code: r.ifscCode,
-          bank_name: r.bankName, branch: r.branchName,
-          account_type: 'savings', is_primary: true, created_at: now,
-        })]);
+        const existingBank = existingBankByUser.get(r.userId);
+        if (existingBank) {
+          const ex = existingBank.data;
+          const newVals = { account_number: r.accountNum, ifsc_code: r.ifscCode, bank_name: r.bankName, branch: r.branchName };
+          const changed = Object.entries(newVals).some(([k, v]) => v && ex[k] !== v);
+          if (changed) {
+            const merged = { ...ex };
+            for (const [k, v] of Object.entries(newVals)) if (v) merged[k] = v;
+            bankUpdateRows.push([JSON.stringify(merged), existingBank.id]);
+            bankUpdated++;
+          } else bankUnchanged++;
+        } else {
+          const bankId = uuidv4();
+          bankInsertRows.push([bankId, r.userId, JSON.stringify({
+            id: bankId, user_id: r.userId, employee_id: r.empId,
+            account_number: r.accountNum, ifsc_code: r.ifscCode,
+            bank_name: r.bankName, branch: r.branchName,
+            account_type: 'savings', is_primary: true, created_at: now,
+          })]);
+          bankCreated++;
+        }
       }
 
       // Bulk execute — multi-row INSERTs + parallel UPDATEs
@@ -9630,14 +9648,17 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         bulkInsertEntities('SalaryStructure', salInsertRows),
         bulkInsertEntities('BankDetails', bankInsertRows),
         bulkUpdateEntities(empUpdates),
+        bulkUpdateEntities(bankUpdateRows),
       ]);
 
-      // Post-import — promote managers & wire reporting_manager_id (bulk, adapted from prior logic)
+      // Post-import — promote reporting managers to the scoped 'manager' role
+      // (org-wide 'management' is a separate, higher tier — see RBAC split)
+      // and wire reporting_manager_id (bulk, adapted from prior logic)
       let managersPromoted = 0;
       const mgrEmails = [...new Set(validRows.map(v => v.reporting_manager_email).filter(Boolean))];
       if (mgrEmails.length) {
         const mgrResults = await Promise.all(mgrEmails.map(e =>
-          run("UPDATE users SET role='management', custom_role='management' WHERE LOWER(email)=$1 AND role IN ('employee','onboarding_pending')", [e])
+          run("UPDATE users SET role='manager', custom_role='manager' WHERE LOWER(email)=$1 AND role IN ('employee','onboarding_pending')", [e])
         ));
         managersPromoted = mgrResults.reduce((s, r) => s + (r.rowCount || 0), 0);
 
@@ -9687,9 +9708,12 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           validation_failures: validationFailures,
           records_skipped: skippedRows.length,
           managers_promoted: managersPromoted,
+          bank_details_created: bankCreated,
+          bank_details_updated: bankUpdated,
+          bank_details_unchanged: bankUnchanged,
         },
         errors: importErrors, warnings,
-        message: `Processed ${profiles.length} records: ${newEmployeesCount} new, ${updatedEmployeesCount} updated, ${noChangeCount} unchanged, ${autoConfirmedCount} auto-confirmed from probation, ${skippedRows.length} skipped. Default password for new accounts: ${DEFAULT_PASSWORD}`,
+        message: `Processed ${profiles.length} records: ${newEmployeesCount} new, ${updatedEmployeesCount} updated, ${noChangeCount} unchanged, ${autoConfirmedCount} auto-confirmed from probation, ${skippedRows.length} skipped. ${bankCreated} bank detail(s) created, ${bankUpdated} updated. ${managersPromoted} promoted to manager role. Default password for new accounts: ${DEFAULT_PASSWORD}`,
       });
     }
 

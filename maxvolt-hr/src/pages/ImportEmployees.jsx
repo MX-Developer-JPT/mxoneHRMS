@@ -225,6 +225,9 @@ export default function ImportEmployees() {
                 { label: 'Duplicates Detected', value: s.duplicate_records_detected ?? 0, color: 'amber' },
                 { label: 'Validation Failures', value: s.validation_failures ?? 0, color: 'red' },
                 { label: 'Records Skipped', value: s.records_skipped ?? importResults.failed ?? 0, color: 'red' },
+                { label: 'Bank Details Created', value: s.bank_details_created ?? 0, color: 'green' },
+                { label: 'Bank Details Updated', value: s.bank_details_updated ?? 0, color: 'blue' },
+                { label: 'Promoted to Manager', value: s.managers_promoted ?? 0, color: 'purple' },
               ];
               const colorClasses = {
                 gray: 'bg-gray-50 border-gray-100 text-gray-700',
