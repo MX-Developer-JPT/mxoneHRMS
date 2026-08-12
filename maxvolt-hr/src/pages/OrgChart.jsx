@@ -363,11 +363,19 @@ export default function OrgChart() {
     summary.columns = [{ width: 28 }, { width: 28 }, { width: 12 }, { width: 20 }, { width: 16 }];
 
     // ── One sheet per department ───────────────────────────────────────
-    const usedNames = new Set(['Summary']);
+    // Excel treats worksheet names as case-insensitive for uniqueness (and
+    // ignores leading/trailing spaces), so "Production" and "PRODUCTION" —
+    // a real data-quality inconsistency in some source imports — collide
+    // even though they're different strings. Dedup on a normalised key.
+    const usedNames = new Set(['SUMMARY']);
     deptGroups.forEach(g => {
-      let sheetName = g.dept.replace(/[\[\]*/\\?:]/g, '').slice(0, 31) || 'Department';
-      while (usedNames.has(sheetName)) sheetName = (sheetName.slice(0, 28) + '_' + (usedNames.size)).slice(0, 31);
-      usedNames.add(sheetName);
+      let sheetName = g.dept.replace(/[\[\]*/\\?:]/g, '').trim().slice(0, 31) || 'Department';
+      let dedupKey = sheetName.toUpperCase();
+      while (usedNames.has(dedupKey)) {
+        sheetName = (sheetName.slice(0, 28) + '_' + (usedNames.size)).slice(0, 31);
+        dedupKey = sheetName.toUpperCase();
+      }
+      usedNames.add(dedupKey);
 
       const ws = wb.addWorksheet(sheetName, { views: [{ state: 'frozen', ySplit: 3 }] });
       ws.mergeCells('A1:F1');
