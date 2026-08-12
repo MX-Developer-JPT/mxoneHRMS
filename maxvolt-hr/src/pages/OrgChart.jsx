@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import * as XLSX from 'xlsx';
 import { base44 } from '@/api/base44Client';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -301,31 +300,102 @@ export default function OrgChart() {
   const focusResult = focusedId ? findNodeAndTrail(activeRoots, focusedId) : null;
   const displayRoots = focusResult ? [focusResult.node] : activeRoots;
 
-  // A plain tabular export of whichever view is open.
-  const downloadExcel = () => {
-    if (!activeRoots.length) return;
-    const rows = [];
-    const walk = (node, level, managerName) => {
-      rows.push({
-        Level: level + 1,
-        'Employee Name': '  '.repeat(level) + node.name,
-        Designation: node.designation || '',
-        Department: node.department || '',
-        'Employee Code': node.employee_code || '',
-        'Reports To': managerName || '',
-        'Team Size': countDescendants(node),
-      });
-      node.children.forEach(c => walk(c, level + 1, node.name));
-    };
-    activeRoots.forEach(r => walk(r, 0, ''));
+  // A richly-styled, department-wise workbook: a Summary sheet with an
+  // at-a-glance table of every department (head, headcount, depth), then one
+  // sheet per department with its own indented reporting-line breakdown.
+  // Always covers the whole company regardless of which view is currently
+  // open — "department wise breakdown" is the point of the export, not a
+  // snapshot of the one department the user happens to be looking at.
+  const maxTreeDepth = (node, d = 1) => node.children.length ? Math.max(...node.children.map(c => maxTreeDepth(c, d + 1))) : d;
 
-    const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = [{ wch: 7 }, { wch: 34 }, { wch: 24 }, { wch: 20 }, { wch: 14 }, { wch: 24 }, { wch: 10 }];
-    const wb = XLSX.utils.book_new();
-    const sheetTitle = selectedDept === '__ALL__' ? 'Full Company' : selectedDept;
-    XLSX.utils.book_append_sheet(wb, ws, sheetTitle.slice(0, 31));
-    const fileLabel = selectedDept === '__ALL__' ? 'full-company' : (selectedDept || 'org').toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    XLSX.writeFile(wb, `org-chart-${fileLabel}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  const downloadExcel = async () => {
+    if (!employees.length) return;
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Maxvolt HR';
+    wb.created = new Date();
+
+    const ORANGE = 'FFE87722';
+    const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: ORANGE } };
+    const SUBHEAD_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    const ROOT_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDEBD8' } };
+    const ALT_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+    const border = { style: 'thin', color: { argb: 'FFD1D5DB' } };
+    const thinBorder = { top: border, bottom: border, left: border, right: border };
+
+    // ── Summary sheet ──────────────────────────────────────────────────
+    const summary = wb.addWorksheet('Summary', { views: [{ state: 'frozen', ySplit: 4 }] });
+    summary.mergeCells('A1:E1');
+    summary.getCell('A1').value = 'Maxvolt Energy Industries Limited — Organisation Structure';
+    summary.getCell('A1').font = { bold: true, size: 15, color: { argb: ORANGE } };
+    summary.getRow(1).height = 26;
+    summary.mergeCells('A2:E2');
+    summary.getCell('A2').value = `Exported ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} — ${employees.length} employees across ${deptGroups.length} departments`;
+    summary.getCell('A2').font = { italic: true, size: 10, color: { argb: 'FF6B7280' } };
+
+    const headerRow = summary.getRow(4);
+    headerRow.values = ['Department', 'Department Head', 'Headcount', 'Head\'s Direct Reports', 'Hierarchy Depth'];
+    headerRow.eachCell(c => { c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = HEADER_FILL; c.border = thinBorder; c.alignment = { vertical: 'middle', horizontal: 'center' }; });
+    headerRow.height = 20;
+
+    deptGroups.forEach((g, i) => {
+      const row = summary.addRow([
+        g.dept, g.head?.name || '—', g.count,
+        g.head?.children?.length || 0,
+        Math.max(...g.roots.map(maxTreeDepth), 1),
+      ]);
+      row.eachCell(c => { c.border = thinBorder; c.alignment = { vertical: 'middle' }; if (i % 2 === 1) c.fill = ALT_FILL; });
+    });
+    summary.columns = [{ width: 28 }, { width: 28 }, { width: 12 }, { width: 20 }, { width: 16 }];
+
+    // ── One sheet per department ───────────────────────────────────────
+    const usedNames = new Set(['Summary']);
+    deptGroups.forEach(g => {
+      let sheetName = g.dept.replace(/[\[\]*/\\?:]/g, '').slice(0, 31) || 'Department';
+      while (usedNames.has(sheetName)) sheetName = (sheetName.slice(0, 28) + '_' + (usedNames.size)).slice(0, 31);
+      usedNames.add(sheetName);
+
+      const ws = wb.addWorksheet(sheetName, { views: [{ state: 'frozen', ySplit: 3 }] });
+      ws.mergeCells('A1:F1');
+      const title = ws.getCell('A1');
+      title.value = `${g.dept}  (${g.count} employee${g.count === 1 ? '' : 's'})`;
+      title.font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
+      title.fill = HEADER_FILL;
+      title.alignment = { vertical: 'middle', indent: 1 };
+      ws.getRow(1).height = 24;
+      ws.mergeCells('A2:F2');
+      ws.getCell('A2').value = `Department Head: ${g.head?.name || '—'}${g.head?.designation ? ` (${g.head.designation})` : ''}`;
+      ws.getCell('A2').font = { italic: true, size: 10, color: { argb: 'FF6B7280' } };
+
+      const hRow = ws.getRow(3);
+      hRow.values = ['Level', 'Employee Name', 'Designation', 'Employee Code', 'Reports To', 'Team Size'];
+      hRow.eachCell(c => { c.font = { bold: true }; c.fill = SUBHEAD_FILL; c.border = thinBorder; });
+
+      const walk = (node, level, managerName) => {
+        const row = ws.addRow([
+          level + 1,
+          '     '.repeat(level) + node.name,
+          node.designation || '',
+          node.employee_code || '',
+          managerName || '—',
+          countDescendants(node),
+        ]);
+        row.getCell(2).font = { bold: level === 0, size: level === 0 ? 12 : 10.5 };
+        row.eachCell(c => { c.border = thinBorder; c.alignment = { vertical: 'middle' }; c.fill = level === 0 ? ROOT_FILL : (level % 2 === 0 ? ALT_FILL : undefined); });
+        node.children.forEach(c => walk(c, level + 1, node.name));
+      };
+      g.roots.forEach(r => walk(r, 0, ''));
+      ws.columns = [{ width: 8 }, { width: 40 }, { width: 26 }, { width: 16 }, { width: 28 }, { width: 12 }];
+    });
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `org-chart-department-breakdown-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const deptSearch = selectedDept ? '' : search.trim().toLowerCase();
@@ -363,11 +433,9 @@ export default function OrgChart() {
             </>
           )}
           <Button variant="outline" size="sm" onClick={load} disabled={loading}><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></Button>
-          {selectedDept !== null && (
-            <Button variant="outline" size="sm" onClick={downloadExcel} disabled={loading || activeRoots.length === 0} title="Export this hierarchy as a spreadsheet">
-              <FileSpreadsheet className="w-4 h-4 mr-1" /> Export Excel
-            </Button>
-          )}
+          <Button variant="outline" size="sm" onClick={downloadExcel} disabled={loading || employees.length === 0} title="Export the full department-wise org structure as a spreadsheet">
+            <FileSpreadsheet className="w-4 h-4 mr-1" /> Export Excel
+          </Button>
         </div>
       </div>
 
