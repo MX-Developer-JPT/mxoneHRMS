@@ -914,9 +914,17 @@ export default function Layout({ children, currentPageName }) {
         {/* Mobile bottom spacer — must exceed the fixed tab bar's height (tab
             minHeight 44px + nav padding) plus the safe-area inset, with margin,
             so the last item on any page scrolls clear of the bar and stays
-            tappable. Was 4.5rem, which left the final card partly under the bar
-            on taller safe-area devices. */}
-        <div className="lg:hidden" style={{ height: 'calc(6rem + env(safe-area-inset-bottom))' }} />
+            tappable. Was 4.5rem, then 6rem, both of which still left the last
+            card/button on longer pages (e.g. App Settings' Delete Account
+            button) partly hidden behind the bar — env(safe-area-inset-bottom)
+            isn't reliably non-zero on every Android WebView (it depends on
+            the app actually being configured edge-to-edge), so a fixed-size
+            base that doesn't lean on that value being accurate is safer than
+            trying to compute the exact minimum. Also adds --vv-bottom-inset
+            (the same iOS toolbar-quirk offset the bar itself is positioned
+            with, set in main.jsx) since that raises the bar's effective top
+            edge on affected browsers, and the spacer needs to clear that too. */}
+        <div className="lg:hidden" style={{ height: 'calc(8rem + env(safe-area-inset-bottom) + var(--vv-bottom-inset, 0px))' }} />
       </div>
 
       {/* ── "More" bottom sheet (iOS style) ─────────────────── */}
