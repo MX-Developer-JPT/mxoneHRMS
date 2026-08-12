@@ -325,6 +325,13 @@ export default function OrgChart() {
   const buildAndSaveOrgWorkbook = async () => {
     const ExcelJSModule = await import('exceljs');
     const ExcelJS = ExcelJSModule.default || ExcelJSModule;
+    // Each department sheet is rooted at whoever's manager falls outside
+    // that department (buildOrgTree's design, so a scoped tree doesn't pull
+    // in unrelated people) — but that means the root row's real manager is
+    // invisible within the department-scoped tree alone. Resolve it here
+    // from the full company roster so e.g. a department head still shows
+    // who they report to org-wide, not just "—".
+    const managerNameById = Object.fromEntries(employees.map(e => [e.user_id, e.name]));
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Maxvolt HR';
     wb.created = new Date();
@@ -394,12 +401,15 @@ export default function OrgChart() {
       hRow.eachCell(c => { c.font = { bold: true }; c.fill = SUBHEAD_FILL; c.border = thinBorder; });
 
       const walk = (node, level, managerName) => {
+        // Root of this department's tree: fall back to the real org-wide
+        // manager (who may sit in a different department) instead of "—".
+        const reportsTo = level === 0 ? (managerNameById[node.reporting_manager_id] || managerName || '—') : (managerName || '—');
         const row = ws.addRow([
           level + 1,
           '     '.repeat(level) + node.name,
           node.designation || '',
           node.employee_code || '',
-          managerName || '—',
+          reportsTo,
           countDescendants(node),
         ]);
         row.getCell(2).font = { bold: level === 0, size: level === 0 ? 12 : 10.5 };
