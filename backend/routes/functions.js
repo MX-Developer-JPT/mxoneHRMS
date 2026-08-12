@@ -1476,7 +1476,9 @@ router.post('/:name', async (req, res) => {
       const lbNum0 = (v) => lbNum(v) ?? 0;
       const lbParseDate = (v) => {
         if (!v || v === '') return '';
-        if (v instanceof Date) return isNaN(v.getTime()) ? '' : v.toISOString().slice(0, 10);
+        // Round to the nearest UTC day first — see the year-detection comment
+        // below for why xlsx's serial-date conversion isn't always exact.
+        if (v instanceof Date) return isNaN(v.getTime()) ? '' : new Date(Math.round(v.getTime() / 86400000) * 86400000).toISOString().slice(0, 10);
         const s = String(v).trim();
         if (/^\d{1,2}-[A-Za-z]+-\d{4}/.test(s)) { const d = new Date(s); return isNaN(d) ? '' : d.toISOString().slice(0, 10); }
         const d = new Date(s);
@@ -1571,7 +1573,16 @@ router.post('/:name', async (req, res) => {
         if (aoa.length < 4) continue;
 
         const yearCell = aoa[1]?.[7];
-        if (yearCell instanceof Date && !isNaN(yearCell.getTime())) detectedYear = yearCell.getFullYear();
+        // xlsx's Excel-serial→Date conversion isn't always exact midnight —
+        // this file's Jan-1 header cell decodes to 2025-12-31T18:29:50Z, ~5.5
+        // hours short. Reading the year straight off that timestamp (even
+        // with getUTCFullYear) yields 2025, not 2026. Round to the nearest
+        // UTC day first so the imprecision can't roll the date across a
+        // year boundary.
+        if (yearCell instanceof Date && !isNaN(yearCell.getTime())) {
+          const roundedDay = new Date(Math.round(yearCell.getTime() / 86400000) * 86400000);
+          detectedYear = roundedDay.getUTCFullYear();
+        }
 
         for (let i = 3; i < aoa.length; i++) {
           const row = aoa[i];
