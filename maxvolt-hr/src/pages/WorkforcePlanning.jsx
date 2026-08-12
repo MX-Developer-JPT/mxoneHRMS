@@ -70,7 +70,7 @@ export default function WorkforcePlanning() {
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Workforce Planning</h1>
           <p className="text-gray-500 text-sm mt-1">Headcount management and future hiring plans</p>

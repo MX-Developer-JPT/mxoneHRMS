@@ -210,7 +210,7 @@ export default function LocationMaster() {
   return (
     <div className="min-h-screen bg-background p-6">
       <div className="max-w-4xl mx-auto space-y-6">
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
           <div>
             <h1 className="text-2xl font-bold text-foreground">Location Master</h1>
             <p className="text-muted-foreground mt-1">Manage office locations and view employees by site</p>

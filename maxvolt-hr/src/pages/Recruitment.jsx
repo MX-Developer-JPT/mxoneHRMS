@@ -1109,8 +1109,8 @@ export default function Recruitment() {
                         <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                           <span className="text-blue-600 font-semibold">{candidate.full_name?.charAt(0).toUpperCase()}</span>
                         </div>
-                        <div>
-                          <p className="font-semibold">{candidate.full_name}</p>
+                        <div className="min-w-0">
+                          <p className="font-semibold truncate">{candidate.full_name}</p>
                           <div className="flex items-center gap-3 flex-wrap mt-0.5">
                             <span className="inline-flex items-center gap-1 text-sm font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded">
                               <Briefcase className="w-3 h-3" />

@@ -243,7 +243,7 @@ export default function Leave() {
       <div className="max-w-5xl mx-auto space-y-6">
 
         {/* Header */}
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">My Leaves</h1>
             <p className="text-gray-500 text-sm mt-1">Apply and track your leave requests</p>

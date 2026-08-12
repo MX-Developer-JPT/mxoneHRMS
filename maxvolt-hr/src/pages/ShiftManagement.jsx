@@ -226,7 +226,11 @@ export default function ShiftManagement() {
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
-        <div className="flex justify-between items-center">
+        {/* flex-col on mobile — at full flex-row width the button group sat
+            beside the title instead of below it, and once "Shift Management"
+            wrapped to two lines at this font size the vertically-centered
+            buttons visually overlapped the second line. */}
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
           <div>
             <h1 className="text-3xl font-bold">Shift Management</h1>
             <p className="text-gray-600 mt-1">Create and manage work shifts</p>

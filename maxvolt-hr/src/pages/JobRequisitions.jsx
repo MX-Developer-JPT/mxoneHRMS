@@ -457,7 +457,7 @@ Return ONLY the job description content as plain text with clear section headers
       <div className="max-w-7xl mx-auto space-y-6">
 
         {/* Header */}
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Job Requisitions</h1>
             <p className="text-gray-500 text-sm mt-1">Manage hiring requests through an approval & JD workflow</p>
@@ -545,7 +545,11 @@ Return ONLY the job description content as plain text with clear section headers
 
                   return (
                     <div key={req.id} className="p-5 hover:bg-gray-50 transition-colors">
-                      <div className="flex justify-between items-start gap-4">
+                      {/* flex-col on mobile — at full flex-row width the fixed-size
+                          action-button group refused to shrink, squeezing the title
+                          block down to near-zero width instead of the buttons
+                          dropping to their own row, so the two visually overlapped. */}
+                      <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
                         <div className="flex-1 min-w-0">
                           <div className="flex flex-wrap items-center gap-2 mb-2">
                             <h3 className="font-semibold text-gray-900">{req.position_title}</h3>

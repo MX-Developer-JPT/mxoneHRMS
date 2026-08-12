@@ -274,7 +274,14 @@ export default function Employees() {
                   {!collapsedDepts[dept] && (
                     <div className="p-4 grid md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {emps.map(emp => (
-                        <Card key={emp.id} className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => setSelectedEmployee(emp)}>
+                        // min-w-0 is required here — grid items default to
+                        // min-width:auto, so without it a long unbreakable
+                        // string anywhere inside (a long email, a long
+                        // designation) forces this card past its grid track
+                        // and the whole grid overflows the viewport on
+                        // mobile, instead of the inner truncate classes
+                        // actually kicking in.
+                        <Card key={emp.id} className="hover:shadow-lg transition-shadow cursor-pointer min-w-0" onClick={() => setSelectedEmployee(emp)}>
                           <CardContent className="p-4">
                             <div className="flex items-start gap-3">
                               <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
@@ -291,11 +298,11 @@ export default function Employees() {
                               </div>
                             </div>
                             <div className="mt-3 space-y-2 text-sm">
-                              <div className="flex items-center gap-2 text-gray-600">
+                              <div className="flex items-center gap-2 text-gray-600 min-w-0">
                                 <Briefcase className="w-4 h-4" />
                                 <span className="truncate">{emp.employee_code}</span>
                               </div>
-                              <div className="flex items-center gap-2 text-gray-600">
+                              <div className="flex items-center gap-2 text-gray-600 min-w-0">
                                 <Mail className="w-4 h-4" />
                                 <span className="truncate">{emp.user?.email}</span>
                               </div>

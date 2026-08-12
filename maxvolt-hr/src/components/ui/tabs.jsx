@@ -9,7 +9,12 @@ const TabsList = React.forwardRef(({ className, ...props }, ref) => (
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground",
+      // max-w-full + overflow-x-auto: several triggers' worth of whitespace-
+      // nowrap text routinely add up to more than a 375px screen (e.g. three
+      // tabs like "Leave Requests"/"Employee Balances"/"Allocate Leaves" ≈
+      // 430px) — previously this just clipped/cramped with no way to reach
+      // the hidden tabs. Scrolls horizontally instead now, app-wide.
+      "inline-flex h-9 max-w-full items-center justify-center overflow-x-auto rounded-lg bg-muted p-1 text-muted-foreground",
       className
     )}
     {...props} />
