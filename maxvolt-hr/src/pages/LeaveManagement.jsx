@@ -70,6 +70,13 @@ export default function LeaveManagement() {
   const [leaveWorkflow, setLeaveWorkflow] = useState(null); // configurable chain from Workflow Builder
   const [importingBalances, setImportingBalances] = useState(false);
   const balanceFileInputRef = useRef(null);
+  const [leaveHistory, setLeaveHistory] = useState([]);
+  const [historyYear, setHistoryYear] = useState(new Date().getFullYear());
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [importingHistory, setImportingHistory] = useState(false);
+  const [historyImportResult, setHistoryImportResult] = useState(null);
+  const [expandedHistoryUser, setExpandedHistoryUser] = useState(null);
+  const historyFileInputRef = useRef(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -295,6 +302,63 @@ export default function LeaveManagement() {
     e.target.value = '';
   };
 
+  // ── Leave History (the full month-by-month "Leave Book" ledger) ─────────
+  const loadLeaveHistory = async (year = historyYear) => {
+    setHistoryLoading(true);
+    try {
+      const res = await base44.functions.invoke('getLeaveHistory', { year });
+      const d = res.data || res;
+      if (d.success) setLeaveHistory(d.history || []);
+      else toast.error(d.error || 'Failed to load leave history');
+    } catch (e) {
+      toast.error('Failed to load leave history: ' + e.message);
+    }
+    setHistoryLoading(false);
+  };
+
+  const handleImportHistory = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImportingHistory(true);
+    setHistoryImportResult(null);
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      const res = await base44.functions.invoke('importLeaveHistory', { fileUrl: file_url, mode: 'import' });
+      const d = res.data || res;
+      if (d.success) {
+        setHistoryImportResult(d);
+        toast.success(`Leave history imported — ${d.leave_balances_created} balances created, ${d.leave_balances_updated} updated, ${d.history_records_created + d.history_records_updated} history records saved`);
+        if (d.not_found_count) toast.warning(`${d.not_found_count} employee(s) in the file were not found by Employee ID`);
+        setHistoryYear(d.year);
+        loadLeaveHistory(d.year);
+      } else toast.error(d.error || 'Import failed');
+    } catch (err) {
+      toast.error('Import failed: ' + err.message);
+    }
+    setImportingHistory(false);
+    e.target.value = '';
+  };
+
+  const downloadLeaveHistory = () => {
+    if (!leaveHistory.length) { toast.error('No leave history loaded for this year yet'); return; }
+    const header = ['Employee Code', 'Employee Name', 'Designation', 'Source', 'EL Allocated', 'EL Taken', 'EL Available', 'CL Allocated', 'CL Taken', 'CL Available', 'SL Allocated', 'SL Taken', 'SL Available',
+      ...leaveHistory[0].months.flatMap(m => [`${m.month} Working Day`, `${m.month} Taken EL`, `${m.month} Taken CL`, `${m.month} Taken SL`, `${m.month} Balance EL`, `${m.month} Balance CL`, `${m.month} Balance SL`])];
+    const rows = leaveHistory.map(h => {
+      const el = h.leaves?.EL, cl = h.leaves?.CL, sl = h.leaves?.SL;
+      return [
+        h.employee_code, h.employee_name, h.designation || '', h.source_sheet || '',
+        el?.total_allocated ?? '', el?.taken ?? '', el?.available ?? '',
+        cl?.total_allocated ?? '', cl?.taken ?? '', cl?.available ?? '',
+        sl?.total_allocated ?? '', sl?.taken ?? '', sl?.available ?? '',
+        ...h.months.flatMap(m => [m.working_day ?? '', m.taken_el ?? '', m.taken_cl ?? '', m.taken_sl ?? '', m.balance_el ?? '', m.balance_cl ?? '', m.balance_sl ?? '']),
+      ];
+    });
+    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, `Leave History ${historyYear}`);
+    XLSX.writeFile(wb, `Leave_History_${historyYear}.xlsx`);
+  };
+
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
 
   const filteredRequests = leaveRequests.filter(l => {
@@ -318,10 +382,11 @@ export default function LeaveManagement() {
           {isHR && <ELGrantButton />}
         </div>
 
-        <Tabs defaultValue="requests" className="space-y-6">
+        <Tabs defaultValue="requests" className="space-y-6" onValueChange={(v) => { if (v === 'history' && !leaveHistory.length) loadLeaveHistory(); }}>
           <TabsList>
             <TabsTrigger value="requests">Leave Requests</TabsTrigger>
             {isHR && <TabsTrigger value="balances">Employee Balances</TabsTrigger>}
+            {isHR && <TabsTrigger value="history">Leave History</TabsTrigger>}
             {isHR && <TabsTrigger value="allocate">Allocate Leaves</TabsTrigger>}
             <TabsTrigger value="policies">Leave Policies</TabsTrigger>
             {isHR && <TabsTrigger value="onBehalf">Apply on Behalf</TabsTrigger>}
@@ -398,6 +463,132 @@ export default function LeaveManagement() {
                       <p className="text-center text-gray-400 py-8">No employees found</p>
                     )}
                   </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+
+          {isHR && (
+            <TabsContent value="history">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <FileText className="w-4 h-4" /> Leave History — {historyYear}
+                  </CardTitle>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <Select value={String(historyYear)} onValueChange={(v) => { const y = Number(v); setHistoryYear(y); loadLeaveHistory(y); }}>
+                      <SelectTrigger className="w-24 h-9"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {[historyYear + 1, historyYear, historyYear - 1, historyYear - 2].filter((y, i, a) => a.indexOf(y) === i).map(y => (
+                          <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button size="sm" variant="outline" onClick={downloadLeaveHistory} disabled={!leaveHistory.length}>
+                      <Download className="w-3.5 h-3.5 mr-1" /> Download Leave Details
+                    </Button>
+                    <input ref={historyFileInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportHistory} />
+                    <Button size="sm" onClick={() => historyFileInputRef.current?.click()} disabled={importingHistory}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                      {importingHistory ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Upload className="w-3.5 h-3.5 mr-1" />}
+                      {importingHistory ? 'Importing…' : 'Import Leave History'}
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Import the full Leave Book workbook (e.g. "LEAVE DETAILS JAN-DEC.xlsx" — sheets: Other EMP Data / Manager Leave Data / Intern Leave data / Left Employee) to set every employee's EL/CL/SL balance from the ledger and save the month-by-month history below. Re-importing the same file is safe — unchanged balances are left untouched.
+                  </p>
+                  {historyImportResult && (
+                    <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                      <div className="bg-green-50 border border-green-100 rounded-lg p-2"><p className="text-lg font-bold text-green-700">{historyImportResult.leave_balances_created}</p><p className="text-green-600">Balances Created</p></div>
+                      <div className="bg-blue-50 border border-blue-100 rounded-lg p-2"><p className="text-lg font-bold text-blue-700">{historyImportResult.leave_balances_updated}</p><p className="text-blue-600">Balances Updated</p></div>
+                      <div className="bg-gray-50 border border-gray-100 rounded-lg p-2"><p className="text-lg font-bold text-gray-700">{historyImportResult.leave_balances_unchanged}</p><p className="text-gray-600">Unchanged</p></div>
+                      <div className="bg-red-50 border border-red-100 rounded-lg p-2"><p className="text-lg font-bold text-red-700">{historyImportResult.not_found_count}</p><p className="text-red-600">Not Found</p></div>
+                    </div>
+                  )}
+                  {historyLoading ? (
+                    <div className="flex items-center justify-center py-8 gap-2 text-gray-500"><Loader2 className="w-4 h-4 animate-spin" /> Loading leave history…</div>
+                  ) : leaveHistory.length === 0 ? (
+                    <p className="text-center text-gray-400 py-8">No leave history imported for {historyYear} yet</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b text-left">
+                            <th className="pb-2 font-semibold text-gray-700 pr-4">Employee</th>
+                            <th className="pb-2 font-semibold text-gray-700 pr-4">Source</th>
+                            <th className="pb-2 font-semibold text-gray-700 pr-4 text-center">EL</th>
+                            <th className="pb-2 font-semibold text-gray-700 pr-4 text-center">CL</th>
+                            <th className="pb-2 font-semibold text-gray-700 pr-4 text-center">SL</th>
+                            <th className="pb-2 font-semibold text-gray-700 pr-4"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {leaveHistory.map(h => (
+                            <React.Fragment key={h.user_id}>
+                              <tr className="border-b hover:bg-gray-50 transition-colors">
+                                <td className="py-2 pr-4">
+                                  <div className="font-medium text-gray-900">{h.employee_name}{h.is_left_employee && <Badge className="ml-2 bg-gray-100 text-gray-600 text-xs">Left</Badge>}</div>
+                                  <div className="text-xs text-gray-500">{h.employee_code} · {h.designation}</div>
+                                </td>
+                                <td className="py-2 pr-4 text-xs text-gray-500">{h.source_sheet}</td>
+                                {['EL', 'CL', 'SL'].map(lt => {
+                                  const l = h.leaves?.[lt];
+                                  return (
+                                    <td key={lt} className="py-2 pr-4 text-center">
+                                      {l ? <span><span className="font-semibold text-green-700">{l.available}</span><span className="text-gray-400">/{l.total_allocated}</span></span> : <span className="text-gray-300 text-xs">—</span>}
+                                    </td>
+                                  );
+                                })}
+                                <td className="py-2 pr-4">
+                                  <Button size="sm" variant="ghost" onClick={() => setExpandedHistoryUser(expandedHistoryUser === h.user_id ? null : h.user_id)}>
+                                    {expandedHistoryUser === h.user_id ? 'Hide months' : 'Show months'}
+                                  </Button>
+                                </td>
+                              </tr>
+                              {expandedHistoryUser === h.user_id && (
+                                <tr>
+                                  <td colSpan={6} className="pb-3">
+                                    <div className="overflow-x-auto bg-gray-50 rounded-lg p-2">
+                                      <table className="text-xs w-full">
+                                        <thead>
+                                          <tr className="text-gray-500">
+                                            <th className="px-2 py-1 text-left">Month</th>
+                                            <th className="px-2 py-1 text-center">Working Days</th>
+                                            <th className="px-2 py-1 text-center">Taken EL</th>
+                                            <th className="px-2 py-1 text-center">Taken CL</th>
+                                            {h.leaves?.SL && <th className="px-2 py-1 text-center">Taken SL</th>}
+                                            <th className="px-2 py-1 text-center">Balance EL</th>
+                                            <th className="px-2 py-1 text-center">Balance CL</th>
+                                            {h.leaves?.SL && <th className="px-2 py-1 text-center">Balance SL</th>}
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {h.months.map(m => (
+                                            <tr key={m.month} className="border-t border-gray-200">
+                                              <td className="px-2 py-1 font-medium">{m.month}</td>
+                                              <td className="px-2 py-1 text-center">{m.working_day ?? '—'}</td>
+                                              <td className="px-2 py-1 text-center">{m.taken_el ?? '—'}</td>
+                                              <td className="px-2 py-1 text-center">{m.taken_cl ?? '—'}</td>
+                                              {h.leaves?.SL && <td className="px-2 py-1 text-center">{m.taken_sl ?? '—'}</td>}
+                                              <td className="px-2 py-1 text-center">{m.balance_el ?? '—'}</td>
+                                              <td className="px-2 py-1 text-center">{m.balance_cl ?? '—'}</td>
+                                              {h.leaves?.SL && <td className="px-2 py-1 text-center">{m.balance_sl ?? '—'}</td>}
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </TabsContent>

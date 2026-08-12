@@ -1437,6 +1437,301 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, created, updated, skipped, errors });
     }
 
+    /* ── Leave Book import — a completely different source format from the
+       simple importLeaveBalances template above: a definitive month-by-month
+       HR ledger workbook (e.g. "LEAVE DETAILS JAN-2026 TO DEC-2026.xlsx")
+       with 2 header rows and up to 4 fixed-layout sheets. Column positions
+       are hardcoded per sheet type below — verified against the real file —
+       because headers repeat non-uniquely ("Balance CL" appears twice) and
+       can't be matched by name alone. Writes both LeaveBalance (so every
+       other leave feature sees the correct running total) and a new
+       LeaveHistory entity (month-by-month record for the history view /
+       export). Re-importing the same file is idempotent: LeaveBalance rows
+       are only touched when a value actually changed, and LeaveHistory rows
+       are wholesale-replaced per user+year (it's a definitive snapshot, not
+       an incremental delta). ── */
+    case 'importLeaveHistory': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { fileUrl, mode = 'validate' } = p;
+      if (!fileUrl) return res.json({ success: false, error: 'fileUrl is required' });
+
+      let fileBuffer;
+      try {
+        const resp = await fetch(fileUrl);
+        if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
+        fileBuffer = Buffer.from(await resp.arrayBuffer());
+      } catch (e) {
+        return res.json({ success: false, error: `Failed to fetch file: ${e.message}` });
+      }
+
+      const XLSX = await import('xlsx');
+      let wb;
+      try {
+        wb = XLSX.read(fileBuffer, { type: 'buffer', cellDates: true });
+      } catch (e) {
+        return res.json({ success: false, error: `Failed to parse Excel file: ${e.message}` });
+      }
+
+      const lbNum = (v) => { if (v === undefined || v === null || v === '') return null; const n = parseFloat(v); return isNaN(n) ? null : n; };
+      const lbNum0 = (v) => lbNum(v) ?? 0;
+      const lbParseDate = (v) => {
+        if (!v || v === '') return '';
+        if (v instanceof Date) return isNaN(v.getTime()) ? '' : v.toISOString().slice(0, 10);
+        const s = String(v).trim();
+        if (/^\d{1,2}-[A-Za-z]+-\d{4}/.test(s)) { const d = new Date(s); return isNaN(d) ? '' : d.toISOString().slice(0, 10); }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+      };
+
+      const LB_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const LB_SHEET_TYPES = {
+        'Other EMP Data': 'regular',
+        'Manager Leave Data': 'manager',
+        'Intern Leave data': 'intern',
+        'Left Employee': 'regular',
+      };
+
+      const lbExtractRegular = (row) => {
+        const months = [];
+        for (let m = 0; m < 12; m++) {
+          const base = 7 + m * 5;
+          months.push({ month: LB_MONTHS[m], working_day: lbNum(row[base]), taken_el: lbNum(row[base + 1]), taken_cl: lbNum(row[base + 2]), balance_el: lbNum(row[base + 3]), balance_cl: lbNum(row[base + 4]) });
+        }
+        const openingEl = lbNum0(row[6]);
+        const totalTakenEl = lbNum0(row[67]), totalTakenCl = lbNum0(row[68]), totalWorkingDay = lbNum0(row[69]);
+        const earningEl = lbNum0(row[70]), earningCl = lbNum0(row[71]);
+        const totalEl = lbNum0(row[72]), totalCl = lbNum0(row[73]);
+        const allocEl = totalEl || (openingEl + earningEl), allocCl = totalCl || earningCl;
+        // Left-employee rows are often exited mid-year with the ledger's final
+        // "Balance" cell never filled in — fall back to a computed balance
+        // rather than silently reporting 0 available.
+        const balanceEl = lbNum(row[74]) ?? Math.max(allocEl - totalTakenEl, 0);
+        const balanceCl = lbNum(row[75]) ?? Math.max(allocCl - totalTakenCl, 0);
+        return {
+          months, total_working_day: totalWorkingDay,
+          leaves: {
+            EL: { opening: openingEl, earned: earningEl, taken: totalTakenEl, total_allocated: allocEl, available: balanceEl },
+            CL: { opening: 0, earned: earningCl, taken: totalTakenCl, total_allocated: allocCl, available: balanceCl },
+          },
+        };
+      };
+
+      const lbExtractManager = (row) => {
+        const months = [];
+        for (let m = 0; m < 12; m++) {
+          const base = 7 + m * 7;
+          months.push({ month: LB_MONTHS[m], working_day: lbNum(row[base]), taken_el: lbNum(row[base + 1]), taken_cl: lbNum(row[base + 2]), taken_sl: lbNum(row[base + 3]), balance_el: lbNum(row[base + 4]), balance_cl: lbNum(row[base + 5]), balance_sl: lbNum(row[base + 6]) });
+        }
+        const totalTakenEl = lbNum0(row[91]), totalTakenCl = lbNum0(row[92]), totalTakenSl = lbNum0(row[93]);
+        const totalWorkingDay = lbNum0(row[94]);
+        const earningEl = lbNum0(row[95]), earningCl = lbNum0(row[96]), earningSl = lbNum0(row[97]);
+        const totalEl = lbNum0(row[98]);
+        const openingEl = lbNum0(row[101]), openingCl = lbNum0(row[102]), openingSl = lbNum0(row[103]);
+        const allocEl = totalEl || (openingEl + earningEl);
+        const balanceEl = lbNum(row[104]) ?? Math.max(allocEl - totalTakenEl, 0);
+        const balanceCl = lbNum(row[99]) ?? Math.max(earningCl - totalTakenCl, 0);
+        const balanceSl = lbNum(row[100]) ?? Math.max(earningSl - totalTakenSl, 0);
+        return {
+          months, total_working_day: totalWorkingDay,
+          leaves: {
+            EL: { opening: openingEl, earned: earningEl, taken: totalTakenEl, total_allocated: allocEl, available: balanceEl },
+            CL: { opening: openingCl, earned: earningCl, taken: totalTakenCl, total_allocated: earningCl, available: balanceCl },
+            SL: { opening: openingSl, earned: earningSl, taken: totalTakenSl, total_allocated: earningSl, available: balanceSl },
+          },
+        };
+      };
+
+      const lbExtractIntern = (row) => {
+        const months = [];
+        for (let m = 0; m < 12; m++) {
+          const base = 7 + m * 3;
+          months.push({ month: LB_MONTHS[m], working_day: lbNum(row[base]), taken_cl: lbNum(row[base + 1]), balance_cl: lbNum(row[base + 2]) });
+        }
+        const yearlyLeave = lbNum0(row[6]);
+        const totalTakenCl = lbNum0(row[43]), totalWorkingDay = lbNum0(row[44]), earningCl = lbNum0(row[45]);
+        const balanceCl = lbNum(row[46]) ?? Math.max(earningCl - totalTakenCl, 0);
+        return {
+          months, total_working_day: totalWorkingDay,
+          leaves: { CL: { opening: 0, earned: earningCl, taken: totalTakenCl, total_allocated: earningCl, yearly_leave_quota: yearlyLeave, available: balanceCl } },
+        };
+      };
+      const lbExtractors = { regular: lbExtractRegular, manager: lbExtractManager, intern: lbExtractIntern };
+
+      // ── Parse every recognised sheet in the workbook ──────────────────────
+      let detectedYear = new Date().getFullYear();
+      const parsedRows = [];
+      const parseErrors = [];
+      for (const sheetName of wb.SheetNames) {
+        const normTarget = sheetName.replace(/[\s_()\-]+/g, '').toLowerCase();
+        const typeKey = Object.keys(LB_SHEET_TYPES).find(k => k.replace(/[\s_()\-]+/g, '').toLowerCase() === normTarget);
+        if (!typeKey) continue;
+        const sheetType = LB_SHEET_TYPES[typeKey];
+        const ws = wb.Sheets[sheetName];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+        if (aoa.length < 4) continue;
+
+        const yearCell = aoa[1]?.[7];
+        if (yearCell instanceof Date && !isNaN(yearCell.getTime())) detectedYear = yearCell.getFullYear();
+
+        for (let i = 3; i < aoa.length; i++) {
+          const row = aoa[i];
+          const code = String(row[1] || '').trim().toUpperCase();
+          if (!code) continue; // blank padding row
+          const name = String(row[2] || '').trim();
+          const stats = lbExtractors[sheetType](row);
+          parsedRows.push({
+            rowNum: i + 1, sheetName, sheetType, code, name,
+            father_name: String(row[3] || '').trim(),
+            designation: String(row[4] || '').trim(),
+            date_of_joining: lbParseDate(row[5]),
+            is_left_employee: sheetType === 'regular' && typeKey === 'Left Employee',
+            ...stats,
+          });
+        }
+      }
+
+      if (!parsedRows.length) return res.json({ success: false, error: 'No recognised Leave Book sheets found (expected: Other EMP Data / Manager Leave Data / Intern Leave data / Left Employee)' });
+
+      // ── Match rows to Employee/user records ────────────────────────────
+      const allCodes = [...new Set(parsedRows.map(r => r.code))];
+      const empRows = await all("SELECT id, user_id, data::jsonb->>'employee_code' AS code, data::jsonb->>'display_name' AS name FROM entities WHERE type='Employee' AND data::jsonb->>'employee_code' = ANY($1)", [allCodes]);
+      const empByCode = new Map(empRows.map(e => [String(e.code).trim().toUpperCase(), e]));
+
+      const notFound = [];
+      const matched = [];
+      for (const row of parsedRows) {
+        const emp = empByCode.get(row.code);
+        if (!emp || !emp.user_id) { notFound.push({ row: row.rowNum, code: row.code, name: row.name, sheet: row.sheetName }); continue; }
+        matched.push({ ...row, userId: emp.user_id });
+      }
+
+      if (mode === 'validate') {
+        return res.json({
+          success: true,
+          year: detectedYear,
+          total_rows: parsedRows.length,
+          matched_count: matched.length,
+          not_found_count: notFound.length,
+          not_found: notFound.slice(0, 30),
+          sheets_found: [...new Set(parsedRows.map(r => r.sheetName))],
+          sample: matched.slice(0, 10).map(r => ({ code: r.code, name: r.name, sheet: r.sheetName, leaves: r.leaves })),
+        });
+      }
+
+      // ── Import mode ─────────────────────────────────────────────────────
+      const policyRows = await all("SELECT id, data::jsonb->>'code' AS code FROM entities WHERE type='LeavePolicy' AND is_active=1");
+      const policyByCode = new Map(policyRows.map(pr => [String(pr.code || '').trim().toUpperCase(), pr.id]));
+
+      const neededUserIds = [...new Set(matched.map(r => r.userId))];
+      const [existingBalRows, existingHistRows] = neededUserIds.length
+        ? await Promise.all([
+            all("SELECT id, user_id, data FROM entities WHERE type='LeaveBalance' AND user_id = ANY($1) AND (data::jsonb->>'year')::int = $2", [neededUserIds, detectedYear]),
+            all("SELECT id, user_id, data FROM entities WHERE type='LeaveHistory' AND user_id = ANY($1) AND (data::jsonb->>'year')::int = $2", [neededUserIds, detectedYear]),
+          ])
+        : [[], []];
+      const balByKey = new Map(existingBalRows.map(r => { const d = JSON.parse(r.data); return [`${r.user_id}:${d.leave_policy_id}`, { id: r.id, data: d }]; }));
+      const histByUser = new Map(existingHistRows.map(r => [r.user_id, { id: r.id, data: JSON.parse(r.data) }]));
+
+      const now = new Date().toISOString();
+      const balInserts = [], balUpdates = [];
+      const histInserts = [], histUpdates = [];
+      const warnings = [];
+      let balCreated = 0, balUpdated = 0, balUnchanged = 0;
+      let histCreated = 0, histUpdated = 0;
+      const missingPolicyCodes = new Set();
+
+      for (const row of matched) {
+        for (const [lt, stats] of Object.entries(row.leaves)) {
+          const policyId = policyByCode.get(lt);
+          if (!policyId) { missingPolicyCodes.add(lt); continue; }
+          const key = `${row.userId}:${policyId}`;
+          const existing = balByKey.get(key);
+          const newVals = {
+            total_allocated: stats.total_allocated, accrued_this_year: stats.earned,
+            used: stats.taken, available: stats.available, carried_forward: stats.opening,
+          };
+          if (existing) {
+            const ex = existing.data;
+            const changed = ['total_allocated', 'accrued_this_year', 'used', 'available', 'carried_forward'].some(f => (ex[f] || 0) !== (newVals[f] || 0));
+            if (changed) {
+              balUpdates.push([JSON.stringify({ ...ex, ...newVals }), existing.id]);
+              balUpdated++;
+            } else balUnchanged++;
+          } else {
+            const id = uuidv4();
+            balInserts.push([id, row.userId, JSON.stringify({
+              id, user_id: row.userId, leave_policy_id: policyId, year: detectedYear,
+              ...newVals, pending_approval: 0,
+            })]);
+            balCreated++;
+          }
+        }
+
+        const histData = {
+          user_id: row.userId, employee_code: row.code, employee_name: row.name, year: detectedYear,
+          source_sheet: row.sheetName, is_left_employee: row.is_left_employee,
+          designation: row.designation, date_of_joining: row.date_of_joining,
+          total_working_day: row.total_working_day, months: row.months, leaves: row.leaves,
+          imported_at: now,
+        };
+        const existingHist = histByUser.get(row.userId);
+        if (existingHist) {
+          histUpdates.push([JSON.stringify({ ...existingHist.data, ...histData }), existingHist.id]);
+          histUpdated++;
+        } else {
+          const id = uuidv4();
+          histInserts.push([id, row.userId, JSON.stringify({ id, ...histData })]);
+          histCreated++;
+        }
+      }
+      if (missingPolicyCodes.size) warnings.push(`No active LeavePolicy configured for: ${[...missingPolicyCodes].join(', ')} — those balances were not imported`);
+
+      const ENT_BATCH = 100, UPDT_BATCH = 50;
+      const bulkInsertEntities = async (type, rows) => {
+        for (let i = 0; i < rows.length; i += ENT_BATCH) {
+          const batch = rows.slice(i, i + ENT_BATCH);
+          const ph = batch.map((_, ri) => `($${ri * 3 + 1},'${type}',$${ri * 3 + 2},'active',$${ri * 3 + 3})`).join(',');
+          await run(`INSERT INTO entities(id,type,user_id,status,data) VALUES ${ph}`, batch.flat());
+        }
+      };
+      const bulkUpdateEntities = async (rows) => {
+        for (let i = 0; i < rows.length; i += UPDT_BATCH) {
+          await Promise.all(rows.slice(i, i + UPDT_BATCH).map(([data, id]) => run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [data, id])));
+        }
+      };
+
+      await Promise.all([
+        bulkInsertEntities('LeaveBalance', balInserts),
+        bulkUpdateEntities(balUpdates),
+        bulkInsertEntities('LeaveHistory', histInserts),
+        bulkUpdateEntities(histUpdates),
+      ]);
+
+      return res.json({
+        success: true, year: detectedYear,
+        total_rows: parsedRows.length, matched_count: matched.length, not_found_count: notFound.length, not_found: notFound.slice(0, 50),
+        leave_balances_created: balCreated, leave_balances_updated: balUpdated, leave_balances_unchanged: balUnchanged,
+        history_records_created: histCreated, history_records_updated: histUpdated,
+        warnings,
+        message: `Processed ${matched.length} employees from ${[...new Set(matched.map(r=>r.sheetName))].join(', ')}: ${balCreated} balances created, ${balUpdated} updated, ${balUnchanged} unchanged. ${histCreated + histUpdated} leave history records saved.`,
+      });
+    }
+
+    /* ── Leave history — month-by-month view, HR sees all, employees see own ── */
+    case 'getLeaveHistory': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const isHR = await hasRole(cu, MGR_ROLES);
+      const year = Number(p.year) || new Date().getFullYear();
+      const targetUserId = isHR ? (p.user_id || null) : cu.id;
+
+      const rows = targetUserId
+        ? await all("SELECT data FROM entities WHERE type='LeaveHistory' AND user_id=$1 AND (data::jsonb->>'year')::int=$2", [targetUserId, year])
+        : await all("SELECT data FROM entities WHERE type='LeaveHistory' AND (data::jsonb->>'year')::int=$1", [year]);
+
+      const history = rows.map(r => JSON.parse(r.data)).sort((a, b) => (a.employee_name || '').localeCompare(b.employee_name || ''));
+      return res.json({ success: true, year, history });
+    }
+
     /* ── Comp-Off: earn leave for working on Sundays/holidays ── */
     case 'requestCompOff': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
