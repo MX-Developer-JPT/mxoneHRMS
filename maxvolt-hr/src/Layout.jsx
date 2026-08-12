@@ -432,6 +432,25 @@ export default function Layout({ children, currentPageName }) {
 
   const touchStartY = useRef(0);
   const contentRef  = useRef(null);
+  const bottomNavRef = useRef(null);
+  // Measured directly from the rendered <nav>, rather than guessed from CSS
+  // env(safe-area-inset-bottom)/heuristics — those guesses (4.5rem, then
+  // 6rem, then 8rem) kept coming up short on real devices, most likely
+  // because env(safe-area-inset-bottom) isn't reliably accurate on every
+  // Android WebView. offsetHeight reflects however this exact bar actually
+  // rendered on this exact device, safe-area padding included, so the
+  // content spacer below can never be undersized relative to it.
+  const [bottomNavHeight, setBottomNavHeight] = useState(0);
+  useEffect(() => {
+    if (!bottomNavRef.current || typeof ResizeObserver === 'undefined') return;
+    const el = bottomNavRef.current;
+    // offsetHeight (not contentRect, which excludes padding/border) — the
+    // bar's safe-area clearance is applied as padding, so it must be included.
+    const ro = new ResizeObserver(() => setBottomNavHeight(el.offsetHeight));
+    ro.observe(el);
+    setBottomNavHeight(el.offsetHeight);
+    return () => ro.disconnect();
+  }, []);
 
   const handleTouchStart = useCallback((e) => {
     if (contentRef.current?.scrollTop === 0)
@@ -911,20 +930,25 @@ export default function Layout({ children, currentPageName }) {
         {mountedTabs.has('Leave')          && <div style={{ display: currentPageName === 'Leave'          ? 'block' : 'none' }}><LeavePage /></div>}
         {mountedTabs.has('Profile')        && <div style={{ display: currentPageName === 'Profile'        ? 'block' : 'none' }}><ProfilePage /></div>}
 
-        {/* Mobile bottom spacer — must exceed the fixed tab bar's height (tab
-            minHeight 44px + nav padding) plus the safe-area inset, with margin,
-            so the last item on any page scrolls clear of the bar and stays
-            tappable. Was 4.5rem, then 6rem, both of which still left the last
-            card/button on longer pages (e.g. App Settings' Delete Account
-            button) partly hidden behind the bar — env(safe-area-inset-bottom)
-            isn't reliably non-zero on every Android WebView (it depends on
-            the app actually being configured edge-to-edge), so a fixed-size
-            base that doesn't lean on that value being accurate is safer than
-            trying to compute the exact minimum. Also adds --vv-bottom-inset
-            (the same iOS toolbar-quirk offset the bar itself is positioned
-            with, set in main.jsx) since that raises the bar's effective top
-            edge on affected browsers, and the spacer needs to clear that too. */}
-        <div className="lg:hidden" style={{ height: 'calc(8rem + env(safe-area-inset-bottom) + var(--vv-bottom-inset, 0px))' }} />
+        {/* Mobile bottom spacer — must exceed the fixed tab bar's real
+            rendered height so the last item on any page scrolls clear of it
+            and stays tappable. Three rounds of guessing this from CSS
+            (4.5rem, 6rem, 8rem, each trying to account for
+            env(safe-area-inset-bottom)) still left content hidden behind
+            the bar on real devices — that value isn't reliably accurate on
+            every Android WebView. Now measured directly: bottomNavHeight is
+            the bar's actual offsetHeight (safe-area padding included,
+            whatever it resolved to on this exact device), tracked via a
+            ResizeObserver above. var(--vv-bottom-inset) is added on top
+            since that's a separate additional offset the bar itself is
+            positioned with (an iOS Safari toolbar quirk), plus a flat 1.5rem
+            margin for comfortable clearance. Falls back to a generous fixed
+            value if the bar hasn't been measured yet (first paint) or
+            ResizeObserver is unavailable. */}
+        <div
+          className="lg:hidden"
+          style={{ height: bottomNavHeight > 0 ? `calc(${bottomNavHeight}px + var(--vv-bottom-inset, 0px) + 1.5rem)` : 'calc(8rem + env(safe-area-inset-bottom) + var(--vv-bottom-inset, 0px))' }}
+        />
       </div>
 
       {/* ── "More" bottom sheet (iOS style) ─────────────────── */}
@@ -1085,6 +1109,7 @@ export default function Layout({ children, currentPageName }) {
           a gap the height of that reserved space. Tracking window.visualViewport
           gives the actual visible bottom edge. */}
       <nav
+        ref={bottomNavRef}
         className="lg:hidden fixed left-0 right-0 z-40 bg-white dark:bg-[#1C1C1E] border-t border-black/10 dark:border-white/10"
         style={{
           bottom: 'var(--vv-bottom-inset, 0px)',

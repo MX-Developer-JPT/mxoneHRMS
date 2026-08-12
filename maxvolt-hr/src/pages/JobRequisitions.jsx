@@ -16,7 +16,7 @@ import {
   Plus, Briefcase, Check, X, Eye, Printer, Loader2,
   Clock, CheckCircle2, XCircle, ChevronRight, Globe, Copy,
   Sparkles, Edit3, FileCheck, Users, CalendarClock, XOctagon, Filter,
-  Download, Upload
+  Download, Upload, Search
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -67,6 +67,7 @@ export default function JobRequisitions() {
   const [formData, setFormData] = useState(EMPTY_FORM);
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterDept, setFilterDept] = useState('all');
+  const [search, setSearch] = useState('');
   const [extendDialog, setExtendDialog] = useState(null); // req to extend
   const [extendDate, setExtendDate] = useState('');
   const [publishDialog, setPublishDialog] = useState(null);
@@ -437,6 +438,12 @@ Return ONLY the job description content as plain text with clear section headers
   const filtered = requisitions.filter(r => {
     if (filterStatus !== 'all' && r.status !== filterStatus) return false;
     if (filterDept !== 'all' && r.department !== filterDept) return false;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      const hay = [r.position_title, r.department, r.location, getUserName(r.requested_by), getUserName(r.hiring_manager_id)]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 
@@ -447,9 +454,13 @@ Return ONLY the job description content as plain text with clear section headers
     published: requisitions.filter(r => r.status === 'published').length,
   };
 
-  // Managers (for hiring manager dropdown): management + hr + admin roles
+  // Hiring manager dropdown must include every manager/management user (not
+  // just top-level management/hr/admin), same fix as Onboarding Approval's
+  // reporting-manager dropdown — a requisition needs to name whoever will
+  // actually manage the new hire, which is very often a 'manager', not just
+  // top-level management.
   const managerOptions = allUsers.filter(u =>
-    ['management', 'hr', 'admin'].includes(u.role) || ['management', 'hr', 'admin'].includes(u.custom_role)
+    ['manager', 'management', 'hr', 'admin'].includes(u.role) || ['manager', 'management', 'hr', 'admin'].includes(u.custom_role)
   );
 
   return (
@@ -504,6 +515,17 @@ Return ONLY the job description content as plain text with clear section headers
               </CardContent>
             </Card>
           ))}
+        </div>
+
+        {/* Search */}
+        <div className="relative max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Input
+            className="pl-9"
+            placeholder="Search by position, department, location, or manager..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
         </div>
 
         {/* Filter */}
