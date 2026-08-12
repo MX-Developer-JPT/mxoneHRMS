@@ -232,16 +232,28 @@ export default function OrgChart() {
   // outside that department), and surface a "head" card per department —
   // the root with the most reports, i.e. the most senior person visible
   // from inside that department's own hierarchy.
+  //
+  // Grouping is case/whitespace-insensitive — source data commonly has the
+  // same department spelled multiple ways ("Production" / "PRODUCTION" /
+  // "Production "), and those must land in one group, not be treated as
+  // separate departments. The display name picks whichever exact spelling
+  // is most common in that group (ties: prefer not-ALL-CAPS, then A→Z).
   const deptGroups = useMemo(() => {
-    const byDept = {};
+    const byKey = {};
     employees.forEach(e => {
-      const d = e.department || 'Unassigned';
-      (byDept[d] ||= []).push(e);
+      const raw = (e.department || 'Unassigned').trim().replace(/\s+/g, ' ');
+      const key = raw.toLowerCase();
+      if (!byKey[key]) byKey[key] = { emps: [], nameCounts: new Map() };
+      byKey[key].emps.push(e);
+      byKey[key].nameCounts.set(raw, (byKey[key].nameCounts.get(raw) || 0) + 1);
     });
-    return Object.entries(byDept).map(([dept, emps]) => {
+    return Object.values(byKey).map(({ emps, nameCounts }) => {
+      const dept = [...nameCounts.entries()].sort((a, b) =>
+        b[1] - a[1] || (a[0] === a[0].toUpperCase()) - (b[0] === b[0].toUpperCase()) || a[0].localeCompare(b[0])
+      )[0][0];
       const { roots: deptRoots } = buildOrgTree(emps);
       const head = [...deptRoots].sort((a, b) => countDescendants(b) - countDescendants(a))[0] || emps[0];
-      return { dept, count: emps.length, head, roots: deptRoots };
+      return { dept, count: emps.length, head, roots: deptRoots, emps };
     }).sort((a, b) => b.count - a.count || a.dept.localeCompare(b.dept));
   }, [employees]);
 
@@ -250,7 +262,12 @@ export default function OrgChart() {
   // department's scoped tree.
   const [selectedDept, setSelectedDept] = useState(null);
   const activeGroup = selectedDept === '__ALL__' ? null : deptGroups.find(g => g.dept === selectedDept);
-  const activeEmployees = selectedDept === '__ALL__' ? employees : (activeGroup ? employees.filter(e => (e.department || 'Unassigned') === selectedDept) : []);
+  // Use the group's own merged employee list rather than re-filtering by an
+  // exact string match against selectedDept — deptGroups already merges
+  // case/whitespace variants of the same department name, and re-filtering
+  // here by exact match would silently drop the variant-spelled employees
+  // back out.
+  const activeEmployees = selectedDept === '__ALL__' ? employees : (activeGroup ? activeGroup.emps : []);
   const activeRoots = selectedDept === '__ALL__' ? roots : (activeGroup ? activeGroup.roots : []);
 
   const openDept = (dept) => { setSelectedDept(dept); setCollapsed(new Set()); setFocusedId(null); setSearch(''); };
