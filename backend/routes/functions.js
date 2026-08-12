@@ -8813,13 +8813,20 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         if (!fileId) throw new Error('Cannot parse file ID from URL');
         const fileRow = await one("SELECT data, storage, r2_key FROM files WHERE id=$1", [fileId]);
         if (!fileRow) throw new Error('File not found in storage');
-        if (fileRow.storage === 'r2' && fileRow.r2_key) {
+        if (fileRow.storage === 'railway' && fileRow.r2_key) {
+          const { presignGet } = await import('../utils/bucket.js');
+          const signedUrl = await presignGet(fileRow.r2_key, { expiresIn: 300 });
+          const resp = await fetch(signedUrl);
+          fileBuffer = Buffer.from(await resp.arrayBuffer());
+        } else if (fileRow.storage === 'r2' && fileRow.r2_key) {
           const { presignGet } = await import('../utils/r2.js');
           const signedUrl = await presignGet(fileRow.r2_key, { expiresIn: 300 });
           const resp = await fetch(signedUrl);
           fileBuffer = Buffer.from(await resp.arrayBuffer());
-        } else {
+        } else if (fileRow.data) {
           fileBuffer = Buffer.from(fileRow.data);
+        } else {
+          throw new Error('File record has no data and no bucket key — upload may have failed');
         }
       } catch (e) {
         return res.json({ success: false, error: `Failed to fetch file: ${e.message}` });
