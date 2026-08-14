@@ -2,7 +2,9 @@
 // Set GROQ_API_KEY in Railway environment variables.
 
 const GROQ_KEY     = process.env.GROQ_API_KEY || '';
-const GROQ_MODEL   = process.env.GROQ_MODEL   || 'llama-3.1-8b-instant';
+// llama-3.1-8b-instant is deprecated by Groq, shutting down 2026-08-16.
+// Groq's recommended replacement is openai/gpt-oss-20b.
+const GROQ_MODEL   = process.env.GROQ_MODEL   || 'openai/gpt-oss-20b';
 const OLLAMA_URL   = process.env.OLLAMA_URL   || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL  || 'tinyllama';
 
