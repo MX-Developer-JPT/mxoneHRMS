@@ -3,8 +3,9 @@
 
 const GROQ_KEY     = process.env.GROQ_API_KEY || '';
 // llama-3.1-8b-instant is deprecated by Groq, shutting down 2026-08-16.
-// Groq's recommended replacement is openai/gpt-oss-20b.
-const GROQ_MODEL   = process.env.GROQ_MODEL   || 'openai/gpt-oss-20b';
+// Using openai/gpt-oss-120b for stronger reasoning (free dev tier), traded
+// off against higher latency than the smaller 20b model.
+const GROQ_MODEL   = process.env.GROQ_MODEL   || 'openai/gpt-oss-120b';
 const OLLAMA_URL   = process.env.OLLAMA_URL   || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL  || 'tinyllama';
 
