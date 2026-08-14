@@ -26,6 +26,7 @@ import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker'
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
 import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption, requestBackgroundLocationIfNeeded } from '@/lib/geofenceBackground';
 import { syncStatusBarTheme, initKeyboardAvoidance } from '@/lib/nativeChrome';
+import { startHeartbeat, logPageView } from '@/lib/adoptionTracking';
 
 const PERSISTENT_TABS = new Set(['Dashboard', 'MarkAttendance', 'Leave', 'Profile']);
 
@@ -483,6 +484,12 @@ export default function Layout({ children, currentPageName }) {
   }, [currentPageName]);
 
   useEffect(() => { loadUser(); }, []);
+
+  // Adoption-analytics: heartbeat while the app is open (drives the "time
+  // spent" estimate) and a page-view event per navigation (drives feature
+  // adoption). Fire-and-forget — see lib/adoptionTracking.js.
+  useEffect(() => { const stop = startHeartbeat(); return stop; }, []);
+  useEffect(() => { logPageView(currentPageName); }, [currentPageName]);
 
   // Native chrome: keep the status bar in sync with the in-app theme toggle,
   // and scroll a focused input clear of the on-screen keyboard. Both are

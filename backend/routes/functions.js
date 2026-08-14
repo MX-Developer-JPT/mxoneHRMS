@@ -13074,6 +13074,189 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       return res.json({ success: true, request_id: reqId });
     }
 
+    /* ── Adoption analytics — event logging + dashboard ──────────────────
+       Lightweight usage-event log (entities type='UsageEvent') that
+       powers the Admin Panel's Adoption Dashboard: activation, active-user
+       rates, department/feature adoption, estimated time-in-app, and a
+       dormant-user watchlist. Login events are recorded server-side in
+       POST /api/auth/login (tamper-proof); everything else (heartbeat,
+       page views, feature actions) is logged client-side via this case. ── */
+    case 'logUserEvent': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { event_type, module, feature, meta } = p;
+      if (!event_type) return res.json({ success: false, error: 'event_type is required' });
+      const id = uuidv4();
+      const now = new Date().toISOString();
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'UsageEvent',$2,'active',$3)", [
+        id, cu.id, JSON.stringify({ id, user_id: cu.id, event_type, module: module || null, feature: feature || null, meta: meta || null, timestamp: now }),
+      ]);
+      return res.json({ success: true });
+    }
+
+    case 'getAdoptionDashboard': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const days = Number(p.days) || 30;
+      const sinceWindow = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const since90 = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]; // enough history for 30-day active + 14-day dormant checks
+
+      const [employees, eventRows] = await Promise.all([
+        parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")),
+        all("SELECT user_id, data FROM entities WHERE type='UsageEvent' AND created_at >= $1", [since90]),
+      ]);
+
+      const events = eventRows.map(r => { try { return { user_id: r.user_id, ...JSON.parse(r.data) }; } catch { return null; } }).filter(Boolean);
+
+      const empByUserId = new Map(employees.filter(e => e.user_id).map(e => [e.user_id, e]));
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const dayMs = 24 * 60 * 60 * 1000;
+      const nowMs = Date.now();
+
+      // Per-user aggregates: first login, last event, active days set, per-day event lists (for time-spent), module usage
+      const perUser = new Map(); // user_id -> { firstLogin, lastEvent, activeDates:Set, moduleCounts:Map, eventsByDay:Map<date,[]> }
+      for (const ev of events) {
+        if (!perUser.has(ev.user_id)) perUser.set(ev.user_id, { firstLogin: null, lastEvent: null, activeDates: new Set(), moduleUsers: new Map(), eventsByDay: new Map() });
+        const u = perUser.get(ev.user_id);
+        const ts = ev.timestamp;
+        if (!ts) continue;
+        const dateStr = ts.slice(0, 10);
+        if (ev.event_type === 'login' && (!u.firstLogin || ts < u.firstLogin)) u.firstLogin = ts;
+        if (!u.lastEvent || ts > u.lastEvent) u.lastEvent = ts;
+        u.activeDates.add(dateStr);
+        if (ev.module && ['module_opened', 'feature_action_completed', 'workflow_submitted'].includes(ev.event_type)) {
+          u.moduleUsers.set(ev.module, (u.moduleUsers.get(ev.module) || 0) + 1);
+        }
+        if (!u.eventsByDay.has(dateStr)) u.eventsByDay.set(dateStr, []);
+        u.eventsByDay.get(dateStr).push(ts);
+      }
+
+      // Estimated time spent: sum gaps between consecutive same-day events, capping any single gap at 5 minutes
+      // (a longer gap almost certainly means the tab was idle/backgrounded, not actively used).
+      const GAP_CAP_MS = 5 * 60 * 1000;
+      let totalActiveMinutesAll = 0;
+      const timeSpentByUser = new Map();
+      for (const [uid, u] of perUser) {
+        let mins = 0;
+        for (const dayEvents of u.eventsByDay.values()) {
+          const sorted = dayEvents.slice().sort();
+          for (let i = 1; i < sorted.length; i++) {
+            const gap = Math.min(new Date(sorted[i]) - new Date(sorted[i - 1]), GAP_CAP_MS);
+            if (gap > 0) mins += gap / 60000;
+          }
+        }
+        timeSpentByUser.set(uid, mins);
+        totalActiveMinutesAll += mins;
+      }
+
+      const totalEmployees = employees.length;
+      const activatedUserIds = new Set([...perUser.entries()].filter(([, u]) => u.firstLogin).map(([uid]) => uid));
+      const activated = employees.filter(e => activatedUserIds.has(e.user_id)).length;
+      const activeToday = employees.filter(e => perUser.get(e.user_id)?.activeDates.has(todayStr)).length;
+      const active7d = employees.filter(e => {
+        const u = perUser.get(e.user_id); if (!u?.lastEvent) return false;
+        return (nowMs - new Date(u.lastEvent).getTime()) <= 7 * dayMs;
+      }).length;
+      const active30d = employees.filter(e => {
+        const u = perUser.get(e.user_id); if (!u?.lastEvent) return false;
+        return (nowMs - new Date(u.lastEvent).getTime()) <= 30 * dayMs;
+      }).length;
+
+      // Department adoption
+      const byDept = {};
+      for (const e of employees) {
+        const dept = e.department || 'Unassigned';
+        (byDept[dept] ||= { eligible: 0, activated: 0, active7d: 0, dormant: 0 });
+        byDept[dept].eligible++;
+        const u = perUser.get(e.user_id);
+        if (u?.firstLogin) byDept[dept].activated++;
+        const lastMs = u?.lastEvent ? new Date(u.lastEvent).getTime() : null;
+        if (lastMs && (nowMs - lastMs) <= 7 * dayMs) byDept[dept].active7d++;
+        if (u?.firstLogin && (!lastMs || (nowMs - lastMs) > 14 * dayMs)) byDept[dept].dormant++;
+      }
+      const departmentAdoption = Object.entries(byDept).map(([dept, d]) => ({
+        department: dept, ...d,
+        activation_pct: d.eligible ? Math.round((d.activated / d.eligible) * 100) : 0,
+        active_pct: d.eligible ? Math.round((d.active7d / d.eligible) * 100) : 0,
+      })).sort((a, b) => b.eligible - a.eligible);
+
+      // Feature/module adoption — unique users + total actions per module, across all tracked users
+      const moduleAgg = {};
+      for (const [, u] of perUser) {
+        for (const [mod, count] of u.moduleUsers) {
+          (moduleAgg[mod] ||= { module: mod, unique_users: 0, actions: 0 });
+          moduleAgg[mod].unique_users++;
+          moduleAgg[mod].actions += count;
+        }
+      }
+      const featureAdoption = Object.values(moduleAgg).sort((a, b) => b.unique_users - a.unique_users);
+
+      // Dormant watchlist: activated but no event in 14+ days (or never active again after first login)
+      const dormantWatchlist = employees.filter(e => {
+        const u = perUser.get(e.user_id);
+        if (!u?.firstLogin) return false;
+        const lastMs = u.lastEvent ? new Date(u.lastEvent).getTime() : new Date(u.firstLogin).getTime();
+        return (nowMs - lastMs) > 14 * dayMs;
+      }).map(e => {
+        const u = perUser.get(e.user_id);
+        return {
+          user_id: e.user_id, name: e.display_name || e.full_name, department: e.department || 'Unassigned',
+          employee_code: e.employee_code, last_active: u.lastEvent || u.firstLogin,
+          days_inactive: Math.floor((nowMs - new Date(u.lastEvent || u.firstLogin).getTime()) / dayMs),
+        };
+      }).sort((a, b) => b.days_inactive - a.days_inactive);
+
+      // Not-yet-activated list (never logged in)
+      const notActivated = employees.filter(e => !perUser.get(e.user_id)?.firstLogin).map(e => ({
+        user_id: e.user_id, name: e.display_name || e.full_name, department: e.department || 'Unassigned', employee_code: e.employee_code,
+      }));
+
+      return res.json({
+        success: true,
+        window_days: days,
+        summary: {
+          total_employees: totalEmployees,
+          activated, activation_pct: totalEmployees ? Math.round((activated / totalEmployees) * 100) : 0,
+          active_today: activeToday,
+          active_7d: active7d, active_7d_pct: activated ? Math.round((active7d / activated) * 100) : 0,
+          active_30d: active30d, active_30d_pct: activated ? Math.round((active30d / activated) * 100) : 0,
+          avg_minutes_per_active_user: activated ? Math.round(totalActiveMinutesAll / activated) : 0,
+          dormant_count: dormantWatchlist.length,
+        },
+        department_adoption: departmentAdoption,
+        feature_adoption: featureAdoption,
+        dormant_watchlist: dormantWatchlist.slice(0, 100),
+        not_activated: notActivated.slice(0, 100),
+      });
+    }
+
+    case 'sendAdoptionReminder': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const userIds = Array.isArray(p.user_ids) ? p.user_ids.filter(Boolean) : [];
+      if (!userIds.length) return res.json({ success: false, error: 'user_ids is required' });
+      const users = await all("SELECT id, email, full_name FROM users WHERE id = ANY($1)", [userIds]);
+      let sent = 0;
+      for (const u of users) {
+        try {
+          await notify(u.id, {
+            title: 'We miss you on Maxvolt One!',
+            message: 'You have a few things waiting — check attendance, leave and announcements on Maxvolt One.',
+            type: 'reminder', link: '/Dashboard',
+          });
+          await sendEmail({
+            to: u.email,
+            subject: 'A quick reminder from Maxvolt One',
+            html: `<div style="font-family:Arial,sans-serif;font-size:14px">
+              <p>Hi ${u.full_name || ''},</p>
+              <p>We noticed you haven't used Maxvolt One in a while. It only takes a minute to check your attendance,
+              apply for leave, view payslips or catch up on announcements.</p>
+              <p><a href="https://maxone.maxvoltenergy.com/login">Open Maxvolt One</a></p>
+            </div>`,
+          });
+          sent++;
+        } catch (e) { console.error('[sendAdoptionReminder] failed for', u.id, e.message); }
+      }
+      return res.json({ success: true, sent, total: userIds.length });
+    }
+
     default:
       console.warn(`[functions] Unknown function: ${name}`);
       return res.status(404).json({ error: `Function '${name}' not implemented` });

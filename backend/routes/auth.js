@@ -48,6 +48,14 @@ router.post('/login', async (req, res) => {
   }
   const token = signToken(user);
   res.json({ token, user: formatUser(user) });
+
+  // Fire-and-forget adoption-analytics login event — recorded server-side
+  // (not from the client) so activation/active-user numbers can't be
+  // skipped by a client that never calls the event-logging endpoint.
+  const eventId = uuidv4();
+  run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'UsageEvent',$2,'active',$3)", [
+    eventId, user.id, JSON.stringify({ id: eventId, user_id: user.id, event_type: 'login', module: null, feature: null, meta: null, timestamp: new Date().toISOString() }),
+  ]).catch(e => console.error('[auth] login event log failed:', e.message));
 });
 
 // POST /api/auth/register

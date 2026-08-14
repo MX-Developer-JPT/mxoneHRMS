@@ -11,11 +11,12 @@ import {
   ChevronLeft, ChevronRight, Eye, Key, AlertTriangle, X, Check,
   BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2,
   Bot, Sparkles, ExternalLink, Zap, Fingerprint, Copy, RotateCcw, Globe, Code2,
-  ScrollText, Clock, Download, Settings2, ChevronsUpDown, CalendarClock
+  ScrollText, Clock, Download, Settings2, ChevronsUpDown, CalendarClock, Activity
 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
+import AdoptionDashboardTab from '@/components/admin/AdoptionDashboardTab';
 
 const TOKEN_KEY = 'base44_access_token';
 const API = (path) => `/api/admin${path}`;
@@ -2247,6 +2248,7 @@ export default function AdminPanel() {
   }
 
   const TABS = [
+    { id: 'adoption',   label: 'Adoption Dashboard', icon: Activity },
     { id: 'entities',   label: 'Data Browser',      icon: Database },
     { id: 'users',      label: 'User Management',    icon: UserCog  },
     { id: 'emp',        label: 'Employee Attrs',     icon: Settings2 },
@@ -2287,6 +2289,7 @@ export default function AdminPanel() {
         </div>
       </div>
 
+      {tab === 'adoption'   && <AdoptionDashboardTab />}
       {tab === 'entities'   && <EntitiesTab typeCounts={typeCounts} />}
       {tab === 'users'      && <UsersTab />}
       {tab === 'emp'        && <EmployeeAttrsTab />}
