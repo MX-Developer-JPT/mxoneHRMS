@@ -67,8 +67,14 @@ export default function ManagementDashboard({ user }) {
       todayTeamAtt = todayTeamAtt.filter(a => teamIds.includes(a.user_id));
     }
 
+    // Same "present" definition as AllAttendance.jsx (the authoritative
+    // attendance page) — recognises work_from_home/short_attendance/late as
+    // present even with no check_in_time, and excludes absent-like statuses
+    // even when a check_in_time happens to be set.
+    const PRESENT_STATUSES = new Set(['present', 'late', 'on_duty', 'work_from_home', 'short_attendance', 'half_day']);
+    const ABSENT_LIKE_STATUSES = new Set(['absent', 'leave', 'holiday', 'week_off']);
     const presentRecords = todayTeamAtt.filter(a =>
-      a.check_in_time || ['present', 'half_day', 'on_duty'].includes(a.status)
+      PRESENT_STATUSES.has(a.status) || (a.check_in_time && !ABSENT_LIKE_STATUSES.has(a.status))
     );
     const presentUserIds = new Set(presentRecords.map(a => a.user_id));
     const onLeaveIds = new Set(todayTeamAtt.filter(a => a.status === 'leave').map(a => a.user_id));

@@ -79,25 +79,36 @@ export default function HRDashboard({ user }) {
 
     const activeEmployeeCount = employees.length;
 
-    const presentRecords = todayAttendance.filter(a =>
-      a.check_in_time || ['present', 'half_day', 'on_duty'].includes(a.status)
-    );
-    const presentToday = presentRecords.length;
+    // Same "present" definition and roster-bound scoping as AllAttendance.jsx
+    // (the authoritative attendance page) — this used to be a raw count of
+    // todayAttendance records with a narrower status check, which (a) could
+    // include attendance rows for users outside the active/non-operator
+    // roster, and (b) missed work_from_home/short_attendance days that have
+    // no check_in_time, causing the Dashboard's number to drift from All
+    // Attendance's for the exact same day.
+    const PRESENT_STATUSES = new Set(['present', 'late', 'on_duty', 'work_from_home', 'short_attendance', 'half_day']);
+    const ABSENT_LIKE_STATUSES = new Set(['absent', 'leave', 'holiday', 'week_off']);
+    const isPresentRecord = (a) => !!a && (PRESENT_STATUSES.has(a.status) || (a.check_in_time && !ABSENT_LIKE_STATUSES.has(a.status)));
+    const attByUser = {};
+    todayAttendance.forEach(a => { attByUser[a.user_id] = a; });
+
+    const presentDetails = employees
+      .filter(e => isPresentRecord(attByUser[e.user_id]))
+      .map(e => {
+        const a = attByUser[e.user_id];
+        const u = userMap[e.user_id];
+        return {
+          name: e.display_name || u?.full_name || e.user_id,
+          code: e.employee_code || '',
+          dept: e.department || '—',
+          checkIn: safeTime(a.check_in_time),
+          status: a.status || 'present'
+        };
+      });
+    const presentToday = presentDetails.length;
     const absentToday = activeEmployeeCount - presentToday;
     const onLeaveToday = todayAttendance.filter(a => a.status === 'leave').length;
     const attendanceRate = activeEmployeeCount > 0 ? Math.round((presentToday / activeEmployeeCount) * 100) : 0;
-
-    const presentDetails = presentRecords.map(a => {
-      const emp = empMap[a.user_id];
-      const u = userMap[a.user_id];
-      return {
-        name: emp?.display_name || u?.full_name || a.user_id,
-        code: emp?.employee_code || '',
-        dept: emp?.department || '—',
-        checkIn: safeTime(a.check_in_time),
-        status: a.status || 'present'
-      };
-    });
 
     const presentUserIds = new Set(todayAttendance.map(a => a.user_id));
     const absentDetails = employees

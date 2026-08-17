@@ -354,8 +354,11 @@ export function computeStatusFromSessions(sessionData, shift, effectiveShiftHour
 }
 
 async function processRecord(record) {
-  // Normalise field names — accept eBio Pascal-case and snake_case formats
-  const codeStr    = String(record.employee_code || record.EmployeeCode || '');
+  // Normalise field names — accept eBio Pascal-case and snake_case formats.
+  // Trimmed here (not just lower-cased for the match below) so a stray
+  // leading/trailing space from the device doesn't create a distinct
+  // AttendanceLog dedup/EmployeeCode identity from the "clean" version.
+  const codeStr    = String(record.employee_code || record.EmployeeCode || '').trim();
   const directUid  = record.user_id;
   // When LogDate is explicitly "" (MxOneSync sends this when the eBioServer DB column is NULL),
   // do NOT fall back to DownloadDate — that's the sync timestamp, not the actual punch time.
@@ -395,9 +398,17 @@ async function processRecord(record) {
   let userId = directUid || null;
   let empData = null;
   if (!userId && codeStr) {
+    // Case-insensitive match — the biometric device and the HR-entered
+    // employee_code/biometric_id don't reliably agree on case (e.g.
+    // "MVE00001" vs "mve00001"), and an exact-string match silently drops
+    // the punch (stored as an unmatched AttendanceLog, no Attendance
+    // record created) even though it's unambiguously the same employee.
+    // The admin's BiometricCodeMapping review UI already matches this way
+    // for display — this brings the actual processing logic in line with it.
+    const codeUpper = codeStr.toUpperCase();
     const mappingRow = await one(
-      "SELECT data FROM entities WHERE type='BiometricCodeMapping' AND data::jsonb->>'biometric_code'=$1 LIMIT 1",
-      [codeStr]
+      "SELECT data FROM entities WHERE type='BiometricCodeMapping' AND UPPER(TRIM(data::jsonb->>'biometric_code'))=$1 LIMIT 1",
+      [codeUpper]
     );
     if (mappingRow) {
       const m = JSON.parse(mappingRow.data);
@@ -405,8 +416,8 @@ async function processRecord(record) {
     }
     if (!userId) {
       const empRow = await one(
-        "SELECT user_id, data FROM entities WHERE type='Employee' AND (data::jsonb->>'employee_code'=$1 OR data::jsonb->>'biometric_id'=$1) LIMIT 1",
-        [codeStr]
+        "SELECT user_id, data FROM entities WHERE type='Employee' AND (UPPER(TRIM(data::jsonb->>'employee_code'))=$1 OR UPPER(TRIM(data::jsonb->>'biometric_id'))=$1) LIMIT 1",
+        [codeUpper]
       );
       if (empRow) { userId = empRow.user_id; empData = JSON.parse(empRow.data); }
     }
