@@ -13207,7 +13207,6 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     case 'getAdoptionDashboard': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const days = Number(p.days) || 30;
-      const sinceWindow = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       const since90 = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]; // enough history for 30-day active + 14-day dormant checks
 
       const [employees, eventRows] = await Promise.all([
@@ -13218,7 +13217,15 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       const events = eventRows.map(r => { try { return { user_id: r.user_id, ...JSON.parse(r.data) }; } catch { return null; } }).filter(Boolean);
 
       const empByUserId = new Map(employees.filter(e => e.user_id).map(e => [e.user_id, e]));
-      const todayStr = new Date().toISOString().slice(0, 10);
+      // IST, not UTC — this app's users are all India-based, and event
+      // timestamps are stored as UTC instants. Using the raw UTC calendar
+      // date here would misclassify "today" for roughly the first 5.5
+      // hours after UTC midnight (which is still yesterday evening in
+      // IST) and the last portion of the IST day (already tomorrow in
+      // UTC), matching the same IST-offset convention already used
+      // elsewhere in this file and in attendancelog.js.
+      const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+      const todayStr = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
       const dayMs = 24 * 60 * 60 * 1000;
       const nowMs = Date.now();
 
@@ -13229,7 +13236,11 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         const u = perUser.get(ev.user_id);
         const ts = ev.timestamp;
         if (!ts) continue;
-        const dateStr = ts.slice(0, 10);
+        // IST calendar date, to match todayStr above — ts itself (used for
+        // firstLogin/lastEvent ordering and the 7/30-day elapsed-time
+        // windows below) stays a raw UTC instant, which is correct there
+        // since those are duration comparisons, not calendar-date ones.
+        const dateStr = new Date(new Date(ts).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
         if (ev.event_type === 'login' && (!u.firstLogin || ts < u.firstLogin)) u.firstLogin = ts;
         if (!u.lastEvent || ts > u.lastEvent) u.lastEvent = ts;
         u.activeDates.add(dateStr);
@@ -13329,7 +13340,11 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
           active_today: activeToday,
           active_7d: active7d, active_7d_pct: activated ? Math.round((active7d / activated) * 100) : 0,
           active_30d: active30d, active_30d_pct: activated ? Math.round((active30d / activated) * 100) : 0,
-          avg_minutes_per_active_user: activated ? Math.round(totalActiveMinutesAll / activated) : 0,
+          // Denominator is users with any tracked event in the window, not
+          // all-time `activated` count — dividing by the latter would dilute
+          // the average with long-dormant employees who contribute 0
+          // minutes, understating it for the "active user" label.
+          avg_minutes_per_active_user: perUser.size ? Math.round(totalActiveMinutesAll / perUser.size) : 0,
           dormant_count: dormantWatchlist.length,
         },
         department_adoption: departmentAdoption,
