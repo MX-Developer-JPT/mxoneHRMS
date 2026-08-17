@@ -425,6 +425,82 @@ export async function sendShiftEndReminders() {
   return { date, checked: rows.length, sent };
 }
 
+// ── Repeated-lateness alert to HR/admin + reporting manager ──────────────
+// Runs once daily. Counts each employee's 'late' Attendance days within the
+// current IST week (Monday–today) and, once someone crosses the threshold,
+// notifies HR/admin plus their reporting manager — once per employee per
+// week, even if they rack up further late days afterward.
+const LATE_THRESHOLD_PER_WEEK = 3;
+
+async function getHrAdminUserIds() {
+  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('hr','admin')");
+  return rows.map(r => r.id);
+}
+
+// Monday of the IST week containing `date` (YYYY-MM-DD).
+function istWeekStart(date) {
+  const d = new Date(date + 'T00:00:00Z');
+  const day = d.getUTCDay(); // 0=Sun..6=Sat
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+export async function checkRepeatedLateArrivals() {
+  const today = istDateString(0);
+  const weekStart = istWeekStart(today);
+
+  const lateRows = await all(
+    "SELECT user_id FROM entities WHERE type='Attendance' AND data::jsonb->>'status'='late' AND data::jsonb->>'date'>=$1 AND data::jsonb->>'date'<=$2",
+    [weekStart, today]
+  );
+  if (lateRows.length === 0) return { weekStart, checked: 0, flagged: 0 };
+
+  const countByUser = new Map();
+  for (const r of lateRows) countByUser.set(r.user_id, (countByUser.get(r.user_id) || 0) + 1);
+
+  const candidateIds = [...countByUser.entries()].filter(([, c]) => c >= LATE_THRESHOLD_PER_WEEK).map(([id]) => id);
+  if (candidateIds.length === 0) return { weekStart, checked: countByUser.size, flagged: 0 };
+
+  const hrAdminIds = await getHrAdminUserIds();
+  let flagged = 0;
+
+  for (const userId of candidateIds) {
+    const already = await one(
+      "SELECT id FROM entities WHERE type='LateArrivalAlertLog' AND user_id=$1 AND data::jsonb->>'week_start'=$2",
+      [userId, weekStart]
+    );
+    if (already) continue;
+
+    const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
+    const emp = empRow ? JSON.parse(empRow.data) : {};
+    const count = countByUser.get(userId);
+    const name = emp.display_name || emp.full_name || 'An employee';
+    const message = `${name} has been late ${count} times this week (since ${weekStart}).`;
+
+    const recipients = new Set(hrAdminIds);
+    if (emp.reporting_manager_id) recipients.add(emp.reporting_manager_id);
+    recipients.delete(userId); // don't alert the late employee about themselves
+
+    for (const rid of recipients) {
+      await notifyUser(rid, {
+        title: 'Repeated Late Arrivals',
+        message,
+        type: 'warning',
+        link: '/AllAttendance',
+      });
+    }
+
+    const logId = uuidv4();
+    await run(
+      "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LateArrivalAlertLog',$2,'sent',$3)",
+      [logId, userId, JSON.stringify({ id: logId, user_id: userId, week_start: weekStart, late_count: count, sent_at: new Date().toISOString() })]
+    );
+    flagged++;
+  }
+  return { weekStart, checked: countByUser.size, flagged };
+}
+
 export async function runNightlyAttendanceAutomation(targetDate) {
   const date = targetDate || istDateString(-1);
   const noRecord = await markMissingAttendanceAsAbsent(date);

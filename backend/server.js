@@ -17,7 +17,7 @@ import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
 import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
-import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders } from './cron/attendanceAutomation.js';
+import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -271,6 +271,14 @@ cron.schedule('*/5 * * * *', () => {
 // Fires any "remind me about this candidate" reminder that's now due.
 cron.schedule('*/15 * * * *', () => {
   sendDueCandidateReminders().catch(err => console.error('[candidate-reminders] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Repeated-lateness alert — daily at 11:00 AM IST ───────────
+// Notifies HR/admin + the employee's reporting manager once, for the week,
+// once someone crosses the late-arrival threshold. Runs mid-morning so the
+// day's own check-ins are already reflected before counting the week.
+cron.schedule('0 11 * * *', () => {
+  checkRepeatedLateArrivals().catch(err => console.error('[late-arrival-alert] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
 // ── Recruitment pipeline stall check — daily at 9:00 AM IST ──
