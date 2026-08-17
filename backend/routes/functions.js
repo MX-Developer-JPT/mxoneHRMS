@@ -8721,8 +8721,11 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
       const today      = new Date().toISOString().slice(0, 10);
       const now        = new Date();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-      const yr12Ago    = new Date(now.getFullYear() - 1, now.getMonth(), 1).toISOString().slice(0, 10);
+      // Date.UTC, not the local-time constructor — new Date(y,m,1).toISOString()
+      // rolls back to the last day of the previous month whenever the
+      // server's local timezone is ahead of UTC.
+      const monthStart = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1)).toISOString().slice(0, 10);
+      const yr12Ago    = new Date(Date.UTC(now.getFullYear() - 1, now.getMonth(), 1)).toISOString().slice(0, 10);
 
       // ── Core headcount ──────────────────────────────────────────────────────
       const totalActive  = scopedIds
@@ -8793,11 +8796,24 @@ ${contextBlock || 'No employee context available — answer from general policy 
         byType: Object.entries(allAssets.reduce((acc, a) => { const t = a.asset_type||a.category||'Other'; acc[t]=(acc[t]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
       };
 
-      const allExits = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Exit'"));
+      // updated_at (not carried by parseEntities) is used as a proxy for "when
+      // this exit's status last changed" — there's no dedicated completion-date
+      // field on the Exit entity, and this is the closest real signal available.
+      const allExitsRaw = scopedIds ? [] : await all("SELECT data, updated_at FROM entities WHERE type='Exit'");
+      const allExits = allExitsRaw.map(r => { try { return { ...JSON.parse(r.data), _updated_at: r.updated_at }; } catch { return null; } }).filter(Boolean);
+      const noticeDurations = allExits
+        .filter(e => e.resignation_date && e.last_working_date)
+        .map(e => (new Date(e.last_working_date) - new Date(e.resignation_date)) / 86400000)
+        .filter(d => d >= 0);
       const exits = {
         total:     allExits.length,
         pending:   allExits.filter(e => !['completed','fnf_done'].includes(e.status)).length,
         completed: allExits.filter(e => ['completed','fnf_done'].includes(e.status)).length,
+        inNotice:  allExits.filter(e => e.status === 'in_notice').length,
+        clearancePending: allExits.filter(e => e.status === 'clearance_pending').length,
+        fnfPending: allExits.filter(e => e.status === 'fnf_pending').length,
+        completedMonth: allExits.filter(e => ['completed','fnf_done'].includes(e.status) && e._updated_at && e._updated_at.slice(0, 7) === today.slice(0, 7)).length,
+        avgNoticeDays: noticeDurations.length ? Math.round(noticeDurations.reduce((s, d) => s + d, 0) / noticeDurations.length) : 0,
         byType: Object.entries(allExits.reduce((acc, e) => { const t = e.exit_type||'Unknown'; acc[t]=(acc[t]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
       };
 
@@ -8836,6 +8852,8 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const ratingDist = Object.entries(allReviews.reduce((acc, r) => { const rt = r.rating||'Pending'; acc[rt]=(acc[rt]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count }));
 
       // ── Metrics (camelCase — consumed by MetricCard via m.xxx) ──────────────
+      // avgBreakHours stays 0 — there's no break-time tracking anywhere in the
+      // attendance model to compute a real figure from.
       const metrics = {
         totalActive, presentToday, absentToday, activeLeaves,
         pendingLeaveRequests, totalPayrollCost, attritionRate,
@@ -8843,11 +8861,104 @@ ${contextBlock || 'No employee context available — answer from general policy 
         biometricSyncedCount, avgWorkingHours, avgBreakHours: 0, avgDailyPunches,
       };
 
+      // ── Compliance (org-wide only — not meaningfully "my team" scoped) ──────
+      const compliance = scopedIds ? {} : await (async () => {
+        const rowPf  = (r) => ((r.pf_employee || 0) + (r.pf_employer || 0)) || (r.deductions?.pf || 0);
+        const rowEsi = (r) => ((r.esi_employee || 0) + (r.esi_employer || 0)) || (r.deductions?.esi || 0);
+        const rowTds = (r) => r.deductions?.tds || 0;
+        const rowPt  = (r) => r.professional_tax || r.deductions?.professional_tax || 0;
+        const pfTotal  = payrollRows.reduce((s, r) => s + rowPf(r), 0);
+        const esiTotal = payrollRows.reduce((s, r) => s + rowEsi(r), 0);
+        const tdsTotal = payrollRows.reduce((s, r) => s + rowTds(r), 0);
+        const ptTotal  = payrollRows.reduce((s, r) => s + rowPt(r), 0);
+
+        // Gratuity is a monthly accrual estimate (standard 15/26 formula,
+        // spread over 12 months), not a liability actually due — based on
+        // each active employee's current basic salary.
+        const activeSalaries = parseEntities(await all("SELECT data FROM entities WHERE type='SalaryStructure' AND status='active'"));
+        const gratuityTotal = Math.round(activeSalaries.reduce((s, ss) => s + (ss.basic_salary || 0) * 15 / 26 / 12, 0));
+
+        const kycEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+        const kycCompliant = kycEmps.filter(e => e.pan_number && e.aadhar_number && (e.uan_number || e.pf_account_number)).length;
+        const kycMissing = kycEmps.length - kycCompliant;
+
+        const complianceRecords = parseEntities(await all("SELECT data FROM entities WHERE type='ComplianceRecord'"));
+        const overdueDeadlines = complianceRecords.filter(r => r.status !== 'paid' && r.due_date && r.due_date < today).length;
+
+        return { pfTotal, esiTotal, tdsTotal, gratuityTotal, ptTotal, kycCompliant, kycMissing, overdueDeadlines };
+      })();
+
+      // ── 6-month trends (org-wide only) ───────────────────────────────────────
+      let leaveTrend = [], headcountGrowth = [], attritionTrend = [], payrollTrend = [];
+      if (!scopedIds) {
+        // Build each month boundary with Date.UTC, not the local-time
+        // constructor — new Date(year, month, 1).toISOString() shifts to UTC
+        // and rolls back to the last day of the PREVIOUS month whenever the
+        // server's local timezone is ahead of UTC (e.g. IST), silently
+        // excluding anyone who joined/exited on the true first or last day
+        // of a month from that month's bucket.
+        const monthLabels = [];
+        for (let i = 5; i >= 0; i--) {
+          const d = new Date(Date.UTC(now.getFullYear(), now.getMonth() - i, 1));
+          monthLabels.push({
+            year: d.getUTCFullYear(), month: d.getUTCMonth() + 1,
+            label: d.toLocaleDateString('en-IN', { month: 'short', timeZone: 'UTC' }),
+            monthStart: d.toISOString().slice(0, 10),
+            monthEnd: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).toISOString().slice(0, 10),
+          });
+        }
+
+        const allEmpsForTrend = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'"));
+        // allExits was already loaded unscoped above (this whole block only
+        // runs when !scopedIds), so reuse it instead of re-querying.
+        const allExitsForTrend = allExits;
+
+        headcountGrowth = monthLabels.map(({ label, monthEnd }) => ({
+          month: label,
+          headcount: allEmpsForTrend.filter(e => {
+            if (!e.date_of_joining || e.date_of_joining > monthEnd) return false;
+            const exit = allExitsForTrend.find(x => x.user_id === e.user_id && ['completed', 'fnf_done'].includes(x.status));
+            return !exit || !exit.last_working_date || exit.last_working_date > monthEnd;
+          }).length,
+        }));
+
+        attritionTrend = monthLabels.map(({ label, monthStart, monthEnd }) => ({
+          month: label,
+          exits: allExitsForTrend.filter(e => e.last_working_date && e.last_working_date >= monthStart && e.last_working_date <= monthEnd).length,
+        }));
+
+        const allPayrollForTrend = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll'"));
+        payrollTrend = monthLabels.map(({ label, year, month }) => ({
+          month: label,
+          total: allPayrollForTrend.filter(r => String(r.year) === String(year) && String(r.month) === String(month)).reduce((s, r) => s + (r.net_salary || 0), 0),
+        }));
+
+        const allLeavesForTrend = parseEntities(await all("SELECT data FROM entities WHERE type='Leave'"));
+        leaveTrend = monthLabels.map(({ label, monthStart, monthEnd }) => ({
+          month: label,
+          count: allLeavesForTrend.filter(l => l.start_date && l.start_date >= monthStart && l.start_date <= monthEnd).length,
+        }));
+      }
+
+      // ── Rule-based flags surfaced in the dashboard's insight card (the
+      // separate "Generate Insights" button calls the actual LLM via
+      // getMISInsights — this auto-populated set is computed, not AI). ──────
+      const insights = [];
+      if (!scopedIds) {
+        if (attritionRate > 15) insights.push({ type: 'danger', message: `Attrition rate is ${attritionRate}% over the last 12 months — above the typical 10-15% healthy range.` });
+        if (pendingLeaveRequests > 10) insights.push({ type: 'warning', message: `${pendingLeaveRequests} leave request(s) are pending approval.` });
+        if (tickets.openTickets > 10) insights.push({ type: 'warning', message: `${tickets.openTickets} helpdesk ticket(s) are still open.` });
+        if (compliance.overdueDeadlines > 0) insights.push({ type: 'danger', message: `${compliance.overdueDeadlines} compliance deadline(s) are overdue.` });
+        if (compliance.kycMissing > 0) insights.push({ type: 'warning', message: `${compliance.kycMissing} active employee(s) have incomplete KYC (PAN/Aadhar/PF).` });
+        if (exits.avgNoticeDays > 0 && exits.avgNoticeDays < 15) insights.push({ type: 'info', message: `Average notice period served is ${exits.avgNoticeDays} days — shorter than the typical 30-day policy.` });
+        if (!insights.length) insights.push({ type: 'success', message: 'No critical issues detected across attendance, leave, compliance and exits.' });
+      }
+
       return res.json({
-        metrics, recruitment, reimbursements, tickets, assets, exits,
+        metrics, recruitment, reimbursements, tickets, assets, exits, compliance,
         attendanceTrends, departmentBreakdown, ratingDist,
         team_scoped: !!scopedIds,
-        insights: [], leaveTrend: [], headcountGrowth: [], attritionTrend: [], payrollTrend: [],
+        insights, leaveTrend, headcountGrowth, attritionTrend, payrollTrend,
         salarByDept: (() => {
           if (scopedIds) return []; // payroll figures are org-financial, not team MIS
           const empDeptMap = {};
