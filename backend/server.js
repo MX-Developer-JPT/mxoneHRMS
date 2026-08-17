@@ -17,7 +17,7 @@ import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
 import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
-import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions } from './cron/attendanceAutomation.js';
+import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -255,6 +255,16 @@ cron.schedule('*/30 * * * *', () => {
 // closed. See closeStaleOpenSessions for details.
 cron.schedule('*/30 * * * *', () => {
   closeStaleOpenSessions().catch(err => console.error('[open-session-safety-net] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Shift start / forgot-to-checkout push reminders — every 5 minutes ─
+// Pushes "your shift started, you haven't checked in" shortly after each
+// employee's shift (+ grace period) begins, and "don't forget to check out"
+// shortly after their shift ends if they're still checked in. Each fires at
+// most once per user per day (see attendanceAutomation.js for the dedup).
+cron.schedule('*/5 * * * *', () => {
+  sendShiftStartReminders().catch(err => console.error('[shift-start-reminders] failed:', err));
+  sendShiftEndReminders().catch(err => console.error('[shift-end-reminders] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
 // ── Candidate reminders — every 15 minutes ───────────────────

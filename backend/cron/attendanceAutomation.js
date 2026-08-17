@@ -15,7 +15,10 @@ function istDateString(dayOffset = 0) {
 
 async function getDefaultShift() {
   const row = await one("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'='true' OR data::jsonb->>'is_default'='1') LIMIT 1");
-  return row ? JSON.parse(row.data) : { days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] };
+  return row ? JSON.parse(row.data) : {
+    days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+    start_time: '09:00', end_time: '18:00', grace_period_minutes: 15,
+  };
 }
 
 async function getShiftForEmployee(emp, defaultShift) {
@@ -265,6 +268,161 @@ export async function closeStaleGeofenceSessions() {
     closed++;
   }
   return { date, checked: rows.length, closed };
+}
+
+// ── Shift start / forgot-to-checkout push reminders ──────────────────────
+// Two independent nags, both fire-and-forget push (+ in-app notification):
+//   1. Shift started and the employee still has no Attendance record at all
+//      for today (i.e. hasn't checked in) — reminds them shortly after their
+//      shift's grace period elapses, once per user per day.
+//   2. Shift ended and the employee is still "in progress" (checked in, never
+//      checked out) — reminds them once, a short grace period after their
+//      shift's end time.
+// Overnight shifts (end_time < start_time, crossing midnight) aren't
+// supported here — same limitation as the rest of this file's shift-window
+// logic (see markMissingAttendanceAsAbsent / getShiftForEmployee callers).
+const START_REMINDER_WINDOW_MIN = 20; // width of the "just started" window, past the grace period
+const END_REMINDER_GRACE_MIN    = 15; // minutes after shift end before nagging about checkout
+const END_REMINDER_WINDOW_MIN   = 30; // width of the checkout-reminder window
+
+function toMinutes(hhmm) {
+  const [h, m] = String(hhmm || '00:00').split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
+// Minutes since IST midnight, "now".
+function nowISTMinutes() {
+  const nowIST = new Date(Date.now() + IST_OFFSET_MS);
+  return nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+}
+
+async function notifyUser(userId, { title, message, type = 'info', link = '' }) {
+  if (!userId) return;
+  try {
+    await run(
+      "INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)",
+      [uuidv4(), userId, title, message, type, link || null]
+    );
+    const { sendPushToUser } = await import('../utils/push.js');
+    sendPushToUser(userId, { title, message, type, link }); // fire-and-forget
+  } catch (e) { console.error('[shift-reminders] notify failed:', e.message); }
+}
+
+// Dedup log for the start reminder — it fires before any Attendance row
+// exists for the user, so (unlike the checkout reminder) there's no existing
+// row to stash a "already reminded" flag on.
+async function alreadyRemindedStart(userId, date) {
+  const row = await one(
+    "SELECT id FROM entities WHERE type='ShiftReminderLog' AND user_id=$1 AND data::jsonb->>'date'=$2",
+    [userId, date]
+  );
+  return !!row;
+}
+
+async function markRemindedStart(userId, date) {
+  const id = uuidv4();
+  await run(
+    "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ShiftReminderLog',$2,'sent',$3)",
+    [id, userId, JSON.stringify({ id, user_id: userId, date, sent_at: new Date().toISOString() })]
+  );
+}
+
+export async function sendShiftStartReminders() {
+  const date = istDateString(0);
+  const weekday = WEEKDAY_NAMES[new Date(date + 'T00:00:00Z').getUTCDay()];
+  const nowMin = nowISTMinutes();
+
+  const holidayRow = await one("SELECT id FROM entities WHERE type='Holiday' AND data::jsonb->>'date'=$1 AND data::jsonb->>'is_half_day' IS DISTINCT FROM 'true'", [date]);
+  if (holidayRow) return { date, checked: 0, sent: 0, reason: 'company holiday' };
+
+  const employees = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
+    .map(r => JSON.parse(r.data))
+    .filter(e => e.user_id && !e.is_attendance_exempt)
+    .filter(e => !e.date_of_joining || e.date_of_joining <= date);
+  if (employees.length === 0) return { date, checked: 0, sent: 0 };
+
+  const defaultShift = await getDefaultShift();
+  const approvedLeaves = (await all(
+    "SELECT data FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date'<=$1 AND data::jsonb->>'end_date'>=$1",
+    [date]
+  )).map(r => JSON.parse(r.data));
+  const onLeaveUserIds = new Set(approvedLeaves.map(l => l.user_id));
+
+  let checked = 0, sent = 0;
+  for (const emp of employees) {
+    if (onLeaveUserIds.has(emp.user_id)) continue;
+
+    const shift = await getShiftForEmployee(emp, defaultShift);
+    const workingDays = Array.isArray(shift.days) && shift.days.length ? shift.days : defaultShift.days;
+    if (workingDays && !workingDays.includes(weekday)) continue; // scheduled off-day
+
+    const startMin = toMinutes(shift.start_time || defaultShift.start_time);
+    const grace = Number(shift.grace_period_minutes ?? defaultShift.grace_period_minutes ?? 15);
+    const windowStart = startMin + grace;
+    const windowEnd = windowStart + START_REMINDER_WINDOW_MIN;
+    if (nowMin < windowStart || nowMin >= windowEnd) continue;
+    checked++;
+
+    const existing = await one(
+      "SELECT id FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1",
+      [emp.user_id, date]
+    );
+    if (existing) continue; // already has a record (checked in, regularised, etc.)
+
+    if (await alreadyRemindedStart(emp.user_id, date)) continue;
+
+    await notifyUser(emp.user_id, {
+      title: 'Your shift has started',
+      message: `Your shift started at ${shift.start_time || defaultShift.start_time} and you haven't checked in yet.`,
+      type: 'warning',
+      link: '/Attendance',
+    });
+    await markRemindedStart(emp.user_id, date);
+    sent++;
+  }
+  return { date, checked, sent };
+}
+
+export async function sendShiftEndReminders() {
+  const date = istDateString(0);
+  const nowMin = nowISTMinutes();
+
+  const rows = await all(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'is_in_progress'='true'",
+    [date]
+  );
+  if (rows.length === 0) return { date, checked: 0, sent: 0 };
+
+  const defaultShift = await getDefaultShift();
+  const empCache = {};
+  let sent = 0;
+
+  for (const row of rows) {
+    const d = JSON.parse(row.data);
+    if (d.status === 'regularised' || d.checkout_reminder_sent) continue;
+
+    if (!(d.user_id in empCache)) {
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
+      empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
+    }
+    const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+    const endMin = toMinutes(shift.end_time || defaultShift.end_time);
+    const windowStart = endMin + END_REMINDER_GRACE_MIN;
+    const windowEnd = windowStart + END_REMINDER_WINDOW_MIN;
+    if (nowMin < windowStart || nowMin >= windowEnd) continue;
+
+    await notifyUser(d.user_id, {
+      title: "Don't forget to check out",
+      message: `Your shift ended at ${shift.end_time || defaultShift.end_time} and you're still checked in.`,
+      type: 'warning',
+      link: '/Attendance',
+    });
+    await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [
+      JSON.stringify({ ...d, checkout_reminder_sent: true }), row.id,
+    ]);
+    sent++;
+  }
+  return { date, checked: rows.length, sent };
 }
 
 export async function runNightlyAttendanceAutomation(targetDate) {
