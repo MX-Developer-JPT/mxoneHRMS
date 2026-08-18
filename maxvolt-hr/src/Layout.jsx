@@ -690,6 +690,7 @@ export default function Layout({ children, currentPageName }) {
   const isGateAdmin  = userRole === 'gate_admin'  || user.role === 'gate_admin';
   const isRecruiter  = userRole === 'recruiter'   || user.role === 'recruiter';
   const isITDept     = employeeDepartment?.toLowerCase() === 'it';
+  const isAdminDept  = employeeDepartment?.toLowerCase().includes('admin');
 
   const isAdmin = user.role === 'admin';
 
@@ -699,8 +700,8 @@ export default function Layout({ children, currentPageName }) {
   else if (isManager)       menuGroups = managerMenuGroups;
   else if (isRecruiter)     menuGroups = recruiterMenuGroups;
   else if (isGateAdmin)     menuGroups = gateAdminMenuGroups;
-  if (isITDept && !isHR) {
-    menuGroups = [...menuGroups, { label: 'IT', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
+  if ((isITDept || isAdminDept) && !isHR) {
+    menuGroups = [...menuGroups, { label: isITDept ? 'IT' : 'Assets', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
   }
   if (isAdmin) {
     menuGroups = [...menuGroups, { label: 'Administration', items: [

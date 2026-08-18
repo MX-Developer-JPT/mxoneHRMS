@@ -20,6 +20,7 @@ import pushRouter           from './routes/push.js';
 import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 import { closeUnreturnedGatePasses } from './cron/gatePassAutomation.js';
+import { sendConfirmationDueReminders } from './cron/confirmationAutomation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -288,6 +289,14 @@ cron.schedule('*/15 * * * *', () => {
 // day's own check-ins are already reflected before counting the week.
 cron.schedule('0 11 * * *', () => {
   checkRepeatedLateArrivals().catch(err => console.error('[late-arrival-alert] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Confirmation-due email reminders — daily at 8:30 AM IST ──
+// Emails the reporting manager once an employee's probation end date is
+// within 30 days (or already overdue) — once per employee per probation
+// end date, so an extension allows a fresh reminder later.
+cron.schedule('30 8 * * *', () => {
+  sendConfirmationDueReminders().catch(err => console.error('[confirmation-reminder] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
 // ── Recruitment pipeline stall check — daily at 9:00 AM IST ──

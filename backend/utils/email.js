@@ -233,6 +233,29 @@ export const emailTemplates = {
     ),
   }),
 
+  confirmationDueReminder: ({ managerName, employeeName, department, designation, probationEndDate, daysLeft }) => ({
+    subject: `Confirmation Due Soon — ${employeeName} (${daysLeft < 0 ? 'overdue' : `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`})`,
+    html: wrap(
+      emailHeader('Employee Confirmation Reminder', daysLeft < 0 ? '#991b1b' : '#b45309'),
+      emailBody(`
+        <p>Dear <strong>${managerName || 'Manager'}</strong>,</p>
+        <p>
+          ${daysLeft < 0
+            ? `<strong>${employeeName}</strong>'s probation period ended on <strong>${probationEndDate}</strong> and is now overdue for a confirmation decision.`
+            : `<strong>${employeeName}</strong>'s probation period is ending on <strong>${probationEndDate}</strong> — ${daysLeft} day${daysLeft === 1 ? '' : 's'} from now.`}
+        </p>
+        ${infoTable([
+          ['Employee', employeeName],
+          ...(designation ? [['Designation', designation]] : []),
+          ...(department ? [['Department', department]] : []),
+          ['Probation End Date', probationEndDate],
+        ])}
+        <p>Please review their performance and record a confirmation decision (confirm or extend probation) in Maxvolt One under Confirmation Management.</p>
+      `),
+      emailFooter()
+    ),
+  }),
+
   otpEmail: ({ name, code, expiresMinutes = 10 }) => ({
     subject: 'Your Maxvolt HR Verification Code',
     html: wrap(
