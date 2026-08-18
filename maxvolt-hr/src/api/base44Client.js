@@ -66,8 +66,18 @@ const auth = {
   resetPasswordRequest: (email) =>
     apiFetch('/auth/reset-password-request', { method: 'POST', body: JSON.stringify({ email }) }),
 
-  resetPassword: (data) =>
-    apiFetch('/auth/reset-password', { method: 'POST', body: JSON.stringify(data) }),
+  // ResetPassword.jsx calls this with { resetToken, newPassword } (the URL's
+  // ?token= query param, read as "resetToken" locally) — but the backend
+  // route reads req.body.token, not req.body.resetToken. Sending the raw
+  // object straight through silently dropped the token every time, so
+  // POST /auth/reset-password always failed with "Token ... required"
+  // regardless of how valid the link was. Normalize the key names here so
+  // either naming works.
+  resetPassword: ({ resetToken, token, newPassword, new_password } = {}) =>
+    apiFetch('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token: token || resetToken, newPassword: newPassword || new_password }),
+    }),
 
   verifyOtp: (data) =>
     apiFetch('/auth/verify-otp', { method: 'POST', body: JSON.stringify(data) }),

@@ -158,7 +158,7 @@ router.post('/reset-password-request', async (req, res) => {
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     await run('DELETE FROM reset_tokens WHERE email = $1', [norm]);
     await run('INSERT INTO reset_tokens (token, email, expires_at) VALUES ($1, $2, $3)', [token, norm, expiresAt]);
-    const appUrl = process.env.APP_URL || 'https://your-app.railway.app';
+    const appUrl = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
     const resetLink = `${appUrl}/reset-password?token=${token}`;
     const tpl = emailTemplates.passwordResetEmail({ name: user.full_name, resetLink });
     await sendEmail({ to: norm, ...tpl });
