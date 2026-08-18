@@ -201,6 +201,21 @@ const ForceChangePassword = ({ onDone }) => {
 
 const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept'];
 
+// Guards the login/register/forgot-password/reset-password routes against an
+// already-authenticated session. Without this, pressing the browser/hardware
+// back button from inside the app could land back on /login (it's still in
+// history from before signing in) and the Login page would render right on
+// top of a perfectly valid session — indistinguishable from actually being
+// logged out, even though the token in localStorage was never touched. The
+// token is the only source of truth for auth state (see AuthContext); this
+// just stops the login FORM from being shown over an active session.
+const PublicOnlyRoute = ({ children }) => {
+  const { isAuthenticated, isLoadingAuth } = useAuth();
+  if (isLoadingAuth) return null;
+  if (isAuthenticated) return <Navigate to="/" replace />;
+  return children;
+};
+
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, user, checkAppState } = useAuth();
   const isPublicPath = PUBLIC_PATHS.some(p => window.location.pathname.startsWith(p));
@@ -237,11 +252,11 @@ const AuthenticatedApp = () => {
       <ForceChangePassword onDone={() => checkAppState()} />
     )}
     <Routes>
-      {/* Public auth routes */}
-      <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
-      <Route path="/forgot-password" element={<ForgotPassword />} />
-      <Route path="/reset-password" element={<ResetPassword />} />
+      {/* Public auth routes — guarded so an active session never sees the login form again */}
+      <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
+      <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
+      <Route path="/forgot-password" element={<PublicOnlyRoute><ForgotPassword /></PublicOnlyRoute>} />
+      <Route path="/reset-password" element={<PublicOnlyRoute><ResetPassword /></PublicOnlyRoute>} />
 
       {/* All protected app routes */}
       <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
