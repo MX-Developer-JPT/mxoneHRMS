@@ -167,6 +167,7 @@ const managerMenuGroups = [
     { name: 'Comp-Off Approvals',       icon: CalendarPlus,    page: 'CompOff' },
     { name: 'Confirmation',             icon: UserCheck,       page: 'ConfirmationManagement' },
     { name: 'Team Calendar',            icon: Calendar,        page: 'TeamCalendar' },
+    { name: 'Org Chart',                icon: Network,         page: 'OrgChart' },
   ]},
   { label: 'Team Insights', items: [
     { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
@@ -179,6 +180,7 @@ const managerMenuGroups = [
   ]},
   { label: 'My Work', items: [
     { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
+    { name: 'Gate Pass',                icon: ShieldCheck,     page: 'GatePassRequest' },
     { name: 'My Payslips',              icon: CreditCard,      page: 'Payslips' },
     { name: 'My Documents',             icon: FolderOpen,      page: 'Documents' },
     { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
