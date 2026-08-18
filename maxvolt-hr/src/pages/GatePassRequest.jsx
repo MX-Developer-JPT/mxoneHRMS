@@ -70,6 +70,7 @@ export default function GatePassRequest() {
     const emp = empRecords?.[0];
     const isOfficial = form.outing_type === 'official_outing';
     const gatePass = await base44.entities.GatePass.create({
+      user_id: user.id,
       employee_user_id: user.id,
       outing_type: form.outing_type,
       reason: form.reason,
@@ -117,15 +118,15 @@ export default function GatePassRequest() {
   const activePasses = myPasses.filter(p => ['pending_approval', 'approved', 'departed'].includes(p.status));
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-6 max-w-3xl mx-auto">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-            <LogOut className="w-6 h-6 text-blue-600" /> My Gate Passes
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+            <LogOut className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600 flex-shrink-0" /> My Gate Passes
           </h1>
           <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Request permission to leave office premises</p>
         </div>
-        <Button onClick={() => setShowForm(!showForm)} className="gap-2">
+        <Button onClick={() => setShowForm(!showForm)} className="gap-2 self-start sm:self-auto">
           <Plus className="w-4 h-4" /> New Request
         </Button>
       </div>
@@ -202,10 +203,10 @@ export default function GatePassRequest() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-5 border-b dark:border-gray-700 pb-2">
+      <div className="flex gap-2 mb-5 border-b dark:border-gray-700 pb-2 overflow-x-auto">
         <button
           onClick={() => setActiveTab('active')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+          className={`flex-shrink-0 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
             activeTab === 'active' ? 'bg-blue-600 text-white' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
           }`}
         >
@@ -218,7 +219,7 @@ export default function GatePassRequest() {
         </button>
         <button
           onClick={() => setActiveTab('history')}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+          className={`flex-shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
             activeTab === 'history' ? 'bg-blue-600 text-white' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
           }`}
         >
@@ -233,10 +234,10 @@ export default function GatePassRequest() {
           )}
           {activePasses.map(pass => (
             <Card key={pass.id} className="hover:shadow-md transition-shadow">
-              <CardContent className="p-5">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
+              <CardContent className="p-4 sm:p-5">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
                       <Badge variant="outline" className="text-xs">{getOutingLabel(pass.outing_type)}</Badge>
                       {pass.field_trip_id && (
                         <Badge className="text-xs bg-orange-100 text-orange-700 flex items-center gap-1">

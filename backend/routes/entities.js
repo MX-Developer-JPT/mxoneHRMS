@@ -67,15 +67,32 @@ function getCurrentUser(req) {
 // (unrestricted), or a 'manager' role approving only their own direct
 // report's request (Employee.reporting_manager_id === approver's id).
 const APPROVAL_SCOPED_TYPES = new Set(['GatePass', 'Reimbursement', 'AttendanceRegularisation']);
+// GatePass has a second scoped transition beyond approve/reject: the
+// physical gate-in/gate-out logging (departed/returned) done by whoever is
+// staffing the gate. Previously NEITHER transition had any check at all for
+// these two statuses, so any authenticated user (any role) could PATCH any
+// employee's gate pass to "departed"/"returned" directly.
+const GATE_LOG_TRANSITIONS = new Set(['departed', 'returned']);
 async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   if (!APPROVAL_SCOPED_TYPES.has(type)) return true;
-  if (!newStatus || !['approved', 'rejected'].includes(newStatus) || newStatus === current.status) return true;
+  if (!newStatus || newStatus === current.status) return true;
+
+  const isGateLogTransition = type === 'GatePass' && GATE_LOG_TRANSITIONS.has(newStatus);
+  const isApprovalTransition = ['approved', 'rejected'].includes(newStatus);
+  if (!isGateLogTransition && !isApprovalTransition) return true;
 
   const cu = getCurrentUser(req);
   if (!cu) { res.status(401).json({ error: 'Unauthorized' }); return false; }
 
   const uRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
   const role = uRow?.custom_role || uRow?.role || cu.custom_role || cu.role;
+
+  if (isGateLogTransition) {
+    if (['hr', 'admin', 'gate_admin'].includes(role)) return true;
+    res.status(403).json({ error: 'Access denied — gate admin access required' });
+    return false;
+  }
+
   if (['hr', 'admin', 'management'].includes(role)) return true;
 
   if (role === 'manager') {

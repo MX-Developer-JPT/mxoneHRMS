@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { format, isToday } from 'date-fns';
 import { safeDate, safeTime, nowIST } from '@/lib/dateUtils';
+import { toast } from 'sonner';
 import {
   LogOut, LogIn, User, Clock, CheckCircle2, ShieldCheck,
   Search, Calendar, ArrowRightLeft, History
@@ -93,58 +94,68 @@ export default function GateAdminDashboard() {
 
   const markDeparture = async () => {
     setActionLoading(true);
-    await base44.entities.GatePass.update(selected.id, {
-      departure_time: nowIST(),
-      status: 'departed',
-      gate_admin_notes: notes,
-    });
-    setSelected(null);
-    setNotes('');
-    await loadData();
-    setActionLoading(false);
+    try {
+      await base44.entities.GatePass.update(selected.id, {
+        departure_time: nowIST(),
+        status: 'departed',
+        gate_admin_notes: notes,
+      });
+      setSelected(null);
+      setNotes('');
+      await loadData();
+    } catch (err) {
+      toast.error(err.message || 'Failed to mark departure');
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const markReturn = async () => {
     setActionLoading(true);
-    const nowISO = nowIST();
-    const todayStr = nowISO.slice(0, 10);
+    try {
+      const nowISO = nowIST();
+      const todayStr = nowISO.slice(0, 10);
 
-    // Calculate LOP based on outing type and duration
-    const lop = calculateLOP(selected.outing_type, selected.departure_time, nowISO);
+      // Calculate LOP based on outing type and duration
+      const lop = calculateLOP(selected.outing_type, selected.departure_time, nowISO);
 
-    // Update gate pass
-    await base44.entities.GatePass.update(selected.id, {
-      return_time: nowISO,
-      status: 'returned',
-      gate_admin_notes: notes,
-      lop_deduction_days: lop.lopDays,
-    });
-
-    // Update/create attendance record for today
-    const existing = await base44.entities.Attendance.filter({ user_id: selected.employee_user_id, date: todayStr });
-    if (existing.length > 0) {
-      await base44.entities.Attendance.update(existing[0].id, {
-        status: lop.status,
-        lop_applicable: lop.lopDays > 0,
+      // Update gate pass
+      await base44.entities.GatePass.update(selected.id, {
+        return_time: nowISO,
+        status: 'returned',
+        gate_admin_notes: notes,
         lop_deduction_days: lop.lopDays,
-        notes: `Gate pass: ${OUTING_LABELS[selected.outing_type] || selected.outing_type} — ${lop.lopDays > 0 ? 'LOP deducted' : 'No LOP'}`,
       });
-    } else {
-      await base44.entities.Attendance.create({
-        user_id: selected.employee_user_id,
-        date: todayStr,
-        status: lop.status,
-        lop_applicable: lop.lopDays > 0,
-        lop_deduction_days: lop.lopDays,
-        notes: `Gate pass: ${OUTING_LABELS[selected.outing_type] || selected.outing_type} — ${lop.lopDays > 0 ? 'LOP deducted' : 'No LOP'}`,
-        auto_marked: true,
-      });
+
+      // Update/create attendance record for today
+      const existing = await base44.entities.Attendance.filter({ user_id: selected.employee_user_id, date: todayStr });
+      if (existing.length > 0) {
+        await base44.entities.Attendance.update(existing[0].id, {
+          status: lop.status,
+          lop_applicable: lop.lopDays > 0,
+          lop_deduction_days: lop.lopDays,
+          notes: `Gate pass: ${OUTING_LABELS[selected.outing_type] || selected.outing_type} — ${lop.lopDays > 0 ? 'LOP deducted' : 'No LOP'}`,
+        });
+      } else {
+        await base44.entities.Attendance.create({
+          user_id: selected.employee_user_id,
+          date: todayStr,
+          status: lop.status,
+          lop_applicable: lop.lopDays > 0,
+          lop_deduction_days: lop.lopDays,
+          notes: `Gate pass: ${OUTING_LABELS[selected.outing_type] || selected.outing_type} — ${lop.lopDays > 0 ? 'LOP deducted' : 'No LOP'}`,
+          auto_marked: true,
+        });
+      }
+
+      setSelected(null);
+      setNotes('');
+      await loadData();
+    } catch (err) {
+      toast.error(err.message || 'Failed to mark return');
+    } finally {
+      setActionLoading(false);
     }
-
-    setSelected(null);
-    setNotes('');
-    await loadData();
-    setActionLoading(false);
   };
 
   const activePasses = passes.filter(p => ['approved', 'departed'].includes(p.status));

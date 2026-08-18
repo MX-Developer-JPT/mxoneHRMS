@@ -9,6 +9,7 @@ import { format } from 'date-fns';
 import { safeDate, nowIST } from '@/lib/dateUtils';
 import { CheckCircle2, XCircle, Clock, User, History, LogOut, LogIn } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
+import { toast } from 'sonner';
 
 const STATUS_COLORS = {
   pending_approval: 'bg-yellow-100 text-yellow-800',
@@ -82,17 +83,22 @@ export default function GatePassApproval() {
     setActionLoading(true);
     const now = nowIST();
     const isApproved = action === 'approved';
-    await base44.entities.GatePass.update(selected.id, {
-      manager_approval_status: action,
-      manager_user_id: user.id,
-      manager_approval_date: now,
-      manager_comment: comment,
-      status: isApproved ? 'approved' : 'rejected',
-    });
-    setSelected(null);
-    setComment('');
-    await loadData();
-    setActionLoading(false);
+    try {
+      await base44.entities.GatePass.update(selected.id, {
+        manager_approval_status: action,
+        manager_user_id: user.id,
+        manager_approval_date: now,
+        manager_comment: comment,
+        status: isApproved ? 'approved' : 'rejected',
+      });
+      setSelected(null);
+      setComment('');
+      await loadData();
+    } catch (err) {
+      toast.error(err.message || `Failed to ${isApproved ? 'approve' : 'reject'} this request`);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const filtered = passes.filter(p => filter === 'all' || p.status === filter);
@@ -101,17 +107,17 @@ export default function GatePassApproval() {
   if (loading) return <div className="p-8 text-center text-gray-500">Loading...</div>;
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900 mb-2">Gate Pass Approvals</h1>
+    <div className="p-4 sm:p-6 max-w-4xl mx-auto">
+      <h1 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">Gate Pass Approvals</h1>
       <p className="text-gray-500 text-sm mb-5">
         {isHR ? 'Viewing all employee gate passes (HR view)' : 'Review and approve gate pass requests from your team'}
       </p>
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-5 border-b pb-2">
+      <div className="flex gap-2 mb-5 border-b pb-2 overflow-x-auto">
         <button
           onClick={() => setActiveTab('approvals')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+          className={`flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
             activeTab === 'approvals' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
@@ -124,7 +130,7 @@ export default function GatePassApproval() {
         </button>
         <button
           onClick={() => setActiveTab('history')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+          className={`flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
             activeTab === 'history' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
@@ -155,17 +161,17 @@ export default function GatePassApproval() {
               const emp = employees[pass.employee_user_id];
               return (
                 <Card key={pass.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => { setSelected(pass); setComment(''); }}>
-                  <CardContent className="p-5">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <User className="w-4 h-4 text-gray-400" />
-                          <span className="font-semibold text-gray-900">{emp?.display_name || 'Unknown'}</span>
-                          {emp && <span className="text-xs text-gray-400">· {emp.employee_code} · {emp.designation} · {emp.department}</span>}
+                  <CardContent className="p-4 sm:p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mb-1">
+                          <User className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                          <span className="font-semibold text-gray-900 truncate">{emp?.display_name || 'Unknown'}</span>
+                          {emp && <span className="text-xs text-gray-400 truncate">· {emp.employee_code} · {emp.designation} · {emp.department}</span>}
                         </div>
-                        <div className="flex items-center gap-2 mt-1">
+                        <div className="flex flex-wrap items-center gap-2 mt-1">
                           {pass.outing_type && <Badge variant="outline" className="text-xs">{pass.outing_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</Badge>}
-                          {pass.reason && <p className="text-gray-700 dark:text-gray-300">{pass.reason}</p>}
+                          {pass.reason && <p className="text-gray-700 dark:text-gray-300 break-words">{pass.reason}</p>}
                         </div>
                         <p className="text-sm text-gray-400 mt-1">
                           Requested: {safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}

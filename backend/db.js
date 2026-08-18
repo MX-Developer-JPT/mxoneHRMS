@@ -138,6 +138,18 @@ async function initSchema() {
   // Purge expired OTPs and tokens on startup
   await pool.query("DELETE FROM otps WHERE expires_at::TIMESTAMPTZ < NOW()");
   await pool.query("DELETE FROM reset_tokens WHERE expires_at::TIMESTAMPTZ < NOW()");
+
+  // One-time backfill: GatePass rows were created without the `user_id`
+  // column set (only `employee_user_id` inside `data` was set), which broke
+  // the manager-approval authorization check in routes/entities.js
+  // (checkApprovalAuthorization resolves the requester via `current.user_id`)
+  // and the reporting-manager notification-on-create hook (same field) for
+  // every gate pass ever submitted. Idempotent — only touches rows still
+  // missing user_id, so safe to run on every startup.
+  await pool.query(
+    "UPDATE entities SET user_id = data::jsonb->>'employee_user_id' " +
+    "WHERE type='GatePass' AND user_id IS NULL AND data::jsonb->>'employee_user_id' IS NOT NULL"
+  );
 }
 
 await initSchema().catch(err => {
