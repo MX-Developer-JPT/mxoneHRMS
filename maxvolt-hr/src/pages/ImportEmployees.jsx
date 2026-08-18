@@ -227,6 +227,8 @@ export default function ImportEmployees() {
                 { label: 'Records Skipped', value: s.records_skipped ?? importResults.failed ?? 0, color: 'red' },
                 { label: 'Bank Details Created', value: s.bank_details_created ?? 0, color: 'green' },
                 { label: 'Bank Details Updated', value: s.bank_details_updated ?? 0, color: 'blue' },
+                { label: 'Salary Structure Created', value: s.salary_structure_created ?? 0, color: 'green' },
+                { label: 'Salary Structure Updated', value: s.salary_structure_updated ?? 0, color: 'blue' },
                 { label: 'Promoted to Manager', value: s.managers_promoted ?? 0, color: 'purple' },
               ];
               const colorClasses = {

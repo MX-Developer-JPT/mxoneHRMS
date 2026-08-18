@@ -9327,6 +9327,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (!salaries.length) salaries = parseSheet('Salary_Structure (2)');
       const statutory = parseSheet('Statutory_Info');
       const bankSheet = parseSheet('Bank_Details');
+      const pfNomineeSheet = parseSheet('PF_Nominee');
+      const insuranceSheet = parseSheet('Insurance_Policies');
       // Leave balance sheets are optional — not every source file carries them.
       const leaveCL = parseSheet('Leave_Balances');
       const leaveEL = parseSheet('Leave_Balances (2)');
@@ -9353,6 +9355,21 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       for (const r of bankSheet) {
         const code = String(r['employee_code'] || '').trim().toUpperCase();
         if (code) bankByCode[code] = r;
+      }
+
+      // PF_Nominee and Insurance_Policies only carry personal_email, no
+      // employee_code — same join-key limitation Statutory_Info already has
+      // in this sheet set, so (matching that sheet's existing convention
+      // here) we join on Employee_Profile's official_email instead.
+      const pfNomineeByEmail = {};
+      for (const r of pfNomineeSheet) {
+        const em = String(r['personal_email'] || '').toLowerCase().trim();
+        if (em) pfNomineeByEmail[em] = r;
+      }
+      const insuranceByEmail = {};
+      for (const r of insuranceSheet) {
+        const em = String(r['personal_email'] || '').toLowerCase().trim();
+        if (em) insuranceByEmail[em] = r;
       }
 
       // Leave balances keyed by personal_email, if the sheet(s) exist
@@ -9423,6 +9440,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const sal  = code ? (salByCode[code] || null) : null;
         const stat = email ? (statByEmail[email] || null) : null;
         const bank = code ? (bankByCode[code] || null) : null;
+        const pfNom = email ? (pfNomineeByEmail[email] || null) : null;
+        const ins   = email ? (insuranceByEmail[email] || null) : null;
         const leave = email ? (leaveByEmail[email] || []) : [];
         if (!sal) warnings.push({ row: rowNum, code, message: `${name} (${code}): No salary data found` });
         if (!bank && !sal?.bank_account) warnings.push({ row: rowNum, code, message: `${name} (${code}): No bank details found` });
@@ -9446,7 +9465,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           address: normWs(row['Address'] || row['address']),
           is_attendance_exempt: String(row['is_attendance_exempt']).toLowerCase() === 'true',
           status: normWs(row['status']) || 'active',
-          sal, stat, bank, leave,
+          sal, stat, bank, pfNom, ins, leave,
           valid: rowErrors.length === 0,
         };
       });
@@ -9469,7 +9488,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
             date_of_joining: r.date_of_joining,
             employee_status: r.employee_status, auto_confirmed: r.auto_confirmed,
             has_salary: !!r.sal, has_bank: !!(r.bank || r.sal?.bank_account),
-            has_statutory: !!(r.stat || r.sal?.pan), leave_records: r.leave.length,
+            has_statutory: !!(r.stat || r.sal?.pan),
+            has_pf_nominee: !!r.pfNom, has_insurance: !!r.ins,
+            leave_records: r.leave.length,
           })),
         });
       }
@@ -9478,6 +9499,22 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const hash = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
       const toNum = (v) => { const n = parseFloat(String(v || '0').replace(/,/g, '')); return isNaN(n) ? 0 : n; };
       const now = new Date().toISOString();
+
+      // Field-by-field merge for nested objects (bank_account, pf_nominee,
+      // insurance). These can't go through the generic top-level scalar merge
+      // below, which uses `merged[k] !== v` reference equality — a freshly
+      // built object literal never `===` the existing one even when every
+      // field inside is identical, which would mark every re-import as
+      // "changed" regardless of whether the source data actually differs.
+      const mergeNested = (oldObj, newPartial) => {
+        const merged = { ...(oldObj || {}) };
+        let changed = false;
+        for (const [k, v] of Object.entries(newPartial)) {
+          if (v === '' || v === null || v === undefined) continue;
+          if (merged[k] !== v) { merged[k] = v; changed = true; }
+        }
+        return { merged, changed };
+      };
 
       // Phase 1: bulk pre-load existing employees BY EMPLOYEE CODE (primary key per spec §1/§7)
       const allCodes = validRows.map(r => r.code);
@@ -9570,6 +9607,54 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const pfNumber     = stat['pf_account_number'] || sal['pf_number']  || '';
         const esiNumber    = cleanInt(stat['esi_number']    || sal['esi_number'] || '');
 
+        // Bank details — mirrored onto the Employee record itself (both the
+        // flat fields AND the nested bank_account shape) because every real
+        // consumer (generateBankTransferFile, exportEmployeeDirectory,
+        // getTaxWorksheet) reads one or both of those directly off Employee,
+        // not off a separate BankDetails entity.
+        const bk = row.bank || {};
+        const accountNum = cleanInt(bk['account_number'] || sal['bank_account'] || '');
+        const ifscCode   = bk['ifsc_code']  || sal['ifsc_code'] || '';
+        const bankName   = bk['bank_name']  || sal['bank']      || '';
+        const branchName = bk['branch']     || '';
+        const hasBank = accountNum && ifscCode;
+        const bankAccountPartial = hasBank
+          ? { account_number: accountNum, ifsc_code: ifscCode, bank_name: bankName, branch: branchName }
+          : null;
+
+        // PF nominee (Profile.jsx / HREmployeeEditPanel.jsx's existing
+        // `pf_nominee` shape) and insurance policy (InsuranceManagement.jsx /
+        // MyInsurance.jsx's existing `insurance` shape) — both already exist
+        // as nested Employee fields elsewhere in the app; this import just
+        // needed to actually populate them. The Excel sheet can carry
+        // multiple insurance rows per employee, but the app's data model
+        // only supports one active policy, so the last row for a given
+        // email wins (same "last occurrence wins" convention already used
+        // for Statutory_Info/Bank_Details lookups above).
+        const pfNom = row.pfNom || {};
+        const pfNomineeName = normWs(pfNom['nominee_name'] || '');
+        const pfNomineePartial = pfNomineeName ? {
+          name: pfNomineeName,
+          relationship: normWs(pfNom['nominee_relationship'] || ''),
+          date_of_birth: parseDate(pfNom['nominee_date_of_birth']),
+          share_percentage: pfNom['share_percentage'] ? toNum(pfNom['share_percentage']) : 100,
+        } : null;
+
+        const ins = row.ins || {};
+        const insuranceType = normWs(ins['insurance_type'] || '');
+        const insurancePolicyNumber = normWs(ins['policy_number'] || '');
+        const insurancePartial = (insuranceType || insurancePolicyNumber) ? {
+          has_insurance: true,
+          insurance_type: insuranceType,
+          insurer_name: normWs(ins['insurer_name'] || ''),
+          policy_number: insurancePolicyNumber,
+          sum_insured: ins['sum_insured'] ? toNum(ins['sum_insured']) : undefined,
+          validity_date: parseDate(ins['validity_date']),
+          nominee_name: normWs(ins['nominee_name'] || ''),
+          nominee_relationship: normWs(ins['nominee_relationship'] || ''),
+          nominee_date_of_birth: parseDate(ins['nominee_date_of_birth']),
+        } : null;
+
         const newFields = {
           employee_code: row.code,
           full_name: row.name, display_name: row.name,
@@ -9599,6 +9684,12 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         if (uanNumber) newFields.uan_number = uanNumber;
         if (pfNumber) newFields.pf_account_number = pfNumber;
         if (esiNumber) newFields.esi_number = esiNumber;
+        if (hasBank) {
+          newFields.bank_account_number = accountNum;
+          newFields.ifsc_code = ifscCode;
+          if (bankName) newFields.bank_name = bankName;
+          if (branchName) newFields.bank_branch = branchName;
+        }
 
         let empId;
         if (existingEmp) {
@@ -9615,6 +9706,18 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
             if (v === '' || v === null || v === undefined) continue; // blank in file → keep existing
             if (merged[k] !== v) { merged[k] = v; changed = true; }
           }
+          if (bankAccountPartial) {
+            const { merged: bm, changed: bc } = mergeNested(ex.bank_account, bankAccountPartial);
+            if (bc) { merged.bank_account = bm; changed = true; }
+          }
+          if (pfNomineePartial) {
+            const { merged: pm, changed: pc } = mergeNested(ex.pf_nominee, pfNomineePartial);
+            if (pc) { merged.pf_nominee = pm; changed = true; }
+          }
+          if (insurancePartial) {
+            const { merged: im, changed: ic } = mergeNested(ex.insurance, insurancePartial);
+            if (ic) { merged.insurance = im; changed = true; }
+          }
           if (changed) {
             empUpdates.push([JSON.stringify(merged), empId]);
             updatedEmployeesCount++;
@@ -9627,6 +9730,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           empId = uuidv4();
           empInserts.push([empId, userId, JSON.stringify({
             id: empId, user_id: userId, ...newFields,
+            ...(bankAccountPartial ? { bank_account: bankAccountPartial } : {}),
+            ...(pfNomineePartial ? { pf_nominee: pfNomineePartial } : {}),
+            ...(insurancePartial ? { insurance: insurancePartial } : {}),
             status: newFields.status || 'active', created_at: now,
           })]);
           newEmployeesCount++;
@@ -9635,7 +9741,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
         if (row.auto_confirmed) autoConfirmedCount++;
 
-        // Salary structure — create-only enrichment, never overwrites existing payroll data
+        // Salary structure — diff-updated for existing employees too (see
+        // salUpdateRows below), not just created for brand-new ones.
         if (row.sal && userId) {
           const s = row.sal;
           const salId = uuidv4();
@@ -9643,13 +9750,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           salInserts.push({ userId, empId, code: row.code, name: row.name, effectiveFrom, s, salId });
         }
 
-        // Bank details — create-only enrichment
-        const bk = row.bank || {};
-        const accountNum = cleanInt(bk['account_number'] || sal['bank_account'] || '');
-        const ifscCode   = bk['ifsc_code']  || sal['ifsc_code'] || '';
-        const bankName   = bk['bank_name']  || sal['bank']      || '';
-        const branchName = bk['branch']     || '';
-        if (accountNum && ifscCode && userId) {
+        if (hasBank && userId) {
           bankInserts.push({ userId, empId, accountNum, ifscCode, bankName, branchName });
         }
       }
@@ -9667,46 +9768,71 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         await run("UPDATE users SET email=$1, full_name=$2 WHERE id=$3", [newEmail, newName, uid]);
       }
 
-      // Bulk-load which of these users already have SalaryStructure/BankDetails.
-      // SalaryStructure stays create-only (payroll-sensitive, out of scope for
-      // this import). BankDetails, however, needs full data so it can be
-      // diff-updated like the Employee record — otherwise a changed bank
-      // account in the file would silently never reach existing employees.
+      // Bulk-load which of these users already have SalaryStructure/BankDetails,
+      // so both can be diff-updated like the Employee record — otherwise a
+      // changed salary component or bank account in the file would silently
+      // never reach existing employees on a re-import.
       const salBankUserIds = [...new Set([...salInserts, ...bankInserts].map(r => r.userId))];
       const [existingSalRows, existingBankRows] = salBankUserIds.length
         ? await Promise.all([
-            all("SELECT user_id FROM entities WHERE type='SalaryStructure' AND user_id = ANY($1) AND status='active'", [salBankUserIds]),
+            all("SELECT id, user_id, data FROM entities WHERE type='SalaryStructure' AND user_id = ANY($1) AND status='active'", [salBankUserIds]),
             all("SELECT id, user_id, data FROM entities WHERE type='BankDetails' AND user_id = ANY($1)", [salBankUserIds]),
           ])
         : [[], []];
-      const existingSalSet  = new Set(existingSalRows.map(r => r.user_id));
+      const existingSalByUser  = new Map(existingSalRows.map(r => [r.user_id, { id: r.id, data: JSON.parse(r.data) }]));
       const existingBankByUser = new Map(existingBankRows.map(r => [r.user_id, { id: r.id, data: JSON.parse(r.data) }]));
 
       const salInsertRows = [];
+      const salUpdateRows = [];
+      let salCreated = 0, salUpdated = 0, salUnchanged = 0;
       for (const r of salInserts) {
-        if (existingSalSet.has(r.userId)) continue;
-        existingSalSet.add(r.userId);
         const s = r.s;
-        salInsertRows.push([r.salId, r.userId, JSON.stringify({
-          id: r.salId, user_id: r.userId, employee_id: r.empId, employee_code: r.code,
-          employee_name: r.name, effective_from: r.effectiveFrom,
-          basic_monthly:        toNum(s['basic_salary']),
-          hra_monthly:          toNum(s['hra']),
-          conveyance_monthly:   toNum(s['conveyance']),
-          car_fuel_maintenance: toNum(s['car_fuel_maintenance']),
-          health_and_wellness:  toNum(s['health_and_wellness']),
-          hard_furnishing:      toNum(s['hard_furnishing']),
-          pf_employee:          toNum(s['provident_fund']),
-          medical_insurance:    toNum(s['medical_insurance']),
-          admin_charge:         toNum(s['admin_charge']),
-          vpp_deduction:        toNum(s['vpp_deduction']),
-          ctc_bonus:            toNum(s['ctc_bonus']),
-          esi_employer:         toNum(s['esi_employer']),
-          nps_employee:         toNum(s['nps_employee']),
-          car_lease:            toNum(s['car_lease']),
-          total_ctc:            toNum(s['totalctc']),
-          status: 'active', created_at: now,
-        })]);
+        // Raw (pre-toNum) values — a blank cell must not zero out an existing
+        // component, same "blank in file → keep existing" rule as everything
+        // else in this import.
+        const rawFields = {
+          basic_monthly: s['basic_salary'], hra_monthly: s['hra'], conveyance_monthly: s['conveyance'],
+          car_fuel_maintenance: s['car_fuel_maintenance'], health_and_wellness: s['health_and_wellness'],
+          hard_furnishing: s['hard_furnishing'], pf_employee: s['provident_fund'], medical_insurance: s['medical_insurance'],
+          admin_charge: s['admin_charge'], vpp_deduction: s['vpp_deduction'], ctc_bonus: s['ctc_bonus'],
+          esi_employer: s['esi_employer'], nps_employee: s['nps_employee'], car_lease: s['car_lease'], total_ctc: s['totalctc'],
+        };
+        const existingSal = existingSalByUser.get(r.userId);
+        if (existingSal) {
+          const ex = existingSal.data;
+          const merged = { ...ex };
+          let changed = false;
+          for (const [k, rawV] of Object.entries(rawFields)) {
+            if (rawV === '' || rawV === null || rawV === undefined) continue; // blank in file → keep existing
+            const v = toNum(rawV);
+            if (merged[k] !== v) { merged[k] = v; changed = true; }
+          }
+          if (r.effectiveFrom && merged.effective_from !== r.effectiveFrom) { merged.effective_from = r.effectiveFrom; changed = true; }
+          if (changed) { salUpdateRows.push([JSON.stringify(merged), existingSal.id]); salUpdated++; }
+          else salUnchanged++;
+        } else {
+          salInsertRows.push([r.salId, r.userId, JSON.stringify({
+            id: r.salId, user_id: r.userId, employee_id: r.empId, employee_code: r.code,
+            employee_name: r.name, effective_from: r.effectiveFrom,
+            basic_monthly:        toNum(s['basic_salary']),
+            hra_monthly:          toNum(s['hra']),
+            conveyance_monthly:   toNum(s['conveyance']),
+            car_fuel_maintenance: toNum(s['car_fuel_maintenance']),
+            health_and_wellness:  toNum(s['health_and_wellness']),
+            hard_furnishing:      toNum(s['hard_furnishing']),
+            pf_employee:          toNum(s['provident_fund']),
+            medical_insurance:    toNum(s['medical_insurance']),
+            admin_charge:         toNum(s['admin_charge']),
+            vpp_deduction:        toNum(s['vpp_deduction']),
+            ctc_bonus:            toNum(s['ctc_bonus']),
+            esi_employer:         toNum(s['esi_employer']),
+            nps_employee:         toNum(s['nps_employee']),
+            car_lease:            toNum(s['car_lease']),
+            total_ctc:            toNum(s['totalctc']),
+            status: 'active', created_at: now,
+          })]);
+          salCreated++;
+        }
       }
 
       const bankInsertRows = [];
@@ -9760,6 +9886,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         bulkInsertEntities('BankDetails', bankInsertRows),
         bulkUpdateEntities(empUpdates),
         bulkUpdateEntities(bankUpdateRows),
+        bulkUpdateEntities(salUpdateRows),
       ]);
 
       // Post-import — promote reporting managers to the scoped 'manager' role
@@ -9822,9 +9949,12 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           bank_details_created: bankCreated,
           bank_details_updated: bankUpdated,
           bank_details_unchanged: bankUnchanged,
+          salary_structure_created: salCreated,
+          salary_structure_updated: salUpdated,
+          salary_structure_unchanged: salUnchanged,
         },
         errors: importErrors, warnings,
-        message: `Processed ${profiles.length} records: ${newEmployeesCount} new, ${updatedEmployeesCount} updated, ${noChangeCount} unchanged, ${autoConfirmedCount} auto-confirmed from probation, ${skippedRows.length} skipped. ${bankCreated} bank detail(s) created, ${bankUpdated} updated. ${managersPromoted} promoted to manager role. Default password for new accounts: ${DEFAULT_PASSWORD}`,
+        message: `Processed ${profiles.length} records: ${newEmployeesCount} new, ${updatedEmployeesCount} updated, ${noChangeCount} unchanged, ${autoConfirmedCount} auto-confirmed from probation, ${skippedRows.length} skipped. ${bankCreated} bank detail(s) created, ${bankUpdated} updated. ${salCreated} salary structure(s) created, ${salUpdated} updated. ${managersPromoted} promoted to manager role. Default password for new accounts: ${DEFAULT_PASSWORD}`,
       });
     }
 
