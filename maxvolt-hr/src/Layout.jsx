@@ -345,6 +345,7 @@ const recruiterMenuGroups = [
     { name: 'Announcements',            icon: Bell,            page: 'Announcements' },
     { name: 'Helpdesk',                 icon: HelpCircle,      page: 'Helpdesk' },
     { name: 'Employee Portal',          icon: Users,           page: 'EmployeeEngagementPortal' },
+    { name: 'Org Chart',                icon: Network,         page: 'OrgChart' },
   ]},
   { label: 'Account', items: [
     { name: 'My Profile',               icon: User2,           page: 'Profile' },
