@@ -19,6 +19,7 @@ import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
 import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
+import { closeUnreturnedGatePasses } from './cron/gatePassAutomation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -265,6 +266,14 @@ cron.schedule('*/30 * * * *', () => {
 cron.schedule('*/5 * * * *', () => {
   sendShiftStartReminders().catch(err => console.error('[shift-start-reminders] failed:', err));
   sendShiftEndReminders().catch(err => console.error('[shift-end-reminders] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Gate pass auto-close — every 15 minutes ───────────────────
+// Closes any gate pass still "departed" once that employee's own shift has
+// ended, so a forgotten/never-returning outing doesn't stay "Currently
+// Outside" forever. See gatePassAutomation.js for the per-outing-type rule.
+cron.schedule('*/15 * * * *', () => {
+  closeUnreturnedGatePasses().catch(err => console.error('[gatepass-auto-close] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
 // ── Candidate reminders — every 15 minutes ───────────────────

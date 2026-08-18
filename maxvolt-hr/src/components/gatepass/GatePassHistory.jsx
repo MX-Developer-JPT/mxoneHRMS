@@ -15,6 +15,7 @@ const STATUS_COLORS = {
   rejected: 'bg-red-100 text-red-800',
   departed: 'bg-orange-100 text-orange-800',
   returned: 'bg-green-100 text-green-800',
+  auto_closed: 'bg-purple-100 text-purple-800',
   cancelled: 'bg-gray-100 text-gray-800',
 };
 
@@ -24,6 +25,7 @@ const STATUS_LABELS = {
   rejected: 'Rejected',
   departed: 'Departed',
   returned: 'Returned',
+  auto_closed: 'Auto-Closed',
   cancelled: 'Cancelled',
 };
 
@@ -106,7 +108,7 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
       </div>
 
       <div className="flex gap-2 mb-4 flex-wrap">
-        {['all', 'pending_approval', 'approved', 'departed', 'returned', 'rejected'].map(s => (
+        {['all', 'pending_approval', 'approved', 'departed', 'returned', 'auto_closed', 'rejected'].map(s => (
           <Button
             key={s}
             size="sm"
@@ -240,6 +242,15 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                   {selected.gate_admin_notes && (
                     <p><span className="font-medium">Gate Notes:</span> {selected.gate_admin_notes}</p>
                   )}
+                  {selected.auto_closed && (
+                    <p className="text-purple-700"><span className="font-medium">Auto-Closed:</span> {selected.auto_closed_reason}</p>
+                  )}
+                </div>
+              )}
+              {selected.status === 'auto_closed' && !selected.departure_time && (
+                <div className="bg-purple-50 rounded-lg p-4 space-y-1">
+                  <p className="font-semibold text-purple-700">Auto-Closed</p>
+                  <p className="text-purple-700">{selected.auto_closed_reason}</p>
                 </div>
               )}
             </div>

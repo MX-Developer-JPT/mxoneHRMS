@@ -20,6 +20,7 @@ const STATUS_COLORS = {
   rejected: 'bg-red-100 text-red-800',
   departed: 'bg-orange-100 text-orange-800',
   returned: 'bg-green-100 text-green-800',
+  auto_closed: 'bg-purple-100 text-purple-800',
   cancelled: 'bg-gray-100 text-gray-800',
 };
 
@@ -29,6 +30,7 @@ const STATUS_LABELS = {
   rejected: 'Rejected',
   departed: 'Departed',
   returned: 'Returned',
+  auto_closed: 'Auto-Closed',
   cancelled: 'Cancelled',
 };
 
