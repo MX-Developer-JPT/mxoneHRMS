@@ -8,8 +8,25 @@ const DefaultFallback = () => (
   </div>
 );
 
+// Shown when the server can't be reached at all (network drop, backend
+// cold-start) — distinct from "session expired" because the token is still
+// valid; the user should retry, not be sent through the login screen.
+const NetworkErrorFallback = ({ message, onRetry }) => (
+  <div className="fixed inset-0 flex items-center justify-center bg-slate-50 px-6">
+    <div className="max-w-sm w-full text-center">
+      <p className="text-slate-700 font-medium mb-4">{message || 'Could not reach the server.'}</p>
+      <button
+        onClick={onRetry}
+        className="px-4 py-2 rounded-md bg-slate-900 text-white text-sm font-medium hover:bg-slate-800"
+      >
+        Retry
+      </button>
+    </div>
+  </div>
+);
+
 export default function ProtectedRoute({ fallback = <DefaultFallback />, unauthenticatedElement }) {
-  const { isAuthenticated, isLoadingAuth, authError } = useAuth();
+  const { isAuthenticated, isLoadingAuth, authError, checkAppState } = useAuth();
 
   if (isLoadingAuth) {
     return fallback;
@@ -18,6 +35,9 @@ export default function ProtectedRoute({ fallback = <DefaultFallback />, unauthe
   if (authError) {
     if (authError.type === 'user_not_registered') {
       return <UserNotRegisteredError />;
+    }
+    if (authError.type === 'network_error') {
+      return <NetworkErrorFallback message={authError.message} onRetry={checkAppState} />;
     }
     return unauthenticatedElement;
   }

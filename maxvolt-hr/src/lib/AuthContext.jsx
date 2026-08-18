@@ -25,17 +25,35 @@ export const AuthProvider = ({ children }) => {
     await checkUserAuth();
   };
 
-  const checkUserAuth = async () => {
+  const checkUserAuth = async (isRetry = false) => {
     setIsLoadingAuth(true);
     try {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
       setIsAuthenticated(true);
+      setAuthError(null);
     } catch (err) {
-      setIsAuthenticated(false);
       if (err.status === 401 || err.status === 403) {
+        // Genuine auth failure — the token really is invalid/expired.
         localStorage.removeItem(TOKEN_KEY);
+        setIsAuthenticated(false);
         setAuthError({ type: 'auth_required', message: 'Session expired, please log in again.' });
+      } else if (!isRetry) {
+        // Anything else (network drop, Railway cold-start/502, timeout) is
+        // NOT proof the session is invalid — the token in localStorage is
+        // still fine. A Capacitor WebView reload (backgrounding, brief
+        // connectivity blip on resume) hits this path routinely; without
+        // this retry, every one of those blips used to flip isAuthenticated
+        // to false and bounce a still-logged-in user to the login screen.
+        // Give it one retry before treating it as anything user-facing.
+        setIsLoadingAuth(false);
+        await new Promise((r) => setTimeout(r, 2000));
+        return checkUserAuth(true);
+      } else {
+        // Still failing after the retry — genuinely can't reach the server.
+        // Don't touch the token or claim the session expired; show a
+        // retry prompt instead of silently logging the user out.
+        setAuthError({ type: 'network_error', message: 'Could not reach the server. Check your connection and try again.' });
       }
     } finally {
       setIsLoadingAuth(false);

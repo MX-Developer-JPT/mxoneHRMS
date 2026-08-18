@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import NotificationBell from '@/components/NotificationBell';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import DashboardPage from './pages/Dashboard';
 import MarkAttendancePage from './pages/MarkAttendance';
 import LeavePage from './pages/Leave';
@@ -931,11 +932,18 @@ export default function Layout({ children, currentPageName }) {
         </div>
 
         {/* Page content */}
+        {/* These four tabs are mounted directly by Layout (kept alive across
+            nav so they don't lose scroll/state), not by the router's
+            <Outlet>/children — so unlike every other page, they sit outside
+            App.jsx's ErrorBoundary+Suspense wrapper. An uncaught render
+            error in any of them (e.g. MarkAttendance) used to blank the
+            entire app instead of just that tab. Each gets its own boundary
+            here so a crash is contained to the one tab. */}
         {!PERSISTENT_TABS.has(currentPageName) && children}
-        {mountedTabs.has('Dashboard')      && <div style={{ display: currentPageName === 'Dashboard'      ? 'block' : 'none' }}><DashboardPage /></div>}
-        {mountedTabs.has('MarkAttendance') && <div style={{ display: currentPageName === 'MarkAttendance' ? 'block' : 'none' }}><MarkAttendancePage /></div>}
-        {mountedTabs.has('Leave')          && <div style={{ display: currentPageName === 'Leave'          ? 'block' : 'none' }}><LeavePage /></div>}
-        {mountedTabs.has('Profile')        && <div style={{ display: currentPageName === 'Profile'        ? 'block' : 'none' }}><ProfilePage /></div>}
+        {mountedTabs.has('Dashboard')      && <div style={{ display: currentPageName === 'Dashboard'      ? 'block' : 'none' }}><ErrorBoundary><DashboardPage /></ErrorBoundary></div>}
+        {mountedTabs.has('MarkAttendance') && <div style={{ display: currentPageName === 'MarkAttendance' ? 'block' : 'none' }}><ErrorBoundary><MarkAttendancePage /></ErrorBoundary></div>}
+        {mountedTabs.has('Leave')          && <div style={{ display: currentPageName === 'Leave'          ? 'block' : 'none' }}><ErrorBoundary><LeavePage /></ErrorBoundary></div>}
+        {mountedTabs.has('Profile')        && <div style={{ display: currentPageName === 'Profile'        ? 'block' : 'none' }}><ErrorBoundary><ProfilePage /></ErrorBoundary></div>}
 
         {/* Mobile bottom spacer — must exceed the fixed tab bar's real
             rendered height so the last item on any page scrolls clear of it
