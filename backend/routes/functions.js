@@ -930,6 +930,16 @@ async function runLeaveAction(cu, leaveId, action, note) {
       // approved after they already attended part of that day) rather than
       // clobbering it.
       try {
+        // Which leave type this actually was (e.g. "Casual Leave" / "CL") —
+        // stashed on the Attendance row itself so the muster and attendance
+        // report exports can show the specific type per day instead of a
+        // generic "L", without needing to join back to Leave/LeavePolicy.
+        let leavePolicyName = null, leavePolicyCode = null;
+        if (lv.leave_policy_id) {
+          const lpRow = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND id=$1", [lv.leave_policy_id]);
+          if (lpRow) { const lp = JSON.parse(lpRow.data); leavePolicyName = lp.name || null; leavePolicyCode = lp.code || null; }
+        }
+
         const dates = [];
         for (let d = new Date(lv.start_date + 'T00:00:00'); d <= new Date(lv.end_date + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
           dates.push(d.toISOString().split('T')[0]);
@@ -939,11 +949,11 @@ async function runLeaveAction(cu, leaveId, action, note) {
           if (attRow) {
             const existing = JSON.parse(attRow.data);
             if (existing.check_in_time) continue; // already genuinely attended this day — don't overwrite
-            const att = { ...existing, status: 'leave', leave_id: leaveId };
+            const att = { ...existing, status: 'leave', leave_id: leaveId, leave_policy_name: leavePolicyName, leave_policy_code: leavePolicyCode };
             await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", ['leave', JSON.stringify(att), attRow.id]);
           } else {
             const attId = uuidv4();
-            const att = { id: attId, user_id: lv.user_id, date, status: 'leave', leave_id: leaveId, created_at: now };
+            const att = { id: attId, user_id: lv.user_id, date, status: 'leave', leave_id: leaveId, leave_policy_name: leavePolicyName, leave_policy_code: leavePolicyCode, created_at: now };
             await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'leave',$3)", [attId, lv.user_id, JSON.stringify(att)]);
           }
         }
@@ -3829,7 +3839,11 @@ router.post('/:name', async (req, res) => {
           }
 
           const hhmm = (mins) => `${String(Math.floor(mins/60)).padStart(2,'0')}:${String(mins%60).padStart(2,'0')}`;
-          dayDetails.push({ cell, workedMins, otMins: isOTEligible ? otMins : 0, hhmm: hhmm(workedMins), othhmm: hhmm(isOTEligible ? otMins : 0) });
+          // displayCell shows the specific leave type (e.g. "CL") instead of
+          // a generic "L" when available; `cell` (category) still drives
+          // coloring via dayStatusColor below, unchanged.
+          const displayCell = cell === 'L' ? (rec?.leave_policy_code || rec?.leave_policy_name || 'L') : cell;
+          dayDetails.push({ cell, displayCell, workedMins, otMins: isOTEligible ? otMins : 0, hhmm: hhmm(workedMins), othhmm: hhmm(isOTEligible ? otMins : 0) });
         }
 
         const totalWorkingHrs = (totalWorkingMins / 60).toFixed(2);
@@ -3918,11 +3932,12 @@ router.post('/:name', async (req, res) => {
         const wsRow = wsAR.getRow(rowNum);
         wsRow.height = 16;
 
+        const dayCategoryCodes = dayDetails.map(d => d.cell); // for color lookup only — see displayCell comment above
         const cellData = [
           emp.employee_code || '', emp.display_name || '',
           emp.department || '', emp.designation || '',
           shift?.name || 'General', isOTEligible ? 'Yes' : 'No',
-          ...dayDetails.map(d => d.cell),
+          ...dayDetails.map(d => d.displayCell),
           ...dayDetails.map(d => d.hhmm),
           totalPresent, totalAbsent, totalLeave, totalHoliday, totalOff, totalWorkingHrs,
         ];
@@ -3935,7 +3950,7 @@ router.post('/:name', async (req, res) => {
           const isDayHours  = ci >= 6 + daysInMonth && ci < 6 + daysInMonth * 2;
           const isSummary   = ci >= 6 + daysInMonth * 2;
           if (isDayStatus) {
-            const statusColor = dayStatusColor(val);
+            const statusColor = dayStatusColor(dayCategoryCodes[ci - 6]);
             cell.fill = arFill(statusColor);
             cell.font = arFont(true, '222222', 8);
             cell.alignment = { horizontal:'center', vertical:'middle' };
@@ -4137,12 +4152,17 @@ router.post('/:name', async (req, res) => {
         const empRecs = mAttMap[emp.user_id] || {};
         const workingDays = mWorkingDaysFor(emp);
         let pC=0, aC=0, lC=0, hdC=0, woC=0, phC=0, odC=0;
-        const codes = [];
+        const codes = [];        // category codes — drive counting AND coloring, unchanged semantics
+        const displayCodes = []; // what's actually printed in the cell
 
         for (let d=1; d<=daysInMonth; d++) {
           const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
           const code = mStatusCode(empRecs[ds], ds, empRecs, workingDays);
           codes.push(code);
+          // Show the specific leave type (e.g. "CL"/"Casual Leave") instead
+          // of a generic "L" — the category code above still drives
+          // counting/coloring so this is display-only.
+          displayCodes.push(code === 'L' ? (empRecs[ds]?.leave_policy_code || empRecs[ds]?.leave_policy_name || 'L') : code);
           if (code==='P'||code==='P*'||code==='SA') pC++;
           else if (code==='A') aC++;
           else if (code==='L') lC++;
@@ -4153,7 +4173,7 @@ router.post('/:name', async (req, res) => {
         }
 
         const totalWorked = pC + odC + lC + woC; // present (incl. half-days) + on-duty + paid leaves + week-off
-        const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...codes, pC, aC, lC, hdC, woC, phC, odC, totalWorked];
+        const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...displayCodes, pC, aC, lC, hdC, woC, phC, odC, totalWorked];
         const dr = wsM.addRow(rowVals);
         dr.height = 15;
 
@@ -4161,7 +4181,7 @@ router.post('/:name', async (req, res) => {
 
         codes.forEach((code,i) => {
           const cell = dr.getCell(INFO+1+i);
-          cell.value = code;
+          cell.value = displayCodes[i];
           Object.assign(cell, {
             font:    mF(true, mTextDark(code), 7),
             fill:    mFl(mStatusFill(code)),
@@ -6119,6 +6139,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'processMonthAttendance': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       // Reprocess attendance from raw_punches for a month range.
       // Supports single month (month/year) or range (month_from/year_from to month_to/year_to).
       const { month, year, month_from, year_from, month_to, year_to, dry_run = false } = p;
