@@ -3157,6 +3157,20 @@ router.post('/:name', async (req, res) => {
         _reimbByUser[r.user_id].push({ rowId: r.id, ...rd });
       }
 
+      // Holidays in this pay period — a declared holiday on the Saturday or
+      // Monday flanking a Sunday must count as "protecting" that Sunday from
+      // the sandwich rule below, the same as if the employee had actually
+      // worked that day. Without this, a company holiday landing on a
+      // Saturday (no attendance record, since nobody was expected to punch
+      // in) looked identical to an unexcused absence, and an employee who
+      // was also absent the following Monday had their Sunday wrongly swept
+      // into LOP even though the "both sides skipped work to extend a
+      // weekend" reasoning the sandwich rule exists for doesn't apply here.
+      const _payHolidaySet = new Set(
+        (await all("SELECT data FROM entities WHERE type='Holiday' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [startDate, endDate]))
+          .map(r => JSON.parse(r.data).date)
+      );
+
       // Shifts — needed to know each employee's REAL working days, so the
       // Sunday sandwich rule below only applies to employees whose shift
       // actually has Sunday off, instead of assuming it for everyone.
@@ -3229,8 +3243,10 @@ router.post('/:name', async (req, res) => {
           // Sunday (6-day-week shift) had that real "present" record
           // silently thrown away and decided purely by Sat/Mon presence.
           if (weekday === 'Sunday' && !_empWorkingDays.includes('Sunday') && !rec) {
-            const satPresent = isMusterPresent(attByDate[fmtDate(new Date(yr, mo-1, dy-1))]);
-            const monPresent = isMusterPresent(attByDate[fmtDate(new Date(yr, mo-1, dy+1))]);
+            const satDs = fmtDate(new Date(yr, mo-1, dy-1));
+            const monDs = fmtDate(new Date(yr, mo-1, dy+1));
+            const satPresent = isMusterPresent(attByDate[satDs]) || _payHolidaySet.has(satDs);
+            const monPresent = isMusterPresent(attByDate[monDs]) || _payHolidaySet.has(monDs);
             if (!satPresent && !monPresent) { absentDays++; }  // both sides absent → Sunday LOP
             else { presentDays++; }                             // protected → count as present
             continue;
@@ -4023,7 +4039,13 @@ router.post('/:name', async (req, res) => {
         if (dow === 0 && isScheduledOff) {
           const sat = new Date(dateObj.getTime() - 86400000).toISOString().slice(0,10);
           const mon = new Date(dateObj.getTime() + 86400000).toISOString().slice(0,10);
-          if (!isMusterWorked(empRecs[sat]) && !isMusterWorked(empRecs[mon])) return 'A';
+          // A declared holiday flanking this Sunday protects it from the
+          // sandwich rule too — "both sides skipped work to extend the
+          // weekend" doesn't apply when one side was already a company
+          // holiday nobody was expected to work.
+          const satOk = isMusterWorked(empRecs[sat]) || mHolidaySet.has(sat);
+          const monOk = isMusterWorked(empRecs[mon]) || mHolidaySet.has(mon);
+          if (!satOk && !monOk) return 'A';
           return 'WO';
         }
         if (!rec) {
@@ -5014,6 +5036,13 @@ router.post('/:name', async (req, res) => {
       const ssMapSS = {};
       for (const r of ssAllRows2) ssMapSS[r.user_id] = JSON.parse(r.data);
 
+      // A holiday flanking a Sunday protects it from the sandwich rule below
+      // — see the identical comment in processAdvancedPayroll/exportAttendanceMuster.
+      const ssHolidaySet = new Set(
+        (await all("SELECT data FROM entities WHERE type='Holiday' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]))
+          .map(r => JSON.parse(r.data).date)
+      );
+
       const dataRows = employees.map((emp, idx) => {
         const pr        = payrollMap[emp.user_id];
         const attByDate = attMapSS[emp.user_id] || {};
@@ -5036,8 +5065,10 @@ router.post('/:name', async (req, res) => {
             const [yr, mo, dy] = ds.split('-').map(Number);
             if (new Date(yr, mo-1, dy).getDay() === 0) {
               // Sunday: sandwich policy
-              const satPresent = isMusterPresentSS(attByDate[fmtDateSS(new Date(yr, mo-1, dy-1))]);
-              const monPresent = isMusterPresentSS(attByDate[fmtDateSS(new Date(yr, mo-1, dy+1))]);
+              const satDsSS = fmtDateSS(new Date(yr, mo-1, dy-1));
+              const monDsSS = fmtDateSS(new Date(yr, mo-1, dy+1));
+              const satPresent = isMusterPresentSS(attByDate[satDsSS]) || ssHolidaySet.has(satDsSS);
+              const monPresent = isMusterPresentSS(attByDate[monDsSS]) || ssHolidaySet.has(monDsSS);
               if (!satPresent && !monPresent) { daysAbsent++; }  // both sides absent → Sunday LOP
               else { daysPresent++; }                            // protected → count as present
               continue;

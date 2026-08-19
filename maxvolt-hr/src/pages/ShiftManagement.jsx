@@ -69,6 +69,16 @@ export default function ShiftManagement() {
       if (editingShift) {
         await base44.entities.Shift.update(editingShift.id, formData);
         toast.success('Shift updated successfully');
+        // Attendance status (late / early-departure / overtime) is computed
+        // from raw punches at check-in/out time and stored on the
+        // Attendance row — it does NOT recompute itself when the shift's
+        // grace period/start-end time changes afterwards. Without this,
+        // e.g. widening the grace period from 15 to 30 minutes would leave
+        // everyone who already punched in today still marked "late" under
+        // the old rule until someone happened to run a reprocess. Refresh
+        // the current month now so the change is reflected immediately.
+        const now = new Date();
+        reprocessCurrentMonth(now.getMonth() + 1, now.getFullYear());
       } else {
         await base44.entities.Shift.create(formData);
         toast.success('Shift created successfully');
@@ -80,6 +90,21 @@ export default function ShiftManagement() {
     } catch (error) {
       console.error('Error saving shift:', error);
       toast.error('Failed to save shift');
+    }
+  };
+
+  // Fire-and-forget — re-derives status for every non-regularised Attendance
+  // row this month from its raw punches using the shift's current settings.
+  // Never blocks the save; a failure here just means HR needs to run
+  // Reprocess Attendance from Admin Panel manually, same as before this
+  // auto-trigger existed.
+  const reprocessCurrentMonth = async (month, year) => {
+    try {
+      const res = await base44.functions.invoke('processMonthAttendance', { month, year, dry_run: false });
+      const d = res.data || res;
+      if (d.success) toast.success(`Attendance re-checked for this month (${d.processed ?? 0} record(s) updated) to reflect the new shift settings`);
+    } catch (err) {
+      console.warn('[ShiftManagement] auto-reprocess failed:', err.message);
     }
   };
 
