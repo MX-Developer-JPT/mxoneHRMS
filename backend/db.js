@@ -150,6 +150,39 @@ async function initSchema() {
     "UPDATE entities SET user_id = data::jsonb->>'employee_user_id' " +
     "WHERE type='GatePass' AND user_id IS NULL AND data::jsonb->>'employee_user_id' IS NOT NULL"
   );
+
+  // One-time seed: map known biometric device names to their site, per
+  // explicit instruction — 'Biomatrice 2' / 'LabourAtt' punches mean Duhai,
+  // 'Biometric' punches mean Ghaziabad. Location Master already lets HR
+  // reconfigure this (AppLocation.biometric_devices) going forward; this
+  // just seeds whichever existing location rows match by name so the All
+  // Attendance Location filter works immediately without manual setup.
+  // Idempotent — only adds a device name a location doesn't already have.
+  try {
+    const deviceSeeds = [
+      { namePattern: '%ghaziabad%', devices: ['Biometric'] },
+      { namePattern: '%duhai%',     devices: ['Biomatrice 2', 'LabourAtt'] },
+    ];
+    for (const { namePattern, devices } of deviceSeeds) {
+      const { rows } = await pool.query(
+        "SELECT id, data FROM entities WHERE type='AppLocation' AND data::jsonb->>'name' ILIKE $1",
+        [namePattern]
+      );
+      for (const row of rows) {
+        const d = JSON.parse(row.data);
+        const existing = Array.isArray(d.biometric_devices) ? d.biometric_devices : [];
+        const existingUpper = new Set(existing.map(x => String(x).trim().toUpperCase()));
+        const merged = [...existing, ...devices.filter(dev => !existingUpper.has(dev.toUpperCase()))];
+        if (merged.length !== existing.length) {
+          await pool.query("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [
+            JSON.stringify({ ...d, biometric_devices: merged }), row.id,
+          ]);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[pg] biometric device seed failed:', e.message);
+  }
 }
 
 await initSchema().catch(err => {

@@ -23,7 +23,7 @@ export default function LocationMaster() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: '', address: '', city: '', state: '', is_active: true, latitude: '', longitude: '', geofence_radius: '' });
+  const [form, setForm] = useState({ name: '', address: '', city: '', state: '', is_active: true, latitude: '', longitude: '', geofence_radius: '', biometric_devices: '' });
   const [capturing, setCapturing] = useState(false);
 
   const captureCurrentLocation = () => {
@@ -134,7 +134,7 @@ export default function LocationMaster() {
 
   const openNew = () => {
     setEditingId(null);
-    setForm({ name: '', address: '', city: '', state: '', is_active: true });
+    setForm({ name: '', address: '', city: '', state: '', is_active: true, biometric_devices: '' });
     setShowDialog(true);
   };
 
@@ -144,6 +144,7 @@ export default function LocationMaster() {
       name: loc.name || '', address: loc.address || '', city: loc.city || '', state: loc.state || '', is_active: loc.is_active !== false,
       latitude: loc.latitude != null ? String(loc.latitude) : '', longitude: loc.longitude != null ? String(loc.longitude) : '',
       geofence_radius: loc.geofence_radius != null ? String(loc.geofence_radius) : '',
+      biometric_devices: (loc.biometric_devices || []).join(', '),
     });
     setShowDialog(true);
   };
@@ -157,7 +158,8 @@ export default function LocationMaster() {
       toast.error('For geofencing, set latitude, longitude AND radius together');
       return;
     }
-    const payload = { ...form, latitude: lat, longitude: lng, geofence_radius: radius };
+    const biometricDevices = form.biometric_devices.split(',').map(d => d.trim()).filter(Boolean);
+    const payload = { ...form, latitude: lat, longitude: lng, geofence_radius: radius, biometric_devices: biometricDevices };
     setSaving(true);
     try {
       if (editingId) {
@@ -246,6 +248,13 @@ export default function LocationMaster() {
                               </p>
                               <p className="text-sm text-muted-foreground">{[loc.address, loc.city, loc.state].filter(Boolean).join(', ') || '—'}</p>
                               <p className="text-xs text-muted-foreground mt-0.5">{empCount} employee(s)</p>
+                              {(loc.biometric_devices || []).length > 0 && (
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                  Biometric: {loc.biometric_devices.map(d => (
+                                    <Badge key={d} variant="outline" className="text-[10px] ml-1">{d}</Badge>
+                                  ))}
+                                </p>
+                              )}
                             </div>
                           </div>
                           <div className="flex items-center gap-3 flex-wrap justify-end">
@@ -407,6 +416,20 @@ export default function LocationMaster() {
                   <div><Label className="text-xs">Radius (m)</Label><Input type="number" value={form.geofence_radius} onChange={e => setForm({...form, geofence_radius: e.target.value})} placeholder="200" /></div>
                 </div>
                 <p className="text-xs text-muted-foreground">Employees assigned to this location (Work Location on the employee record) get auto check-in/out when they enter/leave this circle with the app open.</p>
+              </div>
+              {/* Biometric device mapping — All Attendance's Location filter
+                  resolves each punch's location from record.device_id
+                  against this list, so it must exactly match the device
+                  name the biometric machine reports (e.g. "Biomatrice 2",
+                  "LabourAtt"), not a display label. */}
+              <div className="border rounded-lg p-3 space-y-2 bg-muted/30">
+                <Label className="font-semibold">Biometric Devices at this Location</Label>
+                <Input
+                  value={form.biometric_devices}
+                  onChange={e => setForm({ ...form, biometric_devices: e.target.value })}
+                  placeholder="e.g. Biometric  or  Biomatrice 2, LabourAtt"
+                />
+                <p className="text-xs text-muted-foreground">Comma-separated device names, exactly as reported by the biometric machine. Used to resolve an employee's location on the All Attendance page's Location filter.</p>
               </div>
               <div className="flex items-center gap-2">
                 <Switch checked={form.is_active} onCheckedChange={v => setForm({...form, is_active: v})} />

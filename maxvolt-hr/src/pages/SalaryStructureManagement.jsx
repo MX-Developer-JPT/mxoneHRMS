@@ -106,7 +106,7 @@ function ComponentField({ label, hint, value, onChange, prefix = '₹' }) {
         <Input
           type="number"
           className="pl-7"
-          value={value || ''}
+          value={value ?? ''}
           onChange={e => onChange(parseFloat(e.target.value) || 0)}
         />
       </div>

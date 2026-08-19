@@ -89,6 +89,8 @@ export default function AllAttendance() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [deptFilter, setDeptFilter] = useState('all');
   const [methodFilter, setMethodFilter] = useState('all');
+  const [locationFilter, setLocationFilter] = useState('all');
+  const [locations, setLocations] = useState([]); // AppLocation rows, each optionally carrying biometric_devices[]
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [collapsedDepts, setCollapsedDepts] = useState({});
   const [markingAbsent, setMarkingAbsent] = useState(false);
@@ -104,9 +106,10 @@ export default function AllAttendance() {
   useEffect(() => {
     (async () => {
       try {
-        const [shifts, holidays] = await Promise.all([
+        const [shifts, holidays, appLocations] = await Promise.all([
           base44.entities.Shift.list(),
           base44.entities.Holiday.list(),
+          base44.entities.AppLocation.list(),
         ]);
         const map = {};
         let def = null;
@@ -114,6 +117,7 @@ export default function AllAttendance() {
         setShiftMap(map);
         setDefaultShift(def || { days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] });
         setHolidaySet(new Set(holidays.map(h => toDateStr(h.date))));
+        setLocations(appLocations);
       } catch { /* best-effort — falls back to treating every missing record as absent */ }
     })();
   }, []);
@@ -205,12 +209,39 @@ export default function AllAttendance() {
     });
   }, [employees, attendanceMap, date, holidaySet, shiftMap, defaultShift]);
 
+  // Which configured location a biometric device belongs to — e.g. punches
+  // from a "Biomatrice 2" or "LabourAtt" device mean the employee is
+  // physically at the Duhai site, while "Biometric" means Ghaziabad. Device
+  // names are configured per-location in Location Master (AppLocation.
+  // biometric_devices), not hardcoded, so HR can add/rename devices there
+  // without a code change.
+  const deviceLocationMap = useMemo(() => {
+    const map = new Map();
+    for (const loc of locations) {
+      for (const device of (loc.biometric_devices || [])) {
+        const key = String(device || '').trim().toUpperCase();
+        if (key) map.set(key, loc.name);
+      }
+    }
+    return map;
+  }, [locations]);
+
+  const resolveRecordLocation = (record) => {
+    const device = String(record?.device_id || '').trim().toUpperCase();
+    if (!device) return null;
+    return deviceLocationMap.get(device) || null;
+  };
+
   const filtered = useMemo(() => {
     return rows.filter(r => {
       const displayStatus = getDisplayStatus(r);
       if (statusFilter !== 'all' && displayStatus !== statusFilter) return false;
       if (deptFilter !== 'all' && r._emp?.department !== deptFilter) return false;
       if (methodFilter !== 'all' && getAttendanceMethod(r).key !== methodFilter) return false;
+      if (locationFilter !== 'all') {
+        const loc = resolveRecordLocation(r);
+        if (locationFilter === '__unresolved__' ? !!loc : loc !== locationFilter) return false;
+      }
       if (searchTerm) {
         const t = searchTerm.toLowerCase();
         const name = (r._emp?.display_name || r._emp?._user?.full_name || '').toLowerCase();
@@ -219,7 +250,7 @@ export default function AllAttendance() {
       }
       return true;
     });
-  }, [rows, statusFilter, deptFilter, methodFilter, searchTerm]);
+  }, [rows, statusFilter, deptFilter, methodFilter, locationFilter, deviceLocationMap, searchTerm]);
 
 
   const grouped = useMemo(() => {
@@ -501,6 +532,11 @@ export default function AllAttendance() {
                 { value: 'selfie', label: 'Selfie' },
                 { value: 'manual', label: 'Manual' },
               ]} />
+              <MobileSelect value={locationFilter} onValueChange={setLocationFilter} label="Location" className="w-[160px]" options={[
+                { value: 'all', label: 'All Locations' },
+                ...locations.filter(l => (l.biometric_devices || []).length > 0).map(l => ({ value: l.name, label: l.name })),
+                { value: '__unresolved__', label: 'Unmapped Device' },
+              ]} />
             </div>
           </CardContent>
         </Card>
@@ -745,6 +781,14 @@ export default function AllAttendance() {
                                 );
                               }
                               return null;
+                            })()}
+                            {(() => {
+                              const loc = resolveRecordLocation(record);
+                              return loc ? (
+                                <span title={`Resolved from biometric device: ${record.device_id}`} className="inline-flex items-center gap-0.5 text-xs text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-200">
+                                  <MapPin className="w-3 h-3" /> {loc}
+                                </span>
+                              ) : null;
                             })()}
                             {(record.late_arrival || record.late_minutes > 0) && (record.late_arrival_minutes || record.late_minutes) > 0 && (
                               <span className="inline-flex items-center gap-0.5 text-xs text-orange-600">
