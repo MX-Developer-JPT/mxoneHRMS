@@ -85,6 +85,19 @@ const auth = {
   resendOtp: (data) =>
     apiFetch('/auth/resend-otp', { method: 'POST', body: JSON.stringify(data) }),
 
+  // Self-service password change from App Settings — two paths:
+  // (1) current_password + new_password (changePassword), or
+  // (2) requestPasswordChangeOtp() then verifyPasswordChangeOtp() for
+  //     someone who doesn't remember their current password.
+  changePassword: ({ current_password, new_password }) =>
+    apiFetch('/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password, new_password }) }),
+
+  requestPasswordChangeOtp: () =>
+    apiFetch('/auth/request-password-change-otp', { method: 'POST' }),
+
+  verifyPasswordChangeOtp: ({ otp_code, new_password }) =>
+    apiFetch('/auth/verify-password-change-otp', { method: 'POST', body: JSON.stringify({ otp_code, new_password }) }),
+
   setToken,
 
   updateMe: (data) =>

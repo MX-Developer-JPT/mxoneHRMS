@@ -209,4 +209,64 @@ router.post('/change-password', async (req, res) => {
   res.json({ success: true });
 });
 
+// POST /api/auth/request-password-change-otp — authenticated. Sends a code
+// to the LOGGED-IN user's own email (never a body-supplied address, so this
+// can't be abused to spam an arbitrary inbox) for the "I don't remember my
+// current password" self-service change flow in App Settings. Reuses the
+// same `otps` table as registration verification — the OTP just needs to be
+// tied to an email and expire, and that flow's use of it is unrelated.
+router.post('/request-password-change-otp', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'No token' });
+  let decoded;
+  try { decoded = jwt.verify(token, JWT_SECRET); } catch { return res.status(401).json({ error: 'Invalid token' }); }
+
+  const user = await one('SELECT * FROM users WHERE id=$1', [decoded.id]);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const norm = user.email.toLowerCase().trim();
+  const code = generateOTP();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  await run('DELETE FROM otps WHERE email = $1', [norm]);
+  await run('INSERT INTO otps (email, code, expires_at) VALUES ($1, $2, $3)', [norm, code, expiresAt]);
+  const tpl = emailTemplates.otpEmail({ name: user.full_name, code, expiresMinutes: 10 });
+  sendEmail({ to: norm, ...tpl }).catch(e => console.error('[auth] Password-change OTP email failed:', e.message));
+  // Masked so the UI can show "we sent a code to j***@maxvoltenergy.com"
+  // without exposing the full address to anything reading the response.
+  const maskedEmail = norm.replace(/^(.{1,2}).*(@.*)$/, (_, a, b) => `${a}***${b}`);
+  res.json({ success: true, email: maskedEmail });
+});
+
+// POST /api/auth/verify-password-change-otp — authenticated. Verifies the
+// code against the logged-in user's own email and sets the new password in
+// one step — no current-password check, since not remembering it is exactly
+// why this path exists.
+router.post('/verify-password-change-otp', async (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'No token' });
+  let decoded;
+  try { decoded = jwt.verify(token, JWT_SECRET); } catch { return res.status(401).json({ error: 'Invalid token' }); }
+
+  const { otp_code, new_password } = req.body;
+  if (!otp_code || !new_password) return res.status(400).json({ error: 'Verification code and new password are required' });
+  if (new_password.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
+
+  const user = await one('SELECT * FROM users WHERE id=$1', [decoded.id]);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const norm = user.email.toLowerCase().trim();
+
+  const record = await one('SELECT * FROM otps WHERE email = $1', [norm]);
+  if (!record) return res.status(400).json({ error: 'No verification code found. Please request a new one.' });
+  if (new Date(record.expires_at) < new Date()) {
+    await run('DELETE FROM otps WHERE email = $1', [norm]);
+    return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
+  }
+  if (record.code !== String(otp_code)) return res.status(400).json({ error: 'Invalid verification code' });
+  await run('DELETE FROM otps WHERE email = $1', [norm]);
+
+  const hash = bcrypt.hashSync(new_password, 10);
+  await run('UPDATE users SET password=$1, must_change_password=FALSE, updated_at=NOW()::TEXT WHERE id=$2', [hash, user.id]);
+  res.json({ success: true });
+});
+
 export default router;

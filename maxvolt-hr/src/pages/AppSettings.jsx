@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Sun, Moon, LogOut, Trash2, Settings, Monitor, MapPin, Plus, X, Pencil, Bell, BellOff, Download, Smartphone, ShieldCheck, FileText, ChevronRight } from 'lucide-react';
+import { Sun, Moon, LogOut, Trash2, Settings, Monitor, MapPin, Plus, X, Pencil, Bell, BellOff, Download, Smartphone, ShieldCheck, FileText, ChevronRight, KeyRound, Mail, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from "@/components/ui/badge";
 import { pushSupported, getPushState, enablePush, disablePush } from '@/utils/pwa';
@@ -29,6 +29,17 @@ export default function AppSettings() {
   const [registerBusy, setRegisterBusy] = useState(false);
   const [installEvt, setInstallEvt] = useState(null);
   const [installed, setInstalled] = useState(false);
+
+  // Change password
+  const [showPwDialog, setShowPwDialog] = useState(false);
+  const [pwMethod, setPwMethod] = useState('current'); // 'current' | 'otp'
+  const [pwForm, setPwForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
+  const [pwSaving, setPwSaving] = useState(false);
+  const [otpStep, setOtpStep] = useState('request'); // 'request' | 'verify'
+  const [otpMaskedEmail, setOtpMaskedEmail] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpForm, setOtpForm] = useState({ otp_code: '', new_password: '', confirm_password: '' });
+  const [otpVerifying, setOtpVerifying] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -174,6 +185,58 @@ export default function AppSettings() {
 
   const handleLogout = async () => {
     await base44.auth.logout();
+  };
+
+  const openPwDialog = () => {
+    setPwMethod('current');
+    setPwForm({ current_password: '', new_password: '', confirm_password: '' });
+    setOtpStep('request');
+    setOtpMaskedEmail('');
+    setOtpForm({ otp_code: '', new_password: '', confirm_password: '' });
+    setShowPwDialog(true);
+  };
+
+  const handleChangePasswordWithCurrent = async () => {
+    if (!pwForm.current_password) { toast.error('Enter your current password'); return; }
+    if (pwForm.new_password.length < 6) { toast.error('New password must be at least 6 characters'); return; }
+    if (pwForm.new_password !== pwForm.confirm_password) { toast.error('New passwords do not match'); return; }
+    setPwSaving(true);
+    try {
+      await base44.auth.changePassword({ current_password: pwForm.current_password, new_password: pwForm.new_password });
+      toast.success('Password changed successfully');
+      setShowPwDialog(false);
+    } catch (e) {
+      toast.error(e.message || 'Failed to change password');
+    }
+    setPwSaving(false);
+  };
+
+  const handleRequestOtp = async () => {
+    setOtpSending(true);
+    try {
+      const res = await base44.auth.requestPasswordChangeOtp();
+      setOtpMaskedEmail(res.email || 'your registered email');
+      setOtpStep('verify');
+      toast.success('Verification code sent to your email');
+    } catch (e) {
+      toast.error(e.message || 'Failed to send verification code');
+    }
+    setOtpSending(false);
+  };
+
+  const handleVerifyOtpAndChangePassword = async () => {
+    if (!otpForm.otp_code || otpForm.otp_code.length !== 6) { toast.error('Enter the 6-digit code from your email'); return; }
+    if (otpForm.new_password.length < 6) { toast.error('New password must be at least 6 characters'); return; }
+    if (otpForm.new_password !== otpForm.confirm_password) { toast.error('New passwords do not match'); return; }
+    setOtpVerifying(true);
+    try {
+      await base44.auth.verifyPasswordChangeOtp({ otp_code: otpForm.otp_code, new_password: otpForm.new_password });
+      toast.success('Password changed successfully');
+      setShowPwDialog(false);
+    } catch (e) {
+      toast.error(e.message || 'Failed to verify code');
+    }
+    setOtpVerifying(false);
   };
 
   const handleDeleteAccount = async () => {
@@ -327,6 +390,27 @@ export default function AppSettings() {
           </CardContent>
         </Card>
 
+        {/* Security */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-blue-600" /> Security
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between p-3 border rounded-lg">
+              <div className="flex items-center gap-3">
+                <KeyRound className="w-5 h-5 text-blue-500" />
+                <div>
+                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Change password</p>
+                  <p className="text-xs text-gray-500">Use your current password, or verify with an email code if you don't remember it</p>
+                </div>
+              </div>
+              <Button size="sm" variant="outline" onClick={openPwDialog}>Change</Button>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Location Management — HR/Admin only */}
         {isAdmin() && (
           <Card>
@@ -461,6 +545,139 @@ export default function AppSettings() {
               <Button onClick={handleSaveLocation} className="bg-blue-600 hover:bg-blue-700">Save Location</Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Change Password Dialog */}
+      <Dialog open={showPwDialog} onOpenChange={setShowPwDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Change Password</DialogTitle>
+          </DialogHeader>
+
+          <div className="flex gap-2 border-b pb-2 mb-1">
+            <button
+              onClick={() => setPwMethod('current')}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                pwMethod === 'current' ? 'bg-blue-600 text-white' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+              }`}
+            >
+              <KeyRound className="w-3.5 h-3.5" /> Current Password
+            </button>
+            <button
+              onClick={() => setPwMethod('otp')}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                pwMethod === 'otp' ? 'bg-blue-600 text-white' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+              }`}
+            >
+              <Mail className="w-3.5 h-3.5" /> Email Code
+            </button>
+          </div>
+
+          {pwMethod === 'current' && (
+            <div className="space-y-3">
+              <div>
+                <Label>Current Password</Label>
+                <Input
+                  type="password"
+                  value={pwForm.current_password}
+                  onChange={e => setPwForm(f => ({ ...f, current_password: e.target.value }))}
+                  placeholder="Enter your current password"
+                />
+                <p className="text-xs text-gray-400 mt-1">Don't remember it? Switch to "Email Code" above.</p>
+              </div>
+              <div>
+                <Label>New Password</Label>
+                <Input
+                  type="password"
+                  value={pwForm.new_password}
+                  onChange={e => setPwForm(f => ({ ...f, new_password: e.target.value }))}
+                  placeholder="Min. 6 characters"
+                />
+              </div>
+              <div>
+                <Label>Confirm New Password</Label>
+                <Input
+                  type="password"
+                  value={pwForm.confirm_password}
+                  onChange={e => setPwForm(f => ({ ...f, confirm_password: e.target.value }))}
+                  placeholder="Re-enter new password"
+                />
+              </div>
+              <div className="flex gap-3 justify-end pt-2">
+                <Button variant="outline" onClick={() => setShowPwDialog(false)}>Cancel</Button>
+                <Button onClick={handleChangePasswordWithCurrent} disabled={pwSaving} className="bg-blue-600 hover:bg-blue-700">
+                  {pwSaving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> Saving...</> : 'Change Password'}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {pwMethod === 'otp' && otpStep === 'request' && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                We'll send a 6-digit verification code to your registered email. Use it to set a new password without needing your old one.
+              </p>
+              <div className="flex gap-3 justify-end pt-2">
+                <Button variant="outline" onClick={() => setShowPwDialog(false)}>Cancel</Button>
+                <Button onClick={handleRequestOtp} disabled={otpSending} className="bg-blue-600 hover:bg-blue-700">
+                  {otpSending ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> Sending...</> : 'Send Code'}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {pwMethod === 'otp' && otpStep === 'verify' && (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Code sent to <span className="font-medium">{otpMaskedEmail}</span>. It expires in 10 minutes.
+              </p>
+              <div>
+                <Label>Verification Code</Label>
+                <Input
+                  value={otpForm.otp_code}
+                  onChange={e => setOtpForm(f => ({ ...f, otp_code: e.target.value.replace(/\D/g, '').slice(0, 6) }))}
+                  placeholder="6-digit code"
+                  inputMode="numeric"
+                  maxLength={6}
+                />
+              </div>
+              <div>
+                <Label>New Password</Label>
+                <Input
+                  type="password"
+                  value={otpForm.new_password}
+                  onChange={e => setOtpForm(f => ({ ...f, new_password: e.target.value }))}
+                  placeholder="Min. 6 characters"
+                />
+              </div>
+              <div>
+                <Label>Confirm New Password</Label>
+                <Input
+                  type="password"
+                  value={otpForm.confirm_password}
+                  onChange={e => setOtpForm(f => ({ ...f, confirm_password: e.target.value }))}
+                  placeholder="Re-enter new password"
+                />
+              </div>
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  type="button"
+                  onClick={handleRequestOtp}
+                  disabled={otpSending}
+                  className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+                >
+                  {otpSending ? 'Resending...' : 'Resend code'}
+                </button>
+              </div>
+              <div className="flex gap-3 justify-end pt-2">
+                <Button variant="outline" onClick={() => setShowPwDialog(false)}>Cancel</Button>
+                <Button onClick={handleVerifyOtpAndChangePassword} disabled={otpVerifying} className="bg-blue-600 hover:bg-blue-700">
+                  {otpVerifying ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> Verifying...</> : 'Verify & Change Password'}
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
