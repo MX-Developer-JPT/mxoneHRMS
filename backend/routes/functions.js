@@ -261,8 +261,14 @@ function makeLetterheadChrome(logoDataUrl) {
   };
 
   const headerFn = (currentPage, pageCount, pageSize) => {
+    // The source PNG is a square 834×834 canvas (logo mark + wordmark
+    // stacked, centred) — at the old width:120 it rendered ~120pt TALL too,
+    // blowing past the 100pt top page margin entirely, which is why the
+    // logo was silently invisible/clipped on every generated letter. 62pt
+    // keeps it a normal letterhead-mark size and comfortably inside the
+    // margin (12 bar + 10 gap + 62 logo = 84 < 100).
     const logoRow = logoDataUrl
-      ? { image: 'logo', width: 120, margin: [36, 10, 0, 6] }
+      ? { image: 'logo', width: 62, margin: [36, 10, 0, 6] }
       : { text: 'Maxvolt Energy Industries Limited', fontSize: 14, bold: true, color: '#1e3a5f', margin: [36, 10, 0, 6] };
     return { stack: [bar(pageSize), logoRow] };
   };
@@ -301,10 +307,17 @@ function getStampDataUrl() {
 /* ── Shared: the company seal/stamp node for the signature area — renders
    the actual scanned stamp image (backend/assets/company-stamp.png) when
    present, registered as `images.stamp` by whichever docDef uses it; falls
-   back to a plain vector ring so a missing asset never crashes rendering. ── */
+   back to a plain vector ring so a missing asset never crashes rendering.
+   The negative top/bottom margin is deliberate: pdfmake lays out a `stack`
+   sequentially with no float/overlap support, so the only way to get the
+   stamp physically OVER the signature block (like a real ink stamp pressed
+   over a signature) is to pull it up over whatever text rendered right
+   before it, and pull the next line up into its own bottom edge too.
+   Callers must place this node AFTER the "For Maxvolt Energy Industries
+   Limited" / signatory-name text it should overlap, not before. ── */
 function letterSealNode() {
   if (getStampDataUrl()) {
-    return { image: 'stamp', width: 108, margin: [0, 4, 0, 4], opacity: 0.92 };
+    return { image: 'stamp', width: 100, margin: [0, -55, 0, -60], opacity: 0.85 };
   }
   const r = 40, cx = r + 6, cy = r + 6;
   return {
@@ -511,7 +524,7 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
 
           {
             columns: [
-              { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'HR Manager', bold:true, fontSize:10 },{ text:'Maxvolt Energy Industries Limited', fontSize:9 }, ...(stampDataUrl ? [{ image:'stamp', width:96, margin:[0,6,0,0], opacity:0.92 }] : [])] },
+              { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'HR Manager', bold:true, fontSize:10 },{ text:'Maxvolt Energy Industries Limited', fontSize:9 }, ...(stampDataUrl ? [{ image:'stamp', width:82, margin:[0,-30,0,0], opacity:0.85 }] : [])] },
               { width:'*', text:'' },
               { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'Employee Signature', bold:true, fontSize:10 },{ text:candidateName||'', fontSize:9 }] },
             ],
@@ -7820,7 +7833,7 @@ Return ONLY a valid JSON object (no markdown):
       const annualCTC = ss.ctc || ss.annualCTC || (ss.grossMonthly ? Math.round(ss.grossMonthly * 12) : 0);
 
       const todayDate = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
-      const refPrefix = { confirmation: 'CONF', experience: 'EXP', relieving: 'REL', appointment: 'APPT', salary_revision: 'SAL', increment: 'INC', address_proof: 'ADDR', warning: 'WARN', promotion: 'PROMO' }[letterType] || 'LTR';
+      const refPrefix = { confirmation: 'CONF', experience: 'EXP', relieving: 'REL', appointment: 'APPT', salary_revision: 'SAL', increment: 'INC', address_proof: 'ADDR', warning: 'WARN', promotion: 'PROMO', internship_offer: 'INTOFR', internship_experience: 'INTEXP' }[letterType] || 'LTR';
       const ref = `MEIL/HR/${refPrefix}/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
 
       const empName    = emp.display_name || uRow?.full_name || '[Employee Name]';
@@ -7856,11 +7869,18 @@ Return ONLY a valid JSON object (no markdown):
       const sealHtml = () => stampUrl
         ? `<img class="mx-seal" src="${stampUrl}" style="float:left;width:104px;margin:6px 16px 6px 0;opacity:0.92;" alt="Company Seal" />`
         : `<div class="mx-seal" style="float:left;width:104px;height:104px;border:2.5px double #1d4ed8;border-radius:50%;margin:10px 16px 10px 0;"></div>`;
+      // Text renders BEFORE the seal marker, not after — letterSealNode()
+      // (the pdfmake-side node this marker becomes) uses a negative top
+      // margin to pull itself up over whatever rendered immediately before
+      // it, so the stamp physically overlaps "For Maxvolt Energy Industries
+      // Limited" / the signatory name, the way a real company stamp is
+      // pressed over a signature. Putting the seal first (old order) meant
+      // it just rendered as its own block with no overlap at all.
       const sig  = (close, _defaultSigner, role) => {
         const nameBlock = chosenSignatory
           ? `<p style="margin:4px 0 2px;font-weight:bold;">${chosenSignatory}</p><p style="margin:0;font-size:12px;color:#555;">For Maxvolt Energy Industries Limited</p>`
-          : `<p style="margin:54px 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>${role ? `<p style="margin:0;">${role}</p>` : ''}`;
-        return `<p style="margin:36px 0 0;">${close}</p>${sealHtml()}${nameBlock}<div style="clear:both;"></div>`;
+          : `<p style="margin:8px 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>${role ? `<p style="margin:0;">${role}</p>` : ''}`;
+        return `<p style="margin:16px 0 0;">${close}</p>${nameBlock}${sealHtml()}<div style="clear:both;"></div>`;
       };
 
       const docList = `<ul style="margin:6px 0 14px 24px;line-height:1.85;">
@@ -7974,7 +7994,7 @@ ${H('4. Probation:')}
 ${LI('(a) You will be on probation for period of <strong>Six months</strong> from the date of your joining. Subject to your efficiency, punctuality, conduct, maintenance of discipline and in accordance with the &ldquo;performance criteria&rdquo; as decided by the management/ Our Company, being found satisfactory, your confirmation will be communicated to you in writing or can be extended beyond 6(Six) months on the discretion of the management/Our Company.')}
 ${LI('(b) During the probation period, you are entitled to avail 01 Casual Leave per month. Approval for Casual Leave must be sought from your reporting manager in advance. This ensures proper planning and coordination within the team.')}
 ${H('5. Compensation:')}
-${LI(`(a) Your annual CTC will be as detailed in Annexure &ndash; A as annexed to this letter INR <strong>${overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The Salary shall be payable on a monthly basis in arrears on the 10th day of each calendar month.`)}
+${LI(`(a) Your annual CTC will be INR <strong>${overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong>. The Salary shall be payable on a monthly basis in arrears on the 10th day of each calendar month.`)}
 ${LI('(b) In addition to the Salary, per Our Company&rsquo;s discretion and incentive policy announced from time to time, you may also be entitled to a monthly performance-based performance incentive. This incentive payout, if payable, shall be based on actual performance over and above there should as per Our Company&rsquo;s incentive policy announced from time to time.')}
 ${LI('(c) All payments as mentioned under this Section 5 shall be made in accordance with the relevant policies of Our Company in effect from time to time, including payroll practices, and shall be subject to income tax deductions at source, as applicable. All requirements under Indian tax laws, including tax compliance and filing of tax returns, assessment etc. of your personal income, shall be fulfilled by you.')}
 ${H('6. Performance of duties:')}
@@ -8047,9 +8067,9 @@ ${P('The relieving / resignation acceptance letter from your previous organizati
 ${docList}
 ${P('We welcome you to our organization and look forward to your contribution to the growth of the organization and yourself.')}
 ${P('Yours faithfully,')}
+<p style="margin:8px 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
 ${sealHtml()}
-<p style="margin:44px 0 6px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
-<p style="margin:34px 0 2px;">Manager &ndash; HR_______________________</p>
+<p style="margin:8px 0 2px;">Manager &ndash; HR_______________________</p>
 <p style="margin:0 0 2px;">Date:</p>
 <p style="margin:0 0 24px;">Signature:</p>
 <div style="clear:both;"></div>
@@ -8057,8 +8077,7 @@ ${sealHtml()}
 <p style="margin:0 0 2px;">Employee Name_________________________________</p>
 <p style="margin:0 0 2px;">Date:</p>
 <p style="margin:0 0 20px;">Signature:</p>
-<p style="text-align:center;font-weight:bold;">(Confidential)</p>
-${buildMeilSalaryBox({ heading: 'APPOINTMENT LETTER', subheading: 'Annexure – A', rows: [['Employee Name', empName], ['Date of Joining', fmtDate(joinDate)]], ctcAnnual: overrideAnnualCTC })}`);
+<p style="text-align:center;font-weight:bold;">(Confidential)</p>`);
         },
 
         confirmation: () => wrap(`
@@ -8077,9 +8096,9 @@ ${P('Please signify your acceptance to terms and conditions, mentioned above &am
 ${P('In case you have any queries, do not hesitate to reach your manager/supervisor/HR Department.')}
 ${P('Maxvolt Energy Industries Limited, congratulates you on your confirmation and wishes you well in your position.')}
 <p style="margin:20px 0 2px;">Sincerely,</p>
+<p style="margin:8px 0 2px;">HR Head</p>
+<p style="margin:0 0 2px;font-weight:bold;">Maxvolt Energy Industries Limited</p>
 ${sealHtml()}
-<p style="margin:44px 0 2px;">HR Head</p>
-<p style="margin:0 0 24px;font-weight:bold;">Maxvolt Energy Industries Limited</p>
 <div style="clear:both;"></div>`),
 
         relieving: () => wrap(`
@@ -8097,9 +8116,9 @@ ${P('Please note your Basic Information as maintained in the HR records at the t
 ${P(`During your tenure with the Company, you served as ${designation} in the ${department} Department. You performed your assigned responsibilities diligently, and we appreciate your contributions to the organization.`)}
 ${P('We sincerely thank you for your contributions to the organization and wish you continued success in all your future endeavors.')}
 <p style="margin:16px 0 2px;">Warm Regards,</p>
+<p style="margin:8px 0 2px;font-weight:bold;">MaxVolt Energy Industries Limited</p>
 ${sealHtml()}
-<p style="margin:44px 0 2px;font-weight:bold;">MaxVolt Energy Industries Limited</p>
-<p style="margin:0 0 20px;">(Authorized Signatory)</p>
+<p style="margin:8px 0 20px;">(Authorized Signatory)</p>
 <div style="clear:both;"></div>`),
 
         increment: () => {
@@ -8126,10 +8145,10 @@ ${P(`Your revised compensation and benefits structure are enclosed in Annexure &
 ${P('We would like to take this opportunity to express our appreciation for your valuable contribution to the organization and hope that you will continue to strive for better results. We are confident that you will continue to carry out your responsibilities with dedication and sincerity.')}
 ${P('In case of any queries, please feel free to contact the HR Department.')}
 ${P('Maxvolt Energy Industries Limited congratulates you on your salary revision and wishes you continued success for the future. &ldquo;We are excited to see you take on new challenges and reach even greater heights in your career with us.&rdquo;')}
-<p style="margin:0 0 24px;font-weight:bold;">Thank You!</p>
-${sealHtml()}
+<p style="margin:0 0 8px;font-weight:bold;">Thank You!</p>
 <p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
-<p style="margin:44px 0 20px;">AGM HR</p>
+${sealHtml()}
+<p style="margin:8px 0 20px;">AGM HR</p>
 <div style="clear:both;"></div>
 <p style="text-align:center;font-weight:bold;">(Confidential)</p>
 ${annexureBox}
@@ -8140,27 +8159,20 @@ ${annexureBox}
 
         promotion: () => {
           const newDesig = extra.new_designation || '[New Designation]';
-          const effDate  = extra.effective_date  || '[Effective Date]';
+          const effDate  = fmtDate(extra.effective_date) || '[Effective Date]';
           return wrap(`
-<p style="font-weight:bold;font-size:12px;margin:0 0 16px;">PRIVATE &amp; STRICTLY CONFIDENTIAL</p>
-<p style="margin:0 0 4px;">${todayDate}</p>
-<p style="margin:0 0 20px;">To ${sal} ${empName},</p>
-<p style="text-align:center;font-weight:bold;font-size:17px;letter-spacing:2px;text-decoration:underline;margin:0 0 6px;">PROMOTION LETTER</p>
-<p style="text-align:right;font-size:12px;color:#555;margin:0 0 24px;"><strong>Ref:</strong> ${ref}</p>
-${P(`Dear ${sal} ${empName},`)}
-${P('We are pleased to inform you that based on your sustained performance, contribution and dedication towards the growth of <strong>Maxvolt Energy Industries Limited</strong>, the Management has decided to promote you.')}
-${P(`You are hereby promoted to the designation of <strong>${newDesig}</strong> in the <strong>${department}</strong> department, with effect from <strong>${effDate}</strong>.`)}
-${P(`Your revised annual CTC will be <strong>INR ${overrideAnnualCTC ? Number(overrideAnnualCTC).toLocaleString('en-IN') : '[____]'}/-</strong> as detailed in <strong>Annexure – A</strong>. All other terms and conditions of your appointment shall remain unchanged.`)}
-${H('Performance of Duties:')}
-${P(`In your new role as <strong>${newDesig}</strong>, you will be expected to take on greater responsibilities and continue to uphold the values and work ethics that have earned you this recognition. You shall diligently carry out all duties assigned by your Head of Department and contribute proactively to the team's objectives.`)}
-${H('Confidentiality:')}
-${P('Your salary and promotion details are strictly confidential. Any disclosure to unauthorised persons will be treated as a disciplinary offence and may result in termination of employment.')}
-${P('Please sign and return a copy of this letter as your acceptance of the promotion and its terms.')}
-${P('We congratulate you on this well-deserved promotion and wish you continued success at Maxvolt Energy Industries Limited.')}
-${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory')}
-<p style="margin:64px 0 6px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>
-<p>Name: _________________________________</p>
-${buildMeilSalaryBox({ heading: 'PROMOTION LETTER', subheading: 'Annexure – A', rows: [['Employee Name', empName], ['Date of Promotion', fmtDate(effDate)]], ctcAnnual: overrideAnnualCTC })}`);
+<p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 24px;">PROMOTION LETTER</p>
+${P(`Dear ${sal} <strong>${empName}</strong>,`)}
+${P('Congratulations!')}
+${P(`The Company is pleased to inform you that you have been promoted to <strong>${newDesig}</strong>.`)}
+${P(`It shall be effective from <strong>${effDate}</strong>.`)}
+${P('All the other terms and conditions of your appointment remain unchanged.')}
+<p style="margin:0 0 16px;font-style:italic;">&ldquo;Your growth is our growth. We are thrilled to support you on your journey toward achieving new milestones and breaking boundaries.&rdquo;</p>
+${P('Thank You!')}
+<p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
+${sealHtml()}
+<p style="margin:8px 0 0;font-weight:bold;">${chosenSignatory || 'AGM HR'}</p>
+<div style="clear:both;"></div>`);
         },
 
         salary_revision: () => {
@@ -8241,6 +8253,56 @@ ${P(`During ${pronoun} tenure, ${pronoun2} demonstrated commendable work ethic, 
 ${P(`This certificate is issued at ${pronoun} request and for whatever purpose it may serve.`)}
 ${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory – Human Resources Department')}
 <p style="margin-top:52px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>`),
+
+        internship_offer: () => {
+          const startDate = fmtDate(extra.start_date) || '[Start Date]';
+          const endDate   = fmtDate(extra.end_date)   || '[End Date]';
+          const tenure    = extra.tenure_months ? `${extra.tenure_months} Months` : '[Tenure]';
+          const stipend   = extra.stipend ? `&#8377;${Number(extra.stipend).toLocaleString('en-IN')}` : '[____]';
+          const benefit   = extra.benefit || 'Medical Insurance';
+          const internRole = (designation && designation !== '[Designation]') ? designation : 'Intern';
+          return wrap(`
+<p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 22px;">INTERNSHIP OFFER LETTER</p>
+<p style="margin:0 0 20px;">${todayDate}</p>
+${P(`Dear ${sal} ${empName},`)}
+${P('Congratulations!')}
+${P(`<strong>Subject:</strong> Offer Letter for the Position of Intern &ndash; ${department}`)}
+${P(`We are pleased to confirm your selection as an <strong>Intern</strong> in the <strong>${department} Department</strong> at <strong>Maxvolt Energy Industries Limited</strong>. Your training period will commence on <strong>${startDate}</strong> and will conclude on <strong>${endDate}</strong>.`)}
+${P(`During your training period, you will be entitled to a monthly stipend of <strong>${stipend}</strong>. We believe your skills and talents will be a great addition to our team, and we look forward to your contribution during your time with us.`)}
+${P('Please find below the details of your Training:')}
+<p style="margin:0 0 2px;"><strong>Position:</strong> ${internRole}</p>
+<p style="margin:0 0 2px;"><strong>Department:</strong> ${department}</p>
+<p style="margin:0 0 2px;"><strong>Training Tenure:</strong> ${tenure}</p>
+<p style="margin:0 0 2px;"><strong>Stipend:</strong> ${stipend} per month</p>
+<p style="margin:0 0 16px;"><strong>Benefit:</strong> ${benefit}</p>
+${P(`<strong>Training Period:</strong> ${startDate} to ${endDate}`)}
+${P(`As a trainee, you will be working under the supervision of the ${department} Department, and you will be expected to adhere to the company's policies and regulations.`)}
+${P('We are excited to have you join our team and look forward to a mutually beneficial and productive training experience.')}
+${P('Yours sincerely,')}
+<p style="margin:0 0 2px;font-weight:bold;">HR Manager</p>
+${sealHtml()}
+<p style="margin:8px 0 0;font-weight:bold;">Maxvolt Energy Industries Limited</p>
+<div style="clear:both;"></div>`);
+        },
+
+        internship_experience: () => {
+          const startDate = fmtDate(extra.start_date) || doj;
+          const endDate   = fmtDate(extra.end_date) || fmtDate(extra.last_working_day) || '[End Date]';
+          const workSummary = extra.work_summary || 'various activities and assignments related to their assigned department';
+          const internRole = (designation && designation !== '[Designation]') ? designation : 'Intern';
+          return wrap(`
+<p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 22px;">INTERNSHIP EXPERIENCE CERTIFICATE</p>
+${P(`<strong>Date:</strong> ${todayDate}`)}
+<p style="text-align:center;font-weight:bold;text-decoration:underline;margin:16px 0 16px;">TO WHOMSOEVER IT MAY CONCERN</p>
+${P(`This is to certify that <strong>${sal} ${empName}</strong> has successfully completed an internship with <strong>Maxvolt Energy Industries Limited</strong> as an <strong>${internRole}</strong> in the <strong>${department}</strong> Department from <strong>${startDate}</strong> to <strong>${endDate}</strong>.`)}
+${P(`During the internship period, ${pronoun2} was involved in ${workSummary}.`)}
+${P(`${pronoun2.charAt(0).toUpperCase() + pronoun2.slice(1)} demonstrated a positive attitude, willingness to learn, and professionalism while carrying out the assigned responsibilities.`)}
+${P(`We appreciate ${pronoun} efforts and contribution during the internship and wish ${pronoun} all the best for future academic and professional endeavors.`)}
+<p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
+${sealHtml()}
+<p style="margin:8px 0 0;font-weight:bold;">HR Manager</p>
+<div style="clear:both;"></div>`);
+        },
 
       };
 
@@ -12124,7 +12186,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         appointment: 'Appointment Letter', confirmation: 'Confirmation Letter', increment: 'Increment Letter',
         promotion: 'Promotion Letter', salary_revision: 'Salary Revision Letter',
         experience: 'Experience Certificate', relieving: 'Relieving Letter',
-        address_proof: 'Employment / Address Proof', warning: 'Warning Letter',
+        address_proof: 'Employment / Address Proof', warning: 'Warning Letter', internship_offer: 'Internship Offer Letter', internship_experience: 'Internship Experience Certificate',
       };
       const label   = LETTER_LABELS[letter_type] || 'HR Letter';
       const today   = new Date().toISOString().slice(0, 10);
@@ -12202,7 +12264,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         appointment: 'Appointment Letter', confirmation: 'Confirmation Letter', increment: 'Increment Letter',
         promotion: 'Promotion Letter', salary_revision: 'Salary Revision Letter',
         experience: 'Experience Certificate', relieving: 'Relieving Letter',
-        address_proof: 'Employment / Address Proof', warning: 'Warning Letter',
+        address_proof: 'Employment / Address Proof', warning: 'Warning Letter', internship_offer: 'Internship Offer Letter', internship_experience: 'Internship Experience Certificate',
       };
       const docId   = uuidv4();
       const label   = LETTER_LABELS[letter_type] || 'HR Letter';
