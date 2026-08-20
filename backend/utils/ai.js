@@ -32,7 +32,7 @@ async function callGroq(messages, { json = false } = {}) {
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(45000),
     });
   } catch (err) {
     if (err.name === 'TimeoutError') throw new Error('Groq request timed out.');

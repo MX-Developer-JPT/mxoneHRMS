@@ -8485,46 +8485,55 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
         // ── Company-wide directory (org-chart-level info: name, department,
         // designation, reporting line — the same information every employee
         // can already see on the Org Chart / Employee Directory pages, not
-        // sensitive personal data). Loaded on every call, not just when the
-        // question looks directory-related, so AskMax can reliably answer
-        // "how many employees are in Sales", "who's in HR", "who is my
-        // reporting manager", "who is the HOD of Purchase" etc. without a
-        // separate intent-classification step. Kept to active employees.
-        let empUserMap = {};
-        try {
-          const [allEmpRows, allUserRows] = await Promise.all([
-            all("SELECT data FROM entities WHERE type='Employee' AND status='active'"),
-            all("SELECT id, full_name, display_name FROM users"),
-          ]);
-          const allEmps = allEmpRows.map(r => JSON.parse(r.data));
-          for (const u of allUserRows) empUserMap[u.id] = u.display_name || u.full_name;
+        // sensitive personal data) — ONLY built when the question actually
+        // looks like it needs it. This used to load unconditionally on
+        // every single call regardless of what was asked, which for a
+        // ~300-employee company pushed a large roster into the prompt even
+        // for something like "what's my leave balance" — burning far more
+        // tokens per request than before, which on Groq's free tier trips
+        // the per-minute token rate limit (and/or pushes past the 30s
+        // request timeout) and makes AskMax appear completely broken. A
+        // simple keyword check keeps the common case (leave/salary/
+        // attendance questions) exactly as lightweight as it always was.
+        const DIRECTORY_KEYWORDS = ['department', 'employee', 'employees', 'staff', 'headcount', 'how many', 'who is', 'who are', 'hod', 'head of', 'reports to', 'reporting manager', 'org chart', 'organisation', 'organization', 'roster', 'team', 'directory', 'list of'];
+        const wantsDirectory = DIRECTORY_KEYWORDS.some(k => (question || '').toLowerCase().includes(k));
+        if (wantsDirectory) {
+          try {
+            const [allEmpRows, allUserRows] = await Promise.all([
+              all("SELECT data FROM entities WHERE type='Employee' AND status='active'"),
+              all("SELECT id, full_name, display_name FROM users"),
+            ]);
+            const allEmps = allEmpRows.map(r => JSON.parse(r.data));
+            const dirUserMap = {};
+            for (const u of allUserRows) dirUserMap[u.id] = u.display_name || u.full_name;
 
-          const deptCounts = {};
-          for (const e of allEmps) {
-            const d = e.department || 'Unassigned';
-            deptCounts[d] = (deptCounts[d] || 0) + 1;
+            const deptCounts = {};
+            for (const e of allEmps) {
+              const d = e.department || 'Unassigned';
+              deptCounts[d] = (deptCounts[d] || 0) + 1;
+            }
+            const deptSummary = Object.entries(deptCounts).sort(([, a], [, b]) => b - a)
+              .map(([d, c]) => `- ${d}: ${c} employee(s)`).join('\n');
+            parts.push(`DEPARTMENT HEADCOUNT SUMMARY (use this for "how many employees in X" — do not count rows yourself):\n${deptSummary}`);
+
+            // Full roster, capped to keep the prompt a sane size for a very
+            // large org — sorted by department so "who's in Purchase" reads
+            // as a contiguous block. Designation seniority (Head/Manager/
+            // Director/Lead/HOD in the title, or being listed as someone
+            // else's "Reports To" within the same department) is how the
+            // model should infer a department head — there's no explicit
+            // HOD field in this system's data model.
+            const ROSTER_CAP = 300;
+            const roster = allEmps
+              .slice()
+              .sort((a, b) => (a.department || '').localeCompare(b.department || '') || (a.display_name || '').localeCompare(b.display_name || ''))
+              .slice(0, ROSTER_CAP)
+              .map(e => `- ${e.display_name || dirUserMap[e.user_id] || 'Unknown'} | Code: ${e.employee_code || 'N/A'} | Dept: ${e.department || 'N/A'} | Designation: ${e.designation || 'N/A'} | Reports To: ${dirUserMap[e.reporting_manager_id] || '—'}`)
+              .join('\n');
+            parts.push(`COMPANY DIRECTORY${allEmps.length > ROSTER_CAP ? ` (first ${ROSTER_CAP} of ${allEmps.length} active employees, sorted by department)` : ''}:\n${roster}`);
+          } catch (dirErr) {
+            console.warn('[askMax] directory context build failed:', dirErr.message);
           }
-          const deptSummary = Object.entries(deptCounts).sort(([, a], [, b]) => b - a)
-            .map(([d, c]) => `- ${d}: ${c} employee(s)`).join('\n');
-          parts.push(`DEPARTMENT HEADCOUNT SUMMARY (use this for "how many employees in X" — do not count rows yourself):\n${deptSummary}`);
-
-          // Full roster, capped to keep the prompt a sane size for a very
-          // large org — sorted by department so "who's in Purchase" reads
-          // as a contiguous block. Designation seniority (Head/Manager/
-          // Director/Lead/HOD in the title, or being listed as someone
-          // else's "Reports To" within the same department) is how the
-          // model should infer a department head — there's no explicit HOD
-          // field in this system's data model.
-          const ROSTER_CAP = 600;
-          const roster = allEmps
-            .slice()
-            .sort((a, b) => (a.department || '').localeCompare(b.department || '') || (a.display_name || '').localeCompare(b.display_name || ''))
-            .slice(0, ROSTER_CAP)
-            .map(e => `- ${e.display_name || empUserMap[e.user_id] || 'Unknown'} | Code: ${e.employee_code || 'N/A'} | Dept: ${e.department || 'N/A'} | Designation: ${e.designation || 'N/A'} | Reports To: ${empUserMap[e.reporting_manager_id] || '—'}`)
-            .join('\n');
-          parts.push(`COMPANY DIRECTORY${allEmps.length > ROSTER_CAP ? ` (first ${ROSTER_CAP} of ${allEmps.length} active employees, sorted by department)` : ''}:\n${roster}`);
-        } catch (dirErr) {
-          console.warn('[askMax] directory context build failed:', dirErr.message);
         }
 
         if (uid) {
@@ -8532,7 +8541,14 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
           const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
           const emp = empRow ? JSON.parse(empRow.data) : null;
           if (emp) {
-            const managerName = emp.reporting_manager_id ? (empUserMap[emp.reporting_manager_id] || 'N/A') : 'N/A (no reporting manager set)';
+            // A single targeted lookup — cheap regardless of wantsDirectory,
+            // so "who is my reporting manager" always works without paying
+            // the full-roster token cost above.
+            let managerName = 'N/A (no reporting manager set)';
+            if (emp.reporting_manager_id) {
+              const mgrRow = await one("SELECT full_name, display_name FROM users WHERE id=$1", [emp.reporting_manager_id]);
+              managerName = mgrRow?.display_name || mgrRow?.full_name || 'N/A';
+            }
             parts.push(`EMPLOYEE PROFILE:
 - Name: ${emp.display_name || cu?.email || 'Employee'}
 - Employee Code: ${emp.employee_code || 'N/A'}
@@ -8648,6 +8664,13 @@ ${contextBlock || 'No employee context available — answer from general policy 
         answer = await callAIMessages(history);
         if (!answer) answer = "I'm unable to respond right now. Please try again.";
       } catch(e) {
+        // The frontend replaces this whole message with a generic "AI is
+        // warming up" banner (AskMax.jsx's isAiUnavailableMessage), so
+        // without logging here the ACTUAL reason (rate limit, timeout,
+        // invalid key, ...) is invisible anywhere — including to whoever's
+        // debugging a "the AI is broken" report. This is the one place that
+        // reason gets recorded.
+        console.error('[askMax] AI call failed:', e.message);
         answer = `I'm currently unavailable (${e.message}). Please contact HR directly.`;
       }
       return res.json({ success:true, answer });
