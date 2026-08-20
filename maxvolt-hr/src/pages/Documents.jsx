@@ -75,7 +75,7 @@ export default function Documents() {
       loadData();
     } catch (error) {
       console.error('Error uploading document:', error);
-      toast.error('Failed to upload document');
+      toast.error(error.message || 'Failed to upload document');
     } finally {
       setUploading(false);
     }

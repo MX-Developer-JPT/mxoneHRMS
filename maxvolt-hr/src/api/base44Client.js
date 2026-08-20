@@ -6,6 +6,43 @@ const API_BASE  = '/api';
 const getToken  = () => localStorage.getItem(TOKEN_KEY);
 const setToken  = (t) => { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); };
 
+// Phone cameras routinely produce 5-10MB photos — uploading those raw over a
+// spotty factory-floor wifi or mobile data connection is the single biggest
+// reason uploads feel "stuck" or fail outright, since payload size directly
+// drives upload time on a slow link. Resizes to a sane max dimension and
+// re-encodes as JPEG client-side before the file ever leaves the device,
+// typically cutting a multi-MB camera photo down to a few hundred KB with no
+// visible quality loss for a profile photo or a scanned document. Skipped
+// entirely (falls back to the original file untouched) for non-images, GIFs
+// (re-encoding would destroy animation), files already small enough that
+// compressing isn't worth the CPU cost, or any failure along the way —
+// never let a compression hiccup block the upload itself.
+const MAX_IMAGE_DIMENSION = 1920;
+const IMAGE_COMPRESS_QUALITY = 0.82;
+const SKIP_COMPRESSION_UNDER_BYTES = 400 * 1024;
+
+async function compressImageIfNeeded(file) {
+  if (!file || !file.type?.startsWith('image/') || file.type === 'image/gif') return file;
+  if (file.size <= SKIP_COMPRESSION_UNDER_BYTES) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(bitmap.width, bitmap.height));
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    bitmap.close?.();
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', IMAGE_COMPRESS_QUALITY));
+    if (!blob || blob.size >= file.size) return file; // compression didn't actually help — use the original
+    const newName = (file.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg';
+    return new File([blob], newName, { type: 'image/jpeg' });
+  } catch {
+    return file;
+  }
+}
+
 async function apiFetch(path, options = {}) {
   const token = getToken();
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
@@ -194,17 +231,44 @@ const integrations = {
 
     UploadFile: async ({ file }) => {
       const token = getToken();
+      const uploadFile = await compressImageIfNeeded(file);
       const fd = new FormData();
-      fd.append('file', file);
+      fd.append('file', uploadFile);
 
-      const res = await fetch(`${API_BASE}/upload`, {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: fd,
-      });
+      const attempt = async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000); // generous — mobile uploads can be slow, not stalled
+        try {
+          const res = await fetch(`${API_BASE}/upload`, {
+            method: 'POST',
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            body: fd,
+            signal: controller.signal,
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `Upload failed (${res.status})`);
+          }
+          return res.json(); // { file_url, filename, size }
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      };
 
-      if (!res.ok) throw new Error('File upload failed');
-      return res.json(); // { file_url, filename, size }
+      try {
+        return await attempt();
+      } catch (e) {
+        if (e.name === 'AbortError') throw new Error('Upload timed out — check your connection and try again.');
+        // One retry — covers the single most common failure mode on
+        // employee mobile networks (a transient drop mid-upload), instead
+        // of surfacing "upload failed" for a blip that a plain reattempt
+        // would have sailed through.
+        try { return await attempt(); }
+        catch (e2) {
+          if (e2.name === 'AbortError') throw new Error('Upload timed out — check your connection and try again.');
+          throw e2;
+        }
+      }
     },
 
     SendEmail: async ({ to, subject, body, html }) => {

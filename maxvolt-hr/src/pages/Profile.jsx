@@ -116,7 +116,7 @@ export default function Profile() {
       setEmployee(prev => ({ ...prev, profile_picture_url: file_url }));
       toast.success('Profile picture updated!');
     } catch (err) {
-      toast.error('Failed to upload photo');
+      toast.error(err.message || 'Failed to upload photo');
     }
     setUploadingPhoto(false);
   };
