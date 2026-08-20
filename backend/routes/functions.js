@@ -8482,6 +8482,12 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
 
         const parts = [];
 
+        // Tiny, always-included block (cheap enough to not matter for the
+        // rate-limit budget) so AskMax can answer "who is Jai Pratap Tyagi"
+        // / "who built/created this app" instead of not knowing.
+        parts.push(`ABOUT THIS APPLICATION'S ORIGIN (answer if asked "who built/created this app" or "who is Jai Pratap Tyagi"):
+Maxvolt One was built by Jai Pratap Tyagi, who served as its Application Owner and Go-Live Lead — a solo, in-house build from start to finish, under the sponsorship of Sachin Gupta (Business Projects & Planning). It began March 4, 2026 as a proposal to replace GreytHR with an in-house HRMS, driven by wanting full control of HR systems without per-user licensing costs. What started as attendance/leave/policy modules grew to 106 modules after studying other platforms and consulting HR teams. A key technical milestone was building "MX One Sync," custom middleware bridging Maxvolt's biometric devices (which had no cloud APIs) into the system. It shipped across web, PWA and native Android, with iOS following in September 2026.`);
+
         // ── Company-wide directory (org-chart-level info: name, department,
         // designation, reporting line — the same information every employee
         // can already see on the Org Chart / Employee Directory pages, not
@@ -12895,20 +12901,16 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       const monthsArr = ['January','February','March','April','May','June','July','August','September','October','November','December'];
       const monLabel = monthsArr[m - 1];
 
-      const Groq = (await import('groq-sdk')).default;
-      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-      const completion = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{
-          role: 'user',
-          content: `Write a 3-4 sentence professional attendance summary for ${emp.display_name || 'this employee'} for ${monLabel} ${y}.
+      let narrative;
+      try {
+        narrative = await callAI(`Write a 3-4 sentence professional attendance summary for ${emp.display_name || 'this employee'} for ${monLabel} ${y}.
 Data: Present: ${present} days, Absent: ${absent} days, Late arrivals: ${late}, WFH: ${wfh} days, Half days: ${halfDay}.
-Be specific about patterns, mention if late arrivals are a concern, if WFH is high, if absences seem high for the month. Be constructive.`
-        }],
-        temperature: 0.6, max_tokens: 200
-      });
+Be specific about patterns, mention if late arrivals are a concern, if WFH is high, if absences seem high for the month. Be constructive.`, { maxTokens: 200 });
+      } catch (aiErr) {
+        return res.json({ success: false, error: `Failed to generate: ${aiErr.message}` });
+      }
 
-      return res.json({ success: true, narrative: completion.choices[0].message.content, stats: { present, absent, late, wfh, half_day: halfDay, month: m, year: y } });
+      return res.json({ success: true, narrative, stats: { present, absent, late, wfh, half_day: halfDay, month: m, year: y } });
     }
 
     case 'getWeeklyHRDigest': {
@@ -12931,13 +12933,9 @@ Be specific about patterns, mention if late arrivals are a concern, if WFH is hi
       // High-risk attrition employees
       const highRiskRows = await all("SELECT data FROM entities WHERE type='AttritionRisk' AND data::jsonb->>'risk_level'='High'");
 
-      const Groq = (await import('groq-sdk')).default;
-      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-      const completion = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{
-          role: 'user',
-          content: `You are an AI HR assistant. Write a professional weekly HR digest summary (5-7 sentences) based on this data:
+      let digest;
+      try {
+        digest = await callAI(`You are an AI HR assistant. Write a professional weekly HR digest summary (5-7 sentences) based on this data:
 - Total active employees: ${empCount?.cnt || 0}
 - New joiners this month: ${newJoinees.length}
 - Pending leave approvals: ${pendingLeaves[0]?.cnt || 0}
@@ -12946,14 +12944,14 @@ Be specific about patterns, mention if late arrivals are a concern, if WFH is hi
 - Exits/resignations this month: ${exitRows.length}
 - Employees flagged as high attrition risk: ${highRiskRows.length}
 
-Be actionable and highlight anything that needs HR attention. Professional tone.`
-        }],
-        temperature: 0.7, max_tokens: 350
-      });
+Be actionable and highlight anything that needs HR attention. Professional tone.`, { maxTokens: 350 });
+      } catch (aiErr) {
+        return res.json({ success: false, error: `Failed to generate: ${aiErr.message}` });
+      }
 
       return res.json({
         success: true,
-        digest: completion.choices[0].message.content,
+        digest,
         stats: {
           headcount: parseInt(empCount?.cnt || 0),
           new_joiners: newJoinees.length,
@@ -12977,21 +12975,15 @@ Be actionable and highlight anything that needs HR attention. Professional tone.
 
       if (openTexts.length === 0) return res.json({ success: true, sentiment: 'neutral', themes: [], summary: 'No open text responses to analyze.' });
 
-      const Groq = (await import('groq-sdk')).default;
-      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-      const completion = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{
-          role: 'user',
-          content: `Analyze these anonymous employee survey responses and provide: 1) Overall sentiment (positive/neutral/negative), 2) Top 3-5 recurring themes, 3) A brief 2-3 sentence summary for HR.
+      let parsed = { sentiment: 'neutral', themes: [], summary: '' };
+      try {
+        const raw = await callAI(`Analyze these anonymous employee survey responses and provide: 1) Overall sentiment (positive/neutral/negative), 2) Top 3-5 recurring themes, 3) A brief 2-3 sentence summary for HR.
 Responses: ${openTexts.slice(0, 50).join(' | ')}
-Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","theme2",...], "summary": "..." }`
-        }],
-        temperature: 0.4, max_tokens: 300
-      });
-
-      let parsed = { sentiment: 'neutral', themes: [], summary: completion.choices[0].message.content };
-      try { parsed = JSON.parse(completion.choices[0].message.content); } catch {}
+Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","theme2",...], "summary": "..." }`, { json: true, maxTokens: 300 });
+        parsed = raw && typeof raw === 'object' ? raw : { sentiment: 'neutral', themes: [], summary: String(raw || '') };
+      } catch (aiErr) {
+        return res.json({ success: false, error: `Failed to generate: ${aiErr.message}` });
+      }
 
       return res.json({ success: true, survey_id, response_count: responses.length, open_text_count: openTexts.length, ...parsed });
     }

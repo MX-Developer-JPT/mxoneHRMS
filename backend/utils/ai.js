@@ -102,11 +102,11 @@ export async function callAIMessages(messages, opts = {}) {
   return useGroq() ? callGroq(messages, opts) : callOllama(messages, opts);
 }
 
-export async function callAI(prompt, { system = '', json = false } = {}) {
+export async function callAI(prompt, { system = '', json = false, maxTokens } = {}) {
   const messages = [];
   if (system) messages.push({ role: 'system', content: system });
   messages.push({ role: 'user', content: prompt });
-  return callAIMessages(messages, { json });
+  return callAIMessages(messages, { json, ...(maxTokens ? { maxTokens } : {}) });
 }
 
 export async function checkAI() {

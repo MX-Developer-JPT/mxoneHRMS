@@ -34,6 +34,7 @@ export default function UserRoleManagement() {
   const [users, setUsers] = useState([]);
   const [filteredUsers, setFilteredUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [deptFilter, setDeptFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [editUser, setEditUser] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -61,16 +62,18 @@ export default function UserRoleManagement() {
 
   useEffect(() => {
     const term = searchTerm.toLowerCase();
-    setFilteredUsers(
-      term
-        ? users.filter(u =>
-            u.full_name?.toLowerCase().includes(term) ||
-            u.email?.toLowerCase().includes(term) ||
-            (u.custom_role || u.role)?.toLowerCase().includes(term)
-          )
-        : users
-    );
-  }, [searchTerm, users]);
+    let result = term
+      ? users.filter(u =>
+          u.full_name?.toLowerCase().includes(term) ||
+          u.email?.toLowerCase().includes(term) ||
+          (u.custom_role || u.role)?.toLowerCase().includes(term)
+        )
+      : users;
+    if (deptFilter !== 'all') {
+      result = result.filter(u => employees[u.id]?.department === deptFilter);
+    }
+    setFilteredUsers(result);
+  }, [searchTerm, deptFilter, users, employees]);
 
   const loadUsers = async () => {
     try {
@@ -274,14 +277,29 @@ export default function UserRoleManagement() {
         {/* Search */}
         <Card className="mb-6">
           <CardContent className="pt-6">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-              <Input
-                placeholder="Search by name, email, or role..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10"
-              />
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+                <Input
+                  placeholder="Search by name, email, or role..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10"
+                />
+              </div>
+              {/* Same Department entities the Department Management page
+                  manages — filters the list below by each user's linked
+                  Employee.department, so this always reflects whatever
+                  departments actually exist rather than a fixed list. */}
+              <Select value={deptFilter} onValueChange={setDeptFilter}>
+                <SelectTrigger className="sm:w-56"><SelectValue placeholder="All Departments" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Departments</SelectItem>
+                  {departments.map(d => (
+                    <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </CardContent>
         </Card>
