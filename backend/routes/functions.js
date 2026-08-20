@@ -8482,17 +8482,64 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
 
         const parts = [];
 
+        // ── Company-wide directory (org-chart-level info: name, department,
+        // designation, reporting line — the same information every employee
+        // can already see on the Org Chart / Employee Directory pages, not
+        // sensitive personal data). Loaded on every call, not just when the
+        // question looks directory-related, so AskMax can reliably answer
+        // "how many employees are in Sales", "who's in HR", "who is my
+        // reporting manager", "who is the HOD of Purchase" etc. without a
+        // separate intent-classification step. Kept to active employees.
+        let empUserMap = {};
+        try {
+          const [allEmpRows, allUserRows] = await Promise.all([
+            all("SELECT data FROM entities WHERE type='Employee' AND status='active'"),
+            all("SELECT id, full_name, display_name FROM users"),
+          ]);
+          const allEmps = allEmpRows.map(r => JSON.parse(r.data));
+          for (const u of allUserRows) empUserMap[u.id] = u.display_name || u.full_name;
+
+          const deptCounts = {};
+          for (const e of allEmps) {
+            const d = e.department || 'Unassigned';
+            deptCounts[d] = (deptCounts[d] || 0) + 1;
+          }
+          const deptSummary = Object.entries(deptCounts).sort(([, a], [, b]) => b - a)
+            .map(([d, c]) => `- ${d}: ${c} employee(s)`).join('\n');
+          parts.push(`DEPARTMENT HEADCOUNT SUMMARY (use this for "how many employees in X" — do not count rows yourself):\n${deptSummary}`);
+
+          // Full roster, capped to keep the prompt a sane size for a very
+          // large org — sorted by department so "who's in Purchase" reads
+          // as a contiguous block. Designation seniority (Head/Manager/
+          // Director/Lead/HOD in the title, or being listed as someone
+          // else's "Reports To" within the same department) is how the
+          // model should infer a department head — there's no explicit HOD
+          // field in this system's data model.
+          const ROSTER_CAP = 600;
+          const roster = allEmps
+            .slice()
+            .sort((a, b) => (a.department || '').localeCompare(b.department || '') || (a.display_name || '').localeCompare(b.display_name || ''))
+            .slice(0, ROSTER_CAP)
+            .map(e => `- ${e.display_name || empUserMap[e.user_id] || 'Unknown'} | Code: ${e.employee_code || 'N/A'} | Dept: ${e.department || 'N/A'} | Designation: ${e.designation || 'N/A'} | Reports To: ${empUserMap[e.reporting_manager_id] || '—'}`)
+            .join('\n');
+          parts.push(`COMPANY DIRECTORY${allEmps.length > ROSTER_CAP ? ` (first ${ROSTER_CAP} of ${allEmps.length} active employees, sorted by department)` : ''}:\n${roster}`);
+        } catch (dirErr) {
+          console.warn('[askMax] directory context build failed:', dirErr.message);
+        }
+
         if (uid) {
           // Employee record
           const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
           const emp = empRow ? JSON.parse(empRow.data) : null;
           if (emp) {
+            const managerName = emp.reporting_manager_id ? (empUserMap[emp.reporting_manager_id] || 'N/A') : 'N/A (no reporting manager set)';
             parts.push(`EMPLOYEE PROFILE:
 - Name: ${emp.display_name || cu?.email || 'Employee'}
 - Employee Code: ${emp.employee_code || 'N/A'}
 - Department: ${emp.department || 'N/A'} | Designation: ${emp.designation || 'N/A'}
 - Status: ${emp.employee_status || 'N/A'} | Date of Joining: ${emp.date_of_joining || 'N/A'}
-- Work Location: ${emp.work_location || 'N/A'} | Employment Type: ${emp.employment_type || 'N/A'}`);
+- Work Location: ${emp.work_location || 'N/A'} | Employment Type: ${emp.employment_type || 'N/A'}
+- Reporting Manager: ${managerName}`);
           }
 
           // Leave balances with policy names
@@ -8566,16 +8613,21 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
       const systemMsg = {
         role: 'system',
         content: `You are AskMax, the AI HR copilot for Maxvolt Energy Industries Limited (India, Manufacturing/Energy sector).
-You help employees with HR policies, leave, payroll, attendance, benefits, and procedures.
+You help everyone at the company — employees, managers, HR, recruiters, management — with HR policies, leave, payroll, attendance, benefits, procedures, and company/org-structure questions (headcount, department rosters, reporting lines, department heads).
 
-You have access to the CURRENT EMPLOYEE'S REAL HR DATA below. Use it to give specific, personalised answers (e.g. quote their actual leave balance, payslip figures, or pending items). When the user asks about "my" anything, answer from this data.
+You have access to the CURRENT USER'S REAL HR DATA (EMPLOYEE PROFILE, leave balances, payslip, attendance, open items) plus a company-wide DEPARTMENT HEADCOUNT SUMMARY and COMPANY DIRECTORY below. Use the personal data to answer anything about "my" leave/salary/attendance/manager/employee code. Use the directory data to answer org-structure questions, e.g.:
+- "How many employees are in Sales?" → read the count straight off DEPARTMENT HEADCOUNT SUMMARY, don't count rows yourself.
+- "Who are the employees in HR department?" → list names from COMPANY DIRECTORY where Dept = HR.
+- "Who is my reporting manager?" → the Reporting Manager line in EMPLOYEE PROFILE.
+- "Who is the HOD of Purchase?" → there is no explicit "head of department" field in this system, so infer it from COMPANY DIRECTORY: within that department, the person whose designation signals seniority (Head, Manager, Director, Lead, HOD, VP) and/or who appears as the "Reports To" for other people in that same department. Say plainly that this is inferred from designation/reporting-line data, not an explicitly configured title, if there's any ambiguity — never state it as certain when it isn't.
 
 Rules:
 - Be concise, friendly, professional. Use bullet points for lists.
 - Prefer the official COMPANY POLICIES text when answering policy questions; quote specifics.
 - If the data needed isn't in the context, say so and suggest contacting HR — never invent figures.
-- For numbers (leave balance, salary), only state values present in the context.
-- Never reveal another employee's personal data.
+- For numbers (leave balance, salary, headcount), only state values present in the context.
+- Directory-level info (name, department, designation, who reports to whom) is fine to share with anyone asking — it's the same information already visible to every employee on the Org Chart / Employee Directory pages in the app.
+- Never reveal another employee's SENSITIVE personal data (salary/payslip figures, personal leave/attendance detail, contact info, documents) — that stays scoped to the asking user's own EMPLOYEE PROFILE/leave/payslip/attendance data only, never someone else's.
 
 ──────── EMPLOYEE CONTEXT ────────
 ${contextBlock || 'No employee context available — answer from general policy knowledge and suggest contacting HR for specifics.'}

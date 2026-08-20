@@ -146,12 +146,15 @@ const managementMenuGroups = [
 ];
 
 // Middle management — scoped to their own team (Employee.reporting_manager_id
-// === them). Deliberately a trimmed-down version of managementMenuGroups:
-// drops org-wide-only sections (full Recruitment pipeline, org-wide Talent
-// Grid / Skill Grid, AskMax AI, Recruitment Analytics) that a line manager
-// has no authorization for and that the backend doesn't team-scope. Every
-// item kept here is backed by real reporting_manager_id-based enforcement
-// server-side, not just hidden in the UI.
+// === them, plus their downstream hierarchy where a page supports it — see
+// src/lib/hierarchy.js). Deliberately a trimmed-down version of
+// managementMenuGroups: drops org-wide-only sections (full Recruitment
+// pipeline, org-wide Talent Grid / Skill Grid, Recruitment Analytics) that a
+// line manager has no authorization for and that the backend doesn't
+// team-scope. AskMax AI is included (every role except gate_admin gets it —
+// it answers from the asking user's own scoped data, same as every other
+// page here). Every item kept here is backed by real reporting_manager_id-
+// based enforcement server-side, not just hidden in the UI.
 const managerMenuGroups = [
   { label: 'Overview', items: [
     { name: 'Dashboard',                icon: LayoutDashboard, page: 'Dashboard' },
@@ -171,6 +174,7 @@ const managerMenuGroups = [
   ]},
   { label: 'Team Insights', items: [
     { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
+    { name: 'AskMax AI',                icon: Sparkles,        page: 'AskMax' },
   ]},
   { label: 'My Attendance', items: [
     { name: 'Mark Attendance',          icon: Clock,           page: 'MarkAttendance' },
@@ -348,6 +352,7 @@ const recruiterMenuGroups = [
     { name: 'Helpdesk',                 icon: HelpCircle,      page: 'Helpdesk' },
     { name: 'Employee Portal',          icon: Users,           page: 'EmployeeEngagementPortal' },
     { name: 'Org Chart',                icon: Network,         page: 'OrgChart' },
+    { name: 'AskMax AI',                icon: Sparkles,        page: 'AskMax' },
   ]},
   { label: 'Account', items: [
     { name: 'My Profile',               icon: User2,           page: 'Profile' },
