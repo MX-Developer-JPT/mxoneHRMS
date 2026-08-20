@@ -22,6 +22,7 @@ import {
 import ExitDetailPanel from '../components/exit/ExitDetailPanel';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import { resolveHierarchy } from '@/lib/hierarchy';
 
 const STATUS_CONFIG = {
   submitted:          { label: 'Submitted',        color: 'bg-blue-100 text-blue-800' },
@@ -95,12 +96,15 @@ export default function ExitManagement() {
       let filtered = allExits;
       // 'management' (top-level) sees the full org, same as HR — only
       // 'manager' (scoped middle management) is restricted to their own
-      // reports' exits (plus anything already in dept-clearance stages,
-      // which they may need to action regardless of reporting line).
+      // downstream hierarchy's exits (plus anything already in
+      // dept-clearance stages, which they may need to action regardless of
+      // reporting line). This is VISIBILITY only: ExitDetailPanel's
+      // canManagerAct independently requires a DIRECT report before showing
+      // Approve/Reject, so an indirect report's exit is visible but read-only.
       if (!isHR && role !== 'management') {
         if (role === 'manager') {
-          const reporteeIds = allEmps.filter(e => e.reporting_manager_id === me.id).map(e => e.user_id);
-          filtered = allExits.filter(e => reporteeIds.includes(e.user_id) || ['clearance_pending','clearance_done'].includes(e.status));
+          const { downstreamIds } = resolveHierarchy(me.id, allEmps);
+          filtered = allExits.filter(e => downstreamIds.has(e.user_id) || ['clearance_pending','clearance_done'].includes(e.status));
         } else if (isDeptClearance) {
           filtered = allExits.filter(e => ['clearance_pending','clearance_done'].includes(e.status));
         } else {

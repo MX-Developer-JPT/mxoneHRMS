@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import { format, differenceInDays } from 'date-fns';
 import { Calendar, Loader2, FileText, Search, Plus, UserCheck, Mail, Send } from 'lucide-react';
+import { resolveHierarchy, isDirectReport } from '@/lib/hierarchy';
 
 const CRITERIA = [
   { key: 'work_quality',         label: 'Work Quality' },
@@ -369,9 +370,15 @@ export default function ConfirmationManagement() {
   const hrPendingReviews   = reviews.filter(r => r.status === 'manager_submitted');
   const mgmtPendingReviews = reviews.filter(r => r.status === 'hr_approved');
 
-  // Employees visible to current user
+  // Employees visible to current user — a manager sees their whole downstream
+  // team (direct + indirect reports). This is VISIBILITY only: "Submit
+  // Review" is gated separately below by isDirectReport, so an indirect
+  // report is visible here but stays read-only.
   const myTeamEmps = isManager && user
-    ? allEmps.filter(e => e.reporting_manager_id === user.id)
+    ? (() => {
+        const { downstreamIds } = resolveHierarchy(user.id, allEmps);
+        return allEmps.filter(e => downstreamIds.has(e.user_id));
+      })()
     : allEmps;
 
   // Filtered by search
@@ -489,6 +496,10 @@ export default function ConfirmationManagement() {
                       const completed = hasCompletedReview(emp.user_id);
                       const overdue   = emp.daysLeft != null && emp.daysLeft < 0;
                       const urgent    = emp.daysLeft != null && emp.daysLeft <= 7 && emp.daysLeft >= 0;
+                      // A manager may only submit a review for a DIRECT report —
+                      // an indirect report (visible via the downstream hierarchy
+                      // filter above) is visible here but not actionable.
+                      const canManagerSubmit = !isManager || isDirectReport(emp.user_id, user?.id, allEmps);
                       return (
                         <div key={emp.id} className="border rounded-lg p-4 flex items-center justify-between gap-4">
                           <div className="flex-1 min-w-0">
@@ -519,7 +530,7 @@ export default function ConfirmationManagement() {
                             {active && (
                               <span className="text-xs text-blue-600 font-medium self-center">In Progress</span>
                             )}
-                            {!active && (isManager || isHR) && (
+                            {!active && (isHR || (isManager && canManagerSubmit)) && (
                               <Button
                                 size="sm"
                                 onClick={() => isHR ? openInitiate(emp) : openSubmit(emp)}

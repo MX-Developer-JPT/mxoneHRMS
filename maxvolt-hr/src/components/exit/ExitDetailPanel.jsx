@@ -18,6 +18,7 @@ import {
   Send, Edit3
 } from 'lucide-react';
 import { openLetterheadPrintWindow } from '@/utils/letterhead';
+import { isDirectReport } from '@/lib/hierarchy';
 
 /* ── helpers ─────────────────────────────────────── */
 const STATUS_CONFIG = {
@@ -101,7 +102,12 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
 
   const role = currentUser?.custom_role || currentUser?.role;
   const isHR = role === 'hr' || role === 'admin';
-  const isManager = currentUser?.id === exit.manager_id || role === 'management' || role === 'manager';
+  // A 'manager' may only act (approve/reject) on a DIRECT report's exit —
+  // ExitManagement.jsx broadens the list a manager can VIEW to their whole
+  // downstream hierarchy, so this check keeps indirect reports' exits
+  // visible-but-read-only here.
+  const canManagerAct = role === 'manager' && isDirectReport(exit.user_id, currentUser?.id, employees);
+  const isManager = currentUser?.id === exit.manager_id || role === 'management' || canManagerAct;
 
   const addAudit = (existing, action, cmt) => ([
     ...(existing || []),
