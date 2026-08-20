@@ -16,6 +16,7 @@ import { safeDate } from '@/lib/dateUtils';
 import LeavePolicyManager from '../components/leave/LeavePolicyManager';
 import LeaveAllocationPanel from '../components/leave/LeaveAllocationPanel';
 import HRApplyOnBehalf from '../components/leave/HRApplyOnBehalf';
+import { resolveHierarchy } from '@/lib/hierarchy';
 
 const STATUS_COLORS = {
   pending: 'bg-yellow-100 text-yellow-800',
@@ -118,10 +119,17 @@ export default function LeaveManagement() {
       const isTeamManagerOnly = currentUser.role === 'manager' || currentUser.custom_role === 'manager';
 
       if (isTeamManagerOnly && !isHR) {
-        // Manager sees only leaves from their direct reports
-        const subordinates = empRecords.filter(e => e.reporting_manager_id === currentUser.id);
-        const subUserIds = new Set(subordinates.map(e => e.user_id));
-        requests = requests.filter(r => subUserIds.has(r.user_id));
+        // Visibility is hierarchical — a manager sees leave requests from
+        // their whole downstream team (direct + indirect reports), not just
+        // direct reports. This is VISIBILITY only: canApproveLevel() below
+        // independently checks direct-report-ness (leaveEmp.reporting_
+        // manager_id === user.id) before ever showing an Approve/Reject
+        // control, so an indirect report's request is visible here but
+        // stays read-only — exactly the "monitor, don't override" split
+        // the hierarchy model requires. Never widen canApproveLevel to use
+        // this same downstream set.
+        const { downstreamIds } = resolveHierarchy(currentUser.id, empRecords);
+        requests = requests.filter(r => downstreamIds.has(r.user_id));
       }
 
       setLeaveRequests(requests);

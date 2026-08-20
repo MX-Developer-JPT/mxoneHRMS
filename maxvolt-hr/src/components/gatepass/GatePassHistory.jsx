@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import { LogOut, LogIn, Clock, History, Search, Filter } from 'lucide-react';
+import { resolveHierarchy } from '@/lib/hierarchy';
 
 const STATUS_COLORS = {
   pending_approval: 'bg-yellow-100 text-yellow-800',
@@ -69,10 +70,12 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
     if (filterUserId) {
       filtered = allPasses.filter(p => p.employee_user_id === filterUserId);
     } else if (filterManagerId) {
-      const myEmpIds = allEmployees
-        .filter(e => e.reporting_manager_id === filterManagerId)
-        .map(e => e.user_id);
-      filtered = allPasses.filter(p => myEmpIds.includes(p.employee_user_id));
+      // History is a monitoring view, not an action inbox — a manager can
+      // see their whole downstream hierarchy's gate pass history here, not
+      // just direct reports. (GatePassApproval's separate "Requests" tab,
+      // where actual Approve/Reject happens, correctly stays direct-only.)
+      const { downstreamIds } = resolveHierarchy(filterManagerId, allEmployees);
+      filtered = allPasses.filter(p => downstreamIds.has(p.employee_user_id));
     }
 
     setUsers(userMap);

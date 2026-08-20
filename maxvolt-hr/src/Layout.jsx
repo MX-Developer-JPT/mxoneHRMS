@@ -559,6 +559,44 @@ export default function Layout({ children, currentPageName }) {
     return () => { handle?.remove(); };
   }, [user, ensureBackgroundGeofence]);
 
+  // Android hardware back button / edge gesture — previously unhandled
+  // entirely, so it either did nothing or exited the app outright depending
+  // on the device, instead of navigating back through the app the way every
+  // native Android app is expected to. Priority order matches what a user
+  // actually expects pressing back: close whatever's on top first, THEN
+  // fall back to page navigation, THEN exit only once there's truly nowhere
+  // left to go.
+  //   1. The "More" bottom sheet (Layout's own custom overlay, not a Radix
+  //      primitive, so it needs its own explicit check).
+  //   2. Any open Radix dialog/sheet/popover/dropdown (every one of them —
+  //      DialogContent, Select, Popover, DropdownMenu — closes itself on an
+  //      Escape keydown by Radix's own built-in handling, so dispatching one
+  //      synthetic Escape event closes whichever is actually on top without
+  //      this needing to know about each individual dialog in the app).
+  //   3. Otherwise, real browser history — same navigate(-1) the header's
+  //      visible Back button already uses, so hardware back and the on-screen
+  //      Back button always agree.
+  //   4. Only exit the app when there's nowhere left to go back to.
+  useEffect(() => {
+    let handle;
+    (async () => {
+      try {
+        const { App } = await import('@capacitor/app');
+        handle = await App.addListener('backButton', ({ canGoBack }) => {
+          if (moreSheetOpen) { setMoreSheetOpen(false); return; }
+          const openOverlay = document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [data-radix-popper-content-wrapper]');
+          if (openOverlay) {
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+            return;
+          }
+          if (canGoBack) navigate(-1);
+          else App.exitApp();
+        });
+      } catch { /* not running inside the native shell */ }
+    })();
+    return () => { handle?.remove(); };
+  }, [moreSheetOpen, navigate]);
+
   const loadUser = async () => {
     try {
       const currentUser = await base44.auth.me();

@@ -14,6 +14,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import { resolveHierarchy, isDirectReport } from '@/lib/hierarchy';
 
 const REASON_LABELS = {
   missed_punch: 'Missed Punch', biometric_failure: 'Biometric Failure',
@@ -66,9 +67,14 @@ export default function RegularisationApproval() {
 
       let filtered = allReqs;
       if (!isHR) {
-        // Manager sees all requests from their direct reports (all statuses)
-        const teamUserIds = empRecords.filter(e => e.reporting_manager_id === currentUser.id).map(e => e.user_id);
-        filtered = allReqs.filter(r => teamUserIds.includes(r.user_id));
+        // Visibility is hierarchical — a manager sees regularisation
+        // requests from their whole downstream team (direct + indirect
+        // reports), all statuses. This is VISIBILITY only: the per-request
+        // canManagerAct check below independently requires the request's
+        // employee to be a DIRECT report before showing Approve/Reject/Send
+        // Back, so an indirect report's request is visible but read-only.
+        const { downstreamIds } = resolveHierarchy(currentUser.id, empRecords);
+        filtered = allReqs.filter(r => downstreamIds.has(r.user_id));
       }
 
       setRequests(filtered);
@@ -280,10 +286,14 @@ export default function RegularisationApproval() {
               {employeeGroups.map(([uid, empReqs]) => {
                 const empName = getEmployeeName(uid);
                 const empDept = getEmployeeDept(uid);
+                // Only a DIRECT report's requests are actionable by a
+                // manager — an indirect report (visible via the downstream
+                // hierarchy filter above) never gets bulk actions either.
+                const empIsDirectReport = isHR || isDirectReport(uid, user?.id, employees);
                 const actionableIds = empReqs
                   .filter(r => isHR
                     ? (r.status === 'pending' || r.status === 'manager_approved')
-                    : (r.status === 'pending' || r.status === 'sent_back'))
+                    : (empIsDirectReport && (r.status === 'pending' || r.status === 'sent_back')))
                   .map(r => r.id);
                 return (
                   <div key={uid} className="border rounded-xl overflow-hidden">
@@ -320,7 +330,7 @@ export default function RegularisationApproval() {
                     <div className="divide-y">
                       {empReqs.map(req => {
                         const cfg = statusConfig[req.status] || statusConfig.pending;
-                        const canManagerAct = !isHR && (req.status === 'pending' || req.status === 'sent_back');
+                        const canManagerAct = !isHR && empIsDirectReport && (req.status === 'pending' || req.status === 'sent_back');
                         const canHRAct = isHR && (req.status === 'manager_approved' || req.status === 'pending');
                         const canAct = canManagerAct || canHRAct;
                         const isSelected = bulkSelected.includes(req.id);

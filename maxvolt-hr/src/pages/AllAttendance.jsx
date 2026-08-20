@@ -14,6 +14,7 @@ import { toast } from 'sonner';
 import MobileSelect from '@/components/MobileSelect';
 import AttendanceDetailsDialog from '@/components/attendance/AttendanceDetailsDialog';
 import BiometricSyncStatus from '@/components/attendance/BiometricSyncStatus';
+import { resolveHierarchy } from '@/lib/hierarchy';
 
 const STATUS_COLORS = {
   present: 'bg-green-100 text-green-800 border-green-200',
@@ -166,7 +167,14 @@ export default function AllAttendance() {
       let emps = empRecords.map(e => ({ ...e, _user: users.find(u => u.id === e.user_id) }));
 
       if (userRole === 'manager') {
-        emps = emps.filter(e => e.reporting_manager_id === currentUser.id);
+        // Visibility is hierarchical (direct + indirect reports), not just
+        // direct reports — a manager can see their whole downstream team's
+        // attendance. This page has no approve/reject action, so there's no
+        // approval-authority concern here; that's enforced independently on
+        // the actual approval pages (Leave/Regularisation/Reimbursement/
+        // GatePass) and again server-side regardless of what this shows.
+        const { directIds, downstreamIds } = resolveHierarchy(currentUser.id, empRecords);
+        emps = emps.map(e => ({ ...e, _isDirectReport: directIds.has(e.user_id) })).filter(e => downstreamIds.has(e.user_id));
       }
       // hr, admin, management see all employees — no filtering
 

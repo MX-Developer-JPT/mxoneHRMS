@@ -10,6 +10,10 @@ import HREmployeeEditPanel from '../components/employees/HREmployeeEditPanel';
 import { Badge } from "@/components/ui/badge";
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import { resolveHierarchy } from '@/lib/hierarchy';
+
+const DIRECT_GROUP = 'Direct Reports — you approve their requests';
+const INDIRECT_GROUP = 'Indirect Reports — visibility only, approved by their own manager';
 
 export default function Employees() {
   const [employees, setEmployees] = useState([]);
@@ -52,11 +56,19 @@ export default function Employees() {
       let updatedEmpRecords = await base44.entities.Employee.list('-created_date', 500);
 
       const userRole = currentUser.custom_role || currentUser.role;
-      // Only 'manager' (scoped middle management) is restricted to their own
-      // direct reports here — 'management' (top-level: director/CEO/MD) sees
-      // the full org, same as HR/admin.
+      // Only 'manager' (scoped middle management) is restricted here —
+      // 'management' (top-level: director/CEO/MD) sees the full org, same
+      // as HR/admin. A manager sees their WHOLE downstream hierarchy
+      // (direct + indirect reports), not just direct reports — visibility
+      // and approval authority are different things; direct/indirect is
+      // tagged per-employee below and drives the Direct/Indirect grouping,
+      // never who can approve what (that's enforced independently on each
+      // approval page, and again server-side regardless of what this page
+      // shows).
+      let directIds = new Set(), downstreamIds = new Set();
       if (userRole === 'manager') {
-        updatedEmpRecords = updatedEmpRecords.filter(e => e.reporting_manager_id === currentUser.id);
+        ({ directIds, downstreamIds } = resolveHierarchy(currentUser.id, updatedEmpRecords));
+        updatedEmpRecords = updatedEmpRecords.filter(e => downstreamIds.has(e.user_id));
       }
 
       const enrichedEmps = updatedEmpRecords
@@ -65,7 +77,8 @@ export default function Employees() {
           const user = users.find(u => u.id === emp.user_id);
           return {
             ...emp,
-            user: user ? { ...user, display_name: user.display_name || user.full_name } : user
+            user: user ? { ...user, display_name: user.display_name || user.full_name } : user,
+            _isDirectReport: userRole === 'manager' ? directIds.has(emp.user_id) : undefined,
           };
         })
         // HR/admin/recruiter are operators of the app, not employees — the
@@ -157,8 +170,16 @@ export default function Employees() {
     setExporting(false);
   };
 
+  // A manager's "My Team" is grouped by Direct vs Indirect report instead of
+  // department — the distinction the whole hierarchical-visibility model
+  // hinges on (requirement: direct reports are who this manager can
+  // approve for; indirect reports are visible but approved by someone
+  // else). Everyone else (HR/admin/management) keeps the department view.
+  const isManagerView = currentUser && (currentUser.custom_role || currentUser.role) === 'manager';
   const departmentGroups = filteredEmployees.reduce((groups, emp) => {
-    const dept = emp.department || 'Unassigned';
+    const dept = isManagerView
+      ? (emp._isDirectReport ? DIRECT_GROUP : INDIRECT_GROUP)
+      : (emp.department || 'Unassigned');
     if (!groups[dept]) groups[dept] = [];
     groups[dept].push(emp);
     return groups;
@@ -295,6 +316,9 @@ export default function Employees() {
                                 <Badge className={`${statusColors[emp.status]} mt-1`}>
                                   {emp.status?.replace('_', ' ').toUpperCase()}
                                 </Badge>
+                                {emp._isDirectReport === false && (
+                                  <Badge variant="outline" className="ml-1 mt-1 text-xs text-gray-500">Indirect — via their manager</Badge>
+                                )}
                               </div>
                             </div>
                             <div className="mt-3 space-y-2 text-sm">
