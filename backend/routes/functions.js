@@ -8523,7 +8523,7 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
             // else's "Reports To" within the same department) is how the
             // model should infer a department head — there's no explicit
             // HOD field in this system's data model.
-            const ROSTER_CAP = 300;
+            const ROSTER_CAP = 150;
             const roster = allEmps
               .slice()
               .sort((a, b) => (a.department || '').localeCompare(b.department || '') || (a.display_name || '').localeCompare(b.display_name || ''))
@@ -8605,11 +8605,19 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
           }
         }
 
-        // Active company policies (grounding documents)
+        // Active company policies (grounding documents) — trimmed to titles
+        // only, not full descriptions. This model's Groq free-tier token
+        // budget has turned out to be tight enough that even the
+        // pre-existing policy block (40 policies x 400 chars, unrelated to
+        // the directory feature above) can trip a 413 rate_limit_exceeded
+        // rejection on its own. Titles are enough for the model to know
+        // what policies exist and mention them by name; it can tell the
+        // user to check that policy in Company Policies rather than quoting
+        // the full text verbatim.
         const policyRows = (await all("SELECT data FROM entities WHERE type='CompanyPolicy'")).map(r => JSON.parse(r.data)).filter(pp => pp.is_active !== false);
         if (policyRows.length) {
-          parts.push(`COMPANY POLICIES (official):\n` + policyRows.slice(0, 40).map(pp =>
-            `- [${pp.category || 'general'}] ${pp.title}: ${(pp.description || '').slice(0, 400)}`
+          parts.push(`COMPANY POLICIES ON FILE (titles only — refer the user to the Company Policies page for full text):\n` + policyRows.slice(0, 25).map(pp =>
+            `- [${pp.category || 'general'}] ${pp.title}`
           ).join('\n'));
         }
 
@@ -8622,6 +8630,17 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
 
         parts.unshift(`Today's date: ${todayStr}. Current financial year: ${currentFY}.`);
         contextBlock = parts.join('\n\n');
+
+        // Hard safety cap regardless of what got assembled above — this
+        // Groq account's actual per-request token limit for the 120b model
+        // isn't visible from here, so rather than keep guessing at which
+        // individual block is too big, guarantee the whole context can
+        // never exceed a conservative budget. ~9000 chars is roughly
+        // 2200-2500 tokens, comfortably under even a tight free-tier cap.
+        const CONTEXT_CHAR_CAP = 9000;
+        if (contextBlock.length > CONTEXT_CHAR_CAP) {
+          contextBlock = contextBlock.slice(0, CONTEXT_CHAR_CAP) + '\n\n[Context truncated to stay within the AI provider\'s request size limit.]';
+        }
       } catch (ctxErr) {
         console.warn('[askMax] context build failed:', ctxErr.message);
       }
@@ -8652,7 +8671,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
       const history = [
         systemMsg,
-        ...(conversationHistory || []).slice(-8).map(m => ({
+        ...(conversationHistory || []).slice(-4).map(m => ({
           role: m.role === 'assistant' ? 'assistant' : 'user',
           content: m.content
         })),
@@ -8661,7 +8680,12 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
       let answer;
       try {
-        answer = await callAIMessages(history);
+        // A chat answer rarely needs the full 2048-token default completion
+        // budget, and this provider's rate limit appears to count the
+        // requested max_tokens toward the per-request cap even before any
+        // output is generated (the 413s seen were rejected with 0 tokens
+        // processed) — so trimming this also helps requests clear the cap.
+        answer = await callAIMessages(history, { maxTokens: 1024 });
         if (!answer) answer = "I'm unable to respond right now. Please try again.";
       } catch(e) {
         // The frontend replaces this whole message with a generic "AI is

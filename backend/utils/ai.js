@@ -13,13 +13,13 @@ const useGroq = () => !!GROQ_KEY;
 
 // ── Groq ────────────────────────────────────────────────────
 
-async function callGroq(messages, { json = false } = {}) {
+async function callGroq(messages, { json = false, maxTokens = 2048 } = {}) {
   const apiKey = GROQ_KEY;
   const body = {
     model: GROQ_MODEL,
     messages,
     temperature: json ? 0.1 : 0.7,
-    max_tokens: 2048,
+    max_tokens: maxTokens,
     ...(json ? { response_format: { type: 'json_object' } } : {}),
   };
 
