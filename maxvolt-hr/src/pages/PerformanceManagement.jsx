@@ -10,6 +10,7 @@ import { ReviewStatusBadge, RatingBadge } from '@/components/pms/ReviewStatusBad
 import { RatingDistributionChart, TopPerformersChart } from '@/components/pms/TeamPerformanceChart';
 import RatingStars from '@/components/pms/RatingStars';
 import UnderDevelopmentBanner from '@/components/UnderDevelopmentBanner';
+import { resolveHierarchy, isDirectReport } from '@/lib/hierarchy';
 
 export default function PerformanceManagement() {
   const [user, setUser] = useState(null);
@@ -84,6 +85,12 @@ export default function PerformanceManagement() {
 
   const isHR = user?.role === 'admin' || user?.role === 'hr';
   const isMgr = user?.role === 'management' || isHR;
+
+  // Visibility for "Initiate Appraisal Review" — a manager's whole downstream
+  // hierarchy (direct + indirect reports), not just direct reports. Actually
+  // starting a review is still gated per-row to direct reports only.
+  const visibleTeamEmps = isHR ? employees : resolveHierarchy(user?.id, employees).downstreamIds;
+  const visibleAppraisalEmps = isHR ? employees : employees.filter(e => visibleTeamEmps.has(e.user_id));
 
   const handleAssignGoal = async (form) => {
     await base44.entities.Goal.create({ ...form, manager_user_id: user.id, status: 'pending_acceptance' });
@@ -281,9 +288,14 @@ export default function PerformanceManagement() {
                     <h3 className="font-semibold text-gray-800">Initiate Appraisal Review</h3>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                    {employees.filter(e => e.reporting_manager_id === user?.id || isHR).slice(0, 9).map(emp => {
+                    {visibleAppraisalEmps.slice(0, 9).map(emp => {
                       const u = userMap[emp.user_id];
                       const hasReview = reviews.some(r => r.employee_user_id === emp.user_id);
+                      // A manager may only INITIATE a review for a DIRECT
+                      // report — the broadened list above also surfaces
+                      // indirect reports (visible for monitoring), but
+                      // starting a review for them stays disallowed.
+                      const canInitiate = isHR || isDirectReport(emp.user_id, user?.id, employees);
                       return (
                         <div key={emp.id} className="border rounded-lg p-3 flex items-center justify-between gap-2">
                           <div>
@@ -292,7 +304,9 @@ export default function PerformanceManagement() {
                           </div>
                           {hasReview
                             ? <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Review Active</span>
-                            : <Button size="sm" variant="outline" className="text-xs" onClick={() => handleInitiateReview(emp.user_id)}>Start Review</Button>
+                            : canInitiate
+                              ? <Button size="sm" variant="outline" className="text-xs" onClick={() => handleInitiateReview(emp.user_id)}>Start Review</Button>
+                              : <span className="text-xs text-gray-400">Indirect report</span>
                           }
                         </div>
                       );

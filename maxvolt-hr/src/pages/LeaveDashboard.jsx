@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { PieChartIcon, AlertTriangle, Users, TrendingUp } from 'lucide-react';
+import { resolveHierarchy } from '@/lib/hierarchy';
 
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -35,7 +36,9 @@ export default function LeaveDashboard() {
       let scopedBalances = leaveBalances;
 
       if (isManagerOnly && me?.id) {
-        const teamUserIds = new Set(activeEmp.filter(e => e.reporting_manager_id === me.id).map(e => e.user_id));
+        // Read-only monitoring view — visibility broadens to the manager's
+        // whole downstream hierarchy (direct + indirect reports).
+        const { downstreamIds: teamUserIds } = resolveHierarchy(me.id, activeEmp);
         activeEmp = activeEmp.filter(e => teamUserIds.has(e.user_id));
         scopedLeaves = leaves.filter(l => teamUserIds.has(l.user_id));
         scopedBalances = leaveBalances.filter(b => teamUserIds.has(b.user_id));
