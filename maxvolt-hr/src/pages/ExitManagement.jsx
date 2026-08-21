@@ -76,6 +76,7 @@ export default function ExitManagement() {
   const [initiating, setInitiating] = useState(false);
   const [empSearch, setEmpSearch]   = useState('');
   const [selectedEmp, setSelectedEmp] = useState(null);
+  const [myClearanceDepts, setMyClearanceDepts] = useState([]);
   const [initForm, setInitForm]     = useState({
     reason_category: '', resignation_date: format(new Date(), 'yyyy-MM-dd'),
     last_working_date: '', exit_type: 'resignation', hr_notes: '',
@@ -91,10 +92,11 @@ export default function ExitManagement() {
       const role = me.custom_role || me.role;
       const isHR = role === 'hr' || role === 'admin';
 
-      const [allExits, usersResp, allEmps] = await Promise.all([
+      const [allExits, usersResp, allEmps, myRolesResp] = await Promise.all([
         base44.entities.Exit.list('-created_date', 300),
         base44.functions.invoke('getAllUsers', {}),
         base44.entities.Employee.list('-created_date', 500),
+        base44.functions.invoke('getMyExitClearanceRoles', {}),
       ]);
 
       const users = usersResp.data?.users || [];
@@ -102,6 +104,16 @@ export default function ExitManagement() {
       const myDept = (myEmpRec?.[0]?.department || '').trim().toLowerCase();
       const clearanceDeptKw = ['it', 'information technology', 'finance', 'accounts', 'admin', 'administration', 'security'];
       const isDeptClearance = clearanceDeptKw.some(kw => myDept.includes(kw));
+      // The real, authoritative list of departments this user was actually
+      // assigned as a clearance owner for (Admin Panel → Exit Clearance
+      // Owners) — this is what actually gates action on the backend
+      // (canActOnExitClearance), so visibility here must match it, not just
+      // the department-name guess above.
+      const myClrDepts = (myRolesResp?.data || myRolesResp)?.dept_keys || [];
+      setMyClearanceDepts(myClrDepts);
+      const isMyClearanceCase = (e) => myClrDepts.length > 0
+        && ['in_notice', 'clearance_pending', 'clearance_done'].includes(e.status)
+        && myClrDepts.some(dk => e.clearance_checklist?.[dk]);
 
       let filtered = allExits;
       // 'management' (top-level) sees the full org, same as HR — only
@@ -114,9 +126,9 @@ export default function ExitManagement() {
       if (!isHR && role !== 'management') {
         if (role === 'manager') {
           const { downstreamIds } = resolveHierarchy(me.id, allEmps);
-          filtered = allExits.filter(e => downstreamIds.has(e.user_id) || ['clearance_pending','clearance_done'].includes(e.status));
-        } else if (isDeptClearance) {
-          filtered = allExits.filter(e => ['clearance_pending','clearance_done'].includes(e.status));
+          filtered = allExits.filter(e => downstreamIds.has(e.user_id) || ['clearance_pending','clearance_done'].includes(e.status) || isMyClearanceCase(e));
+        } else if (isDeptClearance || myClrDepts.length) {
+          filtered = allExits.filter(e => ['clearance_pending','clearance_done'].includes(e.status) || isMyClearanceCase(e));
         } else {
           filtered = [];
         }
@@ -131,8 +143,9 @@ export default function ExitManagement() {
       setExits(allExits);
       setEnriched(enrichedData);
       setAllEmployees(allEmps);
-    } catch (e) { console.error(e); }
-    setLoading(false);
+      return enrichedData;
+    } catch (e) { console.error(e); return null; }
+    finally { setLoading(false); }
   };
 
   const isHRRole = () => { const r = currentUser?.custom_role || currentUser?.role; return r === 'hr' || r === 'admin'; };
@@ -578,8 +591,12 @@ export default function ExitManagement() {
           <ExitDetailPanel
             exitRecord={selected}
             currentUser={currentUser}
+            myClearanceDepts={myClearanceDepts}
             onClose={() => setSelected(null)}
-            onRefresh={() => { loadData(); setSelected(null); }}
+            onRefresh={async () => {
+              const fresh = await loadData();
+              setSelected(prev => fresh?.find(e => e.id === prev?.id) || null);
+            }}
           />
         )}
       </div>

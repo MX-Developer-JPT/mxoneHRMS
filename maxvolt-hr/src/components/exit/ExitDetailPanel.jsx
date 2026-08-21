@@ -92,7 +92,7 @@ function InfoRow({ label, value }) {
 }
 
 /* ── main component ──────────────────────────────── */
-export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser, onClose, onRefresh }) {
+export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser, onClose, onRefresh, myClearanceDepts = [] }) {
   const [exit, setExit] = useState(initialRecord);
   const [activeTab, setActiveTab] = useState('overview');
   const [comment, setComment] = useState('');
@@ -125,7 +125,12 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   // Working Department clearance is always actioned by the employee's actual
   // reporting manager — every other dept is HR-gated client-side (the
   // backend independently enforces owner_user_ids/HR via canActOnExitClearance).
-  const canActDept = (deptKey) => isHR || (deptKey === 'working_department' && canManagerAct);
+  // Real, authoritative per-department authorization — mirrors the backend's
+  // canActOnExitClearance exactly: HR/admin/management always; the
+  // employee's actual reporting manager for working_department; or a user
+  // explicitly assigned as that department's clearance owner (Admin Panel →
+  // Exit Clearance Owners), regardless of their role.
+  const canActDept = (deptKey) => isHR || myClearanceDepts.includes(deptKey) || (deptKey === 'working_department' && canManagerAct);
 
   const addAudit = (existing, action, cmt) => ([
     ...(existing || []),

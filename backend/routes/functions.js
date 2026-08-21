@@ -977,7 +977,13 @@ function buildFnFSettlementPdf({ empName, employeeCode, designation, department,
       const DED_LABELS = { epf: 'EPF', esi: 'ESI', medical_insurance: 'Medical Insurance', tax: 'Tax', advance: 'Advance', notice_period: 'Notice Period', paid_amount: 'Paid Amount' };
 
       const earnRows = Object.entries(EARN_LABELS).map(([k, label]) => [cell(label), cell(L(fnf.earnings?.[k]?.actual), { alignment: 'right' }), cell(L(fnf.earnings?.[k]?.earned), { alignment: 'right' })]);
-      const dedRows = Object.entries(DED_LABELS).map(([k, label]) => [cell(label), cell(L(fnf.deductions?.[k]), { alignment: 'right', colSpan: 2 }), {}]);
+      // The Deductions table below has only 2 columns (widths: ['*', 180]) —
+      // no colSpan/filler cell here, unlike the 3-column "Salary Particulars"
+      // table above. Mismatching cell count against column count throws a
+      // pdfmake layout error at render time and the whole PDF generation
+      // fails silently from the caller's perspective (caught by the outer
+      // try/catch in processExitFnFFinance).
+      const dedRows = Object.entries(DED_LABELS).map(([k, label]) => [cell(label), cell(L(fnf.deductions?.[k]), { alignment: 'right' })]);
 
       const docDef = {
         pageSize: 'A4',
@@ -11263,6 +11269,20 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (!lmedDocIds.length) return res.json({ success: true, documents: [] });
       const lmedRows = await all("SELECT data FROM entities WHERE type='Document' AND id = ANY($1)", [lmedDocIds]);
       return res.json({ success: true, documents: lmedRows.map(r => { const d = JSON.parse(r.data); return { id: d.id, document_name: d.document_name, document_type: d.document_type, document_url: d.document_url || null }; }) });
+    }
+
+    case 'getMyExitClearanceRoles': {
+      // Any authenticated user can call this — it's how a non-HR user who
+      // was designated a department clearance owner (Admin Panel → Exit
+      // Clearance Owners) learns which department(s) they can act on, so
+      // the frontend can show them the right exit cases and controls.
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const gmecrRows = await all("SELECT data FROM entities WHERE type='ExitClearanceConfig'");
+      const gmecrDepts = gmecrRows
+        .map(r => JSON.parse(r.data))
+        .filter(c => (c.owner_user_ids || []).includes(cu.id))
+        .map(c => c.dept_key);
+      return res.json({ success: true, dept_keys: gmecrDepts });
     }
 
     case 'getExitClearanceConfigs': {
