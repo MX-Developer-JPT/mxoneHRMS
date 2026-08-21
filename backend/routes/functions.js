@@ -789,6 +789,332 @@ async function notify(userId, { title, message, type = 'info', link = '' }) {
   } catch {}
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   Exit Management — department clearance / No Dues / Full & Final helpers
+   ══════════════════════════════════════════════════════════════════════ */
+
+// The 5 clearance departments (consolidated from the old 7-dept model —
+// reporting_manager + project_manager merged into working_department,
+// standalone security dropped/folded into IT+Admin) with their default
+// checklist items, straight from the reference No Dues Clearance Form.
+const EXIT_CLEARANCE_DEPTS = [
+  { key: 'hr', label: 'HR Department', default_items: [
+    'Leave/attendance regularisation', 'Employee documents', 'Exit interview', 'Notice period',
+    'Final HR clearance', 'Full & Final eligibility',
+  ] },
+  { key: 'finance', label: 'Finance / Accounts', default_items: [
+    'Salary/advance dues', 'Expense/claim settlement', 'Loans/advances', 'Other recoveries',
+    'Any pending financial obligation',
+  ] },
+  { key: 'it', label: 'IT Department', default_items: [
+    'Laptop/Desktop', 'Phone/Tablet', 'SIM', 'ID/Access credentials', 'Software/access accounts',
+    'Other IT assets', 'Data/document handover',
+  ] },
+  { key: 'admin', label: 'Admin/Facilities', default_items: [
+    'ID card/access card', 'Keys', 'Company property', 'Other assigned assets',
+  ] },
+  { key: 'working_department', label: 'Working Department / Reporting Manager', default_items: [
+    'KRA/responsibility handover', 'Project handover', 'Documents/data handover', 'Company property',
+    'Pending work', 'Replacement/transition requirements',
+  ] },
+];
+const EXIT_CLEARANCE_DEPT_KEYS = EXIT_CLEARANCE_DEPTS.map(d => d.key);
+
+// Default asset-return checklist — matches the reference docx's Assets
+// Returned table exactly.
+const DEFAULT_EXIT_ASSETS = [
+  'Laptop/Computer', 'ID Card/Access Card', 'Phone/Tablet', 'Other Equipment/Assets', 'SIM', 'Data/Documents',
+].map(name => ({ name, serial_no: '', condition: '', status: 'pending', returned_date: '', returned_by: '', notes: '' }));
+
+function makeDefaultClearanceChecklist() {
+  const out = {};
+  for (const d of EXIT_CLEARANCE_DEPTS) {
+    out[d.key] = { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: d.default_items.map((label, i) => ({ id: `${d.key}_${i}`, label, checked: false, notes: '' })) };
+  }
+  return out;
+}
+
+// HR/admin/management-editable per-department config: which users own a
+// department's clearance approvals, its checklist item list, and its SLA.
+// Stored as one `ExitClearanceConfig` entity per dept key. Until HR
+// configures owner_user_ids, canActOnExitClearance() below falls back to
+// HR/admin/management for every department, so nothing is ever blocked.
+async function getExitClearanceConfig(deptKey) {
+  const row = await one("SELECT data FROM entities WHERE type='ExitClearanceConfig' AND data::jsonb->>'dept_key'=$1", [deptKey]);
+  return row ? JSON.parse(row.data) : null;
+}
+
+// Authorization for acting on one department's clearance for one exit case.
+// working_department is always the employee's actual reporting manager
+// (mirrors isDirectReport on the frontend) — no config needed for it.
+// Every other department: an owner_user_ids match, OR HR/admin/management
+// as the permanent fallback/override.
+async function canActOnExitClearance(cu, deptKey, employee) {
+  if (!cu) return false;
+  if (await hasRole(cu, MGR_ROLES)) return true;
+  if (deptKey === 'working_department') return employee?.reporting_manager_id === cu.id;
+  const cfg = await getExitClearanceConfig(deptKey);
+  return !!cfg?.owner_user_ids?.includes(cu.id);
+}
+
+// Server-side canonical F&F math — never trusts client-computed totals.
+// "Earned" = actual × (paid_days / total_days_in_month), matching the
+// reference Full & Final Settlement Statement exactly (verified against
+// the Sachin Kumar sample: 12,123 × 11/28 ≈ 4,763).
+function computeExitFnFTotals(fnf) {
+  const totalDays = Number(fnf.total_days_in_month) || 30;
+  const paidDays = Number(fnf.paid_days) || 0;
+  const ratio = totalDays > 0 ? paidDays / totalDays : 0;
+  const earnKeys = ['basic_salary', 'hra', 'special_allowances', 'conveyance', 'gwi', 'others'];
+  const earnings = {};
+  let totalActual = 0, totalEarned = 0;
+  for (const k of earnKeys) {
+    const actual = Number(fnf.earnings?.[k]?.actual) || 0;
+    const earned = Math.round(actual * ratio);
+    earnings[k] = { actual, earned };
+    totalActual += actual; totalEarned += earned;
+  }
+  const dedKeys = ['epf', 'esi', 'medical_insurance', 'tax', 'advance', 'notice_period', 'paid_amount'];
+  const deductions = {};
+  let totalDeductions = 0;
+  for (const k of dedKeys) {
+    const v = Number(fnf.deductions?.[k]) || 0;
+    deductions[k] = v;
+    totalDeductions += v;
+  }
+  const bonus = Number(fnf.other_earnings?.bonus?.amount) || 0;
+  const gratuity = Number(fnf.other_earnings?.gratuity?.amount) || 0;
+  const ot = Number(fnf.other_earnings?.ot) || 0;
+  const others = Number(fnf.other_earnings?.others) || 0;
+  const otherEarningsTotal = bonus + gratuity + ot + others;
+  const netPayable = totalEarned - totalDeductions + otherEarningsTotal;
+  return {
+    ...fnf,
+    total_days_in_month: totalDays, paid_days: paidDays,
+    earnings, total_earnings_actual: totalActual, total_earnings_earned: totalEarned,
+    deductions, total_deductions: totalDeductions,
+    other_earnings: {
+      bonus: { eligibility_period: fnf.other_earnings?.bonus?.eligibility_period || '', amount: bonus },
+      gratuity: { years: fnf.other_earnings?.gratuity?.years || 0, amount: gratuity },
+      ot, others,
+    },
+    net_payable: netPayable,
+  };
+}
+
+const _exitOrdinalDate = (d) => {
+  if (!d) return '';
+  const date = new Date(d + 'T00:00:00');
+  const day = date.getDate();
+  const suffix = day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th';
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  return `${day}${suffix} ${months[date.getMonth()]} ${date.getFullYear()}`;
+};
+
+// No Dues Certificate — reproduces MVE_No Dues.docx: employee details,
+// department clearance table, assets-returned table, KRA-handover table,
+// employee declaration, HR approval. Uses the shared HTML→pdfmake letter
+// pipeline (buildLetterPdf) for identical branding to every other letter.
+async function buildNoDuesCertificatePdf({ empName, employeeCode, department, designation, doj, resignationDate, lwd, clearanceChecklist, assets, kraItems }) {
+  const fmtDate = (d) => d ? _exitOrdinalDate(d) : '—';
+  const deptRows = EXIT_CLEARANCE_DEPTS.map(d => {
+    const c = clearanceChecklist?.[d.key] || {};
+    return `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">${d.label}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.status === 'cleared' ? 'Cleared' : c.status === 'not_cleared' ? 'Not Cleared' : 'Pending'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.authorized_by_name || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.cleared_at ? fmtDate(c.cleared_at.slice(0,10)) : '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.remarks || '—'}</td></tr>`;
+  }).join('');
+  const assetRows = (assets || []).map(a => `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.name}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.serial_no || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.condition || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.status === 'returned' ? 'Returned' : a.status}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.returned_date ? fmtDate(a.returned_date) : '—'}</td></tr>`).join('');
+  const kraRows = (kraItems || []).filter(k => k.task).map(k => `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">${k.task}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${k.assignee || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${k.authorized_signatory_name || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${k.due_date ? fmtDate(k.due_date) : '—'}</td></tr>`).join('');
+
+  const html = `
+<p style="font-weight:bold;text-align:center;font-size:1.15em;">No Dues Clearance Certificate</p>
+<p style="text-align:right;">${_exitOrdinalDate(new Date().toISOString().slice(0,10))}</p>
+<table style="width:100%;border-collapse:collapse;margin:10px 0;">
+  <tr><td style="padding:4px 8px;font-weight:bold;">Name</td><td style="padding:4px 8px;">${empName}</td><td style="padding:4px 8px;font-weight:bold;">Employee ID</td><td style="padding:4px 8px;">${employeeCode || '—'}</td></tr>
+  <tr><td style="padding:4px 8px;font-weight:bold;">Department</td><td style="padding:4px 8px;">${department || '—'}</td><td style="padding:4px 8px;font-weight:bold;">Designation</td><td style="padding:4px 8px;">${designation || '—'}</td></tr>
+  <tr><td style="padding:4px 8px;font-weight:bold;">Date of Joining</td><td style="padding:4px 8px;">${fmtDate(doj)}</td><td style="padding:4px 8px;font-weight:bold;">Date of Resignation</td><td style="padding:4px 8px;">${fmtDate(resignationDate)}</td></tr>
+  <tr><td style="padding:4px 8px;font-weight:bold;">Last Working Day</td><td style="padding:4px 8px;" colspan="3">${fmtDate(lwd)}</td></tr>
+</table>
+<p style="font-weight:bold;margin-top:14px;">Department Clearance</p>
+<table style="width:100%;border-collapse:collapse;">
+  <tr style="background:#f3f4f6;"><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Department</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Status</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Authorized Signatory</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Date</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Remarks</th></tr>
+  ${deptRows}
+</table>
+<p style="font-weight:bold;margin-top:14px;">Assets Returned</p>
+<table style="width:100%;border-collapse:collapse;">
+  <tr style="background:#f3f4f6;"><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Asset</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Serial No.</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Condition</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Status</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Date</th></tr>
+  ${assetRows || '<tr><td colspan="5" style="padding:6px 8px;border:1px solid #d1d5db;">No assets recorded</td></tr>'}
+</table>
+${kraRows ? `<p style="font-weight:bold;margin-top:14px;">KRA / Responsibility Handover</p>
+<table style="width:100%;border-collapse:collapse;">
+  <tr style="background:#f3f4f6;"><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Responsibility</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">To Whom</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Authorized Signatory</th><th style="padding:6px 8px;border:1px solid #d1d5db;text-align:left;">Date</th></tr>
+  ${kraRows}
+</table>` : ''}
+<p style="font-weight:bold;margin-top:14px;">Employee Declaration</p>
+<p>I hereby confirm that I have cleared all dues, returned all company property, and settled any outstanding obligations with MaxVolt Energy Industries Ltd.</p>
+<p style="margin-top:20px;">Employee Signature: _________________________&nbsp;&nbsp;&nbsp;&nbsp;Date: _________________________</p>
+<p style="font-weight:bold;margin-top:20px;">HR Department Approval</p>
+<p>All dues have been cleared and the employee is eligible for full and final settlement.</p>
+<p style="margin-top:30px;">HR Representative: _________________________&nbsp;&nbsp;&nbsp;&nbsp;Date: _________________________</p>`;
+
+  return buildLetterPdf('No Dues Clearance Certificate', employeeCode || '', html);
+}
+
+// Full & Final Settlement PDF — hand-built pdfmake docDef (tabular, like
+// buildSalaryStructurePdf) reproducing the reference statement layout
+// exactly: employee info grid, Earnings (Actual/Earned), Deductions, Other
+// Earnings (Bonus eligibility period / Gratuity years / OT / Others), Net
+// Payable, Verified By / Prepared & Approved By, signed declaration.
+function buildFnFSettlementPdf({ empName, employeeCode, designation, department, fFDate, doj, resignationDate, lwd, forMonth, fnf }) {
+  return new Promise((resolve, reject) => {
+    try {
+      const printer = getPdfPrinter();
+      const logoDataUrl = getLogoDataUrl();
+      const stampDataUrl = getStampDataUrl();
+      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+      const L = (n) => Number(n || 0).toLocaleString('en-IN');
+      const cell = (text, opts = {}) => ({ text: String(text ?? ''), fontSize: 9.5, margin: [4, 3, 4, 3], ...opts });
+      const hCell = (text) => cell(text, { bold: true, fillColor: '#d9d9d9' });
+      const EARN_LABELS = { basic_salary: 'Basic Salary', hra: 'HRA', special_allowances: 'Special Allowances', conveyance: 'Conveyance', gwi: 'GWI', others: 'Others' };
+      const DED_LABELS = { epf: 'EPF', esi: 'ESI', medical_insurance: 'Medical Insurance', tax: 'Tax', advance: 'Advance', notice_period: 'Notice Period', paid_amount: 'Paid Amount' };
+
+      const earnRows = Object.entries(EARN_LABELS).map(([k, label]) => [cell(label), cell(L(fnf.earnings?.[k]?.actual), { alignment: 'right' }), cell(L(fnf.earnings?.[k]?.earned), { alignment: 'right' })]);
+      const dedRows = Object.entries(DED_LABELS).map(([k, label]) => [cell(label), cell(L(fnf.deductions?.[k]), { alignment: 'right', colSpan: 2 }), {}]);
+
+      const docDef = {
+        pageSize: 'A4',
+        pageMargins: [40, 100, 40, 110],
+        header: headerFn,
+        images: { ...(logoDataUrl ? { logo: logoDataUrl } : {}), ...(stampDataUrl ? { stamp: stampDataUrl } : {}) },
+        defaultStyle: { font: 'Roboto', fontSize: 9.5 },
+        content: [
+          { text: 'Full & Final Settlement Statement', bold: true, fontSize: 14, alignment: 'center', margin: [0, 0, 0, 12] },
+          {
+            table: { widths: ['28%', '30%', '22%', '20%'], body: [
+              [cell('Name of Employee:', { bold: true }), cell(empName || ''), cell('F&F Date:', { bold: true }), cell(fFDate || '')],
+              [cell('Employee ID:', { bold: true }), cell(employeeCode || ''), cell('Joining Date:', { bold: true }), cell(doj || '')],
+              [cell('Designation:', { bold: true }), cell(designation || ''), cell('Date of Resignation:', { bold: true }), cell(resignationDate || '')],
+              [cell('Department:', { bold: true }), cell(department || ''), cell('Date of Leaving:', { bold: true }), cell(lwd || '')],
+            ] },
+            layout: 'noBorders', margin: [0, 0, 0, 10],
+          },
+          {
+            table: { widths: ['50%', '25%', '25%'], body: [
+              [hCell('Salary Particulars'), hCell('For the Month'), hCell(forMonth || '')],
+              [cell('Total Days in Month:', { bold: true }), cell(fnf.total_days_in_month, { alignment: 'right', colSpan: 2 }), {}],
+              [cell('Paid Days:', { bold: true }), cell(fnf.paid_days, { alignment: 'right', colSpan: 2 }), {}],
+            ] },
+            layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc' },
+            margin: [0, 0, 0, 10],
+          },
+          {
+            table: { widths: ['*', 90, 90], body: [
+              [hCell('Earnings'), hCell('Actual (₹)'), hCell('Earned (₹)')],
+              ...earnRows,
+              [{ text: 'Total', bold: true, fillColor: '#f0fdf4', margin: [4,3,4,3] }, { text: L(fnf.total_earnings_actual), bold: true, fillColor: '#f0fdf4', alignment: 'right', margin: [4,3,4,3] }, { text: L(fnf.total_earnings_earned), bold: true, fillColor: '#f0fdf4', alignment: 'right', margin: [4,3,4,3] }],
+            ] },
+            layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc' },
+            margin: [0, 0, 0, 10],
+          },
+          {
+            table: { widths: ['*', 180], body: [
+              [hCell('Less Deductions (-)'), hCell('Amount (₹)')],
+              ...dedRows,
+              [{ text: 'Total Deductions', bold: true, fillColor: '#fef2f2', margin: [4,3,4,3] }, { text: L(fnf.total_deductions), bold: true, fillColor: '#fef2f2', alignment: 'right', margin: [4,3,4,3] }],
+            ] },
+            layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc' },
+            margin: [0, 0, 0, 10],
+          },
+          {
+            table: { widths: ['*', '*', 90], body: [
+              [hCell('Other Earnings'), hCell('Eligibility Period / Years'), hCell('Amount (₹)')],
+              [cell('Bonus'), cell(fnf.other_earnings?.bonus?.eligibility_period || ''), cell(L(fnf.other_earnings?.bonus?.amount), { alignment: 'right' })],
+              [cell('Gratuity'), cell(fnf.other_earnings?.gratuity?.years ? `${fnf.other_earnings.gratuity.years} Year(s)` : ''), cell(L(fnf.other_earnings?.gratuity?.amount), { alignment: 'right' })],
+              [cell('OT'), cell(''), cell(L(fnf.other_earnings?.ot), { alignment: 'right' })],
+              [cell('Others'), cell(''), cell(L(fnf.other_earnings?.others), { alignment: 'right' })],
+              [{ text: 'Net Payable (Rs)', bold: true, fillColor: '#1e3a5f', color: 'white', colSpan: 2, margin: [4,5,4,5] }, {}, { text: `₹${L(fnf.net_payable)}`, bold: true, fillColor: '#1e3a5f', color: 'white', alignment: 'right', fontSize: 11, margin: [4,5,4,5] }],
+            ] },
+            layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc' },
+            margin: [0, 0, 0, 14],
+          },
+          { text: `Declaration: I hereby confirm that the Full & Final Settlement amount INR ${L(fnf.net_payable)}, as stated above is payable to me by the Company. Upon receipt of the said amount, I shall have no further claims, demands, or dues whatsoever against the Company.`, fontSize: 9, italics: true, margin: [0, 0, 0, 30] },
+          {
+            columns: [
+              { width: '45%', stack: [{ text: '_________________________', fontSize: 10 }, { text: 'Verified By', bold: true, fontSize: 10 }] },
+              { width: '*', text: '' },
+              { width: '45%', stack: [{ text: '_________________________', fontSize: 10 }, { text: 'Prepared & Approved By', bold: true, fontSize: 10 }, { text: 'Manager - HR & Admin', fontSize: 9 }, ...(stampDataUrl ? [{ image: 'stamp', width: 82, margin: [0, -30, 0, 0], opacity: 0.85 }] : [])] },
+            ],
+          },
+        ],
+        footer: (page, pages) => footerFn(page, pages, { width: 595.28 }),
+      };
+
+      const doc = printer.createPdfKitDocument(docDef);
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+      doc.end();
+    } catch (err) { reject(err); }
+  });
+}
+
+// Uploads a generated exit PDF to R2 (when configured) and persists it as a
+// Document entity, mirroring saveLetterAsDocument's pattern — always
+// returns the base64 too so the caller can offer an immediate download even
+// when R2 isn't configured.
+// Shared exit-lifecycle notifier — the body of case 'notifyExitStatusChange'
+// (still exposed as its own HTTP case below for any existing caller), also
+// called directly from the new server-side workflow cases so a status
+// change always notifies regardless of which endpoint drove it.
+async function runNotifyExitStatusChange(action, employeeId, employeeName, managerId) {
+  try {
+    const empName = employeeName || 'An employee';
+    const hrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+    if (action === 'submitted') {
+      if (managerId) await notify(managerId, { title: 'Resignation Submitted', message: `${empName} has submitted a resignation and requires your approval.`, type: 'warning', link: '/exit-management' });
+      for (const hr of hrRows) await notify(hr.id, { title: 'New Resignation', message: `${empName} has submitted a resignation request.`, type: 'info', link: '/exit-management' });
+    } else if (action === 'hr_initiated') {
+      await notify(employeeId, { title: 'Exit Process Initiated', message: `HR has initiated an exit process for your account. Please log in to review the details and complete required steps.`, type: 'warning', link: '/my-exit' });
+    } else if (action === 'manager_approved') {
+      await notify(employeeId, { title: 'Resignation Approved by Manager', message: `Your resignation has been approved by your manager and forwarded to HR.`, type: 'info', link: '/my-exit' });
+      for (const hr of hrRows) await notify(hr.id, { title: 'Resignation Awaiting HR Approval', message: `${empName}'s resignation has been approved by manager and requires HR review.`, type: 'info', link: '/exit-management' });
+    } else if (action === 'manager_rejected') {
+      await notify(employeeId, { title: 'Resignation Rejected', message: `Your resignation has been rejected by your manager. Please contact HR for assistance.`, type: 'error', link: '/my-exit' });
+    } else if (action === 'hr_approved') {
+      await notify(employeeId, { title: 'Resignation Accepted — Notice Period Started', message: `Your resignation has been accepted by HR. Your notice period is now in progress.`, type: 'success', link: '/my-exit' });
+    } else if (action === 'hr_rejected') {
+      await notify(employeeId, { title: 'Resignation Rejected by HR', message: `Your resignation has been rejected by HR. Please contact HR for further details.`, type: 'error', link: '/my-exit' });
+    } else if (action === 'clearance_started') {
+      await notify(employeeId, { title: 'Clearance Process Started', message: `Your exit clearance has been initiated. Please complete all department clearances before your last working day.`, type: 'info', link: '/my-exit' });
+    } else if (action === 'clearance_done') {
+      await notify(employeeId, { title: 'Clearance Complete', message: `All department clearances are complete. Your No Dues Certificate and F&F settlement will follow.`, type: 'success', link: '/my-exit' });
+      for (const hr of hrRows) await notify(hr.id, { title: 'Clearance Complete — Ready for No Dues / F&F', message: `${empName}'s clearance is complete.`, type: 'info', link: '/exit-management' });
+    } else if (action === 'completed') {
+      await notify(employeeId, { title: 'Exit Process Completed', message: `Your exit process has been completed. Your relieving and experience letters will be shared shortly.`, type: 'success', link: '/my-exit' });
+    }
+  } catch {}
+}
+
+async function persistExitDocument({ userId, documentType, documentName, pdfBuffer, generatedBy }) {
+  const docId = uuidv4();
+  let docUrl = null;
+  try {
+    const { isBucketConfigured, buildKey, putToBucket, presignGet } = await import('../utils/bucket.js');
+    if (isBucketConfigured()) {
+      const r2Key = buildKey(`exit-documents/${docId}`, '.pdf');
+      await putToBucket(r2Key, pdfBuffer, 'application/pdf');
+      docUrl = await presignGet(r2Key, { expiresIn: 31536000, filename: `${documentName.replace(/\s+/g, '_')}.pdf` });
+    }
+  } catch (e) { console.warn('[persistExitDocument] R2 upload failed:', e.message); }
+  const docData = {
+    id: docId, user_id: userId, document_type: documentType, document_name: documentName,
+    ...(docUrl ? { document_url: docUrl } : {}),
+    status: 'verified', generated_by: generatedBy || null,
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  };
+  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, userId, JSON.stringify(docData)]);
+  return { document_id: docId, document_url: docUrl, base64: pdfBuffer.toString('base64') };
+}
+
 // Downloads a resume file and extracts its raw text — PDF via pdf-parse,
 // DOCX via mammoth. No AI involved here, just the file read; returns
 // whatever text it found (or an explanation of why it couldn't). Shared by
@@ -10529,33 +10855,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'notifyExitStatusChange': {
-      const { action: nesAction, employee_id: nesEmpId, employee_name: nesEmpName, actor_name: nesActor, manager_id: nesMgrId } = p;
-      try {
-        const empName = nesEmpName || 'An employee';
-        const hrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
-        if (nesAction === 'submitted') {
-          if (nesMgrId) await notify(nesMgrId, { title: 'Resignation Submitted', message: `${empName} has submitted a resignation and requires your approval.`, type: 'warning', link: '/exit-management' });
-          for (const hr of hrRows) await notify(hr.id, { title: 'New Resignation', message: `${empName} has submitted a resignation request.`, type: 'info', link: '/exit-management' });
-        } else if (nesAction === 'hr_initiated') {
-          await notify(nesEmpId, { title: 'Exit Process Initiated', message: `HR has initiated an exit process for your account. Please log in to review the details and complete required steps.`, type: 'warning', link: '/my-exit' });
-        } else if (nesAction === 'manager_approved') {
-          await notify(nesEmpId, { title: 'Resignation Approved by Manager', message: `Your resignation has been approved by your manager and forwarded to HR.`, type: 'info', link: '/my-exit' });
-          for (const hr of hrRows) await notify(hr.id, { title: 'Resignation Awaiting HR Approval', message: `${empName}'s resignation has been approved by manager and requires HR review.`, type: 'info', link: '/exit-management' });
-        } else if (nesAction === 'manager_rejected') {
-          await notify(nesEmpId, { title: 'Resignation Rejected', message: `Your resignation has been rejected by your manager. Please contact HR for assistance.`, type: 'error', link: '/my-exit' });
-        } else if (nesAction === 'hr_approved') {
-          await notify(nesEmpId, { title: 'Resignation Accepted — Notice Period Started', message: `Your resignation has been accepted by HR. Your notice period is now in progress.`, type: 'success', link: '/my-exit' });
-        } else if (nesAction === 'hr_rejected') {
-          await notify(nesEmpId, { title: 'Resignation Rejected by HR', message: `Your resignation has been rejected by HR. Please contact HR for further details.`, type: 'error', link: '/my-exit' });
-        } else if (nesAction === 'clearance_started') {
-          await notify(nesEmpId, { title: 'Clearance Process Started', message: `Your exit clearance has been initiated. Please complete all department clearances before your last working day.`, type: 'info', link: '/my-exit' });
-        } else if (nesAction === 'fnf_pending') {
-          await notify(nesEmpId, { title: 'F&F Settlement Initiated', message: `Your Full & Final settlement process has been initiated by HR.`, type: 'info', link: '/my-exit' });
-          for (const hr of hrRows) await notify(hr.id, { title: 'F&F Settlement Required', message: `${empName}'s clearance is complete. F&F settlement needs to be processed.`, type: 'info', link: '/exit-management' });
-        } else if (nesAction === 'completed') {
-          await notify(nesEmpId, { title: 'Exit Process Completed', message: `Your exit process has been completed. Your relieving and experience letters will be shared shortly.`, type: 'success', link: '/my-exit' });
-        }
-      } catch {}
+      const { action: nesAction, employee_id: nesEmpId, employee_name: nesEmpName, manager_id: nesMgrId } = p;
+      await runNotifyExitStatusChange(nesAction, nesEmpId, nesEmpName, nesMgrId);
       return res.json({ success: true });
     }
 
@@ -10570,12 +10871,24 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const gesfLbRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [gesfUserId]);
         const gesfLeaveBalance = gesfLbRows.map(r => JSON.parse(r.data));
         const earnedLeave = gesfLeaveBalance.find(lb => (lb.leave_type || '').toLowerCase().includes('earn') || (lb.leave_policy_name || '').toLowerCase().includes('earn'));
-        const monthlyGross = Number(gesfSal.monthly_gross || gesfSal.gross_salary || gesfEmp.monthly_salary || 0);
+        // basic_salary/hra/conveyance/special_allowance are already monthly
+        // figures on SalaryStructure (unlike ctc, which is annual) — the old
+        // code here read gesfSal.monthly_gross/.gross_salary, neither of
+        // which exists on this entity, so auto-fill silently returned 0
+        // against real data. Copy each real component straight into the
+        // matching F&F earnings.<key>.actual cell instead of collapsing to
+        // one figure — a better fit for the F&F statement's per-component
+        // Actual/Earned table anyway.
+        const basicM = Number(gesfSal.basic_salary || 0);
+        const hraM = Number(gesfSal.hra || 0);
+        const specialM = Number(gesfSal.special_allowance || 0);
+        const conveyanceM = Number(gesfSal.conveyance || 0);
+        const monthlyGross = basicM + hraM + specialM + conveyanceM + Number(gesfSal.medical || 0) + Number(gesfSal.lta || 0) + Number(gesfSal.performance_bonus || 0);
         const perDaySalary = monthlyGross > 0 ? Math.round(monthlyGross / 26) : 0;
-        const doj = gesfEmp.date_of_joining || gesfEmp.joining_date || null;
+        const doj = gesfEmp.date_of_joining || null;
         const yearsOfService = doj ? Math.floor((new Date() - new Date(doj)) / (365.25 * 24 * 3600 * 1000)) : 0;
         const gratuityEligible = yearsOfService >= 5;
-        const gratuityAmount = gratuityEligible ? Math.round((monthlyGross * 15 * yearsOfService) / 26) : 0;
+        const gratuityAmount = gratuityEligible ? Math.round((basicM * 15 * yearsOfService) / 26) : 0;
         const gesfLoanRows = await all("SELECT data FROM entities WHERE type='Loan' AND user_id=$1 AND status IN ('approved','active')", [gesfUserId]);
         const loanOutstanding = gesfLoanRows.reduce((s, r) => { const l = JSON.parse(r.data); return s + Number(l.outstanding_amount ?? l.amount ?? 0); }, 0);
         return res.json({
@@ -10587,6 +10900,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           gratuity_eligible: gratuityEligible,
           gratuity_amount: gratuityAmount,
           loan_outstanding: Math.round(loanOutstanding),
+          // Direct per-component actuals for the F&F Actual/Earned table.
+          earnings_actual: { basic_salary: basicM, hra: hraM, special_allowances: specialM, conveyance: conveyanceM, gwi: 0, others: 0 },
+          epf_estimate: Math.round(basicM * 0.12),
+          esi_estimate: monthlyGross <= 21000 ? Math.round(monthlyGross * 0.0075) : 0,
           salary_structure: gesfSal,
           employee: gesfEmp,
         });
@@ -10654,49 +10971,322 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
           await run("UPDATE entities SET data=jsonb_set(data::jsonb,'{experience_letter_generated}','true')::text,updated_at=NOW()::TEXT WHERE type='Exit' AND id=$1", [gedExitId]);
 
-        } else if (gedDocType === 'fnf_letter') {
-          const fnf = gedFnf || gedExit.fnf_data || {};
-          const earnings = fnf.earnings || {};
-          const deductions = fnf.deductions || {};
-          const totalEarnings = Object.values(earnings).reduce((s, v) => s + Number(v || 0), 0);
-          const totalDeductions = Object.values(deductions).reduce((s, v) => s + Number(v || 0), 0);
-          const netPayable = totalEarnings - totalDeductions;
-          const fmt2 = (n) => Number(n || 0).toLocaleString('en-IN');
-
-          htmlContent = `
-<p style="font-weight:bold;text-align:center;">Full & Final Settlement Letter</p>
-<p style="text-align:right;">${ordinalDate(todayStr)}</p>
-<p>Dear ${prefix} ${empName},</p>
-<p>With reference to your resignation and relieving from the services of Maxvolt Energy Industries Limited on <strong>${ordinalDate(lwd)}</strong>, please find below the details of your Full & Final Settlement:</p>
-<table style="width:100%;border-collapse:collapse;margin:16px 0;">
-  <tr style="background:#f3f4f6;"><td colspan="2" style="padding:8px;font-weight:bold;border:1px solid #d1d5db;">Earnings</td></tr>
-  ${earnings.last_month_salary ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Last Month Salary</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.last_month_salary)}</td></tr>` : ''}
-  ${earnings.leave_encashment ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Leave Encashment</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.leave_encashment)}</td></tr>` : ''}
-  ${earnings.gratuity ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Gratuity</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.gratuity)}</td></tr>` : ''}
-  ${earnings.bonus ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Bonus</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.bonus)}</td></tr>` : ''}
-  ${earnings.incentives ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Incentives</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.incentives)}</td></tr>` : ''}
-  ${earnings.reimbursements ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Reimbursements</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(earnings.reimbursements)}</td></tr>` : ''}
-  <tr style="background:#f0fdf4;font-weight:bold;"><td style="padding:8px;border:1px solid #d1d5db;">Total Earnings</td><td style="padding:8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(totalEarnings)}</td></tr>
-  <tr style="background:#f3f4f6;"><td colspan="2" style="padding:8px;font-weight:bold;border:1px solid #d1d5db;">Deductions</td></tr>
-  ${(deductions.loan_recovery || deductions.loan) ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Loan Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.loan_recovery || deductions.loan)}</td></tr>` : ''}
-  ${deductions.advance_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Advance Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.advance_recovery)}</td></tr>` : ''}
-  ${deductions.notice_period_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Notice Period Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.notice_period_recovery)}</td></tr>` : ''}
-  ${deductions.buyout_recovery ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">Buyout Recovery</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.buyout_recovery)}</td></tr>` : ''}
-  ${deductions.tds ? `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">TDS</td><td style="padding:6px 8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(deductions.tds)}</td></tr>` : ''}
-  <tr style="background:#fef2f2;font-weight:bold;"><td style="padding:8px;border:1px solid #d1d5db;">Total Deductions</td><td style="padding:8px;border:1px solid #d1d5db;text-align:right;">₹${fmt2(totalDeductions)}</td></tr>
-  <tr style="background:#1e3a5f;color:white;font-weight:bold;"><td style="padding:10px;border:1px solid #1e3a5f;">Net Amount Payable</td><td style="padding:10px;border:1px solid #1e3a5f;text-align:right;font-size:1.1em;">₹${fmt2(netPayable)}</td></tr>
-</table>
-<p>The above amount of <strong>₹${fmt2(netPayable)}</strong> shall be credited to your registered bank account within 45 days of your last working day.</p>
-<p>Please acknowledge receipt of this letter.</p>
-<p style="margin-top:40px;">Sincerely,<br/><br/><br/>HR / Finance Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
         } else {
-          return res.json({ success: false, error: 'Unknown doc_type. Use: relieving_letter, experience_letter, fnf_letter' });
+          // fnf_letter is now handled by the dedicated, PDF-generating
+          // processExitFnFFinance/generateNoDuesCertificate cases below —
+          // this HTML-only path's fnf_letter branch was removed because its
+          // fnf.earnings.leave_encashment/.gratuity shape never matched what
+          // the F&F tab actually saved (always rendered blank against real data).
+          return res.json({ success: false, error: 'Unknown doc_type. Use: relieving_letter, experience_letter' });
         }
 
         return res.json({ success: true, html: htmlContent, doc_type: gedDocType });
       } catch (e) {
         return res.json({ success: false, error: e.message });
       }
+    }
+
+    /* ══ Exit Management — server-enforced workflow endpoints ══ */
+
+    case 'initiateExit': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { employee_user_id: ieUserId, exit_type: ieExitType, reason_category: ieReason, resignation_date: ieResignDate, last_working_date: ieLwd, hr_notes: ieNotes } = p;
+      if (!ieUserId || !ieLwd) return res.json({ success: false, error: 'employee_user_id and last_working_date required' });
+      const ieEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [ieUserId]);
+      if (!ieEmpRow) return res.json({ success: false, error: 'Employee not found' });
+      const ieEmp = JSON.parse(ieEmpRow.data);
+      const ieExisting = await one("SELECT id FROM entities WHERE type='Exit' AND user_id=$1 AND data::jsonb->>'status' NOT IN ('withdrawn','cancelled','manager_rejected','hr_rejected')", [ieUserId]);
+      if (ieExisting) return res.json({ success: false, error: 'An active exit case already exists for this employee' });
+      const ieId = uuidv4();
+      const ieNow = new Date().toISOString();
+      const ieData = {
+        id: ieId, user_id: ieUserId,
+        exit_type: ieExitType || 'resignation', reason_category: ieReason || 'other',
+        resignation_date: ieResignDate || ieNow.slice(0, 10), last_working_date: ieLwd, proposed_last_day: ieLwd,
+        hr_notes: ieNotes || '', status: 'in_notice', initiated_by_hr: true,
+        hr_actioned_by: cu.id, hr_actioned_at: ieNow, notice_period_days: 30,
+        approval_stages: [
+          { stage: 'manager', status: 'approved', actor_name: 'HR (initiated)', timestamp: ieNow },
+          { stage: 'hr', status: 'approved', actor_id: cu.id, actor_name: cu.full_name, timestamp: ieNow },
+        ],
+        clearance_checklist: makeDefaultClearanceChecklist(),
+        assets: DEFAULT_EXIT_ASSETS.map((a, i) => ({ ...a, id: `asset_${i}` })),
+        kt_items: [], exit_interview: null, hr_exit_interview: null,
+        exit_interview_completed: false, hr_interview_completed: false,
+        fnf_data: null, fnf_calculated: false, no_dues_generated: false,
+        access_deactivated: false, relieving_letter_generated: false, experience_letter_generated: false,
+        audit_log: [{ actor_id: cu.id, actor_name: cu.full_name, action: 'HR Initiated Exit', comment: ieNotes || '', timestamp: ieNow }],
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Exit',$2,'in_notice',$3)", [ieId, ieUserId, JSON.stringify(ieData)]);
+      await notify(ieUserId, { title: 'Exit Process Initiated', message: 'HR has initiated an exit process for your account. Please log in to review the details and complete required steps.', type: 'warning', link: '/my-exit' });
+      return res.json({ success: true, exit_id: ieId });
+    }
+
+    case 'actionExitApproval': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { exit_id: aeaExitId, stage: aeaStage, action: aeaAction, comment: aeaComment, last_working_date: aeaLwd } = p;
+      if (!aeaExitId || !['manager', 'hr'].includes(aeaStage) || !['approved', 'rejected'].includes(aeaAction)) return res.json({ success: false, error: 'exit_id, stage (manager|hr) and action (approved|rejected) required' });
+      const aeaRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [aeaExitId]);
+      if (!aeaRow) return res.json({ success: false, error: 'Exit case not found' });
+      const aeaExit = JSON.parse(aeaRow.data);
+      const aeaIsHR = await hasRole(cu, HR_ROLES);
+      const aeaIsMgmt = await hasRole(cu, ['management']);
+      let aeaAuthorized = aeaIsHR || aeaIsMgmt;
+      if (!aeaAuthorized && aeaStage === 'manager') {
+        const mgrRow = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [aeaExit.user_id]);
+        aeaAuthorized = mgrRow?.mgr === cu.id;
+      }
+      if (!aeaAuthorized) return res.status(403).json({ error: 'Not authorized to act on this stage' });
+      if (aeaStage === 'manager' && aeaExit.status !== 'submitted') return res.json({ success: false, error: `Cannot act — case is at status ${aeaExit.status}` });
+      if (aeaStage === 'hr' && aeaExit.status !== 'manager_approved') return res.json({ success: false, error: `Cannot act — case is at status ${aeaExit.status}` });
+
+      const aeaNow = new Date().toISOString();
+      const aeaStages = (aeaExit.approval_stages || []).map(s => s.stage === aeaStage ? { ...s, status: aeaAction, actor_id: cu.id, actor_name: cu.full_name, comment: aeaComment || '', timestamp: aeaNow } : s);
+      const aeaAudit = [...(aeaExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `${aeaStage === 'manager' ? 'Manager' : 'HR'} ${aeaAction}`, comment: aeaComment || '', timestamp: aeaNow }];
+      let aeaNewStatus, aeaUpd;
+      if (aeaStage === 'manager') {
+        aeaNewStatus = aeaAction === 'approved' ? 'manager_approved' : 'manager_rejected';
+        aeaUpd = { ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, manager_action: aeaAction, manager_comment: aeaComment || '', manager_actioned_at: aeaNow, audit_log: aeaAudit };
+      } else {
+        aeaNewStatus = aeaAction === 'approved' ? 'in_notice' : 'hr_rejected';
+        aeaUpd = { ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, hr_action: aeaAction, hr_comment: aeaComment || '', hr_actioned_by: cu.id, hr_actioned_at: aeaNow, ...(aeaLwd ? { last_working_date: aeaLwd } : {}), audit_log: aeaAudit };
+      }
+      await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(aeaUpd), aeaNewStatus, aeaRow.id]);
+      const aeaNotifyAction = aeaStage === 'manager' ? (aeaAction === 'approved' ? 'manager_approved' : 'manager_rejected') : (aeaAction === 'approved' ? 'hr_approved' : 'hr_rejected');
+      const aeaUserRow = await one('SELECT full_name FROM users WHERE id=$1', [aeaExit.user_id]);
+      await runNotifyExitStatusChange(aeaNotifyAction, aeaExit.user_id, aeaUserRow?.full_name || '');
+      return res.json({ success: true, status: aeaNewStatus });
+    }
+
+    case 'updateExitClearance': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { exit_id: uecExitId, dept_key: uecDept, status: uecStatus, remarks: uecRemarks, outstanding_dues: uecDues, checklist_items: uecItems } = p;
+      if (!uecExitId || !EXIT_CLEARANCE_DEPT_KEYS.includes(uecDept) || !['cleared', 'not_cleared', 'pending'].includes(uecStatus)) return res.json({ success: false, error: 'exit_id, valid dept_key, and status (cleared|not_cleared|pending) required' });
+      const uecRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [uecExitId]);
+      if (!uecRow) return res.json({ success: false, error: 'Exit case not found' });
+      const uecExit = JSON.parse(uecRow.data);
+      const uecEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uecExit.user_id]);
+      const uecEmp = uecEmpRow ? JSON.parse(uecEmpRow.data) : {};
+      if (!(await canActOnExitClearance(cu, uecDept, uecEmp))) return res.status(403).json({ error: `Not authorized to act on ${uecDept} clearance` });
+      if (!['in_notice', 'clearance_pending', 'clearance_done'].includes(uecExit.status)) return res.json({ success: false, error: `Cannot update clearance — case is at status ${uecExit.status}` });
+
+      const uecItemsFinal = Array.isArray(uecItems) ? uecItems : (uecExit.clearance_checklist?.[uecDept]?.checklist_items || []);
+      if (uecStatus === 'cleared' && uecItemsFinal.some(it => !it.checked)) {
+        return res.json({ success: false, error: 'All checklist items must be checked before this department can be marked Cleared' });
+      }
+      const uecNow = new Date().toISOString();
+      const uecChecklist = { ...(uecExit.clearance_checklist || makeDefaultClearanceChecklist()) };
+      uecChecklist[uecDept] = { ...uecChecklist[uecDept], status: uecStatus, authorized_by_id: cu.id, authorized_by_name: cu.full_name, cleared_at: uecStatus === 'cleared' ? uecNow : (uecChecklist[uecDept]?.cleared_at || null), remarks: uecRemarks ?? uecChecklist[uecDept]?.remarks ?? '', outstanding_dues: uecDues ?? uecChecklist[uecDept]?.outstanding_dues ?? '', checklist_items: uecItemsFinal };
+      const uecAllCleared = EXIT_CLEARANCE_DEPT_KEYS.every(k => uecChecklist[k]?.status === 'cleared');
+      const uecNewCaseStatus = uecAllCleared ? 'clearance_done' : (uecExit.status === 'in_notice' ? 'clearance_pending' : uecExit.status);
+      const uecUpd = { ...uecExit, clearance_checklist: uecChecklist, status: uecNewCaseStatus, audit_log: [...(uecExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `${uecDept} clearance: ${uecStatus}`, comment: uecRemarks || '', timestamp: uecNow }] };
+      await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(uecUpd), uecNewCaseStatus, uecRow.id]);
+      if (uecAllCleared) {
+        const uecUserRow = await one('SELECT full_name FROM users WHERE id=$1', [uecExit.user_id]);
+        await runNotifyExitStatusChange('clearance_done', uecExit.user_id, uecUserRow?.full_name || uecEmp.display_name || '');
+      }
+      return res.json({ success: true, status: uecNewCaseStatus, all_cleared: uecAllCleared });
+    }
+
+    case 'generateNoDuesCertificate': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { exit_id: gndExitId } = p;
+      const gndRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [gndExitId]);
+      if (!gndRow) return res.json({ success: false, error: 'Exit case not found' });
+      const gndExit = JSON.parse(gndRow.data);
+      const gndAllCleared = EXIT_CLEARANCE_DEPT_KEYS.every(k => gndExit.clearance_checklist?.[k]?.status === 'cleared');
+      if (!gndAllCleared) return res.json({ success: false, error: 'All 5 department clearances must be Cleared first' });
+      const gndEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [gndExit.user_id]);
+      const gndEmp = gndEmpRow ? JSON.parse(gndEmpRow.data) : {};
+      const gndUserRow = await one("SELECT full_name FROM users WHERE id=$1", [gndExit.user_id]);
+      try {
+        const pdfBuf = await buildNoDuesCertificatePdf({
+          empName: gndUserRow?.full_name || gndEmp.display_name || 'Employee', employeeCode: gndEmp.employee_code,
+          department: gndEmp.department, designation: gndEmp.designation, doj: gndEmp.date_of_joining,
+          resignationDate: gndExit.resignation_date, lwd: gndExit.last_working_date,
+          clearanceChecklist: gndExit.clearance_checklist, assets: gndExit.assets, kraItems: gndExit.kt_items,
+        });
+        const gndDoc = await persistExitDocument({ userId: gndExit.user_id, documentType: 'no_dues_certificate', documentName: `No Dues Certificate — ${gndUserRow?.full_name || ''}`, pdfBuffer: pdfBuf, generatedBy: cu.id });
+        const gndNow = new Date().toISOString();
+        const gndUpd = { ...gndExit, no_dues_generated: true, no_dues_document_id: gndDoc.document_id, no_dues_generated_at: gndNow, audit_log: [...(gndExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'No Dues Certificate generated', comment: '', timestamp: gndNow }] };
+        await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(gndUpd), gndRow.id]);
+        await notify(gndExit.user_id, { title: 'No Dues Certificate Ready', message: 'Your No Dues Clearance Certificate has been generated and is available in My Exit.', type: 'success', link: '/my-exit' });
+        return res.json({ success: true, document_id: gndDoc.document_id, base64: gndDoc.base64, filename: `No_Dues_Certificate.pdf` });
+      } catch (e) { return res.json({ success: false, error: e.message }); }
+    }
+
+    case 'saveExitFnF': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { exit_id: sefExitId, fnf: sefFnf } = p;
+      const sefRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [sefExitId]);
+      if (!sefRow) return res.json({ success: false, error: 'Exit case not found' });
+      const sefExit = JSON.parse(sefRow.data);
+      if (sefExit.status !== 'clearance_done' && !['fnf_prepared'].includes(sefExit.status)) return res.json({ success: false, error: `Cannot prepare F&F — case is at status ${sefExit.status}, needs Clearance Done first` });
+      const sefNow = new Date().toISOString();
+      const sefComputed = computeExitFnFTotals({ ...(sefFnf || {}) });
+      const sefUpd = { ...sefExit, fnf_data: { ...sefComputed, prepared_by_id: cu.id, prepared_by_name: cu.full_name, prepared_at: sefNow }, fnf_calculated: true, status: 'fnf_prepared', audit_log: [...(sefExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `F&F prepared: Net ₹${sefComputed.net_payable.toLocaleString('en-IN')}`, comment: '', timestamp: sefNow }] };
+      await run("UPDATE entities SET data=$1,status='fnf_prepared',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(sefUpd), sefRow.id]);
+      return res.json({ success: true, fnf_data: sefUpd.fnf_data });
+    }
+
+    case 'verifyExitFnF': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { exit_id: vefExitId } = p;
+      const vefRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [vefExitId]);
+      if (!vefRow) return res.json({ success: false, error: 'Exit case not found' });
+      const vefExit = JSON.parse(vefRow.data);
+      if (vefExit.status !== 'fnf_prepared') return res.json({ success: false, error: `Cannot verify — case is at status ${vefExit.status}` });
+      const vefNow = new Date().toISOString();
+      const vefUpd = { ...vefExit, fnf_data: { ...vefExit.fnf_data, verified_by_id: cu.id, verified_by_name: cu.full_name, verified_at: vefNow }, status: 'fnf_verified', audit_log: [...(vefExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'F&F verified', comment: '', timestamp: vefNow }] };
+      await run("UPDATE entities SET data=$1,status='fnf_verified',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(vefUpd), vefRow.id]);
+      return res.json({ success: true });
+    }
+
+    case 'approveExitFnF': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { exit_id: aefExitId } = p;
+      const aefRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [aefExitId]);
+      if (!aefRow) return res.json({ success: false, error: 'Exit case not found' });
+      const aefExit = JSON.parse(aefRow.data);
+      if (aefExit.status !== 'fnf_verified') return res.json({ success: false, error: `Cannot approve — case is at status ${aefExit.status}` });
+      const aefNow = new Date().toISOString();
+      const aefUpd = { ...aefExit, fnf_data: { ...aefExit.fnf_data, hr_approved_by_id: cu.id, hr_approved_by_name: cu.full_name, hr_approved_at: aefNow }, status: 'fnf_hr_approved', audit_log: [...(aefExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'F&F approved by HR', comment: '', timestamp: aefNow }] };
+      await run("UPDATE entities SET data=$1,status='fnf_hr_approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(aefUpd), aefRow.id]);
+      return res.json({ success: true });
+    }
+
+    case 'processExitFnFFinance': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { exit_id: pefExitId, payment_reference: pefRef } = p;
+      const pefRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [pefExitId]);
+      if (!pefRow) return res.json({ success: false, error: 'Exit case not found' });
+      const pefExit = JSON.parse(pefRow.data);
+      if (pefExit.status !== 'fnf_hr_approved') return res.json({ success: false, error: `Cannot process — case is at status ${pefExit.status}` });
+      const pefEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pefExit.user_id]);
+      const pefEmp = pefEmpRow ? JSON.parse(pefEmpRow.data) : {};
+      const pefUserRow = await one("SELECT full_name FROM users WHERE id=$1", [pefExit.user_id]);
+      const pefNow = new Date().toISOString();
+      let pefDoc = null;
+      try {
+        const pefBuf = await buildFnFSettlementPdf({
+          empName: pefUserRow?.full_name || pefEmp.display_name || 'Employee', employeeCode: pefEmp.employee_code,
+          designation: pefEmp.designation, department: pefEmp.department,
+          fFDate: _exitOrdinalDate(pefNow.slice(0, 10)), doj: pefEmp.date_of_joining ? _exitOrdinalDate(pefEmp.date_of_joining) : '',
+          resignationDate: pefExit.resignation_date ? _exitOrdinalDate(pefExit.resignation_date) : '', lwd: pefExit.last_working_date ? _exitOrdinalDate(pefExit.last_working_date) : '',
+          forMonth: pefExit.fnf_data?.for_month || '', fnf: pefExit.fnf_data || {},
+        });
+        pefDoc = await persistExitDocument({ userId: pefExit.user_id, documentType: 'fnf_settlement', documentName: `Full & Final Settlement — ${pefUserRow?.full_name || ''}`, pdfBuffer: pefBuf, generatedBy: cu.id });
+      } catch (e) { console.warn('[processExitFnFFinance] PDF generation failed:', e.message); }
+      const pefUpd = { ...pefExit, fnf_data: { ...pefExit.fnf_data, finance_processed_by_id: cu.id, finance_processed_at: pefNow, payment_reference: pefRef || '' }, fnf_document_id: pefDoc?.document_id || pefExit.fnf_document_id, status: 'fnf_finance_processed', audit_log: [...(pefExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'F&F payment processed by Finance', comment: pefRef || '', timestamp: pefNow }] };
+      await run("UPDATE entities SET data=$1,status='fnf_finance_processed',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(pefUpd), pefRow.id]);
+      await notify(pefExit.user_id, { title: 'F&F Settlement Ready for Acceptance', message: 'Your Full & Final Settlement has been processed. Please review and accept it in My Exit.', type: 'success', link: '/my-exit' });
+      return res.json({ success: true, document_id: pefDoc?.document_id, base64: pefDoc?.base64, filename: 'Full_And_Final_Settlement.pdf' });
+    }
+
+    case 'acceptExitFnF': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { exit_id: acfExitId, typed_name: acfName } = p;
+      if (!acfName?.trim()) return res.json({ success: false, error: 'Typed full name required to accept' });
+      const acfRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [acfExitId]);
+      if (!acfRow) return res.json({ success: false, error: 'Exit case not found' });
+      const acfExit = JSON.parse(acfRow.data);
+      if (acfExit.user_id !== cu.id) return res.status(403).json({ error: 'Only the employee themselves may accept their settlement' });
+      if (acfExit.status !== 'fnf_finance_processed') return res.json({ success: false, error: `Cannot accept — case is at status ${acfExit.status}` });
+      const acfNow = new Date().toISOString();
+      const acfUpd = { ...acfExit, fnf_data: { ...acfExit.fnf_data, employee_accepted: true, employee_accepted_name: acfName.trim(), employee_accepted_at: acfNow }, status: 'fnf_employee_accepted', audit_log: [...(acfExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'F&F accepted by employee', comment: `Typed: ${acfName.trim()}`, timestamp: acfNow }] };
+      await run("UPDATE entities SET data=$1,status='fnf_employee_accepted',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(acfUpd), acfRow.id]);
+      const acfHrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+      for (const hr of acfHrRows) await notify(hr.id, { title: 'F&F Accepted by Employee', message: `${cu.full_name} has accepted their Full & Final Settlement. The exit case is ready to close.`, type: 'info', link: '/exit-management' });
+      return res.json({ success: true });
+    }
+
+    case 'closeExitCase': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { exit_id: cecExitId } = p;
+      const cecRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [cecExitId]);
+      if (!cecRow) return res.json({ success: false, error: 'Exit case not found' });
+      const cecExit = JSON.parse(cecRow.data);
+      const cecAllCleared = EXIT_CLEARANCE_DEPT_KEYS.every(k => cecExit.clearance_checklist?.[k]?.status === 'cleared');
+      const cecReasons = [];
+      if (!cecAllCleared) cecReasons.push('all department clearances must be Cleared');
+      if (!cecExit.no_dues_generated) cecReasons.push('No Dues Certificate must be generated');
+      if (!cecExit.fnf_data?.employee_accepted) cecReasons.push('employee must accept the F&F settlement');
+      if (!cecExit.fnf_data?.finance_processed_by_id) cecReasons.push('Finance must process the F&F payment');
+      if (cecReasons.length) return res.json({ success: false, error: `Cannot close — ${cecReasons.join('; ')}` });
+      const cecNow = new Date().toISOString();
+      const cecUpd = { ...cecExit, status: 'completed', access_deactivated: true, relieving_letter_generated: true, experience_letter_generated: true, audit_log: [...(cecExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Exit completed. Access deactivated.', comment: '', timestamp: cecNow }] };
+      await run("UPDATE entities SET data=$1,status='completed',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecUpd), cecRow.id]);
+      const cecEmpRow = await one("SELECT id FROM entities WHERE type='Employee' AND user_id=$1", [cecExit.user_id]);
+      if (cecEmpRow) await run("UPDATE entities SET data=jsonb_set(jsonb_set(data::jsonb,'{status}','\"resigned\"'),'{exit_date}',$1::jsonb)::text,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecExit.last_working_date || null), cecEmpRow.id]);
+      await notify(cecExit.user_id, { title: 'Exit Process Completed', message: 'Your exit process has been completed. Your relieving and experience letters will be shared shortly.', type: 'success', link: '/my-exit' });
+      return res.json({ success: true });
+    }
+
+    case 'sendExitClearanceReminder': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { exit_id: secExitId } = p;
+      const secRow = await one("SELECT data FROM entities WHERE type='Exit' AND id=$1", [secExitId]);
+      if (!secRow) return res.json({ success: false, error: 'Exit case not found' });
+      const secExit = JSON.parse(secRow.data);
+      const secEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [secExit.user_id]);
+      const secEmp = secEmpRow ? JSON.parse(secEmpRow.data) : {};
+      const secUserRow = await one("SELECT full_name FROM users WHERE id=$1", [secExit.user_id]);
+      const secEmpName = secUserRow?.full_name || secEmp.display_name || 'An employee';
+      let secSent = 0;
+      for (const d of EXIT_CLEARANCE_DEPTS) {
+        const c = secExit.clearance_checklist?.[d.key];
+        if (c?.status === 'cleared') continue;
+        let ownerIds = [];
+        if (d.key === 'working_department') { if (secEmp.reporting_manager_id) ownerIds = [secEmp.reporting_manager_id]; }
+        else { const cfg = await getExitClearanceConfig(d.key); ownerIds = cfg?.owner_user_ids || []; }
+        for (const oid of ownerIds) {
+          const oUser = await one('SELECT full_name, email FROM users WHERE id=$1', [oid]);
+          await notify(oid, { title: `Exit Clearance Pending — ${secEmpName}`, message: `${secEmpName}'s ${d.label} clearance is still pending.`, type: 'warning', link: '/exit-management' });
+          if (oUser?.email) {
+            const tpl = emailTemplates.exitClearanceReminder({ ownerName: oUser.full_name, employeeName: secEmpName, deptLabel: d.label, lastWorkingDate: secExit.last_working_date, daysOverdue: 0 });
+            sendEmail({ to: oUser.email, subject: tpl.subject, html: tpl.html }).catch(() => {});
+          }
+          secSent++;
+        }
+      }
+      return res.json({ success: true, reminders_sent: secSent });
+    }
+
+    case 'listMyExitDocuments': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { exit_id: lmedExitId } = p;
+      const lmedRow = await one("SELECT data FROM entities WHERE type='Exit' AND id=$1", [lmedExitId]);
+      if (!lmedRow) return res.json({ success: false, error: 'Exit case not found' });
+      const lmedExit = JSON.parse(lmedRow.data);
+      if (lmedExit.user_id !== cu.id && !(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'Not authorized' });
+      const lmedDocIds = [lmedExit.no_dues_document_id, lmedExit.fnf_document_id].filter(Boolean);
+      if (!lmedDocIds.length) return res.json({ success: true, documents: [] });
+      const lmedRows = await all("SELECT data FROM entities WHERE type='Document' AND id = ANY($1)", [lmedDocIds]);
+      return res.json({ success: true, documents: lmedRows.map(r => { const d = JSON.parse(r.data); return { id: d.id, document_name: d.document_name, document_type: d.document_type, document_url: d.document_url || null }; }) });
+    }
+
+    case 'getExitClearanceConfigs': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const gecRows = await all("SELECT data FROM entities WHERE type='ExitClearanceConfig'");
+      const gecByKey = Object.fromEntries(gecRows.map(r => { const c = JSON.parse(r.data); return [c.dept_key, c]; }));
+      // Every user eligible to be picked as a department clearance owner —
+      // not just already-assigned ones, or a fresh config would have no one
+      // to choose from.
+      const gecUsers = await all("SELECT id, full_name, email FROM users WHERE role IN ('hr','admin','management','manager','recruiter','employee') ORDER BY full_name");
+      const gecConfigs = EXIT_CLEARANCE_DEPTS.filter(d => d.key !== 'working_department').map(d => gecByKey[d.key] || { dept_key: d.key, label: d.label, owner_user_ids: [], checklist_items: d.default_items, sla_days: 3 });
+      return res.json({ success: true, configs: gecConfigs, owner_options: gecUsers });
+    }
+
+    case 'saveExitClearanceConfig': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { dept_key: secfDept, owner_user_ids: secfOwners, checklist_items: secfItems, sla_days: secfSla } = p;
+      if (!EXIT_CLEARANCE_DEPT_KEYS.includes(secfDept) || secfDept === 'working_department') return res.json({ success: false, error: 'Invalid dept_key' });
+      const secfExisting = await one("SELECT id FROM entities WHERE type='ExitClearanceConfig' AND data::jsonb->>'dept_key'=$1", [secfDept]);
+      const secfDeptMeta = EXIT_CLEARANCE_DEPTS.find(d => d.key === secfDept);
+      const secfData = { id: secfExisting?.id || uuidv4(), dept_key: secfDept, label: secfDeptMeta?.label || secfDept, owner_user_ids: Array.isArray(secfOwners) ? secfOwners : [], checklist_items: Array.isArray(secfItems) && secfItems.length ? secfItems : secfDeptMeta?.default_items || [], sla_days: Number(secfSla) || 3 };
+      if (secfExisting) await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(secfData), secfExisting.id]);
+      else await run("INSERT INTO entities(id,type,status,data) VALUES($1,'ExitClearanceConfig','active',$2)", [secfData.id, JSON.stringify(secfData)]);
+      return res.json({ success: true });
     }
 
     case 'processLeaveAction': {

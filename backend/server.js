@@ -21,6 +21,7 @@ import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleO
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 import { closeUnreturnedGatePasses } from './cron/gatePassAutomation.js';
 import { sendConfirmationDueReminders } from './cron/confirmationAutomation.js';
+import { sendExitClearanceReminders } from './cron/exitClearanceReminders.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -289,6 +290,14 @@ cron.schedule('*/15 * * * *', () => {
 // day's own check-ins are already reflected before counting the week.
 cron.schedule('0 11 * * *', () => {
   checkRepeatedLateArrivals().catch(err => console.error('[late-arrival-alert] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Exit clearance SLA reminders — daily at 9:30 AM IST ──────
+// Reminds each pending department's clearance owners (or the employee's
+// reporting manager for the "working department" clearance) once their
+// configured SLA has elapsed, and escalates to HR when significantly overdue.
+cron.schedule('30 9 * * *', () => {
+  sendExitClearanceReminders().catch(err => console.error('[exit-clearance-reminder] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
 // ── Confirmation-due email reminders — daily at 8:30 AM IST ──

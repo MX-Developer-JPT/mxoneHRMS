@@ -22,39 +22,56 @@ import { isDirectReport } from '@/lib/hierarchy';
 
 /* ── helpers ─────────────────────────────────────── */
 const STATUS_CONFIG = {
-  draft:              { label: 'Draft',              color: 'bg-gray-100 text-gray-700' },
-  submitted:          { label: 'Submitted',          color: 'bg-blue-100 text-blue-800' },
-  manager_approved:   { label: 'Mgr Approved',       color: 'bg-yellow-100 text-yellow-800' },
-  manager_rejected:   { label: 'Mgr Rejected',       color: 'bg-red-100 text-red-800' },
-  hr_approved:        { label: 'HR Approved',        color: 'bg-green-100 text-green-800' },
-  hr_rejected:        { label: 'HR Rejected',        color: 'bg-red-100 text-red-800' },
-  in_notice:          { label: 'In Notice',          color: 'bg-orange-100 text-orange-800' },
-  buyout_pending:     { label: 'Buyout Pending',     color: 'bg-amber-100 text-amber-800' },
-  clearance_pending:  { label: 'Clearance',          color: 'bg-purple-100 text-purple-800' },
-  clearance_done:     { label: 'Clearance Done',     color: 'bg-teal-100 text-teal-800' },
-  fnf_pending:        { label: 'F&F Pending',        color: 'bg-indigo-100 text-indigo-800' },
-  completed:          { label: 'Relieved',           color: 'bg-green-200 text-green-900' },
-  withdrawn:          { label: 'Withdrawn',          color: 'bg-gray-200 text-gray-700' },
-  cancelled:          { label: 'Cancelled',          color: 'bg-gray-100 text-gray-600' },
+  draft:                  { label: 'Draft',              color: 'bg-gray-100 text-gray-700' },
+  submitted:              { label: 'Submitted',          color: 'bg-blue-100 text-blue-800' },
+  manager_approved:       { label: 'Mgr Approved',       color: 'bg-yellow-100 text-yellow-800' },
+  manager_rejected:       { label: 'Mgr Rejected',       color: 'bg-red-100 text-red-800' },
+  hr_approved:            { label: 'HR Approved',        color: 'bg-green-100 text-green-800' },
+  hr_rejected:            { label: 'HR Rejected',        color: 'bg-red-100 text-red-800' },
+  in_notice:              { label: 'In Notice',          color: 'bg-orange-100 text-orange-800' },
+  buyout_pending:         { label: 'Buyout Pending',     color: 'bg-amber-100 text-amber-800' },
+  clearance_pending:      { label: 'Clearance',          color: 'bg-purple-100 text-purple-800' },
+  clearance_done:         { label: 'Clearance Done',     color: 'bg-teal-100 text-teal-800' },
+  fnf_prepared:           { label: 'F&F Prepared',       color: 'bg-indigo-100 text-indigo-800' },
+  fnf_verified:           { label: 'F&F Verified',       color: 'bg-indigo-100 text-indigo-800' },
+  fnf_hr_approved:        { label: 'F&F HR Approved',    color: 'bg-indigo-200 text-indigo-900' },
+  fnf_finance_processed:  { label: 'F&F Processed',      color: 'bg-blue-200 text-blue-900' },
+  fnf_employee_accepted:  { label: 'F&F Accepted',       color: 'bg-teal-200 text-teal-900' },
+  fnf_pending:            { label: 'F&F Pending',        color: 'bg-indigo-100 text-indigo-800' },
+  completed:              { label: 'Relieved',           color: 'bg-green-200 text-green-900' },
+  withdrawn:              { label: 'Withdrawn',          color: 'bg-gray-200 text-gray-700' },
+  cancelled:              { label: 'Cancelled',          color: 'bg-gray-100 text-gray-600' },
 };
 
 const CLEARANCE_DEPTS = [
-  { key: 'hr',               label: 'HR Department',      icon: User },
-  { key: 'it',               label: 'IT Department',      icon: Monitor },
-  { key: 'admin',            label: 'Administration',     icon: ClipboardList },
-  { key: 'finance',          label: 'Finance / Accounts', icon: DollarSign },
-  { key: 'security',         label: 'Security',           icon: ShieldCheck },
-  { key: 'reporting_manager',label: 'Reporting Manager',  icon: Activity },
-  { key: 'project_manager',  label: 'Project Manager',    icon: BookOpen },
+  { key: 'hr',                  label: 'HR Department',                        icon: User },
+  { key: 'finance',             label: 'Finance / Accounts',                   icon: DollarSign },
+  { key: 'it',                  label: 'IT Department',                        icon: Monitor },
+  { key: 'admin',               label: 'Admin/Facilities',                     icon: ClipboardList },
+  { key: 'working_department',  label: 'Working Department / Reporting Mgr',   icon: Activity },
 ];
 
 const DEFAULT_ASSETS = [
-  { name: 'Laptop', type: 'laptop', serial_no: '', issued_date: '', returned_date: '', condition: '', status: 'pending', notes: '' },
-  { name: 'Mouse', type: 'mouse', serial_no: '', issued_date: '', returned_date: '', condition: '', status: 'pending', notes: '' },
-  { name: 'Keyboard', type: 'keyboard', serial_no: '', issued_date: '', returned_date: '', condition: '', status: 'pending', notes: '' },
-  { name: 'ID Card', type: 'id_card', serial_no: '', issued_date: '', returned_date: '', condition: '', status: 'pending', notes: '' },
-  { name: 'Access Card', type: 'access_card', serial_no: '', issued_date: '', returned_date: '', condition: '', status: 'pending', notes: '' },
+  'Laptop/Computer', 'ID Card/Access Card', 'Phone/Tablet', 'Other Equipment/Assets', 'SIM', 'Data/Documents',
+].map((name, i) => ({ id: `asset_${i}`, name, serial_no: '', issued_date: '', returned_date: '', condition: '', status: 'pending', notes: '' }));
+
+const FNF_EARN_ROWS = [
+  ['Basic Salary', 'basic_salary'], ['HRA', 'hra'], ['Special Allowances', 'special_allowances'],
+  ['Conveyance', 'conveyance'], ['GWI', 'gwi'], ['Others', 'others'],
 ];
+const FNF_DED_ROWS = [
+  ['EPF', 'epf'], ['ESI', 'esi'], ['Medical Insurance', 'medical_insurance'], ['Tax', 'tax'],
+  ['Advance', 'advance'], ['Notice Period', 'notice_period'], ['Paid Amount', 'paid_amount'],
+];
+const BLANK_FNF = {
+  f_f_date: '', for_month: '', total_days_in_month: 30, paid_days: 0,
+  earnings: Object.fromEntries(FNF_EARN_ROWS.map(([, k]) => [k, { actual: 0, earned: 0 }])),
+  total_earnings_actual: 0, total_earnings_earned: 0,
+  deductions: Object.fromEntries(FNF_DED_ROWS.map(([, k]) => [k, 0])),
+  total_deductions: 0,
+  other_earnings: { bonus: { eligibility_period: '', amount: 0 }, gratuity: { years: 0, amount: 0 }, ot: 0, others: 0 },
+  net_payable: 0,
+};
 
 const BLANK_HR_INTERVIEW = {
   work_experience_rating: '', management_rating: '', culture_rating: '',
@@ -87,14 +104,11 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   const [loadingAssets, setLoadingAssets] = useState(false);
   const [ktItems, setKtItems] = useState(initialRecord.kt_items || []);
   const [employees, setEmployees] = useState([]);
-  const [fnfData, setFnfData] = useState(initialRecord.fnf_data || {
-    monthly_gross: '', leave_days: '', leave_encash: '',
-    gratuity_amount: '', bonus: '', incentives: '', reimbursements: '',
-    loan_recovery: '', advance_recovery: '', notice_recovery: '',
-    buyout_recovery: '', other_deductions: '', gross_settlement: '', net_settlement: '',
-  });
+  const [fnfData, setFnfData] = useState(initialRecord.fnf_data || { ...BLANK_FNF });
   const [loadingSalary, setLoadingSalary] = useState(false);
   const [generating, setGenerating] = useState('');
+  const [acceptName, setAcceptName] = useState('');
+  const [paymentRef, setPaymentRef] = useState('');
 
   useEffect(() => {
     base44.entities.Employee.list().then(list => setEmployees(list || [])).catch(() => {});
@@ -108,21 +122,19 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   // visible-but-read-only here.
   const canManagerAct = role === 'manager' && isDirectReport(exit.user_id, currentUser?.id, employees);
   const isManager = currentUser?.id === exit.manager_id || role === 'management' || canManagerAct;
+  // Working Department clearance is always actioned by the employee's actual
+  // reporting manager — every other dept is HR-gated client-side (the
+  // backend independently enforces owner_user_ids/HR via canActOnExitClearance).
+  const canActDept = (deptKey) => isHR || (deptKey === 'working_department' && canManagerAct);
 
   const addAudit = (existing, action, cmt) => ([
     ...(existing || []),
     { actor_id: currentUser.id, actor_name: currentUser.full_name, action, comment: cmt || '', timestamp: new Date().toISOString() }
   ]);
 
-  const notifyExit = (action) => {
-    base44.functions.invoke('notifyExitStatusChange', {
-      action, exit_id: exit.id,
-      employee_id: exit.user_id,
-      employee_name: exit.user?.full_name || '',
-      actor_name: currentUser?.full_name || 'HR',
-    }).catch(() => {});
-  };
-
+  // Non-workflow bookkeeping (assets before HR review, KT notes, HR
+  // interview notes) — direct entity writes are fine here since these
+  // aren't security-sensitive status transitions.
   const saveExit = async (updates) => {
     setSaving(true);
     try {
@@ -133,49 +145,53 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
     setSaving(false);
   };
 
+  // Every status-changing workflow action goes through a dedicated,
+  // server-enforced backend case instead of a raw entity write — the
+  // backend independently re-checks authorization for every one of these.
+  const callExit = async (fnName, extra = {}, successMsg) => {
+    setSaving(true);
+    try {
+      const res = await base44.functions.invoke(fnName, { exit_id: exit.id, ...extra });
+      const d = res?.data || res;
+      if (d?.success) {
+        toast.success(successMsg || 'Done');
+        onRefresh();
+        return d;
+      }
+      toast.error(d?.error || 'Action failed');
+      return null;
+    } catch (e) { toast.error(e.message); return null; }
+    finally { setSaving(false); }
+  };
+
   /* ── Approval Actions ── */
   const handleManagerAction = async (action) => {
-    const newStatus = action === 'approved' ? 'manager_approved' : 'manager_rejected';
-    const stages = (exit.approval_stages || []).map(s =>
-      s.stage === 'manager' ? { ...s, status: action, actor_id: currentUser.id, actor_name: currentUser.full_name, comment, timestamp: new Date().toISOString() } : s
-    );
-    await saveExit({ status: newStatus, approval_stages: stages, manager_action: action, manager_comment: comment, manager_actioned_at: new Date().toISOString(), audit_log: addAudit(exit.audit_log, `Manager ${action}`, comment) });
-    notifyExit(action === 'approved' ? 'manager_approved' : 'manager_rejected');
-    toast.success(`Resignation ${action}`);
-    setComment('');
+    const ok = await callExit('actionExitApproval', { stage: 'manager', action, comment }, `Resignation ${action}`);
+    if (ok) setComment('');
   };
 
   const handleHRAction = async (action) => {
-    const newStatus = action === 'approved' ? 'in_notice' : 'hr_rejected';
-    const stages = (exit.approval_stages || []).map(s =>
-      s.stage === 'hr' ? { ...s, status: action, actor_id: currentUser.id, actor_name: currentUser.full_name, comment, timestamp: new Date().toISOString() } : s
-    );
-    await saveExit({ status: newStatus, approval_stages: stages, hr_action: action, hr_comment: comment, hr_actioned_by: currentUser.id, hr_actioned_at: new Date().toISOString(), last_working_date: lwdEdit, audit_log: addAudit(exit.audit_log, `HR ${action}`, comment) });
-    notifyExit(action === 'approved' ? 'hr_approved' : 'hr_rejected');
-    toast.success(`Resignation ${action} by HR`);
-    setComment('');
+    const ok = await callExit('actionExitApproval', { stage: 'hr', action, comment, last_working_date: lwdEdit }, `Resignation ${action} by HR`);
+    if (ok) setComment('');
   };
 
   const handleWithdraw = async () => {
     if (!window.confirm('Are you sure you want to withdraw your resignation?')) return;
     await saveExit({ status: 'withdrawn', withdrawal_at: new Date().toISOString(), audit_log: addAudit(exit.audit_log, 'Resignation Withdrawn', '') });
-    notifyExit('withdrawn');
+    base44.functions.invoke('notifyExitStatusChange', { action: 'withdrawn', employee_id: exit.user_id, employee_name: exit.user?.full_name || '' }).catch(() => {});
     toast.success('Resignation withdrawn');
   };
 
   const handleStartClearance = async () => {
     const initAssets = assets.length ? assets : DEFAULT_ASSETS;
     await saveExit({ status: 'clearance_pending', assets: initAssets, audit_log: addAudit(exit.audit_log, 'Clearance initiated', '') });
-    notifyExit('clearance_started');
+    base44.functions.invoke('notifyExitStatusChange', { action: 'clearance_started', employee_id: exit.user_id, employee_name: exit.user?.full_name || '' }).catch(() => {});
     toast.success('Clearance process started');
   };
 
-  const handleUpdateClearance = async (deptKey, status, notes) => {
-    const updated = { ...(exit.clearance_checklist || {}), [deptKey]: { status, cleared_by: currentUser.full_name, cleared_at: new Date().toISOString(), notes } };
-    const allCleared = CLEARANCE_DEPTS.every(d => updated[d.key]?.status === 'cleared');
-    await saveExit({ clearance_checklist: updated, status: allCleared ? 'clearance_done' : 'clearance_pending', audit_log: addAudit(exit.audit_log, `${deptKey} clearance: ${status}`, notes) });
-    if (allCleared) { notifyExit('clearance_done'); toast.success('All clearances done! Proceeding to F&F.'); }
-    else toast.success(`${deptKey} clearance updated`);
+  const handleUpdateClearance = async (deptKey, status, remarks, checklistItems) => {
+    const ok = await callExit('updateExitClearance', { dept_key: deptKey, status, remarks, checklist_items: checklistItems }, `${deptKey} clearance updated`);
+    if (ok?.all_cleared) toast.success('All clearances done! No Dues Certificate can now be generated.');
   };
 
   const handleSaveAssets = async () => {
@@ -189,31 +205,35 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
     toast.success('KT saved');
   };
 
-  const handleProceedFnF = async () => {
-    await saveExit({ status: 'fnf_pending', audit_log: addAudit(exit.audit_log, 'Proceeded to F&F settlement', '') });
-    notifyExit('fnf_pending');
-    toast.success('Moved to F&F settlement');
+  const downloadPdf = (base64, filename) => {
+    if (!base64) return;
+    const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const handleGenerateNoDues = async () => {
+    setGenerating('no_dues');
+    const d = await callExit('generateNoDuesCertificate', {}, 'No Dues Certificate generated');
+    if (d) downloadPdf(d.base64, d.filename || 'No_Dues_Certificate.pdf');
+    setGenerating('');
   };
 
   const handleSaveFnF = async () => {
-    const gross = (Number(fnfData.leave_encash) || 0) + (Number(fnfData.gratuity_amount) || 0) +
-      (Number(fnfData.bonus) || 0) + (Number(fnfData.incentives) || 0) + (Number(fnfData.reimbursements) || 0);
-    const deductions = (Number(fnfData.loan_recovery) || 0) + (Number(fnfData.advance_recovery) || 0) +
-      (Number(fnfData.notice_recovery) || 0) + (Number(fnfData.buyout_recovery) || 0) + (Number(fnfData.other_deductions) || 0);
-    const net = gross - deductions;
-    const updated = { ...fnfData, gross_settlement: gross, net_settlement: net, calculated_by: currentUser.full_name, calculated_at: new Date().toISOString() };
-    setFnfData(updated);
-    await saveExit({ fnf_data: updated, fnf_calculated: true, audit_log: addAudit(exit.audit_log, `F&F calculated: Net ₹${fmt(net)}`, '') });
-    toast.success('F&F settlement saved');
+    const ok = await callExit('saveExitFnF', { fnf: fnfData }, 'F&F prepared');
+    if (ok?.fnf_data) setFnfData(ok.fnf_data);
   };
-
-  const handleMarkCompleted = async () => {
-    await saveExit({ status: 'completed', access_deactivated: true, relieving_letter_generated: true, experience_letter_generated: true, audit_log: addAudit(exit.audit_log, 'Exit completed. Access deactivated.', '') });
-    const emps = await base44.entities.Employee.filter({ user_id: exit.user_id });
-    if (emps.length > 0) await base44.entities.Employee.update(emps[0].id, { status: 'resigned', exit_date: exit.last_working_date });
-    notifyExit('completed');
-    toast.success('Employee relieved. Exit process completed.');
+  const handleVerifyFnF = () => callExit('verifyExitFnF', {}, 'F&F verified');
+  const handleApproveFnF = () => callExit('approveExitFnF', {}, 'F&F approved');
+  const handleProcessFinance = async () => {
+    setGenerating('fnf_pdf');
+    const d = await callExit('processExitFnFFinance', { payment_reference: paymentRef }, 'F&F payment processed');
+    if (d) downloadPdf(d.base64, d.filename || 'Full_And_Final_Settlement.pdf');
+    setGenerating('');
   };
+  const handleCloseCase = () => callExit('closeExitCase', {}, 'Exit case closed');
 
   const handleSaveHRInterview = async () => {
     setSavingInterview(true);
@@ -369,11 +389,16 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
               {isHR && exit.status === 'in_notice' && (
                 <Button className="w-full bg-purple-600 hover:bg-purple-700" onClick={handleStartClearance} disabled={saving}><ClipboardList className="w-4 h-4 mr-2" />Initiate Clearance Process</Button>
               )}
-              {isHR && exit.status === 'clearance_done' && (
-                <Button className="w-full bg-indigo-600 hover:bg-indigo-700" onClick={handleProceedFnF} disabled={saving}><DollarSign className="w-4 h-4 mr-2" />Proceed to F&F Settlement</Button>
+              {isHR && exit.status === 'clearance_done' && !exit.no_dues_generated && (
+                <Button className="w-full bg-teal-600 hover:bg-teal-700" onClick={handleGenerateNoDues} disabled={saving || generating === 'no_dues'}>
+                  {generating === 'no_dues' ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileText className="w-4 h-4 mr-2" />}Generate No Dues Certificate
+                </Button>
               )}
-              {isHR && exit.status === 'fnf_pending' && exit.fnf_calculated && (
-                <Button className="w-full bg-green-600 hover:bg-green-700" onClick={handleMarkCompleted} disabled={saving}><CheckCircle2 className="w-4 h-4 mr-2" />Mark as Relieved</Button>
+              {exit.no_dues_generated && ['clearance_done', 'fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted'].includes(exit.status) && (
+                <p className="text-xs text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-3 py-2 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" />No Dues Certificate generated — see the F&F Settlement tab to proceed with F&F.</p>
+              )}
+              {isHR && exit.status === 'fnf_employee_accepted' && (
+                <Button className="w-full bg-green-600 hover:bg-green-700" onClick={handleCloseCase} disabled={saving}><CheckCircle2 className="w-4 h-4 mr-2" />Close Exit Case — Mark as Relieved</Button>
               )}
 
               {/* Employee withdraw option */}
@@ -391,7 +416,6 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                     {[
                       ['relieving_letter', 'Relieving Letter'],
                       ['experience_letter', 'Experience / Service Certificate'],
-                      ['fnf_letter', 'Full & Final Settlement Letter'],
                     ].map(([type, label]) => (
                       <div key={type} className="flex items-center justify-between p-3">
                         <div className="flex items-center gap-2 text-sm">
@@ -404,6 +428,14 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                         )}
                       </div>
                     ))}
+                    <div className="flex items-center justify-between p-3">
+                      <div className="flex items-center gap-2 text-sm"><FileText className="w-4 h-4 text-teal-500" />No Dues Certificate</div>
+                      <Badge className={exit.no_dues_generated ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}>{exit.no_dues_generated ? 'Generated' : 'Not generated'}</Badge>
+                    </div>
+                    <div className="flex items-center justify-between p-3">
+                      <div className="flex items-center gap-2 text-sm"><FileText className="w-4 h-4 text-indigo-500" />Full & Final Settlement Statement</div>
+                      <Badge className={exit.fnf_document_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}>{exit.fnf_document_id ? 'Generated' : 'Not generated'}</Badge>
+                    </div>
                   </div>
                 </div>
               )}
@@ -678,25 +710,24 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
           {/* ══ CLEARANCE ══ */}
           {activeTab === 'clearance' && (
             <div className="space-y-3">
-              <p className="text-sm text-gray-500">All departments must clear the employee before F&F settlement can proceed.</p>
+              <p className="text-sm text-gray-500">All 5 departments must clear every checklist item before a No Dues Certificate can be generated.</p>
               {CLEARANCE_DEPTS.map(dept => {
-                const status = exit.clearance_checklist?.[dept.key]?.status || 'pending';
-                const data = exit.clearance_checklist?.[dept.key] || {};
+                const data = exit.clearance_checklist?.[dept.key] || { status: 'pending', checklist_items: [] };
                 const Icon = dept.icon;
                 return (
-                  <div key={dept.key} className={`border rounded-lg p-3 ${status === 'cleared' ? 'bg-green-50 border-green-200' : status === 'rejected' ? 'bg-red-50 border-red-200' : 'bg-gray-50'}`}>
+                  <div key={dept.key} className={`border rounded-lg p-3 ${data.status === 'cleared' ? 'bg-green-50 border-green-200' : data.status === 'not_cleared' ? 'bg-red-50 border-red-200' : 'bg-gray-50'}`}>
                     <div className="flex items-center gap-3 flex-wrap">
-                      <Icon className={`w-5 h-5 flex-shrink-0 ${status === 'cleared' ? 'text-green-600' : status === 'rejected' ? 'text-red-600' : 'text-gray-400'}`} />
+                      <Icon className={`w-5 h-5 flex-shrink-0 ${data.status === 'cleared' ? 'text-green-600' : data.status === 'not_cleared' ? 'text-red-600' : 'text-gray-400'}`} />
                       <div className="flex-1">
                         <p className="font-medium text-sm">{dept.label}</p>
-                        {data.cleared_by && <p className="text-xs text-gray-500">By {data.cleared_by} · {data.cleared_at ? safeDate(data.cleared_at, 'dd MMM yyyy') : ''}</p>}
-                        {data.notes && <p className="text-xs text-gray-600">{data.notes}</p>}
+                        {data.authorized_by_name && <p className="text-xs text-gray-500">By {data.authorized_by_name} · {data.cleared_at ? safeDate(data.cleared_at, 'dd MMM yyyy') : ''}</p>}
+                        {data.remarks && <p className="text-xs text-gray-600">{data.remarks}</p>}
                       </div>
-                      <Badge className={status === 'cleared' ? 'bg-green-100 text-green-700' : status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}>
-                        {status === 'cleared' ? 'Cleared' : status === 'rejected' ? 'Issues Found' : 'Pending'}
+                      <Badge className={data.status === 'cleared' ? 'bg-green-100 text-green-700' : data.status === 'not_cleared' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}>
+                        {data.status === 'cleared' ? 'Cleared' : data.status === 'not_cleared' ? 'Not Cleared' : 'Pending'}
                       </Badge>
                     </div>
-                    {isHR && ['clearance_pending', 'clearance_done'].includes(exit.status) && (
+                    {canActDept(dept.key) && ['in_notice', 'clearance_pending', 'clearance_done'].includes(exit.status) && (
                       <ClearanceDeptActions dept={dept.key} data={data} onUpdate={handleUpdateClearance} />
                     )}
                   </div>
@@ -707,116 +738,16 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
 
           {/* ══ F&F SETTLEMENT ══ */}
           {activeTab === 'fnf' && (
-            <div className="space-y-4">
-              <p className="text-sm text-gray-500">Calculate the full & final settlement amount for the employee.</p>
-              {isHR && (
-                <Button size="sm" variant="outline" onClick={async () => {
-                  setLoadingSalary(true);
-                  try {
-                    const res = await base44.functions.invoke('getEmployeeSalaryForFnF', { user_id: exit.user_id });
-                    const d = res.data;
-                    if (d?.success) {
-                      const perDay = d.per_day_salary || (d.monthly_gross ? Math.round(d.monthly_gross / 26) : 0);
-                      const leaveDays = d.leave_balance || 0;
-                      const leaveEncash = Math.round(leaveDays * perDay);
-                      setFnfData(p => ({
-                        ...p,
-                        monthly_gross: d.monthly_gross || '',
-                        leave_days: leaveDays,
-                        leave_encash: leaveEncash,
-                        gratuity_amount: d.gratuity_eligible ? (d.gratuity_amount || '') : '',
-                        loan_recovery: d.loan_outstanding > 0 ? String(d.loan_outstanding) : p.loan_recovery,
-                        _per_day: perDay,
-                      }));
-                      toast.success(`Loaded: ₹${(d.monthly_gross||0).toLocaleString('en-IN')}/mo · ${leaveDays} leave days · ${d.gratuity_eligible ? 'gratuity eligible' : 'gratuity not eligible'}${d.loan_outstanding > 0 ? ` · loan due ₹${d.loan_outstanding.toLocaleString('en-IN')}` : ''}`);
-                    } else {
-                      toast.error(d?.error || 'Could not fetch salary data');
-                    }
-                  } catch (e) { toast.error('Failed: ' + e.message); }
-                  setLoadingSalary(false);
-                }} disabled={loadingSalary}>
-                  {loadingSalary ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : null}Auto-fill from Payroll
-                </Button>
-              )}
-
-              <div className="space-y-1">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Earnings</p>
-                <div className="border rounded-lg overflow-hidden">
-                  {[
-                    ['Monthly Gross (₹)', 'monthly_gross', 'Reference only'],
-                    ['Leave Balance (days)', 'leave_days', 'Available earned leaves'],
-                    ['Leave Encashment (₹)', 'leave_encash', 'leave_days × (gross/26)'],
-                    ['Gratuity (₹)', 'gratuity_amount', '(basic×15×years)/26 if tenure ≥5 yrs'],
-                    ['Bonus / Arrears (₹)', 'bonus', ''],
-                    ['Incentives (₹)', 'incentives', ''],
-                    ['Reimbursements (₹)', 'reimbursements', ''],
-                  ].map(([label, key, hint]) => (
-                    <div key={key} className="flex items-center gap-3 px-3 py-2 border-b last:border-0">
-                      <span className="text-sm flex-1">{label}</span>
-                      {hint && <span className="text-xs text-gray-400 hidden md:block">{hint}</span>}
-                      {isHR ? (
-                        <Input type="number" className="w-32 h-7 text-sm text-right" value={fnfData[key]} onChange={e => setFnfData(p => ({ ...p, [key]: e.target.value }))} placeholder="0" />
-                      ) : (
-                        <span className="text-sm font-medium w-32 text-right">₹{fmt(fnfData[key])}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Deductions / Recoveries</p>
-                <div className="border rounded-lg overflow-hidden">
-                  {[
-                    ['Loan Recovery (₹)', 'loan_recovery'],
-                    ['Advance Recovery (₹)', 'advance_recovery'],
-                    ['Notice Period Recovery (₹)', 'notice_recovery'],
-                    ['Buyout Recovery (₹)', 'buyout_recovery'],
-                    ['Other Deductions (₹)', 'other_deductions'],
-                  ].map(([label, key]) => (
-                    <div key={key} className="flex items-center gap-3 px-3 py-2 border-b last:border-0">
-                      <span className="text-sm flex-1">{label}</span>
-                      {isHR ? (
-                        <Input type="number" className="w-32 h-7 text-sm text-right" value={fnfData[key]} onChange={e => setFnfData(p => ({ ...p, [key]: e.target.value }))} placeholder="0" />
-                      ) : (
-                        <span className="text-sm font-medium w-32 text-right">₹{fmt(fnfData[key])}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Summary */}
-              {(fnfData.gross_settlement || isHR) && (
-                <div className="border-2 border-gray-900 rounded-lg overflow-hidden">
-                  <div className="bg-gray-900 text-white px-4 py-2 text-sm font-semibold">Settlement Summary</div>
-                  <div className="divide-y">
-                    {[
-                      ['Total Earnings', (Number(fnfData.leave_encash)||0)+(Number(fnfData.gratuity_amount)||0)+(Number(fnfData.bonus)||0)+(Number(fnfData.incentives)||0)+(Number(fnfData.reimbursements)||0), 'text-green-700'],
-                      ['Total Deductions', (Number(fnfData.loan_recovery)||0)+(Number(fnfData.advance_recovery)||0)+(Number(fnfData.notice_recovery)||0)+(Number(fnfData.buyout_recovery)||0)+(Number(fnfData.other_deductions)||0), 'text-red-700'],
-                    ].map(([label, val, color]) => (
-                      <div key={label} className="flex justify-between px-4 py-2 text-sm">
-                        <span>{label}</span><span className={`font-semibold ${color}`}>₹{fmt(val)}</span>
-                      </div>
-                    ))}
-                    <div className="flex justify-between px-4 py-3 font-bold text-base bg-gray-50">
-                      <span>Net Settlement</span>
-                      <span className="text-blue-700">₹{fmt(fnfData.net_settlement || (
-                        (Number(fnfData.leave_encash)||0)+(Number(fnfData.gratuity_amount)||0)+(Number(fnfData.bonus)||0)+(Number(fnfData.incentives)||0)+(Number(fnfData.reimbursements)||0) -
-                        (Number(fnfData.loan_recovery)||0)-(Number(fnfData.advance_recovery)||0)-(Number(fnfData.notice_recovery)||0)-(Number(fnfData.buyout_recovery)||0)-(Number(fnfData.other_deductions)||0)
-                      ))}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {isHR && (
-                <Button className="w-full bg-indigo-600 hover:bg-indigo-700" onClick={handleSaveFnF} disabled={saving}>
-                  <Save className="w-4 h-4 mr-2" />Calculate & Save F&F
-                </Button>
-              )}
-              {fnfData.calculated_by && <p className="text-xs text-gray-400 text-center">Calculated by {fnfData.calculated_by} · {fnfData.calculated_at ? safeDate(fnfData.calculated_at, 'dd MMM yyyy') : ''}</p>}
-            </div>
+            <FnFTab
+              exit={exit} isHR={isHR} currentUser={currentUser} saving={saving} generating={generating}
+              fnfData={fnfData} setFnfData={setFnfData}
+              loadingSalary={loadingSalary} setLoadingSalary={setLoadingSalary}
+              onSave={handleSaveFnF} onVerify={handleVerifyFnF} onApprove={handleApproveFnF}
+              onProcessFinance={handleProcessFinance} paymentRef={paymentRef} setPaymentRef={setPaymentRef}
+              acceptName={acceptName} setAcceptName={setAcceptName}
+              onAccept={() => callExit('acceptExitFnF', { typed_name: acceptName }, 'F&F accepted')}
+              downloadPdf={downloadPdf}
+            />
           )}
 
           {/* ══ TIMELINE ══ */}
@@ -851,14 +782,191 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   );
 }
 
-/* ── Clearance dept actions sub-component ── */
+/* ── Clearance dept actions sub-component — per-item checklist, "cleared"
+   only enabled once every item is checked (server independently enforces
+   this too). ── */
 function ClearanceDeptActions({ dept, data, onUpdate }) {
-  const [notes, setNotes] = useState(data.notes || '');
+  const [items, setItems] = useState(data.checklist_items || []);
+  const [remarks, setRemarks] = useState(data.remarks || '');
+  const [newItem, setNewItem] = useState('');
+  const allChecked = items.length > 0 && items.every(it => it.checked);
+
+  const toggleItem = (id) => setItems(p => p.map(it => it.id === id ? { ...it, checked: !it.checked } : it));
+  const addItem = () => {
+    if (!newItem.trim()) return;
+    setItems(p => [...p, { id: `custom_${Date.now()}`, label: newItem.trim(), checked: false, notes: '' }]);
+    setNewItem('');
+  };
+  const removeItem = (id) => setItems(p => p.filter(it => it.id !== id));
+
   return (
-    <div className="mt-2 flex gap-2 flex-wrap">
-      <Input className="flex-1 h-7 text-xs" placeholder="Remarks..." value={notes} onChange={e => setNotes(e.target.value)} />
-      <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700" onClick={() => onUpdate(dept, 'cleared', notes)}><CheckCircle2 className="w-3 h-3 mr-1" />Clear</Button>
-      <Button size="sm" variant="outline" className="h-7 text-xs border-red-300 text-red-600" onClick={() => onUpdate(dept, 'rejected', notes)}><XCircle className="w-3 h-3 mr-1" />Issue Found</Button>
+    <div className="mt-2 space-y-2">
+      <div className="space-y-1">
+        {items.map(it => (
+          <label key={it.id} className="flex items-center gap-2 text-xs bg-white/60 rounded px-2 py-1">
+            <input type="checkbox" checked={!!it.checked} onChange={() => toggleItem(it.id)} />
+            <span className="flex-1">{it.label}</span>
+            {it.id.startsWith('custom_') && <button type="button" onClick={() => removeItem(it.id)} className="text-red-400"><Trash2 className="w-3 h-3" /></button>}
+          </label>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <Input className="flex-1 h-7 text-xs" placeholder="Add checklist item..." value={newItem} onChange={e => setNewItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addItem())} />
+        <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={addItem}><Plus className="w-3 h-3" /></Button>
+      </div>
+      <Input className="h-7 text-xs" placeholder="Remarks..." value={remarks} onChange={e => setRemarks(e.target.value)} />
+      <div className="flex gap-2 flex-wrap">
+        <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700 disabled:opacity-40" disabled={!allChecked} title={!allChecked ? 'All checklist items must be checked first' : ''} onClick={() => onUpdate(dept, 'cleared', remarks, items)}><CheckCircle2 className="w-3 h-3 mr-1" />Clear</Button>
+        <Button size="sm" variant="outline" className="h-7 text-xs border-red-300 text-red-600" onClick={() => onUpdate(dept, 'not_cleared', remarks, items)}><XCircle className="w-3 h-3 mr-1" />Issue Found</Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => onUpdate(dept, 'pending', remarks, items)}>Save Progress</Button>
+      </div>
+    </div>
+  );
+}
+
+/* ── F&F Settlement tab — Actual/Earned statement matching the reference
+   document, with the full Prepare → Verify → Approve → Process Finance →
+   Employee Accept stage pipeline. ── */
+function FnFTab({ exit, isHR, currentUser, saving, generating, fnfData, setFnfData, loadingSalary, setLoadingSalary, onSave, onVerify, onApprove, onProcessFinance, paymentRef, setPaymentRef, acceptName, setAcceptName, onAccept, downloadPdf }) {
+  const setEarn = (key, actual) => setFnfData(p => ({ ...p, earnings: { ...p.earnings, [key]: { ...p.earnings?.[key], actual: Number(actual) || 0 } } }));
+  const setDed = (key, val) => setFnfData(p => ({ ...p, deductions: { ...p.deductions, [key]: Number(val) || 0 } }));
+  const canEdit = isHR && exit.status === 'clearance_done' && exit.no_dues_generated;
+  const isEmployee = currentUser?.id === exit.user_id;
+
+  const autoFill = async () => {
+    setLoadingSalary(true);
+    try {
+      const res = await base44.functions.invoke('getEmployeeSalaryForFnF', { user_id: exit.user_id });
+      const d = res.data;
+      if (d?.success) {
+        setFnfData(p => ({
+          ...p,
+          earnings: {
+            ...p.earnings,
+            basic_salary: { ...p.earnings?.basic_salary, actual: d.earnings_actual?.basic_salary || 0 },
+            hra: { ...p.earnings?.hra, actual: d.earnings_actual?.hra || 0 },
+            special_allowances: { ...p.earnings?.special_allowances, actual: d.earnings_actual?.special_allowances || 0 },
+            conveyance: { ...p.earnings?.conveyance, actual: d.earnings_actual?.conveyance || 0 },
+          },
+          deductions: { ...p.deductions, epf: d.epf_estimate || 0, esi: d.esi_estimate || 0 },
+          other_earnings: { ...p.other_earnings, gratuity: { years: d.years_of_service || 0, amount: d.gratuity_eligible ? (d.gratuity_amount || 0) : 0 } },
+        }));
+        toast.success(`Loaded salary components · ${d.years_of_service || 0} yrs service · ${d.gratuity_eligible ? 'gratuity eligible' : 'gratuity not eligible'}`);
+      } else toast.error(d?.error || 'Could not fetch salary data');
+    } catch (e) { toast.error('Failed: ' + e.message); }
+    setLoadingSalary(false);
+  };
+
+  if (!exit.no_dues_generated) {
+    return <div className="text-center py-10 text-gray-400 text-sm"><DollarSign className="w-8 h-8 mx-auto mb-2" />F&F Settlement becomes available once the No Dues Certificate is generated.</div>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500">Full & Final Settlement Statement — Actual vs Earned, matching the standard MaxVolt format.</p>
+      {canEdit && (
+        <Button size="sm" variant="outline" onClick={autoFill} disabled={loadingSalary}>
+          {loadingSalary ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : null}Auto-fill from Payroll
+        </Button>
+      )}
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <div><Label className="text-xs">For the Month</Label><Input disabled={!canEdit} value={fnfData.for_month || ''} onChange={e => setFnfData(p => ({ ...p, for_month: e.target.value }))} placeholder="e.g. February 2026" /></div>
+        <div className="grid grid-cols-2 gap-2">
+          <div><Label className="text-xs">Total Days in Month</Label><Input type="number" disabled={!canEdit} value={fnfData.total_days_in_month || ''} onChange={e => setFnfData(p => ({ ...p, total_days_in_month: Number(e.target.value) || 0 }))} /></div>
+          <div><Label className="text-xs">Paid Days</Label><Input type="number" disabled={!canEdit} value={fnfData.paid_days || ''} onChange={e => setFnfData(p => ({ ...p, paid_days: Number(e.target.value) || 0 }))} /></div>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Earnings (Actual → Earned)</p>
+        <div className="border rounded-lg overflow-hidden">
+          <div className="flex items-center gap-3 px-3 py-1.5 bg-gray-50 text-xs font-semibold text-gray-500"><span className="flex-1">Component</span><span className="w-24 text-right">Actual</span><span className="w-24 text-right">Earned</span></div>
+          {FNF_EARN_ROWS.map(([label, key]) => (
+            <div key={key} className="flex items-center gap-3 px-3 py-2 border-t">
+              <span className="text-sm flex-1">{label}</span>
+              {canEdit ? <Input type="number" className="w-24 h-7 text-sm text-right" value={fnfData.earnings?.[key]?.actual || ''} onChange={e => setEarn(key, e.target.value)} placeholder="0" /> : <span className="w-24 text-right text-sm">₹{fmt(fnfData.earnings?.[key]?.actual)}</span>}
+              <span className="w-24 text-right text-sm text-gray-500">₹{fmt(fnfData.earnings?.[key]?.earned)}</span>
+            </div>
+          ))}
+          <div className="flex items-center gap-3 px-3 py-2 border-t bg-green-50 font-semibold text-sm"><span className="flex-1">Total</span><span className="w-24 text-right">₹{fmt(fnfData.total_earnings_actual)}</span><span className="w-24 text-right">₹{fmt(fnfData.total_earnings_earned)}</span></div>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Less Deductions (-)</p>
+        <div className="border rounded-lg overflow-hidden">
+          {FNF_DED_ROWS.map(([label, key]) => (
+            <div key={key} className="flex items-center gap-3 px-3 py-2 border-b last:border-0">
+              <span className="text-sm flex-1">{label}</span>
+              {canEdit ? <Input type="number" className="w-28 h-7 text-sm text-right" value={fnfData.deductions?.[key] || ''} onChange={e => setDed(key, e.target.value)} placeholder="0" /> : <span className="w-28 text-right text-sm">₹{fmt(fnfData.deductions?.[key])}</span>}
+            </div>
+          ))}
+          <div className="flex items-center gap-3 px-3 py-2 bg-red-50 font-semibold text-sm"><span className="flex-1">Total Deductions</span><span className="w-28 text-right">₹{fmt(fnfData.total_deductions)}</span></div>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Other Earnings</p>
+        <div className="border rounded-lg overflow-hidden divide-y">
+          <div className="flex items-center gap-3 px-3 py-2">
+            <span className="text-sm w-24">Bonus</span>
+            {canEdit ? <Input className="flex-1 h-7 text-xs" placeholder="Eligibility period, e.g. April 2025 to February 2026" value={fnfData.other_earnings?.bonus?.eligibility_period || ''} onChange={e => setFnfData(p => ({ ...p, other_earnings: { ...p.other_earnings, bonus: { ...p.other_earnings?.bonus, eligibility_period: e.target.value } } }))} /> : <span className="flex-1 text-xs text-gray-500">{fnfData.other_earnings?.bonus?.eligibility_period}</span>}
+            {canEdit ? <Input type="number" className="w-28 h-7 text-sm text-right" value={fnfData.other_earnings?.bonus?.amount || ''} onChange={e => setFnfData(p => ({ ...p, other_earnings: { ...p.other_earnings, bonus: { ...p.other_earnings?.bonus, amount: Number(e.target.value) || 0 } } }))} /> : <span className="w-28 text-right text-sm">₹{fmt(fnfData.other_earnings?.bonus?.amount)}</span>}
+          </div>
+          <div className="flex items-center gap-3 px-3 py-2">
+            <span className="text-sm w-24">Gratuity</span>
+            {canEdit ? <Input type="number" className="w-20 h-7 text-xs" placeholder="Years" value={fnfData.other_earnings?.gratuity?.years || ''} onChange={e => setFnfData(p => ({ ...p, other_earnings: { ...p.other_earnings, gratuity: { ...p.other_earnings?.gratuity, years: Number(e.target.value) || 0 } } }))} /> : <span className="flex-1 text-xs text-gray-500">{fnfData.other_earnings?.gratuity?.years} yr(s)</span>}
+            {canEdit ? <Input type="number" className="w-28 h-7 text-sm text-right" value={fnfData.other_earnings?.gratuity?.amount || ''} onChange={e => setFnfData(p => ({ ...p, other_earnings: { ...p.other_earnings, gratuity: { ...p.other_earnings?.gratuity, amount: Number(e.target.value) || 0 } } }))} /> : <span className="w-28 text-right text-sm">₹{fmt(fnfData.other_earnings?.gratuity?.amount)}</span>}
+          </div>
+          {[['OT', 'ot'], ['Others', 'others']].map(([label, key]) => (
+            <div key={key} className="flex items-center gap-3 px-3 py-2">
+              <span className="text-sm flex-1">{label}</span>
+              {canEdit ? <Input type="number" className="w-28 h-7 text-sm text-right" value={fnfData.other_earnings?.[key] || ''} onChange={e => setFnfData(p => ({ ...p, other_earnings: { ...p.other_earnings, [key]: Number(e.target.value) || 0 } }))} /> : <span className="w-28 text-right text-sm ml-auto">₹{fmt(fnfData.other_earnings?.[key])}</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="border-2 border-gray-900 rounded-lg overflow-hidden">
+        <div className="flex justify-between px-4 py-3 font-bold text-base bg-gray-900 text-white"><span>Net Payable</span><span>₹{fmt(fnfData.net_payable)}</span></div>
+      </div>
+
+      {canEdit && (
+        <Button className="w-full bg-indigo-600 hover:bg-indigo-700" onClick={onSave} disabled={saving}><Save className="w-4 h-4 mr-2" />Prepare F&F</Button>
+      )}
+      {isHR && exit.status === 'fnf_prepared' && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-sm">
+          <p className="font-medium text-indigo-800 mb-2">F&F prepared by {fnfData.prepared_by_name} — needs independent verification.</p>
+          <Button size="sm" onClick={onVerify} disabled={saving}>Verify F&F</Button>
+        </div>
+      )}
+      {isHR && exit.status === 'fnf_verified' && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-sm">
+          <p className="font-medium text-indigo-800 mb-2">F&F verified by {fnfData.verified_by_name} — awaiting HR/Management approval.</p>
+          <Button size="sm" onClick={onApprove} disabled={saving}>Approve F&F</Button>
+        </div>
+      )}
+      {isHR && exit.status === 'fnf_hr_approved' && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm space-y-2">
+          <p className="font-medium text-blue-800">Approved by {fnfData.hr_approved_by_name} — process the payment in Finance to generate the settlement PDF.</p>
+          <Input placeholder="Payment reference / UTR (optional)" value={paymentRef} onChange={e => setPaymentRef(e.target.value)} />
+          <Button size="sm" onClick={onProcessFinance} disabled={saving || generating === 'fnf_pdf'}>{generating === 'fnf_pdf' ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : null}Process Payment & Generate PDF</Button>
+        </div>
+      )}
+      {['fnf_finance_processed', 'fnf_employee_accepted', 'completed'].includes(exit.status) && fnfData.finance_processed_by_id && (
+        <p className="text-xs text-gray-500 text-center">Processed {fnfData.payment_reference ? `(ref: ${fnfData.payment_reference}) ` : ''}on {fnfData.finance_processed_at ? safeDate(fnfData.finance_processed_at, 'dd MMM yyyy') : ''}</p>
+      )}
+      {isEmployee && exit.status === 'fnf_finance_processed' && (
+        <div className="bg-teal-50 border border-teal-200 rounded-lg p-3 space-y-2">
+          <p className="font-medium text-teal-800 text-sm">Please review the settlement above and type your full name to accept.</p>
+          <Input placeholder="Type your full name to accept" value={acceptName} onChange={e => setAcceptName(e.target.value)} />
+          <Button className="w-full bg-teal-600 hover:bg-teal-700" disabled={!acceptName.trim() || saving} onClick={onAccept}><CheckCircle2 className="w-4 h-4 mr-2" />I Accept This Settlement</Button>
+        </div>
+      )}
+      {fnfData.employee_accepted && (
+        <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-center">Accepted by {fnfData.employee_accepted_name} on {fnfData.employee_accepted_at ? safeDate(fnfData.employee_accepted_at, 'dd MMM yyyy') : ''}</p>
+      )}
     </div>
   );
 }

@@ -22,33 +22,38 @@ const STATUS_STEPS = [
   { status: 'manager_approved', label: 'Mgr Approved',   desc: 'Awaiting HR review' },
   { status: 'in_notice',        label: 'Notice Period',  desc: 'Serving notice period' },
   { status: 'clearance_pending',label: 'Clearance',      desc: 'Dept clearances in progress' },
-  { status: 'fnf_pending',      label: 'F&F Settlement', desc: 'Final settlement processing' },
+  { status: 'fnf_prepared',     label: 'F&F Settlement', desc: 'Final settlement processing' },
   { status: 'completed',        label: 'Relieved',       desc: 'Exit process complete' },
 ];
+// Every F&F sub-stage collapses onto the single "F&F Settlement" stepper step.
+const FNF_SUBSTAGES = ['fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted', 'fnf_pending'];
 
 const STATUS_LABELS = {
-  submitted:          { label: 'Submitted',        color: 'bg-blue-100 text-blue-800' },
-  manager_approved:   { label: 'Mgr Approved',     color: 'bg-yellow-100 text-yellow-800' },
-  manager_rejected:   { label: 'Mgr Rejected',     color: 'bg-red-100 text-red-800' },
-  hr_approved:        { label: 'HR Approved',       color: 'bg-green-100 text-green-800' },
-  hr_rejected:        { label: 'HR Rejected',       color: 'bg-red-100 text-red-800' },
-  in_notice:          { label: 'In Notice Period',  color: 'bg-orange-100 text-orange-800' },
-  clearance_pending:  { label: 'Clearance Pending', color: 'bg-purple-100 text-purple-800' },
-  clearance_done:     { label: 'Clearance Done',    color: 'bg-teal-100 text-teal-800' },
-  fnf_pending:        { label: 'F&F Pending',       color: 'bg-indigo-100 text-indigo-800' },
-  completed:          { label: 'Relieved',          color: 'bg-green-200 text-green-900' },
-  withdrawn:          { label: 'Withdrawn',         color: 'bg-gray-200 text-gray-700' },
-  cancelled:          { label: 'Cancelled',         color: 'bg-gray-100 text-gray-600' },
+  submitted:              { label: 'Submitted',            color: 'bg-blue-100 text-blue-800' },
+  manager_approved:       { label: 'Mgr Approved',         color: 'bg-yellow-100 text-yellow-800' },
+  manager_rejected:       { label: 'Mgr Rejected',         color: 'bg-red-100 text-red-800' },
+  hr_approved:            { label: 'HR Approved',          color: 'bg-green-100 text-green-800' },
+  hr_rejected:            { label: 'HR Rejected',          color: 'bg-red-100 text-red-800' },
+  in_notice:              { label: 'In Notice Period',     color: 'bg-orange-100 text-orange-800' },
+  clearance_pending:      { label: 'Clearance Pending',    color: 'bg-purple-100 text-purple-800' },
+  clearance_done:         { label: 'Clearance Done',       color: 'bg-teal-100 text-teal-800' },
+  fnf_prepared:           { label: 'F&F Prepared',         color: 'bg-indigo-100 text-indigo-800' },
+  fnf_verified:           { label: 'F&F Verified',         color: 'bg-indigo-100 text-indigo-800' },
+  fnf_hr_approved:        { label: 'F&F Approved',         color: 'bg-indigo-200 text-indigo-900' },
+  fnf_finance_processed:  { label: 'F&F Ready to Accept',  color: 'bg-blue-200 text-blue-900' },
+  fnf_employee_accepted:  { label: 'F&F Accepted',         color: 'bg-teal-200 text-teal-900' },
+  fnf_pending:            { label: 'F&F Pending',          color: 'bg-indigo-100 text-indigo-800' },
+  completed:              { label: 'Relieved',             color: 'bg-green-200 text-green-900' },
+  withdrawn:              { label: 'Withdrawn',            color: 'bg-gray-200 text-gray-700' },
+  cancelled:              { label: 'Cancelled',             color: 'bg-gray-100 text-gray-600' },
 };
 
 const CLEARANCE_DEPTS = [
-  { key: 'hr',                label: 'HR Department',      icon: User },
-  { key: 'it',                label: 'IT Department',      icon: Monitor },
-  { key: 'admin',             label: 'Administration',     icon: Building2 },
-  { key: 'finance',           label: 'Finance / Accounts', icon: DollarSign },
-  { key: 'security',          label: 'Security',           icon: ShieldCheck },
-  { key: 'reporting_manager', label: 'Reporting Manager',  icon: Activity },
-  { key: 'project_manager',   label: 'Project Manager',    icon: BookOpen },
+  { key: 'hr',                 label: 'HR Department',                       icon: User },
+  { key: 'finance',            label: 'Finance / Accounts',                  icon: DollarSign },
+  { key: 'it',                 label: 'IT Department',                       icon: Monitor },
+  { key: 'admin',              label: 'Admin/Facilities',                    icon: Building2 },
+  { key: 'working_department', label: 'Working Department / Reporting Mgr',  icon: Activity },
 ];
 
 const INTERVIEW_QUESTIONS = [
@@ -74,6 +79,9 @@ export default function MyExit() {
   const [showResignForm, setShowResignForm] = useState(false);
   const [interview, setInterview]   = useState({});
   const [savingInterview, setSavingInterview] = useState(false);
+  const [acceptName, setAcceptName] = useState('');
+  const [accepting, setAccepting] = useState(false);
+  const [downloadingDoc, setDownloadingDoc] = useState('');
 
   useEffect(() => { loadData(); }, []);
 
@@ -106,8 +114,35 @@ export default function MyExit() {
   const daysRemaining = lwdDate ? Math.max(0, differenceInCalendarDays(lwdDate, today)) : 0;
   const noticeProgress = Math.min(100, Math.round(daysServed / noticeDays * 100));
 
-  const currentStepIdx = STATUS_STEPS.findIndex(s => s.status === exitRecord?.status);
+  const stepperStatus = FNF_SUBSTAGES.includes(exitRecord?.status) ? 'fnf_prepared' : exitRecord?.status;
+  const currentStepIdx = STATUS_STEPS.findIndex(s => s.status === stepperStatus);
   const effectiveStep = currentStepIdx >= 0 ? currentStepIdx : (['manager_rejected','hr_rejected'].includes(exitRecord?.status) ? -1 : 0);
+
+  const handleAcceptFnF = async () => {
+    if (!acceptName.trim()) { toast.error('Please type your full name to accept'); return; }
+    setAccepting(true);
+    try {
+      const res = await base44.functions.invoke('acceptExitFnF', { exit_id: exitRecord.id, typed_name: acceptName.trim() });
+      const d = res?.data || res;
+      if (d?.success) { toast.success('F&F settlement accepted'); loadData(); }
+      else toast.error(d?.error || 'Failed to accept');
+    } catch (e) { toast.error(e.message); }
+    setAccepting(false);
+  };
+
+  const downloadDocument = async (docId, filename) => {
+    // No stored base64 for older-generated documents — this relies on the
+    // R2-hosted document_url captured at generation time via listMyExitDocuments.
+    setDownloadingDoc(docId);
+    try {
+      const res = await base44.functions.invoke('listMyExitDocuments', { exit_id: exitRecord.id });
+      const d = res?.data || res;
+      const doc = d?.documents?.find(x => x.id === docId);
+      if (doc?.document_url) window.open(doc.document_url, '_blank');
+      else toast.error('Document not available for download');
+    } catch (e) { toast.error(e.message); }
+    setDownloadingDoc('');
+  };
 
   const handleWithdraw = async () => {
     if (!window.confirm('Are you sure you want to withdraw your resignation? This cannot be undone.')) return;
@@ -146,7 +181,8 @@ export default function MyExit() {
     { id: 'notice',    label: 'Notice Period',  icon: CalendarDays, show: !!exitRecord },
     { id: 'clearance', label: 'Clearance',      icon: ClipboardList,show: !!exitRecord },
     { id: 'interview', label: 'Exit Interview', icon: MessageSquare,show: !!exitRecord },
-    { id: 'assets',    label: 'My Assets',      icon: Package,      show: !!exitRecord && ['clearance_pending','clearance_done','fnf_pending','completed'].includes(exitRecord?.status) },
+    { id: 'assets',    label: 'My Assets',      icon: Package,      show: !!exitRecord && ['clearance_pending','clearance_done',...FNF_SUBSTAGES,'completed'].includes(exitRecord?.status) },
+    { id: 'fnf',       label: 'F&F Settlement', icon: DollarSign,   show: !!exitRecord && exitRecord.no_dues_generated },
     { id: 'documents', label: 'Documents',      icon: FileText,     show: !!exitRecord },
   ].filter(t => t.show);
 
@@ -323,19 +359,30 @@ export default function MyExit() {
               <div className="space-y-3">
                 <p className="text-sm text-gray-500">Clearance is required from all departments before your F&F can be processed.</p>
                 {CLEARANCE_DEPTS.map(dept => {
-                  const data = exitRecord.clearance_checklist?.[dept.key] || { status: 'pending' };
+                  const data = exitRecord.clearance_checklist?.[dept.key] || { status: 'pending', checklist_items: [] };
                   const Icon = dept.icon;
                   return (
-                    <div key={dept.key} className={`border rounded-lg p-3 flex items-center gap-3 ${data.status === 'cleared' ? 'bg-green-50 border-green-200' : data.status === 'rejected' ? 'bg-red-50 border-red-200' : 'bg-gray-50'}`}>
-                      <Icon className={`w-5 h-5 ${data.status === 'cleared' ? 'text-green-600' : data.status === 'rejected' ? 'text-red-600' : 'text-gray-400'}`} />
-                      <div className="flex-1">
-                        <p className="font-medium text-sm">{dept.label}</p>
-                        {data.cleared_by && <p className="text-xs text-gray-500">Cleared by {data.cleared_by}</p>}
-                        {data.notes && <p className="text-xs text-gray-600">{data.notes}</p>}
+                    <div key={dept.key} className={`border rounded-lg p-3 ${data.status === 'cleared' ? 'bg-green-50 border-green-200' : data.status === 'not_cleared' ? 'bg-red-50 border-red-200' : 'bg-gray-50'}`}>
+                      <div className="flex items-center gap-3">
+                        <Icon className={`w-5 h-5 ${data.status === 'cleared' ? 'text-green-600' : data.status === 'not_cleared' ? 'text-red-600' : 'text-gray-400'}`} />
+                        <div className="flex-1">
+                          <p className="font-medium text-sm">{dept.label}</p>
+                          {data.authorized_by_name && <p className="text-xs text-gray-500">Cleared by {data.authorized_by_name}</p>}
+                          {data.remarks && <p className="text-xs text-gray-600">{data.remarks}</p>}
+                        </div>
+                        <Badge className={data.status === 'cleared' ? 'bg-green-100 text-green-700' : data.status === 'not_cleared' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}>
+                          {data.status === 'cleared' ? 'Cleared' : data.status === 'not_cleared' ? 'Issue Found' : 'Pending'}
+                        </Badge>
                       </div>
-                      <Badge className={data.status === 'cleared' ? 'bg-green-100 text-green-700' : data.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}>
-                        {data.status === 'cleared' ? 'Cleared' : data.status === 'rejected' ? 'Issue Found' : 'Pending'}
-                      </Badge>
+                      {(data.checklist_items || []).length > 0 && (
+                        <div className="mt-2 pl-8 space-y-0.5">
+                          {data.checklist_items.map(it => (
+                            <p key={it.id} className={`text-xs flex items-center gap-1.5 ${it.checked ? 'text-green-700' : 'text-gray-400'}`}>
+                              {it.checked ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}{it.label}
+                            </p>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -365,7 +412,7 @@ export default function MyExit() {
                     </div>
                   </div>
                 ) : (
-                  ['in_notice','clearance_pending','clearance_done','fnf_pending'].includes(exitRecord.status) ? (
+                  ['in_notice','clearance_pending','clearance_done',...FNF_SUBSTAGES].includes(exitRecord.status) ? (
                     <div className="space-y-4">
                       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm">
                         <p className="font-semibold text-amber-800">Please complete your exit interview</p>
@@ -449,14 +496,48 @@ export default function MyExit() {
               </div>
             )}
 
+            {/* ── F&F SETTLEMENT ── */}
+            {activeTab === 'fnf' && (
+              <div className="space-y-4">
+                <p className="text-sm text-gray-500">Your Full &amp; Final Settlement.</p>
+                {exitRecord.fnf_data ? (
+                  <>
+                    <div className="border rounded-lg overflow-hidden">
+                      <div className="flex justify-between px-4 py-2 text-sm bg-gray-50"><span>Total Earnings</span><span className="font-medium">₹{fmt(exitRecord.fnf_data.total_earnings_earned)}</span></div>
+                      <div className="flex justify-between px-4 py-2 text-sm border-t"><span>Total Deductions</span><span className="font-medium text-red-600">₹{fmt(exitRecord.fnf_data.total_deductions)}</span></div>
+                      <div className="flex justify-between px-4 py-3 text-base font-bold bg-gray-900 text-white"><span>Net Payable</span><span>₹{fmt(exitRecord.fnf_data.net_payable)}</span></div>
+                    </div>
+                    {exitRecord.status === 'fnf_finance_processed' && !exitRecord.fnf_data.employee_accepted && (
+                      <div className="bg-teal-50 border border-teal-200 rounded-lg p-3 space-y-2">
+                        <p className="font-medium text-teal-800 text-sm">Please review the settlement above and type your full name to accept.</p>
+                        <Input placeholder="Type your full name to accept" value={acceptName} onChange={e => setAcceptName(e.target.value)} />
+                        <Button className="w-full bg-teal-600 hover:bg-teal-700" disabled={!acceptName.trim() || accepting} onClick={handleAcceptFnF}>
+                          {accepting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}I Accept This Settlement
+                        </Button>
+                      </div>
+                    )}
+                    {exitRecord.fnf_data.employee_accepted && (
+                      <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-center">Accepted by {exitRecord.fnf_data.employee_accepted_name} on {exitRecord.fnf_data.employee_accepted_at ? safeDate(exitRecord.fnf_data.employee_accepted_at, 'dd MMM yyyy') : ''}</p>
+                    )}
+                    {!['fnf_finance_processed','fnf_employee_accepted','completed'].includes(exitRecord.status) && (
+                      <p className="text-xs text-gray-400 text-center">Your settlement is still being prepared and reviewed by HR/Finance.</p>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-center py-10 text-gray-400 text-sm"><DollarSign className="w-8 h-8 mx-auto mb-2" />F&F settlement has not been prepared yet.</div>
+                )}
+              </div>
+            )}
+
             {/* ── DOCUMENTS ── */}
             {activeTab === 'documents' && (
               <div className="space-y-3">
-                {['completed','fnf_pending'].includes(exitRecord.status) ? (
+                {['completed',...FNF_SUBSTAGES].includes(exitRecord.status) || exitRecord.no_dues_generated ? (
                   [
-                    { label: 'Relieving Letter', available: exitRecord.relieving_letter_generated, desc: 'Official relieving from the organization' },
-                    { label: 'Experience Letter', available: exitRecord.experience_letter_generated, desc: 'Certificate of employment and experience' },
-                    { label: 'F&F Settlement Letter', available: exitRecord.fnf_calculated, desc: 'Full & final settlement details' },
+                    { id: exitRecord.no_dues_document_id, label: 'No Dues Certificate', available: exitRecord.no_dues_generated, desc: 'Department-wise clearance certificate' },
+                    { id: exitRecord.fnf_document_id, label: 'Full & Final Settlement Statement', available: !!exitRecord.fnf_document_id, desc: 'Full & final settlement details' },
+                    { id: null, label: 'Relieving Letter', available: exitRecord.relieving_letter_generated, desc: 'Official relieving from the organization' },
+                    { id: null, label: 'Experience Letter', available: exitRecord.experience_letter_generated, desc: 'Certificate of employment and experience' },
                   ].map(doc => (
                     <div key={doc.label} className={`flex items-center justify-between p-4 rounded-lg border ${doc.available ? 'bg-green-50 border-green-200' : 'bg-gray-50'}`}>
                       <div className="flex items-center gap-3">
@@ -466,7 +547,11 @@ export default function MyExit() {
                           <p className="text-xs text-gray-500">{doc.desc}</p>
                         </div>
                       </div>
-                      {doc.available ? (
+                      {doc.available && doc.id ? (
+                        <Button size="sm" variant="outline" disabled={downloadingDoc === doc.id} onClick={() => downloadDocument(doc.id, doc.label)}>
+                          {downloadingDoc === doc.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Download'}
+                        </Button>
+                      ) : doc.available ? (
                         <Badge className="bg-green-100 text-green-700">Ready</Badge>
                       ) : (
                         <Badge className="bg-yellow-100 text-yellow-700">Pending</Badge>
@@ -476,7 +561,7 @@ export default function MyExit() {
                 ) : (
                   <div className="text-center py-10 text-gray-400">
                     <FileText className="w-10 h-10 mx-auto mb-2" />
-                    <p className="text-sm">Documents will be available after your exit is completed.</p>
+                    <p className="text-sm">Documents will be available after your clearance is complete.</p>
                   </div>
                 )}
               </div>

@@ -25,20 +25,30 @@ import { safeDate } from '@/lib/dateUtils';
 import { resolveHierarchy } from '@/lib/hierarchy';
 
 const STATUS_CONFIG = {
-  submitted:          { label: 'Submitted',        color: 'bg-blue-100 text-blue-800' },
-  manager_approved:   { label: 'Mgr Approved',     color: 'bg-yellow-100 text-yellow-800' },
-  manager_rejected:   { label: 'Mgr Rejected',     color: 'bg-red-100 text-red-800' },
-  hr_approved:        { label: 'HR Approved',       color: 'bg-green-100 text-green-800' },
-  hr_rejected:        { label: 'HR Rejected',       color: 'bg-red-100 text-red-800' },
-  in_notice:          { label: 'In Notice',         color: 'bg-orange-100 text-orange-800' },
-  buyout_pending:     { label: 'Buyout Pending',    color: 'bg-amber-100 text-amber-800' },
-  clearance_pending:  { label: 'Clearance',         color: 'bg-purple-100 text-purple-800' },
-  clearance_done:     { label: 'Clearance Done',    color: 'bg-teal-100 text-teal-800' },
-  fnf_pending:        { label: 'F&F Pending',       color: 'bg-indigo-100 text-indigo-800' },
-  completed:          { label: 'Relieved',          color: 'bg-green-200 text-green-900' },
-  withdrawn:          { label: 'Withdrawn',         color: 'bg-gray-200 text-gray-700' },
-  cancelled:          { label: 'Cancelled',         color: 'bg-gray-100 text-gray-600' },
+  submitted:              { label: 'Submitted',            color: 'bg-blue-100 text-blue-800' },
+  manager_approved:       { label: 'Mgr Approved',         color: 'bg-yellow-100 text-yellow-800' },
+  manager_rejected:       { label: 'Mgr Rejected',         color: 'bg-red-100 text-red-800' },
+  hr_approved:            { label: 'HR Approved',          color: 'bg-green-100 text-green-800' },
+  hr_rejected:            { label: 'HR Rejected',          color: 'bg-red-100 text-red-800' },
+  in_notice:              { label: 'In Notice',            color: 'bg-orange-100 text-orange-800' },
+  buyout_pending:         { label: 'Buyout Pending',       color: 'bg-amber-100 text-amber-800' },
+  clearance_pending:      { label: 'Clearance',            color: 'bg-purple-100 text-purple-800' },
+  clearance_done:         { label: 'Clearance Done',       color: 'bg-teal-100 text-teal-800' },
+  fnf_prepared:           { label: 'F&F Prepared',         color: 'bg-indigo-100 text-indigo-800' },
+  fnf_verified:           { label: 'F&F Verified',         color: 'bg-indigo-100 text-indigo-800' },
+  fnf_hr_approved:        { label: 'F&F HR Approved',      color: 'bg-indigo-200 text-indigo-900' },
+  fnf_finance_processed:  { label: 'F&F Processed',        color: 'bg-blue-200 text-blue-900' },
+  fnf_employee_accepted:  { label: 'F&F Accepted',         color: 'bg-teal-200 text-teal-900' },
+  fnf_pending:            { label: 'F&F Pending',          color: 'bg-indigo-100 text-indigo-800' },
+  completed:              { label: 'Relieved',             color: 'bg-green-200 text-green-900' },
+  withdrawn:              { label: 'Withdrawn',            color: 'bg-gray-200 text-gray-700' },
+  cancelled:              { label: 'Cancelled',            color: 'bg-gray-100 text-gray-600' },
 };
+
+const CLEARANCE_DASH_DEPTS = [
+  { key: 'hr', label: 'HR' }, { key: 'finance', label: 'Finance' }, { key: 'it', label: 'IT' },
+  { key: 'admin', label: 'Admin' }, { key: 'working_department', label: 'Working Dept' },
+];
 
 const PIE_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6'];
 
@@ -134,41 +144,22 @@ export default function ExitManagement() {
     }
     setInitiating(true);
     try {
-      const now = new Date().toISOString();
-      await base44.entities.Exit.create({
-        user_id: selectedEmp.user_id,
+      const res = await base44.functions.invoke('initiateExit', {
+        employee_user_id: selectedEmp.user_id,
         exit_type: initForm.exit_type,
         reason_category: initForm.reason_category,
         resignation_date: initForm.resignation_date,
         last_working_date: initForm.last_working_date,
-        proposed_last_day: initForm.last_working_date,
         hr_notes: initForm.hr_notes,
-        status: 'in_notice',
-        initiated_by_hr: true,
-        hr_actioned_by: currentUser.id,
-        hr_actioned_at: now,
-        notice_period_days: 30,
-        approval_stages: [
-          { stage: 'manager', status: 'approved', actor_name: 'HR (initiated)', timestamp: now },
-          { stage: 'hr', status: 'approved', actor_id: currentUser.id, actor_name: currentUser.full_name, timestamp: now },
-        ],
-        clearance_checklist: { hr:{status:'pending'}, it:{status:'pending'}, admin:{status:'pending'}, finance:{status:'pending'}, security:{status:'pending'}, reporting_manager:{status:'pending'}, project_manager:{status:'pending'} },
-        assets: [], kt_items: [],
-        exit_interview: null, hr_exit_interview: null,
-        exit_interview_completed: false, hr_interview_completed: false,
-        fnf_data: null, fnf_calculated: false,
-        access_deactivated: false, relieving_letter_generated: false, experience_letter_generated: false,
-        audit_log: [{ actor_id: currentUser.id, actor_name: currentUser.full_name, action: 'HR Initiated Exit', comment: initForm.hr_notes || '', timestamp: now }],
       });
-      base44.functions.invoke('notifyExitStatusChange', {
-        action: 'hr_initiated', employee_id: selectedEmp.user_id,
-        employee_name: selectedEmp.display_name || '', actor_name: currentUser?.full_name || 'HR',
-      }).catch(() => {});
-      toast.success('Exit initiated successfully');
-      setShowInitiate(false);
-      setSelectedEmp(null); setEmpSearch('');
-      setInitForm({ reason_category: '', resignation_date: format(new Date(), 'yyyy-MM-dd'), last_working_date: '', exit_type: 'resignation', hr_notes: '' });
-      loadData();
+      const d = res?.data || res;
+      if (d?.success) {
+        toast.success('Exit initiated successfully');
+        setShowInitiate(false);
+        setSelectedEmp(null); setEmpSearch('');
+        setInitForm({ reason_category: '', resignation_date: format(new Date(), 'yyyy-MM-dd'), last_working_date: '', exit_type: 'resignation', hr_notes: '' });
+        loadData();
+      } else toast.error(d?.error || 'Failed to initiate exit');
     } catch (err) { toast.error('Failed to initiate exit'); }
     setInitiating(false);
   };
@@ -253,7 +244,7 @@ export default function ExitManagement() {
 
         {/* Tabs */}
         <div className="flex gap-1 border-b">
-          {[{ id: 'dashboard', label: 'Dashboard', icon: BarChart3 }, { id: 'cases', label: 'Exit Cases', icon: Users }].map(tab => {
+          {[{ id: 'dashboard', label: 'Dashboard', icon: BarChart3 }, { id: 'cases', label: 'Exit Cases', icon: Users }, { id: 'clearance', label: 'Clearance Dashboard', icon: ClipboardList }].map(tab => {
             const Icon = tab.icon;
             return (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -393,6 +384,50 @@ export default function ExitManagement() {
               </CardContent>
             </Card>
           </div>
+        )}
+
+        {/* ══ CLEARANCE DASHBOARD TAB ══ */}
+        {activeTab === 'clearance' && (
+          <Card>
+            <CardContent className="p-0 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
+                  <tr>
+                    <th className="px-4 py-2 text-left">Employee</th>
+                    {CLEARANCE_DASH_DEPTS.map(d => <th key={d.key} className="px-3 py-2 text-left">{d.label}</th>)}
+                    <th className="px-3 py-2 text-left">No Dues</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {enriched.filter(ex => ['in_notice', 'clearance_pending', 'clearance_done'].includes(ex.status)).map(ex => (
+                    <tr key={ex.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => setSelected(ex)}>
+                      <td className="px-4 py-2.5">
+                        <p className="font-medium">{ex.user?.full_name}</p>
+                        <p className="text-xs text-gray-400">{ex.employee?.department}</p>
+                      </td>
+                      {CLEARANCE_DASH_DEPTS.map(d => {
+                        const c = ex.clearance_checklist?.[d.key] || { status: 'pending' };
+                        return (
+                          <td key={d.key} className="px-3 py-2.5">
+                            <Badge className={c.status === 'cleared' ? 'bg-green-100 text-green-700' : c.status === 'not_cleared' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}>
+                              {c.status === 'cleared' ? 'Cleared' : c.status === 'not_cleared' ? 'Issue' : 'Pending'}
+                            </Badge>
+                            {c.authorized_by_name && <p className="text-[10px] text-gray-400 mt-0.5">{c.authorized_by_name}</p>}
+                          </td>
+                        );
+                      })}
+                      <td className="px-3 py-2.5">
+                        <Badge className={ex.no_dues_generated ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-500'}>{ex.no_dues_generated ? 'Generated' : '—'}</Badge>
+                      </td>
+                    </tr>
+                  ))}
+                  {!enriched.filter(ex => ['in_notice', 'clearance_pending', 'clearance_done'].includes(ex.status)).length && (
+                    <tr><td colSpan={CLEARANCE_DASH_DEPTS.length + 2} className="px-4 py-10 text-center text-gray-400">No cases currently in clearance</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
         )}
 
         {/* ══ CASES TAB ══ */}

@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 import AdoptionDashboardTab from '@/components/admin/AdoptionDashboardTab';
+import ExitClearanceConfigTab from '@/components/admin/ExitClearanceConfigTab';
 
 const TOKEN_KEY = 'base44_access_token';
 const API = (path) => `/api/admin${path}`;
@@ -2260,6 +2261,7 @@ export default function AdminPanel() {
     { id: 'api',        label: 'API Integration',    icon: Fingerprint },
     { id: 'audit',      label: 'Audit Log',          icon: ScrollText },
     { id: 'maintenance',label: 'Maintenance',        icon: RotateCcw },
+    { id: 'exit_clearance', label: 'Exit Clearance Owners', icon: UserCog },
   ];
 
   return (
@@ -2290,6 +2292,7 @@ export default function AdminPanel() {
       </div>
 
       {tab === 'adoption'   && <AdoptionDashboardTab />}
+      {tab === 'exit_clearance' && <ExitClearanceConfigTab />}
       {tab === 'entities'   && <EntitiesTab typeCounts={typeCounts} />}
       {tab === 'users'      && <UsersTab />}
       {tab === 'emp'        && <EmployeeAttrsTab />}

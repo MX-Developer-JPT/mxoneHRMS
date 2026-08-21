@@ -256,6 +256,27 @@ export const emailTemplates = {
     ),
   }),
 
+  exitClearanceReminder: ({ ownerName, employeeName, deptLabel, lastWorkingDate, daysOverdue }) => ({
+    subject: `Exit Clearance ${daysOverdue > 0 ? 'Overdue' : 'Pending'} — ${employeeName} (${deptLabel})`,
+    html: wrap(
+      emailHeader('Exit Clearance Reminder', daysOverdue > 0 ? '#991b1b' : '#b45309'),
+      emailBody(`
+        <p>Dear <strong>${ownerName || 'Team'}</strong>,</p>
+        <p>
+          <strong>${employeeName}</strong>'s exit clearance for <strong>${deptLabel}</strong> is
+          ${daysOverdue > 0 ? `<strong style="color:#dc2626">overdue by ${daysOverdue} day${daysOverdue === 1 ? '' : 's'}</strong>` : 'still pending'}.
+        </p>
+        ${infoTable([
+          ['Employee', employeeName],
+          ['Department Clearance', deptLabel],
+          ...(lastWorkingDate ? [['Last Working Day', lastWorkingDate]] : []),
+        ])}
+        <p>Please complete this department's clearance checklist in Maxvolt One under Exit Management.</p>
+      `),
+      emailFooter()
+    ),
+  }),
+
   otpEmail: ({ name, code, expiresMinutes = 10 }) => ({
     subject: 'Your Maxvolt HR Verification Code',
     html: wrap(
