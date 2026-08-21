@@ -128,6 +128,10 @@ export default function Leave() {
       toast.error('Please fill in all required fields.');
       return;
     }
+    if (needsDocument && !documentFile) {
+      toast.error('A medical certificate is required for sick leave of more than 2 days.');
+      return;
+    }
     setSubmitting(true);
 
     const totalDays = isWFH ? 1 : validation.adjusted_days;

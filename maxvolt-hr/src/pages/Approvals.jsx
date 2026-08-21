@@ -84,7 +84,21 @@ export default function Approvals() {
       } else {
         // Filter all pending by user_id membership (manager_id field may not be set reliably)
         const allPendingReimb = await base44.entities.Reimbursement.filter({ status: 'pending' }, '-created_date');
-        reimburse = allPendingReimb.filter(r => directReportUserIds.includes(r.user_id));
+        const expenseWf = wfMap.expense;
+        reimburse = allPendingReimb.filter(r => {
+          if (directReportUserIds.includes(r.user_id)) return true;
+          // A configurable workflow step can assign approval to a specific
+          // user who isn't the claimant's manager — without this, such a
+          // claim never appeared in anyone's queue and silently stalled at
+          // that step forever.
+          if (expenseWf?.steps?.length) {
+            const lvl = r.wf_level || 0;
+            const step = expenseWf.steps[lvl];
+            const empRecord = empRecords.find(e => e.user_id === r.user_id);
+            return matchesStep(step, empRecord, currentUser, hrRole);
+          }
+          return false;
+        });
       }
 
       // Gate passes pending manager approval
@@ -112,6 +126,8 @@ export default function Approvals() {
   };
 
   const handleLeaveApproval = async (leaveId, status) => {
+    if (processing[leaveId]) return;
+    setProcessing(p => ({ ...p, [leaveId]: true }));
     try {
       await base44.entities.Leave.update(leaveId, {
         status,
@@ -122,6 +138,8 @@ export default function Approvals() {
       loadData();
     } catch (error) {
       toast.error('Failed to update leave');
+    } finally {
+      setProcessing(p => ({ ...p, [leaveId]: false }));
     }
   };
 
@@ -138,6 +156,8 @@ export default function Approvals() {
   };
 
   const handleReimbursementApproval = async (reimbId, action) => {
+    if (processing[reimbId]) return;
+    setProcessing(p => ({ ...p, [reimbId]: true }));
     try {
       const wf = workflows.expense;
       const reimb = reimbursements.find(r => r.id === reimbId);
@@ -182,6 +202,8 @@ export default function Approvals() {
       loadData();
     } catch (error) {
       toast.error('Failed to update reimbursement');
+    } finally {
+      setProcessing(p => ({ ...p, [reimbId]: false }));
     }
   };
 
@@ -422,10 +444,10 @@ export default function Approvals() {
                               <p className="text-sm mt-2">{leave.reason}</p>
                             </div>
                             <div className="flex gap-2">
-                              <Button onClick={() => handleLeaveApproval(leave.id, 'approved')} size="sm" className="bg-green-600 hover:bg-green-700">
+                              <Button onClick={() => handleLeaveApproval(leave.id, 'approved')} disabled={processing[leave.id]} size="sm" className="bg-green-600 hover:bg-green-700">
                                 <Check className="w-4 h-4 mr-1" /> Approve
                               </Button>
-                              <Button onClick={() => handleLeaveApproval(leave.id, 'rejected')} size="sm" variant="destructive">
+                              <Button onClick={() => handleLeaveApproval(leave.id, 'rejected')} disabled={processing[leave.id]} size="sm" variant="destructive">
                                 <X className="w-4 h-4 mr-1" /> Reject
                               </Button>
                             </div>
@@ -491,10 +513,10 @@ export default function Approvals() {
                               )}
                             </div>
                             <div className="flex gap-2">
-                              <Button onClick={() => handleReimbursementApproval(reimb.id, 'approve')} size="sm" className="bg-green-600 hover:bg-green-700">
+                              <Button onClick={() => handleReimbursementApproval(reimb.id, 'approve')} disabled={processing[reimb.id]} size="sm" className="bg-green-600 hover:bg-green-700">
                                 <Check className="w-4 h-4 mr-1" /> {isHR ? 'Final Approve' : 'Approve'}
                               </Button>
-                              <Button onClick={() => handleReimbursementApproval(reimb.id, 'reject')} size="sm" variant="destructive">
+                              <Button onClick={() => handleReimbursementApproval(reimb.id, 'reject')} disabled={processing[reimb.id]} size="sm" variant="destructive">
                                 <X className="w-4 h-4 mr-1" /> Reject
                               </Button>
                             </div>

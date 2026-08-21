@@ -398,10 +398,10 @@ export default function RegularisationApproval() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              {actionDialog?.action === 'approved' && <CheckCircle2 className="w-5 h-5 text-green-600" />}
-              {actionDialog?.action === 'rejected' && <XCircle className="w-5 h-5 text-red-600" />}
-              {actionDialog?.action === 'sent_back' && <RotateCcw className="w-5 h-5 text-orange-600" />}
-              {actionDialog?.action === 'approved' ? 'Approve' : actionDialog?.action === 'rejected' ? 'Reject' : 'Send Back'} Request
+              {actionDialog?.action === 'approve' && <CheckCircle2 className="w-5 h-5 text-green-600" />}
+              {actionDialog?.action === 'reject' && <XCircle className="w-5 h-5 text-red-600" />}
+              {actionDialog?.action === 'send_back' && <RotateCcw className="w-5 h-5 text-orange-600" />}
+              {actionDialog?.action === 'approve' ? 'Approve' : actionDialog?.action === 'reject' ? 'Reject' : 'Send Back'} Request
             </DialogTitle>
           </DialogHeader>
           {actionDialog && (
@@ -412,12 +412,12 @@ export default function RegularisationApproval() {
                 <p><strong>Reason:</strong> {actionDialog.request.reason}</p>
               </div>
               <div>
-                <Label>Comment {actionDialog.action !== 'approved' ? '*' : '(optional)'}</Label>
+                <Label>Comment {actionDialog.action !== 'approve' ? '*' : '(optional)'}</Label>
                 <Textarea value={comment} onChange={e => setComment(e.target.value)} rows={3}
-                  placeholder={actionDialog.action === 'approved' ? 'Optional comment...' : 'Provide a reason...'}
-                  required={actionDialog.action !== 'approved'} />
+                  placeholder={actionDialog.action === 'approve' ? 'Optional comment...' : 'Provide a reason...'}
+                  required={actionDialog.action !== 'approve'} />
               </div>
-              {actionDialog.action === 'approved' && isHR && (
+              {actionDialog.action === 'approve' && isHR && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800 flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                   <p>Approval will automatically update the attendance record and recalculate working hours.</p>
@@ -427,10 +427,10 @@ export default function RegularisationApproval() {
                 <Button variant="outline" onClick={() => { setActionDialog(null); setComment(''); }}>Cancel</Button>
                 <Button
                   onClick={handleAction}
-                  disabled={processing || (actionDialog.action !== 'approved' && !comment.trim())}
-                  className={actionDialog.action === 'approved' ? 'bg-green-600 hover:bg-green-700' : actionDialog.action === 'rejected' ? 'bg-red-600 hover:bg-red-700' : 'bg-orange-600 hover:bg-orange-700'}
+                  disabled={processing || (actionDialog.action !== 'approve' && !comment.trim())}
+                  className={actionDialog.action === 'approve' ? 'bg-green-600 hover:bg-green-700' : actionDialog.action === 'reject' ? 'bg-red-600 hover:bg-red-700' : 'bg-orange-600 hover:bg-orange-700'}
                 >
-                  {processing ? 'Processing...' : `Confirm ${actionDialog.action === 'approved' ? 'Approval' : actionDialog.action === 'rejected' ? 'Rejection' : 'Send Back'}`}
+                  {processing ? 'Processing...' : `Confirm ${actionDialog.action === 'approve' ? 'Approval' : actionDialog.action === 'reject' ? 'Rejection' : 'Send Back'}`}
                 </Button>
               </div>
             </div>

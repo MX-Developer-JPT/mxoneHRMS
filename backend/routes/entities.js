@@ -1,12 +1,35 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
-import { one, all, run } from '../db.js';
+import { one, all, run, withTransaction } from '../db.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { sendPushToUser } from '../utils/push.js';
 import { JWT_SECRET } from './auth.js';
 
 const router = Router();
+
+// Entity types carrying financial, statutory, or otherwise highly sensitive
+// data. Every route below additionally restricts these to HR/admin/
+// management (unrestricted) or the record's own owner — closing the gap
+// where this whole router previously had no authorization at all, so any
+// caller (authenticated or not) could read/write PAN/Aadhaar/bank details,
+// payroll, loans, insurance claims, and POSH case records for anyone.
+const SENSITIVE_TYPES = new Set([
+  'Payroll', 'PayrollConfiguration', 'SalaryStructure', 'Loan', 'InsuranceClaim',
+  'POSHRecord', 'TaxDeclaration', 'Form16', 'BankDetail', 'LeaveBalance', 'Document',
+]);
+const PRIVILEGED_ROLES = new Set(['hr', 'admin', 'management']);
+
+// Live DB lookup (not the JWT's embedded role, which can go stale for the
+// life of a 30-day token if the user is later promoted/demoted) — mirrors
+// the hasRole() convention used throughout routes/functions.js.
+async function getEffectiveRole(cu) {
+  if (!cu) return null;
+  try {
+    const row = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
+    return row?.custom_role || row?.role || cu.custom_role || cu.role || null;
+  } catch { return cu.custom_role || cu.role || null; }
+}
 
 // Location Master (AppLocation) is admin-only to manage — everyone else can
 // still read it (employees need the list client-side for geofence matching),
@@ -25,10 +48,18 @@ async function requireAdminForType(req, res, type) {
 // they were declined, not a wasted submission slot. Enforced server-side
 // here (not just as a frontend nicety) since creation goes through this
 // generic entity route rather than a dedicated function-route case.
-async function checkRegularisationLimit(res, type, data) {
+// `client` (a locked transaction connection — see withTransaction call sites
+// below) is optional so this can still be called standalone; when provided,
+// the read runs on the SAME connection holding the advisory lock, so it sees
+// a consistent view relative to the insert that follows inside that
+// transaction — closing the read-then-write race where two concurrent
+// requests could both read "4 this month" and both be allowed through.
+async function checkRegularisationLimit(res, type, data, client) {
   if (type !== 'AttendanceRegularisation') return true;
   if (!data.user_id) return true;
-  const rows = await all("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id]);
+  const rows = client
+    ? (await client.query("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id])).rows
+    : await all("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id]);
   const nowIST = new Date(Date.now() + 5.5 * 3600000);
   const curYM = `${nowIST.getUTCFullYear()}-${String(nowIST.getUTCMonth() + 1).padStart(2, '0')}`;
   const countThisMonth = rows.filter(r => {
@@ -66,7 +97,7 @@ function getCurrentUser(req) {
 // Restricts an approved/rejected status change to: HR/admin/management
 // (unrestricted), or a 'manager' role approving only their own direct
 // report's request (Employee.reporting_manager_id === approver's id).
-const APPROVAL_SCOPED_TYPES = new Set(['GatePass', 'Reimbursement', 'AttendanceRegularisation']);
+const APPROVAL_SCOPED_TYPES = new Set(['GatePass', 'Reimbursement', 'AttendanceRegularisation', 'Leave']);
 // GatePass has a second scoped transition beyond approve/reject: the
 // physical gate-in/gate-out logging (departed/returned) done by whoever is
 // staffing the gate. Previously NEITHER transition had any check at all for
@@ -128,12 +159,14 @@ async function checkWfhEligibility(res, type, data) {
 // request can never be created for more days than the employee actually
 // has, regardless of client. WFH doesn't draw from a leave balance at all
 // (see checkWfhEligibility above), so it's exempt from this check.
-async function checkLeaveBalanceSufficiency(res, type, data) {
+async function checkLeaveBalanceSufficiency(res, type, data, client) {
   if (type !== 'Leave') return true;
   if (data.is_wfh || data.leave_type === 'work_from_home') return true;
   if (!data.user_id || !data.leave_policy_id || !data.total_days) return true;
   const year = new Date(data.start_date || Date.now()).getFullYear();
-  const balRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [data.user_id]);
+  const balRows = client
+    ? (await client.query("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [data.user_id])).rows
+    : await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [data.user_id]);
   const bal = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === data.leave_policy_id && b.year === year);
   const available = bal?.available ?? 0;
   if (data.total_days > available) {
@@ -272,25 +305,35 @@ function buildOrderLimit(sort, limit) {
 
 /* ── LIST  GET /api/entities/:type ───────────────────── */
 router.get('/:type', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type } = req.params;
   const { sort, limit } = req.query;
 
   const cacheKey = `${type}:list:${sort || ''}:${limit || ''}`;
+  let data;
   if (CACHEABLE.has(type)) {
     const hit = cacheGet(cacheKey);
-    if (hit) return res.json(hit);
+    if (hit) data = hit;
+  }
+  if (!data) {
+    const sql = `SELECT * FROM entities WHERE type = $1${buildOrderLimit(sort, limit)}`;
+    const rows = await all(sql, [type]);
+    data = rows.map(parseRow);
+    if (CACHEABLE.has(type)) cacheSet(cacheKey, data);
   }
 
-  const sql = `SELECT * FROM entities WHERE type = $1${buildOrderLimit(sort, limit)}`;
-  const rows = await all(sql, [type]);
-  const data = rows.map(parseRow);
-
-  if (CACHEABLE.has(type)) cacheSet(cacheKey, data);
+  if (SENSITIVE_TYPES.has(type)) {
+    const role = await getEffectiveRole(cu);
+    if (!PRIVILEGED_ROLES.has(role)) data = data.filter(d => d.user_id === cu.id);
+  }
   res.json(data);
 });
 
 /* ── FILTER  POST /api/entities/:type/filter ─────────── */
 router.post('/:type/filter', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type } = req.params;
   const { query = {}, sort, limit } = req.body;
 
@@ -321,34 +364,80 @@ router.post('/:type/filter', async (req, res) => {
     if (sort)  data = sortRows(data, sort);
     if (limit) data = data.slice(0, parseInt(limit, 10));
   }
+  if (SENSITIVE_TYPES.has(type)) {
+    const role = await getEffectiveRole(cu);
+    if (!PRIVILEGED_ROLES.has(role)) data = data.filter(d => d.user_id === cu.id);
+  }
   res.json(data);
 });
 
 /* ── GET ONE  GET /api/entities/:type/:id ─────────────── */
 router.get('/:type/:id', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type, id } = req.params;
   const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (!row) return res.status(404).json({ error: 'Not found' });
-  res.json(parseRow(row));
+  const data = parseRow(row);
+  if (SENSITIVE_TYPES.has(type) && data.user_id !== cu.id) {
+    const role = await getEffectiveRole(cu);
+    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
+  }
+  res.json(data);
 });
 
 /* ── CREATE  POST /api/entities/:type ─────────────────── */
 router.post('/:type', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type } = req.params;
   if (!(await requireAdminForType(req, res, type))) return;
   const body = req.body;
   const id = body.id || uuidv4();
   const data = { ...body, id };
-  if (!(await checkRegularisationLimit(res, type, data))) return;
+
+  // A non-privileged caller may only create a record attributed to
+  // themselves — closes the gap where any authenticated user could POST a
+  // Loan/Leave/etc. with someone else's user_id in the body and have it
+  // silently attributed to that other person.
+  if (data.user_id && data.user_id !== cu.id) {
+    const role = await getEffectiveRole(cu);
+    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Cannot create a record on behalf of another user' });
+  }
+
   if (!(await checkWfhEligibility(res, type, data))) return;
-  if (!(await checkLeaveBalanceSufficiency(res, type, data))) return;
 
-  await run(
-    `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [id, type, data.user_id ?? null, data.status ?? null, data.is_active !== false ? 1 : 0, JSON.stringify(data)]
-  );
-
-  const row = await one('SELECT * FROM entities WHERE id=$1', [id]);
+  let row;
+  if (type === 'AttendanceRegularisation' || type === 'Leave') {
+    // These two have a read-then-write quota/balance check that a bare
+    // check-then-insert can't make atomic under concurrent requests from
+    // the same user — serialize per (type,user_id) with a transaction-scoped
+    // advisory lock so the second of two racing requests re-reads the
+    // first's effect before its own check runs.
+    let ok = true;
+    try {
+      row = await withTransaction(async (client) => {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${type}:${data.user_id}`]);
+        if (!(await checkRegularisationLimit(res, type, data, client))) { ok = false; return null; }
+        if (!(await checkLeaveBalanceSufficiency(res, type, data, client))) { ok = false; return null; }
+        await client.query(
+          `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [id, type, data.user_id ?? null, data.status ?? null, data.is_active !== false ? 1 : 0, JSON.stringify(data)]
+        );
+        const { rows } = await client.query('SELECT * FROM entities WHERE id=$1', [id]);
+        return rows[0];
+      });
+    } catch (e) {
+      if (ok) { console.error('[entities] transactional create failed:', e.message); return res.status(500).json({ error: 'Failed to create record' }); }
+    }
+    if (!ok) return; // checkRegularisationLimit/checkLeaveBalanceSufficiency already sent the response
+  } else {
+    await run(
+      `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id, type, data.user_id ?? null, data.status ?? null, data.is_active !== false ? 1 : 0, JSON.stringify(data)]
+    );
+    row = await one('SELECT * FROM entities WHERE id=$1', [id]);
+  }
 
   // Post-creation hook: notify reporting manager (fire and forget)
   (async () => {
@@ -440,6 +529,8 @@ router.post('/:type', async (req, res) => {
 
 /* ── UPDATE  PATCH /api/entities/:type/:id ─────────────── */
 router.patch('/:type/:id', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type, id } = req.params;
   if (!(await requireAdminForType(req, res, type))) return;
   const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
@@ -447,6 +538,15 @@ router.patch('/:type/:id', async (req, res) => {
 
   const current = JSON.parse(row.data);
   if (!(await checkApprovalAuthorization(req, res, type, current, req.body.status))) return;
+
+  // Financial/statutory/compliance records may only be edited by HR/admin/
+  // management or the record's own owner — an employee should never be able
+  // to PATCH a coworker's payroll, loan, POSH case, or salary structure by id.
+  if (SENSITIVE_TYPES.has(type) && row.user_id !== cu.id) {
+    const role = await getEffectiveRole(cu);
+    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
+  }
+
   const updated = { ...current, ...req.body, id };
 
   await run(
@@ -593,8 +693,16 @@ router.patch('/:type/:id', async (req, res) => {
 
 /* ── DELETE  DELETE /api/entities/:type/:id ─────────────── */
 router.delete('/:type/:id', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type, id } = req.params;
   if (!(await requireAdminForType(req, res, type))) return;
+  // Deleting a financial/statutory/compliance record is never self-serve —
+  // always requires HR/admin/management, regardless of ownership.
+  if (SENSITIVE_TYPES.has(type)) {
+    const role = await getEffectiveRole(cu);
+    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
+  }
   const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   cacheInvalidate(type);

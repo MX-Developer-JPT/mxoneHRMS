@@ -143,12 +143,19 @@ export default function AppSettings() {
   };
 
   const loadData = async () => {
-    const [currentUser, locData] = await Promise.all([
-      base44.auth.me(),
-      base44.entities.AppLocation.list()
-    ]);
-    setUser(currentUser);
-    setLocations(locData);
+    try {
+      const [currentUser, locData] = await Promise.all([
+        base44.auth.me(),
+        base44.entities.AppLocation.list()
+      ]);
+      setUser(currentUser);
+      setLocations(locData);
+    } catch (e) {
+      // Previously silent — a session/network failure here left role-gated
+      // sections (Location Management, push diagnostics) simply never
+      // appearing, indistinguishable from "you don't have permission."
+      toast.error('Failed to load settings: ' + e.message);
+    }
   };
 
   const isAdmin = () => user?.role === 'hr' || user?.role === 'admin';

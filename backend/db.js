@@ -190,6 +190,26 @@ await initSchema().catch(err => {
   process.exit(1);
 });
 
+// Runs `fn(client)` inside a single BEGIN/COMMIT transaction on one held
+// connection — needed anywhere a read-then-write decision (balance/limit
+// checks) must be atomic against concurrent requests, since `one`/`all`/`run`
+// each borrow a fresh connection from the pool with no shared transaction
+// context. Rolls back and rethrows on any error; always releases the client.
+export async function withTransaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export const q   = (text, params = []) => pool.query(text, params);
 export const one = async (text, params = []) => {
   const { rows } = await pool.query(text, params);

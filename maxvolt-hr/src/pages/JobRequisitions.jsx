@@ -337,9 +337,9 @@ Return ONLY the job description content as plain text with clear section headers
 
   if (loading) return <div className="flex items-center justify-center h-screen"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>;
 
-  const isHR = user?.role === 'hr' || user?.role === 'admin';
-  const isManagement = ['management', 'hr', 'admin'].includes(user?.role) || ['management', 'hr', 'admin'].includes(user?.custom_role);
   const userRole = user?.custom_role || user?.role;
+  const isHR = userRole === 'hr' || userRole === 'admin';
+  const isManagement = ['management', 'hr', 'admin'].includes(userRole);
   const isManagementOnly = userRole === 'management';
   const isAdmin = user?.role === 'admin' || user?.custom_role === 'admin';
   const isRecruiter = userRole === 'recruiter';

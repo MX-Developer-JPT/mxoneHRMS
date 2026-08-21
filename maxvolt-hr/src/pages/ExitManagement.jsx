@@ -100,10 +100,6 @@ export default function ExitManagement() {
       ]);
 
       const users = usersResp.data?.users || [];
-      const myEmpRec = allEmps.filter(e => e.user_id === me.id);
-      const myDept = (myEmpRec?.[0]?.department || '').trim().toLowerCase();
-      const clearanceDeptKw = ['it', 'information technology', 'finance', 'accounts', 'admin', 'administration', 'security'];
-      const isDeptClearance = clearanceDeptKw.some(kw => myDept.includes(kw));
       // The real, authoritative list of departments this user was actually
       // assigned as a clearance owner for (Admin Panel → Exit Clearance
       // Owners) — this is what actually gates action on the backend
@@ -125,10 +121,19 @@ export default function ExitManagement() {
       // Approve/Reject, so an indirect report's exit is visible but read-only.
       if (!isHR && role !== 'management') {
         if (role === 'manager') {
+          // Own downstream reports, plus any case where this user is an
+          // actual configured clearance-department owner (isMyClearanceCase)
+          // — NOT a blanket grant of every org-wide clearance-stage exit,
+          // which the previous unconditional status check let any manager see.
           const { downstreamIds } = resolveHierarchy(me.id, allEmps);
-          filtered = allExits.filter(e => downstreamIds.has(e.user_id) || ['clearance_pending','clearance_done'].includes(e.status) || isMyClearanceCase(e));
-        } else if (isDeptClearance || myClrDepts.length) {
-          filtered = allExits.filter(e => ['clearance_pending','clearance_done'].includes(e.status) || isMyClearanceCase(e));
+          filtered = allExits.filter(e => downstreamIds.has(e.user_id) || isMyClearanceCase(e));
+        } else if (myClrDepts.length) {
+          // Only real, configured clearance-department ownership grants
+          // visibility here — a department-name text match (e.g. "IT
+          // Support" containing "it") previously let anyone in a loosely
+          // similar-sounding department see every org-wide exit case in
+          // clearance, including exit-interview answers and F&F figures.
+          filtered = allExits.filter(e => isMyClearanceCase(e));
         } else {
           filtered = [];
         }

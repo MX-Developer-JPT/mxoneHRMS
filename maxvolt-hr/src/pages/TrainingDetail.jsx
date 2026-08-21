@@ -86,34 +86,44 @@ export default function TrainingDetail() {
   const saveSession = async () => {
     if (!programId) return;
     setSavingSession(true);
-    // Strip empty strings from optional fields to avoid validation errors
-    const raw = { ...sessionForm, training_program_id: programId };
-    const data = Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== '' && v !== null && v !== undefined));
-    if (editSession) {
-      await base44.entities.TrainingSession.update(editSession.id, data);
-    } else {
-      await base44.entities.TrainingSession.create(data);
+    try {
+      // Strip empty strings from optional fields to avoid validation errors
+      const raw = { ...sessionForm, training_program_id: programId };
+      const data = Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== '' && v !== null && v !== undefined));
+      if (editSession) {
+        await base44.entities.TrainingSession.update(editSession.id, data);
+      } else {
+        await base44.entities.TrainingSession.create(data);
+      }
+      setShowSessionForm(false);
+      loadData();
+    } catch (e) {
+      alert('Failed to save session: ' + e.message);
+    } finally {
+      setSavingSession(false);
     }
-    setShowSessionForm(false);
-    setSavingSession(false);
-    loadData();
   };
 
   // Materials
   const saveMaterial = async () => {
     if (!programId) return;
     setSavingMaterial(true);
-    let file_url = materialForm.file_url || '';
-    if (materialFile) {
-      const res = await base44.integrations.Core.UploadFile({ file: materialFile });
-      file_url = res.file_url;
+    try {
+      let file_url = materialForm.file_url || '';
+      if (materialFile) {
+        const res = await base44.integrations.Core.UploadFile({ file: materialFile });
+        file_url = res.file_url;
+      }
+      await base44.entities.TrainingMaterial.create({ ...materialForm, file_url, training_program_id: programId, uploaded_by: user.id });
+      setShowMaterialForm(false);
+      setMaterialFile(null);
+      setMaterialForm({ title: '', description: '', type: 'document', link_url: '', is_visible_before_session: true });
+      loadData();
+    } catch (e) {
+      alert('Failed to save material: ' + e.message);
+    } finally {
+      setSavingMaterial(false);
     }
-    await base44.entities.TrainingMaterial.create({ ...materialForm, file_url, training_program_id: programId, uploaded_by: user.id });
-    setShowMaterialForm(false);
-    setSavingMaterial(false);
-    setMaterialFile(null);
-    setMaterialForm({ title: '', description: '', type: 'document', link_url: '', is_visible_before_session: true });
-    loadData();
   };
 
   // Enrollments
@@ -129,13 +139,18 @@ export default function TrainingDetail() {
     // check duplicate
     const dup = enrollments.find(e => e.training_session_id === enrollSessionId && e.user_id === enrollUserId);
     if (dup) { alert('Employee already enrolled in this session.'); setSavingEnroll(false); return; }
-    await base44.entities.EmployeeTraining.create({ user_id: enrollUserId, training_session_id: enrollSessionId, training_program_id: programId, enrollment_type: enrollType, nominated_by: user.id, status: 'approved' });
-    // update enrolled count
-    await base44.entities.TrainingSession.update(enrollSessionId, { enrolled_count: existingCount + 1 });
-    setShowEnrollForm(false);
-    setSavingEnroll(false);
-    setEnrollUserId('');
-    loadData();
+    try {
+      await base44.entities.EmployeeTraining.create({ user_id: enrollUserId, training_session_id: enrollSessionId, training_program_id: programId, enrollment_type: enrollType, nominated_by: user.id, status: 'approved' });
+      // update enrolled count
+      await base44.entities.TrainingSession.update(enrollSessionId, { enrolled_count: existingCount + 1 });
+      setShowEnrollForm(false);
+      setEnrollUserId('');
+      loadData();
+    } catch (e) {
+      alert('Failed to enroll: ' + e.message);
+    } finally {
+      setSavingEnroll(false);
+    }
   };
 
   const markAttendance = async (enrollId, present) => {
@@ -362,7 +377,15 @@ export default function TrainingDetail() {
             </div>
             <div>
               <label className="text-sm font-medium">Location / Meeting Link</label>
-              <Input value={sessionForm.location || sessionForm.meeting_link} onChange={e => setSessionForm({ ...sessionForm, location: e.target.value, meeting_link: e.target.value })} placeholder="Room no. or https://..." className="mt-1" />
+              <Input value={sessionForm.location || sessionForm.meeting_link} onChange={e => {
+                const v = e.target.value;
+                // Route the typed value into whichever field it actually is
+                // — writing it into BOTH location and meeting_link meant a
+                // room number like "Room 5" also became the stored meeting
+                // link, and vice versa for a Zoom URL.
+                const isLink = /^https?:\/\//i.test(v.trim());
+                setSessionForm({ ...sessionForm, location: isLink ? '' : v, meeting_link: isLink ? v : '' });
+              }} placeholder="Room no. or https://..." className="mt-1" />
             </div>
             <div>
               <label className="text-sm font-medium">Status</label>

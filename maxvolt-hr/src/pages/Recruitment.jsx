@@ -324,7 +324,7 @@ function AiScoreSection({ candidate }) {
 
       const d = response.data.result;
       setResult({
-        score:              Math.max(1, Math.round((d.score || 0) / 10)),
+        score:              Math.round((d.score || 0) / 10), // no artificial floor — a genuine 0/100 must display as 0/10, not 1/10
         summary:            d.summary,
         strengths:          d.key_strengths || [],
         gaps:               d.areas_for_improvement || [],
@@ -743,7 +743,7 @@ export default function Recruitment() {
     if (filters.search && !c.full_name?.toLowerCase().includes(filters.search.toLowerCase()) &&
         !c.email?.toLowerCase().includes(filters.search.toLowerCase()) &&
         !c.current_company?.toLowerCase().includes(filters.search.toLowerCase())) return false;
-    if (filters.status !== 'all' && c.status !== filters.status) return false;
+    if (filters.status !== 'all' && !(Array.isArray(filters.status) ? filters.status.includes(c.status) : c.status === filters.status)) return false;
     if (filters.source !== 'all' && c.source !== filters.source) return false;
     if (filters.requisition !== 'all' && c.requisition_id !== filters.requisition) return false;
     if (c.experience_years < filters.minExp || c.experience_years > filters.maxExp) return false;
@@ -779,9 +779,13 @@ export default function Recruitment() {
   };
 
   const handleStatClick = (statKey) => {
+    // Match exactly what each card counted above — clicking "In Pipeline"
+    // (screening + interview_scheduled) previously filtered to 'screening'
+    // only, making interview_scheduled candidates vanish from the list even
+    // though the card had just counted them.
     if (statKey === 'total') setFilter('status', 'all');
-    else if (statKey === 'screening') setFilter('status', 'screening');
-    else if (statKey === 'selected') setFilter('status', 'selected');
+    else if (statKey === 'screening') setFilter('status', ['screening', 'interview_scheduled']);
+    else if (statKey === 'selected') setFilter('status', ['selected', 'offered']);
   };
 
   return (
@@ -884,7 +888,7 @@ export default function Recruitment() {
               </div>
               <div className="w-44">
                 <Label className="text-xs">Status</Label>
-                <Select value={filters.status} onValueChange={v => setFilter('status', v)}>
+                <Select value={Array.isArray(filters.status) ? undefined : filters.status} onValueChange={v => setFilter('status', v)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Status</SelectItem>

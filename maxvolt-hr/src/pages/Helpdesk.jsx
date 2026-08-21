@@ -254,6 +254,7 @@ export default function Helpdesk() {
       // store my dept for use in render
       setMyDepartment(myDept);
       setLoading(false);
+      return ticketData;
     } catch (error) {
       console.error('Error loading tickets:', error);
       setLoading(false);
@@ -490,7 +491,14 @@ export default function Helpdesk() {
                helpdeskCategories={helpdeskCategories}
                isHR={isHR}
                isDeptHandler={isDeptHandler(selectedTicket)}
-                onUpdate={() => { loadData(); setSelectedTicket(prev => tickets.find(t => t.id === prev?.id) || prev); }}
+                onUpdate={async () => {
+                  // Await the reload and re-derive from ITS result, not the
+                  // stale `tickets` closure from this render — awaiting
+                  // fixed a bug where the dialog kept showing pre-update
+                  // content (old comment/status) until manually reopened.
+                  const fresh = await loadData();
+                  setSelectedTicket(prev => (fresh || []).find(t => t.id === prev?.id) || prev);
+                }}
                 onClose={() => setSelectedTicket(null)}
               />
             </DialogContent>

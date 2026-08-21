@@ -340,7 +340,7 @@ export default function PayrollManagement() {
 
   const totalGross    = filteredPayrolls.reduce((s, p) => s + (p.gross_salary || 0), 0);
   const totalNet      = filteredPayrolls.reduce((s, p) => s + (p.net_salary  || 0), 0);
-  const totalLOP      = filteredPayrolls.reduce((s, p) => s + (p.deductions?.lop || p.loss_of_pay_amount || 0), 0);
+  const totalLOP      = filteredPayrolls.reduce((s, p) => s + (p.deductions?.lop ?? p.loss_of_pay_amount ?? 0), 0);
   const totalPF       = filteredPayrolls.reduce((s, p) => s + (p.deductions?.pf  || 0), 0);
   const totalESI      = filteredPayrolls.reduce((s, p) => s + (p.deductions?.esi || 0), 0);
   const totalPayroll  = totalNet;   // alias used by existing cards

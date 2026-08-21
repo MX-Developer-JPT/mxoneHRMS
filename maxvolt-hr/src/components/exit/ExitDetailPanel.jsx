@@ -121,7 +121,12 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   // downstream hierarchy, so this check keeps indirect reports' exits
   // visible-but-read-only here.
   const canManagerAct = role === 'manager' && isDirectReport(exit.user_id, currentUser?.id, employees);
-  const isManager = currentUser?.id === exit.manager_id || role === 'management' || canManagerAct;
+  // Deliberately NOT `currentUser?.id === exit.manager_id` — that field is a
+  // one-time snapshot captured when the resignation was first submitted
+  // (ResignationForm.jsx), so a manager reassignment afterward left the OLD
+  // manager still able to approve/reject via this stale match. canManagerAct
+  // checks the live reporting hierarchy instead.
+  const isManager = role === 'management' || canManagerAct;
   // Working Department clearance is always actioned by the employee's actual
   // reporting manager — every other dept is HR-gated client-side (the
   // backend independently enforces owner_user_ids/HR via canActOnExitClearance).

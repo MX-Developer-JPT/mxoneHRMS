@@ -850,7 +850,7 @@ export default function SalaryStructureManagement() {
                     </div>
                   ) : null}
                   <div className="p-3 bg-gray-50 rounded-lg text-sm text-gray-500">
-                    <strong>Compliance Notes:</strong> PF (12% employee, 13% employer) on all components except HRA, capped at ₹15,000 — applicable only when basic &gt; ₹21,000. ESI (0.75% employee, 3.25% employer) on gross — applicable when basic ≤ ₹21,000.
+                    <strong>Compliance Notes:</strong> PF (12% employee, 13% employer) on basic salary, capped at ₹15,000 — applicable to all employees. ESI (0.75% employee, 3.25% employer) on gross — applicable only when basic ≤ ₹21,000.
                   </div>
                 </TabsContent>
 

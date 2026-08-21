@@ -26,11 +26,15 @@ async function alreadyRemindedToday(exitId, deptKey, dayStr) {
   return !!row;
 }
 
-async function markReminded(exitId, deptKey, dayStr) {
+async function markReminded(exitId, userId, deptKey, dayStr) {
   const id = uuidv4();
+  // user_id set (the exiting employee) — every sibling dedup-log table in
+  // this app (ConfirmationReminderLog, LateArrivalAlertLog, etc.) sets it,
+  // and any future query filtering these logs by user_id would otherwise
+  // silently miss this table's entire history.
   await run(
-    "INSERT INTO entities(id,type,status,data) VALUES($1,'ExitClearanceReminderLog','sent',$2)",
-    [id, JSON.stringify({ id, exit_id: exitId, dept_key: deptKey, day: dayStr, sent_at: new Date().toISOString() })]
+    "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ExitClearanceReminderLog',$2,'sent',$3)",
+    [id, userId, JSON.stringify({ id, exit_id: exitId, user_id: userId, dept_key: deptKey, day: dayStr, sent_at: new Date().toISOString() })]
   );
 }
 
@@ -102,7 +106,7 @@ export async function sendExitClearanceReminders() {
           await notifyDb(hr.id, { title: `Exit Clearance Escalation — ${empName}`, message: `${CLEARANCE_DEPT_LABELS[deptKey]} clearance for ${empName} is significantly overdue (${daysOverdue} days past SLA).`, type: 'error', link: '/exit-management' });
         }
       }
-      await markReminded(exit.id, deptKey, today);
+      await markReminded(exit.id, exit.user_id, deptKey, today);
     }
   }
   return { checked, sent };

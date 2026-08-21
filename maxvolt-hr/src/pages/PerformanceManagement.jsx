@@ -33,8 +33,9 @@ export default function PerformanceManagement() {
     setLoading(true);
     const u = await base44.auth.me();
     setUser(u);
-    const isHR = u.role === 'admin' || u.role === 'hr';
-    const isMgr = u.role === 'management' || isHR;
+    const uRole = u.custom_role || u.role;
+    const isHR = uRole === 'admin' || uRole === 'hr';
+    const isMgr = uRole === 'management' || isHR;
 
     const [emps, configsRes] = await Promise.all([
       isMgr ? base44.entities.Employee.filter({ status: 'active' }) : Promise.resolve([]),
@@ -83,8 +84,9 @@ export default function PerformanceManagement() {
   const userMap = {};
   for (const u of users) userMap[u.id] = u;
 
-  const isHR = user?.role === 'admin' || user?.role === 'hr';
-  const isMgr = user?.role === 'management' || isHR;
+  const userEffRole = user?.custom_role || user?.role;
+  const isHR = userEffRole === 'admin' || userEffRole === 'hr';
+  const isMgr = userEffRole === 'management' || isHR;
 
   // Visibility for "Initiate Appraisal Review" — a manager's whole downstream
   // hierarchy (direct + indirect reports), not just direct reports. Actually
@@ -494,7 +496,7 @@ function ReviewCard({ review, user, userMap, isManager, isHR, onSubmitSelf, onSu
                   <label className="text-xs text-gray-500">Self Assessment Comment</label>
                   <textarea className="w-full mt-1 border rounded-lg p-2 text-sm resize-none" rows={3} value={selfComment} onChange={e => setSelfComment(e.target.value)} placeholder="Describe your performance, achievements, and areas for improvement..." />
                 </div>
-                <Button size="sm" disabled={submitting || selfScore === 0} onClick={async () => { setSubmitting(true); await onSubmitSelf(review, selfScore, selfComment); setSubmitting(false); }}>
+                <Button size="sm" disabled={submitting || selfScore === 0} onClick={async () => { setSubmitting(true); try { await onSubmitSelf(review, selfScore, selfComment); } catch (e) { alert('Failed to submit: ' + e.message); } finally { setSubmitting(false); } }}>
                   {submitting ? 'Submitting...' : 'Submit Self Assessment'}
                 </Button>
               </div>
@@ -520,7 +522,7 @@ function ReviewCard({ review, user, userMap, isManager, isHR, onSubmitSelf, onSu
                     <label className="text-xs text-gray-500">Manager Feedback</label>
                     <textarea className="w-full mt-1 border rounded-lg p-2 text-sm resize-none" rows={3} value={mgrComment} onChange={e => setMgrComment(e.target.value)} placeholder="Provide constructive feedback..." />
                   </div>
-                  <Button size="sm" disabled={submitting || mgrScore === 0} onClick={async () => { setSubmitting(true); await onSubmitManager(review, mgrScore, mgrComment); setSubmitting(false); }}>
+                  <Button size="sm" disabled={submitting || mgrScore === 0} onClick={async () => { setSubmitting(true); try { await onSubmitManager(review, mgrScore, mgrComment); } catch (e) { alert('Failed to submit: ' + e.message); } finally { setSubmitting(false); } }}>
                     {submitting ? 'Submitting...' : 'Submit Manager Review'}
                   </Button>
                 </div>

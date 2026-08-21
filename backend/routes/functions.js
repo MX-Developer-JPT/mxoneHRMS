@@ -1434,7 +1434,14 @@ async function runLeaveAction(cu, leaveId, action, note) {
           const lbUpd = { ...lb, used: (lb.used || 0) + lv.total_days, pending_approval: Math.max((lb.pending_approval || 0) - lv.total_days, 0) };
           await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
         }
-      } catch {}
+      } catch (balErr) {
+        // The leave's own status is already committed to 'approved' above —
+        // if this balance update fails, the leave shows approved but the
+        // employee's used/pending balance never adjusts, with previously no
+        // trace anywhere to diagnose it. Log loudly so a real failure here
+        // is actually visible instead of silently swallowed.
+        console.error(`[runLeaveAction] balance update failed for leave ${leaveId} (user ${lv.user_id}):`, balErr.message);
+      }
     }
     await notify(lv.user_id, { title: isWfh ? 'WFH Request Approved' : 'Leave Approved', message: `Your ${isWfh ? 'work from home' : 'leave'} request (${lv.start_date} – ${lv.end_date}) has been approved by ${actorName}.`, type: 'success', link: '/leave' });
     return { httpStatus: 200, body: { success: true, status: 'approved' } };
@@ -1451,7 +1458,9 @@ async function runLeaveAction(cu, leaveId, action, note) {
         const lbUpd = { ...lb, pending_approval: Math.max((lb.pending_approval || 0) - lv.total_days, 0), available: (lb.available || 0) + lv.total_days };
         await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(lbUpd), balRows.find(r => JSON.parse(r.data).id === lb.id)?.id]);
       }
-    } catch {}
+    } catch (balErr) {
+      console.error(`[runLeaveAction] balance restore failed for leave ${leaveId} (user ${lv.user_id}):`, balErr.message);
+    }
     await notify(lv.user_id, { title: 'Leave Rejected', message: `Your leave request (${lv.start_date} – ${lv.end_date}) has been rejected${note ? ': ' + note : ''}.`, type: 'error', link: '/leave' });
     return { httpStatus: 200, body: { success: true, status: 'rejected' } };
   }
@@ -2080,6 +2089,11 @@ router.post('/:name', async (req, res) => {
             designation: String(row[4] || '').trim(),
             date_of_joining: lbParseDate(row[5]),
             is_left_employee: sheetType === 'regular' && typeKey === 'Left Employee',
+            // Captured per-row at parse time, not read from the shared
+            // `detectedYear` after the whole workbook is done — otherwise, if
+            // sheets ever disagree on their year header, every row gets
+            // silently tagged with whichever sheet happened to be parsed last.
+            row_year: detectedYear,
             ...stats,
           });
         }
@@ -2155,7 +2169,7 @@ router.post('/:name', async (req, res) => {
           } else {
             const id = uuidv4();
             balInserts.push([id, row.userId, JSON.stringify({
-              id, user_id: row.userId, leave_policy_id: policyId, year: detectedYear,
+              id, user_id: row.userId, leave_policy_id: policyId, year: row.row_year,
               ...newVals, pending_approval: 0,
             })]);
             balCreated++;
@@ -2163,7 +2177,7 @@ router.post('/:name', async (req, res) => {
         }
 
         const histData = {
-          user_id: row.userId, employee_code: row.code, employee_name: row.name, year: detectedYear,
+          user_id: row.userId, employee_code: row.code, employee_name: row.name, year: row.row_year,
           source_sheet: row.sheetName, is_left_employee: row.is_left_employee,
           designation: row.designation, date_of_joining: row.date_of_joining,
           total_working_day: row.total_working_day, months: row.months, leaves: row.leaves,
@@ -2283,17 +2297,26 @@ router.post('/:name', async (req, res) => {
       // Configurable approval chain (Workflow Builder) — falls back to manager-or-HR
       const wfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='comp_off'");
       const wf = wfRow ? JSON.parse(wfRow.data) : null;
-      const matchesStep = (step) =>
+      const matchesStep = (step) => !!step && (
         (step.approver_type === 'reporting_manager' && emp.reporting_manager_id === cu.id) ||
         (step.approver_type === 'hr' && isHRUser) ||
         (step.approver_type === 'admin' && isAdminUser) ||
-        (step.approver_type === 'specific_user' && step.specific_user_id === cu.id);
+        (step.approver_type === 'specific_user' && step.specific_user_id === cu.id));
 
       let isFinalStep = true;
       if (wf?.is_active && Array.isArray(wf.steps) && wf.steps.length > 0) {
         const level = co.approval_level || 0;
-        const step = wf.steps[level];
-        if (!isAdminUser && !matchesStep(step)) return res.status(403).json({ error: `This request is at approval level ${level + 1} (${step.approver_type.replace(/_/g, ' ')}) — you are not the approver for this step` });
+        // If approval_level has drifted past the workflow's current step
+        // count (e.g. an admin shortened the workflow while this request was
+        // mid-flight), wf.steps[level] is undefined — treat that the same as
+        // "workflow exhausted" (final step, HR/admin decide) instead of
+        // crashing on step.approver_type below.
+        const step = wf.steps[level] || {};
+        if (!wf.steps[level]) {
+          if (!isHRUser && !isAdminUser) return res.status(403).json({ error: 'This request\'s approval workflow has changed — only HR or admin can decide it now' });
+        } else if (!isAdminUser && !matchesStep(step)) {
+          return res.status(403).json({ error: `This request is at approval level ${level + 1} (${step.approver_type.replace(/_/g, ' ')}) — you are not the approver for this step` });
+        }
         isFinalStep = level >= wf.steps.length - 1;
       } else if (!isHRUser && emp.reporting_manager_id !== cu.id) {
         return res.status(403).json({ error: 'Only HR or the reporting manager can decide this request' });
@@ -3816,7 +3839,12 @@ router.post('/:name', async (req, res) => {
 
         const id = uuidv4();
         const payrollData = {
-          id, user_id: emp.user_id, month, year,
+          // Normalized (unpadded) — the dedup check above queries
+          // data->>'month' as an exact string match against String(m_int);
+          // storing the raw, possibly zero-padded request value here would
+          // let a future run's dedup query miss this row and reprocess the
+          // same employee/month into a second Payroll record.
+          id, user_id: emp.user_id, month: m_int, year: y_int,
           basic_salary: basic, hra, conveyance: conv, special_allowance: spec,
           gross_salary: gross,
           deductions: { pf, esi, lop: lopAmount, tds, loan: loanDed },
@@ -4194,6 +4222,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Attendance Report Export (session time + overtime) ── */
     case 'exportAttendanceReport': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { month, year } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const m = parseInt(month), y = parseInt(year);
@@ -4460,6 +4489,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Attendance Muster Export (styled Excel) ─────────── */
     case 'exportAttendanceMuster': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { month, year } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const m = parseInt(month), y = parseInt(year);
@@ -4685,6 +4715,7 @@ router.post('/:name', async (req, res) => {
     // and the check-in/check-out location for selfie or geofence days
     // (biometric has no location signal to show).
     case 'exportSwipeDetails': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { month, year, department: swdDept } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const swM = parseInt(month), swY = parseInt(year);
@@ -4830,6 +4861,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Bulk Document Download (ZIP) ───────────────────── */
     case 'bulkDownloadDocuments': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { user_ids, document_types } = body;
 
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
@@ -4924,6 +4956,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Salary Structure Export (styled Excel) ──────────── */
     case 'exportSalaryStructures': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const ExcelJS = (await import('exceljs')).default;
       const wb = new ExcelJS.Workbook();
       wb.creator = 'Maxvolt One';
@@ -5078,6 +5111,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Employee Directory Export (styled Excel, 2 sheets) ─ */
     case 'exportEmployeeDirectory': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const ExcelJS = (await import('exceljs')).default;
       const wb = new ExcelJS.Workbook();
       wb.creator = 'Maxvolt One';
@@ -5327,6 +5361,7 @@ router.post('/:name', async (req, res) => {
        Sheet 2: full roster grouped under a banner row per department,
        each employee's reporting manager resolved by name. ── */
     case 'exportDepartments': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const ExcelJSD = (await import('exceljs')).default;
       const wbD = new ExcelJSD.Workbook();
       wbD.creator = 'Maxvolt One';
@@ -5473,6 +5508,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Salary Sheet Export (styled Excel) ─────────────── */
     case 'exportSalarySheet': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { month, year } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const m = parseInt(month), y = parseInt(year);
@@ -5883,6 +5919,7 @@ router.post('/:name', async (req, res) => {
 
     case 'generateAttendanceApiKey': {
       // Only admins may regenerate
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
       const { randomBytes } = await import('crypto');
       const newKey = randomBytes(32).toString('hex');
       await run("INSERT INTO settings(key,value,updated_at) VALUES('attendance_api_key',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [newKey]);
@@ -5892,6 +5929,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'autoSendPayslips': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { month, year } = p;
       const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll'"))
         .filter(r => r.month === month && r.year === year);
@@ -5930,6 +5968,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'processFnFSettlement': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { exit_id, employee_id } = p;
       if (!exit_id && !employee_id) return res.json({ success:false, error:'exit_id or employee_id required' });
 
@@ -6062,6 +6101,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'fixAttendanceTimestamps': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       // One-time migration: attendance records created before the IST-digit fix stored
       // check_in_time/check_out_time as real UTC (new Date().toISOString()).
       // The display layer strips Z and treats digits as IST, so "03:30Z" (= 9 AM IST in UTC)
@@ -6122,6 +6162,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'fixCheckInOutSwap': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       // Fixes two related problems:
       //   (A) check_in_time > check_out_time  → classic swap
       //   (B) check_in_time missing but check_out_time has the arrival time
@@ -6283,6 +6324,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'cleanupAutoAbsent': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       // Deletes auto-absent records for employees who actually have biometric attendance
       // on that date.  These phantom absents were created by the old markAbsentEmployees
       // bug where the user_id in the Employee JSON differed from the user_id stored on the
@@ -6464,6 +6506,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'reprocessAttendanceLogs': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       // Re-reads stored AttendanceLogs for a date range and upserts Attendance records.
       // Uses alternating-position punch model (buildSessions) — same as live punch endpoint.
       const { date_from, date_to } = p;
@@ -6573,6 +6616,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'markExemptEmployeesPresent': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       const { date } = p;
       const exempts = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
         .filter(e=>e.is_attendance_exempt);
@@ -6707,6 +6751,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'importShiftAssignments': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       // Assign shifts to employees from Excel rows.
       // Each row: { employee_code, shift_name }
       const { rows: shiftRows = [] } = p;
@@ -6747,6 +6792,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'importDepartments': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       // Create departments and/or assign employees.
       // Supports two row formats:
       //   A) { name, code?, description?, employee_code? }  — create dept + optionally assign one employee
@@ -7347,6 +7393,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'calculateLOP': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { employee_id, month, year } = p;
       if (!employee_id) return res.json({ success:true, lop_days:0, lop_amount:0 });
 
@@ -8018,7 +8065,11 @@ Return ONLY a valid JSON object (no markdown):
       const PF_CEIL = 15000, ESI_CEIL = 21000;
       const autoBasicM = Math.round(monthlyCTC * 0.5);
       const basicM  = salary_overrides?.basic      ? Number(salary_overrides.basic)      : autoBasicM;
-      const autoHraM  = Math.round(autoBasicM * 0.4);
+      // HRA and Conveyance must derive from the ACTUAL basic in use (basicM),
+      // not the un-overridden autoBasicM — otherwise, the moment any single
+      // component is overridden, these auto-fallbacks stay pinned to the old
+      // basic and the line items stop summing to the letter's own total.
+      const autoHraM  = Math.round(basicM * 0.4);
       const hraM    = salary_overrides?.hra        ? Number(salary_overrides.hra)        : autoHraM;
       const pfBase       = Math.min(basicM, PF_CEIL);
       const pfEmpM       = Math.round(pfBase * 0.12);
@@ -8032,9 +8083,12 @@ Return ONLY a valid JSON object (no markdown):
       else { const vp = ctc <= 1500000 ? 0.05 : ctc <= 2000000 ? 0.08 : ctc <= 2500000 ? 0.12 : 0.15; bonusM = Math.round(ctc * vp / 12); bonusType = `VPP (${Math.round(vp*100)}% of CTC)`; }
       const contribM     = pfEmployerM + esiEmployerM + bonusM + medicalM;
       const autoGrossM   = Math.round(monthlyCTC - contribM);
-      const autoConvM    = Math.max(autoGrossM - autoBasicM - autoHraM, 0);
+      const autoConvM    = Math.max(autoGrossM - basicM - hraM, 0);
       const convM        = salary_overrides?.conveyance ? Number(salary_overrides.conveyance) : autoConvM;
-      const grossM       = salary_overrides ? (basicM + hraM + convM) : autoGrossM;
+      // Always the literal sum of the three earnings rows actually printed
+      // below — guarantees the letter's Earnings section and its own
+      // "Total Gross Salary" row can never disagree, override or not.
+      const grossM       = basicM + hraM + convM;
       const totalDedM    = pfEmpM + esiEmpM;
       const netM         = grossM - totalDedM;
 
@@ -8101,7 +8155,7 @@ Return ONLY a valid JSON object (no markdown):
     ${sec('Contribution')}
     ${empRows}
     ${sub('Total Contribution (C)', sal.contribution_annual, sal.contribution_monthly)}
-    <tr style="background:#d9d9d9;font-weight:700;font-size:12px;"><td style="padding:8px 10px;border:1px solid #ccc;">Annually CTC (A+C)</td><td style="padding:8px 10px;border:1px solid #ccc;text-align:right;color:#1d4ed8;">${fmtIN(ctc)}</td><td style="padding:8px 10px;border:1px solid #ccc;text-align:right;color:#1d4ed8;">${fmtIN(sal.monthly_ctc)}</td></tr>
+    <tr style="background:#d9d9d9;font-weight:700;font-size:12px;"><td style="padding:8px 10px;border:1px solid #ccc;">Annually CTC (A+C)</td><td style="padding:8px 10px;border:1px solid #ccc;text-align:right;color:#1d4ed8;">${fmtIN(sal.gross_annual + sal.contribution_annual)}</td><td style="padding:8px 10px;border:1px solid #ccc;text-align:right;color:#1d4ed8;">${fmtIN(sal.gross_monthly + sal.contribution_monthly)}</td></tr>
   </tbody>
 </table>`;
 
@@ -8361,15 +8415,21 @@ Return ONLY a valid JSON object (no markdown):
       const pronoun2    = isFemale ? 'she' : 'he';
 
       const fmt = n => n ? '₹' + Number(n).toLocaleString('en-IN') : '[____]';
-      // Allow HR to override CTC components via extra.ctc_override
+      // Allow HR to override CTC components via extra.ctc_override — use ??
+      // (missing-vs-provided), not ||, so an override explicitly set to 0
+      // (e.g. no HRA for this letter) isn't silently replaced by the stored
+      // SalaryStructure value.
       const ctcOvr  = extra.ctc_override || {};
-      const basic   = Number(ctcOvr.basic)             || ss.basic_salary || ss.basic || 0;
-      const hra     = Number(ctcOvr.hra)               || ss.hra || 0;
-      const conv    = Number(ctcOvr.conveyance)        || ss.conveyance || 0;
-      const special = Number(ctcOvr.special_allowance) || ss.special_allowance || 0;
-      const otherAl = Number(ctcOvr.other_allowance)   || ss.other_allowance || 0;
-      const gross   = basic + hra + conv + special + otherAl || ss.grossMonthly || 0;
-      const pfEmp   = ss.pf_employee || (basic ? Math.round(basic * 0.12) : 0);
+      const ovrNum  = (v) => (v === undefined || v === null || v === '') ? undefined : Number(v);
+      const basic   = ovrNum(ctcOvr.basic)             ?? (ss.basic_salary ?? ss.basic ?? 0);
+      const hra     = ovrNum(ctcOvr.hra)               ?? (ss.hra ?? 0);
+      const conv    = ovrNum(ctcOvr.conveyance)        ?? (ss.conveyance ?? 0);
+      const special = ovrNum(ctcOvr.special_allowance) ?? (ss.special_allowance ?? 0);
+      const otherAl = ovrNum(ctcOvr.other_allowance)   ?? (ss.other_allowance ?? 0);
+      const gross   = (basic + hra + conv + special + otherAl) || (ss.grossMonthly ?? 0);
+      // A legitimately-stored pf_employee of 0 (e.g. an employee who opted
+      // out) must not be replaced by a recomputed 12%-of-basic value.
+      const pfEmp   = ss.pf_employee ?? (basic ? Math.round(basic * 0.12) : 0);
       const net     = gross ? gross - pfEmp : ss.netPay || 0;
       const overrideAnnualCTC = Number(ctcOvr.annual_ctc) || annualCTC;
 
@@ -8699,7 +8759,7 @@ ${sealHtml()}
           const oldSpecial = ss.special_allowance || 0;
           const oldOther   = ss.other_allowance || 0;
           const oldGross   = ss.grossMonthly || (oldBasic + oldHRA + oldConv + oldSpecial + oldOther);
-          const oldPF      = ss.pf_employee || (oldBasic ? Math.round(oldBasic * 0.12) : 0);
+          const oldPF      = ss.pf_employee ?? (oldBasic ? Math.round(oldBasic * 0.12) : 0);
           const oldNet     = ss.netPay || (oldGross ? oldGross - oldPF : 0);
 
           const revRows = [
@@ -8890,17 +8950,21 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
       // HR-entered component overrides (from the same ctc_override panel used
       // for letter generation) win over the auto-calculated values.
       const ovr = p.component_override || {};
+      // Missing-vs-provided (??), not truthy (||) — an override explicitly
+      // set to 0 must stick, not silently fall back to the auto-calculated
+      // value the way a stored 0 was in this exact spot before.
+      const ovrN = (v) => (v === undefined || v === null || v === '') ? undefined : Number(v);
       const structure = {
         id: uuidv4(),
         user_id: targetUid,
         effective_from: effectiveFrom,
         ctc: annualCTC,
         is_manual_override: Object.keys(ovr).length > 0,
-        basic_salary: Number(ovr.basic) || auto.basic_salary,
-        hra: Number(ovr.hra) || auto.hra,
-        conveyance: Number(ovr.conveyance) || auto.conveyance,
+        basic_salary: ovrN(ovr.basic) ?? auto.basic_salary,
+        hra: ovrN(ovr.hra) ?? auto.hra,
+        conveyance: ovrN(ovr.conveyance) ?? auto.conveyance,
         lta: 0,
-        special_allowance: Number(ovr.special_allowance) || auto.special_allowance,
+        special_allowance: ovrN(ovr.special_allowance) ?? auto.special_allowance,
         performance_bonus: auto.performance_bonus,
         pf_contribution: auto.pf_contribution,
         employer_pf_contribution: auto.employer_pf_contribution,
@@ -9982,9 +10046,15 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);     // DD/MM/YYYY or MM/DD/YYYY
         if (slashMatch) {
           const [, a, b, yr] = slashMatch;
-          // Prefer DD/MM/YYYY (Indian standard); if day > 12 it must be day first
-          const day = parseInt(a) > 12 ? a : a;  // treat first number as day
-          const mon = parseInt(a) > 12 ? b : b;
+          // Prefer DD/MM/YYYY (Indian standard) when genuinely ambiguous, but
+          // let whichever number can't possibly be a month (>12) force the
+          // other one to be the month — this actually disambiguates
+          // MM/DD-formatted input (e.g. a US-exported "12/05/2024" = 5 Dec)
+          // instead of always reading the first number as the day.
+          let day, mon;
+          if (parseInt(a, 10) > 12) { day = a; mon = b; }
+          else if (parseInt(b, 10) > 12) { day = b; mon = a; }
+          else { day = a; mon = b; }
           const iso = `${yr}-${mon.padStart(2,'0')}-${day.padStart(2,'0')}`;
           const d = new Date(iso); return isNaN(d) ? '' : iso;
         }
@@ -10749,7 +10819,11 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
         // Probation ending
         if (emp.employee_status === 'probation') {
-          const probEnd = emp.probation_end_date ? new Date(emp.probation_end_date) : (emp.date_of_joining ? new Date(new Date(emp.date_of_joining).getTime() + 90*24*60*60*1000) : null);
+          // 180 days (six months) — matches the Appointment Letter's stated
+          // probation period (templateLetters.appointment); the old 90-day
+          // fallback flagged employees "Probation Overdue" three months early
+          // for anyone missing an explicit probation_end_date.
+          const probEnd = emp.probation_end_date ? new Date(emp.probation_end_date) : (emp.date_of_joining ? new Date(new Date(emp.date_of_joining).getTime() + 180*24*60*60*1000) : null);
           if (probEnd) {
             const diffDays = Math.ceil((probEnd-today)/(1000*60*60*24));
             if (diffDays >= 0 && diffDays <= 30) events.push({ type: 'probation', label: `${name}'s Probation Ends`, date: probEnd.toISOString().slice(0,10), days_away: diffDays, user_id: emp.user_id, department: emp.department });
@@ -10823,7 +10897,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const result = pbEmpRows.map(r => JSON.parse(r.data)).filter(e => e.employee_status === 'probation' || e.employee_status === 'active').map(e => {
         const u = pbUserMap[e.user_id] || {};
         const doj = e.date_of_joining ? new Date(e.date_of_joining) : null;
-        const probEnd = e.probation_end_date ? new Date(e.probation_end_date) : (doj ? new Date(doj.getTime() + 90*24*60*60*1000) : null);
+        const probEnd = e.probation_end_date ? new Date(e.probation_end_date) : (doj ? new Date(doj.getTime() + 180*24*60*60*1000) : null); // 180d = six months, matching the Appointment Letter
         const daysLeft = probEnd ? Math.ceil((probEnd - today2)/(1000*60*60*24)) : null;
         return { ...e, full_name: u.full_name, email: u.email, probation_end_date: probEnd?.toISOString().slice(0,10), days_left: daysLeft, probation_flag: daysLeft !== null && daysLeft <= 30 ? (daysLeft < 0 ? 'overdue' : 'due_soon') : 'active' };
       }).filter(e => e.employee_status === 'probation' || (e.days_left !== null && e.days_left <= 60));
@@ -11084,7 +11158,15 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const uecChecklist = { ...(uecExit.clearance_checklist || makeDefaultClearanceChecklist()) };
       uecChecklist[uecDept] = { ...uecChecklist[uecDept], status: uecStatus, authorized_by_id: cu.id, authorized_by_name: cu.full_name, cleared_at: uecStatus === 'cleared' ? uecNow : (uecChecklist[uecDept]?.cleared_at || null), remarks: uecRemarks ?? uecChecklist[uecDept]?.remarks ?? '', outstanding_dues: uecDues ?? uecChecklist[uecDept]?.outstanding_dues ?? '', checklist_items: uecItemsFinal };
       const uecAllCleared = EXIT_CLEARANCE_DEPT_KEYS.every(k => uecChecklist[k]?.status === 'cleared');
-      const uecNewCaseStatus = uecAllCleared ? 'clearance_done' : (uecExit.status === 'in_notice' ? 'clearance_pending' : uecExit.status);
+      // Must be able to downgrade, not just advance: if the case already
+      // reached clearance_done and a department is later re-opened (e.g. an
+      // owner corrects a mistaken "cleared"), the case status has to fall
+      // back to clearance_pending too — otherwise saveExitFnF's status-only
+      // check (=== 'clearance_done') would let F&F proceed even though
+      // clearance is genuinely incomplete again.
+      const uecNewCaseStatus = uecAllCleared
+        ? 'clearance_done'
+        : (['in_notice', 'clearance_pending', 'clearance_done'].includes(uecExit.status) ? 'clearance_pending' : uecExit.status);
       const uecUpd = { ...uecExit, clearance_checklist: uecChecklist, status: uecNewCaseStatus, audit_log: [...(uecExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `${uecDept} clearance: ${uecStatus}`, comment: uecRemarks || '', timestamp: uecNow }] };
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(uecUpd), uecNewCaseStatus, uecRow.id]);
       if (uecAllCleared) {
@@ -11706,7 +11788,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     /* ── Loan Management ─────────────────────────────── */
     case 'applyForLoan': {
-      const { user_id: lnUid, loan_type, amount: lnAmt, tenure_months, purpose, requested_disbursement_date } = p;
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { user_id: lnUidBody, loan_type, amount: lnAmt, tenure_months, purpose, requested_disbursement_date } = p;
+      let lnUid = lnUidBody || cu.id;
+      if (lnUid !== cu.id && !(await hasRole(cu, HR_ROLES))) lnUid = cu.id;
       const lnId = uuidv4();
       const emi = lnAmt && tenure_months ? Math.ceil(Number(lnAmt) / Number(tenure_months)) : 0;
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Loan',$2,'pending',$3)", [lnId, lnUid,
@@ -11721,31 +11806,41 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'approveLoan': case 'rejectLoan': {
-      const { loan_id: lnActId, approved_by: lnActBy, disbursement_date, rejection_reason } = p;
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { loan_id: lnActId, disbursement_date, rejection_reason } = p;
       const lnRow = await one("SELECT id,data FROM entities WHERE type='Loan' AND id=$1", [lnActId]);
       if (!lnRow) return res.json({ success: false, error: 'Loan not found' });
       const lnData = JSON.parse(lnRow.data);
       const isLnApprove = name === 'approveLoan';
-      const lnUpd = { ...lnData, status: isLnApprove?'approved':'rejected', processed_by: lnActBy, processed_at: new Date().toISOString(), ...(isLnApprove ? { disbursement_date, repayment_start_date: disbursement_date } : { rejection_reason }) };
+      const lnUpd = { ...lnData, status: isLnApprove?'approved':'rejected', processed_by: cu.id, processed_at: new Date().toISOString(), ...(isLnApprove ? { disbursement_date, repayment_start_date: disbursement_date } : { rejection_reason }) };
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(lnUpd), lnUpd.status, lnRow.id]);
       await notify(lnData.user_id, { title: `Loan ${isLnApprove?'Approved':'Rejected'}`, message: isLnApprove?`Your loan of ₹${lnData.amount?.toLocaleString('en-IN')} has been approved. Disbursement: ${disbursement_date||'TBD'}.`:`Your loan application was rejected. ${rejection_reason||''}`, type: isLnApprove?'success':'error', link: '/LoanManagement' });
       return res.json({ success: true });
     }
 
     case 'getLoanDetails': {
-      const { user_id: lnGetUid, loan_id: lnGetId } = p;
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const isLnPriv = await hasRole(cu, HR_ROLES);
+      let { user_id: lnGetUid, loan_id: lnGetId } = p;
+      // Non-HR callers may only ever see their own loans — never omit both
+      // filters (which would return every employee's loan data) and never
+      // scope to someone else's user_id.
+      if (!isLnPriv) { lnGetId = null; lnGetUid = cu.id; }
       let lnQ = "SELECT data FROM entities WHERE type='Loan'";
       const lnP2 = [];
       if (lnGetId) { lnQ += ` AND id=$${lnP2.push(lnGetId)}`; }
       else if (lnGetUid) { lnQ += ` AND user_id=$${lnP2.push(lnGetUid)}`; }
+      else if (!isLnPriv) { return res.json({ success: true, loans: [] }); }
       lnQ += " ORDER BY created_at DESC";
       const lnUserMap2 = {};
       (await all("SELECT id,full_name FROM users")).forEach(u => { lnUserMap2[u.id] = u.full_name; });
-      const loans = (await all(lnQ, [...lnP2])).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: lnUserMap2[d.user_id] }; });
+      let loans = (await all(lnQ, [...lnP2])).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: lnUserMap2[d.user_id] }; });
+      if (!isLnPriv) loans = loans.filter(l => l.user_id === cu.id);
       return res.json({ success: true, loans });
     }
 
     case 'processLoanRepayment': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       const { loan_id: lnRepId, amount: lnRepAmt, repayment_date, notes: lnRepNotes } = p;
       const lnRepRow = await one("SELECT id,data FROM entities WHERE type='Loan' AND id=$1", [lnRepId]);
       if (!lnRepRow) return res.json({ success: false, error: 'Loan not found' });
@@ -11797,7 +11892,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     /* ── Insurance Claims ────────────────────────────── */
     case 'fileInsuranceClaim': {
-      const { user_id: icUid, policy_id, claim_amount, claim_type, description: icDesc, incident_date } = p;
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { user_id: icUidBody, policy_id, claim_amount, claim_type, description: icDesc, incident_date } = p;
+      let icUid = icUidBody || cu.id;
+      if (icUid !== cu.id && !(await hasRole(cu, HR_ROLES))) icUid = cu.id;
       const icId = uuidv4();
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'InsuranceClaim',$2,'pending',$3)", [icId, icUid,
         JSON.stringify({ id: icId, user_id: icUid, policy_id, claim_amount: Number(claim_amount||0), claim_type, description: icDesc, incident_date, status: 'pending', filed_at: new Date().toISOString() })]);
@@ -11811,11 +11909,12 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'processInsuranceClaim': {
-      const { claim_id: icActId, action: icAct, approved_amount, rejection_reason: icRej, processed_by: icProcBy } = p;
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { claim_id: icActId, action: icAct, approved_amount, rejection_reason: icRej } = p;
       const icRow = await one("SELECT id,data FROM entities WHERE type='InsuranceClaim' AND id=$1", [icActId]);
       if (!icRow) return res.json({ success: false, error: 'Claim not found' });
       const icData = JSON.parse(icRow.data);
-      const icUpd = { ...icData, status: icAct==='approve'?'approved':'rejected', processed_by: icProcBy, processed_at: new Date().toISOString(), ...(icAct==='approve' ? { approved_amount: Number(approved_amount||icData.claim_amount||0) } : { rejection_reason: icRej }) };
+      const icUpd = { ...icData, status: icAct==='approve'?'approved':'rejected', processed_by: cu.id, processed_at: new Date().toISOString(), ...(icAct==='approve' ? { approved_amount: Number(approved_amount||icData.claim_amount||0) } : { rejection_reason: icRej }) };
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(icUpd), icUpd.status, icRow.id]);
       const icNid = uuidv4();
       await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [icNid, icData.user_id, `Insurance Claim ${icAct==='approve'?'Approved':'Rejected'}`, icAct==='approve'?`Your claim for ₹${icData.claim_amount} has been approved. Approved amount: ₹${approved_amount||icData.claim_amount}.`:`Your claim was rejected. ${icRej||''}`, 'insurance', '/insurance-management']);
@@ -11823,14 +11922,19 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'getInsuranceClaims': {
-      const { user_id: icGetUid } = p;
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const isIcPriv = await hasRole(cu, HR_ROLES);
+      let { user_id: icGetUid } = p;
+      if (!isIcPriv) icGetUid = cu.id;
       let icQ = "SELECT data FROM entities WHERE type='InsuranceClaim'";
       const icQP = [];
       if (icGetUid) { icQ += ` AND user_id=$${icQP.push(icGetUid)}`; }
+      else if (!isIcPriv) { return res.json({ success: true, claims: [] }); }
       icQ += " ORDER BY created_at DESC";
       const icUMap = {};
       (await all("SELECT id,full_name FROM users")).forEach(u => { icUMap[u.id] = u.full_name; });
-      const claims = (await all(icQ, [...icQP])).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: icUMap[d.user_id] }; });
+      let claims = (await all(icQ, [...icQP])).map(r => { const d = JSON.parse(r.data); return { ...d, employee_name: icUMap[d.user_id] }; });
+      if (!isIcPriv) claims = claims.filter(c => c.user_id === cu.id);
       return res.json({ success: true, claims });
     }
 
@@ -12151,7 +12255,7 @@ Return ONLY valid JSON (no markdown):
 
     case 'getPulseSurveys': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const isHR = ['hr', 'admin'].includes(cu.role);
+      const isHR = await hasRole(cu, HR_ROLES);
       const surveys = (await all("SELECT id,data,status,created_at FROM entities WHERE type='PulseSurvey' ORDER BY created_at DESC"))
         .map(r => ({ ...JSON.parse(r.data), status: r.status }));
       // Which surveys has the current user responded to?
@@ -13075,6 +13179,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
 
     /* ── Save generated letter to employee Documents ─── */
     case 'approveAndSendLetter': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       const { user_id, letter_type, letter_content, ref, employee_name, cc, performance_review_id } = p;
       if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
 
@@ -13153,6 +13258,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
     }
 
     case 'saveLetterAsDocument': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       const { user_id, letter_type, letter_content, ref, employee_name, performance_review_id } = p;
       if (!user_id || !letter_content) return res.status(400).json({ error: 'user_id and letter_content required' });
 
@@ -13428,6 +13534,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
     }
 
     case 'getOvertimeData': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { month, year } = p;
       const startDate = `${year}-${String(month).padStart(2,'0')}-01`;
       const lastDay = new Date(year, month, 0).getDate();
@@ -13473,6 +13580,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
     }
 
     case 'getWFHReport': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { month, year } = p;
       const startDate = `${year}-${String(month).padStart(2,'0')}-01`;
       const lastDay = new Date(year, month, 0).getDate();
@@ -13517,6 +13625,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
     }
 
     case 'getTallyExport': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       const { month, year } = p;
       const payrolls = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll'"))
         .filter(r => r.month === month && r.year === year);
@@ -13616,6 +13725,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
     case 'getAttendanceNarrative': {
       const { user_id, month, year } = p;
       const targetUser = user_id || cu?.id;
+      if (!(await canAccessEmployee(cu, targetUser))) return res.status(403).json({ error: 'Access denied' });
       const m = month || new Date().getMonth() + 1;
       const y = year || new Date().getFullYear();
       const startDate = `${y}-${String(m).padStart(2,'0')}-01`;
@@ -13704,6 +13814,7 @@ Be actionable and highlight anything that needs HR attention. Professional tone.
     }
 
     case 'getSurveySentiment': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       const { survey_id } = p;
       const responseRows = await all(
         "SELECT data FROM entities WHERE type='SurveyResponse' AND data::jsonb->>'survey_id'=$1",
@@ -13728,6 +13839,7 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
     }
 
     case 'getDIMetrics': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
       const employees = empRows.map(r => JSON.parse(r.data));
 
@@ -14017,6 +14129,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'saveInterviewScorecard': {
+      if (!(await hasRole(cu, [...MGR_ROLES, 'recruiter']))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id: sisCandId, scorecard: sisCard } = p;
       if (!sisCandId) return res.json({ success: false, error: 'candidate_id required' });
       const sisCandRow = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [sisCandId]);
@@ -14037,6 +14150,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'getMinimumWagesReport': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       // Central minimum wages (unskilled) — approximate for 2025 (₹ per month)
       const MINIMUM_WAGES = {
         'unskilled': 9360, 'semi_skilled': 10296, 'skilled': 11334,
@@ -14067,6 +14181,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'savePOSHRecord': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       const { id, record_type, date, description, parties, action_taken, status, outcome } = p;
       const recordId = id || uuidv4();
       const data = { id: recordId, record_type, date, description, parties: parties || [], action_taken: action_taken || '', status: status || 'open', outcome: outcome || '', created_by: cu?.id, created_at: new Date().toISOString() };
@@ -14079,6 +14194,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'getPOSHData': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       const rows = await all("SELECT data FROM entities WHERE type='POSHRecord' ORDER BY created_at DESC");
       const records = rows.map(r => JSON.parse(r.data));
       const summary = {
@@ -14091,6 +14207,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'submit360Feedback': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { subject_user_id, relationship, answers, period } = p;
       const feedbackId = uuidv4();
       const data = { id: feedbackId, subject_user_id, reviewer_user_id: cu?.id, relationship, answers: answers || {}, period: period || `${new Date().getFullYear()}-H1`, submitted_at: new Date().toISOString() };
@@ -14101,6 +14218,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     case 'get360FeedbackData': {
       const { subject_user_id, period } = p;
       const targetUser = subject_user_id || cu?.id;
+      if (!(await canAccessEmployee(cu, targetUser))) return res.status(403).json({ error: 'Access denied' });
       const rows = await all("SELECT data FROM entities WHERE type='Feedback360' AND user_id=$1", [targetUser]);
       const feedbacks = rows.map(r => JSON.parse(r.data)).filter(f => !period || f.period === period);
 
@@ -14125,14 +14243,17 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
 
     case 'getSkillMatrix': {
       const { user_id } = p;
-      const rows = await all("SELECT data FROM entities WHERE type='SkillEntry'");
-      const entries = rows.map(r => JSON.parse(r.data));
-
-      // User-scoped request (My Skills tab)
+      // User-scoped request (My Skills tab) — self or a manager/HR viewing a report.
       if (user_id) {
-        const my_skills = entries.filter(e => e.user_id === user_id);
+        if (!(await canAccessEmployee(cu, user_id))) return res.status(403).json({ error: 'Access denied' });
+        const rows = await all("SELECT data FROM entities WHERE type='SkillEntry' AND user_id=$1", [user_id]);
+        const my_skills = rows.map(r => JSON.parse(r.data));
         return res.json({ success: true, my_skills });
       }
+      // Org view requires HR/management.
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const rows = await all("SELECT data FROM entities WHERE type='SkillEntry'");
+      const entries = rows.map(r => JSON.parse(r.data));
 
       // Org view — enrich with employee data
       const empRows = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
@@ -14169,8 +14290,10 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'saveSkillEntry': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { skill_name, proficiency_level, validated, target_user_id } = p;
-      const userId = target_user_id || cu?.id;
+      const userId = target_user_id || cu.id;
+      if (userId !== cu.id && !(await canAccessEmployee(cu, userId))) return res.status(403).json({ error: 'Access denied' });
       const existing = await one("SELECT id FROM entities WHERE type='SkillEntry' AND user_id=$1 AND data::jsonb->>'skill_name'=$2", [userId, skill_name]);
       const entryId = existing?.id || uuidv4();
       const data = { id: entryId, user_id: userId, skill_name, proficiency_level: proficiency_level || 1, validated: validated || false, updated_at: new Date().toISOString() };
@@ -14183,6 +14306,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'getWorkforcePlan': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const rows = await all("SELECT data FROM entities WHERE type='WorkforcePlan' ORDER BY created_at DESC");
       const plans = rows.map(r => JSON.parse(r.data));
 
@@ -14199,6 +14323,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'saveWorkforcePlan': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { id, department, current_count, planned_count, planned_date, notes, status } = p;
       const planId = id || uuidv4();
       const data = { id: planId, department, current_count, planned_count, planned_date, notes: notes || '', status: status || 'draft', created_by: cu?.id, created_at: new Date().toISOString() };

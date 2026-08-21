@@ -1,12 +1,24 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { randomBytes } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { one, run } from '../db.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 
 const router = Router();
-export const JWT_SECRET = process.env.JWT_SECRET || 'maxvolt-hr-jwt-secret-2024';
+
+// A hardcoded fallback secret here would mean anyone who reads this
+// (public/committed) source could forge an admin JWT the moment JWT_SECRET
+// is ever unset. If it's missing, generate a random one for this process
+// instead — every login before the next restart still works correctly,
+// existing sessions from a prior process are invalidated (the safe
+// direction to fail in), and there's never a predictable, guessable secret.
+export const JWT_SECRET = process.env.JWT_SECRET || (() => {
+  const generated = randomBytes(48).toString('hex');
+  console.error('[auth] JWT_SECRET is not set in the environment — using a random secret generated for this process only. Set JWT_SECRET so sessions survive a restart.');
+  return generated;
+})();
 
 export const signToken = (user) =>
   jwt.sign({ id: user.id, email: user.email, role: user.role, custom_role: user.custom_role || user.role }, JWT_SECRET, { expiresIn: '30d' });

@@ -197,7 +197,7 @@ export default function Employees() {
             <h1 className="text-3xl font-bold">Employee Directory</h1>
             <p className="text-gray-600 mt-1">Manage and view employee information</p>
           </div>
-          {(currentUser?.role === 'admin' || currentUser?.custom_role === 'hr') && (
+          {((currentUser?.custom_role || currentUser?.role) === 'admin' || (currentUser?.custom_role || currentUser?.role) === 'hr') && (
             <Button onClick={handleExportAll} disabled={exporting} variant="outline" className="gap-2">
               <Download className="w-4 h-4" />
               {exporting ? 'Exporting...' : 'Export All (CSV)'}
@@ -349,7 +349,7 @@ export default function Employees() {
                                 </div>
                               )}
                             </div>
-                            {(currentUser?.role === 'admin' || currentUser?.custom_role === 'hr') && (
+                            {((currentUser?.custom_role || currentUser?.role) === 'admin' || (currentUser?.custom_role || currentUser?.role) === 'hr') && (
                               <div className="mt-2 flex justify-end" onClick={e => { e.stopPropagation(); setEditingEmployee(emp); }}>
                                 <Button size="sm" variant="outline" className="text-xs">Edit UAN/PF</Button>
                               </div>
@@ -373,7 +373,7 @@ export default function Employees() {
         </Card>
 
         <EmployeeDetailDialog employee={selectedEmployee} onClose={() => setSelectedEmployee(null)} />
-        {(currentUser?.role === 'admin' || currentUser?.custom_role === 'hr') && (
+        {((currentUser?.custom_role || currentUser?.role) === 'admin' || (currentUser?.custom_role || currentUser?.role) === 'hr') && (
           <HREmployeeEditPanel
             employee={editingEmployee}
             onClose={() => setEditingEmployee(null)}

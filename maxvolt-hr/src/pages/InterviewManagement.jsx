@@ -261,7 +261,7 @@ export default function InterviewManagement() {
     no_show: 'bg-orange-100 text-orange-800'
   };
 
-  const upcomingInterviews = interviews.filter(i => i.status === 'scheduled' && new Date(i.scheduled_date) > new Date());
+  const upcomingInterviews = interviews.filter(i => ['scheduled', 'rescheduled'].includes(i.status) && new Date(i.scheduled_date) > new Date());
   const completedInterviews = interviews.filter(i => i.status === 'completed');
 
   const statusFiltered = statusFilter === 'all' ? interviews
@@ -547,7 +547,7 @@ export default function InterviewManagement() {
                           )}
                         </div>
                       </div>
-                      {interview.status === 'scheduled' && (
+                      {['scheduled', 'rescheduled'].includes(interview.status) && (
                         <div className="flex gap-2">
                           <Button size="sm" onClick={() => setShowFeedback(interview)}>
                             Add Feedback

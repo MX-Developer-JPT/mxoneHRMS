@@ -95,14 +95,19 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
           { stage: 'manager', status: 'pending', actor_id: null, actor_name: null, comment: '', timestamp: null },
           { stage: 'hr', status: 'pending', actor_id: null, actor_name: null, comment: '', timestamp: null },
         ],
+        // 5-department model — must match EXIT_CLEARANCE_DEPTS in
+        // backend/routes/functions.js and every clearance UI component
+        // (ExitDetailPanel, MyExit, ExitManagement's Clearance Dashboard),
+        // which all key off hr/finance/it/admin/working_department. The old
+        // 7-key seed here (security/reporting_manager/project_manager) wrote
+        // keys nothing reads, while working_department — the one every
+        // component actually displays/actions — was never seeded at all.
         clearance_checklist: {
-          hr:               { status: 'pending', cleared_by: null, cleared_at: null, notes: '' },
-          it:               { status: 'pending', cleared_by: null, cleared_at: null, notes: '' },
-          admin:            { status: 'pending', cleared_by: null, cleared_at: null, notes: '' },
-          finance:          { status: 'pending', cleared_by: null, cleared_at: null, notes: '' },
-          security:         { status: 'pending', cleared_by: null, cleared_at: null, notes: '' },
-          reporting_manager:{ status: 'pending', cleared_by: null, cleared_at: null, notes: '' },
-          project_manager:  { status: 'pending', cleared_by: null, cleared_at: null, notes: '' },
+          hr:                 { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['Leave/attendance regularisation', 'Employee documents', 'Exit interview', 'Notice period', 'Final HR clearance', 'Full & Final eligibility'].map((label, i) => ({ id: `hr_${i}`, label, checked: false, notes: '' })) },
+          finance:            { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['Salary/advance dues', 'Expense/claim settlement', 'Loans/advances', 'Other recoveries', 'Any pending financial obligation'].map((label, i) => ({ id: `finance_${i}`, label, checked: false, notes: '' })) },
+          it:                 { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['Laptop/Desktop', 'Phone/Tablet', 'SIM', 'ID/Access credentials', 'Software/access accounts', 'Other IT assets', 'Data/document handover'].map((label, i) => ({ id: `it_${i}`, label, checked: false, notes: '' })) },
+          admin:              { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['ID card/access card', 'Keys', 'Company property', 'Other assigned assets'].map((label, i) => ({ id: `admin_${i}`, label, checked: false, notes: '' })) },
+          working_department: { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['KRA/responsibility handover', 'Project handover', 'Documents/data handover', 'Company property', 'Pending work', 'Replacement/transition requirements'].map((label, i) => ({ id: `working_department_${i}`, label, checked: false, notes: '' })) },
         },
         assets: [],
         kt_items: [],

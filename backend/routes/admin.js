@@ -9,19 +9,28 @@ import { sendEmail, verifyEmail, emailTemplates, getEmailConfig } from '../utils
 const router = Router();
 
 // ── Admin auth middleware ──────────────────────────────────
-router.use((req, res, next) => {
+// Re-checks the CURRENT role from the database on every request rather than
+// trusting decoded.role from the JWT alone — tokens are valid for 30 days,
+// so trusting the embedded role let a demoted admin/HR user keep full
+// admin-panel access (including resetting arbitrary passwords) for up to a
+// month after being demoted, since their still-valid old token never
+// reflected the change.
+router.use(async (req, res, next) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'No token' });
+  let decoded;
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    if (!['admin', 'hr'].includes(decoded.role))
-      return res.status(403).json({ error: 'Admin or HR role required' });
-    req.currentUser = decoded;
-    req.isAdmin = decoded.role === 'admin';
-    next();
+    decoded = jwt.verify(token, JWT_SECRET);
   } catch {
-    res.status(401).json({ error: 'Invalid token' });
+    return res.status(401).json({ error: 'Invalid token' });
   }
+  const userRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [decoded.id]);
+  const currentRole = userRow?.custom_role || userRow?.role;
+  if (!userRow || !['admin', 'hr'].includes(currentRole))
+    return res.status(403).json({ error: 'Admin or HR role required' });
+  req.currentUser = decoded;
+  req.isAdmin = currentRole === 'admin';
+  next();
 });
 
 // ── Stats ──────────────────────────────────────────────────

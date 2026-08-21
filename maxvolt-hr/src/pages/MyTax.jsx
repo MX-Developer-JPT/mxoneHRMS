@@ -250,7 +250,7 @@ export default function MyTax() {
                   ['Remaining Tax', fmt(s.remaining_tax)],
                   ['Monthly TDS (spread over ' + s.remaining_months + ' months)', fmt(s.monthly_tds)],
                 ].map(([label, val], i) => (
-                  <div key={i} className={`flex justify-between py-1 ${label.startsWith('=') || label === 'Annual Tax Liability' ? 'border-t font-bold pt-2' : ''} ${label === 'Monthly TDS' + (s.remaining_months ? ' (spread over ' + s.remaining_months + ' months)' : '') ? 'text-blue-700 font-bold border-t pt-2' : ''}`}>
+                  <div key={i} className={`flex justify-between py-1 ${label.startsWith('=') || label === 'Annual Tax Liability' ? 'border-t font-bold pt-2' : ''} ${label.startsWith('Monthly TDS') ? 'text-blue-700 font-bold border-t pt-2' : ''}`}>
                     <span className="text-gray-600">{label}</span>
                     <span className={val.startsWith('-') ? 'text-green-600' : ''}>{val}</span>
                   </div>

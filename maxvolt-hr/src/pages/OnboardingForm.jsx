@@ -256,7 +256,12 @@ export default function OnboardingForm() {
       uan_number: uanNumber,
       pf_account_number: pfAccountNumber,
       pf_nominee: pfNominee,
-      onboarding_submitted: true,
+      // NOT marked submitted yet — set only after every mandatory/optional
+      // document upload below actually succeeds. Marking it true here meant
+      // a failed upload partway through the loop (e.g. a network drop on
+      // document 3 of 4) still left the Employee record showing as fully
+      // submitted, with HR seeing a complete onboarding despite missing docs.
+      onboarding_submitted: false,
       onboarding_rejection_reason: null,
     };
 
@@ -290,6 +295,10 @@ export default function OnboardingForm() {
         });
       }
     }
+
+    // Only now — after every document upload above has actually succeeded —
+    // mark the Employee record as submitted.
+    await base44.entities.Employee.update(empId, { onboarding_submitted: true });
 
     // Mark as submitted BEFORE sending email so confirmation always shows
     setAlreadySubmitted(true);

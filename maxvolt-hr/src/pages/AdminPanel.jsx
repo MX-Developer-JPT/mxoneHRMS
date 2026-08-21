@@ -899,7 +899,7 @@ function EmployeeAttrsTab() {
       shift:             emp.shift || '',
       department:        emp.department || '',
       location:          emp.location || '',
-      reporting_manager: emp.reporting_manager || '__none__',
+      reporting_manager_id: emp.reporting_manager_id || '__none__',
       designation:       emp.designation || '',
     });
   };
@@ -907,7 +907,7 @@ function EmployeeAttrsTab() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const payload = { ...form, reporting_manager: form.reporting_manager === '__none__' ? '' : form.reporting_manager };
+      const payload = { ...form, reporting_manager_id: form.reporting_manager_id === '__none__' ? '' : form.reporting_manager_id };
       await base44.entities.Employee.update(editEmp.id, payload);
       setEmployees(prev => prev.map(e => e.id === editEmp.id ? { ...e, ...payload } : e));
       toast.success('Employee attributes updated');
@@ -943,7 +943,7 @@ function EmployeeAttrsTab() {
                 <td className="px-4 py-2.5 text-muted-foreground">{emp.designation || '—'}</td>
                 <td className="px-4 py-2.5 text-muted-foreground">{emp.shift || '—'}</td>
                 <td className="px-4 py-2.5 text-muted-foreground">{emp.location || '—'}</td>
-                <td className="px-4 py-2.5 text-muted-foreground">{emp.reporting_manager ? getName(emp.reporting_manager) : '—'}</td>
+                <td className="px-4 py-2.5 text-muted-foreground">{emp.reporting_manager_id ? getName(emp.reporting_manager_id) : '—'}</td>
                 <td className="px-4 py-2.5">
                   <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEdit(emp)}><Edit className="w-3.5 h-3.5" /></Button>
                 </td>
@@ -974,8 +974,8 @@ function EmployeeAttrsTab() {
                 <Popover open={adminMgrOpen} onOpenChange={setAdminMgrOpen}>
                   <PopoverTrigger asChild>
                     <button type="button" className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
-                      <span className={form.reporting_manager && form.reporting_manager !== '__none__' ? 'text-foreground' : 'text-muted-foreground'}>
-                        {form.reporting_manager && form.reporting_manager !== '__none__' ? getName(form.reporting_manager) : 'None'}
+                      <span className={form.reporting_manager_id && form.reporting_manager_id !== '__none__' ? 'text-foreground' : 'text-muted-foreground'}>
+                        {form.reporting_manager_id && form.reporting_manager_id !== '__none__' ? getName(form.reporting_manager_id) : 'None'}
                       </span>
                       <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </button>
@@ -986,12 +986,12 @@ function EmployeeAttrsTab() {
                       <CommandList>
                         <CommandEmpty>No employee found.</CommandEmpty>
                         <CommandGroup>
-                          <CommandItem value="none" onSelect={() => { setForm(f => ({ ...f, reporting_manager: '__none__' })); setAdminMgrOpen(false); }}>
-                            <Check className={`mr-2 h-4 w-4 ${!form.reporting_manager || form.reporting_manager === '__none__' ? 'opacity-100' : 'opacity-0'}`} /> None
+                          <CommandItem value="none" onSelect={() => { setForm(f => ({ ...f, reporting_manager_id: '__none__' })); setAdminMgrOpen(false); }}>
+                            <Check className={`mr-2 h-4 w-4 ${!form.reporting_manager_id || form.reporting_manager_id === '__none__' ? 'opacity-100' : 'opacity-0'}`} /> None
                           </CommandItem>
                           {employees.filter(e => e.id !== editEmp.id && e.user_id).map(e => (
-                            <CommandItem key={e.id} value={getName(e.user_id)} onSelect={() => { setForm(f => ({ ...f, reporting_manager: e.user_id })); setAdminMgrOpen(false); }}>
-                              <Check className={`mr-2 h-4 w-4 ${form.reporting_manager === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
+                            <CommandItem key={e.id} value={getName(e.user_id)} onSelect={() => { setForm(f => ({ ...f, reporting_manager_id: e.user_id })); setAdminMgrOpen(false); }}>
+                              <Check className={`mr-2 h-4 w-4 ${form.reporting_manager_id === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
                               {getName(e.user_id)}
                             </CommandItem>
                           ))}

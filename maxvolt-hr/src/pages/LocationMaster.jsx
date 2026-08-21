@@ -134,7 +134,7 @@ export default function LocationMaster() {
 
   const openNew = () => {
     setEditingId(null);
-    setForm({ name: '', address: '', city: '', state: '', is_active: true, biometric_devices: '' });
+    setForm({ name: '', address: '', city: '', state: '', is_active: true, latitude: '', longitude: '', geofence_radius: '', biometric_devices: '' });
     setShowDialog(true);
   };
 

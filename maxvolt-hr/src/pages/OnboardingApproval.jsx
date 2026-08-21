@@ -118,18 +118,22 @@ export default function OnboardingApproval() {
       toast.error('Please provide a rejection reason');
       return;
     }
-    await base44.functions.invoke('rejectUserOnboarding', {
-      user_id: selectedUser.id,
-      reason: rejectionReason
-    });
-    toast.success('Rejection sent to employee');
-    setShowRejectionDialog(false);
-    loadData();
+    try {
+      await base44.functions.invoke('rejectUserOnboarding', {
+        user_id: selectedUser.id,
+        reason: rejectionReason
+      });
+      toast.success('Rejection sent to employee');
+      setShowRejectionDialog(false);
+      loadData();
+    } catch (e) {
+      toast.error('Failed to send rejection: ' + e.message);
+    }
   };
 
   const handleSubmitApproval = async () => {
     try {
-      if (!formData.employee_code || !formData.department || !formData.designation || !formData.date_of_joining) {
+      if (!formData.employee_code || !formData.department || !formData.designation || !formData.date_of_joining || !formData.designation_tier || !formData.work_location) {
         toast.error('Please fill in all required fields');
         return;
       }

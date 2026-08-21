@@ -55,11 +55,13 @@ export async function sendConfirmationDueReminders() {
     const manager = managerMap.get(emp.reporting_manager_id);
     if (!manager?.email) continue;
 
-    // Same 90-day-from-joining fallback used by getProbationEmployees so the
-    // email and the Confirmation Management dashboard never disagree.
+    // Same 180-day (six month) fallback used by getProbationEmployees — kept
+    // in sync so the email and the Confirmation Management dashboard never
+    // disagree, and matches the Appointment Letter's stated probation period
+    // (the old 90-day fallback flagged employees overdue three months early).
     const probEnd = emp.probation_end_date
       ? new Date(emp.probation_end_date + 'T00:00:00Z')
-      : (emp.date_of_joining ? new Date(new Date(emp.date_of_joining + 'T00:00:00Z').getTime() + 90 * 24 * 60 * 60 * 1000) : null);
+      : (emp.date_of_joining ? new Date(new Date(emp.date_of_joining + 'T00:00:00Z').getTime() + 180 * 24 * 60 * 60 * 1000) : null);
     if (!probEnd) continue;
 
     const daysLeft = Math.ceil((probEnd.getTime() - todayMs) / (24 * 60 * 60 * 1000));

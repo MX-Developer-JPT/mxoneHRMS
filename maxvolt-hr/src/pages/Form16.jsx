@@ -87,10 +87,20 @@ export default function Form16() {
     setWorksheetLoading(true);
     try {
       const now = new Date();
+      const currentFyBase = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+      const fyStart = parseInt(fy.split('-')[0], 10);
+      const isCurrentFy = fyStart === currentFyBase;
+      // The page's FY selector previously had no effect here — this always
+      // requested the current calendar month regardless of which financial
+      // year was selected. For the active FY, current month is still the
+      // most useful view; for a past FY, use March — its last month — for
+      // the fullest annual picture of that year instead.
+      const month = isCurrentFy ? now.getMonth() + 1 : 3;
+      const year = isCurrentFy ? now.getFullYear() : fyStart + 1;
       const res = await base44.functions.invoke('getTaxWorksheet', {
         user_id: row.user_id,
-        month: now.getMonth() + 1,
-        year: now.getFullYear(),
+        month,
+        year,
       });
       const d = res.data || res;
       if (d.success) setWorksheetHtml(d.html);
