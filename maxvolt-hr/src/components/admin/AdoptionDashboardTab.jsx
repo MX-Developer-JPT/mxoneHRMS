@@ -3,7 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { toast } from 'sonner';
 import {
   Users, UserCheck, Activity, TrendingUp, Clock, AlertTriangle,
-  RefreshCw, Send, CheckCircle2, XCircle, Loader2,
+  RefreshCw, Send, CheckCircle2, XCircle, Loader2, Download,
 } from 'lucide-react';
 
 // Suggested management targets from "MaxVolt One — Go-Live Marketing,
@@ -34,6 +34,7 @@ export default function AdoptionDashboardTab() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(new Set());
   const [sending, setSending] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -86,6 +87,24 @@ export default function AdoptionDashboardTab() {
     setSending(false);
   };
 
+  const exportDetails = async () => {
+    setExporting(true);
+    try {
+      const r = await base44.functions.invoke('exportAdoptionDetails', { days: 30 });
+      const d = r?.data || r;
+      if (d?.base64) {
+        const bytes = Uint8Array.from(atob(d.base64), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = d.filename || 'Adoption_Details.xlsx'; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } else {
+        toast.error(d?.error || 'Export failed');
+      }
+    } catch (e) { toast.error('Export failed: ' + e.message); }
+    setExporting(false);
+  };
+
   if (loading && !data) {
     return <div className="flex items-center justify-center py-16 text-muted-foreground gap-2"><Loader2 className="w-5 h-5 animate-spin" /> Loading adoption dashboard...</div>;
   }
@@ -99,7 +118,17 @@ export default function AdoptionDashboardTab() {
         <p className="text-sm text-muted-foreground">
           Login, activation and feature-usage analytics — owned per the Go-Live Adoption Plan. Last 30 days.
         </p>
-        <button onClick={load} className="p-1.5 rounded border hover:bg-muted"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={exportDetails}
+            disabled={exporting}
+            className="text-xs px-3 py-1.5 rounded border hover:bg-muted disabled:opacity-40 flex items-center gap-1.5"
+          >
+            {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            Export Adoption Details
+          </button>
+          <button onClick={load} className="p-1.5 rounded border hover:bg-muted"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /></button>
+        </div>
       </div>
 
       {/* Executive Summary */}

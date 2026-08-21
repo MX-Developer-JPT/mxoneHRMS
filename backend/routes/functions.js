@@ -639,6 +639,135 @@ async function getScopedUserIds(cu) {
 
 const parseEntities = (rows) => rows.map(r => JSON.parse(r.data));
 
+// Shared adoption-analytics computation, used by both getAdoptionDashboard
+// (on-screen) and exportAdoptionDetails (multi-sheet Excel) — kept as one
+// function so the two never drift apart on numbers.
+async function computeAdoptionData(days) {
+  const since90 = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]; // enough history for 30-day active + 14-day dormant checks
+
+  const [employees, eventRows] = await Promise.all([
+    parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")),
+    all("SELECT user_id, data FROM entities WHERE type='UsageEvent' AND created_at >= $1", [since90]),
+  ]);
+
+  const events = eventRows.map(r => { try { return { user_id: r.user_id, ...JSON.parse(r.data) }; } catch { return null; } }).filter(Boolean);
+
+  const empByUserId = new Map(employees.filter(e => e.user_id).map(e => [e.user_id, e]));
+  // IST, not UTC — see note in the original callers.
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const todayStr = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+  const dayMs = 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+
+  const perUser = new Map();
+  for (const ev of events) {
+    if (!perUser.has(ev.user_id)) perUser.set(ev.user_id, { firstLogin: null, lastEvent: null, activeDates: new Set(), moduleUsers: new Map(), eventsByDay: new Map() });
+    const u = perUser.get(ev.user_id);
+    const ts = ev.timestamp;
+    if (!ts) continue;
+    const dateStr = new Date(new Date(ts).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+    if (ev.event_type === 'login' && (!u.firstLogin || ts < u.firstLogin)) u.firstLogin = ts;
+    if (!u.lastEvent || ts > u.lastEvent) u.lastEvent = ts;
+    u.activeDates.add(dateStr);
+    if (ev.module && ['module_opened', 'feature_action_completed', 'workflow_submitted'].includes(ev.event_type)) {
+      u.moduleUsers.set(ev.module, (u.moduleUsers.get(ev.module) || 0) + 1);
+    }
+    if (!u.eventsByDay.has(dateStr)) u.eventsByDay.set(dateStr, []);
+    u.eventsByDay.get(dateStr).push(ts);
+  }
+
+  const GAP_CAP_MS = 5 * 60 * 1000;
+  let totalActiveMinutesAll = 0;
+  const timeSpentByUser = new Map();
+  for (const [uid, u] of perUser) {
+    let mins = 0;
+    for (const dayEvents of u.eventsByDay.values()) {
+      const sorted = dayEvents.slice().sort();
+      for (let i = 1; i < sorted.length; i++) {
+        const gap = Math.min(new Date(sorted[i]) - new Date(sorted[i - 1]), GAP_CAP_MS);
+        if (gap > 0) mins += gap / 60000;
+      }
+    }
+    timeSpentByUser.set(uid, mins);
+    totalActiveMinutesAll += mins;
+  }
+
+  const totalEmployees = employees.length;
+  const activatedUserIds = new Set([...perUser.entries()].filter(([, u]) => u.firstLogin).map(([uid]) => uid));
+  const activated = employees.filter(e => activatedUserIds.has(e.user_id)).length;
+  const activeToday = employees.filter(e => perUser.get(e.user_id)?.activeDates.has(todayStr)).length;
+  const active7d = employees.filter(e => {
+    const u = perUser.get(e.user_id); if (!u?.lastEvent) return false;
+    return (nowMs - new Date(u.lastEvent).getTime()) <= 7 * dayMs;
+  }).length;
+  const active30d = employees.filter(e => {
+    const u = perUser.get(e.user_id); if (!u?.lastEvent) return false;
+    return (nowMs - new Date(u.lastEvent).getTime()) <= 30 * dayMs;
+  }).length;
+
+  const byDept = {};
+  for (const e of employees) {
+    const dept = e.department || 'Unassigned';
+    (byDept[dept] ||= { eligible: 0, activated: 0, active7d: 0, dormant: 0 });
+    byDept[dept].eligible++;
+    const u = perUser.get(e.user_id);
+    if (u?.firstLogin) byDept[dept].activated++;
+    const lastMs = u?.lastEvent ? new Date(u.lastEvent).getTime() : null;
+    if (lastMs && (nowMs - lastMs) <= 7 * dayMs) byDept[dept].active7d++;
+    if (u?.firstLogin && (!lastMs || (nowMs - lastMs) > 14 * dayMs)) byDept[dept].dormant++;
+  }
+  const departmentAdoption = Object.entries(byDept).map(([dept, d]) => ({
+    department: dept, ...d,
+    activation_pct: d.eligible ? Math.round((d.activated / d.eligible) * 100) : 0,
+    active_pct: d.eligible ? Math.round((d.active7d / d.eligible) * 100) : 0,
+  })).sort((a, b) => b.eligible - a.eligible);
+
+  const moduleAgg = {};
+  for (const [, u] of perUser) {
+    for (const [mod, count] of u.moduleUsers) {
+      (moduleAgg[mod] ||= { module: mod, unique_users: 0, actions: 0 });
+      moduleAgg[mod].unique_users++;
+      moduleAgg[mod].actions += count;
+    }
+  }
+  const featureAdoption = Object.values(moduleAgg).sort((a, b) => b.unique_users - a.unique_users);
+
+  const dormantWatchlist = employees.filter(e => {
+    const u = perUser.get(e.user_id);
+    if (!u?.firstLogin) return false;
+    const lastMs = u.lastEvent ? new Date(u.lastEvent).getTime() : new Date(u.firstLogin).getTime();
+    return (nowMs - lastMs) > 14 * dayMs;
+  }).map(e => {
+    const u = perUser.get(e.user_id);
+    return {
+      user_id: e.user_id, name: e.display_name || e.full_name, department: e.department || 'Unassigned',
+      employee_code: e.employee_code, last_active: u.lastEvent || u.firstLogin,
+      days_inactive: Math.floor((nowMs - new Date(u.lastEvent || u.firstLogin).getTime()) / dayMs),
+    };
+  }).sort((a, b) => b.days_inactive - a.days_inactive);
+
+  const notActivated = employees.filter(e => !perUser.get(e.user_id)?.firstLogin).map(e => ({
+    user_id: e.user_id, name: e.display_name || e.full_name, department: e.department || 'Unassigned', employee_code: e.employee_code,
+  }));
+
+  return {
+    window_days: days,
+    summary: {
+      total_employees: totalEmployees,
+      activated, activation_pct: totalEmployees ? Math.round((activated / totalEmployees) * 100) : 0,
+      active_today: activeToday,
+      active_7d: active7d, active_7d_pct: activated ? Math.round((active7d / activated) * 100) : 0,
+      active_30d: active30d, active_30d_pct: activated ? Math.round((active30d / activated) * 100) : 0,
+      avg_minutes_per_active_user: perUser.size ? Math.round(totalActiveMinutesAll / perUser.size) : 0,
+      dormant_count: dormantWatchlist.length,
+    },
+    department_adoption: departmentAdoption,
+    feature_adoption: featureAdoption,
+    dormant_watchlist: dormantWatchlist,
+    not_activated: notActivated,
+  };
+}
+
 // Creates an in-app notification for a user. IMPORTANT: this writes to the
 // dedicated `notifications` SQL table — the same one GET /api/notifications
 // (NotificationBell.jsx) actually reads. An earlier version of this helper
@@ -13542,151 +13671,101 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     case 'getAdoptionDashboard': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const days = Number(p.days) || 30;
-      const since90 = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]; // enough history for 30-day active + 14-day dormant checks
-
-      const [employees, eventRows] = await Promise.all([
-        parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")),
-        all("SELECT user_id, data FROM entities WHERE type='UsageEvent' AND created_at >= $1", [since90]),
-      ]);
-
-      const events = eventRows.map(r => { try { return { user_id: r.user_id, ...JSON.parse(r.data) }; } catch { return null; } }).filter(Boolean);
-
-      const empByUserId = new Map(employees.filter(e => e.user_id).map(e => [e.user_id, e]));
-      // IST, not UTC — this app's users are all India-based, and event
-      // timestamps are stored as UTC instants. Using the raw UTC calendar
-      // date here would misclassify "today" for roughly the first 5.5
-      // hours after UTC midnight (which is still yesterday evening in
-      // IST) and the last portion of the IST day (already tomorrow in
-      // UTC), matching the same IST-offset convention already used
-      // elsewhere in this file and in attendancelog.js.
-      const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-      const todayStr = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
-      const dayMs = 24 * 60 * 60 * 1000;
-      const nowMs = Date.now();
-
-      // Per-user aggregates: first login, last event, active days set, per-day event lists (for time-spent), module usage
-      const perUser = new Map(); // user_id -> { firstLogin, lastEvent, activeDates:Set, moduleCounts:Map, eventsByDay:Map<date,[]> }
-      for (const ev of events) {
-        if (!perUser.has(ev.user_id)) perUser.set(ev.user_id, { firstLogin: null, lastEvent: null, activeDates: new Set(), moduleUsers: new Map(), eventsByDay: new Map() });
-        const u = perUser.get(ev.user_id);
-        const ts = ev.timestamp;
-        if (!ts) continue;
-        // IST calendar date, to match todayStr above — ts itself (used for
-        // firstLogin/lastEvent ordering and the 7/30-day elapsed-time
-        // windows below) stays a raw UTC instant, which is correct there
-        // since those are duration comparisons, not calendar-date ones.
-        const dateStr = new Date(new Date(ts).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
-        if (ev.event_type === 'login' && (!u.firstLogin || ts < u.firstLogin)) u.firstLogin = ts;
-        if (!u.lastEvent || ts > u.lastEvent) u.lastEvent = ts;
-        u.activeDates.add(dateStr);
-        if (ev.module && ['module_opened', 'feature_action_completed', 'workflow_submitted'].includes(ev.event_type)) {
-          u.moduleUsers.set(ev.module, (u.moduleUsers.get(ev.module) || 0) + 1);
-        }
-        if (!u.eventsByDay.has(dateStr)) u.eventsByDay.set(dateStr, []);
-        u.eventsByDay.get(dateStr).push(ts);
-      }
-
-      // Estimated time spent: sum gaps between consecutive same-day events, capping any single gap at 5 minutes
-      // (a longer gap almost certainly means the tab was idle/backgrounded, not actively used).
-      const GAP_CAP_MS = 5 * 60 * 1000;
-      let totalActiveMinutesAll = 0;
-      const timeSpentByUser = new Map();
-      for (const [uid, u] of perUser) {
-        let mins = 0;
-        for (const dayEvents of u.eventsByDay.values()) {
-          const sorted = dayEvents.slice().sort();
-          for (let i = 1; i < sorted.length; i++) {
-            const gap = Math.min(new Date(sorted[i]) - new Date(sorted[i - 1]), GAP_CAP_MS);
-            if (gap > 0) mins += gap / 60000;
-          }
-        }
-        timeSpentByUser.set(uid, mins);
-        totalActiveMinutesAll += mins;
-      }
-
-      const totalEmployees = employees.length;
-      const activatedUserIds = new Set([...perUser.entries()].filter(([, u]) => u.firstLogin).map(([uid]) => uid));
-      const activated = employees.filter(e => activatedUserIds.has(e.user_id)).length;
-      const activeToday = employees.filter(e => perUser.get(e.user_id)?.activeDates.has(todayStr)).length;
-      const active7d = employees.filter(e => {
-        const u = perUser.get(e.user_id); if (!u?.lastEvent) return false;
-        return (nowMs - new Date(u.lastEvent).getTime()) <= 7 * dayMs;
-      }).length;
-      const active30d = employees.filter(e => {
-        const u = perUser.get(e.user_id); if (!u?.lastEvent) return false;
-        return (nowMs - new Date(u.lastEvent).getTime()) <= 30 * dayMs;
-      }).length;
-
-      // Department adoption
-      const byDept = {};
-      for (const e of employees) {
-        const dept = e.department || 'Unassigned';
-        (byDept[dept] ||= { eligible: 0, activated: 0, active7d: 0, dormant: 0 });
-        byDept[dept].eligible++;
-        const u = perUser.get(e.user_id);
-        if (u?.firstLogin) byDept[dept].activated++;
-        const lastMs = u?.lastEvent ? new Date(u.lastEvent).getTime() : null;
-        if (lastMs && (nowMs - lastMs) <= 7 * dayMs) byDept[dept].active7d++;
-        if (u?.firstLogin && (!lastMs || (nowMs - lastMs) > 14 * dayMs)) byDept[dept].dormant++;
-      }
-      const departmentAdoption = Object.entries(byDept).map(([dept, d]) => ({
-        department: dept, ...d,
-        activation_pct: d.eligible ? Math.round((d.activated / d.eligible) * 100) : 0,
-        active_pct: d.eligible ? Math.round((d.active7d / d.eligible) * 100) : 0,
-      })).sort((a, b) => b.eligible - a.eligible);
-
-      // Feature/module adoption — unique users + total actions per module, across all tracked users
-      const moduleAgg = {};
-      for (const [, u] of perUser) {
-        for (const [mod, count] of u.moduleUsers) {
-          (moduleAgg[mod] ||= { module: mod, unique_users: 0, actions: 0 });
-          moduleAgg[mod].unique_users++;
-          moduleAgg[mod].actions += count;
-        }
-      }
-      const featureAdoption = Object.values(moduleAgg).sort((a, b) => b.unique_users - a.unique_users);
-
-      // Dormant watchlist: activated but no event in 14+ days (or never active again after first login)
-      const dormantWatchlist = employees.filter(e => {
-        const u = perUser.get(e.user_id);
-        if (!u?.firstLogin) return false;
-        const lastMs = u.lastEvent ? new Date(u.lastEvent).getTime() : new Date(u.firstLogin).getTime();
-        return (nowMs - lastMs) > 14 * dayMs;
-      }).map(e => {
-        const u = perUser.get(e.user_id);
-        return {
-          user_id: e.user_id, name: e.display_name || e.full_name, department: e.department || 'Unassigned',
-          employee_code: e.employee_code, last_active: u.lastEvent || u.firstLogin,
-          days_inactive: Math.floor((nowMs - new Date(u.lastEvent || u.firstLogin).getTime()) / dayMs),
-        };
-      }).sort((a, b) => b.days_inactive - a.days_inactive);
-
-      // Not-yet-activated list (never logged in)
-      const notActivated = employees.filter(e => !perUser.get(e.user_id)?.firstLogin).map(e => ({
-        user_id: e.user_id, name: e.display_name || e.full_name, department: e.department || 'Unassigned', employee_code: e.employee_code,
-      }));
-
+      const d = await computeAdoptionData(days);
       return res.json({
         success: true,
-        window_days: days,
-        summary: {
-          total_employees: totalEmployees,
-          activated, activation_pct: totalEmployees ? Math.round((activated / totalEmployees) * 100) : 0,
-          active_today: activeToday,
-          active_7d: active7d, active_7d_pct: activated ? Math.round((active7d / activated) * 100) : 0,
-          active_30d: active30d, active_30d_pct: activated ? Math.round((active30d / activated) * 100) : 0,
-          // Denominator is users with any tracked event in the window, not
-          // all-time `activated` count — dividing by the latter would dilute
-          // the average with long-dormant employees who contribute 0
-          // minutes, understating it for the "active user" label.
-          avg_minutes_per_active_user: perUser.size ? Math.round(totalActiveMinutesAll / perUser.size) : 0,
-          dormant_count: dormantWatchlist.length,
-        },
-        department_adoption: departmentAdoption,
-        feature_adoption: featureAdoption,
-        dormant_watchlist: dormantWatchlist.slice(0, 100),
-        not_activated: notActivated.slice(0, 100),
+        window_days: d.window_days,
+        summary: d.summary,
+        department_adoption: d.department_adoption,
+        feature_adoption: d.feature_adoption,
+        dormant_watchlist: d.dormant_watchlist.slice(0, 100),
+        not_activated: d.not_activated.slice(0, 100),
       });
+    }
+
+    case 'exportAdoptionDetails': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const days = Number(p.days) || 30;
+      const d = await computeAdoptionData(days);
+
+      const ExcelJS = (await import('exceljs')).default;
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Maxvolt One';
+
+      const fnt = (bold=false,color='000000',size=10) => ({ name:'Arial', bold, color:{argb:`FF${color}`}, size });
+      const fl  = (argb) => ({ type:'pattern', pattern:'solid', fgColor:{argb:`FF${argb}`} });
+      const bd  = () => ({ top:{style:'thin',color:{argb:'FFD5D5D5'}}, left:{style:'thin',color:{argb:'FFD5D5D5'}}, bottom:{style:'thin',color:{argb:'FFD5D5D5'}}, right:{style:'thin',color:{argb:'FFD5D5D5'}} });
+      const ctr = { horizontal:'center', vertical:'middle' };
+
+      const addSheet = (name, headerColor, cols, rows) => {
+        const ws = wb.addWorksheet(name, { views:[{ state:'frozen', xSplit:0, ySplit:2 }] });
+        cols.forEach((c,i) => { ws.getColumn(i+1).width = c.w; });
+        ws.mergeCells(1,1,1,cols.length);
+        Object.assign(ws.getCell(1,1), { value:`${name.toUpperCase()}   |   Maxvolt One — Adoption Dashboard`, font:fnt(true,'FFFFFF',13), fill:fl(headerColor), alignment:ctr });
+        ws.getRow(1).height = 28;
+        ws.mergeCells(2,1,2,cols.length);
+        Object.assign(ws.getCell(2,1), { value:`Generated: ${new Date().toLocaleString('en-IN')}   |   Rows: ${rows.length}   |   Window: last ${days} days`, font:fnt(false,'FFFFFF',9), fill:fl(headerColor), alignment:{horizontal:'left',vertical:'middle'} });
+        ws.getRow(2).height = 18;
+        const headerRow = ws.getRow(3);
+        cols.forEach((c,i) => { Object.assign(headerRow.getCell(i+1), { value:c.h, font:fnt(true,'FFFFFF',9), fill:fl(headerColor), alignment:ctr, border:bd() }); });
+        headerRow.height = 20;
+        rows.forEach((r, ri) => {
+          const row = ws.getRow(4 + ri);
+          cols.forEach((c, ci) => { Object.assign(row.getCell(ci+1), { value: r[c.k] ?? '', font:fnt(false), alignment: c.ctr ? ctr : {horizontal:'left',vertical:'middle'}, border:bd() }); });
+        });
+        return ws;
+      };
+
+      // Sheet 1: Summary
+      const s = d.summary;
+      addSheet('Summary', '1A3C5E', [
+        { h:'Metric', k:'metric', w:32 }, { h:'Value', k:'value', w:16, ctr:true },
+      ], [
+        { metric:'Total Employees', value:s.total_employees },
+        { metric:'Activated', value:`${s.activated} (${s.activation_pct}%)` },
+        { metric:'Active Today', value:s.active_today },
+        { metric:'7-Day Active', value:`${s.active_7d} (${s.active_7d_pct}%)` },
+        { metric:'30-Day Active', value:`${s.active_30d} (${s.active_30d_pct}%)` },
+        { metric:'Avg. Minutes / Active User (30d)', value:s.avg_minutes_per_active_user },
+        { metric:'Dormant Users (14+ days inactive)', value:s.dormant_count },
+      ]);
+
+      // Sheet 2: Department Adoption
+      addSheet('Department Adoption', '1565C0', [
+        { h:'Department', k:'department', w:22 },
+        { h:'Eligible', k:'eligible', w:12, ctr:true },
+        { h:'Activated', k:'activated', w:12, ctr:true },
+        { h:'Activation %', k:'activation_pct', w:14, ctr:true },
+        { h:'7d Active', k:'active7d', w:12, ctr:true },
+        { h:'7d Active %', k:'active_pct', w:14, ctr:true },
+        { h:'Dormant', k:'dormant', w:12, ctr:true },
+      ], d.department_adoption);
+
+      // Sheet 3: Feature / Module Adoption
+      addSheet('Feature Adoption', '2E7D32', [
+        { h:'Module', k:'module', w:28 },
+        { h:'Unique Users', k:'unique_users', w:14, ctr:true },
+        { h:'Total Actions', k:'actions', w:14, ctr:true },
+      ], d.feature_adoption);
+
+      // Sheet 4: Dormant Watchlist
+      addSheet('Dormant Watchlist', '4527A0', [
+        { h:'Name', k:'name', w:26 },
+        { h:'Employee Code', k:'employee_code', w:16 },
+        { h:'Department', k:'department', w:20 },
+        { h:'Last Active', k:'last_active_fmt', w:20 },
+        { h:'Days Inactive', k:'days_inactive', w:14, ctr:true },
+      ], d.dormant_watchlist.map(r => ({ ...r, last_active_fmt: r.last_active ? new Date(r.last_active).toLocaleString('en-IN') : '' })));
+
+      // Sheet 5: Never Logged In
+      addSheet('Never Logged In', '4E342E', [
+        { h:'Name', k:'name', w:26 },
+        { h:'Employee Code', k:'employee_code', w:16 },
+        { h:'Department', k:'department', w:20 },
+      ], d.not_activated);
+
+      const buf = await wb.xlsx.writeBuffer();
+      return res.json({ success: true, base64: Buffer.from(buf).toString('base64'), filename: `Adoption_Details_${new Date().toISOString().slice(0,10)}.xlsx` });
     }
 
     case 'sendAdoptionReminder': {
