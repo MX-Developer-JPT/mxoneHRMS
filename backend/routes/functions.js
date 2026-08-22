@@ -10136,18 +10136,155 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       }
     }
 
+    // Generates the exact multi-sheet workbook importEmployeeData expects
+    // (Employee_Profile / Salary_Structure / Statutory_Info / Bank_Details /
+    // PF_Nominee / Insurance_Policies / Leave_Balances — see normKey() and
+    // parseSheet() above), prefilled with every current employee's data so
+    // HR can re-download, edit in place, and re-upload rather than
+    // reconstructing the sheet from scratch. The previous version of this
+    // case was a single-sheet CSV with a completely different, unrelated
+    // column set that importEmployeeData couldn't have read back, and it
+    // returned {file_url, csv} with no `base64` field — the frontend
+    // (ImportUploadStep.jsx) destructures `{ base64, filename }` from the
+    // response, so every click of "Download Template" was throwing on
+    // atob(undefined) before this fix.
     case 'generateEmployeeTemplate': {
-      const csv = [
-        'full_name,email,employee_code,department,designation,mobile,date_of_joining,date_of_birth,gender,ctc',
-        'John Doe,john.doe@company.com,EMP001,Engineering,Software Engineer,9876543210,2024-01-15,1995-06-20,Male,600000',
-        'Jane Smith,jane.smith@company.com,EMP002,HR,HR Executive,9876543211,2024-02-01,1997-03-10,Female,480000',
-      ].join('\n');
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
 
-      const { writeFileSync, mkdirSync, existsSync } = await import('fs');
-      const uploadsDir = process.env.NODE_ENV === 'production' ? '/app/uploads' : './backend/uploads';
-      if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true });
-      writeFileSync(`${uploadsDir}/employee_import_template.csv`, csv);
-      return res.json({ success:true, file_url:'/uploads/employee_import_template.csv', csv });
+      const getEmpRows = await all("SELECT data FROM entities WHERE type='Employee'");
+      const getEmps = getEmpRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.employee_code || '').localeCompare(b.employee_code || ''));
+      const getUserIds = getEmps.map(e => e.user_id).filter(Boolean);
+
+      const [getSalRows, getBankRows, getLeaveRows, getPolicyRows] = await Promise.all([
+        getUserIds.length ? all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND user_id = ANY($1) AND status='active'", [getUserIds]) : [],
+        getUserIds.length ? all("SELECT user_id,data FROM entities WHERE type='BankDetails' AND user_id = ANY($1)", [getUserIds]) : [],
+        getUserIds.length ? all("SELECT user_id,data FROM entities WHERE type='LeaveBalance' AND user_id = ANY($1)", [getUserIds]) : [],
+        all("SELECT data FROM entities WHERE type='LeavePolicy'"),
+      ]);
+      const getSalByUser = {};  getSalRows.forEach(r  => { if (!(r.user_id in getSalByUser))  getSalByUser[r.user_id]  = JSON.parse(r.data); });
+      const getBankByUser = {}; getBankRows.forEach(r => { if (!(r.user_id in getBankByUser)) getBankByUser[r.user_id] = JSON.parse(r.data); });
+      const getLeaveByUser = {}; getLeaveRows.forEach(r => { (getLeaveByUser[r.user_id] ||= []).push(JSON.parse(r.data)); });
+      const getPolicyById = {}; getPolicyRows.forEach(r => { const pl = JSON.parse(r.data); getPolicyById[pl.id] = pl; });
+
+      const ExcelJSt = await import('exceljs');
+      const wbT = new ExcelJSt.default.Workbook();
+      wbT.creator = 'Maxvolt One'; wbT.created = new Date();
+
+      const tHeaderFont = { name: 'Calibri', bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      const tHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } };
+      const addTSheet = (name, headers, rows) => {
+        const ws = wbT.addWorksheet(name);
+        const hdrRow = ws.addRow(headers);
+        hdrRow.eachCell(c => { c.font = tHeaderFont; c.fill = tHeaderFill; });
+        hdrRow.height = 18;
+        headers.forEach((h, i) => { ws.getColumn(i + 1).width = Math.max(16, h.length + 2); });
+        for (const r of rows) ws.addRow(r);
+        ws.views = [{ state: 'frozen', ySplit: 1 }];
+        return ws;
+      };
+
+      // ── Employee_Profile ──────────────────────────────────────────────
+      addTSheet('Employee_Profile', [
+        'Employee Code*', 'Full Name*', 'Official Email*', 'Department*', 'Designation*', 'Designation Tier',
+        'Date Of Joining*', 'Employee Status', 'Employee Confirmation Date', 'Date Of Birth', 'Gender', 'Phone',
+        'Blood Group', 'Employment Type', 'Father Spouse Name', 'Reporting Manager Email', 'Address',
+        'Is Attendance Exempt', 'Status',
+      ], getEmps.length ? getEmps.map(e => [
+        e.employee_code || '', e.display_name || e.full_name || '', e.official_email || '', e.department || '', e.designation || '',
+        e.designation_tier || '', e.date_of_joining || '', e.employee_status || '', e.employee_confirmation_date || '',
+        e.date_of_birth || '', e.gender || '', e.phone || '', e.blood_group || '', e.employment_type || '', e.father_spouse_name || '',
+        e.reporting_manager_email || '', e.address || '', e.is_attendance_exempt ? 'TRUE' : 'FALSE', e.status || 'active',
+      ]) : [[
+        'MVE00001', 'Jane Doe', 'jane.doe@company.com', 'Engineering', 'Software Engineer', 'L2',
+        '2024-01-15', 'probation', '', '1995-06-20', 'female', '9876543210',
+        'O+', 'full_time', '', 'manager@company.com', '',
+        'FALSE', 'active',
+      ]]);
+
+      // ── Salary_Structure ──────────────────────────────────────────────
+      addTSheet('Salary_Structure', [
+        'Employee ID*', 'Basic Salary', 'HRA', 'Conveyance', 'Car Fuel Maintenance', 'Health And Wellness',
+        'Hard Furnishing', 'Provident Fund', 'Medical Insurance', 'Admin Charge', 'VPP Deduction', 'CTC Bonus',
+        'ESI Employer', 'NPS Employee', 'Car Lease', 'TotalCTC', 'Bank Account', 'IFSC Code', 'Bank',
+        'PAN', 'UAN', 'PF Number', 'ESI Number', 'Joining Date',
+      ], getEmps.length ? getEmps.map(e => {
+        const sal = getSalByUser[e.user_id] || {};
+        return [
+          e.employee_code || '', sal.basic_monthly || '', sal.hra_monthly || '', sal.conveyance_monthly || '',
+          sal.car_fuel_maintenance || '', sal.health_and_wellness || '', sal.hard_furnishing || '', sal.pf_employee || '',
+          sal.medical_insurance || '', sal.admin_charge || '', sal.vpp_deduction || '', sal.ctc_bonus || '',
+          sal.esi_employer || '', sal.nps_employee || '', sal.car_lease || '', sal.total_ctc || '',
+          e.bank_account_number || '', e.ifsc_code || '', e.bank_name || '',
+          e.pan_number || '', e.uan_number || '', e.pf_account_number || '', e.esi_number || '',
+          sal.effective_from || e.date_of_joining || '',
+        ];
+      }) : [['MVE00001', 600000, 240000, 19200, '', '', '', 72000, '', '', '', '', '', '', '', 931200, '', '', '', '', '', '', '', '2024-01-15']]);
+
+      // ── Statutory_Info, Bank_Details, PF_Nominee, Insurance_Policies —
+      // all joined on personal_email at import time, so fall back to
+      // official_email when no personal email is on file (keeps the row
+      // joinable if re-imported as-is).
+      const getPersonalEmail = (e) => e.personal_email || e.official_email || '';
+
+      addTSheet('Statutory_Info', [
+        'Personal Email*', 'PAN Number', 'Aadhar Number', 'UAN Number', 'PF Account Number', 'ESI Number',
+      ], getEmps.length ? getEmps.map(e => [
+        getPersonalEmail(e), e.pan_number || '', e.aadhar_number || '', e.uan_number || '', e.pf_account_number || '', e.esi_number || '',
+      ]) : [['jane.doe@company.com', 'ABCDE1234F', '123456789012', '123456789012', 'PF1234567890', '1234567890']]);
+
+      addTSheet('Bank_Details', [
+        'Employee Code*', 'Account Number', 'IFSC Code', 'Bank Name', 'Branch',
+      ], getEmps.length ? getEmps.map(e => {
+        const bank = getBankByUser[e.user_id] || {};
+        return [
+          e.employee_code || '', bank.account_number || e.bank_account_number || '', bank.ifsc_code || e.ifsc_code || '',
+          bank.bank_name || e.bank_name || '', bank.branch || e.bank_branch || '',
+        ];
+      }) : [['MVE00001', '000123456789', 'HDFC0000001', 'HDFC Bank', 'Ghaziabad']]);
+
+      addTSheet('PF_Nominee', [
+        'Personal Email*', 'Nominee Name', 'Nominee Relationship', 'Nominee Date Of Birth', 'Share Percentage',
+      ], getEmps.length ? getEmps.filter(e => e.pf_nominee?.name).map(e => {
+        const nom = e.pf_nominee || {};
+        return [getPersonalEmail(e), nom.name || '', nom.relationship || '', nom.date_of_birth || '', nom.share_percentage ?? ''];
+      }) : [['jane.doe@company.com', 'John Doe', 'Spouse', '1996-04-12', 100]]);
+
+      addTSheet('Insurance_Policies', [
+        'Personal Email*', 'Insurance Type', 'Policy Number', 'Insurer Name', 'Sum Insured', 'Validity Date',
+        'Nominee Name', 'Nominee Relationship', 'Nominee Date Of Birth',
+      ], getEmps.length ? getEmps.filter(e => e.insurance?.policy_number || e.insurance?.insurance_type).map(e => {
+        const ins = e.insurance || {};
+        return [
+          getPersonalEmail(e), ins.insurance_type || '', ins.policy_number || '', ins.insurer_name || '',
+          ins.sum_insured ?? '', ins.validity_date || '', ins.nominee_name || '', ins.nominee_relationship || '', ins.nominee_date_of_birth || '',
+        ];
+      }) : [['jane.doe@company.com', 'Health', 'POL123456', 'Star Health', 500000, '2027-03-31', 'John Doe', 'Spouse', '1996-04-12']]);
+
+      // Informational only — importEmployeeData parses this sheet (for the
+      // preview's leave_records count) but never writes LeaveBalance rows
+      // from it, so this is a reference snapshot of current balances, not
+      // an editable-and-reimportable source of truth like the sheets above.
+      const leaveRowsOut = [];
+      getEmps.forEach(e => {
+        for (const lb of (getLeaveByUser[e.user_id] || [])) {
+          const policy = getPolicyById[lb.leave_policy_id];
+          leaveRowsOut.push([
+            getPersonalEmail(e), policy?.code || policy?.name || lb.leave_policy_id || '',
+            lb.total_allocated ?? '', lb.used ?? '', lb.available ?? '', lb.year ?? '',
+          ]);
+        }
+      });
+      addTSheet('Leave_Balances', [
+        'Personal Email*', 'Leave Type', 'Total Allocated', 'Taken', 'Available', 'Year',
+      ], leaveRowsOut.length ? leaveRowsOut : [['jane.doe@company.com', 'CL', 12, 2, 10, new Date().getFullYear()]]);
+
+      const bufT = await wbT.xlsx.writeBuffer();
+      return res.json({
+        success: true,
+        base64: Buffer.from(bufT).toString('base64'),
+        filename: `Employee_Import_Template_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        employees_included: getEmps.length,
+      });
     }
 
     case 'importEmployeeData': {
