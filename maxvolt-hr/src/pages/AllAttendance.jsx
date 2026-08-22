@@ -66,6 +66,7 @@ function getDisplayStatus(record) {
 
 const EMP_STATUS_CAL_COLORS = {
   present: 'bg-green-100 border-green-300 text-green-800',
+  late: 'bg-green-100 border-green-300 text-green-800',
   on_duty: 'bg-teal-100 border-teal-300 text-teal-800',
   work_from_home: 'bg-cyan-100 border-cyan-300 text-cyan-800',
   half_day: 'bg-yellow-100 border-yellow-300 text-yellow-800',
@@ -272,7 +273,7 @@ export default function AllAttendance() {
 
   const stats = useMemo(() => ({
     total: rows.length,
-    present: rows.filter(r => ['present','late','on_duty','work_from_home','short_attendance'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off'].includes(r.status))).length,
+    present: rows.filter(r => ['present','late','on_duty','work_from_home','short_attendance'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off','half_day'].includes(r.status))).length,
     absent: rows.filter(r => r.status === 'absent' || (!r.check_in_time && !r.status)).length,
     halfDay: rows.filter(r => r.status === 'half_day').length,
     leave: rows.filter(r => r.status === 'leave').length,
@@ -572,9 +573,9 @@ export default function AllAttendance() {
             const ds = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
             const dayRecs = calMonthRecords.filter(r => r.date?.slice(0,10) === ds);
             const recordedIds = new Set(dayRecs.map(r => r.user_id));
-            const present = dayRecs.filter(r => r.check_in_time || ['present','late','on_duty','work_from_home'].includes(r.status)).length;
             const leave = dayRecs.filter(r => r.status === 'leave').length;
             const halfDay = dayRecs.filter(r => r.status === 'half_day').length;
+            const present = dayRecs.filter(r => !['leave','half_day','absent'].includes(r.status) && (r.check_in_time || ['present','late','on_duty','work_from_home'].includes(r.status))).length;
             // Employees with no record on a day they weren't even scheduled to
             // work (a declared Holiday, or outside their Shift's working days —
             // typically Sunday) are on a paid day off, not absent.
@@ -659,7 +660,7 @@ export default function AllAttendance() {
                     <Building2 className="w-4 h-4 text-blue-500" />
                     {dept}
                     <span className="text-sm font-normal text-gray-500">({records.length})</span>
-                    <span className="text-xs text-green-600 font-medium">{records.filter(r => ['present','late','on_duty','work_from_home','short_attendance'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off'].includes(r.status))).length} present</span>
+                    <span className="text-xs text-green-600 font-medium">{records.filter(r => ['present','late','on_duty','work_from_home','short_attendance'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off','half_day'].includes(r.status))).length} present</span>
                     {records.filter(r => r.status === 'absent' || (!r.check_in_time && !r.status)).length > 0 && (
                       <span className="text-xs text-red-500 font-medium">{records.filter(r => r.status === 'absent' || (!r.check_in_time && !r.status)).length} absent</span>
                     )}
@@ -872,15 +873,21 @@ export default function AllAttendance() {
             }
             if (week.length) { while (week.length < 7) week.push(null); weeks.push(week); }
 
-            const statusLabel = { present: 'P', absent: 'A', half_day: 'HD', leave: 'L', holiday: 'H', week_off: 'W', on_duty: 'OD', work_from_home: 'WFH', short_attendance: 'SA' };
+            const statusLabel = { present: 'P', late: 'P', absent: 'A', half_day: 'HD', leave: 'L', holiday: 'H', week_off: 'W', on_duty: 'OD', work_from_home: 'WFH', short_attendance: 'SA' };
 
             const summary = { present: 0, absent: 0, leave: 0, halfDay: 0, wfh: 0, ot: 0 };
             records.forEach(r => {
               const s = getDisplayStatus(r);
-              if (['present','on_duty','short_attendance'].includes(s) || r.check_in_time) summary.present++;
-              else if (s === 'absent') summary.absent++;
+              // Explicit non-present statuses must be checked BEFORE the
+              // check_in_time fallback below — a half-day or auto-closed
+              // absent record still has check_in_time set, so testing
+              // check_in_time first (as this used to) silently reclassified
+              // every half-day/absent-with-a-punch record as "present",
+              // leaving the dedicated Absent/Half Day cards stuck at 0.
+              if (s === 'absent') summary.absent++;
               else if (s === 'leave') summary.leave++;
               else if (s === 'half_day') summary.halfDay++;
+              else if (['present','late','on_duty','short_attendance','work_from_home'].includes(s) || r.check_in_time) summary.present++;
               if (s === 'work_from_home') summary.wfh++;
               if ((r.overtime_minutes || 0) > 0) summary.ot++;
             });
