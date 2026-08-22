@@ -88,12 +88,26 @@ export default function OnboardingForm() {
   };
   const [mandatoryFiles, setMandatoryFiles] = useState({});
   const [optionalFiles, setOptionalFiles] = useState({});
+  // Documents already HR-verified during the pre-offer stage (see
+  // getCarriedOverDocuments) — keyed by onboarding doc key (aadhar,
+  // prev_payslips). Never re-requested from the candidate; rendered as a
+  // read-only "already submitted" card instead of an upload dropzone.
+  const [carriedOverDocs, setCarriedOverDocs] = useState({});
 
   useEffect(() => { loadData(); }, []);
 
   const loadData = async () => {
     const currentUser = await base44.auth.me();
     setUser(currentUser);
+
+    base44.functions.invoke('getCarriedOverDocuments', {}).then(res => {
+      const docs = res?.data?.documents || {};
+      setCarriedOverDocs({
+        ...(docs.aadhaar_card ? { aadhar: docs.aadhaar_card } : {}),
+        ...(docs.salary_slips ? { prev_payslips: docs.salary_slips } : {}),
+        ...(docs.bank_statements ? { bank_statements: docs.bank_statements } : {}),
+      });
+    }).catch(() => {});
 
     // Determine if name looks like an email prefix (no spaces, or contains dots/underscores)
     const existingName = currentUser.full_name || '';
@@ -177,7 +191,26 @@ export default function OnboardingForm() {
       bankDetails.account_number && bankDetails.ifsc_code && bankDetails.bank_name &&
       aadharNumber && panNumber &&
       isInsuranceValid() && esiValid &&
-      MANDATORY_DOCS.every(d => mandatoryFiles[d.key]);
+      MANDATORY_DOCS.every(d => mandatoryFiles[d.key] || carriedOverDocs[d.key]);
+  };
+
+  // Creates Document entities from a pre-offer-verified carry-over entry —
+  // handles both the single-file shape (aadhaar_card) and the multi-file
+  // shape (salary_slips/bank_statements), pre-marked 'verified' with a note
+  // that it was already checked during the offer stage, not left in
+  // 'pending_verification' like a genuinely new upload.
+  const createCarriedOverDocument = async (docKey, label, type) => {
+    const carried = carriedOverDocs[docKey];
+    if (!carried) return;
+    const files = Array.isArray(carried.files) ? carried.files : (carried.file_url ? [{ file_url: carried.file_url, filename: carried.filename }] : []);
+    for (const f of files) {
+      if (!f?.file_url) continue;
+      await base44.entities.Document.create({
+        user_id: user.id, document_type: type, document_name: label,
+        document_url: f.file_url, uploaded_by: user.id, status: 'verified',
+        notes: 'Carried over from offer-stage document verification — not re-verified at onboarding.',
+      });
+    }
   };
 
   const handleSubmit = async () => {
@@ -282,6 +315,10 @@ export default function OnboardingForm() {
           user_id: user.id, document_type: doc.type, document_name: doc.label,
           document_url: file_url, uploaded_by: user.id, status: 'pending_verification',
         });
+      } else if (carriedOverDocs[doc.key]) {
+        // Already HR-verified at the offer stage — carry it over as-is
+        // rather than asking the candidate to upload it again.
+        await createCarriedOverDocument(doc.key, doc.label, doc.type);
       }
     }
 
@@ -293,7 +330,17 @@ export default function OnboardingForm() {
           user_id: user.id, document_type: doc.type, document_name: doc.label,
           document_url: file_url, uploaded_by: user.id, status: 'pending_verification',
         });
+      } else if (carriedOverDocs[doc.key]) {
+        await createCarriedOverDocument(doc.key, doc.label, doc.type);
       }
+    }
+
+    // Bank statements were collected pre-offer but have no dedicated upload
+    // slot in this form (bank details here are entered as text fields) —
+    // still carry the actual statement files over so they're on file
+    // without a matching dropzone to click.
+    if (carriedOverDocs.bank_statements) {
+      await createCarriedOverDocument('bank_statements', "Bank Statements (Last 6 Months)", 'bank_statement');
     }
 
     // Only now — after every document upload above has actually succeeded —
@@ -802,18 +849,20 @@ export default function OnboardingForm() {
                 <h3 className="font-semibold text-red-700 mb-3">Mandatory Documents</h3>
                 <div className="space-y-3">
                   {MANDATORY_DOCS.map(doc => (
-                    <div key={doc.key} className="flex items-center gap-4 p-3 border rounded-lg bg-gray-50">
+                    <div key={doc.key} className={`flex items-center gap-4 p-3 border rounded-lg ${carriedOverDocs[doc.key] && !mandatoryFiles[doc.key] ? 'bg-blue-50 border-blue-200' : 'bg-gray-50'}`}>
                       <div className="flex-1">
                         <p className="font-medium text-sm">{doc.label} <span className="text-red-500">*</span></p>
-                        {mandatoryFiles[doc.key] && (
+                        {mandatoryFiles[doc.key] ? (
                           <p className="text-xs text-green-600 mt-1">✓ {mandatoryFiles[doc.key].name}</p>
-                        )}
+                        ) : carriedOverDocs[doc.key] ? (
+                          <p className="text-xs text-blue-700 mt-1">✓ Already Submitted — Verified at Offer Stage</p>
+                        ) : null}
                       </div>
                       <label className="cursor-pointer">
                         <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
                           onChange={e => { if (e.target.files[0]) setMandatoryFiles(p => ({ ...p, [doc.key]: e.target.files[0] })); }} />
                         <Button variant="outline" size="sm" asChild>
-                          <span><Upload className="w-4 h-4 mr-1" />{mandatoryFiles[doc.key] ? 'Change' : 'Upload'}</span>
+                          <span><Upload className="w-4 h-4 mr-1" />{mandatoryFiles[doc.key] ? 'Change' : carriedOverDocs[doc.key] ? 'Replace' : 'Upload'}</span>
                         </Button>
                       </label>
                     </div>
@@ -873,18 +922,20 @@ export default function OnboardingForm() {
                 <h3 className="font-semibold text-gray-600 mb-3">Optional Documents</h3>
                 <div className="space-y-3">
                   {OPTIONAL_DOCS.map(doc => (
-                    <div key={doc.key} className="flex items-center gap-4 p-3 border rounded-lg">
+                    <div key={doc.key} className={`flex items-center gap-4 p-3 border rounded-lg ${carriedOverDocs[doc.key] && !optionalFiles[doc.key] ? 'bg-blue-50 border-blue-200' : ''}`}>
                       <div className="flex-1">
                         <p className="font-medium text-sm">{doc.label}</p>
-                        {optionalFiles[doc.key] && (
+                        {optionalFiles[doc.key] ? (
                           <p className="text-xs text-green-600 mt-1">✓ {optionalFiles[doc.key].name}</p>
-                        )}
+                        ) : carriedOverDocs[doc.key] ? (
+                          <p className="text-xs text-blue-700 mt-1">✓ Already Submitted — Verified at Offer Stage</p>
+                        ) : null}
                       </div>
                       <label className="cursor-pointer">
                         <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
                           onChange={e => { if (e.target.files[0]) setOptionalFiles(p => ({ ...p, [doc.key]: e.target.files[0] })); }} />
                         <Button variant="outline" size="sm" asChild>
-                          <span><Upload className="w-4 h-4 mr-1" />{optionalFiles[doc.key] ? 'Change' : 'Upload'}</span>
+                          <span><Upload className="w-4 h-4 mr-1" />{optionalFiles[doc.key] ? 'Change' : carriedOverDocs[doc.key] ? 'Replace' : 'Upload'}</span>
                         </Button>
                       </label>
                     </div>

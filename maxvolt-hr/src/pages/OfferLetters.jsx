@@ -13,12 +13,12 @@ import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import {
   FileCheck, Mail, Phone, Loader2, Send, CalendarCheck, Copy, RefreshCw,
-  Search, Users, CheckCircle2, Clock, XCircle, FileText, Building2, MapPin, User, Printer,
-  ChevronDown, ChevronsUpDown, Check, Pencil,
+  Search, Users, CheckCircle2, Clock, XCircle, FileText, Building2, MapPin, User,
+  ChevronDown, ChevronsUpDown, Check, Pencil, ShieldCheck, Upload, AlertTriangle, Download,
 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
-import { openLetterheadPrintWindow } from '@/utils/letterhead';
+import { openPdfBlob } from '@/utils/letterhead';
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -74,6 +74,113 @@ const STATUS_CONFIG = {
   selected:       { label: 'Selected',     color: 'bg-blue-100 text-blue-800',      icon: FileCheck },
   interview_done: { label: 'Interviewed',  color: 'bg-purple-100 text-purple-800',  icon: Clock },
 };
+
+const CANDIDATE_DOC_TYPES = [
+  { key: 'aadhaar_card', label: 'Aadhaar Card' },
+  { key: 'salary_slips', label: "Last 3 Months' Salary Slips" },
+  { key: 'bank_statements', label: "Last 6 Months' Bank Statements" },
+];
+const DOC_STATUS_CONFIG = {
+  pending:    { label: 'Pending',    color: 'bg-gray-100 text-gray-600',   icon: Clock },
+  submitted:  { label: 'Submitted',  color: 'bg-blue-100 text-blue-700',   icon: FileText },
+  verified:   { label: 'Verified',   color: 'bg-green-100 text-green-700', icon: ShieldCheck },
+  rejected:   { label: 'Rejected',   color: 'bg-red-100 text-red-700',     icon: XCircle },
+};
+
+// HR-side per-candidate document review — verify or reject each of the 3
+// mandatory pre-offer documents (with a required reason on reject, which
+// re-emails the candidate the same submission link). The offer letter
+// cannot be sent until every one of these reads "Verified" — enforced here
+// visually (Send Offer stays disabled) and again, non-bypassably, on the
+// server inside sendOfferLetter.
+function CandidateDocReviewDialog({ candidate, onClose, onRefresh }) {
+  const [busyKey, setBusyKey] = useState(null);
+  const [rejectDialog, setRejectDialog] = useState(null); // { docKey, label }
+  const [rejectReason, setRejectReason] = useState('');
+  const docs = candidate.documents || {};
+
+  const act = async (docKey, action, reason) => {
+    setBusyKey(docKey);
+    try {
+      const res = await base44.functions.invoke('verifyCandidateDocument', {
+        candidate_id: candidate.id, doc_key: docKey, action, reason,
+      });
+      if (res.data?.success) {
+        toast.success(action === 'verified' ? 'Document verified' : 'Document rejected — candidate notified to resubmit');
+        onRefresh();
+      } else toast.error(res.data?.error || 'Action failed');
+    } catch (e) { toast.error(e.message); }
+    setBusyKey(null);
+    setRejectDialog(null);
+    setRejectReason('');
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-500">
+        Review each mandatory document for <strong>{candidate.full_name}</strong>. All three must be verified before the offer letter can be sent.
+      </p>
+      {CANDIDATE_DOC_TYPES.map(t => {
+        const d = docs[t.key] || { status: 'pending' };
+        const sc = DOC_STATUS_CONFIG[d.status] || DOC_STATUS_CONFIG.pending;
+        const StatusIcon = sc.icon;
+        const files = Array.isArray(d.files) ? d.files : (d.file_url ? [{ file_url: d.file_url, filename: d.filename }] : []);
+        return (
+          <div key={t.key} className="border rounded-lg p-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <p className="font-medium text-sm">{t.label}</p>
+                {files.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {files.map((f, i) => (
+                      <a key={i} href={f.file_url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">{f.filename || `File ${i + 1}`}</a>
+                    ))}
+                  </div>
+                ) : <p className="text-xs text-gray-400 mt-1">Not submitted yet</p>}
+                {d.status === 'rejected' && d.rejection_reason && (
+                  <p className="text-xs text-red-600 mt-1">Reason: {d.rejection_reason}</p>
+                )}
+                {d.status === 'verified' && d.verified_by_name && (
+                  <p className="text-xs text-gray-400 mt-1">Verified by {d.verified_by_name} · {d.verified_at ? safeDate(d.verified_at, 'dd MMM yyyy') : ''}</p>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <Badge className={sc.color + ' flex items-center gap-1'}><StatusIcon className="w-3 h-3" />{sc.label}</Badge>
+                {files.length > 0 && d.status !== 'verified' && (
+                  <>
+                    <Button size="sm" variant="outline" disabled={busyKey === t.key} onClick={() => act(t.key, 'verified')} className="border-green-300 text-green-700 hover:bg-green-50">
+                      {busyKey === t.key ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3 mr-1" />}Verify
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={busyKey === t.key} onClick={() => setRejectDialog({ docKey: t.key, label: t.label })} className="border-red-300 text-red-700 hover:bg-red-50">
+                      <XCircle className="w-3 h-3 mr-1" />Reject
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {rejectDialog && (
+        <div className="border border-red-200 bg-red-50 rounded-lg p-3 space-y-2">
+          <Label className="text-xs">Reason for rejecting "{rejectDialog.label}" *</Label>
+          <Textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} rows={2} placeholder="e.g. document is blurry, name mismatch..." />
+          <div className="flex gap-2 justify-end">
+            <Button size="sm" variant="ghost" onClick={() => { setRejectDialog(null); setRejectReason(''); }}>Cancel</Button>
+            <Button size="sm" disabled={!rejectReason.trim() || busyKey} onClick={() => act(rejectDialog.docKey, 'rejected', rejectReason.trim())} className="bg-red-600 hover:bg-red-700 text-white">
+              Confirm Rejection
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex justify-end pt-2">
+        <Button variant="outline" onClick={onClose}>Close</Button>
+      </div>
+    </div>
+  );
+}
 
 function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) {
   const [form, setForm] = useState({
@@ -143,19 +250,26 @@ function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) 
   const handlePreview = async () => {
     setPreviewing(true);
     try {
-      const res = await base44.functions.invoke('generateOfferLetter', {
+      // previewOfferLetterPdf returns the exact same PDF sendOfferLetter
+      // attaches (same buildOfferLetterPdf call, same computeOfferSalary
+      // math) and has no side effects — unlike the old generateOfferLetter,
+      // which silently flipped the candidate's status to "offered" on every
+      // preview click.
+      const res = await base44.functions.invoke('previewOfferLetterPdf', {
         candidate_id: candidate.id,
         joining_date: form.joining_date,
         designation: form.designation,
         department: form.department,
         location: form.location,
         reporting_to: form.reporting_to,
-        ctc: Number(form.annual_ctc),
+        annual_ctc: Number(form.annual_ctc),
         probation_months: Number(form.probation_months),
+        offer_valid_days: Number(form.offer_valid_days),
+        medical_contribution: Number(form.medical_contribution) || 0,
         salary_overrides: salaryOverrides,
       });
       if (res.data?.success) {
-        openLetterheadPrintWindow(`Offer Letter — ${candidate.full_name}`, res.data.html, '', false);
+        openPdfBlob(res.data.base64, res.data.filename);
       } else toast.error(res.data?.error || 'Preview failed');
     } catch (e) { toast.error(e.message); }
     setPreviewing(false);
@@ -343,74 +457,6 @@ function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) 
   );
 }
 
-const printConsentForm = (offer, emp) => {
-  const S  = `font-family:Arial,sans-serif;font-size:11px;line-height:1.8;color:#1a1a1a;`;
-  const par = `margin-bottom:10px;`;
-  const today = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
-  const joiningDate = offer.joining_date ? new Date(offer.joining_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }) : '_______________';
-  const candidateName = offer.full_name || offer.candidate_name || emp?.display_name || '_______________';
-  const fatherName    = offer.father_spouse_name || offer.father_name || emp?.father_spouse_name || '';
-  const designation   = offer.designation || offer.position_applied || '_______________';
-  const department    = offer.department || '_______________';
-  const ctc           = Number(offer.offer_ctc_annual || offer.expected_ctc || 0);
-  const location      = offer.location || offer.work_location || 'Ghaziabad, Uttar Pradesh';
-
-  const field = (label, val) => `
-<tr>
-  <td style="padding:5px 16px 5px 0;font-weight:bold;color:#444;white-space:nowrap;vertical-align:top;">${label}:</td>
-  <td style="padding:5px 0;border-bottom:1px solid #eee;min-width:180px;">${val || '_______________'}</td>
-</tr>`;
-
-  const docs = ['10th &amp; 12th Marksheets / Certificates', 'Graduation &amp; Post-Graduation Certificates (if applicable)', 'Previous Employment Experience Letter(s)', 'Last 3 Months Salary Slips', 'Aadhaar Card (front &amp; back)', 'PAN Card', 'Passport-size Photographs (3 copies)', 'Bank Account Details / Cancelled Cheque', 'Address Proof (Voter ID / Passport / Driving Licence)', 'Resignation Acceptance Letter from Previous Employer (if applicable)'];
-
-  const content = `<div style="${S}">
-<h2 style="text-align:center;font-size:14px;font-weight:bold;text-decoration:underline;margin-bottom:6px;">CONSENT FORM FOR BACKGROUND VERIFICATION SERVICES</h2>
-<p style="${par}margin-top:12px;">I, <strong>${candidateName}</strong>, Son / Daughter of <strong>${fatherName || '________________________'}</strong> hereby authorize MaxVolt Energy Industries Limited and its associates to conduct a comprehensive background verification based on the documentation and information provided by me.</p>
-<p style="${par}">I understand that the scope of the background verification check may include, but is not limited to: authentication of government documents, address verification, education qualification, past employment checks, reference checks, criminal records check, credit history and reference checks.</p>
-<p style="${par}">Further, I authorize any individual, company, firm, corporation, or public agency to divulge any and all information, verbal or written, pertaining to me as is required to complete the background verification report. I confirm that I will not hold MaxVolt Energy Industries Limited and its associates liable for any direct or indirect loss / damage, whether financial or non-financial, incurred by me due to the verifications conducted.</p>
-
-<hr style="margin:18px 0;border-color:#e0e0e0;">
-<h3 style="font-size:11px;font-weight:bold;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;">Candidate Joining Consent</h3>
-<p style="${par}">I, <strong>${candidateName}</strong>, hereby accept the offer of employment extended by Maxvolt Energy Industries Limited for the position of <strong>${designation}</strong> in <strong>${department}</strong> Department and confirm my intent to join on <strong>${joiningDate}</strong> at <strong>${location}</strong> with an Annual CTC of <strong>&#8377;${ctc ? ctc.toLocaleString('en-IN') : '_______________'}/-</strong>.</p>
-
-<table style="margin:12px 0 18px;font-size:11px;border-collapse:collapse;">
-  ${field('Full Name', candidateName)}
-  ${field('Email', offer.email || offer.candidate_email || '')}
-  ${field('Mobile', offer.phone || emp?.mobile || offer.candidate_phone || '')}
-  ${field('Father\'s / Spouse Name', fatherName)}
-  ${field('Aadhaar / PAN No.', '')}
-</table>
-
-<p style="${par}font-weight:bold;">Documents to be submitted on joining:</p>
-<ul style="margin:4px 0 16px 20px;line-height:1.9;font-size:10.5px;">
-  ${docs.map(d => `<li>${d}</li>`).join('')}
-</ul>
-
-<p style="${par}">I declare that all information provided in my application / resume is true and accurate. I have no outstanding commitments that would prevent me from joining on the agreed date, and I agree to abide by the company's policies and code of conduct.</p>
-
-<div style="display:flex;gap:60px;margin-top:36px;">
-  <div style="flex:1;">
-    <div style="height:48px;"></div>
-    <div style="border-top:1.5px solid #1a1a1a;padding-top:6px;">
-      <p style="font-size:11px;"><strong>${candidateName}</strong></p>
-      <p style="font-size:10px;color:#555;">Candidate Signature</p>
-      <p style="font-size:10px;color:#555;margin-top:4px;">Date: _______________</p>
-    </div>
-  </div>
-  <div style="flex:1;">
-    <div style="height:48px;"></div>
-    <div style="border-top:1.5px solid #1a1a1a;padding-top:6px;">
-      <p style="font-size:11px;"><strong>Maxvolt Energy Industries Limited</strong></p>
-      <p style="font-size:10px;color:#555;">Authorised Signatory – HR</p>
-      <p style="font-size:10px;color:#555;margin-top:4px;">Date: ${today}</p>
-    </div>
-  </div>
-</div>
-</div>`;
-
-  openLetterheadPrintWindow('Consent Form - ' + candidateName, content, '', false);
-};
-
 export default function OfferLetters() {
   const [candidates, setCandidates] = useState([]);
   const [departments, setDepartments] = useState([]);
@@ -418,7 +464,10 @@ export default function OfferLetters() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [dialogCandidate, setDialogCandidate] = useState(null);
+  const [docDialogCandidate, setDocDialogCandidate] = useState(null);
   const [invitingId, setInvitingId] = useState(null);
+  const [sendingDocReqId, setSendingDocReqId] = useState(null);
+  const [downloadingConsentId, setDownloadingConsentId] = useState(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -434,8 +483,9 @@ export default function OfferLetters() {
       );
       setCandidates(relevant);
       setDepartments(depts.map(d => d.name).filter(Boolean).sort());
-    } catch (e) { toast.error('Failed to load data'); }
-    setLoading(false);
+      return relevant;
+    } catch (e) { toast.error('Failed to load data'); return []; }
+    finally { setLoading(false); }
   };
 
   const handleMarkDeclined = async (c) => {
@@ -448,6 +498,34 @@ export default function OfferLetters() {
       toast.success('Offer marked as declined');
       loadData();
     } catch (e) { toast.error(e.message); }
+  };
+
+  const handleSendDocRequest = async (c) => {
+    setSendingDocReqId(c.id);
+    try {
+      const res = await base44.functions.invoke('sendCandidateDocRequest', { candidate_id: c.id });
+      if (res.data?.success) { toast.success('Document request sent to ' + c.email); loadData(); }
+      else toast.error(res.data?.error || 'Failed to send document request');
+    } catch (e) { toast.error(e.message); }
+    setSendingDocReqId(null);
+  };
+
+  const handleDownloadConsent = async (c) => {
+    setDownloadingConsentId(c.id);
+    try {
+      const res = await base44.functions.invoke('getCandidateConsentPdf', { candidate_id: c.id });
+      if (res.data?.success) {
+        if (res.data.url) {
+          // Anchor click, not window.open() — reliable even after an await
+          // (see openPdfBlob's comment in utils/letterhead.js for why).
+          const a = document.createElement('a'); a.href = res.data.url; a.target = '_blank'; a.rel = 'noopener';
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        } else {
+          openPdfBlob(res.data.base64, res.data.filename, { download: true });
+        }
+      } else toast.error(res.data?.error || 'Consent form not available');
+    } catch (e) { toast.error(e.message); }
+    setDownloadingConsentId(null);
   };
 
   const handleInvite = async (c) => {
@@ -640,11 +718,35 @@ export default function OfferLetters() {
 
                         {/* Right: Actions */}
                         <div className="flex flex-col gap-2 flex-shrink-0">
-                          {/* Send / Resend offer */}
+                          {/* Document collection — must happen, and be verified, before an offer can go out */}
+                          {c.status !== 'offered' && c.status !== 'offer_accepted' && c.status !== 'offer_declined' && c.status !== 'joined' && (
+                            !c.doc_collection_sent_at ? (
+                              <Button size="sm" variant="outline" onClick={() => handleSendDocRequest(c)} disabled={sendingDocReqId === c.id}
+                                className="border-indigo-300 text-indigo-700 hover:bg-indigo-50">
+                                {sendingDocReqId === c.id ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Upload className="w-3 h-3 mr-1" />}
+                                Send Document Request
+                              </Button>
+                            ) : (
+                              <Button size="sm" variant="outline" onClick={() => setDocDialogCandidate(c)}
+                                className={c.doc_collection_status === 'verified' ? 'border-green-300 text-green-700 hover:bg-green-50' : 'border-amber-300 text-amber-700 hover:bg-amber-50'}>
+                                {c.doc_collection_status === 'verified' ? <ShieldCheck className="w-3 h-3 mr-1" /> : <AlertTriangle className="w-3 h-3 mr-1" />}
+                                Review Documents
+                                {c.doc_collection_status && c.doc_collection_status !== 'verified' && (
+                                  <span className="ml-1 capitalize">({c.doc_collection_status.replace('_', ' ')})</span>
+                                )}
+                              </Button>
+                            )
+                          )}
+
+                          {/* Send / Resend offer — disabled until every mandatory
+                              document is verified; the server enforces this too
+                              (sendOfferLetter), this is just the visible reason why. */}
                           <Button
                             size="sm"
                             variant={c.status === 'offered' ? 'outline' : 'default'}
                             onClick={() => setDialogCandidate(c)}
+                            disabled={c.status !== 'offered' && c.doc_collection_status !== 'verified'}
+                            title={c.status !== 'offered' && c.doc_collection_status !== 'verified' ? 'All mandatory documents must be verified before sending the offer letter' : undefined}
                             className={c.status === 'offered' ? 'border-teal-300 text-teal-700 hover:bg-teal-50' : 'bg-green-600 hover:bg-green-700 text-white'}
                           >
                             {c.status === 'offered'
@@ -684,16 +786,19 @@ export default function OfferLetters() {
                             </Button>
                           )}
 
-                          {/* Print consent form for accepted/joined candidates */}
-                          {(c.status === 'offer_accepted' || c.status === 'joined') && (
+                          {/* Download the actual signed-and-submitted consent PDF
+                              (candidate details + digitally drawn signature +
+                              submission timestamp) for accepted/joined candidates */}
+                          {(c.status === 'offer_accepted' || c.status === 'joined') && c.consent_signed_at && (
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() => printConsentForm(c, null)}
+                              onClick={() => handleDownloadConsent(c)}
+                              disabled={downloadingConsentId === c.id}
                               className="border-blue-300 text-blue-700 hover:bg-blue-50"
                             >
-                              <Printer className="w-3 h-3 mr-1" />
-                              Print Consent Form
+                              {downloadingConsentId === c.id ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Download className="w-3 h-3 mr-1" />}
+                              Download Signed Consent
                             </Button>
                           )}
                         </div>
@@ -722,6 +827,29 @@ export default function OfferLetters() {
               departments={departments}
               onClose={() => setDialogCandidate(null)}
               onRefresh={loadData}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Document Review Dialog */}
+      <Dialog open={!!docDialogCandidate} onOpenChange={open => { if (!open) setDocDialogCandidate(null); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-indigo-600" />
+              Document Review — {docDialogCandidate?.full_name}
+            </DialogTitle>
+          </DialogHeader>
+          {docDialogCandidate && (
+            <CandidateDocReviewDialog
+              candidate={docDialogCandidate}
+              onClose={() => setDocDialogCandidate(null)}
+              onRefresh={async () => {
+                const fresh = await loadData();
+                const updated = fresh.find(c => c.id === docDialogCandidate.id);
+                if (updated) setDocDialogCandidate(updated);
+              }}
             />
           )}
         </DialogContent>

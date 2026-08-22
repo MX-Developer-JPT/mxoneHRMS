@@ -12,7 +12,7 @@ import { toast } from 'sonner';
 import { Plus, UserPlus, Briefcase, Building2, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy, ChevronsUpDown, Check, ClipboardCheck, ThumbsDown, LayoutGrid, List, Calendar, MessageSquare, Filter } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { openLetterheadPrintWindow } from '@/utils/letterhead';
+import { openPdfBlob } from '@/utils/letterhead';
 import CandidateDetailDialog from '../components/recruitment/CandidateDetailDialog';
 import CandidateScoreCard from '../components/recruitment/CandidateScoreCard';
 
@@ -85,18 +85,19 @@ function OfferLetterDialog({ candidate, onClose, onRefresh }) {
   const handlePreview = async () => {
     setPreviewing(true);
     try {
-      const res = await base44.functions.invoke('generateOfferLetter', {
+      const res = await base44.functions.invoke('previewOfferLetterPdf', {
         candidate_id: candidate.id,
         joining_date: form.joining_date,
         designation: form.designation,
         department: form.department,
         location: form.location,
         reporting_to: form.reporting_to,
-        ctc: Number(form.annual_ctc),
+        annual_ctc: Number(form.annual_ctc),
         probation_months: Number(form.probation_months),
+        offer_valid_days: Number(form.offer_valid_days),
       });
       if (res.data?.success) {
-        openLetterheadPrintWindow(`Offer Letter — ${candidate.full_name}`, res.data.html, '', false);
+        openPdfBlob(res.data.base64, res.data.filename);
       } else {
         toast.error(res.data?.error || 'Failed to generate preview');
       }

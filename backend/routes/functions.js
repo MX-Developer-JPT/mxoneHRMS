@@ -555,6 +555,374 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
   });
 }
 
+// ── Shared: canonical offer-letter salary math — single source of truth so
+// previewOfferLetterPdf and sendOfferLetter can never compute different
+// numbers for the same inputs. Deliberately kept as the existing 3-component
+// formula (Basic/HRA/Conveyance, ESI-on-basic) — not touched/extended.
+function computeOfferSalary(annualCTC, medicalContribution = 0, overrides = {}) {
+  const ctc = Number(annualCTC) || 0;
+  const monthlyCTC = ctc / 12;
+  const PF_CEIL = 15000, ESI_CEIL = 21000;
+  const autoBasicM = Math.round(monthlyCTC * 0.5);
+  const basicM  = overrides?.basic ? Number(overrides.basic) : autoBasicM;
+  const autoHraM = Math.round(basicM * 0.4);
+  const hraM    = overrides?.hra ? Number(overrides.hra) : autoHraM;
+  const pfBase       = Math.min(basicM, PF_CEIL);
+  const pfEmpM        = Math.round(pfBase * 0.12);
+  const pfEmployerM   = Math.round(pfBase * 0.13);
+  const isESI         = basicM <= ESI_CEIL;
+  const esiEmpM       = isESI ? Math.round(basicM * 0.0075) : 0;
+  const esiEmployerM  = isESI ? Math.round(basicM * 0.0325) : 0;
+  const medicalM      = Number(medicalContribution) || 0;
+  let bonusM, bonusType;
+  if (ctc <= 1000000) { bonusM = Math.round(basicM * 0.0833); bonusType = 'Bonus (8.33% of Basic)'; }
+  else { const vp = ctc <= 1500000 ? 0.05 : ctc <= 2000000 ? 0.08 : ctc <= 2500000 ? 0.12 : 0.15; bonusM = Math.round(ctc * vp / 12); bonusType = `VPP (${Math.round(vp * 100)}% of CTC)`; }
+  const contribM   = pfEmployerM + esiEmployerM + bonusM + medicalM;
+  const autoGrossM = Math.round(monthlyCTC - contribM);
+  const autoConvM  = Math.max(autoGrossM - basicM - hraM, 0);
+  const convM      = overrides?.conveyance ? Number(overrides.conveyance) : autoConvM;
+  const grossM     = basicM + hraM + convM;
+  const totalDedM  = pfEmpM + esiEmpM;
+  const netM       = grossM - totalDedM;
+
+  return {
+    monthly_ctc: Math.round(monthlyCTC), annual_ctc: ctc,
+    basic_monthly: basicM,        basic_annual: basicM * 12,
+    hra_monthly: hraM,            hra_annual: hraM * 12,
+    conveyance_monthly: convM,    conveyance_annual: convM * 12,
+    gross_monthly: grossM,        gross_annual: grossM * 12,
+    pf_emp_monthly: pfEmpM,       pf_emp_annual: pfEmpM * 12,
+    esi_emp_monthly: esiEmpM,     esi_emp_annual: esiEmpM * 12,
+    pf_employer_monthly: pfEmployerM,   pf_employer_annual: pfEmployerM * 12,
+    esi_employer_monthly: esiEmployerM, esi_employer_annual: esiEmployerM * 12,
+    medical_monthly: medicalM,    medical_annual: medicalM * 12,
+    bonus_monthly: bonusM,        bonus_annual: bonusM * 12, bonusType,
+    contribution_monthly: contribM, contribution_annual: contribM * 12,
+    net_monthly: netM,            net_annual: netM * 12,
+    isESI,
+    usedOverrides: { basic: !!overrides?.basic, hra: !!overrides?.hra, conveyance: !!overrides?.conveyance },
+  };
+}
+
+// ── Shared: the 3 mandatory pre-offer documents every candidate must submit
+// and have HR-verified before an offer letter can be sent. Stored as
+// `documents.<key>` on the Candidate row (candidates have no user account,
+// so this can't go through the standard Document entity — see the plan's
+// data-model note).
+const CANDIDATE_DOC_TYPES = [
+  { key: 'aadhaar_card',    label: 'Aadhaar Card',                    multi: false },
+  { key: 'salary_slips',    label: "Last 3 Months' Salary Slips",     multi: true },
+  { key: 'bank_statements', label: "Last 6 Months' Bank Statements",  multi: true },
+];
+function blankCandidateDocs() {
+  const out = {};
+  for (const t of CANDIDATE_DOC_TYPES) out[t.key] = t.multi ? { status: 'pending', files: [] } : { status: 'pending', file_url: null };
+  return out;
+}
+// Recomputed after every submit/verify/reject — 'verified' only once every
+// mandatory document type is individually verified.
+function deriveDocCollectionStatus(documents) {
+  const statuses = CANDIDATE_DOC_TYPES.map(t => documents?.[t.key]?.status || 'pending');
+  if (statuses.every(s => s === 'verified')) return 'verified';
+  if (statuses.some(s => s === 'rejected')) return 'rejected';
+  if (statuses.every(s => s === 'pending')) return 'pending';
+  return 'partially_submitted';
+}
+
+// ── Shared: builds the exact params buildOfferLetterPdf() needs from a
+// candidate row + the same override params sendOfferLetter accepts — shared
+// by previewOfferLetterPdf and sendOfferLetter so they can never diverge.
+function buildOfferPdfParams(cand, p) {
+  const { joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, medical_contribution = 0, salary_overrides } = p;
+  const name = cand.full_name || cand.name || 'Candidate';
+  const position = designation || cand.position_applied || 'Position';
+  const department_ = department || cand.department || 'Department';
+  const workLocation = location || 'Ghaziabad, Uttar Pradesh';
+  const ctc = Number(annual_ctc || cand.expected_ctc || 0);
+  const jDate = joining_date || '';
+  const validTill = new Date(Date.now() + (Number(offer_valid_days) || 7) * 24 * 60 * 60 * 1000);
+  const fmtDate = (d) => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+  const jDateStr = jDate ? fmtDate(jDate) : 'As mutually agreed';
+  const sal = computeOfferSalary(ctc, Number(medical_contribution) || 0, salary_overrides);
+  return {
+    name, position, department: department_, workLocation,
+    jDateStr, docDateStr: jDateStr,
+    todayStr: fmtDate(new Date()), validTillStr: fmtDate(validTill),
+    annualCTC: ctc, sal,
+    reportingTo: reporting_to || '', employeeCode: cand.employee_code || '',
+    _jDate: jDate, _validTill: validTill, _probation: probation_months,
+  };
+}
+
+// ── Shared: the real offer-letter PDF — one function, used by BOTH the
+// Preview button (previewOfferLetterPdf) and the actual send (sendOfferLetter)
+// so there is never a discrepancy between what HR previews and what the
+// candidate receives. Two pages, same letterhead chrome as every other
+// generated document (makeLetterheadChrome) — page 1 reproduces the
+// reference offer letter's clauses verbatim with dynamic fields substituted
+// in; page 2 is the boxed salary break-up table matching the reference's
+// page 2 layout exactly.
+function buildOfferLetterPdf(offer) {
+  return new Promise((resolve, reject) => {
+    try {
+      const logoDataUrl = getLogoDataUrl();
+      const stampDataUrl = getStampDataUrl();
+      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+      const {
+        name, position, department, workLocation, jDateStr, docDateStr, todayStr, validTillStr,
+        annualCTC, sal, reportingTo, employeeCode,
+      } = offer;
+      const L = (n) => Number(n || 0).toLocaleString('en-IN');
+      const GRAY = '#d9d9d9', BLUE = '#1d4ed8';
+      // Tight vertical padding — page 2 has ~16 table rows plus the header
+      // block, and needs to fit on one page like the reference does; the
+      // original [4,3,4,3] cell margin pushed it onto a 4th page, splitting
+      // the outer bordered box across a page break.
+      const cell   = (text, opts = {}) => ({ text: String(text ?? ''), fontSize: 9.5, margin: [4, 1.5, 4, 1.5], ...opts });
+      const hCell  = (text) => cell(text, { bold: true, fillColor: GRAY, alignment: 'right' });
+      const hLCell = (text) => cell(text, { bold: true, fillColor: GRAY });
+      const dRow   = (label, annual, monthly) => [cell(label), cell(L(annual), { alignment: 'right' }), cell(L(monthly), { alignment: 'right' })];
+      const sRow   = (label) => [{ text: label, bold: true, decoration: 'underline', colSpan: 3, fontSize: 9.5, margin: [4, 3, 4, 1.5] }, {}, {}];
+      const tRow   = (label, annual, monthly, color) => [
+        cell(label, { bold: true, fillColor: GRAY, ...(color ? { color } : {}) }),
+        cell(L(annual),  { bold: true, fillColor: GRAY, alignment: 'right', ...(color ? { color } : {}) }),
+        cell(L(monthly), { bold: true, fillColor: GRAY, alignment: 'right', ...(color ? { color } : {}) }),
+      ];
+      const dedRows = [
+        dRow('PF Employee Contribution (12% on Basic, max ₹15,000)', sal.pf_emp_annual, sal.pf_emp_monthly),
+        ...(sal.isESI ? [dRow('ESI Employee Contribution (0.75% on Basic)', sal.esi_emp_annual, sal.esi_emp_monthly)] : []),
+      ];
+      const totalDedAnnual  = sal.pf_emp_annual + sal.esi_emp_annual;
+      const totalDedMonthly = sal.pf_emp_monthly + sal.esi_emp_monthly;
+      const contRows = [
+        dRow('PF Employer Contribution', sal.pf_employer_annual, sal.pf_employer_monthly),
+        ...(sal.isESI ? [dRow('ESI Employer Contribution (3.25% on Basic)', sal.esi_employer_annual, sal.esi_employer_monthly)] : []),
+        ...(sal.medical_monthly > 0 ? [dRow('Medical Contribution', sal.medical_annual, sal.medical_monthly)] : []),
+        dRow(sal.bonusType || 'Bonus / VPP', sal.bonus_annual, sal.bonus_monthly),
+      ];
+
+      const docsList = [
+        'Proof of address & ID (Local & Permanent).',
+        'Five color recent passport-size photos (Not older than three months)',
+        'Photocopies of your 10th, 12th certificate & highest degree certificates,',
+        'Offer, Appointment & Increment Letters (Past 3)',
+        'Proof of work experience – Experience / relieving letter (Past 3)',
+        'Last 3 months salary slips & 6 months bank statement.',
+        'Proof of address & ID (Local & Permanent).',
+      ];
+
+      const docDef = {
+        pageSize: 'A4',
+        pageMargins: [50, 100, 50, 110],
+        header: headerFn,
+        footer: footerFn,
+        images: {
+          ...(logoDataUrl ? { logo: logoDataUrl } : {}),
+          ...(stampDataUrl ? { stamp: stampDataUrl } : {}),
+        },
+        defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.4 },
+        content: [
+          // ── PAGE 1 — letter body ──
+          { text: 'OFFER LETTER', bold: true, fontSize: 14, decoration: 'underline', alignment: 'center', margin: [0, 0, 0, 16] },
+          { text: todayStr, margin: [0, 0, 0, 14] },
+          { text: [{ text: 'Dear ' }, { text: name, bold: true }, { text: ',' }], margin: [0, 0, 0, 10] },
+          { text: 'Congratulation!!', bold: true, margin: [0, 0, 0, 8] },
+          { text: [{ text: 'Subject: ', bold: true }, { text: `Offer to the Post of ` }, { text: position, bold: true }, { text: '.' }], margin: [0, 0, 0, 10] },
+          { text: [
+            { text: 'We are pleased to offer you the position of ' }, { text: position, bold: true },
+            { text: ' in the ' }, { text: `${department} Department`, bold: true },
+            { text: ' in ' }, { text: workLocation, bold: true },
+            { text: ' location with MaxVolt Energy Industries Limited.' },
+          ], alignment: 'justify', margin: [0, 0, 0, 10] },
+          { text: 'We trust that your knowledge, skills and experience will be among our most valuable assets. As discussed, and agreed with you, you will be eligible to receive the following beginning on your joining date:', alignment: 'justify', margin: [0, 0, 0, 8] },
+          {
+            ul: [
+              [{ text: 'Salary: Annual CTC- INR ' }, { text: `${L(annualCTC)}/-`, bold: true }],
+              [{ text: 'Date of Joining: ' }, { text: jDateStr, bold: true }],
+              [{ text: 'Documentation: ' }, { text: docDateStr, bold: true }],
+            ],
+            margin: [10, 0, 0, 12],
+          },
+          { text: [
+            { text: 'This offer letter is valid until ' }, { text: validTillStr, bold: true },
+            { text: '. Please send a signed copy of this letter indicating your acceptance to join and a resignation acceptance letter from your current employer to our HR.' },
+          ], alignment: 'justify', margin: [0, 0, 0, 10] },
+          { text: `The joining formalities and induction will be carried out in our ${workLocation} office. Please submit the following documents to HR at the time of your joining:`, alignment: 'justify', margin: [0, 0, 0, 8] },
+          { ul: docsList, margin: [10, 0, 0, 16] },
+          { text: 'We look forward to welcome you aboard. Sincerely,', margin: [0, 0, 0, 18] },
+          { text: '(Confidential)', bold: true, alignment: 'center', margin: [0, 0, 0, 24] },
+          {
+            columns: [
+              {
+                width: '50%',
+                stack: [
+                  { text: 'For Maxvolt Energy Industries Limited', bold: true, margin: [0, 0, 0, 2] },
+                  ...(stampDataUrl ? [letterSealNode()] : [{ text: '', margin: [0, 34, 0, 0] }]),
+                  { text: 'Manager – HR_______________________', margin: [0, stampDataUrl ? 6 : 34, 0, 2] },
+                  { text: 'Date:', margin: [0, 0, 0, 2] },
+                  { text: 'Signature:' },
+                ],
+              },
+              {
+                width: '50%',
+                stack: [
+                  { text: 'I accept the offer on the terms and conditions as described in this letter', bold: true, margin: [0, 0, 0, 2] },
+                  { text: 'Employee Name__________________________', margin: [0, 34, 0, 2] },
+                  { text: 'Date:', margin: [0, 0, 0, 2] },
+                  { text: 'Signature:' },
+                ],
+              },
+            ],
+          },
+
+          // ── PAGE 2 — salary break-up ──
+          { text: '', pageBreak: 'before' },
+          {
+            table: {
+              widths: ['*'],
+              body: [[{
+                margin: [0, 0, 0, 0],
+                stack: [
+                  { text: 'M/S MAXVOLT ENERGY INDUSTRIES LIMITED', bold: true, alignment: 'center', fontSize: 11 },
+                  { text: 'E- 82, Bulandshahr Road Industrial Area', alignment: 'center', fontSize: 9 },
+                  { text: 'Ghaziabad, UP - 201009', alignment: 'center', fontSize: 9, margin: [0, 0, 0, 6] },
+                  {
+                    table: {
+                      widths: ['32%', '68%'],
+                      body: [
+                        [cell('Employee Name', { bold: true }), cell(name, { bold: true, alignment: 'right' })],
+                        [cell('Designation', { bold: true }), cell(position, { alignment: 'right' })],
+                        [cell('Department', { bold: true }), cell(department, { alignment: 'right' })],
+                        [cell('Date of Joining', { bold: true }), cell(jDateStr, { alignment: 'right' })],
+                      ],
+                    },
+                    layout: 'noBorders', margin: [0, 0, 0, 4],
+                  },
+                  { text: 'Break-up of various components of Salary', italics: true, decoration: 'underline', alignment: 'center', margin: [0, 2, 0, 6] },
+                  {
+                    table: {
+                      headerRows: 1,
+                      widths: ['*', 90, 90],
+                      body: [
+                        [hLCell('Salary Head'), hCell('Annually'), hCell('Monthly')],
+                        sRow('Earnings'),
+                        dRow('Basic (50% of CTC)', sal.basic_annual, sal.basic_monthly),
+                        dRow('HRA (40% of Basic)', sal.hra_annual, sal.hra_monthly),
+                        dRow('Conveyance Allowance (Balance)', sal.conveyance_annual, sal.conveyance_monthly),
+                        tRow('Total Gross Salary (A)', sal.gross_annual, sal.gross_monthly),
+                        sRow('Deduction'),
+                        ...dedRows,
+                        tRow('Total Deduction (B)', totalDedAnnual, totalDedMonthly),
+                        tRow('Total Net Salary (A-B)', sal.net_annual, sal.net_monthly),
+                        sRow('Contribution'),
+                        ...contRows,
+                        tRow('Total Contribution (C)', sal.contribution_annual, sal.contribution_monthly),
+                        tRow('Annually CTC (A+C)', annualCTC, annualCTC / 12, BLUE),
+                      ],
+                    },
+                    layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc' },
+                  },
+                ],
+                border: [true, true, true, true],
+              }]],
+            },
+            layout: { hLineWidth: () => 1, vLineWidth: () => 1, hLineColor: () => '#1a1a1a', vLineColor: () => '#1a1a1a' },
+            margin: [0, 0, 0, 10],
+          },
+          { text: '(Confidential)', bold: true, alignment: 'center' },
+        ],
+      };
+
+      const doc = getPdfPrinter().createPdfKitDocument(docDef);
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+      doc.end();
+    } catch (err) { reject(err); }
+  });
+}
+
+// ── Consent Form PDF — candidate details + the background-verification
+// consent prose (matches OfferAcceptPage.jsx's on-screen text) + the
+// candidate's drawn signature embedded as an image + submission timestamp.
+function buildConsentFormPdf(data) {
+  return new Promise((resolve, reject) => {
+    try {
+      const logoDataUrl = getLogoDataUrl();
+      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+      const { fullName, fatherName, mobile, dob, address, email, designation, department, joiningDate, submittedAtStr, signatureDataUrl } = data;
+      const images = { ...(logoDataUrl ? { logo: logoDataUrl } : {}) };
+      if (signatureDataUrl) images.signature = signatureDataUrl;
+
+      const field = (label, value) => [
+        { text: `${label}:`, bold: true, fontSize: 10, margin: [0, 3, 0, 3] },
+        { text: value || '—', fontSize: 10, margin: [0, 3, 0, 3], border: [false, false, false, true] },
+      ];
+
+      const docDef = {
+        pageSize: 'A4',
+        pageMargins: [50, 100, 50, 110],
+        header: headerFn,
+        footer: footerFn,
+        images,
+        defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.45 },
+        content: [
+          { text: 'CONSENT FORM FOR BACKGROUND VERIFICATION SERVICES', bold: true, fontSize: 13, decoration: 'underline', alignment: 'center', margin: [0, 0, 0, 16] },
+          { text: [
+            { text: 'I, ' }, { text: fullName, bold: true }, { text: ', Son/Daughter of ' }, { text: fatherName || '________________', bold: true },
+            { text: ', hereby authorize MaxVolt Energy Industries Limited and its associates to conduct a comprehensive background verification based on the documentation and information provided by me.' },
+          ], alignment: 'justify', margin: [0, 0, 0, 10] },
+          { text: 'I understand that the scope of the background verification check may include, but is not limited to: authentication of government documents, address verification, education qualification, past employment checks, reference checks, criminal records check, credit history and reference checks.', alignment: 'justify', margin: [0, 0, 0, 10] },
+          { text: 'Further, I authorize any individual, company, firm, corporation, or public agency to divulge any and all information, verbal or written, pertaining to me as is required to complete the background verification report. I confirm that I will not hold MaxVolt Energy Industries Limited and its associates liable for any direct or indirect loss/damage, whether financial or non-financial, incurred by me due to the verifications conducted.', alignment: 'justify', margin: [0, 0, 0, 16] },
+          { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 495, y2: 0, lineWidth: 0.5, lineColor: '#cccccc' }], margin: [0, 0, 0, 12] },
+          { text: 'CANDIDATE DETAILS', bold: true, fontSize: 10.5, decoration: 'underline', margin: [0, 0, 0, 8] },
+          {
+            table: {
+              widths: ['30%', '70%'],
+              body: [
+                field('Full Name', fullName),
+                field('Email', email),
+                field('Mobile', mobile),
+                field("Father's / Spouse's Name", fatherName),
+                field('Date of Birth', dob),
+                field('Address', address),
+                field('Designation', designation),
+                field('Department', department),
+                field('Date of Joining', joiningDate),
+              ],
+            },
+            layout: 'noBorders', margin: [0, 0, 0, 20],
+          },
+          { text: 'I declare that all information provided above is true and accurate to the best of my knowledge.', alignment: 'justify', margin: [0, 0, 0, 24] },
+          {
+            columns: [
+              {
+                width: '50%',
+                stack: [
+                  ...(signatureDataUrl ? [{ image: 'signature', width: 140, margin: [0, 0, 0, 4] }] : [{ text: '', margin: [0, 40, 0, 0] }]),
+                  { text: '_________________________', fontSize: 10 },
+                  { text: fullName, bold: true, fontSize: 10 },
+                  { text: 'Candidate Signature', fontSize: 9, color: '#555' },
+                  { text: `Submitted: ${submittedAtStr}`, fontSize: 9, color: '#555' },
+                ],
+              },
+              { width: '50%', text: '' },
+            ],
+          },
+        ],
+      };
+
+      const doc = getPdfPrinter().createPdfKitDocument(docDef);
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+      doc.end();
+    } catch (err) { reject(err); }
+  });
+}
+
 const router = Router();
 
 // In-memory store for long-running background jobs (biometric processing, bulk imports).
@@ -1127,6 +1495,24 @@ async function persistExitDocument({ userId, documentType, documentName, pdfBuff
   };
   await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, userId, JSON.stringify(docData)]);
   return { document_id: docId, document_url: docUrl, base64: pdfBuffer.toString('base64') };
+}
+
+// Same upload-to-storage logic as persistExitDocument, but for a document
+// generated BEFORE the person has a user account (a candidate) — no
+// `Document` entity is created (that type is gated by canAccessSensitive on
+// user_id ownership, which a candidate can never satisfy); the caller stores
+// the returned URL directly onto the Candidate row instead.
+async function persistCandidatePdf({ candidateId, documentName, pdfBuffer }) {
+  let docUrl = null;
+  try {
+    const { isBucketConfigured, buildKey, putToBucket, presignGet } = await import('../utils/bucket.js');
+    if (isBucketConfigured()) {
+      const key = buildKey(`candidate-documents/${candidateId}`, '.pdf');
+      await putToBucket(key, pdfBuffer, 'application/pdf');
+      docUrl = await presignGet(key, { expiresIn: 31536000, filename: `${documentName.replace(/\s+/g, '_')}.pdf` });
+    }
+  } catch (e) { console.warn('[persistCandidatePdf] bucket upload failed:', e.message); }
+  return { url: docUrl, base64: pdfBuffer.toString('base64') };
 }
 
 // Downloads a resume file and extracts its raw text — PDF via pdf-parse,
@@ -8143,84 +8529,208 @@ Return ONLY a valid JSON object (no markdown):
     }
 
     /* ── Offer Letter ────────────────────────────────── */
-    case 'generateOfferLetter': {
-      const { candidate_id, joining_date, designation, department, ctc, probation_months = 6, reporting_to, location, salary_overrides } = p;
-      if (!candidate_id) return res.json({ success:false, error:'candidate_id required' });
+    // Preview — returns the EXACT same PDF sendOfferLetter attaches, with NO
+    // side effects (no status change, no token generated). This is what
+    // fixes the Preview button: the old generateOfferLetter case both
+    // mutated the candidate's status on every click AND returned HTML opened
+    // via window.open() after an await, which most browsers silently
+    // popup-block since it's no longer inside the click's user-gesture
+    // window. The frontend now decodes this base64 into a Blob and opens it
+    // via an <a> click instead (see ExitDetailPanel.jsx's downloadPdf for
+    // the established pattern).
+    /* ── Pre-offer document collection (candidate has no account — token-
+       gated public cases, same pattern as offer_accept_token below) ───── */
 
-      const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
-      if (!cRow) return res.json({ success:false, error:'Candidate not found' });
+    case 'sendCandidateDocRequest': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { candidate_id } = p;
+      if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
+      const cRow = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+      if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
       const cand = JSON.parse(cRow.data);
+      if (!cand.email) return res.json({ success: false, error: 'Candidate has no email address' });
 
-      const name          = cand.full_name || cand.name || 'Candidate';
-      const position      = designation   || cand.position_applied || 'Position';
-      const dept          = department    || cand.department        || 'Department';
-      const jDate         = joining_date  || '';
-      const annualCTC     = ctc           || cand.expected_ctc || 0;
-      const monthlyCTC    = annualCTC > 0 ? Math.round(annualCTC / 12) : 0;
-      const probation     = probation_months;
-      const reportingTo   = reporting_to || 'Reporting Manager';
-      const workLocation  = location     || 'Ghaziabad, Uttar Pradesh';
-      const todayDate     = new Date().toLocaleDateString('en-IN', { day:'2-digit', month:'long', year:'numeric' });
-      const offerRef      = `MEIL/HR/OL/${new Date().getFullYear()}/${String(Math.floor(Math.random()*9000)+1000)}`;
+      const token = uuidv4();
+      const appBase = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
+      const link = `${appBase}/candidate-documents/${token}`;
+      const now = new Date().toISOString();
+      const updated = {
+        ...cand,
+        doc_collection_token: token,
+        doc_collection_sent_at: now,
+        doc_collection_status: 'pending',
+        documents: blankCandidateDocs(),
+        doc_audit_log: [...(cand.doc_audit_log || []), { action: 'requested', by: cu.id, by_name: cu.full_name, at: now }],
+      };
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(updated), cRow.id]);
 
-      const offerValidTill = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
-      const jDateStr2 = jDate ? new Date(jDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }) : 'As mutually agreed';
-
-      const letterHtml = `
-<div style="font-family:Arial,sans-serif;font-size:13.5px;color:#111;line-height:1.75;max-width:700px;">
-  <p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 22px;">OFFER LETTER</p>
-  <p style="margin:0 0 20px;">${todayDate}</p>
-  <p style="margin:0 0 12px;">Dear <strong>${name}</strong>,</p>
-  <p style="font-weight:bold;margin:0 0 10px;">Congratulation!!</p>
-  <p style="margin:0 0 12px;"><strong>Subject:</strong> Offer to the Post of <strong>${position}</strong>.</p>
-  <p style="margin:0 0 12px;text-align:justify;">We are pleased to offer you the position of <strong>${position}</strong> in the <strong>${dept} Department</strong> in <strong>${workLocation}</strong> location with MaxVolt Energy Industries Limited.</p>
-  <p style="margin:0 0 12px;text-align:justify;">We trust that your knowledge, skills and experience will be among our most valuable assets. As discussed, and agreed with you, you will be eligible to receive the following beginning on your joining date:</p>
-  <ul style="margin:0 0 14px 24px;line-height:1.85;">
-    <li>Salary: Annual CTC- INR ${annualCTC.toLocaleString('en-IN')} /-</li>
-    <li>Date of Joining: ${jDateStr2}</li>
-    <li>Documentation: ${jDateStr2}</li>
-  </ul>
-  <p style="margin:0 0 12px;text-align:justify;">This offer letter is valid until <strong>${offerValidTill}</strong>. Please send a signed copy of this letter indicating your acceptance to join and a resignation acceptance letter from your current employer to our HR.</p>
-  <p style="margin:0 0 12px;text-align:justify;">The joining formalities and induction will be carried out in our ${workLocation} office. Please submit the following documents to HR at the time of your joining:</p>
-  <ul style="margin:0 0 14px 24px;line-height:1.85;">
-    <li>Proof of address &amp; ID (Local &amp; Permanent).</li>
-    <li>Five color recent passport-size photos (Not older than three months)</li>
-    <li>Photocopies of your 10th,12th certificate &amp; highest degree certificates,</li>
-    <li>Offer, Appointment &amp; Increment Letters (Past3)</li>
-    <li>Proof of work experience &ndash; Experience / relieving letter (Past3)</li>
-    <li>Last 3 months salary slips &amp; 6 months bank statement.</li>
-    <li>Proof of address &amp; ID (Local &amp; Permanent).</li>
-  </ul>
-  <p style="margin:0 0 24px;">We look forward to welcome you aboard. Sincerely,</p>
-  <p style="text-align:center;font-weight:bold;margin:0 0 24px;">(Confidential)</p>
-  <table style="width:100%;border-collapse:collapse;">
-    <tr>
-      <td style="width:50%;vertical-align:top;padding-right:20px;">
-        <p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
-        ${getStampDataUrl()
-          ? `<img src="${getStampDataUrl()}" style="width:84px;margin:6px 0 -66px 4px;opacity:0.92;" alt="Company Seal" />`
-          : `<div style="width:84px;height:84px;border:2.5px double #1d4ed8;border-radius:50%;margin:10px 0 -78px 4px;"></div>`}
-        <p style="margin:34px 0 2px;">Manager &ndash; HR_______________________</p>
-        <p style="margin:0 0 2px;">Date:</p>
-        <p style="margin:0;">Signature:</p>
-      </td>
-      <td style="width:50%;vertical-align:top;">
-        <p style="margin:0 0 2px;font-weight:bold;">I accept the offer on the terms and conditions as described in this letter</p>
-        <p style="margin:34px 0 2px;">Employee Name__________________________</p>
-        <p style="margin:0 0 2px;">Date:</p>
-        <p style="margin:0;">Signature:</p>
-      </td>
-    </tr>
-  </table>
-</div>`;
-
-      // Update candidate status to 'offered'
+      let emailError = null;
       try {
-        const updated = { ...cand, status: 'offered', offer_letter_date: new Date().toISOString(), offer_ctc: annualCTC, joining_date };
-        await run("UPDATE entities SET status='offered', data=$1 WHERE id=$2", [JSON.stringify(updated), candidate_id]);
-      } catch {}
+        await sendEmail({
+          to: cand.email,
+          subject: `Document Submission Required — ${cand.full_name || 'Candidate'} at Maxvolt Energy Industries Limited`,
+          html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
+            <div style="background:#ea580c;color:#fff;padding:20px;border-radius:10px 10px 0 0;text-align:center;">
+              <h2 style="margin:0;">Document Submission Required</h2>
+            </div>
+            <div style="padding:24px;border:1px solid #e5e7eb;border-top:none;">
+              <p>Dear <strong>${cand.full_name || 'Candidate'}</strong>,</p>
+              <p>Before we can proceed with your offer letter for <strong>${cand.position_applied || 'the role you applied for'}</strong>, please submit the following via the secure link below:</p>
+              <ul>
+                <li>Last 3 months' salary slips</li>
+                <li>Last 6 months' bank statements</li>
+                <li>Aadhaar Card</li>
+                <li>Your expected/confirmed date of joining</li>
+                <li>Whether you currently hold any other offer</li>
+              </ul>
+              <div style="text-align:center;margin:24px 0;">
+                <a href="${link}" style="display:inline-block;background:#ea580c;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">Submit Documents</a>
+              </div>
+              <p style="font-size:12px;color:#888;">This link is unique to you — please do not share it.</p>
+            </div>
+          </div>`,
+        });
+      } catch (e) { emailError = e.message; }
 
-      return res.json({ success:true, html: letterHtml, ref: offerRef });
+      return res.json({ success: true, link, email_error: emailError });
+    }
+
+    case 'getCandidateDocPortal': {
+      const { token } = p;
+      if (!token) return res.json({ success: false, error: 'Token required' });
+      const row = await one("SELECT data FROM entities WHERE type='Candidate' AND data::jsonb->>'doc_collection_token'=$1", [token]);
+      if (!row) return res.json({ success: false, error: 'Link not found or invalid.' });
+      const cand = JSON.parse(row.data);
+      return res.json({ success: true, candidate: {
+        full_name: cand.full_name, position_applied: cand.position_applied, department: cand.department,
+        documents: cand.documents || blankCandidateDocs(),
+        doc_collection_status: cand.doc_collection_status || 'pending',
+        expected_doj: cand.expected_doj || '',
+        has_other_offer: cand.has_other_offer || false,
+        other_offer_details: cand.other_offer_details || {},
+      }});
+    }
+
+    case 'submitCandidateDocuments': {
+      const { token, documents, expected_doj, has_other_offer, other_offer_details } = p;
+      if (!token) return res.json({ success: false, error: 'Token required' });
+      const row = await one("SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'doc_collection_token'=$1", [token]);
+      if (!row) return res.json({ success: false, error: 'Link not found or invalid.' });
+      const cand = JSON.parse(row.data);
+
+      const now = new Date().toISOString();
+      const nextDocs = { ...(cand.documents || blankCandidateDocs()) };
+      for (const t of CANDIDATE_DOC_TYPES) {
+        const incoming = documents?.[t.key];
+        if (!incoming) continue;
+        // A previously-rejected document goes back to 'submitted' on
+        // resubmission — never silently stays 'rejected'.
+        if (t.multi) {
+          const files = Array.isArray(incoming.files) ? incoming.files.filter(f => f?.file_url) : [];
+          if (!files.length) continue;
+          nextDocs[t.key] = { ...nextDocs[t.key], files, status: 'submitted', submitted_at: now, rejection_reason: null };
+        } else {
+          if (!incoming.file_url) continue;
+          nextDocs[t.key] = { ...nextDocs[t.key], file_url: incoming.file_url, filename: incoming.filename || '', status: 'submitted', submitted_at: now, rejection_reason: null };
+        }
+      }
+
+      const updated = {
+        ...cand,
+        documents: nextDocs,
+        doc_collection_status: deriveDocCollectionStatus(nextDocs),
+        expected_doj: expected_doj || cand.expected_doj || '',
+        has_other_offer: !!has_other_offer,
+        other_offer_details: has_other_offer ? (other_offer_details || {}) : null,
+        doc_audit_log: [...(cand.doc_audit_log || []), { action: 'submitted', by: 'candidate', by_name: cand.full_name, at: now }],
+      };
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(updated), row.id]);
+
+      const hrEmail = process.env.HR_EMAIL || 'hr@maxvoltenergy.com';
+      await sendEmail({
+        to: hrEmail,
+        subject: `Documents Submitted: ${cand.full_name || 'Candidate'}`,
+        html: `<p><strong>${cand.full_name || 'A candidate'}</strong> has submitted pre-offer documents for review. Please verify them in Offer Letters → Document Review.</p>`,
+      }).catch(() => {});
+
+      return res.json({ success: true, doc_collection_status: updated.doc_collection_status });
+    }
+
+    case 'getCandidateDocStatusList': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const rows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'doc_collection_token' IS NOT NULL");
+      const list = rows.map(r => {
+        const c = JSON.parse(r.data);
+        return {
+          id: r.id, full_name: c.full_name, email: c.email, position_applied: c.position_applied,
+          documents: c.documents || {}, doc_collection_status: c.doc_collection_status || 'pending',
+          expected_doj: c.expected_doj, has_other_offer: c.has_other_offer, other_offer_details: c.other_offer_details,
+          doc_collection_sent_at: c.doc_collection_sent_at, doc_audit_log: c.doc_audit_log || [],
+        };
+      });
+      return res.json({ success: true, candidates: list });
+    }
+
+    case 'verifyCandidateDocument': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { candidate_id, doc_key, action, reason } = p; // action: 'verified' | 'rejected'
+      if (!candidate_id || !doc_key || !['verified', 'rejected'].includes(action)) {
+        return res.json({ success: false, error: 'candidate_id, doc_key, and a valid action are required' });
+      }
+      if (!CANDIDATE_DOC_TYPES.some(t => t.key === doc_key)) return res.json({ success: false, error: 'Unknown document type' });
+      if (action === 'rejected' && !reason) return res.json({ success: false, error: 'A rejection reason is required' });
+
+      const row = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+      if (!row) return res.json({ success: false, error: 'Candidate not found' });
+      const cand = JSON.parse(row.data);
+      const docs = { ...(cand.documents || blankCandidateDocs()) };
+      const now = new Date().toISOString();
+      docs[doc_key] = {
+        ...docs[doc_key],
+        status: action,
+        verified_at: now, verified_by: cu.id, verified_by_name: cu.full_name,
+        rejection_reason: action === 'rejected' ? reason : null,
+      };
+      const updated = {
+        ...cand,
+        documents: docs,
+        doc_collection_status: deriveDocCollectionStatus(docs),
+        doc_audit_log: [...(cand.doc_audit_log || []), { action, doc_key, by: cu.id, by_name: cu.full_name, at: now, reason: reason || null }],
+      };
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(updated), row.id]);
+
+      if (action === 'rejected' && cand.email && cand.doc_collection_token) {
+        const appBase = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
+        const link = `${appBase}/candidate-documents/${cand.doc_collection_token}`;
+        const docLabel = CANDIDATE_DOC_TYPES.find(t => t.key === doc_key)?.label || doc_key;
+        await sendEmail({
+          to: cand.email,
+          subject: `Action Required: Resubmit ${docLabel}`,
+          html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
+            <p>Dear ${cand.full_name || 'Candidate'},</p>
+            <p>Your submitted <strong>${docLabel}</strong> could not be verified: <em>${reason}</em></p>
+            <p>Please resubmit via your document submission link:</p>
+            <div style="text-align:center;margin:20px 0;"><a href="${link}" style="display:inline-block;background:#ea580c;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">Resubmit Document</a></div>
+          </div>`,
+        }).catch(() => {});
+      }
+
+      return res.json({ success: true, doc_collection_status: updated.doc_collection_status });
+    }
+
+    case 'previewOfferLetterPdf': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { candidate_id } = p;
+      if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
+      const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+      if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
+      const cand = JSON.parse(cRow.data);
+      try {
+        const pdfBuffer = await buildOfferLetterPdf(buildOfferPdfParams(cand, p));
+        return res.json({ success: true, base64: pdfBuffer.toString('base64'), filename: `Offer_Letter_${(cand.full_name || 'Candidate').replace(/\s+/g, '_')}.pdf` });
+      } catch (e) {
+        return res.json({ success: false, error: 'Failed to generate preview: ' + e.message });
+      }
     }
 
     /* ── Send Offer Letter (email to candidate) ─────── */
@@ -8234,63 +8744,27 @@ Return ONLY a valid JSON object (no markdown):
 
       if (!cand.email) return res.json({ success: false, error: 'Candidate has no email address' });
 
+      // Hard gate — server-side, not just a disabled button on the frontend
+      // — the offer letter must not go out until every mandatory pre-offer
+      // document (Aadhaar, salary slips, bank statements) has actually been
+      // HR-verified, not merely uploaded.
+      if (cand.doc_collection_status !== 'verified') {
+        return res.json({ success: false, error: 'All mandatory documents must be verified before the offer letter can be sent.' });
+      }
+
       const name       = cand.full_name || cand.name || 'Candidate';
       const pos        = designation || cand.position_applied || 'Position';
       const dept       = department || cand.department || 'Department';
       const loc        = location || 'Ghaziabad, Uttar Pradesh';
-      const ctc        = annual_ctc || cand.expected_ctc || 0;
-      const monthlyCTC = ctc / 12; // keep float for accuracy
+      const ctc        = Number(annual_ctc || cand.expected_ctc || 0);
       const jDate      = joining_date || '';
       const probation  = probation_months;
       const validTill  = new Date(Date.now() + (offer_valid_days || 7) * 24 * 60 * 60 * 1000);
 
-      // Salary breakdown — PF for ALL employees; ESI when basic ≤ ₹21,000 on basic salary
-      const PF_CEIL = 15000, ESI_CEIL = 21000;
-      const autoBasicM = Math.round(monthlyCTC * 0.5);
-      const basicM  = salary_overrides?.basic      ? Number(salary_overrides.basic)      : autoBasicM;
-      // HRA and Conveyance must derive from the ACTUAL basic in use (basicM),
-      // not the un-overridden autoBasicM — otherwise, the moment any single
-      // component is overridden, these auto-fallbacks stay pinned to the old
-      // basic and the line items stop summing to the letter's own total.
-      const autoHraM  = Math.round(basicM * 0.4);
-      const hraM    = salary_overrides?.hra        ? Number(salary_overrides.hra)        : autoHraM;
-      const pfBase       = Math.min(basicM, PF_CEIL);
-      const pfEmpM       = Math.round(pfBase * 0.12);
-      const pfEmployerM  = Math.round(pfBase * 0.13);
-      const isESI        = basicM <= ESI_CEIL;
-      const esiEmpM      = isESI ? Math.round(basicM * 0.0075) : 0;
-      const esiEmployerM = isESI ? Math.round(basicM * 0.0325) : 0;
-      const medicalM     = Number(medical_contribution) || 0;
-      let bonusM, bonusType;
-      if (ctc <= 1000000) { bonusM = Math.round(basicM * 0.0833); bonusType = 'Bonus (8.33% of Basic)'; }
-      else { const vp = ctc <= 1500000 ? 0.05 : ctc <= 2000000 ? 0.08 : ctc <= 2500000 ? 0.12 : 0.15; bonusM = Math.round(ctc * vp / 12); bonusType = `VPP (${Math.round(vp*100)}% of CTC)`; }
-      const contribM     = pfEmployerM + esiEmployerM + bonusM + medicalM;
-      const autoGrossM   = Math.round(monthlyCTC - contribM);
-      const autoConvM    = Math.max(autoGrossM - basicM - hraM, 0);
-      const convM        = salary_overrides?.conveyance ? Number(salary_overrides.conveyance) : autoConvM;
-      // Always the literal sum of the three earnings rows actually printed
-      // below — guarantees the letter's Earnings section and its own
-      // "Total Gross Salary" row can never disagree, override or not.
-      const grossM       = basicM + hraM + convM;
-      const totalDedM    = pfEmpM + esiEmpM;
-      const netM         = grossM - totalDedM;
-
-      const sal = {
-        monthly_ctc: Math.round(monthlyCTC), annual_ctc: ctc,
-        basic_monthly: basicM,        basic_annual: basicM * 12,
-        hra_monthly: hraM,            hra_annual: hraM * 12,
-        conveyance_monthly: convM,    conveyance_annual: convM * 12,
-        gross_monthly: grossM,        gross_annual: grossM * 12,
-        pf_emp_monthly: pfEmpM,       pf_emp_annual: pfEmpM * 12,
-        esi_emp_monthly: esiEmpM,     esi_emp_annual: esiEmpM * 12,
-        pf_employer_monthly: pfEmployerM,   pf_employer_annual: pfEmployerM * 12,
-        esi_employer_monthly: esiEmployerM, esi_employer_annual: esiEmployerM * 12,
-        medical_monthly: medicalM,    medical_annual: medicalM * 12,
-        bonus_monthly: bonusM,        bonus_annual: bonusM * 12, bonusType,
-        contribution_monthly: contribM, contribution_annual: contribM * 12,
-        net_monthly: netM,            net_annual: netM * 12,
-        isESI,
-      };
+      // Canonical salary math — same helper previewOfferLetterPdf uses, so
+      // the two can never compute different numbers for the same inputs.
+      const sal = computeOfferSalary(ctc, medical_contribution, salary_overrides);
+      const isESI = sal.isESI, medicalM = sal.medical_monthly, bonusType = sal.bonusType;
 
       const offerRef    = `MEIL/HR/OL/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
       const acceptToken = uuidv4();
@@ -8413,22 +8887,15 @@ Return ONLY a valid JSON object (no markdown):
       };
       await run("UPDATE entities SET status='offered', data=$1 WHERE id=$2", [JSON.stringify(offerData), candidate_id]);
 
-      // Generate salary structure PDF attachment
+      // Generate the real offer letter PDF (same buildOfferLetterPdf that
+      // previewOfferLetterPdf uses — guarantees what HR previewed is
+      // literally what the candidate receives) and attach it instead of a
+      // standalone salary-structure-only PDF.
       let pdfBuffer = null;
       try {
-        const jDateFmt = jDate ? new Date(jDate).toLocaleDateString('en-IN', { day:'2-digit', month:'2-digit', year:'numeric' }) : '';
-        pdfBuffer = await buildSalaryStructurePdf({
-          candidateName: name,
-          employeeCode:  cand.employee_code || '',
-          designation:   pos,
-          department:    dept,
-          dateOfJoining: jDateFmt,
-          effectiveFrom: todayStr,
-          annualCTC:     ctc,
-          sal,
-        });
+        pdfBuffer = await buildOfferLetterPdf(buildOfferPdfParams(cand, p));
       } catch (pdfErr) {
-        console.error('[pdf] salary structure generation failed:', pdfErr.message);
+        console.error('[pdf] offer letter generation failed:', pdfErr.message);
       }
 
       let emailError = null;
@@ -8438,7 +8905,7 @@ Return ONLY a valid JSON object (no markdown):
           subject: `Offer Letter – ${pos} at Maxvolt Energy Industries Limited`,
           html:    emailHtml,
           attachments: pdfBuffer ? [{
-            filename: `Salary_Structure_${name.replace(/\s+/g, '_')}.pdf`,
+            filename: `Offer_Letter_${name.replace(/\s+/g, '_')}.pdf`,
             content:  pdfBuffer,
           }] : [],
         });
@@ -8464,6 +8931,7 @@ Return ONLY a valid JSON object (no markdown):
       return res.json({ offer: {
         full_name: cand.full_name,
         email: cand.email,
+        phone: cand.phone || '',
         designation: cand.designation || cand.position_applied,
         department: cand.department,
         location: cand.location,
@@ -8472,27 +8940,68 @@ Return ONLY a valid JSON object (no markdown):
         probation_months: cand.probation_months,
         offer_ref: cand.offer_ref,
         salary: cand.salary,
+        // Prefill from whatever the candidate already gave us at the
+        // document-collection stage, so the consent form never re-asks —
+        // still editable on the candidate's side (see requirement #5).
+        prefill: {
+          father_name: cand.consent_father_name || cand.father_spouse_name || '',
+          mobile: cand.consent_mobile || cand.phone || '',
+          dob: cand.consent_dob || cand.date_of_birth || '',
+          address: cand.consent_address || cand.address || '',
+        },
       }});
     }
 
-    /* ── Accept Offer Letter (public, token-based) ───── */
+    /* ── Consent Form: candidate details + digital signature (public,
+       token-based) — this IS the "accept the offer" step; extends the
+       original typed-name+checkbox flow rather than sending a second,
+       redundant link for the same next action. ───── */
     case 'acceptOfferLetter': {
-      const { token, full_name, parent_name, contact_no } = p;
+      const { token, full_name, parent_name, contact_no, dob, address, signature_data_url } = p;
       if (!token) return res.json({ success: false, error: 'Token required' });
+      if (!signature_data_url) return res.json({ success: false, error: 'A signature is required.' });
 
       const row = await one("SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'offer_accept_token'=$1", [token]);
       if (!row) return res.json({ success: false, error: 'Offer not found.' });
       const cand = JSON.parse(row.data);
       if (cand.offer_status === 'accepted') return res.json({ success: false, error: 'Already accepted.' });
 
+      const now = new Date().toISOString();
+      const nowStr = new Date().toLocaleString('en-IN');
+
+      let consentPdfUrl = null, consentPdfBase64 = null;
+      try {
+        const pdfBuffer = await buildConsentFormPdf({
+          fullName: full_name || cand.full_name, fatherName: parent_name, mobile: contact_no,
+          dob, address, email: cand.email,
+          designation: cand.designation || cand.position_applied, department: cand.department,
+          joiningDate: cand.joining_date, submittedAtStr: nowStr, signatureDataUrl: signature_data_url,
+        });
+        const persisted = await persistCandidatePdf({ candidateId: row.id, documentName: `Consent Form - ${full_name || cand.full_name}`, pdfBuffer });
+        consentPdfUrl = persisted.url;
+        consentPdfBase64 = persisted.base64;
+      } catch (e) { console.error('[consent] PDF generation/storage failed:', e.message); }
+
       const updated = {
         ...cand,
         status: 'offer_accepted',
         offer_status: 'accepted',
-        offer_accepted_at: new Date().toISOString(),
+        offer_accepted_at: now,
         offer_accepted_name: full_name || cand.full_name,
         offer_parent_name: parent_name,
         offer_contact: contact_no,
+        consent_full_name: full_name || cand.full_name,
+        consent_father_name: parent_name,
+        consent_mobile: contact_no,
+        consent_dob: dob || '',
+        consent_address: address || '',
+        consent_signed_at: now,
+        consent_pdf_url: consentPdfUrl,
+        // Base64 fallback so HR can always retrieve it even if bucket
+        // storage isn't configured (mirrors persistExitDocument's own
+        // db-bytes fallback intent) — not sent to the frontend list view,
+        // only read when HR explicitly downloads it.
+        consent_pdf_base64_cached: consentPdfUrl ? null : consentPdfBase64,
       };
       await run("UPDATE entities SET status='offer_accepted', data=$1 WHERE id=$2", [JSON.stringify(updated), row.id]);
 
@@ -8506,12 +9015,12 @@ Return ONLY a valid JSON object (no markdown):
             <h2 style="margin:0;">Offer Accepted!</h2>
           </div>
           <div style="padding:24px;border:1px solid #e5e7eb;border-top:none;">
-            <p><strong>${updated.full_name}</strong> has accepted the offer letter.</p>
+            <p><strong>${updated.full_name}</strong> has accepted the offer letter and digitally signed the consent form.</p>
             <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:12px;">
               <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600;width:40%;">Position</td><td style="padding:6px 12px;border:1px solid #e5e7eb;">${updated.designation || updated.position_applied}</td></tr>
               <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600;">Joining Date</td><td style="padding:6px 12px;border:1px solid #e5e7eb;">${updated.joining_date || '—'}</td></tr>
               <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600;">Contact</td><td style="padding:6px 12px;border:1px solid #e5e7eb;">${updated.email} · ${contact_no}</td></tr>
-              <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600;">Accepted On</td><td style="padding:6px 12px;border:1px solid #e5e7eb;">${new Date().toLocaleString('en-IN')}</td></tr>
+              <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600;">Accepted On</td><td style="padding:6px 12px;border:1px solid #e5e7eb;">${nowStr}</td></tr>
             </table>
           </div>
         </div>`,
@@ -8520,7 +9029,40 @@ Return ONLY a valid JSON object (no markdown):
       return res.json({ success: true });
     }
 
+    /* ── HR: fetch the signed consent PDF for a candidate ───── */
+    case 'getCandidateConsentPdf': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { candidate_id } = p;
+      if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
+      const row = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+      if (!row) return res.json({ success: false, error: 'Candidate not found' });
+      const cand = JSON.parse(row.data);
+      if (!cand.consent_signed_at) return res.json({ success: false, error: 'Consent form not signed yet.' });
+      if (cand.consent_pdf_url) return res.json({ success: true, url: cand.consent_pdf_url });
+      if (cand.consent_pdf_base64_cached) return res.json({ success: true, base64: cand.consent_pdf_base64_cached, filename: `Consent_Form_${(cand.full_name || 'Candidate').replace(/\s+/g, '_')}.pdf` });
+      return res.json({ success: false, error: 'Consent PDF not available.' });
+    }
+
     /* ── Invite Joiner to App ─────────────────────────── */
+    /* ── Onboarding: documents already HR-verified during the pre-offer
+       stage should never be re-requested — matches the logged-in joiner
+       back to their original Candidate row by email and returns whichever
+       of the 3 mandatory pre-offer document types are 'verified'. ───── */
+    case 'getCarriedOverDocuments': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const uRow = await one('SELECT email FROM users WHERE id=$1', [cu.id]);
+      if (!uRow?.email) return res.json({ success: true, documents: {} });
+      const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND LOWER(data::jsonb->>'email')=LOWER($1) ORDER BY updated_at DESC LIMIT 1", [uRow.email]);
+      if (!cRow) return res.json({ success: true, documents: {} });
+      const cand = JSON.parse(cRow.data);
+      const carried = {};
+      for (const t of CANDIDATE_DOC_TYPES) {
+        const d = cand.documents?.[t.key];
+        if (d?.status === 'verified') carried[t.key] = d;
+      }
+      return res.json({ success: true, documents: carried });
+    }
+
     case 'inviteJoinerToApp': {
       if (!cu) return res.status(401).json({ error: 'Unauthorised' });
       const { candidate_id } = p;

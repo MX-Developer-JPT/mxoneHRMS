@@ -112,6 +112,30 @@ export function buildLetterheadHtml(title, contentHtml, extraStyles = '') {
 }
 
 /**
+ * Opens (or downloads) a base64-encoded PDF via a blob URL + a synthetic
+ * <a> click — NOT window.open(). window.open() called after an `await`
+ * (as every PDF-generating call here is) is no longer inside the click
+ * event's user-gesture window, so most browsers silently block it as a
+ * popup with no visible error. An anchor click, by contrast, is reliably
+ * allowed even when triggered from an async handler — this is the pattern
+ * that actually works for "Preview"/"Download PDF" buttons in this app.
+ */
+export function openPdfBlob(base64, filename, { download = false } = {}) {
+  if (!base64) return;
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  if (download) a.download = filename || 'document.pdf';
+  else { a.target = '_blank'; a.rel = 'noopener'; }
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/**
  * Wraps content in a full letterhead page and opens a print window.
  */
 export function openLetterheadPrintWindow(title, contentHtml, extraStyles = '', autoPrint = true) {

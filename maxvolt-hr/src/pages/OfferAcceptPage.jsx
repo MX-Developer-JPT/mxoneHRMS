@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import { CheckCircle2, Loader2, FileText, Building2, Calendar, MapPin, User, AlertCircle } from 'lucide-react';
+import SignaturePad from '@/components/SignaturePad';
 
 function fmt(n) {
   return Number(n || 0).toLocaleString('en-IN');
@@ -18,14 +20,25 @@ export default function OfferAcceptPage() {
   const [error, setError] = useState('');
   const [accepted, setAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({ full_name: '', parent_name: '', contact_no: '', agreed: false });
+  const [form, setForm] = useState({ full_name: '', parent_name: '', contact_no: '', dob: '', address: '', agreed: false });
+  const sigRef = useRef(null);
 
   useEffect(() => {
     if (!token) { setError('Invalid link.'); setLoading(false); return; }
     base44.functions.invoke('getOfferByToken', { token }).then(res => {
       if (res.data?.offer) {
         setOffer(res.data.offer);
-        setForm(f => ({ ...f, full_name: res.data.offer.full_name || '' }));
+        const pf = res.data.offer.prefill || {};
+        // Pre-filled wherever the candidate already gave us this info at
+        // the document-collection stage — still editable below.
+        setForm(f => ({
+          ...f,
+          full_name: res.data.offer.full_name || '',
+          parent_name: pf.father_name || '',
+          contact_no: pf.mobile || res.data.offer.phone || '',
+          dob: pf.dob || '',
+          address: pf.address || '',
+        }));
       } else {
         setError(res.data?.error || 'Offer not found or link has expired.');
       }
@@ -35,11 +48,14 @@ export default function OfferAcceptPage() {
 
   const handleAccept = async (e) => {
     e.preventDefault();
-    if (!form.full_name || !form.parent_name || !form.contact_no) {
+    if (!form.full_name || !form.parent_name || !form.contact_no || !form.dob || !form.address) {
       toast.error('Please fill in all required fields.'); return;
     }
     if (!form.agreed) {
       toast.error('Please agree to the consent form before accepting.'); return;
+    }
+    if (!sigRef.current || sigRef.current.isEmpty()) {
+      toast.error('Please sign the consent form before submitting.'); return;
     }
     setSubmitting(true);
     try {
@@ -48,6 +64,9 @@ export default function OfferAcceptPage() {
         full_name: form.full_name,
         parent_name: form.parent_name,
         contact_no: form.contact_no,
+        dob: form.dob,
+        address: form.address,
+        signature_data_url: sigRef.current.toDataURL(),
       });
       if (res.data?.success) {
         setAccepted(true);
@@ -305,7 +324,7 @@ export default function OfferAcceptPage() {
                 className="mt-1"
               />
             </div>
-            <div className="sm:col-span-2">
+            <div>
               <Label className="text-sm font-medium">Contact Number *</Label>
               <Input
                 type="tel"
@@ -316,6 +335,32 @@ export default function OfferAcceptPage() {
                 className="mt-1"
               />
             </div>
+            <div>
+              <Label className="text-sm font-medium">Date of Birth *</Label>
+              <Input
+                type="date"
+                value={form.dob}
+                onChange={e => setForm(f => ({ ...f, dob: e.target.value }))}
+                required
+                className="mt-1"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <Label className="text-sm font-medium">Address *</Label>
+              <Textarea
+                value={form.address}
+                onChange={e => setForm(f => ({ ...f, address: e.target.value }))}
+                placeholder="Current residential address"
+                rows={2}
+                required
+                className="mt-1"
+              />
+            </div>
+          </div>
+
+          <div>
+            <Label className="text-sm font-medium mb-2 block">Digital Signature *</Label>
+            <SignaturePad ref={sigRef} height={160} />
           </div>
 
           <label className="flex items-start gap-3 cursor-pointer">
