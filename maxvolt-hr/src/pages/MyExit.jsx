@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,8 @@ import {
   RotateCcw, Loader2, BookOpen, Save, ShieldCheck, Monitor, Building2
 } from 'lucide-react';
 import ResignationForm from '../components/exit/ResignationForm';
+import SignaturePad from '@/components/SignaturePad';
+import { deriveOverallExitStatus, OVERALL_STATUS_COLORS } from '@/lib/exitStatus';
 
 const STATUS_STEPS = [
   { status: 'submitted',        label: 'Submitted',      desc: 'Awaiting manager approval' },
@@ -48,13 +50,19 @@ const STATUS_LABELS = {
   cancelled:              { label: 'Cancelled',             color: 'bg-gray-100 text-gray-600' },
 };
 
-const CLEARANCE_DEPTS = [
-  { key: 'hr',                 label: 'HR Department',                       icon: User },
-  { key: 'finance',            label: 'Finance / Accounts',                  icon: DollarSign },
-  { key: 'it',                 label: 'IT Department',                       icon: Monitor },
-  { key: 'admin',              label: 'Admin/Facilities',                    icon: Building2 },
-  { key: 'working_department', label: 'Working Department / Reporting Mgr',  icon: Activity },
-];
+// Departments are no longer a hardcoded list — each Exit record's own
+// clearance_checklist snapshot carries its own label per department. This is
+// just a cosmetic icon lookup for the departments that ship by default; any
+// custom department HR adds falls back to a generic icon.
+const CLEARANCE_DEPT_ICONS = {
+  hr: User, finance: DollarSign, it: Monitor, admin: Building2, working_department: Activity,
+};
+const CLEARANCE_STATUS_LABELS = { cleared: 'Cleared', not_cleared: 'Issue Found', not_applicable: 'Not Applicable', action_requested: 'Action Requested', pending: 'Pending' };
+const CLEARANCE_STATUS_COLORS = {
+  cleared: 'bg-green-100 text-green-700', not_cleared: 'bg-red-100 text-red-700',
+  not_applicable: 'bg-gray-200 text-gray-600', action_requested: 'bg-amber-100 text-amber-700',
+  pending: 'bg-yellow-100 text-yellow-700',
+};
 
 const INTERVIEW_QUESTIONS = [
   { key: 'work_experience_rating',   label: 'Work Experience',   type: 'rating' },
@@ -82,6 +90,8 @@ export default function MyExit() {
   const [acceptName, setAcceptName] = useState('');
   const [accepting, setAccepting] = useState(false);
   const [downloadingDoc, setDownloadingDoc] = useState('');
+  const [submittingDeclaration, setSubmittingDeclaration] = useState(false);
+  const declarationSigRef = useRef(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -104,6 +114,7 @@ export default function MyExit() {
   if (loading) return <div className="flex items-center justify-center h-screen"><div className="w-8 h-8 border-4 border-red-200 border-t-red-600 rounded-full animate-spin" /></div>;
 
   const statusCfg = exitRecord ? (STATUS_LABELS[exitRecord.status] || { label: exitRecord.status, color: 'bg-gray-100' }) : null;
+  const overallStatus = exitRecord ? deriveOverallExitStatus(exitRecord) : null;
 
   // Notice period calculations
   const today = new Date();
@@ -128,6 +139,19 @@ export default function MyExit() {
       else toast.error(d?.error || 'Failed to accept');
     } catch (e) { toast.error(e.message); }
     setAccepting(false);
+  };
+
+  const handleSubmitDeclaration = async () => {
+    if (!declarationSigRef.current || declarationSigRef.current.isEmpty()) { toast.error('Please sign to confirm your declaration'); return; }
+    setSubmittingDeclaration(true);
+    try {
+      const signature_data_url = declarationSigRef.current.toDataURL();
+      const res = await base44.functions.invoke('submitExitDeclaration', { exit_id: exitRecord.id, signature_data_url });
+      const d = res?.data || res;
+      if (d?.success) { toast.success('Declaration signed'); loadData(); }
+      else toast.error(d?.error || 'Failed to submit declaration');
+    } catch (e) { toast.error(e.message); }
+    setSubmittingDeclaration(false);
   };
 
   const downloadDocument = async (docId, filename) => {
@@ -242,6 +266,9 @@ export default function MyExit() {
             {!['manager_rejected','hr_rejected'].includes(exitRecord.status) && (
               <Card>
                 <CardContent className="p-4">
+                  <div className="flex justify-end mb-2">
+                    <Badge className={OVERALL_STATUS_COLORS[overallStatus] || 'bg-gray-100 text-gray-600'}>{overallStatus}</Badge>
+                  </div>
                   <div className="flex items-center justify-between overflow-x-auto pb-2">
                     {STATUS_STEPS.map((step, i) => {
                       const done = effectiveStep > i;
@@ -357,35 +384,54 @@ export default function MyExit() {
             {/* ── CLEARANCE ── */}
             {activeTab === 'clearance' && (
               <div className="space-y-3">
-                <p className="text-sm text-gray-500">Clearance is required from all departments before your F&F can be processed.</p>
-                {CLEARANCE_DEPTS.map(dept => {
-                  const data = exitRecord.clearance_checklist?.[dept.key] || { status: 'pending', checklist_items: [] };
-                  const Icon = dept.icon;
-                  return (
-                    <div key={dept.key} className={`border rounded-lg p-3 ${data.status === 'cleared' ? 'bg-green-50 border-green-200' : data.status === 'not_cleared' ? 'bg-red-50 border-red-200' : 'bg-gray-50'}`}>
-                      <div className="flex items-center gap-3">
-                        <Icon className={`w-5 h-5 ${data.status === 'cleared' ? 'text-green-600' : data.status === 'not_cleared' ? 'text-red-600' : 'text-gray-400'}`} />
-                        <div className="flex-1">
-                          <p className="font-medium text-sm">{dept.label}</p>
-                          {data.authorized_by_name && <p className="text-xs text-gray-500">Cleared by {data.authorized_by_name}</p>}
-                          {data.remarks && <p className="text-xs text-gray-600">{data.remarks}</p>}
+                {Object.keys(exitRecord.clearance_checklist || {}).length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-8">Clearance hasn't started yet — it begins automatically once your manager and HR approve your resignation.</p>
+                ) : (
+                  <>
+                    <p className="text-sm text-gray-500">Clearance is required from all mandatory departments before your F&F can be processed.</p>
+                    {Object.entries(exitRecord.clearance_checklist || {}).map(([deptKey, data]) => {
+                      const Icon = CLEARANCE_DEPT_ICONS[deptKey] || Building2;
+                      const label = data.label || deptKey;
+                      return (
+                        <div key={deptKey} className={`border rounded-lg p-3 ${data.status === 'cleared' ? 'bg-green-50 border-green-200' : data.status === 'not_cleared' ? 'bg-red-50 border-red-200' : data.status === 'not_applicable' ? 'bg-gray-100 border-gray-200' : 'bg-gray-50'}`}>
+                          <div className="flex items-center gap-3">
+                            <Icon className={`w-5 h-5 ${data.status === 'cleared' ? 'text-green-600' : data.status === 'not_cleared' ? 'text-red-600' : 'text-gray-400'}`} />
+                            <div className="flex-1">
+                              <p className="font-medium text-sm">{label}{data.mandatory === false && <span className="ml-1.5 text-[10px] text-gray-400 font-normal">(optional)</span>}</p>
+                              {data.authorized_by_name && <p className="text-xs text-gray-500">Cleared by {data.authorized_by_name}</p>}
+                              {data.remarks && <p className="text-xs text-gray-600">{data.remarks}</p>}
+                            </div>
+                            <Badge className={CLEARANCE_STATUS_COLORS[data.status] || CLEARANCE_STATUS_COLORS.pending}>
+                              {CLEARANCE_STATUS_LABELS[data.status] || 'Pending'}
+                            </Badge>
+                          </div>
+                          {(data.checklist_items || []).length > 0 && (
+                            <div className="mt-2 pl-8 space-y-0.5">
+                              {data.checklist_items.map(it => (
+                                <p key={it.id} className={`text-xs flex items-center gap-1.5 ${it.checked ? 'text-green-700' : 'text-gray-400'}`}>
+                                  {it.checked ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}{it.label}
+                                </p>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                        <Badge className={data.status === 'cleared' ? 'bg-green-100 text-green-700' : data.status === 'not_cleared' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}>
-                          {data.status === 'cleared' ? 'Cleared' : data.status === 'not_cleared' ? 'Issue Found' : 'Pending'}
-                        </Badge>
+                      );
+                    })}
+                    {exitRecord.status === 'clearance_done' && !exitRecord.declaration_signed_at && (
+                      <div className="border rounded-lg p-4 bg-blue-50 border-blue-200 space-y-3">
+                        <p className="font-semibold text-sm text-blue-900">Employee Declaration</p>
+                        <p className="text-sm text-blue-800">I hereby confirm that I have cleared all dues, returned all company property, and settled any outstanding obligations with MaxVolt Energy Industries Ltd.</p>
+                        <SignaturePad ref={declarationSigRef} />
+                        <Button className="w-full bg-blue-600 hover:bg-blue-700" disabled={submittingDeclaration} onClick={handleSubmitDeclaration}>
+                          {submittingDeclaration ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}Sign & Submit Declaration
+                        </Button>
                       </div>
-                      {(data.checklist_items || []).length > 0 && (
-                        <div className="mt-2 pl-8 space-y-0.5">
-                          {data.checklist_items.map(it => (
-                            <p key={it.id} className={`text-xs flex items-center gap-1.5 ${it.checked ? 'text-green-700' : 'text-gray-400'}`}>
-                              {it.checked ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}{it.label}
-                            </p>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                    )}
+                    {exitRecord.declaration_signed_at && (
+                      <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-center">Declaration signed on {safeDate(exitRecord.declaration_signed_at, 'dd MMM yyyy')}</p>
+                    )}
+                  </>
+                )}
               </div>
             )}
 
@@ -536,6 +582,7 @@ export default function MyExit() {
                   [
                     { id: exitRecord.no_dues_document_id, label: 'No Dues Certificate', available: exitRecord.no_dues_generated, desc: 'Department-wise clearance certificate' },
                     { id: exitRecord.fnf_document_id, label: 'Full & Final Settlement Statement', available: !!exitRecord.fnf_document_id, desc: 'Full & final settlement details' },
+                    { id: exitRecord.fnf_agreement_document_id, label: 'Full & Final Settlement Agreement', available: !!exitRecord.fnf_agreement_document_id, desc: 'Signed acknowledgement of settlement receipt' },
                     { id: null, label: 'Relieving Letter', available: exitRecord.relieving_letter_generated, desc: 'Official relieving from the organization' },
                     { id: null, label: 'Experience Letter', available: exitRecord.experience_letter_generated, desc: 'Certificate of employment and experience' },
                   ].map(doc => (

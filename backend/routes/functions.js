@@ -186,6 +186,18 @@ function htmlLetterToPdfContent(html) {
       continue;
     }
 
+    // SIGNATURE marker — <img class="mx-signature" .../> renders a captured
+    // signature image (registered under the 'signature' image key by the
+    // caller via buildLetterPdf's extraImages param); used wherever a
+    // generated document needs to show a real captured signature instead of
+    // a blank "Signature: ___" line.
+    const sigImg = rem.match(/^<img[^>]*class=["']mx-signature["'][^>]*\/?>/i);
+    if (sigImg) {
+      nodes.push({ image: 'signature', fit: [150, 50], margin: [0, 2, 0, 4] });
+      rem = rem.slice(sigImg[0].length);
+      continue;
+    }
+
     // UL
     const ul = rem.match(/^<ul[^>]*>([\s\S]*?)<\/ul>/i);
     if (ul) {
@@ -402,7 +414,7 @@ function calcSalaryBreakdown(annualCTC, medicalContribution = 0, ceilings = {}) 
 }
 
 /* ── Shared: build Maxvolt letterhead PDF with parsed HTML content ── */
-async function buildLetterPdf(label, ref, htmlContent) {
+async function buildLetterPdf(label, ref, htmlContent, extraImages = {}) {
   const logoDataUrl = getLogoDataUrl();
   const stampDataUrl = getStampDataUrl();
   const content = htmlLetterToPdfContent(htmlContent);
@@ -416,6 +428,7 @@ async function buildLetterPdf(label, ref, htmlContent) {
     images: {
       ...(logoDataUrl ? { logo: logoDataUrl } : {}),
       ...(stampDataUrl ? { stamp: stampDataUrl } : {}),
+      ...extraImages,
     },
     content,
     defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.6 },
@@ -1169,11 +1182,14 @@ async function notify(userId, { title, message, type = 'info', link = '' }) {
    Exit Management — department clearance / No Dues / Full & Final helpers
    ══════════════════════════════════════════════════════════════════════ */
 
-// The 5 clearance departments (consolidated from the old 7-dept model —
-// reporting_manager + project_manager merged into working_department,
-// standalone security dropped/folded into IT+Admin) with their default
-// checklist items, straight from the reference No Dues Clearance Form.
-const EXIT_CLEARANCE_DEPTS = [
+// Seed data for the 4 owner-configurable departments — used only to
+// bootstrap an ExitClearanceConfig row's label/default checklist items the
+// FIRST time HR (or the system) touches that department, before HR has ever
+// visited Admin Panel → Exit Clearance Config to customize it. The
+// authoritative, currently-configured department LIST (which HR can add to
+// / remove from) is getClearanceDepts() below — this array is not read
+// anywhere except as a fallback inside it.
+const EXIT_CLEARANCE_SEED_DEPTS = [
   { key: 'hr', label: 'HR Department', default_items: [
     'Leave/attendance regularisation', 'Employee documents', 'Exit interview', 'Notice period',
     'Final HR clearance', 'Full & Final eligibility',
@@ -1189,12 +1205,66 @@ const EXIT_CLEARANCE_DEPTS = [
   { key: 'admin', label: 'Admin/Facilities', default_items: [
     'ID card/access card', 'Keys', 'Company property', 'Other assigned assets',
   ] },
-  { key: 'working_department', label: 'Working Department / Reporting Manager', default_items: [
-    'KRA/responsibility handover', 'Project handover', 'Documents/data handover', 'Company property',
-    'Pending work', 'Replacement/transition requirements',
-  ] },
 ];
-const EXIT_CLEARANCE_DEPT_KEYS = EXIT_CLEARANCE_DEPTS.map(d => d.key);
+// working_department is never a configurable/ownable department — it's
+// always the employee's actual live reporting manager (canActOnExitClearance
+// below), so it's a fixed entry rather than an ExitClearanceConfig row.
+const WORKING_DEPT_ENTRY = { key: 'working_department', label: 'Working Department / Reporting Manager', mandatory: true, default_items: [
+  'KRA/responsibility handover', 'Project handover', 'Documents/data handover', 'Company property',
+  'Pending work', 'Replacement/transition requirements',
+] };
+
+// The currently-configured clearance department list — every
+// ExitClearanceConfig row in the DB (this is now the department REGISTRY,
+// not just an owner-assignment table for a fixed set: HR can add a brand
+// new dept_key via saveExitClearanceConfig, or remove one via
+// deleteExitClearanceConfig), seeded with EXIT_CLEARANCE_SEED_DEPTS'
+// label/items for any of the 4 original departments HR hasn't customized
+// yet, plus the fixed working_department entry. Short-TTL cached like the
+// entities.js CACHEABLE pattern; invalidated on every config write.
+let _clearanceDeptsCache = null, _clearanceDeptsCacheExp = 0;
+async function getClearanceDepts() {
+  if (_clearanceDeptsCache && Date.now() < _clearanceDeptsCacheExp) return _clearanceDeptsCache;
+  const rows = await all("SELECT data FROM entities WHERE type='ExitClearanceConfig'");
+  const configs = rows.map(r => JSON.parse(r.data));
+  const byKey = new Map(configs.map(c => [c.dept_key, c]));
+  for (const seed of EXIT_CLEARANCE_SEED_DEPTS) {
+    if (!byKey.has(seed.key)) byKey.set(seed.key, { dept_key: seed.key, label: seed.label, checklist_items: seed.default_items, owner_user_ids: [], sla_days: 3, mandatory: true });
+  }
+  const depts = [
+    WORKING_DEPT_ENTRY,
+    ...[...byKey.values()].map(c => ({
+      key: c.dept_key, label: c.label,
+      default_items: Array.isArray(c.checklist_items) && c.checklist_items.length ? c.checklist_items : [],
+      mandatory: c.mandatory !== false, sla_days: c.sla_days || 3,
+    })),
+  ];
+  _clearanceDeptsCache = depts;
+  _clearanceDeptsCacheExp = Date.now() + 30_000;
+  return depts;
+}
+function invalidateClearanceDeptsCache() { _clearanceDeptsCache = null; }
+
+// Global exit-workflow toggles HR can flip in Admin Panel → Exit Clearance
+// Config (requirement: "whether employee declaration/asset verification/KRA
+// handover is required") — a single-row `ExitWorkflowConfig` entity (id
+// fixed to 'global', never more than one row) rather than one row per
+// toggle; short-TTL cached the same way as the department list.
+let _exitWorkflowConfigCache = null, _exitWorkflowConfigCacheExp = 0;
+async function getExitWorkflowConfig() {
+  if (_exitWorkflowConfigCache && Date.now() < _exitWorkflowConfigCacheExp) return _exitWorkflowConfigCache;
+  const row = await one("SELECT data FROM entities WHERE type='ExitWorkflowConfig' AND id='exit-workflow-global'");
+  const cfg = row ? JSON.parse(row.data) : {};
+  const resolved = {
+    require_employee_declaration: cfg.require_employee_declaration !== false,
+    require_asset_verification: cfg.require_asset_verification !== false,
+    require_kra_handover: cfg.require_kra_handover !== false,
+  };
+  _exitWorkflowConfigCache = resolved;
+  _exitWorkflowConfigCacheExp = Date.now() + 30_000;
+  return resolved;
+}
+function invalidateExitWorkflowConfigCache() { _exitWorkflowConfigCache = null; }
 
 // Default asset-return checklist — matches the reference docx's Assets
 // Returned table exactly.
@@ -1202,12 +1272,33 @@ const DEFAULT_EXIT_ASSETS = [
   'Laptop/Computer', 'ID Card/Access Card', 'Phone/Tablet', 'Other Equipment/Assets', 'SIM', 'Data/Documents',
 ].map(name => ({ name, serial_no: '', condition: '', status: 'pending', returned_date: '', returned_by: '', notes: '' }));
 
-function makeDefaultClearanceChecklist() {
+// Snapshots the CURRENTLY configured department list into a fresh checklist
+// — each entry carries its own label/mandatory flag, so a department added
+// or removed later never retroactively changes what an already-in-progress
+// exit case requires (buildNoDuesCertificatePdf and every "are all
+// mandatory clearances done" check below read these snapshotted fields
+// straight off the checklist, never the live config).
+async function makeDefaultClearanceChecklist() {
+  const depts = await getClearanceDepts();
   const out = {};
-  for (const d of EXIT_CLEARANCE_DEPTS) {
-    out[d.key] = { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: d.default_items.map((label, i) => ({ id: `${d.key}_${i}`, label, checked: false, notes: '' })) };
+  for (const d of depts) {
+    out[d.key] = {
+      status: 'pending', mandatory: d.mandatory !== false, label: d.label,
+      authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '',
+      checklist_items: (d.default_items || []).map((label, i) => ({ id: `${d.key}_${i}`, label, checked: false, notes: '' })),
+      supporting_documents: [],
+    };
   }
   return out;
+}
+// Whether every MANDATORY department in a checklist is cleared (or marked
+// not_applicable, which also satisfies it) — optional/non-mandatory
+// departments never block completion. Reads the snapshot's own `mandatory`
+// flag, not the live config, per the note on makeDefaultClearanceChecklist.
+function isChecklistFullyCleared(checklist) {
+  const entries = Object.values(checklist || {});
+  if (!entries.length) return false;
+  return entries.every(v => v.mandatory === false || ['cleared', 'not_applicable'].includes(v.status));
 }
 
 // HR/admin/management-editable per-department config: which users own a
@@ -1291,11 +1382,16 @@ const _exitOrdinalDate = (d) => {
 // department clearance table, assets-returned table, KRA-handover table,
 // employee declaration, HR approval. Uses the shared HTML→pdfmake letter
 // pipeline (buildLetterPdf) for identical branding to every other letter.
-async function buildNoDuesCertificatePdf({ empName, employeeCode, department, designation, doj, resignationDate, lwd, clearanceChecklist, assets, kraItems }) {
+async function buildNoDuesCertificatePdf({ empName, employeeCode, department, designation, doj, resignationDate, lwd, clearanceChecklist, assets, kraItems, declarationSignatureDataUrl, declarationSignedAt }) {
   const fmtDate = (d) => d ? _exitOrdinalDate(d) : '—';
-  const deptRows = EXIT_CLEARANCE_DEPTS.map(d => {
-    const c = clearanceChecklist?.[d.key] || {};
-    return `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">${d.label}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.status === 'cleared' ? 'Cleared' : c.status === 'not_cleared' ? 'Not Cleared' : 'Pending'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.authorized_by_name || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.cleared_at ? fmtDate(c.cleared_at.slice(0,10)) : '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.remarks || '—'}</td></tr>`;
+  // Iterates the checklist's OWN entries (each one carries its own
+  // snapshotted `label`, see makeDefaultClearanceChecklist) rather than a
+  // hardcoded department list — this is what makes the certificate reflect
+  // whatever departments HR had configured when this specific exit case's
+  // clearance was initiated, department-list changes since then included.
+  const DEPT_STATUS_LABELS = { cleared: 'Cleared', not_cleared: 'Rejected', not_applicable: 'Not Applicable', action_requested: 'Action Requested', pending: 'Pending' };
+  const deptRows = Object.entries(clearanceChecklist || {}).map(([key, c]) => {
+    return `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.label || key}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${DEPT_STATUS_LABELS[c.status] || 'Pending'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.authorized_by_name || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.cleared_at ? fmtDate(c.cleared_at.slice(0,10)) : '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${c.remarks || '—'}</td></tr>`;
   }).join('');
   const assetRows = (assets || []).map(a => `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.name}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.serial_no || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.condition || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.status === 'returned' ? 'Returned' : a.status}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${a.returned_date ? fmtDate(a.returned_date) : '—'}</td></tr>`).join('');
   const kraRows = (kraItems || []).filter(k => k.task).map(k => `<tr><td style="padding:6px 8px;border:1px solid #d1d5db;">${k.task}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${k.assignee || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${k.authorized_signatory_name || '—'}</td><td style="padding:6px 8px;border:1px solid #d1d5db;">${k.due_date ? fmtDate(k.due_date) : '—'}</td></tr>`).join('');
@@ -1326,12 +1422,14 @@ ${kraRows ? `<p style="font-weight:bold;margin-top:14px;">KRA / Responsibility H
 </table>` : ''}
 <p style="font-weight:bold;margin-top:14px;">Employee Declaration</p>
 <p>I hereby confirm that I have cleared all dues, returned all company property, and settled any outstanding obligations with MaxVolt Energy Industries Ltd.</p>
-<p style="margin-top:20px;">Employee Signature: _________________________&nbsp;&nbsp;&nbsp;&nbsp;Date: _________________________</p>
+${declarationSignatureDataUrl
+  ? `<img class="mx-signature" /><p style="margin-top:2px;">Employee Signature (digitally signed)&nbsp;&nbsp;&nbsp;&nbsp;Date: ${declarationSignedAt ? fmtDate(declarationSignedAt.slice(0,10)) : '—'}</p>`
+  : `<p style="margin-top:20px;">Employee Signature: _________________________&nbsp;&nbsp;&nbsp;&nbsp;Date: _________________________</p>`}
 <p style="font-weight:bold;margin-top:20px;">HR Department Approval</p>
 <p>All dues have been cleared and the employee is eligible for full and final settlement.</p>
 <p style="margin-top:30px;">HR Representative: _________________________&nbsp;&nbsp;&nbsp;&nbsp;Date: _________________________</p>`;
 
-  return buildLetterPdf('No Dues Clearance Certificate', employeeCode || '', html);
+  return buildLetterPdf('No Dues Clearance Certificate', employeeCode || '', html, declarationSignatureDataUrl ? { signature: declarationSignatureDataUrl } : {});
 }
 
 // Full & Final Settlement PDF — hand-built pdfmake docDef (tabular, like
@@ -1423,6 +1521,67 @@ function buildFnFSettlementPdf({ empName, employeeCode, designation, department,
               { width: '45%', stack: [{ text: '_________________________', fontSize: 10 }, { text: 'Verified By', bold: true, fontSize: 10 }] },
               { width: '*', text: '' },
               { width: '45%', stack: [{ text: '_________________________', fontSize: 10 }, { text: 'Prepared & Approved By', bold: true, fontSize: 10 }, { text: 'Manager - HR & Admin', fontSize: 9 }, ...(stampDataUrl ? [{ image: 'stamp', width: 82, margin: [0, -30, 0, 0], opacity: 0.85 }] : [])] },
+            ],
+          },
+        ],
+        footer: (page, pages) => footerFn(page, pages, { width: 595.28 }),
+      };
+
+      const doc = printer.createPdfKitDocument(docDef);
+      const chunks = [];
+      doc.on('data', c => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+      doc.end();
+    } catch (err) { reject(err); }
+  });
+}
+
+// Full & Final Settlement AGREEMENT — a short one-page acknowledgement of
+// receipt, distinct from the Statement above (which shows the earnings/
+// deductions breakup). Generated once the employee has actually accepted the
+// settlement (acceptExitFnF), since the acknowledgement text only makes sense
+// after that point — it names the accepted amount and the employee's own
+// typed-name confirmation as the acceptance record.
+function buildFnFSettlementAgreementPdf({ empName, employeeCode, designation, department, doj, resignationDate, lwd, netPayable, acceptedName, acceptedAt }) {
+  return new Promise((resolve, reject) => {
+    try {
+      const printer = getPdfPrinter();
+      const logoDataUrl = getLogoDataUrl();
+      const stampDataUrl = getStampDataUrl();
+      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+      const L = (n) => Number(n || 0).toLocaleString('en-IN');
+      const cell = (text, opts = {}) => ({ text: String(text ?? ''), fontSize: 10, margin: [4, 3, 4, 3], ...opts });
+
+      const docDef = {
+        pageSize: 'A4',
+        pageMargins: [50, 100, 50, 110],
+        header: headerFn,
+        images: { ...(logoDataUrl ? { logo: logoDataUrl } : {}), ...(stampDataUrl ? { stamp: stampDataUrl } : {}) },
+        defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.6 },
+        content: [
+          { text: 'Full & Final Settlement Agreement', bold: true, fontSize: 14, alignment: 'center', margin: [0, 0, 0, 16] },
+          {
+            table: { widths: ['28%', '30%', '22%', '20%'], body: [
+              [cell('Name of Employee:', { bold: true }), cell(empName || ''), cell('Employee ID:', { bold: true }), cell(employeeCode || '')],
+              [cell('Designation:', { bold: true }), cell(designation || ''), cell('Department:', { bold: true }), cell(department || '')],
+              [cell('Date of Joining:', { bold: true }), cell(doj || ''), cell('Date of Resignation:', { bold: true }), cell(resignationDate || '')],
+              [cell('Date of Leaving:', { bold: true }), cell(lwd || '', { colSpan: 3 }), {}, {}],
+            ] },
+            layout: 'noBorders', margin: [0, 0, 0, 16],
+          },
+          { text: `I, ${empName || 'the undersigned'}, hereby confirm and acknowledge receipt of the Full & Final settlement amount of ₹${L(netPayable)} from MaxVolt Energy Industries Ltd. in connection with the cessation of my employment.`, margin: [0, 0, 0, 10] },
+          { text: 'I confirm that this amount is in full and final settlement of all my dues, claims, and entitlements of whatsoever nature arising out of or in connection with my employment with the Company. Upon receipt of this amount, I shall have no further claims, demands, or dues outstanding against the Company, its management, or its representatives.', margin: [0, 0, 0, 10] },
+          { text: 'I further confirm that I have returned all Company property in my possession and that all departmental clearances have been duly completed prior to this settlement.', margin: [0, 0, 0, 30] },
+          {
+            columns: [
+              { width: '55%', stack: [
+                { text: `Digitally accepted by: ${acceptedName || empName || ''}`, fontSize: 10 },
+                { text: `Date: ${acceptedAt || ''}`, fontSize: 10, margin: [0, 2, 0, 0] },
+                { text: '(Employee Signature)', fontSize: 9, italics: true, margin: [0, 2, 0, 0] },
+              ] },
+              { width: '*', text: '' },
+              { width: '45%', stack: [{ text: '_________________________', fontSize: 10 }, { text: 'For MaxVolt Energy Industries Ltd.', bold: true, fontSize: 10 }, { text: 'Manager - HR & Admin', fontSize: 9 }, ...(stampDataUrl ? [{ image: 'stamp', width: 82, margin: [0, -30, 0, 0], opacity: 0.85 }] : [])] },
             ],
           },
         ],
@@ -11956,7 +12115,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           { stage: 'manager', status: 'approved', actor_name: 'HR (initiated)', timestamp: ieNow },
           { stage: 'hr', status: 'approved', actor_id: cu.id, actor_name: cu.full_name, timestamp: ieNow },
         ],
-        clearance_checklist: makeDefaultClearanceChecklist(),
+        clearance_checklist: await makeDefaultClearanceChecklist(),
         assets: DEFAULT_EXIT_ASSETS.map((a, i) => ({ ...a, id: `asset_${i}` })),
         kt_items: [], exit_interview: null, hr_exit_interview: null,
         exit_interview_completed: false, hr_interview_completed: false,
@@ -11976,12 +12135,17 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const aeaRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [aeaExitId]);
       if (!aeaRow) return res.json({ success: false, error: 'Exit case not found' });
       const aeaExit = JSON.parse(aeaRow.data);
-      const aeaIsHR = await hasRole(cu, HR_ROLES);
-      const aeaIsMgmt = await hasRole(cu, ['management']);
-      let aeaAuthorized = aeaIsHR || aeaIsMgmt;
-      if (!aeaAuthorized && aeaStage === 'manager') {
+      // Manager-stage approval is deliberately NOT overridable by HR/
+      // management — only the employee's actual configured direct
+      // reporting manager may approve/reject that stage ("Only the
+      // employee's direct reporting manager should have the authority").
+      // HR keeps full authority at the hr stage, which is correctly theirs.
+      let aeaAuthorized;
+      if (aeaStage === 'manager') {
         const mgrRow = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [aeaExit.user_id]);
         aeaAuthorized = mgrRow?.mgr === cu.id;
+      } else {
+        aeaAuthorized = (await hasRole(cu, HR_ROLES)) || (await hasRole(cu, ['management']));
       }
       if (!aeaAuthorized) return res.status(403).json({ error: 'Not authorized to act on this stage' });
       if (aeaStage === 'manager' && aeaExit.status !== 'submitted') return res.json({ success: false, error: `Cannot act — case is at status ${aeaExit.status}` });
@@ -11996,7 +12160,19 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         aeaUpd = { ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, manager_action: aeaAction, manager_comment: aeaComment || '', manager_actioned_at: aeaNow, audit_log: aeaAudit };
       } else {
         aeaNewStatus = aeaAction === 'approved' ? 'in_notice' : 'hr_rejected';
-        aeaUpd = { ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, hr_action: aeaAction, hr_comment: aeaComment || '', hr_actioned_by: cu.id, hr_actioned_at: aeaNow, ...(aeaLwd ? { last_working_date: aeaLwd } : {}), audit_log: aeaAudit };
+        aeaUpd = {
+          ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, hr_action: aeaAction, hr_comment: aeaComment || '',
+          hr_actioned_by: cu.id, hr_actioned_at: aeaNow, ...(aeaLwd ? { last_working_date: aeaLwd } : {}), audit_log: aeaAudit,
+          // Clearance is initialized here — the moment the case actually
+          // reaches in_notice, the earliest point clearance actions become
+          // possible (updateExitClearance requires this status) — never at
+          // submission time. Manager approval is always a strict
+          // prerequisite to reaching this point.
+          ...(aeaAction === 'approved' ? {
+            clearance_checklist: await makeDefaultClearanceChecklist(),
+            assets: Array.isArray(aeaExit.assets) && aeaExit.assets.length ? aeaExit.assets : DEFAULT_EXIT_ASSETS.map((a, i) => ({ ...a, id: `asset_${i}` })),
+          } : {}),
+        };
       }
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(aeaUpd), aeaNewStatus, aeaRow.id]);
       const aeaNotifyAction = aeaStage === 'manager' ? (aeaAction === 'approved' ? 'manager_approved' : 'manager_rejected') : (aeaAction === 'approved' ? 'hr_approved' : 'hr_rejected');
@@ -12029,11 +12205,19 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     case 'updateExitClearance': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { exit_id: uecExitId, dept_key: uecDept, status: uecStatus, remarks: uecRemarks, outstanding_dues: uecDues, checklist_items: uecItems } = p;
-      if (!uecExitId || !EXIT_CLEARANCE_DEPT_KEYS.includes(uecDept) || !['cleared', 'not_cleared', 'pending'].includes(uecStatus)) return res.json({ success: false, error: 'exit_id, valid dept_key, and status (cleared|not_cleared|pending) required' });
+      const { exit_id: uecExitId, dept_key: uecDept, status: uecStatus, remarks: uecRemarks, outstanding_dues: uecDues, checklist_items: uecItems, supporting_documents: uecDocs } = p;
+      const uecValidStatuses = ['cleared', 'not_cleared', 'not_applicable', 'pending', 'action_requested'];
+      if (!uecExitId || !uecDept || !uecValidStatuses.includes(uecStatus)) return res.json({ success: false, error: 'exit_id, dept_key, and a valid status required' });
       const uecRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [uecExitId]);
       if (!uecRow) return res.json({ success: false, error: 'Exit case not found' });
       const uecExit = JSON.parse(uecRow.data);
+      // Department must exist in THIS case's own checklist snapshot — not a
+      // hardcoded list — since the configured department set is dynamic and
+      // this case only ever requires whatever departments existed when its
+      // checklist was built (see makeDefaultClearanceChecklist).
+      if (!uecExit.clearance_checklist || !(uecDept in uecExit.clearance_checklist)) {
+        return res.json({ success: false, error: 'This exit case has no such clearance department' });
+      }
       const uecEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uecExit.user_id]);
       const uecEmp = uecEmpRow ? JSON.parse(uecEmpRow.data) : {};
       if (!(await canActOnExitClearance(cu, uecDept, uecEmp))) return res.status(403).json({ error: `Not authorized to act on ${uecDept} clearance` });
@@ -12054,9 +12238,22 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         }
       }
       const uecNow = new Date().toISOString();
-      const uecChecklist = { ...(uecExit.clearance_checklist || makeDefaultClearanceChecklist()) };
-      uecChecklist[uecDept] = { ...uecChecklist[uecDept], status: uecStatus, authorized_by_id: cu.id, authorized_by_name: cu.full_name, cleared_at: uecStatus === 'cleared' ? uecNow : (uecChecklist[uecDept]?.cleared_at || null), remarks: uecRemarks ?? uecChecklist[uecDept]?.remarks ?? '', outstanding_dues: uecDues ?? uecChecklist[uecDept]?.outstanding_dues ?? '', checklist_items: uecItemsFinal };
-      const uecAllCleared = EXIT_CLEARANCE_DEPT_KEYS.every(k => uecChecklist[k]?.status === 'cleared');
+
+      // "Request Action" is a notification, not a status transition — the
+      // department's own clearance status is left exactly as it was (still
+      // whatever it is, typically 'pending'); it just tells the employee
+      // what's outstanding and logs the ask.
+      if (uecStatus === 'action_requested') {
+        if (!uecRemarks) return res.json({ success: false, error: 'Please specify what action is being requested' });
+        const uecReqUpd = { ...uecExit, audit_log: [...(uecExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `${uecDept} clearance: action requested`, comment: uecRemarks, timestamp: uecNow }] };
+        await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(uecReqUpd), uecRow.id]);
+        await notify(uecExit.user_id, { title: 'Action Required for Your Exit Clearance', message: `${uecExit.clearance_checklist[uecDept]?.label || uecDept}: ${uecRemarks}`, type: 'warning', link: '/my-exit' }).catch(() => {});
+        return res.json({ success: true, status: uecExit.status, all_cleared: false });
+      }
+
+      const uecChecklist = { ...(uecExit.clearance_checklist || await makeDefaultClearanceChecklist()) };
+      uecChecklist[uecDept] = { ...uecChecklist[uecDept], status: uecStatus, authorized_by_id: cu.id, authorized_by_name: cu.full_name, cleared_at: uecStatus === 'cleared' ? uecNow : (uecChecklist[uecDept]?.cleared_at || null), remarks: uecRemarks ?? uecChecklist[uecDept]?.remarks ?? '', outstanding_dues: uecDues ?? uecChecklist[uecDept]?.outstanding_dues ?? '', checklist_items: uecItemsFinal, supporting_documents: Array.isArray(uecDocs) ? uecDocs : (uecChecklist[uecDept]?.supporting_documents || []) };
+      const uecAllCleared = isChecklistFullyCleared(uecChecklist);
       // Must be able to downgrade, not just advance: if the case already
       // reached clearance_done and a department is later re-opened (e.g. an
       // owner corrects a mistaken "cleared"), the case status has to fall
@@ -12075,14 +12272,36 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true, status: uecNewCaseStatus, all_cleared: uecAllCleared });
     }
 
+    case 'submitExitDeclaration': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { exit_id: sedExitId, signature_data_url: sedSig } = p;
+      if (!sedExitId || !sedSig) return res.json({ success: false, error: 'exit_id and signature_data_url are required' });
+      const sedRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [sedExitId]);
+      if (!sedRow) return res.json({ success: false, error: 'Exit case not found' });
+      const sedExit = JSON.parse(sedRow.data);
+      if (sedExit.user_id !== cu.id) return res.status(403).json({ error: 'Not your exit case' });
+      if (!isChecklistFullyCleared(sedExit.clearance_checklist)) {
+        return res.json({ success: false, error: 'All mandatory department clearances must be completed before you can sign the declaration' });
+      }
+      if (sedExit.declaration_signed_at) return res.json({ success: false, error: 'Declaration already signed' });
+      const sedNow = new Date().toISOString();
+      const sedUpd = { ...sedExit, declaration_signed_at: sedNow, declaration_signature_data_url: sedSig, audit_log: [...(sedExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Employee signed exit declaration', comment: '', timestamp: sedNow }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(sedUpd), sedRow.id]);
+      return res.json({ success: true });
+    }
+
     case 'generateNoDuesCertificate': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { exit_id: gndExitId } = p;
       const gndRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [gndExitId]);
       if (!gndRow) return res.json({ success: false, error: 'Exit case not found' });
       const gndExit = JSON.parse(gndRow.data);
-      const gndAllCleared = EXIT_CLEARANCE_DEPT_KEYS.every(k => gndExit.clearance_checklist?.[k]?.status === 'cleared');
-      if (!gndAllCleared) return res.json({ success: false, error: 'All 5 department clearances must be Cleared first' });
+      const gndAllCleared = isChecklistFullyCleared(gndExit.clearance_checklist);
+      if (!gndAllCleared) return res.json({ success: false, error: 'All mandatory department clearances must be Cleared (or marked Not Applicable) first' });
+      const gndWfCfg = await getExitWorkflowConfig();
+      if (gndWfCfg.require_employee_declaration && !gndExit.declaration_signed_at) {
+        return res.json({ success: false, error: 'The employee must sign the exit declaration before the No Dues Certificate can be generated' });
+      }
       const gndEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [gndExit.user_id]);
       const gndEmp = gndEmpRow ? JSON.parse(gndEmpRow.data) : {};
       const gndUserRow = await one("SELECT full_name FROM users WHERE id=$1", [gndExit.user_id]);
@@ -12092,6 +12311,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           department: gndEmp.department, designation: gndEmp.designation, doj: gndEmp.date_of_joining,
           resignationDate: gndExit.resignation_date, lwd: gndExit.last_working_date,
           clearanceChecklist: gndExit.clearance_checklist, assets: gndExit.assets, kraItems: gndExit.kt_items,
+          declarationSignatureDataUrl: gndExit.declaration_signature_data_url, declarationSignedAt: gndExit.declaration_signed_at,
         });
         const gndDoc = await persistExitDocument({ userId: gndExit.user_id, documentType: 'no_dues_certificate', documentName: `No Dues Certificate — ${gndUserRow?.full_name || ''}`, pdfBuffer: pdfBuf, generatedBy: cu.id });
         const gndNow = new Date().toISOString();
@@ -12180,7 +12400,21 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (acfExit.user_id !== cu.id) return res.status(403).json({ error: 'Only the employee themselves may accept their settlement' });
       if (acfExit.status !== 'fnf_finance_processed') return res.json({ success: false, error: `Cannot accept — case is at status ${acfExit.status}` });
       const acfNow = new Date().toISOString();
-      const acfUpd = { ...acfExit, fnf_data: { ...acfExit.fnf_data, employee_accepted: true, employee_accepted_name: acfName.trim(), employee_accepted_at: acfNow }, status: 'fnf_employee_accepted', audit_log: [...(acfExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'F&F accepted by employee', comment: `Typed: ${acfName.trim()}`, timestamp: acfNow }] };
+      const acfEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [acfExit.user_id]);
+      const acfEmp = acfEmpRow ? JSON.parse(acfEmpRow.data) : {};
+      let acfAgreementDoc = null;
+      try {
+        const acfBuf = await buildFnFSettlementAgreementPdf({
+          empName: cu.full_name || acfEmp.display_name || 'Employee', employeeCode: acfEmp.employee_code,
+          designation: acfEmp.designation, department: acfEmp.department,
+          doj: acfEmp.date_of_joining ? _exitOrdinalDate(acfEmp.date_of_joining) : '',
+          resignationDate: acfExit.resignation_date ? _exitOrdinalDate(acfExit.resignation_date) : '',
+          lwd: acfExit.last_working_date ? _exitOrdinalDate(acfExit.last_working_date) : '',
+          netPayable: acfExit.fnf_data?.net_payable, acceptedName: acfName.trim(), acceptedAt: _exitOrdinalDate(acfNow.slice(0, 10)),
+        });
+        acfAgreementDoc = await persistExitDocument({ userId: acfExit.user_id, documentType: 'fnf_settlement_agreement', documentName: `Full & Final Settlement Agreement — ${cu.full_name || ''}`, pdfBuffer: acfBuf, generatedBy: cu.id });
+      } catch (e) { console.warn('[acceptExitFnF] Agreement PDF generation failed:', e.message); }
+      const acfUpd = { ...acfExit, fnf_data: { ...acfExit.fnf_data, employee_accepted: true, employee_accepted_name: acfName.trim(), employee_accepted_at: acfNow }, fnf_agreement_document_id: acfAgreementDoc?.document_id || acfExit.fnf_agreement_document_id, status: 'fnf_employee_accepted', audit_log: [...(acfExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'F&F accepted by employee', comment: `Typed: ${acfName.trim()}`, timestamp: acfNow }] };
       await run("UPDATE entities SET data=$1,status='fnf_employee_accepted',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(acfUpd), acfRow.id]);
       const acfHrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
       for (const hr of acfHrRows) await notify(hr.id, { title: 'F&F Accepted by Employee', message: `${cu.full_name} has accepted their Full & Final Settlement. The exit case is ready to close.`, type: 'info', link: '/exit-management' });
@@ -12193,9 +12427,11 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const cecRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [cecExitId]);
       if (!cecRow) return res.json({ success: false, error: 'Exit case not found' });
       const cecExit = JSON.parse(cecRow.data);
-      const cecAllCleared = EXIT_CLEARANCE_DEPT_KEYS.every(k => cecExit.clearance_checklist?.[k]?.status === 'cleared');
+      const cecAllCleared = isChecklistFullyCleared(cecExit.clearance_checklist);
+      const cecWfCfg = await getExitWorkflowConfig();
       const cecReasons = [];
-      if (!cecAllCleared) cecReasons.push('all department clearances must be Cleared');
+      if (!cecAllCleared) cecReasons.push('all mandatory department clearances must be Cleared');
+      if (cecWfCfg.require_employee_declaration && !cecExit.declaration_signed_at) cecReasons.push('employee must sign the exit declaration');
       if (!cecExit.no_dues_generated) cecReasons.push('No Dues Certificate must be generated');
       if (!cecExit.fnf_data?.employee_accepted) cecReasons.push('employee must accept the F&F settlement');
       if (!cecExit.fnf_data?.finance_processed_by_id) cecReasons.push('Finance must process the F&F payment');
@@ -12209,6 +12445,26 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true });
     }
 
+    // Restore/Rehire — reactivates an archived (Left Employees) profile
+    // instead of creating a duplicate, since nothing about the Employee row
+    // is ever deleted on exit; this just flips status back and clears the
+    // exit date, leaving every historical record (attendance, payroll,
+    // documents, exit history, etc.) intact and attached to the same row.
+    case 'restoreLeftEmployee': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { user_id: rleUserId } = p;
+      if (!rleUserId) return res.json({ success: false, error: 'user_id required' });
+      const rleRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [rleUserId]);
+      if (!rleRow) return res.json({ success: false, error: 'Employee record not found' });
+      const rleEmp = JSON.parse(rleRow.data);
+      if (!['resigned', 'terminated', 'retired'].includes(rleEmp.status)) return res.json({ success: false, error: 'Employee is not currently archived' });
+      const rleUpd = { ...rleEmp, status: 'active', exit_date: null };
+      await run("UPDATE entities SET data=$1,status='active',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(rleUpd), rleRow.id]);
+      const rleUserRow = await one('SELECT full_name FROM users WHERE id=$1', [rleUserId]);
+      await notify(rleUserId, { title: 'Welcome Back!', message: 'Your employee profile has been reactivated by HR.', type: 'success', link: '/dashboard' }).catch(() => {});
+      return res.json({ success: true, employee_name: rleUserRow?.full_name || rleEmp.display_name || '' });
+    }
+
     case 'sendExitClearanceReminder': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { exit_id: secExitId } = p;
@@ -12220,17 +12476,20 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const secUserRow = await one("SELECT full_name FROM users WHERE id=$1", [secExit.user_id]);
       const secEmpName = secUserRow?.full_name || secEmp.display_name || 'An employee';
       let secSent = 0;
-      for (const d of EXIT_CLEARANCE_DEPTS) {
-        const c = secExit.clearance_checklist?.[d.key];
-        if (c?.status === 'cleared') continue;
+      // Iterates this case's OWN checklist snapshot (dept key + label) —
+      // not a hardcoded list — so reminders always match whatever
+      // departments this specific exit case actually requires.
+      for (const [deptKey, c] of Object.entries(secExit.clearance_checklist || {})) {
+        if (['cleared', 'not_applicable'].includes(c?.status)) continue;
+        const deptLabel = c.label || deptKey;
         let ownerIds = [];
-        if (d.key === 'working_department') { if (secEmp.reporting_manager_id) ownerIds = [secEmp.reporting_manager_id]; }
-        else { const cfg = await getExitClearanceConfig(d.key); ownerIds = cfg?.owner_user_ids || []; }
+        if (deptKey === 'working_department') { if (secEmp.reporting_manager_id) ownerIds = [secEmp.reporting_manager_id]; }
+        else { const cfg = await getExitClearanceConfig(deptKey); ownerIds = cfg?.owner_user_ids || []; }
         for (const oid of ownerIds) {
           const oUser = await one('SELECT full_name, email FROM users WHERE id=$1', [oid]);
-          await notify(oid, { title: `Exit Clearance Pending — ${secEmpName}`, message: `${secEmpName}'s ${d.label} clearance is still pending.`, type: 'warning', link: '/exit-management' });
+          await notify(oid, { title: `Exit Clearance Pending — ${secEmpName}`, message: `${secEmpName}'s ${deptLabel} clearance is still pending.`, type: 'warning', link: '/exit-management' });
           if (oUser?.email) {
-            const tpl = emailTemplates.exitClearanceReminder({ ownerName: oUser.full_name, employeeName: secEmpName, deptLabel: d.label, lastWorkingDate: secExit.last_working_date, daysOverdue: 0 });
+            const tpl = emailTemplates.exitClearanceReminder({ ownerName: oUser.full_name, employeeName: secEmpName, deptLabel, lastWorkingDate: secExit.last_working_date, daysOverdue: 0 });
             sendEmail({ to: oUser.email, subject: tpl.subject, html: tpl.html }).catch(() => {});
           }
           secSent++;
@@ -12246,7 +12505,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (!lmedRow) return res.json({ success: false, error: 'Exit case not found' });
       const lmedExit = JSON.parse(lmedRow.data);
       if (lmedExit.user_id !== cu.id && !(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'Not authorized' });
-      const lmedDocIds = [lmedExit.no_dues_document_id, lmedExit.fnf_document_id].filter(Boolean);
+      const lmedDocIds = [lmedExit.no_dues_document_id, lmedExit.fnf_document_id, lmedExit.fnf_agreement_document_id].filter(Boolean);
       if (!lmedDocIds.length) return res.json({ success: true, documents: [] });
       const lmedRows = await all("SELECT data FROM entities WHERE type='Document' AND id = ANY($1)", [lmedDocIds]);
       return res.json({ success: true, documents: lmedRows.map(r => { const d = JSON.parse(r.data); return { id: d.id, document_name: d.document_name, document_type: d.document_type, document_url: d.document_url || null }; }) });
@@ -12274,19 +12533,73 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       // not just already-assigned ones, or a fresh config would have no one
       // to choose from.
       const gecUsers = await all("SELECT id, full_name, email FROM users WHERE role IN ('hr','admin','management','manager','recruiter','employee') ORDER BY full_name");
-      const gecConfigs = EXIT_CLEARANCE_DEPTS.filter(d => d.key !== 'working_department').map(d => gecByKey[d.key] || { dept_key: d.key, label: d.label, owner_user_ids: [], checklist_items: d.default_items, sla_days: 3 });
-      return res.json({ success: true, configs: gecConfigs, owner_options: gecUsers });
+      // Seed the 4 original departments with their defaults if HR hasn't
+      // customized them yet; any additional department HR has added is
+      // already a real row in gecByKey and just passes through.
+      const gecSeeded = { ...gecByKey };
+      for (const seed of EXIT_CLEARANCE_SEED_DEPTS) {
+        if (!gecSeeded[seed.key]) gecSeeded[seed.key] = { dept_key: seed.key, label: seed.label, owner_user_ids: [], checklist_items: seed.default_items, sla_days: 3, mandatory: true };
+      }
+      const gecConfigs = Object.values(gecSeeded).map(c => ({ ...c, mandatory: c.mandatory !== false }));
+      const gwfCfg = await getExitWorkflowConfig();
+      return res.json({ success: true, configs: gecConfigs, owner_options: gecUsers, workflow_config: gwfCfg, working_department: WORKING_DEPT_ENTRY });
     }
 
     case 'saveExitClearanceConfig': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
-      const { dept_key: secfDept, owner_user_ids: secfOwners, checklist_items: secfItems, sla_days: secfSla } = p;
-      if (!EXIT_CLEARANCE_DEPT_KEYS.includes(secfDept) || secfDept === 'working_department') return res.json({ success: false, error: 'Invalid dept_key' });
-      const secfExisting = await one("SELECT id FROM entities WHERE type='ExitClearanceConfig' AND data::jsonb->>'dept_key'=$1", [secfDept]);
-      const secfDeptMeta = EXIT_CLEARANCE_DEPTS.find(d => d.key === secfDept);
-      const secfData = { id: secfExisting?.id || uuidv4(), dept_key: secfDept, label: secfDeptMeta?.label || secfDept, owner_user_ids: Array.isArray(secfOwners) ? secfOwners : [], checklist_items: Array.isArray(secfItems) && secfItems.length ? secfItems : secfDeptMeta?.default_items || [], sla_days: Number(secfSla) || 3 };
+      const { dept_key: secfDeptIn, label: secfLabelIn, owner_user_ids: secfOwners, checklist_items: secfItems, sla_days: secfSla, mandatory: secfMandatory } = p;
+      // Add-a-new-department path: no dept_key given, or a key that doesn't
+      // exist yet — HR is defining a brand-new clearance department, not
+      // editing one of the built-in 4. Slugged from the label if no key
+      // was explicitly supplied.
+      const secfSlug = (s) => String(s || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+      let secfDept = secfDeptIn ? secfSlug(secfDeptIn) : secfSlug(secfLabelIn);
+      if (!secfDept || secfDept === 'working_department') return res.json({ success: false, error: 'A valid department name is required' });
+      const secfExisting = await one("SELECT id,data FROM entities WHERE type='ExitClearanceConfig' AND data::jsonb->>'dept_key'=$1", [secfDept]);
+      if (!secfExisting && !secfLabelIn?.trim()) return res.json({ success: false, error: 'A label is required to create a new department' });
+      const secfSeedMeta = EXIT_CLEARANCE_SEED_DEPTS.find(d => d.key === secfDept);
+      const secfExistingData = secfExisting ? JSON.parse(secfExisting.data) : null;
+      const secfData = {
+        id: secfExisting?.id || uuidv4(), dept_key: secfDept,
+        label: secfLabelIn?.trim() || secfExistingData?.label || secfSeedMeta?.label || secfDept,
+        owner_user_ids: Array.isArray(secfOwners) ? secfOwners : (secfExistingData?.owner_user_ids || []),
+        checklist_items: Array.isArray(secfItems) && secfItems.length ? secfItems : (secfExistingData?.checklist_items || secfSeedMeta?.default_items || []),
+        sla_days: Number(secfSla) || secfExistingData?.sla_days || 3,
+        mandatory: secfMandatory !== undefined ? !!secfMandatory : (secfExistingData?.mandatory !== false),
+      };
       if (secfExisting) await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(secfData), secfExisting.id]);
       else await run("INSERT INTO entities(id,type,status,data) VALUES($1,'ExitClearanceConfig','active',$2)", [secfData.id, JSON.stringify(secfData)]);
+      invalidateClearanceDeptsCache();
+      return res.json({ success: true, dept_key: secfDept });
+    }
+
+    // Removing a department only affects FUTURE exit cases — any exit
+    // already in progress keeps whatever departments were snapshotted into
+    // its own clearance_checklist when it was built, unaffected by this.
+    case 'deleteExitClearanceConfig': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { dept_key: decfDept } = p;
+      if (!decfDept || decfDept === 'working_department') return res.json({ success: false, error: 'Invalid dept_key' });
+      const decfRow = await one("SELECT id FROM entities WHERE type='ExitClearanceConfig' AND data::jsonb->>'dept_key'=$1", [decfDept]);
+      if (!decfRow) return res.json({ success: false, error: 'Department not found' });
+      await run("DELETE FROM entities WHERE id=$1", [decfRow.id]);
+      invalidateClearanceDeptsCache();
+      return res.json({ success: true });
+    }
+
+    case 'saveExitWorkflowConfig': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { require_employee_declaration, require_asset_verification, require_kra_handover } = p;
+      const swcData = {
+        id: 'exit-workflow-global',
+        require_employee_declaration: require_employee_declaration !== false,
+        require_asset_verification: require_asset_verification !== false,
+        require_kra_handover: require_kra_handover !== false,
+      };
+      const swcExisting = await one("SELECT id FROM entities WHERE type='ExitWorkflowConfig' AND id='exit-workflow-global'");
+      if (swcExisting) await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(swcData), swcExisting.id]);
+      else await run("INSERT INTO entities(id,type,status,data) VALUES('exit-workflow-global','ExitWorkflowConfig','active',$1)", [JSON.stringify(swcData)]);
+      invalidateExitWorkflowConfigCache();
       return res.json({ success: true });
     }
 

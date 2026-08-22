@@ -15,7 +15,7 @@ import {
   Clock, CalendarClock, CalendarX, Star, Save, Plus, Trash2, Package,
   Laptop, Phone, CreditCard, Key, Headphones, Monitor, Printer as PrintIcon,
   RotateCcw, ChevronRight, BookOpen, ShieldCheck, Activity, Info, Loader2,
-  Send, Edit3
+  Send, Edit3, Building2, Paperclip
 } from 'lucide-react';
 import { openLetterheadPrintWindow } from '@/utils/letterhead';
 import { isDirectReport } from '@/lib/hierarchy';
@@ -43,13 +43,21 @@ const STATUS_CONFIG = {
   cancelled:              { label: 'Cancelled',          color: 'bg-gray-100 text-gray-600' },
 };
 
-const CLEARANCE_DEPTS = [
-  { key: 'hr',                  label: 'HR Department',                        icon: User },
-  { key: 'finance',             label: 'Finance / Accounts',                   icon: DollarSign },
-  { key: 'it',                  label: 'IT Department',                        icon: Monitor },
-  { key: 'admin',               label: 'Admin/Facilities',                     icon: ClipboardList },
-  { key: 'working_department',  label: 'Working Department / Reporting Mgr',   icon: Activity },
-];
+// Departments are no longer a hardcoded list — each Exit record's own
+// clearance_checklist snapshot (built server-side from whatever HR had
+// configured when the case reached in_notice) carries its own label per
+// department, via `data.label`. This is just a cosmetic icon lookup for the
+// departments that ship by default; any custom department HR adds falls
+// back to a generic icon.
+const CLEARANCE_DEPT_ICONS = {
+  hr: User, finance: DollarSign, it: Monitor, admin: ClipboardList, working_department: Activity,
+};
+const CLEARANCE_STATUS_LABELS = { cleared: 'Cleared', not_cleared: 'Rejected', not_applicable: 'Not Applicable', action_requested: 'Action Requested', pending: 'Pending' };
+const CLEARANCE_STATUS_COLORS = {
+  cleared: 'bg-green-100 text-green-700', not_cleared: 'bg-red-100 text-red-700',
+  not_applicable: 'bg-gray-200 text-gray-600', action_requested: 'bg-amber-100 text-amber-700',
+  pending: 'bg-yellow-100 text-yellow-700',
+};
 
 const DEFAULT_ASSETS = [
   'Laptop/Computer', 'ID Card/Access Card', 'Phone/Tablet', 'Other Equipment/Assets', 'SIM', 'Data/Documents',
@@ -199,8 +207,8 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
     toast.success('Clearance process started');
   };
 
-  const handleUpdateClearance = async (deptKey, status, remarks, checklistItems) => {
-    const ok = await callExit('updateExitClearance', { dept_key: deptKey, status, remarks, checklist_items: checklistItems }, `${deptKey} clearance updated`);
+  const handleUpdateClearance = async (deptKey, status, remarks, checklistItems, supportingDocuments) => {
+    const ok = await callExit('updateExitClearance', { dept_key: deptKey, status, remarks, checklist_items: checklistItems, supporting_documents: supportingDocuments }, `${deptKey} clearance updated`);
     if (ok?.all_cleared) toast.success('All clearances done! No Dues Certificate can now be generated.');
   };
 
@@ -444,6 +452,10 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                     <div className="flex items-center justify-between p-3">
                       <div className="flex items-center gap-2 text-sm"><FileText className="w-4 h-4 text-indigo-500" />Full & Final Settlement Statement</div>
                       <Badge className={exit.fnf_document_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}>{exit.fnf_document_id ? 'Generated' : 'Not generated'}</Badge>
+                    </div>
+                    <div className="flex items-center justify-between p-3">
+                      <div className="flex items-center gap-2 text-sm"><FileText className="w-4 h-4 text-purple-500" />Full & Final Settlement Agreement</div>
+                      <Badge className={exit.fnf_agreement_document_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}>{exit.fnf_agreement_document_id ? 'Generated' : 'Not generated'}</Badge>
                     </div>
                   </div>
                 </div>
@@ -718,29 +730,42 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
           {/* ══ CLEARANCE ══ */}
           {activeTab === 'clearance' && (
             <div className="space-y-3">
-              <p className="text-sm text-gray-500">All 5 departments must clear every checklist item before a No Dues Certificate can be generated.</p>
-              {CLEARANCE_DEPTS.map(dept => {
-                const data = exit.clearance_checklist?.[dept.key] || { status: 'pending', checklist_items: [] };
-                const Icon = dept.icon;
-                return (
-                  <div key={dept.key} className={`border rounded-lg p-3 ${data.status === 'cleared' ? 'bg-green-50 border-green-200' : data.status === 'not_cleared' ? 'bg-red-50 border-red-200' : 'bg-gray-50'}`}>
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <Icon className={`w-5 h-5 flex-shrink-0 ${data.status === 'cleared' ? 'text-green-600' : data.status === 'not_cleared' ? 'text-red-600' : 'text-gray-400'}`} />
-                      <div className="flex-1">
-                        <p className="font-medium text-sm">{dept.label}</p>
-                        {data.authorized_by_name && <p className="text-xs text-gray-500">By {data.authorized_by_name} · {data.cleared_at ? safeDate(data.cleared_at, 'dd MMM yyyy') : ''}</p>}
-                        {data.remarks && <p className="text-xs text-gray-600">{data.remarks}</p>}
+              {Object.keys(exit.clearance_checklist || {}).length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-8">Clearance hasn't started yet — it's automatically initiated once the direct reporting manager and HR approve the resignation.</p>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-500">Every mandatory department must clear (or be marked Not Applicable) before a No Dues Certificate can be generated.</p>
+                  {Object.entries(exit.clearance_checklist || {}).map(([deptKey, data]) => {
+                    const Icon = CLEARANCE_DEPT_ICONS[deptKey] || Building2;
+                    const label = data.label || deptKey;
+                    return (
+                      <div key={deptKey} className={`border rounded-lg p-3 ${data.status === 'cleared' ? 'bg-green-50 border-green-200' : data.status === 'not_cleared' ? 'bg-red-50 border-red-200' : data.status === 'not_applicable' ? 'bg-gray-100 border-gray-200' : 'bg-gray-50'}`}>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <Icon className={`w-5 h-5 flex-shrink-0 ${data.status === 'cleared' ? 'text-green-600' : data.status === 'not_cleared' ? 'text-red-600' : 'text-gray-400'}`} />
+                          <div className="flex-1">
+                            <p className="font-medium text-sm">{label}{data.mandatory === false && <span className="ml-1.5 text-[10px] text-gray-400 font-normal">(optional)</span>}</p>
+                            {data.authorized_by_name && <p className="text-xs text-gray-500">By {data.authorized_by_name} · {data.cleared_at ? safeDate(data.cleared_at, 'dd MMM yyyy') : ''}</p>}
+                            {data.remarks && <p className="text-xs text-gray-600">{data.remarks}</p>}
+                            {(data.supporting_documents || []).length > 0 && (
+                              <div className="flex flex-wrap gap-2 mt-1">
+                                {data.supporting_documents.map((f, i) => (
+                                  <a key={i} href={f.file_url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">{f.filename || `Attachment ${i + 1}`}</a>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <Badge className={CLEARANCE_STATUS_COLORS[data.status] || CLEARANCE_STATUS_COLORS.pending}>
+                            {CLEARANCE_STATUS_LABELS[data.status] || 'Pending'}
+                          </Badge>
+                        </div>
+                        {canActDept(deptKey) && ['in_notice', 'clearance_pending', 'clearance_done'].includes(exit.status) && (
+                          <ClearanceDeptActions dept={deptKey} data={data} onUpdate={handleUpdateClearance} />
+                        )}
                       </div>
-                      <Badge className={data.status === 'cleared' ? 'bg-green-100 text-green-700' : data.status === 'not_cleared' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}>
-                        {data.status === 'cleared' ? 'Cleared' : data.status === 'not_cleared' ? 'Not Cleared' : 'Pending'}
-                      </Badge>
-                    </div>
-                    {canActDept(dept.key) && ['in_notice', 'clearance_pending', 'clearance_done'].includes(exit.status) && (
-                      <ClearanceDeptActions dept={dept.key} data={data} onUpdate={handleUpdateClearance} />
-                    )}
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </>
+              )}
             </div>
           )}
 
@@ -797,6 +822,8 @@ function ClearanceDeptActions({ dept, data, onUpdate }) {
   const [items, setItems] = useState(data.checklist_items || []);
   const [remarks, setRemarks] = useState(data.remarks || '');
   const [newItem, setNewItem] = useState('');
+  const [docs, setDocs] = useState(data.supporting_documents || []);
+  const [uploading, setUploading] = useState(false);
   const allChecked = items.length > 0 && items.every(it => it.checked);
 
   const toggleItem = (id) => setItems(p => p.map(it => it.id === id ? { ...it, checked: !it.checked } : it));
@@ -806,6 +833,21 @@ function ClearanceDeptActions({ dept, data, onUpdate }) {
     setNewItem('');
   };
   const removeItem = (id) => setItems(p => p.filter(it => it.id !== id));
+  const removeDoc = (i) => setDocs(p => p.filter((_, idx) => idx !== i));
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploading(true);
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      setDocs(p => [...p, { file_url, filename: file.name, uploaded_at: new Date().toISOString() }]);
+    } catch (err) {
+      toast.error('Upload failed: ' + err.message);
+    }
+    setUploading(false);
+  };
 
   return (
     <div className="mt-2 space-y-2">
@@ -823,10 +865,26 @@ function ClearanceDeptActions({ dept, data, onUpdate }) {
         <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={addItem}><Plus className="w-3 h-3" /></Button>
       </div>
       <Input className="h-7 text-xs" placeholder="Remarks..." value={remarks} onChange={e => setRemarks(e.target.value)} />
+      <div className="space-y-1">
+        {docs.map((f, i) => (
+          <div key={i} className="flex items-center gap-2 text-xs bg-white/60 rounded px-2 py-1">
+            <Paperclip className="w-3 h-3 text-gray-400 flex-shrink-0" />
+            <a href={f.file_url} target="_blank" rel="noopener noreferrer" className="flex-1 text-blue-600 hover:underline truncate">{f.filename}</a>
+            <button type="button" onClick={() => removeDoc(i)} className="text-red-400"><Trash2 className="w-3 h-3" /></button>
+          </div>
+        ))}
+        <label className="inline-flex items-center gap-1 text-xs text-gray-500 cursor-pointer hover:text-gray-700">
+          <Paperclip className="w-3 h-3" />
+          {uploading ? 'Uploading…' : 'Attach supporting document'}
+          <input type="file" className="hidden" disabled={uploading} onChange={handleFileUpload} />
+        </label>
+      </div>
       <div className="flex gap-2 flex-wrap">
-        <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700 disabled:opacity-40" disabled={!allChecked} title={!allChecked ? 'All checklist items must be checked first' : ''} onClick={() => onUpdate(dept, 'cleared', remarks, items)}><CheckCircle2 className="w-3 h-3 mr-1" />Clear</Button>
-        <Button size="sm" variant="outline" className="h-7 text-xs border-red-300 text-red-600" onClick={() => onUpdate(dept, 'not_cleared', remarks, items)}><XCircle className="w-3 h-3 mr-1" />Issue Found</Button>
-        <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => onUpdate(dept, 'pending', remarks, items)}>Save Progress</Button>
+        <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700 disabled:opacity-40" disabled={!allChecked} title={!allChecked ? 'All checklist items must be checked first' : ''} onClick={() => onUpdate(dept, 'cleared', remarks, items, docs)}><CheckCircle2 className="w-3 h-3 mr-1" />Clear</Button>
+        <Button size="sm" variant="outline" className="h-7 text-xs border-red-300 text-red-600" onClick={() => onUpdate(dept, 'not_cleared', remarks, items, docs)}><XCircle className="w-3 h-3 mr-1" />Issue Found</Button>
+        <Button size="sm" variant="outline" className="h-7 text-xs border-gray-300 text-gray-500" onClick={() => onUpdate(dept, 'not_applicable', remarks, items, docs)}>Not Applicable</Button>
+        <Button size="sm" variant="outline" className="h-7 text-xs border-amber-300 text-amber-700" disabled={!remarks.trim()} title={!remarks.trim() ? 'Add remarks describing what is needed' : ''} onClick={() => onUpdate(dept, 'action_requested', remarks, items, docs)}><Send className="w-3 h-3 mr-1" />Request Action</Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-500" onClick={() => onUpdate(dept, 'pending', remarks, items, docs)}>Save Progress</Button>
       </div>
     </div>
   );

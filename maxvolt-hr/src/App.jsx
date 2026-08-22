@@ -45,6 +45,8 @@ import CandidateDocumentPortal from './pages/CandidateDocumentPortal';
 const LOPConfiguration = lazy(() => import('./pages/LOPConfiguration'));
 const MyExit = lazy(() => import('./pages/MyExit'));
 const ExitManagement = lazy(() => import('./pages/ExitManagement'));
+const LeftEmployees = lazy(() => import('./pages/LeftEmployees'));
+const LeftEmployeeProfile = lazy(() => import('./pages/LeftEmployeeProfile'));
 const TrainingManagement = lazy(() => import('./pages/TrainingManagement'));
 const TrainingDetail = lazy(() => import('./pages/TrainingDetail'));
 const TrainingCalendar = lazy(() => import('./pages/TrainingCalendar'));
@@ -363,6 +365,16 @@ const AuthenticatedApp = () => {
       <Route path="/ExitManagement" element={
         <LayoutWrapper currentPageName="ExitManagement">
           <ExitManagement />
+        </LayoutWrapper>
+      } />
+      <Route path="/LeftEmployees" element={
+        <LayoutWrapper currentPageName="LeftEmployees">
+          <LeftEmployees />
+        </LayoutWrapper>
+      } />
+      <Route path="/LeftEmployeeProfile" element={
+        <LayoutWrapper currentPageName="LeftEmployeeProfile">
+          <LeftEmployeeProfile />
         </LayoutWrapper>
       } />
       <Route path="/TrainingManagement" element={

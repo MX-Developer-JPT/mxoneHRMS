@@ -95,20 +95,15 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
           { stage: 'manager', status: 'pending', actor_id: null, actor_name: null, comment: '', timestamp: null },
           { stage: 'hr', status: 'pending', actor_id: null, actor_name: null, comment: '', timestamp: null },
         ],
-        // 5-department model — must match EXIT_CLEARANCE_DEPTS in
-        // backend/routes/functions.js and every clearance UI component
-        // (ExitDetailPanel, MyExit, ExitManagement's Clearance Dashboard),
-        // which all key off hr/finance/it/admin/working_department. The old
-        // 7-key seed here (security/reporting_manager/project_manager) wrote
-        // keys nothing reads, while working_department — the one every
-        // component actually displays/actions — was never seeded at all.
-        clearance_checklist: {
-          hr:                 { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['Leave/attendance regularisation', 'Employee documents', 'Exit interview', 'Notice period', 'Final HR clearance', 'Full & Final eligibility'].map((label, i) => ({ id: `hr_${i}`, label, checked: false, notes: '' })) },
-          finance:            { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['Salary/advance dues', 'Expense/claim settlement', 'Loans/advances', 'Other recoveries', 'Any pending financial obligation'].map((label, i) => ({ id: `finance_${i}`, label, checked: false, notes: '' })) },
-          it:                 { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['Laptop/Desktop', 'Phone/Tablet', 'SIM', 'ID/Access credentials', 'Software/access accounts', 'Other IT assets', 'Data/document handover'].map((label, i) => ({ id: `it_${i}`, label, checked: false, notes: '' })) },
-          admin:              { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['ID card/access card', 'Keys', 'Company property', 'Other assigned assets'].map((label, i) => ({ id: `admin_${i}`, label, checked: false, notes: '' })) },
-          working_department: { status: 'pending', authorized_by_id: null, authorized_by_name: '', cleared_at: null, remarks: '', outstanding_dues: '', checklist_items: ['KRA/responsibility handover', 'Project handover', 'Documents/data handover', 'Company property', 'Pending work', 'Replacement/transition requirements'].map((label, i) => ({ id: `working_department_${i}`, label, checked: false, notes: '' })) },
-        },
+        // Deliberately NOT seeded here — the clearance checklist and asset
+        // list must not exist until the direct reporting manager approves
+        // (actionExitApproval builds them via the shared, dynamically
+        // department-configured makeDefaultClearanceChecklist() at that
+        // point, once status actually reaches in_notice). Building it here
+        // at submission time would let clearance start before any approval
+        // at all, and would duplicate department config that only the
+        // server should own.
+        clearance_checklist: {},
         assets: [],
         kt_items: [],
         exit_interview: null,

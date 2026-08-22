@@ -23,6 +23,7 @@ import ExitDetailPanel from '../components/exit/ExitDetailPanel';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import { resolveHierarchy } from '@/lib/hierarchy';
+import { deriveOverallExitStatus, OVERALL_STATUS_COLORS } from '@/lib/exitStatus';
 
 const STATUS_CONFIG = {
   submitted:              { label: 'Submitted',            color: 'bg-blue-100 text-blue-800' },
@@ -45,10 +46,16 @@ const STATUS_CONFIG = {
   cancelled:              { label: 'Cancelled',            color: 'bg-gray-100 text-gray-600' },
 };
 
-const CLEARANCE_DASH_DEPTS = [
-  { key: 'hr', label: 'HR' }, { key: 'finance', label: 'Finance' }, { key: 'it', label: 'IT' },
-  { key: 'admin', label: 'Admin' }, { key: 'working_department', label: 'Working Dept' },
-];
+// Departments are dynamic (HR-configurable), so the dashboard's department
+// columns are derived from whatever departments actually appear across the
+// currently-visible in-clearance cases, not a hardcoded list.
+const CLEARANCE_DASH_FALLBACK_LABELS = { hr: 'HR', finance: 'Finance', it: 'IT', admin: 'Admin', working_department: 'Working Dept' };
+const CLEARANCE_DASH_STATUS_LABELS = { cleared: 'Cleared', not_cleared: 'Issue', not_applicable: 'N/A', action_requested: 'Action Req.', pending: 'Pending' };
+const CLEARANCE_DASH_STATUS_COLORS = {
+  cleared: 'bg-green-100 text-green-700', not_cleared: 'bg-red-100 text-red-700',
+  not_applicable: 'bg-gray-200 text-gray-600', action_requested: 'bg-amber-100 text-amber-700',
+  pending: 'bg-yellow-100 text-yellow-700',
+};
 
 const PIE_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6'];
 
@@ -185,6 +192,17 @@ export default function ExitManagement() {
   /* ── dashboard stats ── */
   const now = new Date();
   const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const clearanceCases = useMemo(() => enriched.filter(ex => ['in_notice', 'clearance_pending', 'clearance_done'].includes(ex.status)), [enriched]);
+  const clearanceDeptCols = useMemo(() => {
+    const seen = new Map();
+    for (const ex of clearanceCases) {
+      for (const [key, data] of Object.entries(ex.clearance_checklist || {})) {
+        if (!seen.has(key)) seen.set(key, data.label || CLEARANCE_DASH_FALLBACK_LABELS[key] || key);
+      }
+    }
+    return Array.from(seen.entries()).map(([key, label]) => ({ key, label }));
+  }, [clearanceCases]);
 
   const stats = useMemo(() => {
     const all = enriched;
@@ -412,23 +430,27 @@ export default function ExitManagement() {
                 <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                   <tr>
                     <th className="px-4 py-2 text-left">Employee</th>
-                    {CLEARANCE_DASH_DEPTS.map(d => <th key={d.key} className="px-3 py-2 text-left">{d.label}</th>)}
+                    {clearanceDeptCols.map(d => <th key={d.key} className="px-3 py-2 text-left">{d.label}</th>)}
                     <th className="px-3 py-2 text-left">No Dues</th>
+                    <th className="px-3 py-2 text-left">Overall Progress</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {enriched.filter(ex => ['in_notice', 'clearance_pending', 'clearance_done'].includes(ex.status)).map(ex => (
+                  {clearanceCases.map(ex => {
+                    const overall = deriveOverallExitStatus(ex);
+                    return (
                     <tr key={ex.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => setSelected(ex)}>
                       <td className="px-4 py-2.5">
                         <p className="font-medium">{ex.user?.full_name}</p>
                         <p className="text-xs text-gray-400">{ex.employee?.department}</p>
                       </td>
-                      {CLEARANCE_DASH_DEPTS.map(d => {
-                        const c = ex.clearance_checklist?.[d.key] || { status: 'pending' };
+                      {clearanceDeptCols.map(d => {
+                        const c = ex.clearance_checklist?.[d.key];
+                        if (!c) return <td key={d.key} className="px-3 py-2.5 text-gray-300">—</td>;
                         return (
                           <td key={d.key} className="px-3 py-2.5">
-                            <Badge className={c.status === 'cleared' ? 'bg-green-100 text-green-700' : c.status === 'not_cleared' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}>
-                              {c.status === 'cleared' ? 'Cleared' : c.status === 'not_cleared' ? 'Issue' : 'Pending'}
+                            <Badge className={CLEARANCE_DASH_STATUS_COLORS[c.status] || CLEARANCE_DASH_STATUS_COLORS.pending}>
+                              {CLEARANCE_DASH_STATUS_LABELS[c.status] || 'Pending'}
                             </Badge>
                             {c.authorized_by_name && <p className="text-[10px] text-gray-400 mt-0.5">{c.authorized_by_name}</p>}
                           </td>
@@ -437,10 +459,14 @@ export default function ExitManagement() {
                       <td className="px-3 py-2.5">
                         <Badge className={ex.no_dues_generated ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-500'}>{ex.no_dues_generated ? 'Generated' : '—'}</Badge>
                       </td>
+                      <td className="px-3 py-2.5">
+                        <Badge className={OVERALL_STATUS_COLORS[overall] || 'bg-gray-100 text-gray-600'}>{overall}</Badge>
+                      </td>
                     </tr>
-                  ))}
-                  {!enriched.filter(ex => ['in_notice', 'clearance_pending', 'clearance_done'].includes(ex.status)).length && (
-                    <tr><td colSpan={CLEARANCE_DASH_DEPTS.length + 2} className="px-4 py-10 text-center text-gray-400">No cases currently in clearance</td></tr>
+                    );
+                  })}
+                  {!clearanceCases.length && (
+                    <tr><td colSpan={clearanceDeptCols.length + 3} className="px-4 py-10 text-center text-gray-400">No cases currently in clearance</td></tr>
                   )}
                 </tbody>
               </table>

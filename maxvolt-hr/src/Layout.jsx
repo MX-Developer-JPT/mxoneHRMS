@@ -12,7 +12,7 @@ import {
   ShieldCheck, Sparkles, AlertTriangle, QrCode, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
-  Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar, Camera, Loader2, LayoutGrid,
+  Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar, Camera, Loader2, LayoutGrid, Archive,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -302,6 +302,7 @@ const hrMenuGroups = [
     { name: 'Insurance Management',    icon: Shield,          page: 'InsuranceManagement' },
     { name: 'My Insurance',            icon: Shield,          page: 'MyInsurance' },
     { name: 'Exit Management',         icon: LogOut,          page: 'ExitManagement' },
+    { name: 'Left Employees',          icon: Archive,         page: 'LeftEmployees' },
   ]},
   { label: 'Operations', items: [
     { name: 'Departments',             icon: Building2,       page: 'DepartmentManagement' },
