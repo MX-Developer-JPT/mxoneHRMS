@@ -94,20 +94,13 @@ export default function Employees() {
     }
   };
 
-  if (loading) {
-    return <div className="flex items-center justify-center h-screen">Loading...</div>;
-  }
-
-  const statusColors = {
-    active: 'bg-green-100 text-green-800',
-    on_leave: 'bg-yellow-100 text-yellow-800',
-    resigned: 'bg-red-100 text-red-800',
-    terminated: 'bg-gray-100 text-gray-800'
-  };
-
   // Six full passes over up to 500 employees — was running on every render
   // (every keystroke in the search box, every filter change), not just when
-  // the employees list itself actually changed.
+  // the employees list itself actually changed. Must stay ABOVE the
+  // `if (loading) return` below — every hook in a component must run on
+  // every render regardless of early returns, or React throws "Rendered
+  // more hooks than during the previous render" (error #310) the moment
+  // `loading` flips from true to false.
   const stats = useMemo(() => ({
     total: employees.length,
     active: employees.filter(e => e.status === 'active').length,
@@ -124,6 +117,17 @@ export default function Employees() {
              e.employee_status === 'probation';
     }).length
   }), [employees]);
+
+  if (loading) {
+    return <div className="flex items-center justify-center h-screen">Loading...</div>;
+  }
+
+  const statusColors = {
+    active: 'bg-green-100 text-green-800',
+    on_leave: 'bg-yellow-100 text-yellow-800',
+    resigned: 'bg-red-100 text-red-800',
+    terminated: 'bg-gray-100 text-gray-800'
+  };
 
   const handleStatClick = (type) => {
     setFilterType(type);
