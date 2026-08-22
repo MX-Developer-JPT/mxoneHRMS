@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertTriangle, Clock, TrendingDown, BarChart3, Users, RefreshCw, Fingerprint, Camera, MapPin, Activity } from 'lucide-react';
-import { getAttendanceMethod } from '@/lib/attendanceSource';
+import { getAttendanceMethod, scheduledOffStatus, PRESENT_LIKE_STATUSES } from '@/lib/attendanceSource';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell
@@ -32,11 +32,14 @@ export default function AttendanceReports() {
     const startStr = `${year}-${String(month).padStart(2, '0')}-01`;
     const lastDay = new Date(year, month, 0).getDate();
     const endStr = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    const todayStr = format(new Date(), 'yyyy-MM-dd');
 
-    const [records, emps, logs] = await Promise.all([
+    const [records, emps, logs, shifts, holidays] = await Promise.all([
       base44.entities.Attendance.filter({ date: { $gte: startStr, $lte: endStr } }, '-date', 5000),
       base44.entities.Employee.filter({ status: 'active' }, '-created_date', 500),
       base44.entities.AttendanceLog.filter({}, '-LogDate', 3000).catch(() => []),
+      base44.entities.Shift.list().catch(() => []),
+      base44.entities.Holiday.list().catch(() => []),
     ]);
 
     const filtered = records.filter(r => {
@@ -57,7 +60,36 @@ export default function AttendanceReports() {
       return year > dojY || (year === dojY && month >= dojM);
     });
 
-    setAttendance(filtered);
+    // A day with no Attendance record is only a real absence if the employee
+    // was actually scheduled to work it (see scheduledOffStatus) — without
+    // this, every summary card below only reflected however many explicit
+    // Attendance rows the cron job happened to create, silently undercounting
+    // absences for any day that record-creation missed. Fills the gap with
+    // synthetic absent/holiday/week_off entries (never a real record) so
+    // every card, chart and department/location breakdown counts the same
+    // set of employee-days the Muster Roll and Swipe Details exports do.
+    const shiftMap = {};
+    let defaultShift = { days: ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'] };
+    shifts.forEach(s => { shiftMap[s.id] = s; if (s.is_default) defaultShift = s; });
+    const holidaySet = new Set(holidays.map(h => toDateStr(h.date)).filter(d => d >= startStr && d <= endStr));
+    const recByEmpDate = {};
+    filtered.forEach(r => {
+      const uid = r.user_id, d = toDateStr(r.date);
+      if (!recByEmpDate[uid]) recByEmpDate[uid] = {};
+      recByEmpDate[uid][d] = r;
+    });
+    const combined = [...filtered];
+    dojFilteredEmps.forEach(emp => {
+      const empRecs = recByEmpDate[emp.user_id] || {};
+      for (let d = 1; d <= lastDay; d++) {
+        const ds = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        if (ds > todayStr || empRecs[ds]) continue;
+        const off = scheduledOffStatus(emp, ds, holidaySet, shiftMap, defaultShift);
+        combined.push({ user_id: emp.user_id, date: ds, status: off || 'absent', _synthetic: true });
+      }
+    });
+
+    setAttendance(combined);
     setEmployees(dojFilteredEmps);
     setBioLogs(filteredLogs);
     setLoading(false);
@@ -66,18 +98,30 @@ export default function AttendanceReports() {
   // --- Derived stats ---
   const stats = useMemo(() => {
     const total = attendance.length;
-    const present = attendance.filter(a => ['present', 'on_duty'].includes(a.status)).length;
+    const present = attendance.filter(a => PRESENT_LIKE_STATUSES.includes(a.status)).length;
     const halfDay = attendance.filter(a => a.status === 'half_day').length;
     const absent = attendance.filter(a => a.status === 'absent').length;
+    const holiday = attendance.filter(a => a.status === 'holiday').length;
+    const weekOff = attendance.filter(a => a.status === 'week_off').length;
     const late = attendance.filter(a => a.late_arrival).length;
     const earlyOut = attendance.filter(a => a.early_departure).length;
-    const biometric = attendance.filter(a => getAttendanceMethod(a).key === 'biometric').length;
-    const geofence  = attendance.filter(a => getAttendanceMethod(a).key === 'geofence').length;
-    const selfie    = attendance.filter(a => getAttendanceMethod(a).key === 'selfie').length;
+    // Method distribution only makes sense over real punches — the
+    // synthetic inferred-absent/holiday/week_off entries added above carry
+    // no method signal, and getAttendanceMethod() would otherwise default
+    // every one of them into "Manual", swamping the real breakdown.
+    const realRecords = attendance.filter(a => !a._synthetic);
+    const biometric = realRecords.filter(a => getAttendanceMethod(a).key === 'biometric').length;
+    const geofence  = realRecords.filter(a => getAttendanceMethod(a).key === 'geofence').length;
+    const selfie    = realRecords.filter(a => getAttendanceMethod(a).key === 'selfie').length;
+    const manual    = realRecords.length - biometric - geofence - selfie;
     const workedRecs = attendance.filter(a => (a.working_hours || 0) > 0);
     const avgHours = workedRecs.length > 0 ? (workedRecs.reduce((s, a) => s + a.working_hours, 0) / workedRecs.length) : 0;
     const totalOvertime = attendance.reduce((s, a) => s + ((a.overtime_minutes || 0) / 60), 0);
-    return { total, present, halfDay, absent, late, earlyOut, biometric, geofence, selfie, avgHours, totalOvertime };
+    // Present/absent/half-day are the only categories that represent a
+    // "was this employee expected to work" day — holidays and week-offs
+    // aren't, so they're excluded from the attendance-rate denominator.
+    const workingTotal = present + absent + halfDay;
+    return { total, present, halfDay, absent, holiday, weekOff, late, earlyOut, biometric, geofence, selfie, manual, avgHours, totalOvertime, workingTotal };
   }, [attendance]);
 
   // --- Daily trend ---
@@ -87,7 +131,7 @@ export default function AttendanceReports() {
       const d = toDateStr(a.date);
       if (!d) return;
       if (!map[d]) map[d] = { date: d, present: 0, absent: 0, halfDay: 0, late: 0, earlyOut: 0 };
-      if (['present', 'on_duty'].includes(a.status)) map[d].present++;
+      if (PRESENT_LIKE_STATUSES.includes(a.status)) map[d].present++;
       else if (a.status === 'half_day') map[d].halfDay++;
       else if (a.status === 'absent') map[d].absent++;
       if (a.late_arrival) map[d].late++;
@@ -111,8 +155,11 @@ export default function AttendanceReports() {
       const emp = employees.find(e => e.user_id === a.user_id);
       const dept = emp?.department || 'Unknown';
       if (!map[dept]) return;
+      // Holidays/week-offs aren't part of the working-day denominator either
+      // — matches stats.workingTotal's rationale above.
+      if (a.status === 'holiday' || a.status === 'week_off') return;
       map[dept].records++;
-      if (['present', 'on_duty'].includes(a.status)) map[dept].present++;
+      if (PRESENT_LIKE_STATUSES.includes(a.status)) map[dept].present++;
       if (a.status === 'absent') map[dept].absent++;
       if (a.late_arrival) map[dept].late++;
       if (a.early_departure) map[dept].earlyOut++;
@@ -158,7 +205,7 @@ export default function AttendanceReports() {
     { name: 'Biometric', value: stats.biometric, color: '#10b981' },
     { name: 'Geofence', value: stats.geofence, color: '#6366f1' },
     { name: 'Selfie', value: stats.selfie, color: '#3b82f6' },
-    { name: 'Manual', value: stats.total - stats.biometric - stats.geofence - stats.selfie, color: '#9ca3af' },
+    { name: 'Manual', value: stats.manual, color: '#9ca3af' },
   ].filter(m => m.value > 0), [stats]);
 
   // --- Biometric log stats ---
@@ -183,8 +230,9 @@ export default function AttendanceReports() {
       const emp = employees.find(e => e.user_id === a.user_id);
       const loc = emp?.work_location || 'Unspecified';
       if (!map[loc]) return;
+      if (a.status === 'holiday' || a.status === 'week_off') return;
       map[loc].records++;
-      if (['present', 'on_duty', 'late', 'short_attendance'].includes(a.status)) map[loc].present++;
+      if (PRESENT_LIKE_STATUSES.includes(a.status)) map[loc].present++;
       if (a.status === 'absent') map[loc].absent++;
       if (a.late_arrival) map[loc].late++;
       if (a.early_departure) map[loc].earlyOut++;
@@ -237,7 +285,7 @@ export default function AttendanceReports() {
         {/* Summary Cards */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
-            { label: 'Present Days', value: stats.present, color: 'text-green-600', sub: `${stats.total > 0 ? ((stats.present / stats.total) * 100).toFixed(1) : 0}% rate` },
+            { label: 'Present Days', value: stats.present, color: 'text-green-600', sub: `${stats.workingTotal > 0 ? ((stats.present / stats.workingTotal) * 100).toFixed(1) : 0}% rate` },
             { label: 'Absent Days', value: stats.absent, color: 'text-red-600', sub: 'This month' },
             { label: 'Late Arrivals', value: stats.late, color: 'text-orange-600', sub: 'Instances' },
             { label: 'Early Departures', value: stats.earlyOut, color: 'text-yellow-600', sub: 'Instances' },

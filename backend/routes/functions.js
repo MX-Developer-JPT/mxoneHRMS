@@ -4769,6 +4769,32 @@ router.post('/:name', async (req, res) => {
       };
       const swWeekdayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
+      // A missing record only means 'absent' if the employee was actually
+      // scheduled to work that day — mirrors exportAttendanceMuster's
+      // mStatusCode logic exactly, so a Saturday that IS a working day per
+      // this employee's Shift, or a declared Holiday, shows correctly here
+      // instead of every blank day being flattened to a blanket "Absent".
+      const swFallbackDays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const swHolidaySet = new Set(parseEntities(await all(
+        "SELECT data FROM entities WHERE type='Holiday' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [swMonthStart, swMonthEnd]
+      )).map(h => h.date));
+      const swShiftCache = {};
+      let swDefaultShift = { days: swFallbackDays };
+      (await all("SELECT data FROM entities WHERE type='Shift'")).forEach(r => {
+        const s = JSON.parse(r.data);
+        swShiftCache[s.id] = s;
+        if (s.is_default) swDefaultShift = s;
+      });
+      const swWorkingDaysFor = (emp) => {
+        const shift = (emp?.shift_id && swShiftCache[emp.shift_id]) || swDefaultShift;
+        return Array.isArray(shift?.days) && shift.days.length ? shift.days : (swDefaultShift.days || swFallbackDays);
+      };
+      const swInferredStatus = (ds, workingDays) => {
+        if (swHolidaySet.has(ds)) return 'holiday';
+        const weekday = swWeekdayNames[new Date(ds + 'T00:00:00').getDay()];
+        return workingDays.includes(weekday) ? 'absent' : 'week_off';
+      };
+
       const ExcelJSsw = await import('exceljs');
       const wbSw = new ExcelJSsw.default.Workbook();
       wbSw.creator = 'Maxvolt One'; wbSw.created = new Date();
@@ -4821,13 +4847,14 @@ router.post('/:name', async (req, res) => {
         const empRecs = swAttMap[emp.user_id] || {};
         const rowBg = swEmpAlt ? 'F5F9FF' : 'FFFFFF';
         swEmpAlt = !swEmpAlt;
+        const workingDays = swWorkingDaysFor(emp);
 
         for (let d = 1; d <= swDaysInMonth; d++) {
           const ds = `${swY}-${String(swM).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
           const rec = empRecs[ds];
           const weekday = swWeekdayNames[new Date(swY, swM-1, d).getDay()];
           const method = swMethod(rec);
-          const status = rec?.status || (rec ? '' : 'absent');
+          const status = rec?.status || (rec ? '' : swInferredStatus(ds, workingDays));
 
           const row = wsSw.getRow(swRowNum++);
           const vals = [
