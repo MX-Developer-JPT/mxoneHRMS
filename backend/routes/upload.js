@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
+import sharp from 'sharp';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { one, run } from '../db.js';
@@ -72,17 +73,41 @@ router.post('/', memUpload.single('file'), async (req, res) => {
   const mime = req.file.mimetype || 'application/octet-stream';
   const uploader = optionalUser(req)?.id || null;
 
+  // Photos straight off a phone camera commonly arrive at 3-8MB / 3000-4000px
+  // — far larger than any avatar/detail view actually displays — and were
+  // being stored and served at that original size. Downscale (preserving
+  // format/transparency, honoring EXIF rotation before it's stripped) before
+  // it ever reaches storage. Skipped for GIF (animation would break) and SVG
+  // (already vector/tiny). This is what made profile photos across the org
+  // chart and employee portal slow to load.
+  let fileBuffer = req.file.buffer;
+  let fileSize = req.file.size;
+  if (/^image\//.test(mime) && mime !== 'image/gif' && mime !== 'image/svg+xml') {
+    try {
+      const resized = await sharp(req.file.buffer)
+        .rotate()
+        .resize({ width: 1200, height: 1200, fit: 'inside', withoutEnlargement: true })
+        .toBuffer();
+      if (resized.length > 0 && resized.length < fileBuffer.length) {
+        fileBuffer = resized;
+        fileSize = resized.length;
+      }
+    } catch (resizeErr) {
+      console.warn('[upload] image resize skipped:', resizeErr.message);
+    }
+  }
+
   try {
     // 1. Railway Bucket (private) — store object, keep only a key reference in DB
     if (isBucketConfigured()) {
       try {
         const key = buildKey(id, ext);
-        await putToBucket(key, req.file.buffer, mime);
+        await putToBucket(key, fileBuffer, mime);
         await run(
           "INSERT INTO files(id, filename, mime, size, storage, r2_key, uploaded_by) VALUES($1,$2,$3,$4,'railway',$5,$6)",
-          [id, req.file.originalname || `${id}${ext}`, mime, req.file.size, key, uploader]
+          [id, req.file.originalname || `${id}${ext}`, mime, fileSize, key, uploader]
         );
-        return res.json({ file_url: `${APP_BASE}/api/upload/file/${id}${ext}`, filename: req.file.originalname, size: req.file.size });
+        return res.json({ file_url: `${APP_BASE}/api/upload/file/${id}${ext}`, filename: req.file.originalname, size: fileSize });
       } catch (bucketErr) {
         console.warn('[upload] Railway Bucket failed, falling back:', bucketErr.message);
       }
@@ -91,8 +116,8 @@ router.post('/', memUpload.single('file'), async (req, res) => {
     // 2. Cloudinary
     if (USE_CLOUDINARY) {
       try {
-        const result = await uploadToCloudinary(req.file.buffer, req.file.originalname);
-        return res.json({ file_url: result.secure_url, filename: result.public_id, size: req.file.size });
+        const result = await uploadToCloudinary(fileBuffer, req.file.originalname);
+        return res.json({ file_url: result.secure_url, filename: result.public_id, size: fileSize });
       } catch (cloudErr) {
         console.warn('[upload] Cloudinary failed, falling back to DB:', cloudErr.message);
       }
@@ -101,9 +126,9 @@ router.post('/', memUpload.single('file'), async (req, res) => {
     // 3. PostgreSQL bytes — always-available persistent fallback
     await run(
       "INSERT INTO files(id, filename, mime, size, data, storage, uploaded_by) VALUES($1,$2,$3,$4,$5,'db',$6)",
-      [id, req.file.originalname || `${id}${ext}`, mime, req.file.size, req.file.buffer, uploader]
+      [id, req.file.originalname || `${id}${ext}`, mime, fileSize, fileBuffer, uploader]
     );
-    return res.json({ file_url: `/api/upload/file/${id}${ext}`, filename: req.file.originalname, size: req.file.size });
+    return res.json({ file_url: `/api/upload/file/${id}${ext}`, filename: req.file.originalname, size: fileSize });
   } catch (err) {
     console.error('Upload error:', err);
     return res.status(500).json({ error: 'Upload failed: ' + err.message });
@@ -124,12 +149,19 @@ router.get('/file/:id', async (req, res) => {
     // it — storage tells us which presigner to use. 'railway' is anything
     // uploaded after the Railway Bucket switch; 'r2' is anything uploaded
     // before it, still served straight from R2.
+    // Cache-Control on the redirect itself — without it, every repeat view
+    // of the same photo (org chart re-render, profile revisit) re-hit this
+    // server, re-queried Postgres, and re-signed a fresh bucket URL just to
+    // redirect again, instead of the browser reusing what it already has.
+    // Capped under the signed URL's own 3600s validity window.
     if (row.storage === 'railway' && row.r2_key) {
       const url = await presignBucketGet(row.r2_key, { expiresIn: 3600, filename: row.filename });
+      res.setHeader('Cache-Control', 'private, max-age=3000');
       return res.redirect(302, url);
     }
     if (row.storage === 'r2' && row.r2_key) {
       const url = await presignR2Get(row.r2_key, { expiresIn: 3600, filename: row.filename });
+      res.setHeader('Cache-Control', 'private, max-age=3000');
       return res.redirect(302, url);
     }
 

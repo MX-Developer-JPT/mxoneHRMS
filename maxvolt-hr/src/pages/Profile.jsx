@@ -64,6 +64,7 @@ export default function Profile() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoLoadError, setPhotoLoadError] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   const [formData, setFormData] = useState({
@@ -114,6 +115,7 @@ export default function Profile() {
       const { file_url } = await base44.integrations.Core.UploadFile({ file });
       await base44.entities.Employee.update(employee.id, { profile_picture_url: file_url });
       setEmployee(prev => ({ ...prev, profile_picture_url: file_url }));
+      setPhotoLoadError(false);
       toast.success('Profile picture updated!');
     } catch (err) {
       toast.error(err.message || 'Failed to upload photo');
@@ -164,11 +166,12 @@ export default function Profile() {
           <CardContent className="relative pt-0 pb-6 px-6">
             <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-10">
               <div className="relative w-20 h-20 group">
-                {employee?.profile_picture_url ? (
+                {employee?.profile_picture_url && !photoLoadError ? (
                   <img
                     src={employee.profile_picture_url}
                     alt={user?.full_name}
                     className="w-20 h-20 rounded-full object-cover border-4 border-white shadow-lg"
+                    onError={() => setPhotoLoadError(true)}
                   />
                 ) : (
                   <div className="w-20 h-20 rounded-full bg-blue-600 border-4 border-white shadow-lg flex items-center justify-center">

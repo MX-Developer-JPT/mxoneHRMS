@@ -46,6 +46,30 @@ function accentFor(dept) {
   return DEPT_ACCENTS[dept];
 }
 
+// Lazy-loaded, size-constrained, and falls back to the initials avatar if
+// the photo URL 404s/expires (e.g. a legacy pre-migration storage record) —
+// without this an <img> with a dead src shows a broken-image icon forever,
+// since the initials fallback below only ever triggered on an empty URL,
+// never a URL that failed to load.
+function AvatarImg({ url, name, sizeClass, sizePx, textClass }) {
+  const [imgError, setImgError] = useState(false);
+  if (!url || imgError) {
+    return (
+      <div className={`${sizeClass} rounded-full ${colorFor(name)} text-white flex items-center justify-center ${textClass} font-bold shrink-0`}>
+        {initials(name)}
+      </div>
+    );
+  }
+  return (
+    <img
+      src={url} alt={name}
+      className={`${sizeClass} rounded-full object-cover shadow`}
+      loading="lazy" decoding="async" width={sizePx} height={sizePx}
+      onError={() => setImgError(true)}
+    />
+  );
+}
+
 function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, cardRef }) {
   return (
     <div
@@ -55,13 +79,7 @@ function ChartCard({ node, highlight, hasKids, isCollapsed, onToggle, onFocus, c
       title={hasKids ? `View ${node.name}'s team` : node.name}
     >
       <div className="p-3 flex flex-col items-center text-center gap-1.5">
-        {node.profile_picture_url ? (
-          <img src={node.profile_picture_url} alt={node.name} className="w-12 h-12 rounded-full object-cover shadow" />
-        ) : (
-          <div className={`w-12 h-12 rounded-full ${colorFor(node.name)} text-white flex items-center justify-center text-sm font-bold shrink-0`}>
-            {initials(node.name)}
-          </div>
-        )}
+        <AvatarImg url={node.profile_picture_url} name={node.name} sizeClass="w-12 h-12" sizePx={48} textClass="text-sm" />
         <div className="min-w-0 w-full">
           <p className="text-[13px] font-semibold text-gray-800 dark:text-gray-100 truncate">{node.name}</p>
           <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">{node.designation || node.department || 'No title'}</p>
@@ -553,13 +571,7 @@ export default function OrgChart() {
                     <p className="font-semibold text-gray-800 dark:text-gray-100 text-base mb-3">{g.dept}</p>
                     {g.head && (
                       <div className="flex items-center gap-2 pt-3 border-t border-gray-100 dark:border-gray-800">
-                        {g.head.profile_picture_url ? (
-                          <img src={g.head.profile_picture_url} alt={g.head.name} className="w-8 h-8 rounded-full object-cover shadow" />
-                        ) : (
-                          <div className={`w-8 h-8 rounded-full ${colorFor(g.head.name)} text-white flex items-center justify-center text-xs font-bold shrink-0`}>
-                            {initials(g.head.name)}
-                          </div>
-                        )}
+                        <AvatarImg url={g.head.profile_picture_url} name={g.head.name} sizeClass="w-8 h-8" sizePx={32} textClass="text-xs" />
                         <div className="min-w-0">
                           <p className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate flex items-center gap-1">
                             <Crown className="w-3 h-3 text-amber-500 shrink-0" /> {g.head.name}

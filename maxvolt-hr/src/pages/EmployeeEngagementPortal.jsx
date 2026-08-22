@@ -9,14 +9,17 @@ import { safeDate } from '@/lib/dateUtils';
 function EmployeeCard({ employee, user }) {
   const displayName = employee.display_name || user?.full_name || '?';
   const initials = displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+  const [imgError, setImgError] = useState(false);
   return (
     <Card className="hover:shadow-md transition-shadow">
       <CardContent className="p-5 flex flex-col items-center text-center gap-3">
-        {employee.profile_picture_url ? (
+        {employee.profile_picture_url && !imgError ? (
           <img
             src={employee.profile_picture_url}
             alt={displayName}
             className="w-20 h-20 rounded-full object-cover border-2 border-blue-100 shadow"
+            loading="lazy" decoding="async" width={80} height={80}
+            onError={() => setImgError(true)}
           />
         ) : (
           <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow">
@@ -43,11 +46,17 @@ function EmployeeCard({ employee, user }) {
 function NewJoinerCard({ employee }) {
   const displayName = employee.display_name || '?';
   const initials = displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+  const [imgError, setImgError] = useState(false);
   return (
     <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-4 flex gap-4 items-start">
       <div className="flex-shrink-0">
-        {employee.profile_picture_url ? (
-          <img src={employee.profile_picture_url} alt={displayName} className="w-14 h-14 rounded-full object-cover border-2 border-blue-200" />
+        {employee.profile_picture_url && !imgError ? (
+          <img
+            src={employee.profile_picture_url} alt={displayName}
+            className="w-14 h-14 rounded-full object-cover border-2 border-blue-200"
+            loading="lazy" decoding="async" width={56} height={56}
+            onError={() => setImgError(true)}
+          />
         ) : (
           <div className="w-14 h-14 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
             <span className="text-white text-xl font-bold">{initials}</span>
