@@ -139,6 +139,9 @@ const managementMenuGroups = [
     { name: 'My Assets',                icon: Laptop,          page: 'MyAssets' },
     { name: 'My Exit',                  icon: LogOut,          page: 'MyExit' },
   ]},
+  { label: 'Exit Management', items: [
+    { name: 'Exit Management',          icon: LogOut,          page: 'ExitManagement' },
+  ]},
   { label: 'Engagement', items: [
     { name: 'Announcements',            icon: Bell,            page: 'Announcements' },
     { name: 'Helpdesk',                 icon: HelpCircle,      page: 'Helpdesk' },
@@ -200,6 +203,9 @@ const managerMenuGroups = [
     { name: 'My Insurance',             icon: Shield,          page: 'MyInsurance' },
     { name: 'My Assets',                icon: Laptop,          page: 'MyAssets' },
     { name: 'My Exit',                  icon: LogOut,          page: 'MyExit' },
+  ]},
+  { label: 'Exit Management', items: [
+    { name: 'Exit Management',          icon: LogOut,          page: 'ExitManagement' },
   ]},
   { label: 'Engagement', items: [
     { name: 'Announcements',            icon: Bell,            page: 'Announcements' },
@@ -767,7 +773,11 @@ export default function Layout({ children, currentPageName }) {
   if ((isITDept || isAdminDept) && !isHR) {
     menuGroups = [...menuGroups, { label: isITDept ? 'IT' : 'Assets', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
   }
-  if (myClearanceDepts.length > 0 && !isHR) {
+  // Managers, top management, and HR already have 'Exit Management' baked
+  // into their base menu above — this only adds it for everyone else (plain
+  // employees, recruiters, gate admins) who happens to own a configured
+  // clearance department, so it's never duplicated in the nav.
+  if (myClearanceDepts.length > 0 && !isHR && !isManager && !isTopManagement) {
     menuGroups = [...menuGroups, { label: 'Clearance', items: [{ name: 'Exit Management', icon: LogOut, page: 'ExitManagement' }] }];
   }
   if (isAdmin) {
