@@ -205,8 +205,7 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   };
 
   const handleSaveAssets = async () => {
-    await saveExit({ assets, audit_log: addAudit(exit.audit_log, 'Assets updated', '') });
-    toast.success('Assets saved');
+    await callExit('updateExitAssets', { assets }, 'Assets saved');
   };
 
   const handleSaveKT = async () => {
@@ -688,7 +687,7 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
               loadingAssets={loadingAssets}
               setLoadingAssets={setLoadingAssets}
               saving={saving}
-              isHR={isHR}
+              canManageAssets={isHR || myClearanceDepts.includes('it')}
               currentUser={currentUser}
               onSave={handleSaveAssets}
               onConfirmReturn={async (asset, condition, notes) => {
@@ -711,8 +710,7 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                     });
                   } catch (e) { console.warn('Asset entity update failed:', e.message); }
                 }
-                await saveExit({ assets: updatedAssets, audit_log: addAudit(exit.audit_log, `Asset returned: ${asset.name}`, condition) });
-                toast.success(`${asset.name} marked as returned`);
+                await callExit('updateExitAssets', { assets: updatedAssets }, `${asset.name} marked as returned`);
               }}
             />
           )}
@@ -982,7 +980,7 @@ function FnFTab({ exit, isHR, currentUser, saving, generating, fnfData, setFnfDa
 }
 
 /* ── Asset Return Tab sub-component ── */
-function AssetReturnTab({ exit, assets, setAssets, loadingAssets, setLoadingAssets, saving, isHR, currentUser, onSave, onConfirmReturn }) {
+function AssetReturnTab({ exit, assets, setAssets, loadingAssets, setLoadingAssets, saving, canManageAssets, currentUser, onSave, onConfirmReturn }) {
   const [confirmDialog, setConfirmDialog] = useState(null); // { asset, index }
   const [confirmCondition, setConfirmCondition] = useState('good');
   const [confirmNotes, setConfirmNotes] = useState('');
@@ -1032,12 +1030,12 @@ function AssetReturnTab({ exit, assets, setAssets, loadingAssets, setLoadingAsse
           <p className="text-xs text-gray-500">Assets assigned to employee from the asset tracking system</p>
         </div>
         <div className="flex gap-2">
-          {isHR && (
+          {canManageAssets && (
             <Button size="sm" variant="outline" onClick={handleAddManual}>
               <Plus className="w-3.5 h-3.5 mr-1" />Add Manual
             </Button>
           )}
-          {isHR && (
+          {canManageAssets && (
             <Button size="sm" variant="outline" onClick={async () => {
               setLoadingAssets(true);
               try {
@@ -1075,7 +1073,7 @@ function AssetReturnTab({ exit, assets, setAssets, loadingAssets, setLoadingAsse
           <Package className="w-10 h-10 mx-auto mb-2" />
           <p className="text-sm font-medium">No assets found</p>
           <p className="text-xs mt-1">No assets are assigned to this employee in the tracking system.<br />Use "Add Manual" to add ID card, access card, etc.</p>
-          {isHR && <Button size="sm" className="mt-3" onClick={handleAddManual}><Plus className="w-3.5 h-3.5 mr-1" />Add Manual Asset</Button>}
+          {canManageAssets && <Button size="sm" className="mt-3" onClick={handleAddManual}><Plus className="w-3.5 h-3.5 mr-1" />Add Manual Asset</Button>}
         </div>
       ) : (
         <div className="space-y-2">
@@ -1107,22 +1105,22 @@ function AssetReturnTab({ exit, assets, setAssets, loadingAssets, setLoadingAsse
                 </div>
                 {/* Actions */}
                 <div className="flex gap-1.5 flex-shrink-0">
-                  {isHR && asset.status === 'pending' && (
+                  {canManageAssets && asset.status === 'pending' && (
                     <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700" onClick={() => { setConfirmDialog({ asset, index: i }); setConfirmCondition('good'); setConfirmNotes(''); }}>
                       <CheckCircle2 className="w-3 h-3 mr-1" />Confirm Return
                     </Button>
                   )}
-                  {isHR && asset.status === 'pending' && (
+                  {canManageAssets && asset.status === 'pending' && (
                     <Button size="sm" variant="outline" className="h-7 text-xs border-red-300 text-red-600" onClick={() => { setConfirmDialog({ asset, index: i }); setConfirmCondition('missing'); setConfirmNotes(''); }}>
                       <AlertCircle className="w-3 h-3 mr-1" />Mark Missing
                     </Button>
                   )}
-                  {isHR && asset.status !== 'pending' && (
+                  {canManageAssets && asset.status !== 'pending' && (
                     <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-400" onClick={() => { const c=[...assets]; c[i]={...c[i],status:'pending',returned_date:'',returned_by:'',condition:'',notes:''}; setAssets(c); }}>
                       <RotateCcw className="w-3 h-3" />
                     </Button>
                   )}
-                  {isHR && asset._source === 'manual' && (
+                  {canManageAssets && asset._source === 'manual' && (
                     <Button size="sm" variant="ghost" className="h-7 text-xs text-red-400" onClick={() => setAssets(p => p.filter((_, j) => j !== i))}><Trash2 className="w-3 h-3" /></Button>
                   )}
                 </div>
@@ -1134,7 +1132,7 @@ function AssetReturnTab({ exit, assets, setAssets, loadingAssets, setLoadingAsse
 
       <div className="flex items-center justify-between text-sm">
         <span className="text-gray-500">{returnedCount}/{assets.length} accounted for</span>
-        {isHR && <Button onClick={onSave} disabled={saving}><Save className="w-4 h-4 mr-2" />Save Asset Status</Button>}
+        {canManageAssets && <Button onClick={onSave} disabled={saving}><Save className="w-4 h-4 mr-2" />Save Asset Status</Button>}
       </div>
 
       {/* Confirm return dialog */}

@@ -925,8 +925,9 @@ export default function AllAttendance() {
                             return (
                               <div
                                 key={di}
-                                className={`relative border rounded text-center py-1 px-0.5 text-[10px] font-medium leading-tight ${isFuture ? 'bg-gray-50 border-gray-100 text-gray-300' : colorClass} ${isToday ? 'ring-1 ring-blue-500' : ''}`}
-                                title={rec ? `${status?.replace(/_/g,' ')}${rec.regularised ? ' (Regularised)' : ''}${checkIn ? ` · In: ${safeTime(checkIn)}` : ''}${checkOut ? ` · Out: ${safeTime(checkOut)}` : ''}${hours ? ` · ${hours.toFixed(1)}h` : ''}` : ''}
+                                className={`relative border rounded text-center py-1 px-0.5 text-[10px] font-medium leading-tight ${isFuture ? 'bg-gray-50 border-gray-100 text-gray-300' : colorClass} ${isToday ? 'ring-1 ring-blue-500' : ''} ${rec ? 'cursor-pointer hover:ring-1 hover:ring-blue-400' : ''}`}
+                                title={rec ? `${status?.replace(/_/g,' ')}${rec.regularised ? ' (Regularised)' : ''}${checkIn ? ` · In: ${safeTime(checkIn)}` : ''}${checkOut ? ` · Out: ${safeTime(checkOut)}` : ''}${hours ? ` · ${hours.toFixed(1)}h` : ''} — click for full details` : ''}
+                                onClick={() => rec && setSelectedRecord(rec)}
                               >
                                 {rec?.regularised && <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-violet-500" />}
                                 <div className={`font-bold text-[11px] ${isToday ? 'text-blue-600' : di === 0 ? 'text-red-400' : ''}`}>{d}</div>

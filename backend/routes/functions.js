@@ -11151,6 +11151,28 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true, status: aeaNewStatus });
     }
 
+    case 'updateExitAssets': {
+      // Server-enforced counterpart to the Asset Return tab's save/confirm
+      // actions — HR/admin/management or the IT department's configured
+      // clearance owner (the population that can act on IT clearance) may
+      // update an exit case's asset-return table. Everyone else who was
+      // previously allowed to see this record (working-dept manager, other
+      // dept owners) cannot, since asset return is IT's checklist item.
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { exit_id: ueaExitId, assets: ueaAssets } = p;
+      if (!ueaExitId || !Array.isArray(ueaAssets)) return res.json({ success: false, error: 'exit_id and assets array required' });
+      const ueaRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [ueaExitId]);
+      if (!ueaRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ueaExit = JSON.parse(ueaRow.data);
+      const ueaEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [ueaExit.user_id]);
+      const ueaEmp = ueaEmpRow ? JSON.parse(ueaEmpRow.data) : {};
+      if (!(await canActOnExitClearance(cu, 'it', ueaEmp))) return res.status(403).json({ error: 'Not authorized to manage asset return' });
+      const ueaNow = new Date().toISOString();
+      const ueaUpd = { ...ueaExit, assets: ueaAssets, audit_log: [...(ueaExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Assets updated', comment: '', timestamp: ueaNow }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(ueaUpd), ueaRow.id]);
+      return res.json({ success: true });
+    }
+
     case 'updateExitClearance': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { exit_id: uecExitId, dept_key: uecDept, status: uecStatus, remarks: uecRemarks, outstanding_dues: uecDues, checklist_items: uecItems } = p;
@@ -11166,6 +11188,16 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const uecItemsFinal = Array.isArray(uecItems) ? uecItems : (uecExit.clearance_checklist?.[uecDept]?.checklist_items || []);
       if (uecStatus === 'cleared' && uecItemsFinal.some(it => !it.checked)) {
         return res.json({ success: false, error: 'All checklist items must be checked before this department can be marked Cleared' });
+      }
+      // IT clearance also gates on the asset-return letter — a laptop/ID
+      // card still marked "pending" must block IT sign-off, not just its
+      // own checklist items, since the checklist and the asset table are
+      // tracked separately in the UI.
+      if (uecDept === 'it' && uecStatus === 'cleared') {
+        const uecAssets = Array.isArray(uecExit.assets) ? uecExit.assets : [];
+        if (uecAssets.some(a => a.status === 'pending')) {
+          return res.json({ success: false, error: 'All assets must be marked returned (Asset Return tab) before IT clearance can be approved' });
+        }
       }
       const uecNow = new Date().toISOString();
       const uecChecklist = { ...(uecExit.clearance_checklist || makeDefaultClearanceChecklist()) };

@@ -434,6 +434,7 @@ export default function Layout({ children, currentPageName }) {
   const [photoUploading,      setPhotoUploading]     = useState(false);
   const [employeeDisplayName, setEmployeeDisplayName]= useState('');
   const [employeeDepartment,  setEmployeeDepartment] = useState('');
+  const [myClearanceDepts,    setMyClearanceDepts]   = useState([]);
   const [moreSheetOpen,       setMoreSheetOpen]      = useState(false);
   const [pullDistance,        setPullDistance]       = useState(0);
   const [isRefreshing,        setIsRefreshing]       = useState(false);
@@ -633,6 +634,15 @@ export default function Layout({ children, currentPageName }) {
         }
       } catch (_) {}
 
+      // Any non-HR user configured as a department clearance owner (Admin
+      // Panel → Exit Clearance Owners) needs a nav path to Exit Management —
+      // otherwise they have no way to act on cases assigned to them.
+      try {
+        const clr = await base44.functions.invoke('getMyExitClearanceRoles');
+        const clrData = clr.data || clr;
+        if (clrData?.success) setMyClearanceDepts(clrData.dept_keys || []);
+      } catch (_) {}
+
       // Resume GPS tracking for an already-active Field Duty trip (e.g. one auto-started
       // from a Gate Pass request, or one left running from before a page reload) — the
       // tracker itself lives outside any single page, so this is what makes it survive
@@ -748,6 +758,9 @@ export default function Layout({ children, currentPageName }) {
   else if (isGateAdmin)     menuGroups = gateAdminMenuGroups;
   if ((isITDept || isAdminDept) && !isHR) {
     menuGroups = [...menuGroups, { label: isITDept ? 'IT' : 'Assets', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
+  }
+  if (myClearanceDepts.length > 0 && !isHR) {
+    menuGroups = [...menuGroups, { label: 'Clearance', items: [{ name: 'Exit Management', icon: LogOut, page: 'ExitManagement' }] }];
   }
   if (isAdmin) {
     menuGroups = [...menuGroups, { label: 'Administration', items: [
