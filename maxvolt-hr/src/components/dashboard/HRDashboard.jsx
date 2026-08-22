@@ -12,7 +12,7 @@ import {
   ChevronRight, CreditCard, Building2, TrendingDown,
   Gift, Star, Timer, LogIn, RefreshCw
 } from 'lucide-react';
-import { format, startOfMonth, endOfMonth, isBefore, parseISO } from 'date-fns';
+import { format } from 'date-fns';
 import { safeTime } from '@/lib/dateUtils';
 
 export default function HRDashboard({ user }) {
@@ -37,125 +37,21 @@ export default function HRDashboard({ user }) {
   };
 
   const loadData = async () => {
-    const today = format(new Date(), 'yyyy-MM-dd');
-    const monthStart = format(startOfMonth(new Date()), 'yyyy-MM-dd');
-    const monthEnd = format(endOfMonth(new Date()), 'yyyy-MM-dd');
-
-    const [
-      usersResp, employeesRaw, attendanceResp,
-      pendingLeaves, pendingReimbursements, pendingRegularisations,
-      openTickets, candidates, announcements, payrolls, leavePolicies,
-      assets, exits, complianceDeadlines, jobReqs
-    ] = await Promise.all([
-      base44.functions.invoke('getAllUsers', {}).catch(() => ({ data: { users: [] } })),
-      base44.entities.Employee.filter({ status: 'active' }).catch(() => []),
-      base44.functions.invoke('getAllAttendance', { date: today }).catch(() => ({ data: { records: [] } })),
-      base44.entities.Leave.filter({ status: 'pending' }).catch(() => []),
-      base44.entities.Reimbursement.filter({ status: 'pending' }).catch(() => []),
-      base44.entities.AttendanceRegularisation.filter({ status: 'manager_approved' }).catch(() => []),
-      base44.entities.Ticket.filter({ status: { $in: ['open', 'in_progress'] } }).catch(() => []),
-      base44.entities.Candidate.filter({ status: { $in: ['applied', 'screening', 'interview_scheduled'] } }).catch(() => []),
-      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 3).catch(() => []),
-      base44.entities.Payroll.filter({ status: 'draft', month: new Date().getMonth() + 1, year: new Date().getFullYear() }).catch(() => []),
-      base44.entities.LeavePolicy.filter({ is_active: true }).catch(() => []),
-      base44.entities.Asset.list('-created_date', 500).catch(() => []),
-      base44.entities.Exit.filter({ status: { $in: ['submitted', 'manager_approved', 'in_notice', 'clearance_pending', 'clearance_done', 'fnf_pending'] } }).catch(() => []),
-      base44.entities.ComplianceDeadline.filter({ status: { $ne: 'completed' } }).catch(() => []),
-      base44.entities.JobRequisition.filter({ status: { $in: ['approved', 'published'] } }).catch(() => []),
-    ]);
-
-    const allUsers = usersResp?.data?.users || [];
-    const todayAttendance = attendanceResp?.data?.records || [];
-
-    const userMap = {};
-    allUsers.forEach(u => { userMap[u.id] = u; });
-
-    // HR/admin/recruiter are operators of the app, not employees — exclude
-    // them from headcount, attendance rate, and department breakdowns.
-    const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
-
-    const empMap = {};
-    employees.forEach(e => { empMap[e.user_id] = e; });
-
-    const activeEmployeeCount = employees.length;
-
-    // Same "present" definition and roster-bound scoping as AllAttendance.jsx
-    // (the authoritative attendance page) — this used to be a raw count of
-    // todayAttendance records with a narrower status check, which (a) could
-    // include attendance rows for users outside the active/non-operator
-    // roster, and (b) missed work_from_home/short_attendance days that have
-    // no check_in_time, causing the Dashboard's number to drift from All
-    // Attendance's for the exact same day.
-    const PRESENT_STATUSES = new Set(['present', 'late', 'on_duty', 'work_from_home', 'short_attendance', 'half_day']);
-    const ABSENT_LIKE_STATUSES = new Set(['absent', 'leave', 'holiday', 'week_off']);
-    const isPresentRecord = (a) => !!a && (PRESENT_STATUSES.has(a.status) || (a.check_in_time && !ABSENT_LIKE_STATUSES.has(a.status)));
-    const attByUser = {};
-    todayAttendance.forEach(a => { attByUser[a.user_id] = a; });
-
-    const presentDetails = employees
-      .filter(e => isPresentRecord(attByUser[e.user_id]))
-      .map(e => {
-        const a = attByUser[e.user_id];
-        const u = userMap[e.user_id];
-        return {
-          name: e.display_name || u?.full_name || e.user_id,
-          code: e.employee_code || '',
-          dept: e.department || '—',
-          checkIn: safeTime(a.check_in_time),
-          status: a.status || 'present'
-        };
-      });
-    const presentToday = presentDetails.length;
-    const absentToday = activeEmployeeCount - presentToday;
-    const onLeaveToday = todayAttendance.filter(a => a.status === 'leave').length;
-    const attendanceRate = activeEmployeeCount > 0 ? Math.round((presentToday / activeEmployeeCount) * 100) : 0;
-
-    const presentUserIds = new Set(todayAttendance.map(a => a.user_id));
-    const absentDetails = employees
-      .filter(e => !presentUserIds.has(e.user_id))
-      .map(e => ({ name: e.display_name || userMap[e.user_id]?.full_name || '—', code: e.employee_code || '', dept: e.department || '—' }));
-
-    const deptMap = {};
-    employees.forEach(e => {
-      const d = e.department || 'Unknown';
-      deptMap[d] = (deptMap[d] || 0) + 1;
-    });
-    const deptBreakdown = Object.entries(deptMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
-
-    const policyMap = {};
-    leavePolicies.forEach(p => { policyMap[p.id] = p.name; });
-
-    const totalAssets = assets.length;
-    const assignedAssets = assets.filter(a => a.status === 'assigned').length;
-    const availableAssets = assets.filter(a => a.status === 'available').length;
-    const overdueReturns = assets.filter(a => a.status === 'assigned' && a.return_date && isBefore(parseISO(a.return_date), new Date())).length;
-
-    const pendingExits = exits.length;
-    const overdueDeadlines = complianceDeadlines.filter(d => d.due_date && isBefore(parseISO(d.due_date), new Date())).length;
-
-    const openPositions = jobReqs.length;
-    const openPositionsList = jobReqs.slice(0, 5);
+    // Was ~15 independent parallel requests (each its own browser->server
+    // round trip) computing all of this client-side — now one request; the
+    // backend runs the equivalent queries in parallel against the DB
+    // directly, which is far cheaper than 15 separate HTTP round trips.
+    const res = await base44.functions.invoke('getHRDashboardSummary', {});
+    const d = res?.data || res;
+    if (!d?.success) { setLoading(false); return; }
 
     // Upcoming events & compliance insights in parallel (non-blocking)
     base44.functions.invoke('getUpcomingEvents', {}).then(r => setUpcomingEvents(r?.data?.events || [])).catch(() => {});
     base44.functions.invoke('getComplianceInsights', {}).then(r => setComplianceInsights(r?.data?.insights || [])).catch(() => {});
 
     setData({
-      activeEmployeeCount, presentToday, absentToday, onLeaveToday, attendanceRate,
-      presentDetails, absentDetails,
-      pendingLeaves: pendingLeaves.length,
-      pendingReimbursements: pendingReimbursements.length,
-      pendingRegularisations: pendingRegularisations.length,
-      openTickets: openTickets.length,
-      activeCandidates: candidates.length,
-      pendingPayrolls: payrolls.length,
-      deptBreakdown, announcements,
-      recentLeaves: pendingLeaves.slice(0, 5),
-      recentCandidates: candidates.slice(0, 4),
-      policyMap,
-      totalAssets, assignedAssets, availableAssets, overdueReturns,
-      pendingExits, overdueDeadlines,
-      openPositions, openPositionsList,
+      ...d,
+      presentDetails: (d.presentDetails || []).map(e => ({ ...e, checkIn: safeTime(e.checkIn) })),
     });
     setLoading(false);
   };

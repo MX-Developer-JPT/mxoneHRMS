@@ -400,18 +400,44 @@ router.post('/:type/filter', async (req, res) => {
     (query.is_active !== undefined && isPrimitive(query.is_active) && Object.keys(query).length === 1));
   const sqlSuffix = isSimpleFilter ? buildOrderLimit(sort, limit) : '';
 
-  let rows;
+  const baseParams = [type];
+  let sql;
   if (simpleUserId && simpleStatus) {
-    rows = await all(`SELECT * FROM entities WHERE type=$1 AND user_id=$2 AND status=$3${sqlSuffix}`, [type, simpleUserId, simpleStatus]);
+    sql = `SELECT * FROM entities WHERE type=$1 AND user_id=$2 AND status=$3`;
+    baseParams.push(simpleUserId, simpleStatus);
   } else if (simpleUserId) {
-    rows = await all(`SELECT * FROM entities WHERE type=$1 AND user_id=$2${sqlSuffix}`, [type, simpleUserId]);
+    sql = `SELECT * FROM entities WHERE type=$1 AND user_id=$2`;
+    baseParams.push(simpleUserId);
   } else if (simpleStatus) {
-    rows = await all(`SELECT * FROM entities WHERE type=$1 AND status=$2${sqlSuffix}`, [type, simpleStatus]);
+    sql = `SELECT * FROM entities WHERE type=$1 AND status=$2`;
+    baseParams.push(simpleStatus);
   } else if (query.is_active !== undefined && isPrimitive(query.is_active)) {
-    rows = await all(`SELECT * FROM entities WHERE type=$1 AND is_active=$2${sqlSuffix}`, [type, query.is_active ? 1 : 0]);
+    sql = `SELECT * FROM entities WHERE type=$1 AND is_active=$2`;
+    baseParams.push(query.is_active ? 1 : 0);
   } else {
-    rows = await all('SELECT * FROM entities WHERE type=$1', [type]);
+    sql = `SELECT * FROM entities WHERE type=$1`;
   }
+
+  // Additionally push a `date` range down to SQL when present, regardless
+  // of isSimpleFilter — a purely additive fetch-size narrowing. matchesFilter()
+  // below still re-validates every condition (including this one)
+  // identically, so a bug here could only ever under-narrow — same behavior
+  // as before this change — never return wrong results. This matters most
+  // for large, long-lived tables like Attendance: a `{date: {$gte, $lte}}`
+  // filter isn't one of the "simple" fields above, so before this change no
+  // SQL WHERE was ever applied and the entire table (every Attendance row
+  // ever created, for every employee) was pulled into Node memory on every
+  // date-ranged report/page load before being filtered down in JS.
+  const dateFilter = query.date;
+  if (dateFilter && typeof dateFilter === 'object' && !Array.isArray(dateFilter)) {
+    const gte = isPrimitive(dateFilter.$gte) ? dateFilter.$gte : undefined;
+    const lte = isPrimitive(dateFilter.$lte) ? dateFilter.$lte : undefined;
+    if (gte !== undefined) { baseParams.push(gte); sql += ` AND data::jsonb->>'date' >= $${baseParams.length}`; }
+    if (lte !== undefined) { baseParams.push(lte); sql += ` AND data::jsonb->>'date' <= $${baseParams.length}`; }
+  }
+
+  sql += sqlSuffix;
+  const rows = await all(sql, baseParams);
 
   let data = rows.map(parseRow).filter(d => matchesFilter(d, query));
   if (!isSimpleFilter) {

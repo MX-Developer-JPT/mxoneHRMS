@@ -7741,6 +7741,148 @@ router.post('/:name', async (req, res) => {
       return res.json({ summary, deadlines, records: recs });
     }
 
+    // Everything HRDashboard.jsx needs in one round trip. That page used to
+    // fire ~15 independent requests in parallel on every load (and every
+    // manual refresh) — each one a separate HTTP round trip even though
+    // they're all cheap, mostly-indexed queries. Bundling them into one
+    // request removes ~14 round trips' worth of browser-to-server latency
+    // per load; the underlying DB queries still run in parallel here via
+    // Promise.all, so this isn't slower than before per-query, just far
+    // fewer trips. Mirrors the exact aggregation HRDashboard.jsx used to do
+    // client-side, so the frontend payload shape doesn't need to change.
+    case 'getHRDashboardSummary': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const ghdsToday = new Date().toISOString().slice(0, 10);
+      const ghdsMonth = new Date().getMonth() + 1;
+      const ghdsYear = new Date().getFullYear();
+
+      const [
+        usersRows, empRows, attRows,
+        pendingLeaveRows, pendingReimbRows, pendingRegRows,
+        openTicketRows, candidateRows, announcementRows, payrollRows, leavePolicyRows,
+        assetRows, exitRows, complianceDeadlineRows, jobReqRows,
+      ] = await Promise.all([
+        all('SELECT id,role,custom_role,full_name FROM users'),
+        all("SELECT data FROM entities WHERE type='Employee' AND status='active'"),
+        all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1", [ghdsToday]),
+        all("SELECT data FROM entities WHERE type='Leave' AND status='pending'"),
+        all("SELECT data FROM entities WHERE type='Reimbursement' AND status='pending'"),
+        all("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND status='manager_approved'"),
+        all("SELECT data FROM entities WHERE type='Ticket' AND status IN ('open','in_progress')"),
+        all("SELECT data FROM entities WHERE type='Candidate' AND status IN ('applied','screening','interview_scheduled')"),
+        all("SELECT data FROM entities WHERE type='Announcement' AND status='published' ORDER BY created_at DESC LIMIT 3"),
+        all("SELECT data FROM entities WHERE type='Payroll' AND status='draft' AND (data::jsonb->>'month')::int=$1 AND (data::jsonb->>'year')::int=$2", [ghdsMonth, ghdsYear]),
+        all("SELECT data FROM entities WHERE type='LeavePolicy' AND is_active=1"),
+        all("SELECT data FROM entities WHERE type='Asset'"),
+        all("SELECT data FROM entities WHERE type='Exit' AND status IN ('submitted','manager_approved','in_notice','clearance_pending','clearance_done','fnf_pending')"),
+        all("SELECT data FROM entities WHERE type='ComplianceDeadline' AND status != 'completed'"),
+        all("SELECT data FROM entities WHERE type='JobRequisition' AND status IN ('approved','published')"),
+      ]);
+
+      const allUsers = usersRows;
+      const userMap = {};
+      allUsers.forEach(u => { userMap[u.id] = u; });
+
+      // Deduplicate today's attendance the same way getAllAttendance does —
+      // prefer biometric/geofence/checked-in records over an auto-absent row
+      // for the same (user_id, date).
+      const ghdsRawAtt = attRows.map(r => JSON.parse(r.data)).filter(r => r.user_id);
+      const ghdsAttByKey = {};
+      for (const rec of ghdsRawAtt) {
+        const prev = ghdsAttByKey[rec.user_id];
+        const score = (r) =>
+          (r.biometric_synced ? 16 : 0) +
+          (r.auto_geofence || r.auto_geofence_checkout ? 8 : 0) +
+          (r.check_in_time    ? 4 : 0) +
+          (r.status !== 'absent' && r.status !== 'auto_marked' ? 2 : 0) +
+          (r.status === 'regularised' || r.regularised ? 1 : 0);
+        if (!prev || score(rec) > score(prev)) ghdsAttByKey[rec.user_id] = rec;
+      }
+      const todayAttendance = Object.values(ghdsAttByKey);
+
+      const employeesRaw = empRows.map(r => JSON.parse(r.data));
+      // HR/admin/recruiter are operators of the app, not employees.
+      const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
+      const activeEmployeeCount = employees.length;
+
+      const PRESENT_STATUSES = new Set(['present', 'late', 'on_duty', 'work_from_home', 'short_attendance', 'half_day']);
+      const ABSENT_LIKE_STATUSES = new Set(['absent', 'leave', 'holiday', 'week_off']);
+      const isPresentRecord = (a) => !!a && (PRESENT_STATUSES.has(a.status) || (a.check_in_time && !ABSENT_LIKE_STATUSES.has(a.status)));
+      const attByUser = {};
+      todayAttendance.forEach(a => { attByUser[a.user_id] = a; });
+
+      const presentDetails = employees
+        .filter(e => isPresentRecord(attByUser[e.user_id]))
+        .map(e => {
+          const a = attByUser[e.user_id];
+          const u = userMap[e.user_id];
+          return {
+            name: e.display_name || u?.full_name || e.user_id,
+            code: e.employee_code || '',
+            dept: e.department || '—',
+            checkIn: a.check_in_time || null,
+            status: a.status || 'present',
+          };
+        });
+      const presentToday = presentDetails.length;
+      const absentToday = activeEmployeeCount - presentToday;
+      const onLeaveToday = todayAttendance.filter(a => a.status === 'leave').length;
+      const attendanceRate = activeEmployeeCount > 0 ? Math.round((presentToday / activeEmployeeCount) * 100) : 0;
+
+      const presentUserIds = new Set(todayAttendance.map(a => a.user_id));
+      const absentDetails = employees
+        .filter(e => !presentUserIds.has(e.user_id))
+        .map(e => ({ name: e.display_name || userMap[e.user_id]?.full_name || '—', code: e.employee_code || '', dept: e.department || '—' }));
+
+      const deptMap = {};
+      employees.forEach(e => {
+        const d = e.department || 'Unknown';
+        deptMap[d] = (deptMap[d] || 0) + 1;
+      });
+      const deptBreakdown = Object.entries(deptMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+      const leavePolicies = leavePolicyRows.map(r => JSON.parse(r.data));
+      const policyMap = {};
+      leavePolicies.forEach(p => { policyMap[p.id] = p.name; });
+
+      const assets = assetRows.map(r => JSON.parse(r.data));
+      const totalAssets = assets.length;
+      const assignedAssets = assets.filter(a => a.status === 'assigned').length;
+      const availableAssets = assets.filter(a => a.status === 'available').length;
+      const overdueReturns = assets.filter(a => a.status === 'assigned' && a.return_date && a.return_date < ghdsToday).length;
+
+      const exits = exitRows.map(r => JSON.parse(r.data));
+      const complianceDeadlines = complianceDeadlineRows.map(r => JSON.parse(r.data));
+      const overdueDeadlines = complianceDeadlines.filter(d => d.due_date && d.due_date < ghdsToday).length;
+
+      const jobReqs = jobReqRows.map(r => JSON.parse(r.data));
+      const openPositions = jobReqs.length;
+      const openPositionsList = jobReqs.slice(0, 5);
+
+      const pendingLeaves = pendingLeaveRows.map(r => JSON.parse(r.data));
+      const candidates = candidateRows.map(r => JSON.parse(r.data));
+
+      return res.json({
+        success: true,
+        activeEmployeeCount, presentToday, absentToday, onLeaveToday, attendanceRate,
+        presentDetails, absentDetails,
+        pendingLeaves: pendingLeaves.length,
+        pendingReimbursements: pendingReimbRows.length,
+        pendingRegularisations: pendingRegRows.length,
+        openTickets: openTicketRows.length,
+        activeCandidates: candidates.length,
+        pendingPayrolls: payrollRows.length,
+        deptBreakdown,
+        announcements: announcementRows.map(r => JSON.parse(r.data)),
+        recentLeaves: pendingLeaves.slice(0, 5),
+        recentCandidates: candidates.slice(0, 4),
+        policyMap,
+        totalAssets, assignedAssets, availableAssets, overdueReturns,
+        pendingExits: exits.length, overdueDeadlines,
+        openPositions, openPositionsList,
+      });
+    }
+
     case 'getComplianceInsights': {
       const today = new Date();
       const compRows = await all("SELECT data FROM entities WHERE type='Compliance'");
