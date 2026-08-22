@@ -383,7 +383,13 @@ export default function TrainingDetail() {
                 // — writing it into BOTH location and meeting_link meant a
                 // room number like "Room 5" also became the stored meeting
                 // link, and vice versa for a Zoom URL.
-                const isLink = /^https?:\/\//i.test(v.trim());
+                // Broader than a bare http(s):// prefix — meeting links are
+                // routinely pasted without a protocol ("zoom.us/j/123",
+                // "meet.google.com/abc-defg", "www.example.com"), and
+                // MyTraining.jsx/TrainingCalendar.jsx's "Join" link only
+                // renders from `meeting_link`, so misclassifying one of
+                // these as a room number silently drops the join link.
+                const isLink = /^(https?:\/\/|www\.)/i.test(v.trim()) || /^[\w-]+(\.[\w-]+)+(\/|$)/i.test(v.trim());
                 setSessionForm({ ...sessionForm, location: isLink ? '' : v, meeting_link: isLink ? v : '' });
               }} placeholder="Room no. or https://..." className="mt-1" />
             </div>

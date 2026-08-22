@@ -17,6 +17,7 @@ const router = Router();
 const SENSITIVE_TYPES = new Set([
   'Payroll', 'PayrollConfiguration', 'SalaryStructure', 'Loan', 'InsuranceClaim',
   'POSHRecord', 'TaxDeclaration', 'Form16', 'BankDetail', 'LeaveBalance', 'Document',
+  'Reimbursement',
 ]);
 const PRIVILEGED_ROLES = new Set(['hr', 'admin', 'management']);
 
@@ -31,14 +32,55 @@ async function getEffectiveRole(cu) {
   } catch { return cu.custom_role || cu.role || null; }
 }
 
+// Reimbursement and LeaveBalance both carry data sensitive enough to
+// restrict like every other SENSITIVE_TYPES entry — but unlike the rest, a
+// non-privileged 'manager' role legitimately needs to see their own direct
+// reports' records too, not just their own: Reimbursement for approval
+// (checkApprovalAuthorization below), LeaveBalance because
+// LeaveManagement.jsx/LeaveDashboard.jsx read the whole team's balances to
+// show available-days context while a manager reviews a pending leave
+// request. These two helpers mirror checkApprovalAuthorization's manager
+// scoping exactly, so read access and write/approval access never disagree.
+const MANAGER_VISIBLE_SENSITIVE_TYPES = new Set(['Reimbursement', 'LeaveBalance']);
+async function getDirectReportUserIds(managerId) {
+  const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND data::jsonb->>'reporting_manager_id'=$1", [managerId]);
+  return new Set(rows.map(r => r.user_id));
+}
+
+async function filterSensitive(data, cu, type) {
+  if (!SENSITIVE_TYPES.has(type)) return data;
+  const role = await getEffectiveRole(cu);
+  if (PRIVILEGED_ROLES.has(role)) return data;
+  if (MANAGER_VISIBLE_SENSITIVE_TYPES.has(type) && role === 'manager') {
+    const reportIds = await getDirectReportUserIds(cu.id);
+    return data.filter(d => d.user_id === cu.id || reportIds.has(d.user_id));
+  }
+  return data.filter(d => d.user_id === cu.id);
+}
+
+async function canAccessSensitive(cu, type, ownerUserId) {
+  if (!SENSITIVE_TYPES.has(type)) return true;
+  if (ownerUserId === cu.id) return true;
+  const role = await getEffectiveRole(cu);
+  if (PRIVILEGED_ROLES.has(role)) return true;
+  if (MANAGER_VISIBLE_SENSITIVE_TYPES.has(type) && role === 'manager') {
+    const row = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [ownerUserId]);
+    return row?.mgr === cu.id;
+  }
+  return false;
+}
+
 // Location Master (AppLocation) is admin-only to manage — everyone else can
 // still read it (employees need the list client-side for geofence matching),
-// but only an admin may create/update/delete a configured location.
-async function requireAdminForType(req, res, type) {
+// but only an admin may create/update/delete a configured location. Takes
+// the already-authenticated `cu` and re-checks the CURRENT role via
+// getEffectiveRole (live DB lookup), not the JWT's embedded role directly —
+// that raw-JWT-role version of this check let a demoted admin keep managing
+// locations for up to 30 days, the same staleness bug fixed everywhere else
+// in this file's authorization pass.
+async function requireAdminForType(cu, res, type) {
   if (type !== 'AppLocation') return true;
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  let role = null;
-  try { role = token ? jwt.verify(token, JWT_SECRET).role : null; } catch { role = null; }
+  const role = await getEffectiveRole(cu);
   if (role !== 'admin') { res.status(403).json({ error: 'Admin role required to manage locations' }); return false; }
   return true;
 }
@@ -130,6 +172,21 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
     const targetUserId = current.user_id;
     const empRow = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [targetUserId]);
     if (empRow?.mgr === cu.id) return true;
+  }
+
+  // Reimbursement's configurable ApprovalWorkflow (module 'expense') can
+  // assign a step to a 'specific_user' who isn't the claimant's manager —
+  // Approvals.jsx already surfaces such claims to that person (matching
+  // WorkflowBuilder.jsx's "integrated: true" note for this module), so the
+  // backend must recognize them as the authorized approver for their step
+  // too, not just HR/admin/management/direct-manager.
+  if (type === 'Reimbursement') {
+    const wfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='expense'");
+    const wf = wfRow ? JSON.parse(wfRow.data) : null;
+    if (wf?.is_active !== false && Array.isArray(wf?.steps) && wf.steps.length > 0) {
+      const step = wf.steps[current.wf_level || 0];
+      if (step?.approver_type === 'specific_user' && step.specific_user_id === cu.id) return true;
+    }
   }
 
   res.status(403).json({ error: 'Access denied — not authorized to approve this request' });
@@ -323,10 +380,7 @@ router.get('/:type', async (req, res) => {
     if (CACHEABLE.has(type)) cacheSet(cacheKey, data);
   }
 
-  if (SENSITIVE_TYPES.has(type)) {
-    const role = await getEffectiveRole(cu);
-    if (!PRIVILEGED_ROLES.has(role)) data = data.filter(d => d.user_id === cu.id);
-  }
+  data = await filterSensitive(data, cu, type);
   res.json(data);
 });
 
@@ -364,10 +418,7 @@ router.post('/:type/filter', async (req, res) => {
     if (sort)  data = sortRows(data, sort);
     if (limit) data = data.slice(0, parseInt(limit, 10));
   }
-  if (SENSITIVE_TYPES.has(type)) {
-    const role = await getEffectiveRole(cu);
-    if (!PRIVILEGED_ROLES.has(role)) data = data.filter(d => d.user_id === cu.id);
-  }
+  data = await filterSensitive(data, cu, type);
   res.json(data);
 });
 
@@ -379,10 +430,7 @@ router.get('/:type/:id', async (req, res) => {
   const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const data = parseRow(row);
-  if (SENSITIVE_TYPES.has(type) && data.user_id !== cu.id) {
-    const role = await getEffectiveRole(cu);
-    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
-  }
+  if (!(await canAccessSensitive(cu, type, data.user_id))) return res.status(403).json({ error: 'Access denied' });
   res.json(data);
 });
 
@@ -391,7 +439,7 @@ router.post('/:type', async (req, res) => {
   const cu = getCurrentUser(req);
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type } = req.params;
-  if (!(await requireAdminForType(req, res, type))) return;
+  if (!(await requireAdminForType(cu, res, type))) return;
   const body = req.body;
   const id = body.id || uuidv4();
   const data = { ...body, id };
@@ -403,6 +451,25 @@ router.post('/:type', async (req, res) => {
   if (data.user_id && data.user_id !== cu.id) {
     const role = await getEffectiveRole(cu);
     if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Cannot create a record on behalf of another user' });
+  }
+
+  // SENSITIVE_TYPES also need a create-time gate — GET/PATCH/DELETE all
+  // restrict these, but creation had no type-level check at all, so a plain
+  // employee could self-fabricate e.g. a LeaveBalance with an inflated
+  // `available` and have checkLeaveBalanceSufficiency trust it, or POST a
+  // brand-new org-wide PayrollConfiguration (which has no user_id at all,
+  // so even the "on behalf of another user" check above never applies to
+  // it). A few of these types ARE legitimately self-created by an ordinary
+  // employee (LoanManagement.jsx's self-service loan application,
+  // OnboardingForm.jsx's own-document upload) — those keep working via the
+  // self-ownership exception; everything else requires HR/admin/management.
+  if (SENSITIVE_TYPES.has(type)) {
+    const SELF_CREATABLE = new Set(['Loan', 'InsuranceClaim', 'Document']);
+    const isSelfCreatable = SELF_CREATABLE.has(type) && data.user_id === cu.id;
+    if (!isSelfCreatable) {
+      const role = await getEffectiveRole(cu);
+      if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Not authorized to create this record' });
+    }
   }
 
   if (!(await checkWfhEligibility(res, type, data))) return;
@@ -532,22 +599,63 @@ router.patch('/:type/:id', async (req, res) => {
   const cu = getCurrentUser(req);
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type, id } = req.params;
-  if (!(await requireAdminForType(req, res, type))) return;
+  if (!(await requireAdminForType(cu, res, type))) return;
   const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (!row) return res.status(404).json({ error: 'Not found' });
 
   const current = JSON.parse(row.data);
   if (!(await checkApprovalAuthorization(req, res, type, current, req.body.status))) return;
 
+  // Is this PATCH exactly the approve/reject (or GatePass gate-log)
+  // transition checkApprovalAuthorization just verified above? That
+  // function already correctly allows a direct manager (or, for
+  // Reimbursement, a workflow specific_user) to flip `status` on someone
+  // else's record — but that authorization is scoped to THIS ONE
+  // transition, not a blanket "may edit any field of a report's record."
+  // Both checks below must treat it as its own case, not fold it into the
+  // general owner-or-privileged rule.
+  const isScopedTransition = APPROVAL_SCOPED_TYPES.has(type) && req.body.status && req.body.status !== current.status;
+
   // Financial/statutory/compliance records may only be edited by HR/admin/
-  // management or the record's own owner — an employee should never be able
-  // to PATCH a coworker's payroll, loan, POSH case, or salary structure by id.
-  if (SENSITIVE_TYPES.has(type) && row.user_id !== cu.id) {
+  // management or the record's own owner for anything OTHER than that one
+  // already-authorized transition — deliberately NOT using the
+  // manager-of-report read exception here (canAccessSensitive), since that
+  // exists so a manager can SEE a report's LeaveBalance/Reimbursement, not
+  // edit arbitrary fields of it.
+  if (!isScopedTransition && SENSITIVE_TYPES.has(type) && row.user_id !== cu.id) {
     const role = await getEffectiveRole(cu);
     if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
   }
 
+  // General ownership baseline for every OTHER type that carries a user_id
+  // (Ticket, Feedback360, SkillEntry, Document, etc.) — previously these had
+  // no write authorization at all beyond "any authenticated user." Skipped
+  // when: the record has no user_id (an org-wide config type — Department,
+  // HolidayCalendar, AppLocation — left to their existing role-gated UI);
+  // this is the already-authorized scoped transition above; or the caller
+  // is the record's assignee (assigned_to) — the pattern Helpdesk tickets
+  // use for support staff who aren't the ticket's original raiser.
+  if (!isScopedTransition && current.user_id && current.user_id !== cu.id && current.assigned_to !== cu.id && current.assigned_to_user_id !== cu.id) {
+    const genRole = await getEffectiveRole(cu);
+    if (!PRIVILEGED_ROLES.has(genRole)) return res.status(403).json({ error: 'Access denied — not your record' });
+  }
+
   const updated = { ...current, ...req.body, id };
+
+  // Leave's WFH-eligibility and balance-sufficiency rules were previously
+  // only enforced at creation (POST) — an owner could PATCH their own
+  // already-created Leave to raise total_days past their balance, or flip
+  // is_wfh/leave_type to 'work_from_home' without being wfh_eligible.
+  // Re-validate, but ONLY when one of those leave-determining fields is
+  // actually part of this PATCH, and NOT on an approve/reject transition —
+  // deliberately narrow, since LeaveBalance's available/pending_approval
+  // bookkeeping around the approval step (runLeaveAction) isn't something
+  // this generic route should second-guess with its own re-derivation.
+  const isLeaveContentChange = type === 'Leave' && ['total_days', 'is_wfh', 'leave_type', 'leave_policy_id', 'start_date'].some(f => f in req.body);
+  if (isLeaveContentChange && !isScopedTransition) {
+    if (!(await checkWfhEligibility(res, type, updated))) return;
+    if (!(await checkLeaveBalanceSufficiency(res, type, updated))) return;
+  }
 
   await run(
     `UPDATE entities SET data=$1, user_id=$2, status=$3, is_active=$4, updated_at=NOW()::TEXT WHERE id=$5`,
@@ -696,12 +804,23 @@ router.delete('/:type/:id', async (req, res) => {
   const cu = getCurrentUser(req);
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type, id } = req.params;
-  if (!(await requireAdminForType(req, res, type))) return;
+  if (!(await requireAdminForType(cu, res, type))) return;
   // Deleting a financial/statutory/compliance record is never self-serve —
   // always requires HR/admin/management, regardless of ownership.
   if (SENSITIVE_TYPES.has(type)) {
     const role = await getEffectiveRole(cu);
     if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
+  } else {
+    // General ownership baseline for every other type — deleting is
+    // destructive/irreversible, so it deserves at least an ownership check
+    // even outside the SENSITIVE_TYPES allowlist: any authenticated user
+    // could otherwise delete any other employee's Ticket/GatePass/Leave/etc.
+    // by id alone. Skipped for records with no user_id (org-wide config).
+    const existing = await one('SELECT user_id FROM entities WHERE type=$1 AND id=$2', [type, id]);
+    if (existing?.user_id && existing.user_id !== cu.id) {
+      const genRole = await getEffectiveRole(cu);
+      if (!PRIVILEGED_ROLES.has(genRole)) return res.status(403).json({ error: 'Access denied — not your record' });
+    }
   }
   const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });

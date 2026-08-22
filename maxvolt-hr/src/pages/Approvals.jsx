@@ -129,11 +129,22 @@ export default function Approvals() {
     if (processing[leaveId]) return;
     setProcessing(p => ({ ...p, [leaveId]: true }));
     try {
-      await base44.entities.Leave.update(leaveId, {
-        status,
-        approved_by: user.id,
-        approved_date: new Date().toISOString()
+      // Delegates to processLeaveAction — a raw base44.entities.Leave.update()
+      // here only flipped `status` and never touched LeaveBalance at all
+      // (no used/pending_approval/available adjustment), unlike
+      // processLeaveAction/runLeaveAction which does this correctly and is
+      // what LeaveManagement.jsx already uses. The two pages approving the
+      // exact same Leave record through different paths meant balances
+      // silently drifted depending on which page/role approved a request.
+      const res = await base44.functions.invoke('processLeaveAction', {
+        leave_id: leaveId,
+        action: status === 'approved' ? 'approve' : 'reject',
       });
+      const d = res.data || res;
+      if (d?.success === false) {
+        toast.error(d.error || 'Failed to update leave');
+        return;
+      }
       toast.success(`Leave ${status}`);
       loadData();
     } catch (error) {

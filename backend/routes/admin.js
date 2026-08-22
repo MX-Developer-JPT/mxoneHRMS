@@ -24,7 +24,18 @@ router.use(async (req, res, next) => {
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
   }
-  const userRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [decoded.id]);
+  // Wrapped — a transient DB error here (pool exhaustion, brief network
+  // blip) previously threw as an unhandled rejection inside this
+  // router.use() middleware; Node terminates the whole process on an
+  // unhandled rejection, which would have taken the entire backend down
+  // for every user over one flaky query on one admin-panel request.
+  let userRow;
+  try {
+    userRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [decoded.id]);
+  } catch (e) {
+    console.error('[admin-auth] role lookup failed:', e.message);
+    return res.status(503).json({ error: 'Temporarily unable to verify access — please retry' });
+  }
   const currentRole = userRow?.custom_role || userRow?.role;
   if (!userRow || !['admin', 'hr'].includes(currentRole))
     return res.status(403).json({ error: 'Admin or HR role required' });

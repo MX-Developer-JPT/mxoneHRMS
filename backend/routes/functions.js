@@ -575,9 +575,17 @@ const getUser = (req) => {
 
 // Role guard — checks the JWT role first, then the DB role/custom_role
 // (the two are usually kept in sync, but custom_role can differ).
+// Always re-checks the CURRENT role from the DB — never trusts cu.role/
+// cu.custom_role from the JWT as sufficient on its own. JWTs are valid for
+// 30 days (auth.js); a version of this that short-circuited true whenever
+// the JWT's embedded role matched (only falling back to the DB when it
+// *didn't* match) let a demoted admin/HR user keep every privileged
+// permission check in this file passing for up to 30 days after demotion —
+// the same class of bug admin.js's auth middleware was separately patched
+// to close, but which this shared helper — used by every hasRole() call
+// site in the file — still had.
 async function hasRole(cu, roles) {
   if (!cu) return false;
-  if (roles.includes(cu.role) || roles.includes(cu.custom_role)) return true;
   try {
     const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
     return !!u && (roles.includes(u.role) || roles.includes(u.custom_role));
@@ -8420,7 +8428,11 @@ Return ONLY a valid JSON object (no markdown):
       // (e.g. no HRA for this letter) isn't silently replaced by the stored
       // SalaryStructure value.
       const ctcOvr  = extra.ctc_override || {};
-      const ovrNum  = (v) => (v === undefined || v === null || v === '') ? undefined : Number(v);
+      // Guards NaN too, not just undefined/null/'' — `NaN ?? fallback` still
+      // evaluates to NaN (?? only falls back on null/undefined), so a
+      // malformed non-numeric override previously propagated NaN through
+      // basic/hra/conveyance/gross/net instead of falling back safely.
+      const ovrNum  = (v) => { if (v === undefined || v === null || v === '') return undefined; const n = Number(v); return isNaN(n) ? undefined : n; };
       const basic   = ovrNum(ctcOvr.basic)             ?? (ss.basic_salary ?? ss.basic ?? 0);
       const hra     = ovrNum(ctcOvr.hra)               ?? (ss.hra ?? 0);
       const conv    = ovrNum(ctcOvr.conveyance)        ?? (ss.conveyance ?? 0);
@@ -8953,7 +8965,8 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
       // Missing-vs-provided (??), not truthy (||) — an override explicitly
       // set to 0 must stick, not silently fall back to the auto-calculated
       // value the way a stored 0 was in this exact spot before.
-      const ovrN = (v) => (v === undefined || v === null || v === '') ? undefined : Number(v);
+      // Guards NaN too — see the identical fix on ovrNum above.
+      const ovrN = (v) => { if (v === undefined || v === null || v === '') return undefined; const n = Number(v); return isNaN(n) ? undefined : n; };
       const structure = {
         id: uuidv4(),
         user_id: targetUid,
