@@ -137,6 +137,23 @@ export default function AllAttendance() {
     if (!silent) setLoading(true);
     else setSilentRefreshing(true);
     try {
+      // The 30s background poll only needs fresh Attendance rows — the
+      // employee roster, user directory and department list it used to
+      // refetch alongside them are effectively static for the page's
+      // lifetime, so re-pulling all of them (Employee up to 500 rows,
+      // every user, every department) every 30 seconds was four full
+      // requests' worth of wasted work per tick for zero behavioral gain.
+      // A full reload still happens on date change and the manual Refresh
+      // button (both call loadData(false)).
+      if (silent && employees.length > 0) {
+        const attendanceResp = await base44.functions.invoke('getAllAttendance', { date });
+        const dayRecords = attendanceResp.data?.records || [];
+        const map = {};
+        dayRecords.forEach(r => { map[r.user_id] = r; });
+        setAttendanceMap(map);
+        return;
+      }
+
       const currentUser = await base44.auth.me();
       const userRole = currentUser.custom_role || currentUser.role;
 

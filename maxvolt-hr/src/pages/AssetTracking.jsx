@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import * as XLSX from 'xlsx';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -758,7 +757,7 @@ export default function AssetTracking() {
     return String(v || '').trim();
   };
 
-  const parseWorkbookToRows = (wb) => {
+  const parseWorkbookToRows = (wb, XLSX) => {
     const parsed = [];
     for (const sheetName of wb.SheetNames) {
       const ws = wb.Sheets[sheetName];
@@ -812,8 +811,11 @@ export default function AssetTracking() {
     setImportResults(null);
     try {
       const buf = await importFile.arrayBuffer();
+      // Loaded on demand — xlsx is a ~430KB chunk this page shouldn't pay
+      // for until someone actually clicks Import.
+      const XLSX = await import('xlsx');
       const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-      const rows = parseWorkbookToRows(wb);
+      const rows = parseWorkbookToRows(wb, XLSX);
       if (rows.length === 0) {
         setImportResults({ success: 0, errors: ['No recognizable asset rows found in any sheet. Expected columns like Name, Department, System/Category, Serial Number.'] });
         setImporting(false);

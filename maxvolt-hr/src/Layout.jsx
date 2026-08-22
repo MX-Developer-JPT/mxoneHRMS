@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, lazy } from 'react';
 import { useTheme } from 'next-themes';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
@@ -19,10 +19,17 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import NotificationBell from '@/components/NotificationBell';
 import ErrorBoundary from '@/components/ErrorBoundary';
-import DashboardPage from './pages/Dashboard';
-import MarkAttendancePage from './pages/MarkAttendance';
-import LeavePage from './pages/Leave';
-import ProfilePage from './pages/Profile';
+// Lazy, not static — these previously loaded their full component tree (and,
+// for Dashboard, every role-specific dashboard variant plus its data-fetch
+// burst) into the main bundle for every user on every page, regardless of
+// which page they actually landed on first. Still kept mounted-but-hidden
+// once visited (see mountedTabs below) so switching back is instant; only
+// the FIRST visit now pays a lazy-chunk fetch instead of it being paid
+// upfront by the whole app.
+const DashboardPage = lazy(() => import('./pages/Dashboard'));
+const MarkAttendancePage = lazy(() => import('./pages/MarkAttendance'));
+const LeavePage = lazy(() => import('./pages/Leave'));
+const ProfilePage = lazy(() => import('./pages/Profile'));
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
 import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption, requestBackgroundLocationIfNeeded } from '@/lib/geofenceBackground';

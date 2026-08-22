@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -105,7 +105,10 @@ export default function Employees() {
     terminated: 'bg-gray-100 text-gray-800'
   };
 
-  const stats = {
+  // Six full passes over up to 500 employees — was running on every render
+  // (every keystroke in the search box, every filter change), not just when
+  // the employees list itself actually changed.
+  const stats = useMemo(() => ({
     total: employees.length,
     active: employees.filter(e => e.status === 'active').length,
     on_leave: employees.filter(e => e.status === 'on_leave').length,
@@ -116,11 +119,11 @@ export default function Employees() {
       if (!e.employee_confirmation_date) return false;
       const confirmDate = new Date(e.employee_confirmation_date);
       const now = new Date();
-      return confirmDate.getMonth() === now.getMonth() && 
+      return confirmDate.getMonth() === now.getMonth() &&
              confirmDate.getFullYear() === now.getFullYear() &&
              e.employee_status === 'probation';
     }).length
-  };
+  }), [employees]);
 
   const handleStatClick = (type) => {
     setFilterType(type);

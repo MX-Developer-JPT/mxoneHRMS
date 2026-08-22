@@ -117,17 +117,22 @@ export default function PayrollProcessing() {
       setLoading(true);
       const calculated = [];
 
+      // One fetch for every active salary structure instead of one
+      // sequential request per employee below — the previous loop made a
+      // round trip per employee (hundreds of them for a full org), turning
+      // "Calculate Payroll" into minutes of sequential network latency.
+      const allStructures = await base44.entities.SalaryStructure.filter({ status: 'active' }, '-effective_from', 5000);
+      const latestStructureByUser = {};
+      for (const s of allStructures) {
+        if (!(s.user_id in latestStructureByUser)) latestStructureByUser[s.user_id] = s; // already sorted by -effective_from, so first hit is latest
+      }
+
       for (const employee of employees) {
         if (payrolls.find(p => p.user_id === employee.id)) continue;
 
-        const structures = await base44.entities.SalaryStructure.filter(
-          { user_id: employee.id, status: 'active' },
-          '-effective_from',
-          1
-        );
-        if (structures.length === 0) continue;
+        const structure = latestStructureByUser[employee.id];
+        if (!structure) continue;
 
-        const structure   = structures[0];
         const empAtt      = attendance.filter(a => a.user_id === employee.id);
         const presentDays = empAtt.filter(a => a.status === 'present').length;
         const empLoan     = loans.find(l => l.user_id === employee.id);

@@ -11,7 +11,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Zap, Loader2, Users, Download, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import * as XLSX from 'xlsx';
 import { safeDate } from '@/lib/dateUtils';
 import LeavePolicyManager from '../components/leave/LeavePolicyManager';
 import LeaveAllocationPanel from '../components/leave/LeaveAllocationPanel';
@@ -258,7 +257,10 @@ export default function LeaveManagement() {
   // identifier every other leave-balance read/write path already uses.
   // Prefilled with each employee's CURRENT total_allocated so the sheet
   // doubles as an editable export of what's on file today, not a blank form.
-  const downloadBalanceTemplate = () => {
+  const downloadBalanceTemplate = async () => {
+    // Loaded on demand — xlsx is a ~430KB chunk this page shouldn't pay for
+    // until someone actually clicks a Template/Export/Import action.
+    const XLSX = await import('xlsx');
     const activeEmployees = employees.filter(e => e.status !== 'resigned' && e.status !== 'terminated');
     const currentYear = new Date().getFullYear();
     const header = ['Employee Code', 'Employee Name', 'Department', 'Designation', ...leavePolicies.map(p => p.code)];
@@ -283,6 +285,7 @@ export default function LeaveManagement() {
     setImportingBalances(true);
     try {
       const buf = await file.arrayBuffer();
+      const XLSX = await import('xlsx');
       const wb = XLSX.read(buf, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const parsed = XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -347,8 +350,9 @@ export default function LeaveManagement() {
     e.target.value = '';
   };
 
-  const downloadLeaveHistory = () => {
+  const downloadLeaveHistory = async () => {
     if (!leaveHistory.length) { toast.error('No leave history loaded for this year yet'); return; }
+    const XLSX = await import('xlsx');
     const header = ['Employee Code', 'Employee Name', 'Designation', 'Source', 'EL Allocated', 'EL Taken', 'EL Available', 'CL Allocated', 'CL Taken', 'CL Available', 'SL Allocated', 'SL Taken', 'SL Available',
       ...leaveHistory[0].months.flatMap(m => [`${m.month} Working Day`, `${m.month} Taken EL`, `${m.month} Taken CL`, `${m.month} Taken SL`, `${m.month} Balance EL`, `${m.month} Balance CL`, `${m.month} Balance SL`])];
     const rows = leaveHistory.map(h => {

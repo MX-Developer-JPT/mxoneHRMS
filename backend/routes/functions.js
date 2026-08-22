@@ -4205,10 +4205,16 @@ router.post('/:name', async (req, res) => {
         .filter(r => r.month === month && r.year === year);
       if (payrolls.length === 0) return res.json({ success:false, error:'No processed payroll records for this period' });
 
+      // One batched query for every employee this payroll touches instead
+      // of a round trip per row — was O(n) sequential DB queries for an
+      // org-wide bank transfer file.
+      const gbtfEmpRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND user_id = ANY($1)", [payrolls.map(pr => pr.user_id)]);
+      const gbtfEmpMap = {};
+      gbtfEmpRows.forEach(r => { gbtfEmpMap[r.user_id] = JSON.parse(r.data); });
+
       const lines = ['Beneficiary Name,Account Number,IFSC Code,Bank Name,Branch,Amount,Remarks'];
       for (const pr of payrolls) {
-        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pr.user_id]);
-        const emp    = empRow ? JSON.parse(empRow.data) : {};
+        const emp    = gbtfEmpMap[pr.user_id] || {};
         const bank   = emp.bank_account_number || '';
         const ifsc   = emp.ifsc_code || '';
         const bankName = emp.bank_name || '';
@@ -13615,19 +13621,28 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
       const employees = empRows.map(r => JSON.parse(r.data));
 
+      // One batched Attendance query for the whole month across every
+      // employee, plus one batched SalaryStructure query, instead of up to
+      // two round trips per employee — was O(n) sequential DB queries for
+      // a company-wide report.
+      const godAttRows = await all(
+        "SELECT user_id,data FROM entities WHERE type='Attendance' AND user_id = ANY($1) AND data::jsonb->>'date' BETWEEN $2 AND $3",
+        [employees.map(e => e.user_id), startDate, endDate]
+      );
+      const godAttByUser = {};
+      godAttRows.forEach(r => { (godAttByUser[r.user_id] ||= []).push(JSON.parse(r.data)); });
+      const godSsRows = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND status='active' AND user_id = ANY($1)", [employees.map(e => e.user_id)]);
+      const godSsMap = {};
+      godSsRows.forEach(r => { if (!(r.user_id in godSsMap)) godSsMap[r.user_id] = JSON.parse(r.data); });
+
       const overtimeData = [];
       for (const emp of employees) {
-        const attRows = await all(
-          "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' BETWEEN $2 AND $3",
-          [emp.user_id, startDate, endDate]
-        );
-        const records = attRows.map(r => JSON.parse(r.data));
+        const records = godAttByUser[emp.user_id] || [];
         const shiftHrs = 8; // default shift hours; actual OT = worked beyond shift
         const otRecords = records.filter(a => (a.working_hours || 0) > shiftHrs);
         const totalOTHours = otRecords.reduce((sum, a) => sum + Math.max(0, (a.working_hours || 0) - shiftHrs), 0);
         if (totalOTHours > 0) {
-          const ssRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [emp.user_id]);
-          const ss = ssRow ? JSON.parse(ssRow.data) : {};
+          const ss = godSsMap[emp.user_id] || {};
           const dailyRate = (ss.basic_salary || ss.basic_monthly || 0) / 26;
           const hourlyRate = dailyRate / 8;
           const otAmount = Math.round(hourlyRate * 2 * totalOTHours); // 2x rate
@@ -13777,9 +13792,13 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       ];
       let idx = 1;
       let totGross=0, totBasic=0, totHRA=0, totConv=0, totSpecial=0, totPF=0, totPT=0, totESI=0, totLOP=0, totNet=0;
+      // One batched query for every employee instead of a round trip per
+      // payroll row.
+      const gteEmpRows = await all("SELECT user_id,data FROM entities WHERE type='Employee' AND user_id = ANY($1)", [payrolls.map(pr => pr.user_id)]);
+      const gteEmpMap = {};
+      gteEmpRows.forEach(r => { gteEmpMap[r.user_id] = JSON.parse(r.data); });
       for (const pr of payrolls) {
-        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pr.user_id]);
-        const emp = empRow ? JSON.parse(empRow.data) : {};
+        const emp = gteEmpMap[pr.user_id] || {};
         const gross=pr.gross_salary||0, basic=pr.basic_salary||0, hra=pr.hra||0, conv=pr.conveyance||0,
           special=pr.special_allowance||0, pf=pr.deductions?.pf||0, pt=pr.deductions?.pt||0,
           esi=pr.deductions?.esi||0, lop=pr.loss_of_pay_amount||0, net=pr.net_salary||0;
@@ -14232,13 +14251,19 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
       const employees = empRows.map(r => JSON.parse(r.data));
 
+      // One batched query for every active SalaryStructure instead of a
+      // round trip per employee — was O(n) sequential DB queries for a
+      // company-wide compliance report.
+      const gmwrSsRows = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND status='active' AND user_id = ANY($1)", [employees.map(e => e.user_id)]);
+      const gmwrSsMap = {};
+      gmwrSsRows.forEach(r => { if (!(r.user_id in gmwrSsMap)) gmwrSsMap[r.user_id] = JSON.parse(r.data); });
+
       const violations = [];
       const compliant = [];
 
       for (const emp of employees) {
-        const ssRow = await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active'", [emp.user_id]);
-        if (!ssRow) continue;
-        const ss = JSON.parse(ssRow.data);
+        const ss = gmwrSsMap[emp.user_id];
+        if (!ss) continue;
         const gross = (ss.basic_salary || ss.basic_monthly || 0) + (ss.hra || ss.hra_monthly || 0) + (ss.conveyance || ss.conveyance_monthly || 0);
         const minWage = MINIMUM_WAGES[emp.skill_category || 'default'];
 

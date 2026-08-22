@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import * as XLSX from 'xlsx';
 import { base44 } from '@/api/base44Client';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -381,7 +380,10 @@ Return ONLY the job description content as plain text with clear section headers
     'Experience Required', 'Location', 'Salary Range Min', 'Salary Range Max',
     'Target Hire Date', 'Priority', 'Status', 'Required Skills', 'Job Description / Notes',
   ];
-  const downloadRequisitionTemplate = () => {
+  const downloadRequisitionTemplate = async () => {
+    // Loaded on demand — xlsx is a ~430KB chunk this page shouldn't pay for
+    // until someone actually clicks Template/Import.
+    const XLSX = await import('xlsx');
     const sample = [
       'Senior Backend Engineer', departments[0]?.name || 'Engineering', 'full_time', 2,
       '3-5 years', locations[0]?.name || 'Ghaziabad', 800000, 1200000,
@@ -400,6 +402,7 @@ Return ONLY the job description content as plain text with clear section headers
     setImporting(true);
     try {
       const buf = await file.arrayBuffer();
+      const XLSX = await import('xlsx');
       const wb = XLSX.read(buf, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const parsed = XLSX.utils.sheet_to_json(ws, { defval: '' });

@@ -13,7 +13,6 @@ import { DollarSign, Users, Plus, Edit, Printer, Search, TrendingUp, Building, C
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
-import * as XLSX from 'xlsx';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
 import SalaryBreakdownCard from '../components/salary/SalaryBreakdownCard';
 
@@ -386,8 +385,11 @@ export default function SalaryStructureManagement() {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
+        // Loaded on demand — xlsx is a ~430KB chunk this page shouldn't pay
+        // for until someone actually clicks Import.
+        const XLSX = await import('xlsx');
         const wb = XLSX.read(ev.target.result, { type: 'array' });
         const ws = wb.Sheets[wb.SheetNames[0]];
         // Find the header row — look for the row that contains 'EMPLOYEE ID'
