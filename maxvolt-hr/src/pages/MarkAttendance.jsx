@@ -16,6 +16,13 @@ import AttendanceCameraCapture from '@/components/attendance/AttendanceCameraCap
 // e.g. 9:00 AM IST → Date with getTime() = 2026-06-26T09:00:00Z (not actual UTC 03:30)
 const toISTTime = () => new Date(Date.now() + 5.5 * 60 * 60 * 1000);
 
+// Installed Home-Screen PWA on iOS ('standalone' navigator flag is iOS-only;
+// display-mode: standalone covers Android/desktop installed PWAs too).
+const isStandalonePWA = () =>
+  window.navigator?.standalone === true ||
+  (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+const isIOSDevice = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
 export default function MarkAttendance() {
   const [user, setUser] = useState(null);
   const [employee, setEmployee] = useState(null);
@@ -32,6 +39,9 @@ export default function MarkAttendance() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [refining, setRefining] = useState(false);   // GPS accuracy refinement in progress
   const [remarks, setRemarks] = useState('');        // optional note saved with the punch
+  // True while we're deliberately withholding the auto geolocation fetch,
+  // waiting for an explicit tap — see the mount effect below for why.
+  const [locationNeedsTap, setLocationNeedsTap] = useState(false);
 
   // ── Geofence auto attendance — HR decides who is tracked (Employee.geofence_eligible),
   // employees get no on/off control at all. Eligible employees are tracked in the
@@ -89,7 +99,24 @@ export default function MarkAttendance() {
 
   useEffect(() => {
     loadData();
-    getCurrentLocationWithDetails();
+
+    // An unprompted geolocation call fired on page load (not from a direct
+    // user tap) is silently swallowed by iOS Safari when this page is
+    // running as an installed Home-Screen (standalone) app — no permission
+    // dialog ever appears, the request just times out, and the employee is
+    // stuck staring at "Fetching your location..." forever with no way to
+    // trigger the prompt. Checking the Permissions API first lets us still
+    // auto-fetch when permission is ALREADY granted (the common repeat-visit
+    // case — no extra tap needed) while leaving the very first request to an
+    // explicit button tap, which iOS reliably honors as a user gesture.
+    if (navigator.permissions?.query) {
+      navigator.permissions.query({ name: 'geolocation' }).then(status => {
+        if (status.state === 'granted') getCurrentLocationWithDetails();
+        else setLocationNeedsTap(true);
+      }).catch(() => getCurrentLocationWithDetails());
+    } else {
+      getCurrentLocationWithDetails();
+    }
 
     // Update time every second
     const timer = setInterval(() => {
@@ -98,6 +125,11 @@ export default function MarkAttendance() {
 
     return () => clearInterval(timer);
   }, []);
+
+  const handleEnableLocationTap = () => {
+    setLocationNeedsTap(false);
+    getCurrentLocationWithDetails();
+  };
 
   const loadData = async () => {
     try {
@@ -809,7 +841,18 @@ export default function MarkAttendance() {
               )}
             </div>
 
-            {!location && !locationError && (
+            {locationNeedsTap && !location && !locationError && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 md:p-4 space-y-2">
+                <p className="text-xs md:text-sm text-blue-800 font-medium">
+                  Location access is needed to mark attendance.
+                </p>
+                <Button type="button" size="sm" onClick={handleEnableLocationTap} className="bg-blue-600 hover:bg-blue-700">
+                  <MapPin className="w-4 h-4 mr-1.5" />Enable Location Access
+                </Button>
+              </div>
+            )}
+
+            {!locationNeedsTap && !location && !locationError && (
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 md:p-4">
                 <p className="text-xs md:text-sm text-yellow-800">
                   <strong>Note:</strong> Fetching your location for attendance verification...
@@ -818,11 +861,21 @@ export default function MarkAttendance() {
             )}
 
             {locationError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3 md:p-4">
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 md:p-4 space-y-2">
                 <p className="text-xs md:text-sm text-red-800 font-medium">{locationError}</p>
-                <p className="text-xs text-red-600 mt-1">
-                  On iPhone: Settings → Privacy & Security → Location Services → Safari / Chrome → While Using the App
-                </p>
+                {isIOSDevice() ? (
+                  <p className="text-xs text-red-600">
+                    On iPhone: Settings → Privacy & Security → Location Services → Safari → While Using the App.
+                    {isStandalonePWA() && ' Then close this app fully (swipe it away from the App Switcher) and reopen it from your Home Screen — iOS only picks up the new permission after a fresh launch.'}
+                  </p>
+                ) : (
+                  <p className="text-xs text-red-600">
+                    On Android: tap the lock/site-info icon in the address bar (or Settings → Apps → this app/browser → Permissions) and allow Location.
+                  </p>
+                )}
+                <Button type="button" size="sm" variant="outline" onClick={getCurrentLocationWithDetails} className="border-red-300 text-red-700 hover:bg-red-100">
+                  Try Again
+                </Button>
               </div>
             )}
           </CardContent>
