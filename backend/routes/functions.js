@@ -996,6 +996,11 @@ const normalizePhone = (ph) => String(ph || '').replace(/\D/g, '').slice(-10); /
 // as-is; anything a manager should see a *team-scoped slice* of needs the
 // explicit scoping helpers instead of just adding 'manager' back in here.
 const MGR_ROLES = ['hr', 'admin', 'management'];
+// Recruitment-pipeline access — the 'recruiter' role's whole job is Job
+// Requisitions / Candidates / Interviews / Offer Letters / Recruitment
+// Analytics (see Layout.jsx's recruiterMenuGroups), so every case backing
+// those pages needs 'recruiter' alongside the usual HR/admin/management set.
+const RECRUIT_ROLES = ['hr', 'admin', 'management', 'recruiter'];
 
 // Single-target authorization: may `cu` view/act on data belonging to
 // `targetUserId`? HR/admin/management: unrestricted. manager: only their own
@@ -8477,6 +8482,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'scoreAndSummariseCv': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
       const { candidate_id, position_applied, department, experience_years, current_company, current_ctc, expected_ctc, notice_period } = p;
 
       // Same fix as scoreCandidate: ground this in the actual resume text
@@ -8536,7 +8542,7 @@ Return ONLY a valid JSON object (no markdown) with:
     }
 
     case 'scoreCandidate': {
-      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
       const { candidate_id, job_requisition_id } = p;
       const cRow  = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       const jdRow = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [job_requisition_id]);
@@ -8701,7 +8707,7 @@ Return ONLY a valid JSON object (no markdown):
        gated public cases, same pattern as offer_accept_token below) ───── */
 
     case 'sendCandidateDocRequest': {
-      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
       const cRow = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -8816,7 +8822,7 @@ Return ONLY a valid JSON object (no markdown):
     }
 
     case 'getCandidateDocStatusList': {
-      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const rows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'doc_collection_token' IS NOT NULL");
       const list = rows.map(r => {
         const c = JSON.parse(r.data);
@@ -8831,7 +8837,7 @@ Return ONLY a valid JSON object (no markdown):
     }
 
     case 'verifyCandidateDocument': {
-      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id, doc_key, action, reason } = p; // action: 'verified' | 'rejected'
       if (!candidate_id || !doc_key || !['verified', 'rejected'].includes(action)) {
         return res.json({ success: false, error: 'candidate_id, doc_key, and a valid action are required' });
@@ -8878,7 +8884,7 @@ Return ONLY a valid JSON object (no markdown):
     }
 
     case 'previewOfferLetterPdf': {
-      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -8894,6 +8900,7 @@ Return ONLY a valid JSON object (no markdown):
 
     /* ── Send Offer Letter (email to candidate) ─────── */
     case 'sendOfferLetter': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id, joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, notes, medical_contribution = 0, salary_overrides } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
 
@@ -9190,7 +9197,7 @@ Return ONLY a valid JSON object (no markdown):
 
     /* ── HR: fetch the signed consent PDF for a candidate ───── */
     case 'getCandidateConsentPdf': {
-      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
       const row = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -9223,7 +9230,7 @@ Return ONLY a valid JSON object (no markdown):
     }
 
     case 'inviteJoinerToApp': {
-      if (!cu) return res.status(401).json({ error: 'Unauthorised' });
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id } = p;
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
@@ -10149,6 +10156,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
     }
 
     case 'sendInterviewEmail': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       // Accept either direct fields or candidate_id (from InterviewManagement.jsx)
       let candidateEmail = p.candidate_email;
       let candidateName  = p.candidate_name || 'Candidate';
@@ -10274,7 +10282,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
     // returns groups with more than one application so HR can review and
     // clean them up (reject the extras, keep the right one).
     case 'findDuplicateApplications': {
-      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const jobFilter = p?.job_id || null;
       const sql = jobFilter
         ? "SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'job_id'=$1"
@@ -15166,6 +15174,7 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
     }
 
     case 'getRecruitmentMIS': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { days = 180, department: misDept, requisition_id: misReqId } = p;
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
@@ -15320,6 +15329,7 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
     }
 
     case 'getRecruitmentInsights': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       // Takes the same summary data the client already fetched from
       // getRecruitmentMIS and asks the AI to write short, specific,
       // numbers-grounded observations from it — the narrative-insights
@@ -15354,7 +15364,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'saveInterviewScorecard': {
-      if (!(await hasRole(cu, [...MGR_ROLES, 'recruiter']))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id: sisCandId, scorecard: sisCard } = p;
       if (!sisCandId) return res.json({ success: false, error: 'candidate_id required' });
       const sisCandRow = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [sisCandId]);
