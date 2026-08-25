@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Bell, Megaphone, AlertCircle, Calendar, Search, Paperclip, Star } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Bell, Megaphone, AlertCircle, Calendar, Search, Paperclip, Star, ChevronRight, MapPin, Building2 } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 import { safeDate } from '@/lib/dateUtils';
 import { isAnnouncementForEmployee } from '@/lib/announcementAudience';
@@ -22,6 +23,7 @@ export default function Announcements() {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
   const [viewerDoc, setViewerDoc] = useState(null);
+  const [openAnnouncement, setOpenAnnouncement] = useState(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -74,14 +76,19 @@ export default function Announcements() {
         {urgentAnnouncements.length > 0 && (
           <div className="space-y-2">
             {urgentAnnouncements.map(a => (
-              <div key={a.id} className="bg-red-600 text-white rounded-xl p-4 flex items-start gap-3 shadow-lg">
+              <button
+                key={a.id}
+                onClick={() => setOpenAnnouncement(a)}
+                className="w-full text-left bg-red-600 text-white rounded-xl p-4 flex items-start gap-3 shadow-lg hover:bg-red-700 transition-colors"
+              >
                 <AlertCircle className="w-6 h-6 mt-0.5 flex-shrink-0 animate-pulse" />
-                <div>
+                <div className="flex-1 min-w-0">
                   <p className="font-bold text-lg">{a.title}</p>
-                  <p className="text-red-100 text-sm mt-1">{a.content}</p>
+                  <p className="text-red-100 text-sm mt-1 line-clamp-1">{a.content}</p>
                   <p className="text-red-200 text-xs mt-2">{safeDate(a.publish_date || a.created_date, 'MMMM d, yyyy')}</p>
                 </div>
-              </div>
+                <ChevronRight className="w-5 h-5 flex-shrink-0 mt-1 opacity-70" />
+              </button>
             ))}
           </div>
         )}
@@ -109,45 +116,49 @@ export default function Announcements() {
 
         {/* Announcement List */}
         {displayed.length > 0 ? (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {displayed.map(announcement => {
               const cfg = categoryConfig[announcement.category] || categoryConfig.general;
               const Icon = cfg.icon;
               return (
-                <Card key={announcement.id} className={`hover:shadow-lg transition-all border-l-4 ${cfg.border}`}>
-                  <CardHeader className="pb-2">
+                <Card
+                  key={announcement.id}
+                  className={`hover:shadow-md transition-all border-l-4 ${cfg.border} cursor-pointer`}
+                  onClick={() => setOpenAnnouncement(announcement)}
+                >
+                  <CardContent className="p-4">
                     <div className="flex items-start gap-3">
-                      <div className={`p-2.5 rounded-xl ${cfg.color} flex-shrink-0 mt-0.5`}>
+                      <div className={`p-2.5 rounded-xl ${cfg.color} flex-shrink-0`}>
                         <Icon className="w-5 h-5" />
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-start justify-between gap-3 flex-wrap">
-                          <CardTitle className="text-lg leading-tight">{announcement.title}</CardTitle>
+                          <p className="text-base font-semibold leading-tight text-blue-700 hover:underline">{announcement.title}</p>
                           <Badge className={`${cfg.color} text-xs flex-shrink-0`}>{cfg.label.toUpperCase()}</Badge>
                         </div>
-                        <div className="flex items-center gap-3 mt-1.5 text-sm text-gray-500">
+                        <p className="text-sm text-gray-500 mt-1 line-clamp-1">{announcement.content}</p>
+                        <div className="flex items-center gap-3 mt-2 text-xs text-gray-400 flex-wrap">
                           <span className="flex items-center gap-1">
                             <Calendar className="w-3.5 h-3.5" />
                             {safeDate(announcement.publish_date || announcement.created_date, 'MMMM d, yyyy')}
                           </span>
-                          {announcement.target_audience !== 'all' && (
-                            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
+                          {announcement.attachment_url && (
+                            <span className="flex items-center gap-1"><Paperclip className="w-3.5 h-3.5" /> Attachment</span>
+                          )}
+                          {announcement.target_audience === 'specific_departments' && (
+                            <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
                               {announcement.target_departments?.join(', ')}
+                            </span>
+                          )}
+                          {announcement.target_audience === 'specific_locations' && (
+                            <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
+                              {announcement.target_locations?.join(', ')}
                             </span>
                           )}
                         </div>
                       </div>
+                      <ChevronRight className="w-5 h-5 flex-shrink-0 text-gray-300 mt-1.5" />
                     </div>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{announcement.content}</p>
-                    {announcement.attachment_url && (
-                      <button
-                        onClick={() => setViewerDoc({ url: announcement.attachment_url, title: announcement.title })}
-                        className="inline-flex items-center gap-1.5 mt-3 text-blue-600 hover:text-blue-800 text-sm font-medium hover:underline">
-                        <Paperclip className="w-4 h-4" /> View Attachment
-                      </button>
-                    )}
                   </CardContent>
                 </Card>
               );
@@ -169,6 +180,59 @@ export default function Announcements() {
         title={viewerDoc?.title}
         onClose={() => setViewerDoc(null)}
       />
+
+      <Dialog open={!!openAnnouncement} onOpenChange={(o) => !o && setOpenAnnouncement(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          {openAnnouncement && (() => {
+            const cfg = categoryConfig[openAnnouncement.category] || categoryConfig.general;
+            const Icon = cfg.icon;
+            return (
+              <>
+                <DialogHeader>
+                  <div className="flex items-start gap-3">
+                    <div className={`p-2.5 rounded-xl ${cfg.color} flex-shrink-0`}>
+                      <Icon className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <DialogTitle className="text-xl leading-tight">{openAnnouncement.title}</DialogTitle>
+                        <Badge className={`${cfg.color} text-xs flex-shrink-0`}>{cfg.label.toUpperCase()}</Badge>
+                      </div>
+                      <div className="flex items-center gap-3 mt-1.5 text-sm text-gray-500 flex-wrap">
+                        <span className="flex items-center gap-1">
+                          <Calendar className="w-3.5 h-3.5" />
+                          {safeDate(openAnnouncement.publish_date || openAnnouncement.created_date, 'MMMM d, yyyy')}
+                        </span>
+                        {openAnnouncement.target_audience === 'specific_departments' && openAnnouncement.target_departments?.length > 0 && (
+                          <span className="flex items-center gap-1 bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
+                            <Building2 className="w-3.5 h-3.5" /> {openAnnouncement.target_departments.join(', ')}
+                          </span>
+                        )}
+                        {openAnnouncement.target_audience === 'specific_locations' && openAnnouncement.target_locations?.length > 0 && (
+                          <span className="flex items-center gap-1 bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
+                            <MapPin className="w-3.5 h-3.5" /> {openAnnouncement.target_locations.join(', ')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </DialogHeader>
+                <div className="mt-2 space-y-4">
+                  <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{openAnnouncement.content}</p>
+                  {openAnnouncement.attachment_url && (
+                    <button
+                      onClick={() => setViewerDoc({ url: openAnnouncement.attachment_url, title: openAnnouncement.title })}
+                      className="inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-800 text-sm font-medium hover:underline"
+                    >
+                      <Paperclip className="w-4 h-4" /> View Attachment
+                    </button>
+                  )}
+                </div>
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
