@@ -281,9 +281,9 @@ export async function closeStaleGeofenceSessions() {
 // Overnight shifts (end_time < start_time, crossing midnight) aren't
 // supported here — same limitation as the rest of this file's shift-window
 // logic (see markMissingAttendanceAsAbsent / getShiftForEmployee callers).
-const START_REMINDER_WINDOW_MIN = 20; // width of the "just started" window, past the grace period
 const END_REMINDER_GRACE_MIN    = 15; // minutes after shift end before nagging about checkout
 const END_REMINDER_WINDOW_MIN   = 30; // width of the checkout-reminder window
+const REPEAT_REMINDER_GAP_MIN   = 15; // how often the "still haven't checked in" nudge repeats
 
 function toMinutes(hhmm) {
   const [h, m] = String(hhmm || '00:00').split(':').map(Number);
@@ -308,23 +308,37 @@ async function notifyUser(userId, { title, message, type = 'info', link = '' }) 
   } catch (e) { console.error('[shift-reminders] notify failed:', e.message); }
 }
 
-// Dedup log for the start reminder — it fires before any Attendance row
-// exists for the user, so (unlike the checkout reminder) there's no existing
-// row to stash a "already reminded" flag on.
-async function alreadyRemindedStart(userId, date) {
+// Dedup log for shift reminders — one ShiftReminderLog row per
+// (user, date, reminder_type), tracking when it last fired. Recency-based
+// (not "has this ever fired today") so the post-shift "you haven't checked
+// in" nudge can repeat every N minutes until the employee actually checks
+// in, while the once-daily pre-shift reminder just uses a gap wider than a
+// single day so it only ever fires once.
+async function alreadyRemindedRecently(userId, date, reminderType, minGapMinutes) {
   const row = await one(
-    "SELECT id FROM entities WHERE type='ShiftReminderLog' AND user_id=$1 AND data::jsonb->>'date'=$2",
-    [userId, date]
+    "SELECT id,data FROM entities WHERE type='ShiftReminderLog' AND user_id=$1 AND data::jsonb->>'date'=$2 AND data::jsonb->>'reminder_type'=$3",
+    [userId, date, reminderType]
   );
-  return !!row;
+  if (!row) return { already: false, rowId: null };
+  const d = JSON.parse(row.data);
+  const elapsedMin = (Date.now() - new Date(d.sent_at).getTime()) / 60000;
+  return { already: elapsedMin < minGapMinutes, rowId: row.id };
 }
 
-async function markRemindedStart(userId, date) {
-  const id = uuidv4();
-  await run(
-    "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ShiftReminderLog',$2,'sent',$3)",
-    [id, userId, JSON.stringify({ id, user_id: userId, date, sent_at: new Date().toISOString() })]
-  );
+async function markReminded(userId, date, reminderType, rowId) {
+  const now = new Date().toISOString();
+  if (rowId) {
+    await run(
+      "UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2",
+      [JSON.stringify({ id: rowId, user_id: userId, date, reminder_type: reminderType, sent_at: now }), rowId]
+    );
+  } else {
+    const id = uuidv4();
+    await run(
+      "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ShiftReminderLog',$2,'sent',$3)",
+      [id, userId, JSON.stringify({ id, user_id: userId, date, reminder_type: reminderType, sent_at: now })]
+    );
+  }
 }
 
 export async function sendShiftStartReminders() {
@@ -359,8 +373,11 @@ export async function sendShiftStartReminders() {
     const startMin = toMinutes(shift.start_time || defaultShift.start_time);
     const grace = Number(shift.grace_period_minutes ?? defaultShift.grace_period_minutes ?? 15);
     const windowStart = startMin + grace;
-    const windowEnd = windowStart + START_REMINDER_WINDOW_MIN;
-    if (nowMin < windowStart || nowMin >= windowEnd) continue;
+    // No upper bound on the window — keeps repeating (throttled to once per
+    // REPEAT_REMINDER_GAP_MIN below) for as long as the employee still
+    // hasn't checked in, rather than firing once in a narrow window after
+    // grace and then falling silent for the rest of the day.
+    if (nowMin < windowStart) continue;
     checked++;
 
     const existing = await one(
@@ -369,7 +386,8 @@ export async function sendShiftStartReminders() {
     );
     if (existing) continue; // already has a record (checked in, regularised, etc.)
 
-    if (await alreadyRemindedStart(emp.user_id, date)) continue;
+    const { already, rowId } = await alreadyRemindedRecently(emp.user_id, date, 'post_shift_checkin', REPEAT_REMINDER_GAP_MIN);
+    if (already) continue;
 
     await notifyUser(emp.user_id, {
       title: 'Your shift has started',
@@ -377,7 +395,63 @@ export async function sendShiftStartReminders() {
       type: 'warning',
       link: '/Attendance',
     });
-    await markRemindedStart(emp.user_id, date);
+    await markReminded(emp.user_id, date, 'post_shift_checkin', rowId);
+    sent++;
+  }
+  return { date, checked, sent };
+}
+
+// ── Pre-shift "starting soon" reminder — fires once, ~10 minutes before
+// each employee's shift starts. Runs alongside sendShiftStartReminders on
+// the same 5-minute cron tick; PRE_SHIFT_LEAD_MIN's window is sized to the
+// cron cadence so it can't be skipped between ticks.
+const PRE_SHIFT_LEAD_MIN = 10;
+export async function sendPreShiftReminders() {
+  const date = istDateString(0);
+  const weekday = WEEKDAY_NAMES[new Date(date + 'T00:00:00Z').getUTCDay()];
+  const nowMin = nowISTMinutes();
+
+  const holidayRow = await one("SELECT id FROM entities WHERE type='Holiday' AND data::jsonb->>'date'=$1 AND data::jsonb->>'is_half_day' IS DISTINCT FROM 'true'", [date]);
+  if (holidayRow) return { date, checked: 0, sent: 0, reason: 'company holiday' };
+
+  const employees = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
+    .map(r => JSON.parse(r.data))
+    .filter(e => e.user_id && !e.is_attendance_exempt)
+    .filter(e => !e.date_of_joining || e.date_of_joining <= date);
+  if (employees.length === 0) return { date, checked: 0, sent: 0 };
+
+  const defaultShift = await getDefaultShift();
+  const approvedLeaves = (await all(
+    "SELECT data FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date'<=$1 AND data::jsonb->>'end_date'>=$1",
+    [date]
+  )).map(r => JSON.parse(r.data));
+  const onLeaveUserIds = new Set(approvedLeaves.map(l => l.user_id));
+
+  let checked = 0, sent = 0;
+  for (const emp of employees) {
+    if (onLeaveUserIds.has(emp.user_id)) continue;
+
+    const shift = await getShiftForEmployee(emp, defaultShift);
+    const workingDays = Array.isArray(shift.days) && shift.days.length ? shift.days : defaultShift.days;
+    if (workingDays && !workingDays.includes(weekday)) continue;
+
+    const startMin = toMinutes(shift.start_time || defaultShift.start_time);
+    const targetMin = startMin - PRE_SHIFT_LEAD_MIN;
+    // A 5-minute-wide window matching the cron cadence — wide enough that
+    // one tick always lands inside it, narrow enough it only fires once.
+    if (nowMin < targetMin || nowMin >= targetMin + 5) continue;
+    checked++;
+
+    const { already, rowId } = await alreadyRemindedRecently(emp.user_id, date, 'pre_shift', 12 * 60);
+    if (already) continue;
+
+    await notifyUser(emp.user_id, {
+      title: 'Your shift starts soon',
+      message: `Your shift starts at ${shift.start_time || defaultShift.start_time} in about ${PRE_SHIFT_LEAD_MIN} minutes.`,
+      type: 'info',
+      link: '/Attendance',
+    });
+    await markReminded(emp.user_id, date, 'pre_shift', rowId);
     sent++;
   }
   return { date, checked, sent };

@@ -17,7 +17,7 @@ import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
 import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
-import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
+import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, sendPreShiftReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 import { closeUnreturnedGatePasses } from './cron/gatePassAutomation.js';
 import { sendConfirmationDueReminders } from './cron/confirmationAutomation.js';
@@ -261,11 +261,14 @@ cron.schedule('*/30 * * * *', () => {
 }, { timezone: 'Asia/Kolkata' });
 
 // ── Shift start / forgot-to-checkout push reminders — every 5 minutes ─
-// Pushes "your shift started, you haven't checked in" shortly after each
-// employee's shift (+ grace period) begins, and "don't forget to check out"
-// shortly after their shift ends if they're still checked in. Each fires at
-// most once per user per day (see attendanceAutomation.js for the dedup).
+// Pushes a "your shift starts soon" heads-up ~10 minutes before each
+// employee's shift begins (once), then "your shift started, you haven't
+// checked in" repeating every 15 minutes (once grace period has passed)
+// until they actually check in, and "don't forget to check out" shortly
+// after their shift ends if they're still checked in. See
+// attendanceAutomation.js for the dedup/repeat logic.
 cron.schedule('*/5 * * * *', () => {
+  sendPreShiftReminders().catch(err => console.error('[pre-shift-reminders] failed:', err));
   sendShiftStartReminders().catch(err => console.error('[shift-start-reminders] failed:', err));
   sendShiftEndReminders().catch(err => console.error('[shift-end-reminders] failed:', err));
 }, { timezone: 'Asia/Kolkata' });

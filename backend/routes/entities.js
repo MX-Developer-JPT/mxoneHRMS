@@ -600,7 +600,21 @@ router.post('/:type', async (req, res) => {
           });
         }
       } else if (type === 'Ticket') {
-        await notifyMany(await getHrAdminUserIds(), {
+        // HR/admin always see every ticket (oversight), plus everyone in the
+        // ticket's assigned_department (set from the chosen HelpdeskCategory's
+        // default_department_name at creation — see Helpdesk.jsx) so the
+        // concerned department is notified immediately, not just once HR
+        // manually assigns it to a specific person later (see the
+        // assigned_to notification on Ticket update, below).
+        const ticketAudience = new Set(await getHrAdminUserIds());
+        if (data.assigned_department) {
+          const deptRows = await all(
+            "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department'=$1",
+            [data.assigned_department]
+          );
+          for (const r of deptRows) if (r.user_id) ticketAudience.add(r.user_id);
+        }
+        await notifyMany([...ticketAudience], {
           title: 'New Helpdesk Ticket',
           message: `${data.subject || 'A new ticket'} (${data.priority || 'medium'} priority) was raised.`,
           type: data.priority === 'high' || data.priority === 'urgent' ? 'warning' : 'info',
