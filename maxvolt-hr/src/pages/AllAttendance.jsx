@@ -158,7 +158,12 @@ export default function AllAttendance() {
       const userRole = currentUser.custom_role || currentUser.role;
 
       const [empRecords, usersResp, attendanceResp, deptRecords] = await Promise.all([
-        base44.entities.Employee.filter({ status: 'active' }, '-created_date', 500),
+        // 5000, not the 500 several other pages use — this is the org-wide
+        // attendance roster, so silently truncating it once headcount grows
+        // past a small cap would make the newest-hired employees (sorted
+        // last if this ever changed to ascending, or simply pushed out by
+        // any future growth past the old 500 cap) disappear from view here.
+        base44.entities.Employee.filter({ status: 'active' }, '-created_date', 5000),
         base44.functions.invoke('getAllUsers', {}),
         base44.functions.invoke('getAllAttendance', { date }),
         base44.entities.Department.list(),
@@ -183,11 +188,15 @@ export default function AllAttendance() {
       const map = {};
       dayRecords.forEach(r => { map[r.user_id] = r; });
 
-      // Only show employees who had joined by the selected date
+      // Only show employees who had joined by the selected date. Compares
+      // via toDateStr (not a raw string `<=`) so a date_of_joining stored
+      // with a time component (e.g. a full ISO timestamp instead of a plain
+      // YYYY-MM-DD) can't silently sort as "later" than a plain date string
+      // and wrongly hide an employee who joined today.
       const selDate = date;
       emps = emps.filter(e => {
         if (!e.date_of_joining) return true; // no DOJ stored → always show
-        return e.date_of_joining <= selDate;
+        return toDateStr(e.date_of_joining) <= selDate;
       });
 
       setEmployees(emps);

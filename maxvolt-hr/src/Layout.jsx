@@ -759,7 +759,13 @@ export default function Layout({ children, currentPageName }) {
   const isManager     = userRole === 'manager'    || user.role === 'manager';
   const isGateAdmin  = userRole === 'gate_admin'  || user.role === 'gate_admin';
   const isRecruiter  = userRole === 'recruiter'   || user.role === 'recruiter';
-  const isITDept     = employeeDepartment?.toLowerCase() === 'it';
+  // Matches the "IT" department however HR spelled it out in Department
+  // Management — exact 'it', or any variant of "Information Technology"
+  // (with or without the "Information Technology" wording, hyphenated or
+  // not) — not just a literal 2-letter "it" match, which silently excluded
+  // anyone whose department was actually named "Information Technology".
+  const itDeptLower  = employeeDepartment?.toLowerCase().trim() || '';
+  const isITDept     = itDeptLower === 'it' || itDeptLower.includes('information technology');
   const isAdminDept  = employeeDepartment?.toLowerCase().includes('admin');
 
   const isAdmin = user.role === 'admin';

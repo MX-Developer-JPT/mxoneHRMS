@@ -53,7 +53,7 @@ export default function Employees() {
       const usersResponse = await base44.functions.invoke('getAllUsers', {});
       const users = usersResponse?.data?.users || usersResponse?.users || [];
       
-      let updatedEmpRecords = await base44.entities.Employee.list('-created_date', 500);
+      let updatedEmpRecords = await base44.entities.Employee.list('-created_date', 5000);
 
       const userRole = currentUser.custom_role || currentUser.role;
       // Only 'manager' (scoped middle management) is restricted here —

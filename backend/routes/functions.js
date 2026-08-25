@@ -418,6 +418,21 @@ async function buildLetterPdf(label, ref, htmlContent, extraImages = {}) {
   const logoDataUrl = getLogoDataUrl();
   const stampDataUrl = getStampDataUrl();
   const content = htmlLetterToPdfContent(htmlContent);
+  // Every letter through this shared builder should carry the company seal
+  // overlapping its closing signature block — most callers (No Dues
+  // Certificate, Confirmation/Probation letters, and every dynamically
+  // AI/template-composed HR letter from approveAndSendLetter/
+  // saveLetterAsDocument) never include an explicit <img class="mx-seal">
+  // marker in their HTML, so without this they'd render with no stamp at
+  // all. Appending letterSealNode() as the last content node pulls it up
+  // (via its own negative top margin) to overlap whatever the letter's
+  // final line was — which is always the signature block for every letter
+  // built this way — without every caller having to remember to add the
+  // marker themselves. Skipped only when a caller already placed one
+  // explicitly, so it's never double-stamped.
+  if (!/class=["']mx-seal["']/i.test(htmlContent)) {
+    content.push(letterSealNode());
+  }
   const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
 
   const docDef = {
