@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { safeTime } from '@/lib/dateUtils';
+import { isAnnouncementForEmployee } from '@/lib/announcementAudience';
 
 export default function ManagementDashboard({ user }) {
   const [data, setData] = useState(null);
@@ -35,15 +36,19 @@ export default function ManagementDashboard({ user }) {
   const loadData = async () => {
     const today = format(new Date(), 'yyyy-MM-dd');
 
-    const [employeesRaw, usersResp, leaves, reimbursements, regularisations, announcements, teamAssets, teamTrainings] = await Promise.all([
+    const [employeesRaw, usersResp, leaves, reimbursements, regularisations, announcements, teamAssets, teamTrainings, myEmp] = await Promise.all([
       base44.entities.Employee.filter({ reporting_manager_id: user.id }).catch(() => []),
       base44.functions.invoke('getAllUsers', {}).catch(() => ({ data: { users: [] } })),
       base44.entities.Leave.filter({ status: 'pending' }).catch(() => []),
       base44.entities.Reimbursement.filter({ status: 'pending' }).catch(() => []),
       base44.entities.AttendanceRegularisation.filter({ manager_id: user.id, status: 'pending' }).catch(() => []),
-      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 4).catch(() => []),
+      // Fetch more than the widget shows — audience-filtered below, so
+      // pulling only 4 by recency could leave the widget empty even when
+      // older announcements actually targeted at this manager exist.
+      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 30).catch(() => []),
       base44.entities.Asset.filter({ status: 'assigned' }).catch(() => []),
       base44.entities.EmployeeTraining.filter({ status: 'in_progress' }).catch(() => []),
+      base44.entities.Employee.filter({ user_id: user.id }).catch(() => []),
     ]);
 
     const allUsers = usersResp?.data?.users || [];
@@ -141,7 +146,7 @@ export default function ManagementDashboard({ user }) {
       teamExpenses: teamExpenses.length,
       pendingRegularisations: regularisations.length,
       todayTeamAtt,
-      announcements,
+      announcements: announcements.filter(a => isAnnouncementForEmployee(a, myEmp?.[0])).slice(0, 4),
       teamAssetCount,
       teamTrainingCount,
     });

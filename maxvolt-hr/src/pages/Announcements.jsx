@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Bell, Megaphone, AlertCircle, Calendar, Search, Paperclip, Star } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 import { safeDate } from '@/lib/dateUtils';
+import { isAnnouncementForEmployee } from '@/lib/announcementAudience';
 
 const categoryConfig = {
   general: { color: 'bg-blue-100 text-blue-800', border: 'border-blue-200', icon: Bell, label: 'General' },
@@ -27,17 +28,16 @@ export default function Announcements() {
   const loadData = async () => {
     try {
       const currentUser = await base44.auth.me();
+      const role = currentUser.custom_role || currentUser.role;
+      const isHR = role === 'hr' || role === 'admin';
       const published = await base44.entities.Announcement.filter({ status: 'published' }, '-publish_date');
       const empRecord = await base44.entities.Employee.filter({ user_id: currentUser.id });
-      const userDepartment = empRecord[0]?.department;
 
-      const filtered = published.filter(a => {
-        if (a.target_audience === 'all') return true;
-        if (a.target_audience === 'specific_departments' && a.target_departments) {
-          return a.target_departments.includes(userDepartment);
-        }
-        return false;
-      });
+      // HR/admin see every published announcement here too (same oversight
+      // rationale as their dashboard widget and AnnouncementManagement) —
+      // everyone else only sees ones that actually targeted them, via the
+      // same audience rule the notification itself is sent with.
+      const filtered = isHR ? published : published.filter(a => isAnnouncementForEmployee(a, empRecord[0]));
 
       setAnnouncements(filtered);
     } catch (error) {

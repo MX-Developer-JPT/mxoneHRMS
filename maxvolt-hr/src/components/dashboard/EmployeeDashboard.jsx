@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
 import { safeDate, safeTime } from '@/lib/dateUtils';
+import { isAnnouncementForEmployee } from '@/lib/announcementAudience';
 
 export default function EmployeeDashboard({ user }) {
   const [data, setData] = useState(null);
@@ -41,7 +42,10 @@ export default function EmployeeDashboard({ user }) {
       base44.entities.Leave.filter({ user_id: user.id }, '-created_date', 5).catch(() => []),
       base44.entities.Reimbursement.filter({ user_id: user.id, status: 'pending' }).catch(() => []),
       base44.entities.Ticket.filter({ user_id: user.id, status: { $in: ['open', 'in_progress'] } }).catch(() => []),
-      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 5).catch(() => []),
+      // Fetch more than the widget shows — audience-filtered below, so
+      // pulling only 5 by recency could leave the widget empty even when
+      // older announcements actually targeted at this employee exist.
+      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 30).catch(() => []),
       base44.entities.AttendanceRegularisation.filter({ user_id: user.id, status: 'pending' }).catch(() => []),
       base44.entities.TrainingNotification.filter({ user_id: user.id, is_read: false }, '-created_date', 10).catch(() => []),
       base44.entities.Asset.filter({ assigned_to_user_id: user.id, status: 'assigned' }).catch(() => []),
@@ -91,7 +95,7 @@ export default function EmployeeDashboard({ user }) {
       recentLeaves: myLeaves,
       pendingReimbursements: myReimbursements.length,
       openTickets: myTickets.length,
-      announcements,
+      announcements: announcements.filter(a => isAnnouncementForEmployee(a, employeeRecord)).slice(0, 5),
       pendingRegularisations: regularisations.length,
       trainingNotifs,
       myAssets,
