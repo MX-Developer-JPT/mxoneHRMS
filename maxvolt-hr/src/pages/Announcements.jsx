@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Bell, Megaphone, AlertCircle, Calendar, Search, Paperclip, Star, ChevronRight, MapPin, Building2 } from 'lucide-react';
+import { Bell, Megaphone, AlertCircle, Calendar, Search, Paperclip, Star, ChevronRight, MapPin, Building2, Users, CheckCircle2, Clock, Loader2 } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 import { safeDate } from '@/lib/dateUtils';
 import { isAnnouncementForEmployee } from '@/lib/announcementAudience';
@@ -24,6 +24,29 @@ export default function Announcements() {
   const [activeCategory, setActiveCategory] = useState('all');
   const [viewerDoc, setViewerDoc] = useState(null);
   const [openAnnouncement, setOpenAnnouncement] = useState(null);
+  const [canSeeReadStats, setCanSeeReadStats] = useState(false);
+  const [readStats, setReadStats] = useState(null);
+  const [loadingReadStats, setLoadingReadStats] = useState(false);
+  const [readStatsTab, setReadStatsTab] = useState('unread');
+
+  const handleOpenAnnouncement = (announcement) => {
+    setOpenAnnouncement(announcement);
+    setReadStats(null);
+    setReadStatsTab('unread');
+    // Fire-and-forget — failure here shouldn't block reading.
+    base44.functions.invoke('markAnnouncementRead', { announcement_id: announcement.id }).catch(() => {});
+    if (canSeeReadStats) loadReadStats(announcement.id);
+  };
+
+  const loadReadStats = async (announcementId) => {
+    setLoadingReadStats(true);
+    try {
+      const res = await base44.functions.invoke('getAnnouncementReadStats', { announcement_id: announcementId });
+      const d = res?.data || res;
+      if (d?.success) setReadStats(d);
+    } catch (_) {}
+    setLoadingReadStats(false);
+  };
 
   useEffect(() => { loadData(); }, []);
 
@@ -32,6 +55,7 @@ export default function Announcements() {
       const currentUser = await base44.auth.me();
       const role = currentUser.custom_role || currentUser.role;
       const isHR = role === 'hr' || role === 'admin';
+      setCanSeeReadStats(isHR || role === 'management');
       const published = await base44.entities.Announcement.filter({ status: 'published' }, '-publish_date');
       const empRecord = await base44.entities.Employee.filter({ user_id: currentUser.id });
 
@@ -78,7 +102,7 @@ export default function Announcements() {
             {urgentAnnouncements.map(a => (
               <button
                 key={a.id}
-                onClick={() => setOpenAnnouncement(a)}
+                onClick={() => handleOpenAnnouncement(a)}
                 className="w-full text-left bg-red-600 text-white rounded-xl p-4 flex items-start gap-3 shadow-lg hover:bg-red-700 transition-colors"
               >
                 <AlertCircle className="w-6 h-6 mt-0.5 flex-shrink-0 animate-pulse" />
@@ -124,7 +148,7 @@ export default function Announcements() {
                 <Card
                   key={announcement.id}
                   className={`hover:shadow-md transition-all border-l-4 ${cfg.border} cursor-pointer`}
-                  onClick={() => setOpenAnnouncement(announcement)}
+                  onClick={() => handleOpenAnnouncement(announcement)}
                 >
                   <CardContent className="p-4">
                     <div className="flex items-start gap-3">
@@ -226,6 +250,53 @@ export default function Announcements() {
                     >
                       <Paperclip className="w-4 h-4" /> View Attachment
                     </button>
+                  )}
+
+                  {canSeeReadStats && (
+                    <div className="border-t pt-4">
+                      <p className="text-sm font-semibold text-gray-700 flex items-center gap-1.5 mb-2"><Users className="w-4 h-4" /> Read Stats</p>
+                      {loadingReadStats ? (
+                        <div className="flex items-center justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-gray-400" /></div>
+                      ) : readStats ? (
+                        <div className="space-y-3">
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="bg-gray-50 rounded-lg p-2.5 text-center">
+                              <p className="text-lg font-bold text-gray-700">{readStats.total}</p>
+                              <p className="text-xs text-gray-500">Total</p>
+                            </div>
+                            <div className="bg-green-50 rounded-lg p-2.5 text-center">
+                              <p className="text-lg font-bold text-green-700">{readStats.read_count}</p>
+                              <p className="text-xs text-gray-500">Read</p>
+                            </div>
+                            <div className="bg-amber-50 rounded-lg p-2.5 text-center">
+                              <p className="text-lg font-bold text-amber-700">{readStats.unread_count}</p>
+                              <p className="text-xs text-gray-500">Not Read</p>
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={() => setReadStatsTab('read')} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${readStatsTab === 'read' ? 'bg-green-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border'}`}>Read ({readStats.read_count})</button>
+                            <button onClick={() => setReadStatsTab('unread')} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${readStatsTab === 'unread' ? 'bg-amber-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border'}`}>Not Read ({readStats.unread_count})</button>
+                          </div>
+                          <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                            {readStatsTab === 'read' ? (
+                              readStats.read.length ? readStats.read.map(u => (
+                                <div key={u.user_id} className="flex items-center justify-between gap-3 border rounded-lg px-3 py-1.5 bg-green-50/50 border-green-100">
+                                  <p className="text-sm font-medium truncate">{u.full_name}</p>
+                                  <span className="flex items-center gap-1 text-xs text-green-700 flex-shrink-0"><CheckCircle2 className="w-3.5 h-3.5" /> {safeDate(u.read_at, 'MMM d, h:mm a')}</span>
+                                </div>
+                              )) : <p className="text-sm text-gray-400 text-center py-4">No one has read this yet</p>
+                            ) : (
+                              readStats.unread.length ? readStats.unread.map(u => (
+                                <div key={u.user_id} className="flex items-center justify-between gap-3 border rounded-lg px-3 py-1.5">
+                                  <p className="text-sm font-medium truncate">{u.full_name}</p>
+                                  <span className="flex items-center gap-1 text-xs text-amber-600 flex-shrink-0"><Clock className="w-3.5 h-3.5" /> Not read</span>
+                                </div>
+                              )) : <p className="text-sm text-gray-400 text-center py-4">Everyone in the audience has read this</p>
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
                   )}
                 </div>
               </>

@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
-import { Plus, Megaphone, Trash2, Eye, Edit, Archive, Paperclip, X, FileText, Image, Upload } from 'lucide-react';
+import { Plus, Megaphone, Trash2, Eye, Edit, Archive, Paperclip, X, FileText, Image, Upload, Users, CheckCircle2, Clock, Loader2 } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 
 const categoryConfig = {
@@ -51,8 +51,26 @@ export default function AnnouncementManagement() {
   const [uploadingFile, setUploadingFile] = useState(false);
   const [uploadedFileName, setUploadedFileName] = useState('');
   const [viewerDoc, setViewerDoc] = useState(null);
+  const [readStatsFor, setReadStatsFor] = useState(null);
+  const [readStatsData, setReadStatsData] = useState(null);
+  const [loadingReadStats, setLoadingReadStats] = useState(false);
+  const [readStatsTab, setReadStatsTab] = useState('unread');
 
   useEffect(() => { loadData(); }, []);
+
+  const openReadStats = async (ann) => {
+    setReadStatsFor(ann);
+    setReadStatsData(null);
+    setReadStatsTab('unread');
+    setLoadingReadStats(true);
+    try {
+      const res = await base44.functions.invoke('getAnnouncementReadStats', { announcement_id: ann.id });
+      const d = res?.data || res;
+      if (d?.success) setReadStatsData(d);
+      else toast.error(d?.error || 'Failed to load read stats');
+    } catch (e) { toast.error(e.message); }
+    setLoadingReadStats(false);
+  };
 
   const loadData = async () => {
     try {
@@ -395,9 +413,14 @@ export default function AnnouncementManagement() {
                       </Button>
                     )}
                     {ann.status === 'published' && (
-                      <Button size="sm" variant="outline" onClick={() => handleArchive(ann.id)} className="text-xs h-7">
-                        <Archive className="w-3 h-3 mr-1" /> Archive
-                      </Button>
+                      <>
+                        <Button size="sm" variant="outline" onClick={() => openReadStats(ann)} className="text-xs h-7">
+                          <Users className="w-3 h-3 mr-1" /> Read Stats
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => handleArchive(ann.id)} className="text-xs h-7">
+                          <Archive className="w-3 h-3 mr-1" /> Archive
+                        </Button>
+                      </>
                     )}
                     <Button variant="outline" size="sm" onClick={() => handleEdit(ann)} className="text-xs h-7">
                       <Edit className="w-3 h-3 mr-1" /> Edit
@@ -437,6 +460,73 @@ export default function AnnouncementManagement() {
         title={viewerDoc?.title}
         onClose={() => setViewerDoc(null)}
       />
+
+      <Dialog open={!!readStatsFor} onOpenChange={(o) => !o && setReadStatsFor(null)}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Read Stats — {readStatsFor?.title}</DialogTitle>
+          </DialogHeader>
+          {loadingReadStats ? (
+            <div className="flex items-center justify-center py-10"><Loader2 className="w-6 h-6 animate-spin text-gray-400" /></div>
+          ) : readStatsData ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-gray-50 rounded-lg p-3 text-center">
+                  <p className="text-xl font-bold text-gray-700">{readStatsData.total}</p>
+                  <p className="text-xs text-gray-500">Total Audience</p>
+                </div>
+                <div className="bg-green-50 rounded-lg p-3 text-center">
+                  <p className="text-xl font-bold text-green-700">{readStatsData.read_count}</p>
+                  <p className="text-xs text-gray-500">Read</p>
+                </div>
+                <div className="bg-amber-50 rounded-lg p-3 text-center">
+                  <p className="text-xl font-bold text-amber-700">{readStatsData.unread_count}</p>
+                  <p className="text-xs text-gray-500">Not Read</p>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setReadStatsTab('read')}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${readStatsTab === 'read' ? 'bg-green-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border'}`}
+                >Read ({readStatsData.read_count})</button>
+                <button
+                  onClick={() => setReadStatsTab('unread')}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${readStatsTab === 'unread' ? 'bg-amber-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border'}`}
+                >Not Read ({readStatsData.unread_count})</button>
+              </div>
+
+              <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                {readStatsTab === 'read' ? (
+                  readStatsData.read.length ? readStatsData.read.map(u => (
+                    <div key={u.user_id} className="flex items-center justify-between gap-3 border rounded-lg px-3 py-2 bg-green-50/50 border-green-100">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{u.full_name}</p>
+                        <p className="text-xs text-gray-400 truncate">{u.department || u.email}</p>
+                      </div>
+                      <span className="flex items-center gap-1 text-xs text-green-700 flex-shrink-0">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> {safeDate(u.read_at, 'MMM d, h:mm a')}
+                      </span>
+                    </div>
+                  )) : <p className="text-sm text-gray-400 text-center py-6">No one has read this yet</p>
+                ) : (
+                  readStatsData.unread.length ? readStatsData.unread.map(u => (
+                    <div key={u.user_id} className="flex items-center justify-between gap-3 border rounded-lg px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{u.full_name}</p>
+                        <p className="text-xs text-gray-400 truncate">{u.department || u.email}</p>
+                      </div>
+                      <span className="flex items-center gap-1 text-xs text-amber-600 flex-shrink-0">
+                        <Clock className="w-3.5 h-3.5" /> Not read
+                      </span>
+                    </div>
+                  )) : <p className="text-sm text-gray-400 text-center py-6">Everyone in the audience has read this</p>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

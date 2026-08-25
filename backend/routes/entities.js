@@ -331,7 +331,7 @@ async function getHrAdminUserIds() {
 // target_departments (matches Employee.department, which is always stored
 // as the department's NAME — see OnboardingApproval.jsx's department
 // dropdown — never its short code).
-async function getAnnouncementAudienceUserIds(data) {
+export async function getAnnouncementAudienceUserIds(data) {
   const audience = data.target_audience || 'all';
   if (audience === 'specific_locations') {
     const locs = Array.isArray(data.target_locations) ? data.target_locations : [];

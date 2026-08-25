@@ -7,7 +7,7 @@ import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours } from './attendancelog.js';
-import { cacheInvalidate } from './entities.js';
+import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
@@ -2157,6 +2157,57 @@ router.post('/:name', async (req, res) => {
       _usersCache = users;
       _usersCacheExp = Date.now() + 60_000; // 60-second cache
       return res.json({ users });
+    }
+
+    /* ── Announcement read receipts ──────────────────────
+       read_by lives on the Announcement row itself as [{user_id, read_at}]
+       — dedup'd by user_id (re-opening just refreshes read_at rather than
+       adding a duplicate entry) so "has this person read it" and "when"
+       are both answerable from the one field. ── */
+    case 'markAnnouncementRead': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { announcement_id: marId } = p;
+      if (!marId) return res.json({ success: false, error: 'announcement_id required' });
+      const marRow = await one("SELECT id,data FROM entities WHERE type='Announcement' AND id=$1", [marId]);
+      if (!marRow) return res.json({ success: false, error: 'Announcement not found' });
+      const marAnn = JSON.parse(marRow.data);
+      const marNow = new Date().toISOString();
+      const marReadBy = Array.isArray(marAnn.read_by) ? marAnn.read_by.filter(r => r.user_id !== cu.id) : [];
+      marReadBy.push({ user_id: cu.id, read_at: marNow });
+      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...marAnn, read_by: marReadBy }), marRow.id]);
+      return res.json({ success: true });
+    }
+
+    // HR/admin/management-only — who in the announcement's actual audience
+    // has read it and when, versus who hasn't yet.
+    case 'getAnnouncementReadStats': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { announcement_id: garId } = p;
+      if (!garId) return res.json({ success: false, error: 'announcement_id required' });
+      const garRow = await one("SELECT id,data FROM entities WHERE type='Announcement' AND id=$1", [garId]);
+      if (!garRow) return res.json({ success: false, error: 'Announcement not found' });
+      const garAnn = JSON.parse(garRow.data);
+      const garAudienceIds = await getAnnouncementAudienceUserIds(garAnn);
+      const garReadMap = new Map((garAnn.read_by || []).map(r => [r.user_id, r.read_at]));
+      const garUserRows = garAudienceIds.length
+        ? await all("SELECT id,full_name,email FROM users WHERE id = ANY($1)", [garAudienceIds])
+        : [];
+      const garUserMap = new Map(garUserRows.map(u => [u.id, u]));
+      const garEmpRows = garAudienceIds.length
+        ? await all("SELECT user_id,data FROM entities WHERE type='Employee' AND user_id = ANY($1)", [garAudienceIds])
+        : [];
+      const garEmpMap = new Map(garEmpRows.map(r => [r.user_id, JSON.parse(r.data)]));
+      const read = [], unread = [];
+      for (const uid of garAudienceIds) {
+        const u = garUserMap.get(uid);
+        const emp = garEmpMap.get(uid);
+        const entry = { user_id: uid, full_name: u?.full_name || emp?.display_name || 'Unknown', email: u?.email || '', department: emp?.department || '' };
+        if (garReadMap.has(uid)) read.push({ ...entry, read_at: garReadMap.get(uid) });
+        else unread.push(entry);
+      }
+      read.sort((a, b) => new Date(a.read_at) - new Date(b.read_at));
+      unread.sort((a, b) => a.full_name.localeCompare(b.full_name));
+      return res.json({ success: true, total: garAudienceIds.length, read_count: read.length, unread_count: unread.length, read, unread });
     }
 
     case 'initNewUser': {
