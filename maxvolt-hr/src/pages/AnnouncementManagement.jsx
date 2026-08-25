@@ -34,6 +34,7 @@ const emptyForm = {
   category: 'general',
   target_audience: 'all',
   target_departments: [],
+  target_locations: [],
   status: 'draft',
   attachment_url: ''
 };
@@ -41,6 +42,7 @@ const emptyForm = {
 export default function AnnouncementManagement() {
   const [announcements, setAnnouncements] = useState([]);
   const [departments, setDepartments] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingAnnouncement, setEditingAnnouncement] = useState(null);
@@ -54,12 +56,14 @@ export default function AnnouncementManagement() {
 
   const loadData = async () => {
     try {
-      const [announcementData, deptData] = await Promise.all([
+      const [announcementData, deptData, locData] = await Promise.all([
         base44.entities.Announcement.list('-created_date'),
-        base44.entities.Department.list()
+        base44.entities.Department.list(),
+        base44.entities.AppLocation.list()
       ]);
       setAnnouncements(announcementData);
       setDepartments(deptData);
+      setLocations(locData.filter(l => l.is_active !== false));
     } catch (error) {
       console.error('Error loading announcements:', error);
     }
@@ -141,6 +145,7 @@ export default function AnnouncementManagement() {
       category: ann.category,
       target_audience: ann.target_audience || 'all',
       target_departments: ann.target_departments || [],
+      target_locations: ann.target_locations || [],
       status: ann.status,
       attachment_url: ann.attachment_url || ''
     });
@@ -210,10 +215,37 @@ export default function AnnouncementManagement() {
                       <SelectContent>
                         <SelectItem value="all">All Employees</SelectItem>
                         <SelectItem value="specific_departments">Specific Departments</SelectItem>
+                        <SelectItem value="specific_locations">Specific Locations</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                 </div>
+
+                {formData.target_audience === 'specific_locations' && (
+                  <div>
+                    <Label>Select Locations</Label>
+                    <div className="border rounded-lg p-3 space-y-2 max-h-40 overflow-y-auto bg-gray-50">
+                      {locations.map(loc => (
+                        <label key={loc.id} className="flex items-center gap-2 cursor-pointer hover:bg-white p-1 rounded">
+                          <input type="checkbox" className="rounded"
+                            checked={formData.target_locations.includes(loc.name)}
+                            onChange={e => {
+                              const key = loc.name;
+                              setFormData(prev => ({
+                                ...prev,
+                                target_locations: e.target.checked
+                                  ? [...prev.target_locations, key]
+                                  : prev.target_locations.filter(l => l !== key)
+                              }));
+                            }}
+                          />
+                          <span className="text-sm">{loc.name}</span>
+                        </label>
+                      ))}
+                      {locations.length === 0 && <p className="text-xs text-gray-400">No locations configured — see Location Master.</p>}
+                    </div>
+                  </div>
+                )}
 
                 {formData.target_audience === 'specific_departments' && (
                   <div>
@@ -222,9 +254,17 @@ export default function AnnouncementManagement() {
                       {departments.map(dept => (
                         <label key={dept.id} className="flex items-center gap-2 cursor-pointer hover:bg-white p-1 rounded">
                           <input type="checkbox" className="rounded"
-                            checked={formData.target_departments.includes(dept.code || dept.name)}
+                            checked={formData.target_departments.includes(dept.name)}
                             onChange={e => {
-                              const key = dept.code || dept.name;
+                              // Employee.department is always stored as the
+                              // department's NAME (see OnboardingApproval.jsx's
+                              // department dropdown, value={dept.name}), never
+                              // its short code — this used to store dept.code
+                              // here whenever one was set, so the audience
+                              // query (which matches against Employee.department)
+                              // silently matched nobody and the announcement
+                              // reached zero employees in the targeted departments.
+                              const key = dept.name;
                               setFormData(prev => ({
                                 ...prev,
                                 target_departments: e.target.checked
@@ -341,7 +381,11 @@ export default function AnnouncementManagement() {
                     <p className="text-xs text-gray-500">
                       {ann.publish_date ? `Published ${safeDate(ann.publish_date, 'MMM d, yyyy')}` : `Created ${safeDate(ann.created_date, 'MMM d, yyyy')}`}
                       {' · '}
-                      {ann.target_audience === 'all' ? 'All employees' : `Depts: ${ann.target_departments?.join(', ') || 'None selected'}`}
+                      {ann.target_audience === 'all'
+                        ? 'All employees'
+                        : ann.target_audience === 'specific_locations'
+                          ? `Locations: ${ann.target_locations?.join(', ') || 'None selected'}`
+                          : `Depts: ${ann.target_departments?.join(', ') || 'None selected'}`}
                     </p>
                   </div>
                   <div className="flex gap-2 flex-wrap">

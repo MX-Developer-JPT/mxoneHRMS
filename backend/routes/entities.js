@@ -324,10 +324,29 @@ async function getHrAdminUserIds() {
 }
 
 // Announcement audience: 'all' (or unset) → every active employee;
-// otherwise every active employee in one of target_departments.
+// 'specific_locations' → every active employee whose work_location is one
+// of target_locations (matches AppLocation.name, per Location Master —
+// see OnboardingApproval.jsx's location dropdown); anything else (the
+// existing 'specific_departments' path) → every active employee in one of
+// target_departments (matches Employee.department, which is always stored
+// as the department's NAME — see OnboardingApproval.jsx's department
+// dropdown — never its short code).
 async function getAnnouncementAudienceUserIds(data) {
+  const audience = data.target_audience || 'all';
+  if (audience === 'specific_locations') {
+    const locs = Array.isArray(data.target_locations) ? data.target_locations : [];
+    if (!locs.length) {
+      const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
+      return rows.map(r => r.user_id).filter(Boolean);
+    }
+    const rows = await all(
+      "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'work_location' = ANY($1)",
+      [locs]
+    );
+    return rows.map(r => r.user_id).filter(Boolean);
+  }
   const depts = Array.isArray(data.target_departments) ? data.target_departments : [];
-  if ((data.target_audience || 'all') === 'all' || depts.length === 0) {
+  if (audience === 'all' || depts.length === 0) {
     const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
     return rows.map(r => r.user_id).filter(Boolean);
   }
