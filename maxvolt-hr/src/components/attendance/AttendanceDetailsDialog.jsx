@@ -8,7 +8,13 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { MapPin, Camera, Clock, Coffee, ArrowDownCircle, ArrowUpCircle, Timer, Fingerprint, Activity } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
-import { getAttendanceMethod, getGeofenceDetail } from '@/lib/attendanceSource';
+import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, getGeofenceDetail } from '@/lib/attendanceSource';
+
+const METHOD_ICON = { biometric: Fingerprint, geofence: MapPin, selfie: Camera, manual: Clock };
+const METHOD_BADGE_CLASS = {
+  biometric: 'bg-green-100 text-green-700', geofence: 'bg-indigo-100 text-indigo-700',
+  selfie: 'bg-blue-100 text-blue-700', manual: 'bg-gray-100 text-gray-600',
+};
 
 export default function AttendanceDetailsDialog({ record, employee, open, onClose }) {
   if (!record) return null;
@@ -51,6 +57,13 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
   const totalWorkMins  = record.total_working_minutes ?? (record.working_hours ? Math.round(record.working_hours * 60) : 0);
 
   const attendanceMethod = getAttendanceMethod(record).key;
+  const checkInMethod = getCheckInMethod(record);
+  const checkOutMethod = getCheckOutMethod(record);
+  // Only worth calling out as two separate badges when there's actually a
+  // checkout to compare against and the two sides genuinely differ (e.g.
+  // checked in via selfie, checked out via biometric) — otherwise the
+  // single combined badge below already says it.
+  const methodsDiffer = !!record.check_out_time && checkInMethod.key !== checkOutMethod.key;
   const isWorking = record.is_in_progress || record.status === 'in_progress';
 
   // Unified display sessions list
@@ -112,25 +125,42 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                     Checked Out
                   </Badge>
                 )}
-                {attendanceMethod === 'biometric' && (
-                  <Badge className="bg-green-100 text-green-700 flex items-center gap-1">
-                    <Fingerprint className="w-3 h-3" /> Biometric
-                  </Badge>
-                )}
-                {attendanceMethod === 'geofence' && (
-                  <Badge className="bg-indigo-100 text-indigo-700 flex items-center gap-1" title={getGeofenceDetail(record)}>
-                    <MapPin className="w-3 h-3" /> {getGeofenceDetail(record)}
-                  </Badge>
-                )}
-                {attendanceMethod === 'selfie' && (
-                  <Badge className="bg-blue-100 text-blue-700 flex items-center gap-1">
-                    <Camera className="w-3 h-3" /> Selfie + Location
-                  </Badge>
-                )}
-                {attendanceMethod === 'manual' && record.check_in_time && (
-                  <Badge className="bg-gray-100 text-gray-600 flex items-center gap-1">
-                    <Clock className="w-3 h-3" /> Manual
-                  </Badge>
+                {methodsDiffer ? (
+                  <>
+                    {(() => { const Icon = METHOD_ICON[checkInMethod.key]; return (
+                      <Badge className={`${METHOD_BADGE_CLASS[checkInMethod.key]} flex items-center gap-1`} title={checkInMethod.key === 'geofence' ? getGeofenceDetail(record) : undefined}>
+                        <Icon className="w-3 h-3" /> Checked in: {checkInMethod.label}
+                      </Badge>
+                    ); })()}
+                    {(() => { const Icon = METHOD_ICON[checkOutMethod.key]; return (
+                      <Badge className={`${METHOD_BADGE_CLASS[checkOutMethod.key]} flex items-center gap-1`} title={checkOutMethod.key === 'geofence' ? getGeofenceDetail(record) : undefined}>
+                        <Icon className="w-3 h-3" /> Checked out: {checkOutMethod.label}
+                      </Badge>
+                    ); })()}
+                  </>
+                ) : (
+                  <>
+                    {attendanceMethod === 'biometric' && (
+                      <Badge className="bg-green-100 text-green-700 flex items-center gap-1">
+                        <Fingerprint className="w-3 h-3" /> Biometric
+                      </Badge>
+                    )}
+                    {attendanceMethod === 'geofence' && (
+                      <Badge className="bg-indigo-100 text-indigo-700 flex items-center gap-1" title={getGeofenceDetail(record)}>
+                        <MapPin className="w-3 h-3" /> {getGeofenceDetail(record)}
+                      </Badge>
+                    )}
+                    {attendanceMethod === 'selfie' && (
+                      <Badge className="bg-blue-100 text-blue-700 flex items-center gap-1">
+                        <Camera className="w-3 h-3" /> Selfie + Location
+                      </Badge>
+                    )}
+                    {attendanceMethod === 'manual' && record.check_in_time && (
+                      <Badge className="bg-gray-100 text-gray-600 flex items-center gap-1">
+                        <Clock className="w-3 h-3" /> Manual
+                      </Badge>
+                    )}
+                  </>
                 )}
               </div>
             </div>

@@ -7,7 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, MapPin, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, BarChart3, CalendarDays, List, ChevronLeft, ChevronRight, Loader2, Wrench } from 'lucide-react';
-import { getAttendanceMethod, getGeofenceDetail, scheduledOffStatus } from '@/lib/attendanceSource';
+import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, getGeofenceDetail, scheduledOffStatus } from '@/lib/attendanceSource';
+
+const METHOD_SHORT_LABEL = { biometric: 'Bio', geofence: 'Geo', selfie: 'Selfie', manual: 'Manual' };
 import { format } from 'date-fns';
 import { safeTime } from '@/lib/dateUtils';
 import { toast } from 'sonner';
@@ -771,6 +773,18 @@ export default function AllAttendance() {
                               </span>
                             )}
                             {(() => {
+                              const inM = getCheckInMethod(record);
+                              const outM = getCheckOutMethod(record);
+                              if (record.check_out_time && inM.key !== outM.key) {
+                                return (
+                                  <span
+                                    title={`Checked in: ${inM.label} · Checked out: ${outM.label}`}
+                                    className="inline-flex items-center gap-0.5 text-xs text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200"
+                                  >
+                                    In: {METHOD_SHORT_LABEL[inM.key]} · Out: {METHOD_SHORT_LABEL[outM.key]}
+                                  </span>
+                                );
+                              }
                               const method = getAttendanceMethod(record);
                               if (method.key === 'biometric') return (
                                 <span className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 px-1.5 py-0.5 rounded border border-green-200">

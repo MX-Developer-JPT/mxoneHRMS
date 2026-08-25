@@ -7,7 +7,9 @@ import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter
 import { safeDate, safeTime } from '@/lib/dateUtils';
 import { ClipboardList, Coffee, Activity, Fingerprint, MapPin, Camera } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
-import { getAttendanceMethod } from '@/lib/attendanceSource';
+import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod } from '@/lib/attendanceSource';
+
+const METHOD_SHORT_LABEL = { biometric: 'Biometric', geofence: 'Geofence', selfie: 'Selfie', manual: 'Manual' };
 import { Button } from "@/components/ui/button";
 import { Link } from 'react-router-dom';
 
@@ -218,14 +220,22 @@ export default function AttendanceHistory() {
                                   <Coffee className="w-3 h-3" /> Break: {fmtMins(totalBreakMins)}
                                 </span>
                               )}
-                              {a.check_in_time && method.key === 'biometric' && (
-                                <span className="text-green-600 flex items-center gap-0.5"><Fingerprint className="w-3 h-3" /> Biometric</span>
-                              )}
-                              {a.check_in_time && method.key === 'geofence' && (
-                                <span className="text-indigo-600 flex items-center gap-0.5"><MapPin className="w-3 h-3" /> Geofence</span>
-                              )}
-                              {a.check_in_time && method.key === 'selfie' && (
-                                <span className="text-blue-600 flex items-center gap-0.5"><Camera className="w-3 h-3" /> Selfie</span>
+                              {a.check_in_time && a.check_out_time && getCheckInMethod(a).key !== getCheckOutMethod(a).key ? (
+                                <span className="text-purple-600 flex items-center gap-0.5">
+                                  In: {METHOD_SHORT_LABEL[getCheckInMethod(a).key]} · Out: {METHOD_SHORT_LABEL[getCheckOutMethod(a).key]}
+                                </span>
+                              ) : (
+                                <>
+                                  {a.check_in_time && method.key === 'biometric' && (
+                                    <span className="text-green-600 flex items-center gap-0.5"><Fingerprint className="w-3 h-3" /> Biometric</span>
+                                  )}
+                                  {a.check_in_time && method.key === 'geofence' && (
+                                    <span className="text-indigo-600 flex items-center gap-0.5"><MapPin className="w-3 h-3" /> Geofence</span>
+                                  )}
+                                  {a.check_in_time && method.key === 'selfie' && (
+                                    <span className="text-blue-600 flex items-center gap-0.5"><Camera className="w-3 h-3" /> Selfie</span>
+                                  )}
+                                </>
                               )}
                             </div>
                             {/* Per-session mini timeline */}

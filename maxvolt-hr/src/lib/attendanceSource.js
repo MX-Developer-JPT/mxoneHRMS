@@ -17,6 +17,32 @@ export function getAttendanceMethod(record) {
   return ATTENDANCE_METHODS.manual;
 }
 
+// Per-side method — a record can legitimately be checked in by one method
+// (e.g. selfie) and checked out by another (e.g. biometric); getAttendanceMethod
+// above collapses both into a single value (biometric > geofence > selfie >
+// manual) which hides that split. These two prefer the explicit
+// check_in_source/check_out_source fields (set at the moment each punch
+// happens — see markSelfieAttendance / nativeGeofenceEvent / the biometric
+// sync merge in functions.js) and fall back to the same signal-based
+// inference as getAttendanceMethod for older records that predate those
+// fields.
+export function getCheckInMethod(record) {
+  if (!record) return ATTENDANCE_METHODS.manual;
+  if (record.check_in_source && ATTENDANCE_METHODS[record.check_in_source]) return ATTENDANCE_METHODS[record.check_in_source];
+  if (record.check_in_selfie_url) return ATTENDANCE_METHODS.selfie;
+  if (record.auto_geofence) return ATTENDANCE_METHODS.geofence;
+  if (record.biometric_synced) return ATTENDANCE_METHODS.biometric;
+  return ATTENDANCE_METHODS.manual;
+}
+export function getCheckOutMethod(record) {
+  if (!record) return ATTENDANCE_METHODS.manual;
+  if (record.check_out_source && ATTENDANCE_METHODS[record.check_out_source]) return ATTENDANCE_METHODS[record.check_out_source];
+  if (record.check_out_selfie_url) return ATTENDANCE_METHODS.selfie;
+  if (record.auto_geofence_checkout) return ATTENDANCE_METHODS.geofence;
+  if (record.biometric_synced) return ATTENDANCE_METHODS.biometric;
+  return ATTENDANCE_METHODS.manual;
+}
+
 // Human-readable detail for the geofence case — distinguishes the native background
 // geofence (works with the app backgrounded/closed) from the in-app foreground watcher.
 export function getGeofenceDetail(record) {

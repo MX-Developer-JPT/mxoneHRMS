@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Users, Search, Mail, Phone, Briefcase, Calendar, Building2, ChevronDown, ChevronRight, Download } from 'lucide-react';
 import EmployeeDetailDialog from '../components/employees/EmployeeDetailDialog';
 import HREmployeeEditPanel from '../components/employees/HREmployeeEditPanel';
+import MarkEmployeeLeftDialog from '../components/employees/MarkEmployeeLeftDialog';
 import { Badge } from "@/components/ui/badge";
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -25,6 +26,7 @@ export default function Employees() {
   const [collapsedDepts, setCollapsedDepts] = useState({});
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [editingEmployee, setEditingEmployee] = useState(null);
+  const [markingLeftEmployee, setMarkingLeftEmployee] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [exporting, setExporting] = useState(false);
 
@@ -357,8 +359,9 @@ export default function Employees() {
                               )}
                             </div>
                             {((currentUser?.custom_role || currentUser?.role) === 'admin' || (currentUser?.custom_role || currentUser?.role) === 'hr') && (
-                              <div className="mt-2 flex justify-end" onClick={e => { e.stopPropagation(); setEditingEmployee(emp); }}>
-                                <Button size="sm" variant="outline" className="text-xs">Edit UAN/PF</Button>
+                              <div className="mt-2 flex justify-end gap-2">
+                                <Button size="sm" variant="outline" className="text-xs" onClick={e => { e.stopPropagation(); setEditingEmployee(emp); }}>Edit UAN/PF</Button>
+                                <Button size="sm" variant="outline" className="text-xs text-red-600 border-red-200 hover:bg-red-50" onClick={e => { e.stopPropagation(); setMarkingLeftEmployee(emp); }}>Mark as Left</Button>
                               </div>
                             )}
                           </CardContent>
@@ -381,11 +384,18 @@ export default function Employees() {
 
         <EmployeeDetailDialog employee={selectedEmployee} onClose={() => setSelectedEmployee(null)} />
         {((currentUser?.custom_role || currentUser?.role) === 'admin' || (currentUser?.custom_role || currentUser?.role) === 'hr') && (
-          <HREmployeeEditPanel
-            employee={editingEmployee}
-            onClose={() => setEditingEmployee(null)}
-            onSave={loadData}
-          />
+          <>
+            <HREmployeeEditPanel
+              employee={editingEmployee}
+              onClose={() => setEditingEmployee(null)}
+              onSave={loadData}
+            />
+            <MarkEmployeeLeftDialog
+              employee={markingLeftEmployee}
+              onClose={() => setMarkingLeftEmployee(null)}
+              onSaved={loadData}
+            />
+          </>
         )}
 
         <Dialog open={showFilterDialog} onOpenChange={setShowFilterDialog}>

@@ -3791,7 +3791,15 @@ router.post('/:name', async (req, res) => {
         // timestamp from a session that already ended earlier today.
         check_out_time: sessionData.is_in_progress ? null : sessionData.check_out_time,
         ...statusResult, shift_id: ngEmp.shift_id || null,
-        auto_geofence: true, geofence_location: ngFence?.name || location_name || '',
+        // auto_geofence historically got set on BOTH enter and exit events,
+        // so a record could never tell which SIDE (check-in vs check-out)
+        // was actually geofence-triggered — auto_geofence_checkout existed
+        // as a field name elsewhere in the codebase but was never actually
+        // written. Each event now only flips its own side; the other side's
+        // existing flag (from an earlier event, or from a different method
+        // entirely — selfie/biometric) is left untouched.
+        ...(event === 'enter' ? { auto_geofence: true, check_in_source: 'geofence' } : { auto_geofence_checkout: true, check_out_source: 'geofence' }),
+        geofence_location: ngFence?.name || location_name || '',
         geofence_source: ['in_app', 'native_android', 'native_ios'].includes(source) ? source : 'native_android', geofence_device: device_id || '',
         ...(event === 'enter' ? { check_in_location: locPayload } : { check_out_location: locPayload }),
       };
@@ -3863,8 +3871,8 @@ router.post('/:name', async (req, res) => {
         check_out_time: saSessionData.is_in_progress ? null : saSessionData.check_out_time,
         ...saStatusResult, shift_id: saEmp.shift_id || null,
         ...(saEvent === 'in'
-          ? { check_in_selfie_url: saSelfieUrl || '', check_in_location: saLocation || null, ...(saNotes ? { notes: saNotes.slice(0, 200) } : {}) }
-          : { check_out_selfie_url: saSelfieUrl || '', check_out_location: saLocation || null, ...(saNotes ? { checkout_notes: saNotes.slice(0, 200) } : {}) }),
+          ? { check_in_selfie_url: saSelfieUrl || '', check_in_location: saLocation || null, check_in_source: 'selfie', ...(saNotes ? { notes: saNotes.slice(0, 200) } : {}) }
+          : { check_out_selfie_url: saSelfieUrl || '', check_out_location: saLocation || null, check_out_source: 'selfie', ...(saNotes ? { checkout_notes: saNotes.slice(0, 200) } : {}) }),
       };
       if (saAttRow) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(saAttData), saStatusResult.status, saAttRow.id]);
       else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [saId, cu.id, saStatusResult.status, JSON.stringify(saAttData)]);
@@ -3930,6 +3938,8 @@ router.post('/:name', async (req, res) => {
         admin_marked: true,
         admin_edited_by: cu.id,
         admin_edited_at: new Date().toISOString(),
+        ...(asCheckIn ? { check_in_source: 'manual' } : {}),
+        ...(asCheckOut ? { check_out_source: 'manual' } : {}),
         ...(asNotes ? { notes: asNotes.slice(0, 200) } : {}),
       };
       if (asAttRow) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(asAttData), asFinalStatus, asAttRow.id]);
@@ -7179,12 +7189,33 @@ router.post('/:name', async (req, res) => {
         if (existing) {
           const d = JSON.parse(existing.data);
           if (d.status === 'regularised' || d.regularised) { skipped++; continue; }
-          const upd = { ...d, biometric_synced: true, employee_code: empData.employee_code || empCode || d.employee_code, ...sd, ...statusResult };
+          // Per-side method attribution: this sync's own raw device punches
+          // for the day fully recompute check_in_time/check_out_time (sd,
+          // spread below) regardless of what side they actually came from —
+          // that's a wholesale device-log recompute, not evidence either
+          // side was newly captured BY biometric. Only flip a side's
+          // recorded source to 'biometric' when that side's timestamp
+          // actually changed as a result of this sync (or never had a
+          // source before); an unchanged side keeps whatever method
+          // (selfie/geofence) it already had — e.g. a selfie check-in this
+          // morning followed by a biometric-only evening punch correctly
+          // keeps "checked in by selfie, checked out by biometric" instead
+          // of biometric silently claiming both sides.
+          const inChanged = d.check_in_time !== sd.check_in_time;
+          const outChanged = d.check_out_time !== sd.check_out_time;
+          const upd = {
+            ...d, biometric_synced: true, employee_code: empData.employee_code || empCode || d.employee_code, ...sd, ...statusResult,
+            check_in_source: (inChanged || !d.check_in_source) ? 'biometric' : d.check_in_source,
+            check_out_source: (outChanged || !d.check_out_source) ? 'biometric' : d.check_out_source,
+          };
           await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [status, JSON.stringify(upd), existing.id]);
           updated++;
         } else {
           const id2 = uuidv4();
-          const attData = { id: id2, user_id: userId, date, source: 'biometric', biometric_synced: true, employee_code: empData.employee_code || empCode, ...sd, ...statusResult };
+          const attData = {
+            id: id2, user_id: userId, date, source: 'biometric', biometric_synced: true, employee_code: empData.employee_code || empCode, ...sd, ...statusResult,
+            check_in_source: sd.check_in_time ? 'biometric' : null, check_out_source: sd.check_out_time ? 'biometric' : null,
+          };
           await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [id2, userId, status, JSON.stringify(attData)]);
           created++;
         }
@@ -12465,6 +12496,33 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const cecEmpRow = await one("SELECT id FROM entities WHERE type='Employee' AND user_id=$1", [cecExit.user_id]);
       if (cecEmpRow) await run("UPDATE entities SET data=jsonb_set(jsonb_set(data::jsonb,'{status}','\"resigned\"'),'{exit_date}',$1::jsonb)::text,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecExit.last_working_date || null), cecEmpRow.id]);
       await notify(cecExit.user_id, { title: 'Exit Process Completed', message: 'Your exit process has been completed. Your relieving and experience letters will be shared shortly.', type: 'success', link: '/my-exit' });
+      return res.json({ success: true });
+    }
+
+    // Quick "Mark as Left" — an HR shortcut for archiving an employee who
+    // never went through (or doesn't need) the full Exit Management
+    // resignation/clearance/F&F workflow. Deliberately does NOT create an
+    // Exit record — Left Employees / LeftEmployeeProfile both already
+    // handle a missing exit record gracefully (no clearance/F&F section
+    // shown), which is exactly right for this shortcut path.
+    case 'markEmployeeAsLeft': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const { user_id: melUserId, exit_type: melType, last_working_date: melLwd, reason: melReason } = p;
+      if (!melUserId || !['resigned', 'terminated', 'retired'].includes(melType)) {
+        return res.json({ success: false, error: 'user_id and a valid exit_type (resigned/terminated/retired) are required' });
+      }
+      const melRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [melUserId]);
+      if (!melRow) return res.json({ success: false, error: 'Employee record not found' });
+      const melEmp = JSON.parse(melRow.data);
+      if (['resigned', 'terminated', 'retired'].includes(melEmp.status)) {
+        return res.json({ success: false, error: 'Employee is already marked as left' });
+      }
+      const melNow = new Date().toISOString();
+      const melUpd = {
+        ...melEmp, status: melType, exit_date: melLwd || melNow.slice(0, 10),
+        exit_reason: melReason || '', exit_marked_by: cu.id, exit_marked_by_name: cu.full_name, exit_marked_at: melNow,
+      };
+      await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(melUpd), melType, melRow.id]);
       return res.json({ success: true });
     }
 
