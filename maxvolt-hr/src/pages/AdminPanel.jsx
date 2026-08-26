@@ -1512,6 +1512,12 @@ const MA_STATUS_COLORS = {
 };
 const MA_STATUS_OPTIONS = ['present', 'half_day', 'leave', 'absent', 'holiday', 'week_off', 'on_duty', 'work_from_home'];
 
+function addMinutesHM(hm, mins) {
+  const [h, m] = String(hm || '00:00').split(':').map(Number);
+  const total = (h * 60 + m + Number(mins || 0) + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
 function ManualAttendanceTab() {
   const [employees, setEmployees] = useState([]);
   const [loadingEmps, setLoadingEmps] = useState(true);
@@ -1522,6 +1528,7 @@ function ManualAttendanceTab() {
   const [calYear, setCalYear] = useState(new Date().getFullYear());
   const [monthRecords, setMonthRecords] = useState([]);
   const [loadingCal, setLoadingCal] = useState(false);
+  const [empShift, setEmpShift] = useState(null); // { start_time, end_time, grace_period_minutes } for the selected employee
 
   const [editDate, setEditDate] = useState(null); // 'YYYY-MM-DD' currently being edited
   const [form, setForm] = useState({ check_in_time: '', check_out_time: '', status: 'present', notes: '' });
@@ -1550,7 +1557,7 @@ function ManualAttendanceTab() {
     setLoadingCal(true);
     try {
       const res = await base44.functions.invoke('adminGetEmployeeMonthAttendance', { user_id: selectedEmp.user_id, month: calMonth, year: calYear });
-      if (res.data?.success) setMonthRecords(res.data.records || []);
+      if (res.data?.success) { setMonthRecords(res.data.records || []); setEmpShift(res.data.shift || null); }
       else toast.error(res.data?.error || 'Failed to load attendance');
     } catch (e) {
       toast.error('Failed to load attendance: ' + e.message);
@@ -1593,6 +1600,29 @@ function ManualAttendanceTab() {
     return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
   }
 
+  // Live "will this be marked late/early?" preview, mirroring the backend's
+  // computeStatusFromSessions math exactly (shift start/end + grace period)
+  // — shown before saving so the admin can see whether a chosen time falls
+  // inside the employee's actual allowed window instead of guessing.
+  function timingPreview(shift, checkIn, checkOut) {
+    if (!shift || !checkIn) return null;
+    const toMins = (t) => { const [h, m] = String(t || '00:00').split(':').map(Number); return h * 60 + m; };
+    const shiftStart = toMins(shift.start_time || '09:00');
+    const shiftEnd = toMins(shift.end_time || '18:00');
+    const grace = Number(shift.grace_period_minutes || 15);
+    const inMins = toMins(checkIn);
+    const parts = [];
+    if (inMins > shiftStart + grace) parts.push({ ok: false, text: `${inMins - shiftStart - grace} min late` });
+    else parts.push({ ok: true, text: 'on-time check-in' });
+    if (checkOut) {
+      const outMins = toMins(checkOut);
+      if (outMins < shiftEnd - grace) parts.push({ ok: false, text: `${shiftEnd - grace - outMins} min early departure` });
+      else if (outMins > shiftEnd + grace) parts.push({ ok: true, text: `${outMins - shiftEnd - grace} min overtime` });
+      else parts.push({ ok: true, text: 'on-time check-out' });
+    }
+    return parts;
+  }
+
   const handleSave = async () => {
     if (!selectedEmp || !editDate) return;
     if (!form.check_in_time && form.status === 'present') {
@@ -1602,19 +1632,21 @@ function ManualAttendanceTab() {
     setSaving(true);
     try {
       const isPunchStatus = ['present', 'half_day', 'on_duty', 'work_from_home'].includes(form.status);
-      // Work From Home is an explicit admin override, not something punch
-      // times should ever recompute away from — computeStatusFromSessions
+      // Work From Home / On Duty are explicit admin overrides, not something
+      // punch times should ever recompute away from — computeStatusFromSessions
       // only ever resolves to present/late/half_day/short_attendance, so
-      // letting it drive status here silently turned a WFH day back into
-      // "present" the moment a check-in time was entered. Pin the status
-      // for WFH while still sending the times so the hours get recorded.
-      const preserveStatus = form.status === 'work_from_home';
+      // letting it drive status here silently turned a WFH/OD day back into
+      // "present" (or "late") the moment a check-in time was entered. Pin the
+      // status for these two while still sending the times so the hours (and
+      // late/early-departure minutes, computed the same way as any other
+      // punch) get recorded correctly against the employee's shift.
+      const preserveStatus = ['work_from_home', 'on_duty'].includes(form.status);
       const res = await base44.functions.invoke('adminSetAttendance', {
         user_id: selectedEmp.user_id,
         date: editDate,
         check_in_time: isPunchStatus ? (form.check_in_time || undefined) : undefined,
         check_out_time: isPunchStatus ? (form.check_out_time || undefined) : undefined,
-        status: (isPunchStatus && form.check_in_time && !preserveStatus) ? undefined : form.status, // let punches drive status when both are given, except for WFH
+        status: (isPunchStatus && form.check_in_time && !preserveStatus) ? undefined : form.status, // let punches drive status when both are given, except for WFH/OD
         notes: form.notes || undefined,
       });
       if (res.data?.success) {
@@ -1755,14 +1787,35 @@ function ManualAttendanceTab() {
                 </div>
               </div>
 
+              {empShift && ['present', 'half_day'].includes(form.status) && (
+                <div className="text-[11px] text-muted-foreground bg-muted/40 rounded-md px-2.5 py-1.5">
+                  Shift window: {empShift.start_time}–{empShift.end_time} · {empShift.grace_period_minutes ?? 15} min grace
+                  {' '}(allowed check-in up to {addMinutesHM(empShift.start_time, empShift.grace_period_minutes ?? 15)})
+                  {form.check_in_time && (() => {
+                    const preview = timingPreview(empShift, form.check_in_time, form.check_out_time);
+                    return preview ? (
+                      <span className="block mt-1">
+                        {preview.map((part, i) => (
+                          <span key={i} className={`mr-2 font-medium ${part.ok ? 'text-green-600' : 'text-amber-600'}`}>
+                            {part.ok ? '✓' : '⚠'} {part.text}
+                          </span>
+                        ))}
+                      </span>
+                    ) : null;
+                  })()}
+                </div>
+              )}
+
               <div>
                 <Label className="text-xs">Notes (optional)</Label>
                 <Input className="h-9 text-sm mt-1" placeholder="Reason for manual edit…" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value.slice(0, 200) }))} />
               </div>
 
               <p className="text-[11px] text-muted-foreground">
-                {['present', 'half_day', 'on_duty', 'work_from_home'].includes(form.status)
-                  ? 'A check-in time is required for this status; check-out is optional (leaves the day in progress). Status shown on save reflects computed lateness/half-day rules unless it differs from what you picked.'
+                {['present', 'half_day'].includes(form.status)
+                  ? 'A check-in time is required for this status; check-out is optional (leaves the day in progress). If the times you enter fall within the shift window above, the day is saved as on-time — it is only marked late/early when the time genuinely falls outside the allowed window.'
+                  : ['on_duty', 'work_from_home'].includes(form.status)
+                  ? 'Status stays as selected regardless of the times entered — On Duty / Work From Home are never auto-changed to Late based on check-in/out time.'
                   : 'This status needs no punch time — check-in/out fields will be ignored.'}
               </p>
 

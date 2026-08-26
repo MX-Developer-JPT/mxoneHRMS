@@ -4064,7 +4064,19 @@ router.post('/:name', async (req, res) => {
         "SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' >= $2 AND data::jsonb->>'date' <= $3",
         [agUserId, agStart, agEnd]
       ));
-      return res.json({ success: true, records });
+      // Return the employee's effective shift too, so the Manual Attendance
+      // editor can show the admin the exact allowed check-in/out window
+      // instead of them having to guess (or assume) what counts as "late".
+      let agShift = { start_time: '09:00', end_time: '18:00', working_hours: 9, grace_period_minutes: 15 };
+      const agEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [agUserId]);
+      if (agEmpRow) {
+        const agEmp = JSON.parse(agEmpRow.data);
+        if (agEmp.shift_id) {
+          const agShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [agEmp.shift_id]);
+          if (agShiftRow) agShift = JSON.parse(agShiftRow.data);
+        }
+      }
+      return res.json({ success: true, records, shift: agShift });
     }
 
     /* ── Field Duty: GPS distance tracking for out-duty staff ── */
