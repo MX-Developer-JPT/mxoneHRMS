@@ -5190,9 +5190,14 @@ router.post('/:name', async (req, res) => {
           const isScheduledOff = !workingDays.includes(weekday);
 
           let cell = '', workedMins = 0, otMins = 0;
+          // A day before this employee's own joining date must never read
+          // as Absent (or anything else) — they simply weren't employed
+          // yet. Same treatment as a future day that hasn't happened yet.
+          const isPreJoining = emp.date_of_joining && dateStr < emp.date_of_joining;
 
           if (!rec) {
-            if (isHoliday) { cell = 'H'; totalHoliday++; }
+            if (isPreJoining) { cell = ''; }
+            else if (isHoliday) { cell = 'H'; totalHoliday++; }
             else if (isScheduledOff) { cell = 'OFF'; totalOff++; }
             else if (dateStr > reportTodayIST) { cell = ''; }
             else { cell = 'A'; totalAbsent++; }
@@ -5439,7 +5444,13 @@ router.post('/:name', async (req, res) => {
       // Saturday/Sunday check) — a shift that includes Saturday as a
       // working day must not show 'WO' for it just because there's no
       // attendance record yet.
-      const mStatusCode = (rec, dateStr, empRecs, workingDays) => {
+      const mStatusCode = (rec, dateStr, empRecs, workingDays, doj) => {
+        // A day before the employee even joined the company must never be
+        // scored at all — not absent, not week-off, nothing — regardless of
+        // what the calendar says about that date. Overrides every other
+        // branch below, including an existing record (shouldn't happen, but
+        // pre-joining data is never meaningful either way).
+        if (doj && dateStr < doj) return '';
         const dateObj = new Date(dateStr + 'T00:00:00');
         const dow = dateObj.getDay();
         const weekday = mWeekdayNames[dow];
@@ -5457,8 +5468,12 @@ router.post('/:name', async (req, res) => {
           // sandwich rule too — "both sides skipped work to extend the
           // weekend" doesn't apply when one side was already a company
           // holiday nobody was expected to work.
-          const satOk = isMusterWorked(empRecs[sat]) || mHolidaySet.has(sat);
-          const monOk = isMusterWorked(empRecs[mon]) || mHolidaySet.has(mon);
+          // A neighboring day before the employee's own DOJ can't count
+          // against them either — otherwise a brand-new joiner's very first
+          // Sunday gets wrongly sandwiched into 'A' by a Saturday that was
+          // before they even joined.
+          const satOk = isMusterWorked(empRecs[sat]) || mHolidaySet.has(sat) || (doj && sat < doj);
+          const monOk = isMusterWorked(empRecs[mon]) || mHolidaySet.has(mon) || (doj && mon < doj);
           if (!satOk && !monOk) return 'A';
           return 'WO';
         }
@@ -5558,7 +5573,7 @@ router.post('/:name', async (req, res) => {
 
         for (let d=1; d<=daysInMonth; d++) {
           const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-          const code = mStatusCode(empRecs[ds], ds, empRecs, workingDays);
+          const code = mStatusCode(empRecs[ds], ds, empRecs, workingDays, emp.date_of_joining);
           codes.push(code);
           // Show the specific leave type (e.g. "CL"/"Casual Leave") instead
           // of a generic "L" — the category code above still drives
@@ -5696,7 +5711,9 @@ router.post('/:name', async (req, res) => {
         return Array.isArray(shift?.days) && shift.days.length ? shift.days : (swDefaultShift.days || swFallbackDays);
       };
       const swTodayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
-      const swInferredStatus = (ds, workingDays) => {
+      const swInferredStatus = (ds, workingDays, doj) => {
+        // Before the employee's own joining date — never a real status.
+        if (doj && ds < doj) return '';
         if (swHolidaySet.has(ds)) return 'holiday';
         const weekday = swWeekdayNames[new Date(ds + 'T00:00:00').getDay()];
         if (!workingDays.includes(weekday)) return 'week_off';
@@ -5765,7 +5782,7 @@ router.post('/:name', async (req, res) => {
           const rec = empRecs[ds];
           const weekday = swWeekdayNames[new Date(swY, swM-1, d).getDay()];
           const method = swMethod(rec);
-          const status = rec?.status || (rec ? '' : swInferredStatus(ds, workingDays));
+          const status = rec?.status || (rec ? '' : swInferredStatus(ds, workingDays, emp.date_of_joining));
 
           const row = wsSw.getRow(swRowNum++);
           const vals = [
