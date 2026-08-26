@@ -2,14 +2,16 @@
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar, Fingerprint } from 'lucide-react';
+import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar, Fingerprint, Home, Route } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getAttendanceMethod, getGeofenceDetail } from '@/lib/attendanceSource';
 import { isBackgroundGeofenceAvailable, startBackgroundGeofence } from '@/lib/geofenceBackground';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import AttendanceCameraCapture from '@/components/attendance/AttendanceCameraCapture';
+import { startTracking as startFieldTripTracking, stopTracking as stopFieldTripTracking } from '@/lib/fieldTripTracker';
 
 // Returns a Date object with its ms representing IST clock digits as if they were UTC.
 // This matches the "Store IST, display IST" convention used throughout the app.
@@ -39,6 +41,7 @@ export default function MarkAttendance() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [refining, setRefining] = useState(false);   // GPS accuracy refinement in progress
   const [remarks, setRemarks] = useState('');        // optional note saved with the punch
+  const [selfieReason, setSelfieReason] = useState(''); // mandatory: 'wfh' | 'od' — why they're using the Selfie Method today
   // True while we're deliberately withholding the auto geolocation fetch,
   // waiting for an explicit tap — see the mount effect below for why.
   const [locationNeedsTap, setLocationNeedsTap] = useState(false);
@@ -298,6 +301,10 @@ export default function MarkAttendance() {
       toast.error('Waiting for location...');
       return;
     }
+    if (!selfieReason) {
+      toast.error('Please select why you are using the Selfie Method (WFH or Outduty)');
+      return;
+    }
 
     setIsCheckingOut(false);
     setShowCamera(true);
@@ -331,7 +338,8 @@ export default function MarkAttendance() {
       user_id: user.id,
       date: today,
       check_in_time: checkInTime.toISOString(),
-      status: 'present',
+      status: selfieReason === 'wfh' ? 'work_from_home' : selfieReason === 'od' ? 'on_duty' : 'present',
+      selfie_reason: selfieReason,
       shift_id: shift?.id
     });
     setLoading(false);
@@ -355,6 +363,7 @@ export default function MarkAttendance() {
       const res = await base44.functions.invoke('markSelfieAttendance', {
         event: 'in',
         selfie_url: selfieUrl,
+        reason: selfieReason,
         location: {
           latitude: location.latitude,
           longitude: location.longitude,
@@ -372,8 +381,15 @@ export default function MarkAttendance() {
       const d = res.data || res;
       if (d?.success === false) throw new Error(d.error || 'Check-in failed');
       setRemarks('');
+      setSelfieReason('');
       // Patch optimistic state with the real id so checkout can update correctly
       if (d?.attendance_id) setTodayAttendance(prev => prev ? { ...prev, id: d.attendance_id } : prev);
+
+      // Field Duty Tracking was just auto-started server-side (OD + eligible
+      // employee) — start the actual GPS watch loop immediately rather than
+      // waiting for Layout.jsx's mount-time resume check to pick it up on
+      // the next reload/navigation.
+      if (d?.field_trip?.status === 'active') startFieldTripTracking(d.field_trip.id, 0);
 
       toast.success('Checked in successfully');
       setCapturedPhoto(null);
@@ -536,6 +552,11 @@ export default function MarkAttendance() {
       const d = res.data || res;
       if (d?.success === false) throw new Error(d.error || 'Check-out failed');
       setRemarks('');
+
+      // Field Duty Tracking was just auto-ended server-side — stop the local
+      // GPS watch loop too, so it doesn't keep polling/uploading points
+      // against a trip the backend already marked completed.
+      if (d?.field_trip?.status === 'completed') stopFieldTripTracking();
 
       toast.success(`Checked out successfully (${workingHours.toFixed(2)} hours)`);
       setCapturedPhoto(null);
@@ -756,6 +777,8 @@ export default function MarkAttendance() {
                         </p>
                         <p className="text-xs mt-1">
                           Status: Working
+                          {todayAttendance.selfie_reason === 'wfh' && ' · WFH'}
+                          {todayAttendance.selfie_reason === 'od' && ' · OD (Outduty)'}
                           {todayAttendance.session_count > 1 && ` · Session ${todayAttendance.session_count} today`}
                           {todayAttendance.working_hours > 0 && ` · ${todayAttendance.working_hours.toFixed(1)}h so far`}
                         </p>
@@ -808,11 +831,29 @@ export default function MarkAttendance() {
               </div>
             )}
 
+            {/* Mandatory — every Selfie Method check-in must say why (WFH or
+                Outduty); the resulting attendance status is set to that
+                reason (see backend markSelfieAttendance), not left as a note. */}
+            {canCheckIn && (
+              <div className="mb-4">
+                <p className="text-sm text-gray-500 mb-1.5">Why are you using the Selfie Method? <span className="text-red-500">*</span></p>
+                <Select value={selfieReason} onValueChange={setSelfieReason}>
+                  <SelectTrigger className="bg-white">
+                    <SelectValue placeholder="Select a reason..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="wfh"><span className="flex items-center gap-2"><Home className="w-4 h-4" /> Work From Home (WFH)</span></SelectItem>
+                    <SelectItem value="od"><span className="flex items-center gap-2"><Route className="w-4 h-4" /> Outduty (OD)</span></SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             <div className="flex flex-col sm:flex-row gap-3 md:gap-4">
               {canCheckIn && (
                 <Button
                   onClick={handleCheckIn}
-                  disabled={loading || !location}
+                  disabled={loading || !location || !selfieReason}
                   className="flex-1 bg-green-600 hover:bg-green-700"
                   size="lg"
                 >

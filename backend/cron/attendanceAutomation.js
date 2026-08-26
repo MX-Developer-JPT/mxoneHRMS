@@ -99,6 +99,24 @@ export async function markMissingAttendanceAsAbsent(targetDate) {
 // trailing open session is closed as zero-duration (see
 // closeTrailingOpenSession) and the day's status is recomputed from
 // whatever was actually, legitimately worked.
+// Auto-ends whichever FieldTrip THIS attendance record auto-started (via
+// markSelfieAttendance's OD flow) if it's still active when the day gets
+// force-closed by one of the safety-net jobs below — a forgotten checkout
+// must not leave Field Duty Tracking running indefinitely. Never touches a
+// trip the employee started manually and hasn't linked to this attendance id.
+async function closeLinkedFieldTrip(userId, attendanceId) {
+  if (!attendanceId) return;
+  const row = await one(
+    "SELECT id,data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active' AND data::jsonb->>'linked_attendance_id'=$2",
+    [userId, attendanceId]
+  );
+  if (!row) return;
+  const trip = JSON.parse(row.data);
+  await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [
+    JSON.stringify({ ...trip, status: 'completed', end_time: new Date().toISOString(), auto_closed: true }), row.id,
+  ]);
+}
+
 export async function closeUnfinishedSessions(targetDate) {
   const date = targetDate || istDateString(-1);
   const rows = await all("SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1", [date]);
@@ -133,12 +151,17 @@ export async function closeUnfinishedSessions(targetDate) {
 
     const sessionData = closeTrailingOpenSession(rawPunches);
     const statusResult = computeStatusFromSessions(sessionData, shift, halfDayHours);
+    // A WFH/OD day the employee forgot to check out of must stay WFH/OD —
+    // not silently revert to whatever present/late/half-day the raw punch
+    // timeline alone computes to.
+    const finalStatus = d.selfie_reason === 'wfh' ? 'work_from_home' : d.selfie_reason === 'od' ? 'on_duty' : statusResult.status;
     const updated = {
-      ...d, ...sessionData, ...statusResult,
+      ...d, ...sessionData, ...statusResult, status: finalStatus,
       auto_closed_at: new Date().toISOString(),
       auto_closed_reason: 'Final session of the day was never checked out before the 2 AM cutoff — closed as a zero-duration session at the last recorded punch; status reflects hours actually worked in completed sessions.',
     };
-    await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [statusResult.status, JSON.stringify(updated), row.id]);
+    await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [finalStatus, JSON.stringify(updated), row.id]);
+    await closeLinkedFieldTrip(d.user_id, d.id);
     marked++;
   }
   return { date, checked: rows.length, marked };
@@ -191,12 +214,14 @@ export async function closeStaleOpenSessions() {
 
     const sessionData = closeTrailingOpenSession(rawPunches);
     const statusResult = computeStatusFromSessions(sessionData, shift, halfDayHours);
+    const finalStatus = d.selfie_reason === 'wfh' ? 'work_from_home' : d.selfie_reason === 'od' ? 'on_duty' : statusResult.status;
     const updated = {
-      ...d, ...sessionData, ...statusResult,
+      ...d, ...sessionData, ...statusResult, status: finalStatus,
       auto_closed_at: new Date().toISOString(),
       auto_closed_reason: 'Checked in but never checked out for a past day — the last recorded check-in was treated as the final check-out; status reflects hours actually worked in completed sessions.',
     };
-    await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [statusResult.status, JSON.stringify(updated), row.id]);
+    await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [finalStatus, JSON.stringify(updated), row.id]);
+    await closeLinkedFieldTrip(d.user_id, d.id);
     marked++;
   }
   return { checked: rows.length, marked };

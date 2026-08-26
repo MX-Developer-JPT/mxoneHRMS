@@ -261,6 +261,9 @@ export default function FieldDuty() {
               </p>
             )}
             <p className="text-xs text-gray-400">Keep the app open (screen stays awake). Points sync every 20 seconds.</p>
+            {activeTrip.source === 'od_attendance' && (
+              <p className="text-xs text-indigo-600 font-medium">Started automatically for your Outduty attendance — it'll stop automatically when you check out.</p>
+            )}
             <Button className="bg-red-600 hover:bg-red-700 text-white" onClick={openEndDialog} disabled={busy}>
               <Square className="w-4 h-4 mr-2" /> End Trip
             </Button>
@@ -309,7 +312,10 @@ export default function FieldDuty() {
                       <td className="px-4 py-2.5 text-gray-600">
                         <span className="inline-flex items-center gap-1">{t.vehicle_type === '4_wheeler' ? <Car className="w-3.5 h-3.5" /> : <Bike className="w-3.5 h-3.5" />} {t.vehicle_type === '4_wheeler' ? '4-Wheeler' : '2-Wheeler'}</span>
                       </td>
-                      <td className="px-4 py-2.5 text-gray-600 max-w-[180px] truncate">{t.purpose || '—'}</td>
+                      <td className="px-4 py-2.5 text-gray-600 max-w-[180px] truncate">
+                        {t.source === 'od_attendance' && <Badge className="bg-indigo-100 text-indigo-700 text-[10px] mr-1.5 align-middle">AUTO · OD</Badge>}
+                        {t.purpose || '—'}
+                      </td>
                       <td className="px-4 py-2.5 text-right font-medium">{fmtKm(t.distance_km)}</td>
                       <td className="px-4 py-2.5 text-right text-gray-700">{t.claimed ? fmt(t.claim_amount) : rate > 0 ? fmt((t.distance_km || 0) * rate + (t.toll_parking_amount || 0)) : '—'}</td>
                       <td className="px-4 py-2.5 text-center">

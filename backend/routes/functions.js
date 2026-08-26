@@ -3879,8 +3879,15 @@ router.post('/:name', async (req, res) => {
     // find-existing-by-user+date check) since this always looks up first.
     case 'markSelfieAttendance': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { event: saEvent, selfie_url: saSelfieUrl, location: saLocation, notes: saNotes } = p;
+      const { event: saEvent, selfie_url: saSelfieUrl, location: saLocation, notes: saNotes, reason: saReasonIn } = p;
       if (!['in', 'out'].includes(saEvent)) return res.json({ success: false, error: "event must be 'in' or 'out'" });
+      // Why the employee is using the Selfie Method — mandatory on every
+      // check-in (a WFH morning followed by an OD afternoon is a legitimate
+      // second session with a different reason); checkout just carries
+      // forward whatever the most recent check-in recorded, never re-asked.
+      if (saEvent === 'in' && !['wfh', 'od'].includes(saReasonIn)) {
+        return res.json({ success: false, error: "reason must be 'wfh' or 'od'" });
+      }
 
       const saNowIST = new Date(Date.now() + 5.5 * 3600000);
       const saToday = saNowIST.toISOString().slice(0, 10);
@@ -3888,6 +3895,7 @@ router.post('/:name', async (req, res) => {
       const saAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, saToday]);
       const saAtt = saAttRow ? JSON.parse(saAttRow.data) : null;
       if (saAtt?.status === 'regularised' || saAtt?.regularised) return res.json({ success: false, error: 'This day has been manually regularised by HR — selfie punches are ignored' });
+      const saReason = saEvent === 'in' ? saReasonIn : (saAtt?.selfie_reason || null);
 
       let saRawPunches = saAtt?.raw_punches ? [...saAtt.raw_punches] : [];
       if (!saRawPunches.length && saAtt?.check_in_time) {
@@ -3914,24 +3922,68 @@ router.post('/:name', async (req, res) => {
       }
       const saHalfDayHours = await getHalfDayOverrideHours(saToday, saShift);
       const saStatusResult = computeStatusFromSessions(saSessionData, saShift, saHalfDayHours);
+      // WFH/OD are proper attendance statuses (filterable/reportable), not a
+      // note bolted onto 'present' — override whatever the normal
+      // present/late/half-day engine computed. Only applies while the
+      // session that's open right now is still in progress; once the
+      // employee's final checkout of the day closes it, the naturally
+      // computed status is left alone for any later session that starts
+      // with no reason carried over (shouldn't happen — 'in' always
+      // requires one — but keeps this override scoped to reason-bearing days).
+      const saFinalStatus = saReason === 'wfh' ? 'work_from_home' : saReason === 'od' ? 'on_duty' : saStatusResult.status;
 
       const saId = saAtt?.id || uuidv4();
       const saAttData = {
         ...(saAtt || {}), id: saId, user_id: cu.id, date: saToday,
         ...saSessionData,
         check_out_time: saSessionData.is_in_progress ? null : saSessionData.check_out_time,
-        ...saStatusResult, shift_id: saEmp.shift_id || null,
+        ...saStatusResult, status: saFinalStatus, selfie_reason: saReason, shift_id: saEmp.shift_id || null,
         ...(saEvent === 'in'
           ? { check_in_selfie_url: saSelfieUrl || '', check_in_location: saLocation || null, check_in_source: 'selfie', ...(saNotes ? { notes: saNotes.slice(0, 200) } : {}) }
           : { check_out_selfie_url: saSelfieUrl || '', check_out_location: saLocation || null, check_out_source: 'selfie', ...(saNotes ? { checkout_notes: saNotes.slice(0, 200) } : {}) }),
       };
-      if (saAttRow) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(saAttData), saStatusResult.status, saAttRow.id]);
-      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [saId, cu.id, saStatusResult.status, JSON.stringify(saAttData)]);
+      if (saAttRow) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(saAttData), saFinalStatus, saAttRow.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [saId, cu.id, saFinalStatus, JSON.stringify(saAttData)]);
+
+      // Field Duty Tracking, auto-started/stopped by OD selfie check-in/out —
+      // never for WFH, and never for an employee HR hasn't opted in via
+      // field_duty_tracking_eligible (checked here server-side, same as the
+      // page's own eligibility gate — an employee can't force this on by
+      // just picking OD if HR left them disabled).
+      let saFieldTrip = null;
+      if (saReason === 'od' && saEmp.field_duty_tracking_eligible) {
+        if (saEvent === 'in') {
+          const saActiveTrip = await one("SELECT id FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [cu.id]);
+          if (!saActiveTrip) {
+            const ftId = uuidv4();
+            const ft = {
+              id: ftId, user_id: cu.id, date: saToday, start_time: saNowIST.toISOString(), status: 'active',
+              vehicle_type: '2_wheeler', purpose: 'Outduty (auto-started from attendance check-in)',
+              points: [], distance_km: 0, point_count: 0, toll_parking_amount: 0,
+              source: 'od_attendance', linked_attendance_id: saId,
+            };
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'FieldTrip',$2,'active',$3)", [ftId, cu.id, JSON.stringify(ft)]);
+            saFieldTrip = ft;
+          }
+        } else {
+          // Only auto-ends the trip THIS attendance record started — never
+          // touches an unrelated trip the employee started manually and
+          // simply hasn't ended yet.
+          const saTripRow = await one("SELECT id,data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active' AND data::jsonb->>'linked_attendance_id'=$2", [cu.id, saId]);
+          if (saTripRow) {
+            const saTrip = JSON.parse(saTripRow.data);
+            const saTripUpd = { ...saTrip, status: 'completed', end_time: saNowIST.toISOString() };
+            await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(saTripUpd), saTripRow.id]);
+            saFieldTrip = saTripUpd;
+          }
+        }
+      }
 
       return res.json({
         success: true, action: saEvent === 'in' ? 'checked_in' : 'checked_out', attendance_id: saId,
         session_number: saSessionData.session_count, is_in_progress: saSessionData.is_in_progress,
-        working_hours: saSessionData.working_hours, status: saStatusResult.status,
+        working_hours: saSessionData.working_hours, status: saFinalStatus,
+        field_trip: saFieldTrip ? { id: saFieldTrip.id, status: saFieldTrip.status } : null,
       });
     }
 
@@ -7254,12 +7306,17 @@ router.post('/:name', async (req, res) => {
           // of biometric silently claiming both sides.
           const inChanged = d.check_in_time !== sd.check_in_time;
           const outChanged = d.check_out_time !== sd.check_out_time;
+          // WFH/OD is a status the employee explicitly declared for the day
+          // via the Selfie Method's mandatory reason — a biometric punch
+          // landing on the same day (e.g. an OD employee briefly stopping by
+          // the office) must not silently revert it back to present/late.
+          const bsFinalStatus = d.selfie_reason === 'wfh' ? 'work_from_home' : d.selfie_reason === 'od' ? 'on_duty' : statusResult.status;
           const upd = {
-            ...d, biometric_synced: true, employee_code: empData.employee_code || empCode || d.employee_code, ...sd, ...statusResult,
+            ...d, biometric_synced: true, employee_code: empData.employee_code || empCode || d.employee_code, ...sd, ...statusResult, status: bsFinalStatus,
             check_in_source: (inChanged || !d.check_in_source) ? 'biometric' : d.check_in_source,
             check_out_source: (outChanged || !d.check_out_source) ? 'biometric' : d.check_out_source,
           };
-          await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [status, JSON.stringify(upd), existing.id]);
+          await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [bsFinalStatus, JSON.stringify(upd), existing.id]);
           updated++;
         } else {
           const id2 = uuidv4();

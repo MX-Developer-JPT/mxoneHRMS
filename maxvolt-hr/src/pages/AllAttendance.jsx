@@ -26,7 +26,12 @@ const STATUS_COLORS = {
   holiday: 'bg-purple-100 text-purple-800 border-purple-200',
   week_off: 'bg-gray-100 text-gray-700 border-gray-200',
   on_duty: 'bg-teal-100 text-teal-800 border-teal-200',
+  work_from_home: 'bg-indigo-100 text-indigo-800 border-indigo-200',
 };
+
+// Abbreviated labels for the statuses the spec calls out explicitly —
+// everything else still falls back to the raw status.replace('_',' ').
+const STATUS_LABELS = { on_duty: 'OD', work_from_home: 'WFH' };
 
 function toDateStr(val) {
   if (!val) return '';
@@ -542,7 +547,8 @@ export default function AllAttendance() {
                 { value: 'leave', label: 'On Leave' },
                 { value: 'holiday', label: 'Holiday' },
                 { value: 'week_off', label: 'Week Off' },
-                { value: 'on_duty', label: 'On Duty' },
+                { value: 'on_duty', label: 'OD (Outduty)' },
+                { value: 'work_from_home', label: 'WFH' },
               ]} />
               <MobileSelect value={deptFilter} onValueChange={setDeptFilter} label="Department" className="w-[160px]" options={[
                 { value: 'all', label: 'All Departments' },
@@ -843,7 +849,7 @@ export default function AllAttendance() {
                               <CalendarDays className="w-4 h-4" />
                             </button>
                             <Badge className={`text-xs border ${STATUS_COLORS[displayStatus] || 'bg-gray-100 text-gray-700'}`}>
-                              {displayStatus.replace('_', ' ')}
+                              {STATUS_LABELS[displayStatus] || displayStatus.replace('_', ' ')}
                             </Badge>
                             {record.regularised && (
                               <Badge className="text-xs bg-violet-100 text-violet-800 border border-violet-200" title="Marked present after regularisation approval">

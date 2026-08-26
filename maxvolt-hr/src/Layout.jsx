@@ -250,6 +250,7 @@ const hrMenuGroups = [
     { name: 'Shift Management',        icon: UserCog,         page: 'ShiftManagement' },
     { name: 'Attendance Exemption',    icon: ShieldOff,       page: 'AttendanceExemption' },
     { name: 'Geofence Eligibility',    icon: Radar,           page: 'GeofenceEligibility' },
+    { name: 'Field Duty Eligibility',  icon: Route,           page: 'FieldDutyEligibility' },
   ]},
   { label: 'Leave', items: [
     { name: 'Leave Management',        icon: FileText,        page: 'LeaveManagement' },
