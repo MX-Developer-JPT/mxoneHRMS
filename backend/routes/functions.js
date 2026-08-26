@@ -4032,11 +4032,36 @@ router.post('/:name', async (req, res) => {
         asStatusResult = { status: asOverrideStatus };
       }
       const asFinalStatus = asOverrideStatus || asStatusResult.status;
+      // Work From Home / On Duty are explicit overrides that must never
+      // read as "late" or "early departure" regardless of the entered
+      // times — matches the frontend's status-pinning and closes the same
+      // gap for late_minutes/early_departure_minutes etc.
+      const asPreserveLate = ['work_from_home', 'on_duty'].includes(asOverrideStatus);
+
+      // late_minutes/late_arrival/early_departure*/overtime_minutes were
+      // never recomputed here before — only session/time fields were, so a
+      // record edited via this endpoint kept whatever stale lateness figures
+      // it had from BEFORE the edit (e.g. an old biometric punch), which is
+      // why a day just corrected to "on-time WFH" could still show a
+      // leftover "94m late" badge on the attendance list. Always overwrite
+      // them explicitly instead of letting old fields from `...(asAtt||{})`
+      // silently survive the edit.
+      const asLateFields = !asCheckIn || asPreserveLate
+        ? { late_minutes: 0, late_arrival: false, late_arrival_minutes: 0, early_departure_minutes: 0, early_departure: false, overtime_minutes: asPreserveLate ? (asStatusResult.overtime_minutes || 0) : 0 }
+        : {
+            late_minutes: asStatusResult.late_minutes || 0,
+            late_arrival: !!asStatusResult.late_arrival,
+            late_arrival_minutes: asStatusResult.late_arrival_minutes || 0,
+            early_departure_minutes: asStatusResult.early_departure_minutes || 0,
+            early_departure: !!asStatusResult.early_departure,
+            overtime_minutes: asStatusResult.overtime_minutes || 0,
+          };
 
       const asId = asAtt?.id || uuidv4();
       const asAttData = {
         ...(asAtt || {}), id: asId, user_id: asUserId, date: asDate,
         ...asSessionData,
+        ...asLateFields,
         status: asFinalStatus,
         shift_id: asEmp.shift_id || null,
         admin_marked: true,
