@@ -22,7 +22,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { isBucketConfigured, buildKey, putToBucket, presignGet } from '../utils/bucket.js';
-import { extractPayslipFields } from '../utils/payslipExtract.js';
+import { extractPayslipFields, monthMismatch } from '../utils/payslipExtract.js';
 
 const router = Router();
 
@@ -73,6 +73,18 @@ router.post('/', memUpload.array('files', 500), async (req, res) => {
     [String(month), String(year)]
   );
   const existingByUser = new Map(existingPayrollRows.map(r => [r.user_id, r.id]));
+
+  // Previous month's net salary per employee, for the "unexpected salary
+  // variance" check — a >40% swing either direction is unusual enough to be
+  // worth a human glance (a genuine raise/LOP/exit can cause it, but so can
+  // a mis-extracted figure) without being noisy for normal month-to-month drift.
+  const prevMonth = month === 1 ? 12 : month - 1;
+  const prevYear = month === 1 ? year - 1 : year;
+  const prevPayrollRows = await all(
+    "SELECT user_id,data FROM entities WHERE type='Payroll' AND data::jsonb->>'month'=$1 AND data::jsonb->>'year'=$2",
+    [String(prevMonth), String(prevYear)]
+  );
+  const prevNetByUser = new Map(prevPayrollRows.map(r => [r.user_id, JSON.parse(r.data).net_salary]));
 
   const batchId = uuidv4();
   const results = [];
@@ -174,6 +186,20 @@ router.post('/', memUpload.array('files', 500), async (req, res) => {
     }
     if (extracted.net_salary == null) fileResult.warnings.push('Could not extract Net Salary — review the record before releasing it');
     if (extracted.gross_salary == null) fileResult.warnings.push('Could not extract Gross Salary — review the record before releasing it');
+
+    const monthWarning = monthMismatch(extracted.payroll_month_in_doc, month, year);
+    if (monthWarning) fileResult.warnings.push(monthWarning);
+
+    const prevNet = prevNetByUser.get(emp.user_id);
+    if (prevNet != null && prevNet > 0 && extracted.net_salary != null) {
+      const variancePct = Math.abs(extracted.net_salary - prevNet) / prevNet * 100;
+      if (variancePct > 40) {
+        fileResult.warnings.push(`Net salary (₹${extracted.net_salary.toLocaleString('en-IN')}) differs by ${variancePct.toFixed(0)}% from last month (₹${prevNet.toLocaleString('en-IN')}) — verify before releasing`);
+      }
+    }
+
+    fileResult.gross_salary = extracted.gross_salary ?? null;
+    fileResult.net_salary = extracted.net_salary ?? null;
 
     // Store the (now-decrypted-in-memory) PDF securely — private bucket with
     // a long-lived presigned URL, same pattern used for offer letters/exit

@@ -12,7 +12,7 @@ import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnf
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { extractPayslipFields } from '../utils/payslipExtract.js';
+import { extractPayslipFields, monthMismatch } from '../utils/payslipExtract.js';
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -4640,6 +4640,24 @@ router.post('/:name', async (req, res) => {
         "SELECT id FROM entities WHERE type='Payroll' AND user_id=$1 AND data::jsonb->>'month'=$2 AND data::jsonb->>'year'=$3",
         [rpUserId, String(batch.month), String(batch.year)]
       );
+      const rpWarnings = [];
+      const rpMonthWarning = monthMismatch(rpFields.payroll_month_in_doc, batch.month, batch.year);
+      if (rpMonthWarning) rpWarnings.push(rpMonthWarning);
+      const rpPrevMonth = batch.month === 1 ? 12 : batch.month - 1;
+      const rpPrevYear = batch.month === 1 ? batch.year - 1 : batch.year;
+      const rpPrevRow = await one(
+        "SELECT data FROM entities WHERE type='Payroll' AND user_id=$1 AND data::jsonb->>'month'=$2 AND data::jsonb->>'year'=$3",
+        [rpUserId, String(rpPrevMonth), String(rpPrevYear)]
+      );
+      const rpPrevNet = rpPrevRow ? JSON.parse(rpPrevRow.data).net_salary : null;
+      if (rpPrevNet != null && rpPrevNet > 0 && rpFields.net_salary != null) {
+        const variancePct = Math.abs(rpFields.net_salary - rpPrevNet) / rpPrevNet * 100;
+        if (variancePct > 40) {
+          rpWarnings.push(`Net salary (₹${rpFields.net_salary.toLocaleString('en-IN')}) differs by ${variancePct.toFixed(0)}% from last month (₹${rpPrevNet.toLocaleString('en-IN')}) — verify before releasing`);
+        }
+      }
+      if (rpFields.net_salary == null) rpWarnings.push('Could not extract Net Salary — review the record before releasing it');
+      if (rpFields.gross_salary == null) rpWarnings.push('Could not extract Gross Salary — review the record before releasing it');
       const rpNow = new Date().toISOString();
       const rpPayrollId = rpExistingRow?.id || uuidv4();
       const rpPayrollData = {
@@ -4656,13 +4674,16 @@ router.post('/:name', async (req, res) => {
         employee_code: emp.employee_code, department: emp.department || null, designation: emp.designation || null,
         payslip_source: 'bulk_upload', payslip_file_url: fileEntry.file_url || null,
         payslip_upload_batch_id: rpBatchId, payslip_uploaded_by: cu.id, payslip_uploaded_at: rpNow,
-        payslip_extraction_warnings: [],
+        payslip_extraction_warnings: rpWarnings,
       };
       if (rpExistingRow) await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(rpPayrollData), rpExistingRow.id]);
       else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Payroll',$2,'processed',$3)", [rpPayrollId, rpUserId, JSON.stringify(rpPayrollData)]);
 
-      fileEntry.status = 'mapped'; fileEntry.user_id = rpUserId; fileEntry.employee_name = emp.display_name || '';
+      fileEntry.status = rpWarnings.length ? 'mapped_needs_review' : 'mapped';
+      fileEntry.user_id = rpUserId; fileEntry.employee_name = emp.display_name || '';
       fileEntry.employee_code = empCode; fileEntry.error = null; fileEntry.payroll_id = rpPayrollId;
+      fileEntry.warnings = rpWarnings;
+      fileEntry.gross_salary = rpFields.gross_salary ?? null; fileEntry.net_salary = rpFields.net_salary ?? null;
       fileEntry.resolved_by = cu.id; fileEntry.resolved_at = rpNow;
       batch.counts.unmapped = Math.max(0, (batch.counts.unmapped || 0) - 1);
       batch.counts.mapped = (batch.counts.mapped || 0) + 1;

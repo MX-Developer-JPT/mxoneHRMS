@@ -216,6 +216,8 @@ export default function PayslipUpload() {
                     <th className="py-2 pr-3 font-medium">Employee</th>
                     <th className="py-2 pr-3 font-medium">Filename</th>
                     <th className="py-2 pr-3 font-medium">Status</th>
+                    <th className="py-2 pr-3 font-medium text-right">Gross Salary</th>
+                    <th className="py-2 pr-3 font-medium text-right">Net Salary</th>
                     <th className="py-2 pr-3 font-medium">Details</th>
                   </tr>
                 </thead>
@@ -226,6 +228,8 @@ export default function PayslipUpload() {
                       <td className="py-2 pr-3">{f.employee_name || '—'}</td>
                       <td className="py-2 pr-3 text-slate-500 max-w-[180px] truncate" title={f.filename}>{f.filename}</td>
                       <td className="py-2 pr-3"><StatusBadge status={f.status} /></td>
+                      <td className="py-2 pr-3 text-right tabular-nums">{f.gross_salary != null ? `₹${f.gross_salary.toLocaleString('en-IN')}` : '—'}</td>
+                      <td className="py-2 pr-3 text-right tabular-nums font-medium">{f.net_salary != null ? `₹${f.net_salary.toLocaleString('en-IN')}` : '—'}</td>
                       <td className="py-2 pr-3 text-slate-500 text-xs max-w-xs">
                         {f.error && <div className="text-red-600">{f.error}</div>}
                         {(f.warnings || []).map((w, i) => <div key={i} className="text-amber-600">⚠ {w}</div>)}
@@ -257,6 +261,7 @@ export default function PayslipUpload() {
                   <Checkbox checked={selectedForRelease.has(f.payroll_id)} onCheckedChange={() => toggleRelease(f.payroll_id)} />
                   <span className="font-mono text-xs text-slate-500 w-20">{f.employee_code}</span>
                   <span className="flex-1 text-sm">{f.employee_name}</span>
+                  <span className="text-sm text-slate-600 tabular-nums w-24 text-right">{f.net_salary != null ? `₹${f.net_salary.toLocaleString('en-IN')}` : '—'}</span>
                   <StatusBadge status={f.status} />
                 </label>
               ))}
