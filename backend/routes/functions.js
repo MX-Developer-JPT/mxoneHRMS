@@ -10918,6 +10918,13 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
               created_date: new Date().toISOString(),
             })]
           );
+          // This announcement is inserted directly (above), not through the
+          // entities.js POST route, so its usual "notify everyone on
+          // publish" hook never fires for it — broadcast explicitly instead.
+          const njAudience = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND user_id != $1", [uid]);
+          for (const r of njAudience) {
+            notify(r.user_id, { title: `Welcome ${empName}!`, message: `Please join us in welcoming ${empName} to the team as ${empData.designation || employeeData.designation || 'a new team member'}.`, type: 'info', link: '/Announcements' }).catch(() => {});
+          }
         }
       } catch(e) { console.error('[email/ann] Onboarding approval error:', e.message); }
 

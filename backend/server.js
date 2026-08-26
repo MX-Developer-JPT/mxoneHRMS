@@ -22,6 +22,7 @@ import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmen
 import { closeUnreturnedGatePasses } from './cron/gatePassAutomation.js';
 import { sendConfirmationDueReminders } from './cron/confirmationAutomation.js';
 import { sendExitClearanceReminders } from './cron/exitClearanceReminders.js';
+import { sendAbsentLeaveReminders, sendRegularisationReminders, sendCelebrationNotifications, sendUpcomingHolidayReminders } from './cron/dailyReminders.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -316,5 +317,18 @@ cron.schedule('30 8 * * *', () => {
 // without new candidates; re-alerts at most once a week per item.
 cron.schedule('0 9 * * *', () => {
   checkStalePipeline().catch(err => console.error('[recruitment-stall-check] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+
+// ── Absent-without-leave / regularisation nag + celebrations + holiday
+// reminder — daily at 9:15 AM IST. Absent-leave repeats daily until the
+// employee applies leave for that day, escalating to their manager once
+// it's been 4+ days; late/short/half-day repeats daily until a
+// regularisation request is submitted. See dailyReminders.js for the
+// per-kind dedup logic.
+cron.schedule('15 9 * * *', () => {
+  sendAbsentLeaveReminders().catch(err => console.error('[absent-leave-reminder] failed:', err));
+  sendRegularisationReminders().catch(err => console.error('[regularisation-reminder] failed:', err));
+  sendCelebrationNotifications().catch(err => console.error('[celebration-notifications] failed:', err));
+  sendUpcomingHolidayReminders().catch(err => console.error('[holiday-reminder] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
