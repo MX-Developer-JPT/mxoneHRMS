@@ -154,7 +154,14 @@ export async function closeUnfinishedSessions(targetDate) {
     // A WFH/OD day the employee forgot to check out of must stay WFH/OD —
     // not silently revert to whatever present/late/half-day the raw punch
     // timeline alone computes to.
-    const finalStatus = d.selfie_reason === 'wfh' ? 'work_from_home' : d.selfie_reason === 'od' ? 'on_duty' : statusResult.status;
+    // Preserve WFH/OD however it was set — via the employee's own selfie
+    // flow (selfie_reason) or an admin manually pinning the status in the
+    // Manual Attendance editor (d.status) — so a day left "in progress"
+    // (check-in given, no check-out) doesn't get silently recomputed back
+    // to present/late/half-day when this safety net closes it out.
+    const finalStatus = (d.selfie_reason === 'wfh' || d.status === 'work_from_home') ? 'work_from_home'
+      : (d.selfie_reason === 'od' || d.status === 'on_duty') ? 'on_duty'
+      : statusResult.status;
     const updated = {
       ...d, ...sessionData, ...statusResult, status: finalStatus,
       auto_closed_at: new Date().toISOString(),
@@ -214,7 +221,14 @@ export async function closeStaleOpenSessions() {
 
     const sessionData = closeTrailingOpenSession(rawPunches);
     const statusResult = computeStatusFromSessions(sessionData, shift, halfDayHours);
-    const finalStatus = d.selfie_reason === 'wfh' ? 'work_from_home' : d.selfie_reason === 'od' ? 'on_duty' : statusResult.status;
+    // Preserve WFH/OD however it was set — via the employee's own selfie
+    // flow (selfie_reason) or an admin manually pinning the status in the
+    // Manual Attendance editor (d.status) — so a day left "in progress"
+    // (check-in given, no check-out) doesn't get silently recomputed back
+    // to present/late/half-day when this safety net closes it out.
+    const finalStatus = (d.selfie_reason === 'wfh' || d.status === 'work_from_home') ? 'work_from_home'
+      : (d.selfie_reason === 'od' || d.status === 'on_duty') ? 'on_duty'
+      : statusResult.status;
     const updated = {
       ...d, ...sessionData, ...statusResult, status: finalStatus,
       auto_closed_at: new Date().toISOString(),

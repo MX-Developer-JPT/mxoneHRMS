@@ -1602,12 +1602,19 @@ function ManualAttendanceTab() {
     setSaving(true);
     try {
       const isPunchStatus = ['present', 'half_day', 'on_duty', 'work_from_home'].includes(form.status);
+      // Work From Home is an explicit admin override, not something punch
+      // times should ever recompute away from — computeStatusFromSessions
+      // only ever resolves to present/late/half_day/short_attendance, so
+      // letting it drive status here silently turned a WFH day back into
+      // "present" the moment a check-in time was entered. Pin the status
+      // for WFH while still sending the times so the hours get recorded.
+      const preserveStatus = form.status === 'work_from_home';
       const res = await base44.functions.invoke('adminSetAttendance', {
         user_id: selectedEmp.user_id,
         date: editDate,
         check_in_time: isPunchStatus ? (form.check_in_time || undefined) : undefined,
         check_out_time: isPunchStatus ? (form.check_out_time || undefined) : undefined,
-        status: isPunchStatus && form.check_in_time ? undefined : form.status, // let punches drive status when both are given
+        status: (isPunchStatus && form.check_in_time && !preserveStatus) ? undefined : form.status, // let punches drive status when both are given, except for WFH
         notes: form.notes || undefined,
       });
       if (res.data?.success) {
