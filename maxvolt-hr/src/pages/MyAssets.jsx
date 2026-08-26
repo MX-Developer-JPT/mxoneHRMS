@@ -165,6 +165,7 @@ export default function MyAssets() {
           </div>
           <div style="text-align:center;">
             <div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>
+            <img src="${(typeof window !== 'undefined' ? window.location.origin : '') + '/company-stamp.png'}" style="width:78px;opacity:0.85;display:block;margin:-24px auto -26px;" onerror="this.style.display='none'" />
             <p style="font-weight:600;">Authorized Signatory</p>
             <p style="color:#888;font-size:9px;">HR / IT Department</p>
           </div>

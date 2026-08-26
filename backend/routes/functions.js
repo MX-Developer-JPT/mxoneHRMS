@@ -12229,7 +12229,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 <p>${prefix} ${empName} has been formally relieved from the services of Maxvolt Energy Industries Limited with effect from <strong>${ordinalDate(lwd)}</strong>.</p>
 <p>During ${gender === 'female' ? 'her' : 'his'} tenure, ${gender === 'female' ? 'she' : 'he'} has discharged all ${gender === 'female' ? 'her' : 'his'} duties and responsibilities assigned to ${gender === 'female' ? 'her' : 'him'} diligently and sincerely.</p>
 <p>We wish ${gender === 'female' ? 'her' : 'him'} all the best in ${gender === 'female' ? 'her' : 'his'} future endeavors.</p>
-<p style="margin-top:40px;">Sincerely,<br/><br/><br/>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
+<p style="margin-top:8px;">Sincerely,</p>
+<img src="/company-stamp.png" style="width:84px;opacity:0.85;display:block;margin:-6px 0 -6px;" onerror="this.style.display='none'" />
+<p>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
 
           await run("UPDATE entities SET data=jsonb_set(data::jsonb,'{relieving_letter_generated}','true')::text,updated_at=NOW()::TEXT WHERE type='Exit' AND id=$1", [gedExitId]);
 
@@ -12242,7 +12244,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 <p>During ${gender === 'female' ? 'her' : 'his'} association with the company, ${gender === 'female' ? 'she' : 'he'} served as <strong>${designation}</strong>${department ? ` in the <strong>${department}</strong> department` : ''}.</p>
 <p>We found ${gender === 'female' ? 'her' : 'him'} to be hardworking, dedicated, and a team player with good interpersonal skills. ${gender === 'female' ? 'She' : 'He'} handled all ${gender === 'female' ? 'her' : 'his'} responsibilities with sincerity and professionalism.</p>
 <p>We wish ${gender === 'female' ? 'her' : 'him'} all the best in ${gender === 'female' ? 'her' : 'his'} future career.</p>
-<p style="margin-top:40px;">Sincerely,<br/><br/><br/>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
+<p style="margin-top:8px;">Sincerely,</p>
+<img src="/company-stamp.png" style="width:84px;opacity:0.85;display:block;margin:-6px 0 -6px;" onerror="this.style.display='none'" />
+<p>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
 
           await run("UPDATE entities SET data=jsonb_set(data::jsonb,'{experience_letter_generated}','true')::text,updated_at=NOW()::TEXT WHERE type='Exit' AND id=$1", [gedExitId]);
 

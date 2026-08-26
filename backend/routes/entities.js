@@ -633,12 +633,36 @@ router.post('/:type', async (req, res) => {
           );
           for (const r of deptRows) if (r.user_id) ticketAudience.add(r.user_id);
         }
+        // A category can also name one specific default assignee (set on
+        // HelpdeskCategoryManagement) — routed at creation time, not only
+        // once HR manually assigns it later. Gets its own clearer "assigned
+        // to you" wording rather than the generic department-broadcast one.
+        if (data.assigned_to) ticketAudience.delete(data.assigned_to);
         await notifyMany([...ticketAudience], {
           title: 'New Helpdesk Ticket',
           message: `${data.subject || 'A new ticket'} (${data.priority || 'medium'} priority) was raised.`,
           type: data.priority === 'high' || data.priority === 'urgent' ? 'warning' : 'info',
           link: '/Helpdesk',
         });
+        if (data.assigned_to) {
+          await notifyMany([data.assigned_to], {
+            title: 'Helpdesk Ticket Assigned to You',
+            message: `${data.subject || 'A new ticket'} (${data.priority || 'medium'} priority) was routed to you.`,
+            type: 'info', link: '/Helpdesk',
+          });
+        }
+        // Acknowledgement to whoever raised it — confirms it was received
+        // and says where it went, so they're not left wondering.
+        if (data.user_id) {
+          const routedTo = data.assigned_to
+            ? (await one('SELECT full_name FROM users WHERE id=$1', [data.assigned_to]))?.full_name
+            : (data.assigned_department || null);
+          await notifyMany([data.user_id], {
+            title: 'Ticket Raised',
+            message: `Your ticket "${data.subject || 'support request'}" has been raised${routedTo ? ` and routed to ${routedTo}` : ''}. We'll update you as it progresses.`,
+            type: 'info', link: '/Helpdesk',
+          });
+        }
       } else if (type === 'POSHRecord') {
         await notifyMany(await getHrAdminUserIds(), {
           title: 'New POSH Record Logged',
@@ -831,6 +855,29 @@ router.patch('/:type/:id', async (req, res) => {
             title: `Ticket ${req.body.status === 'resolved' ? 'Resolved' : 'Closed'}`,
             message: `${updated.subject || 'Your ticket'} was marked ${req.body.status}.`,
             type: 'success', link: '/Helpdesk',
+          });
+        }
+        if (req.body.status === 'in_progress' && current.status !== 'in_progress' && updated.user_id) {
+          await notifyMany([updated.user_id], {
+            title: 'Ticket In Progress',
+            message: `${updated.subject || 'Your ticket'} is now being worked on.`,
+            type: 'info', link: '/Helpdesk',
+          });
+        }
+        // A new comment — notify whoever DIDN'T just write it: the raiser if
+        // the assignee/department commented, or the assignee (falling back
+        // to HR/admin if unassigned) if the raiser themselves commented.
+        if (Array.isArray(req.body.comments) && req.body.comments.length > (current.comments?.length || 0)) {
+          const lastComment = req.body.comments[req.body.comments.length - 1];
+          const commenterId = lastComment?.author_id;
+          const commentPreview = (lastComment?.text || '').slice(0, 120);
+          const recipients = commenterId === updated.user_id
+            ? (updated.assigned_to ? [updated.assigned_to] : await getHrAdminUserIds())
+            : [updated.user_id].filter(Boolean);
+          await notifyMany(recipients.filter(id => id !== commenterId), {
+            title: 'New Comment on Ticket',
+            message: `${lastComment?.author_name || 'Someone'} commented on "${updated.subject || 'a ticket'}"${commentPreview ? `: ${commentPreview}` : ''}`,
+            type: 'info', link: '/Helpdesk',
           });
         }
       } else if (type === 'Asset') {

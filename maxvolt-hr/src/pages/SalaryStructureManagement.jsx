@@ -208,6 +208,7 @@ function printSalaryStructure(structure, emp) {
       <div style="margin-top:44px;display:flex;justify-content:space-between;font-size:10px;">
         <div style="text-align:center;">
           <div style="margin-bottom:22px;">_________________________</div>
+          <img src="${(typeof window !== 'undefined' ? window.location.origin : '') + '/company-stamp.png'}" style="width:78px;opacity:0.85;display:block;margin:-52px auto 6px;" onerror="this.style.display='none'" />
           <b>HR Manager</b><br>Maxvolt Energy Industries Limited
         </div>
         <div style="text-align:center;">

@@ -587,8 +587,8 @@ export default function AssetTracking() {
       <div style="display:flex;justify-content:space-between;align-items:flex-end;font-size:11px;">
         <div>
           <p style="margin-bottom:6px;">Sincerely,</p>
-          <img src="${stampUrl}" style="width:84px;opacity:0.92;display:block;margin-bottom:2px;" onerror="this.style.display='none'" />
-          <p>Issue by</p>
+          <p style="margin:0;">Issue by</p>
+          <img src="${stampUrl}" style="width:84px;opacity:0.85;display:block;margin:-28px 0 -30px 6px;" onerror="this.style.display='none'" />
           <p style="font-weight:600;">HR Manager</p>
         </div>
         <div style="text-align:center;">

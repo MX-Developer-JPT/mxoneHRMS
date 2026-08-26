@@ -273,6 +273,7 @@ export default function Helpdesk() {
       user_id: user.id,
       status: 'open',
       assigned_department: cat?.default_department_name || '',
+      assigned_to: cat?.default_assignee_user_id || null,
       created_date: new Date().toISOString(),
     };
     setTickets(prev => [optimisticTicket, ...prev]);
@@ -284,9 +285,10 @@ export default function Helpdesk() {
         ...formData,
         user_id: user.id,
         status: 'open',
-        assigned_department: cat?.default_department_name || ''
+        assigned_department: cat?.default_department_name || '',
+        assigned_to: cat?.default_assignee_user_id || null,
       });
-      toast.success('Ticket raised successfully');
+      toast.success('Ticket raised successfully — you\'ll be notified once it\'s reviewed');
       loadData();
     } catch (error) {
       setTickets(prev => prev.filter(t => t.id !== optimisticTicket.id)); // revert
@@ -350,6 +352,7 @@ export default function Helpdesk() {
                       label: cat.name + (cat.default_department_name ? ` → ${cat.default_department_name}` : '')
                     }))}
                   />
+                  {(() => { const c = helpdeskCategories.find(c => c.code === formData.category); return c?.description ? <p className="text-xs text-gray-500 mt-1">{c.description}</p> : null; })()}
                 </div>
                 <div>
                   <Label>Priority</Label>

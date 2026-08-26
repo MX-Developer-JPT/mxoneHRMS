@@ -6,15 +6,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Pencil, Trash2, Settings } from 'lucide-react';
+import { Plus, Pencil, Trash2, Settings, User } from 'lucide-react';
 import { toast } from 'sonner';
 
-const emptyForm = { name: '', code: '', default_department_name: '', is_active: true };
+const emptyForm = { name: '', code: '', description: '', default_department_name: '', default_assignee_user_id: '', is_active: true };
 
 export default function HelpdeskCategoryManagement() {
   const [categories, setCategories] = useState([]);
   const [departments, setDepartments] = useState([]);
+  const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState(null);
@@ -24,12 +26,14 @@ export default function HelpdeskCategoryManagement() {
   useEffect(() => { loadData(); }, []);
 
   const loadData = async () => {
-    const [cats, depts] = await Promise.all([
+    const [cats, depts, usersResp] = await Promise.all([
       base44.entities.HelpdeskCategory.list(),
-      base44.entities.Department.list()
+      base44.entities.Department.list(),
+      base44.functions.invoke('getAllUsers', {}).catch(() => ({ data: { users: [] } })),
     ]);
     setCategories(cats);
     setDepartments(depts);
+    setUsers(usersResp?.data?.users || usersResp?.users || []);
     setLoading(false);
   };
 
@@ -41,7 +45,12 @@ export default function HelpdeskCategoryManagement() {
 
   const openEdit = (cat) => {
     setEditingCategory(cat);
-    setForm({ name: cat.name, code: cat.code, default_department_name: cat.default_department_name || '', is_active: cat.is_active !== false });
+    setForm({
+      name: cat.name, code: cat.code, description: cat.description || '',
+      default_department_name: cat.default_department_name || '',
+      default_assignee_user_id: cat.default_assignee_user_id || '',
+      is_active: cat.is_active !== false,
+    });
     setDialogOpen(true);
   };
 
@@ -107,12 +116,15 @@ export default function HelpdeskCategoryManagement() {
                           <Badge variant="outline" className="text-xs font-mono">{cat.code}</Badge>
                           {cat.is_active === false && <Badge className="bg-gray-100 text-gray-500 text-xs">Inactive</Badge>}
                         </div>
-                        {cat.default_department_name ? (
+                        {cat.description && <p className="text-sm text-gray-600 mt-0.5">{cat.description}</p>}
+                        {cat.default_department_name || cat.default_assignee_user_id ? (
                           <p className="text-sm text-gray-500 mt-0.5">
-                            Default routing → <strong>{cat.default_department_name}</strong>
+                            {cat.default_department_name && <>Routes to <strong>{cat.default_department_name}</strong></>}
+                            {cat.default_department_name && cat.default_assignee_user_id && ' · '}
+                            {cat.default_assignee_user_id && <>Assigned to <strong>{users.find(u => u.id === cat.default_assignee_user_id)?.full_name || 'a specific employee'}</strong></>}
                           </p>
                         ) : (
-                          <p className="text-sm text-gray-400 mt-0.5">No default department set</p>
+                          <p className="text-sm text-gray-400 mt-0.5">No default routing set</p>
                         )}
                       </div>
                     </div>
@@ -149,6 +161,15 @@ export default function HelpdeskCategoryManagement() {
                 <Input value={form.code} onChange={e => setForm({ ...form, code: e.target.value })} placeholder="e.g. it_support" />
               </div>
               <div>
+                <Label>Description</Label>
+                <Textarea
+                  value={form.description}
+                  onChange={e => setForm({ ...form, description: e.target.value })}
+                  placeholder="What kind of issues belong in this category? Shown to employees when they pick it."
+                  rows={2}
+                />
+              </div>
+              <div>
                 <Label>Default Department Routing</Label>
                 <Select value={form.default_department_name} onValueChange={v => setForm({ ...form, default_department_name: v })}>
                   <SelectTrigger><SelectValue placeholder="Select department (optional)" /></SelectTrigger>
@@ -159,7 +180,20 @@ export default function HelpdeskCategoryManagement() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-gray-400 mt-1">Tickets of this category will be auto-routed to this department</p>
+                <p className="text-xs text-gray-400 mt-1">Tickets of this category are visible to everyone in this department</p>
+              </div>
+              <div>
+                <Label className="flex items-center gap-1.5"><User className="w-3.5 h-3.5" /> Default Assignee</Label>
+                <Select value={form.default_assignee_user_id} onValueChange={v => setForm({ ...form, default_assignee_user_id: v })}>
+                  <SelectTrigger><SelectValue placeholder="Select a specific employee (optional)" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={null}>None</SelectItem>
+                    {users.map(u => (
+                      <SelectItem key={u.id} value={u.id}>{u.full_name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-gray-400 mt-1">Tickets of this category are auto-assigned straight to this person, in addition to department routing</p>
               </div>
               <div className="flex gap-3 justify-end pt-2">
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
