@@ -5149,6 +5149,11 @@ router.post('/:name', async (req, res) => {
       const reportHolidaySet = new Set(parseEntities(await all(
         "SELECT data FROM entities WHERE type='Holiday' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]
       )).map(h => h.date));
+      // A future day with no Attendance row yet must not be guessed as
+      // Absent — it simply hasn't happened. Holidays/off-days still show
+      // correctly (calendar facts, not guesses); only the blanket 'A'
+      // fallback below is gated on this.
+      const reportTodayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 
       const toMinutes = (t) => {
         if (!t) return 0;
@@ -5189,6 +5194,7 @@ router.post('/:name', async (req, res) => {
           if (!rec) {
             if (isHoliday) { cell = 'H'; totalHoliday++; }
             else if (isScheduledOff) { cell = 'OFF'; totalOff++; }
+            else if (dateStr > reportTodayIST) { cell = ''; }
             else { cell = 'A'; totalAbsent++; }
           } else {
             const s = rec.status;
@@ -5422,6 +5428,13 @@ router.post('/:name', async (req, res) => {
         const s = r.status;
         return s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home' || s === 'half_day' || (!s && (r.check_in_time || r.biometric_synced));
       };
+      // "Today" in IST — a day that hasn't happened yet must never be
+      // guessed as Absent just because no Attendance row exists for it.
+      // Only applies to the *unrecorded* fallback below: a future date that
+      // already has a real record (e.g. an approved leave spanning future
+      // dates, or a declared Holiday) still shows its real status, since
+      // that's a known calendar fact, not a guess.
+      const mTodayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
       // workingDays is THIS employee's real Shift.days (not a hardcoded
       // Saturday/Sunday check) — a shift that includes Saturday as a
       // working day must not show 'WO' for it just because there's no
@@ -5432,10 +5445,12 @@ router.post('/:name', async (req, res) => {
         const weekday = mWeekdayNames[dow];
         const isHoliday = mHolidaySet.has(dateStr);
         const isScheduledOff = !isHoliday && !workingDays.includes(weekday);
+        const isFuture = !rec && dateStr > mTodayIST;
         // Sunday sandwich rule — only meaningful when Sunday is actually
         // this employee's scheduled off day; a shift that has Sunday as a
         // working day falls through to normal handling below instead.
         if (dow === 0 && isScheduledOff) {
+          if (isFuture) return '';
           const sat = new Date(dateObj.getTime() - 86400000).toISOString().slice(0,10);
           const mon = new Date(dateObj.getTime() + 86400000).toISOString().slice(0,10);
           // A declared holiday flanking this Sunday protects it from the
@@ -5450,6 +5465,7 @@ router.post('/:name', async (req, res) => {
         if (!rec) {
           if (isHoliday) return 'PH';
           if (isScheduledOff) return 'WO';
+          if (isFuture) return '';
           return 'A';
         }
         const s = rec.status;
@@ -5458,6 +5474,7 @@ router.post('/:name', async (req, res) => {
         if (s === 'holiday')   return 'PH';
         if (s === 'leave')     return 'L';
         if (s === 'on_duty')   return 'OD';
+        if (s === 'work_from_home') return 'WFH';
         if (s === 'half_day')  return 'HD';
         if (s === 'short_attendance') return 'SA';
         if (s === 'late' || rec.late_arrival) return 'P*';
@@ -5471,7 +5488,7 @@ router.post('/:name', async (req, res) => {
       };
 
       const mStatusFill = (code) => {
-        const map = { 'P':'22C55E','P*':'F97316','PR':'8B5CF6','A':'EF4444','WO':'D1D5DB','PH':'A78BFA','L':'60A5FA','OD':'14B8A6','HD':'FBBF24','SA':'FB923C' };
+        const map = { 'P':'22C55E','P*':'F97316','PR':'8B5CF6','A':'EF4444','WO':'D1D5DB','PH':'A78BFA','L':'60A5FA','OD':'14B8A6','WFH':'6366F1','HD':'FBBF24','SA':'FB923C' };
         return map[code] || 'F3F4F6';
       };
       const mTextDark = (code) => ['WO','HD','SA'].includes(code) ? '1F2937' : 'FFFFFF';
@@ -5481,7 +5498,7 @@ router.post('/:name', async (req, res) => {
       const wsM = wbM.addWorksheet('Muster Roll', { views: [{ state:'frozen', xSplit:5, ySplit:4 }] });
 
       const INFO = 5; // Code,Name,Dept,Desig,Location
-      const SUMM = 8; // P,A,L,HD,WO,PH,OD,Total
+      const SUMM = 9; // P,A,L,HD,WO,PH,OD,WFH,Total
       const totCols = INFO + daysInMonth + SUMM;
 
       const mF  = (bold=false, col='1A1A1A', sz=9) => ({ name:'Calibri', bold, color:{ argb:'FF'+col }, size:sz });
@@ -5506,7 +5523,7 @@ router.post('/:name', async (req, res) => {
       Object.assign(r2.getCell(1), { font:mF(false,'475569',8), fill:mFl('F8FAFC'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
       // Row 3 — legend
-      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   PR = Present (Regularised)   A = Absent   HD = Half Day   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   SA = Short Attendance']);
+      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   PR = Present (Regularised)   A = Absent   HD = Half Day   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   WFH = Work From Home   SA = Short Attendance   (OD and WFH count toward the Present total)']);
       r3.height = 15; wsM.mergeCells(3,1,3,totCols);
       Object.assign(r3.getCell(1), { font:mF(false,'1E40AF',8), fill:mFl('EFF6FF'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
@@ -5515,7 +5532,7 @@ router.post('/:name', async (req, res) => {
         const dow = ['Su','Mo','Tu','We','Th','Fr','Sa'][new Date(y,m-1,i+1).getDay()];
         return `${i+1}\n${dow}`;
       });
-      const hRow = wsM.addRow(['Code','Employee Name','Department','Designation','Location',...dayHdrs,'P','A','L','HD','WO','PH','OD','Total']);
+      const hRow = wsM.addRow(['Code','Employee Name','Department','Designation','Location',...dayHdrs,'P','A','L','HD','WO','PH','OD','WFH','Total']);
       hRow.height = 34;
       hRow.eachCell(cell => Object.assign(cell, { font:mF(true,'FFFFFF',8), fill:mFl('1E40AF'), alignment:{ horizontal:'center', vertical:'middle', wrapText:true }, border:mBd() }));
       for (let d=1; d<=daysInMonth; d++) {
@@ -5535,7 +5552,7 @@ router.post('/:name', async (req, res) => {
         const bg = deptBgMap[dept];
         const empRecs = mAttMap[emp.user_id] || {};
         const workingDays = mWorkingDaysFor(emp);
-        let pC=0, aC=0, lC=0, hdC=0, woC=0, phC=0, odC=0;
+        let pC=0, aC=0, lC=0, hdC=0, woC=0, phC=0, odC=0, wfhC=0;
         const codes = [];        // category codes — drive counting AND coloring, unchanged semantics
         const displayCodes = []; // what's actually printed in the cell
 
@@ -5553,11 +5570,15 @@ router.post('/:name', async (req, res) => {
           else if (code==='HD') { hdC++; pC+=0.5; aC+=0.5; }
           else if (code==='WO') woC++;
           else if (code==='PH') phC++;
-          else if (code==='OD') odC++;
+          // OD and WFH are worked, full days — counted in their own column
+          // for visibility AND folded into the Present total, per explicit
+          // requirement (WFH/OD are present, just not physically in office).
+          else if (code==='OD')  { odC++;  pC++; }
+          else if (code==='WFH') { wfhC++; pC++; }
         }
 
-        const totalWorked = pC + odC + lC + woC; // present (incl. half-days) + on-duty + paid leaves + week-off
-        const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...displayCodes, pC, aC, lC, hdC, woC, phC, odC, totalWorked];
+        const totalWorked = pC + lC + woC; // present (incl. half-days, OD, WFH) + paid leaves + week-off
+        const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...displayCodes, pC, aC, lC, hdC, woC, phC, odC, wfhC, totalWorked];
         const dr = wsM.addRow(rowVals);
         dr.height = 15;
 
@@ -5574,7 +5595,7 @@ router.post('/:name', async (req, res) => {
           });
         });
 
-        [pC,aC,lC,hdC,woC,phC,odC,totalWorked].forEach((v,i) => {
+        [pC,aC,lC,hdC,woC,phC,odC,wfhC,totalWorked].forEach((v,i) => {
           const cell = dr.getCell(INFO+daysInMonth+1+i);
           const isTotal = i===SUMM-1;
           Object.assign(cell, {
@@ -5674,10 +5695,15 @@ router.post('/:name', async (req, res) => {
         const shift = (emp?.shift_id && swShiftCache[emp.shift_id]) || swDefaultShift;
         return Array.isArray(shift?.days) && shift.days.length ? shift.days : (swDefaultShift.days || swFallbackDays);
       };
+      const swTodayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
       const swInferredStatus = (ds, workingDays) => {
         if (swHolidaySet.has(ds)) return 'holiday';
         const weekday = swWeekdayNames[new Date(ds + 'T00:00:00').getDay()];
-        return workingDays.includes(weekday) ? 'absent' : 'week_off';
+        if (!workingDays.includes(weekday)) return 'week_off';
+        // A future working day with no record yet hasn't happened — don't
+        // guess 'absent' for it (see exportAttendanceMuster's identical fix).
+        if (ds > swTodayIST) return '';
+        return 'absent';
       };
 
       const ExcelJSsw = await import('exceljs');
