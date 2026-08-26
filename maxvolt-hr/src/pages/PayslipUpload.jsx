@@ -8,9 +8,13 @@ import { Switch } from "@/components/ui/switch";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Input } from "@/components/ui/input";
 import {
   UploadCloud, FileText, CheckCircle2, XCircle, AlertTriangle, Loader2,
   Users, FileWarning, Copy, KeyRound, FileX2, Send, History, ChevronDown, ChevronUp,
+  Search, ChevronsUpDown, UserCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -50,9 +54,18 @@ export default function PayslipUpload() {
   const [releasing, setReleasing] = useState(false);
   const [batches, setBatches] = useState([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [employees, setEmployees] = useState([]);
+  const [releaseSearch, setReleaseSearch] = useState('');
   const fileInputRef = useRef(null);
 
-  useEffect(() => { loadBatches(); }, []);
+  useEffect(() => { loadBatches(); loadEmployees(); }, []);
+
+  const loadEmployees = async () => {
+    try {
+      const emps = await base44.entities.Employee.list('-created_date', 2000);
+      setEmployees(emps || []);
+    } catch (e) { /* non-fatal — only needed for the resolve-unmapped picker */ }
+  };
 
   const loadBatches = async () => {
     try {
@@ -97,11 +110,48 @@ export default function PayslipUpload() {
     });
   };
 
+  const handleResolveUnmapped = async (fileId, employee) => {
+    if (!result?.batch_id) return;
+    try {
+      const res = await base44.functions.invoke('resolvePayslipUploadFile', {
+        batch_id: result.batch_id, file_id: fileId, user_id: employee.user_id,
+      });
+      const d = res?.data || res;
+      if (d?.success) {
+        toast.success(`Assigned to ${employee.display_name || employee.employee_code}`);
+        setResult(prev => ({
+          ...prev,
+          counts: { ...prev.counts, unmapped: Math.max(0, (prev.counts.unmapped || 0) - 1), mapped: (prev.counts.mapped || 0) + 1 },
+          files: prev.files.map(f => f.id === fileId ? {
+            ...f, status: 'mapped', user_id: employee.user_id, employee_name: employee.display_name || '',
+            employee_code: employee.employee_code, error: null, payroll_id: d.payroll_id,
+          } : f),
+        }));
+        loadBatches();
+      } else {
+        toast.error(d?.error || 'Failed to assign this payslip');
+      }
+    } catch (e) {
+      toast.error('Error assigning payslip: ' + e.message);
+    }
+  };
+
   const mappedFiles = (result?.files || []).filter(f => f.status === 'mapped' || f.status === 'mapped_needs_review');
+  const filteredMappedFiles = releaseSearch.trim()
+    ? mappedFiles.filter(f => {
+        const q = releaseSearch.toLowerCase();
+        return (f.employee_name || '').toLowerCase().includes(q) || (f.employee_code || '').toLowerCase().includes(q);
+      })
+    : mappedFiles;
 
   const selectAllMapped = () => {
-    if (selectedForRelease.size === mappedFiles.length) setSelectedForRelease(new Set());
-    else setSelectedForRelease(new Set(mappedFiles.map(f => f.payroll_id)));
+    const allVisibleSelected = filteredMappedFiles.length > 0 && filteredMappedFiles.every(f => selectedForRelease.has(f.payroll_id));
+    setSelectedForRelease(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) filteredMappedFiles.forEach(f => next.delete(f.payroll_id));
+      else filteredMappedFiles.forEach(f => next.add(f.payroll_id));
+      return next;
+    });
   };
 
   const handleRelease = async () => {
@@ -219,6 +269,7 @@ export default function PayslipUpload() {
                     <th className="py-2 pr-3 font-medium text-right">Gross Salary</th>
                     <th className="py-2 pr-3 font-medium text-right">Net Salary</th>
                     <th className="py-2 pr-3 font-medium">Details</th>
+                    <th className="py-2 pr-3 font-medium">Assign Employee</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -234,6 +285,11 @@ export default function PayslipUpload() {
                         {f.error && <div className="text-red-600">{f.error}</div>}
                         {(f.warnings || []).map((w, i) => <div key={i} className="text-amber-600">⚠ {w}</div>)}
                       </td>
+                      <td className="py-2 pr-3">
+                        {f.status === 'unmapped' && (
+                          <EmployeePicker employees={employees} onSelect={(emp) => handleResolveUnmapped(f.id, emp)} />
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -248,15 +304,27 @@ export default function PayslipUpload() {
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">3. Release Payslips to Employees</CardTitle>
             <Button variant="outline" size="sm" onClick={selectAllMapped}>
-              {selectedForRelease.size === mappedFiles.length ? 'Deselect All' : 'Select All'}
+              {filteredMappedFiles.length > 0 && filteredMappedFiles.every(f => selectedForRelease.has(f.payroll_id)) ? 'Deselect All' : 'Select All'}
             </Button>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-slate-500">
               Choose which employees should be able to see and download their payslip now. Unselected employees' payslips stay hidden until you release them.
             </p>
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-2.5 top-2.5 text-slate-400" />
+              <Input
+                placeholder="Search employees by name or code…"
+                value={releaseSearch}
+                onChange={(e) => setReleaseSearch(e.target.value)}
+                className="pl-8"
+              />
+            </div>
             <div className="border rounded-lg divide-y max-h-80 overflow-y-auto">
-              {mappedFiles.map(f => (
+              {filteredMappedFiles.length === 0 && (
+                <p className="text-sm text-slate-400 px-3 py-4 text-center">No employees match "{releaseSearch}"</p>
+              )}
+              {filteredMappedFiles.map(f => (
                 <label key={f.payroll_id} className="flex items-center gap-3 px-3 py-2 hover:bg-slate-50 cursor-pointer">
                   <Checkbox checked={selectedForRelease.has(f.payroll_id)} onCheckedChange={() => toggleRelease(f.payroll_id)} />
                   <span className="font-mono text-xs text-slate-500 w-20">{f.employee_code}</span>
@@ -323,5 +391,43 @@ function StatCard({ label, value, color = 'text-slate-900' }) {
       <div className={`text-xl font-bold ${color}`}>{value ?? 0}</div>
       <div className="text-xs text-slate-500 mt-0.5">{label}</div>
     </div>
+  );
+}
+
+// Search-to-select employee combobox, used to manually resolve an
+// "unmapped" file (no employee code matched its filename) to the correct
+// employee without needing to re-upload.
+function EmployeePicker({ employees, onSelect }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 border border-blue-200 rounded-md px-2 py-1 hover:bg-blue-50">
+          <UserCheck className="w-3.5 h-3.5" /> Assign <ChevronsUpDown className="w-3 h-3 opacity-50" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[300px] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search employee by name or code…" />
+          <CommandList>
+            <CommandEmpty>No employee found.</CommandEmpty>
+            <CommandGroup>
+              {employees.map(emp => (
+                <CommandItem
+                  key={emp.user_id}
+                  value={`${emp.display_name || ''} ${emp.employee_code || ''}`}
+                  onSelect={() => { onSelect(emp); setOpen(false); }}
+                >
+                  <div>
+                    <p className="font-medium">{emp.display_name}</p>
+                    <p className="text-xs text-gray-500">{emp.employee_code} {emp.designation ? `· ${emp.designation}` : ''}</p>
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
