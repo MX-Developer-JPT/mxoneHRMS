@@ -17,6 +17,7 @@ import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
 import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
+import payslipUploadRouter  from './routes/payslipUpload.js';
 import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, sendPreShiftReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 import { closeUnreturnedGatePasses } from './cron/gatePassAutomation.js';
@@ -194,6 +195,7 @@ app.use('/api/admin',           adminRouter);
 app.use('/api/attendance-log',  attendanceLogRouter);
 app.use('/api/notifications',   notificationsRouter);
 app.use('/api/push',            pushRouter);
+app.use('/api/payslip-upload',  payslipUploadRouter);
 
 // Production: serve built React frontend
 if (process.env.NODE_ENV === 'production') {

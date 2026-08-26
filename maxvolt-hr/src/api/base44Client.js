@@ -271,6 +271,27 @@ const integrations = {
       }
     },
 
+    // Bulk payslip upload — many password-protected PDFs in one request,
+    // hence a raw multipart fetch (like UploadFile) rather than apiFetch's
+    // JSON-only convention. No client-side timeout: a full month's PDFs can
+    // legitimately take a while to decrypt+extract server-side.
+    UploadPayslips: async ({ files, month, year, replace_existing }) => {
+      const token = getToken();
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      fd.append('month', String(month));
+      fd.append('year', String(year));
+      if (replace_existing) fd.append('replace_existing', 'true');
+      const res = await fetch(`${API_BASE}/payslip-upload`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+      return data; // { success, batch_id, counts, files }
+    },
+
     SendEmail: async ({ to, subject, body, html }) => {
       return apiFetch('/functions/sendCustomEmail', {
         method: 'POST',

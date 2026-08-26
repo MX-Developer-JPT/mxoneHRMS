@@ -13,6 +13,7 @@ import {
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
   Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar, Camera, Loader2, LayoutGrid, Archive,
+  UploadCloud,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -260,6 +261,8 @@ const hrMenuGroups = [
   ]},
   { label: 'Payroll', items: [
     { name: 'Payroll',                 icon: CreditCard,      page: 'PayrollManagement' },
+    { name: 'Payslip Upload',          icon: UploadCloud,     page: 'PayslipUpload' },
+    { name: 'Payroll Analytics',       icon: PieChart,        page: 'PayrollAnalytics' },
     { name: 'Salary Structure',        icon: DollarSign,      page: 'SalaryStructureManagement' },
     { name: 'Loans',                   icon: DollarSign,      page: 'LoanManagement' },
     { name: 'Off-Cycle Payments',      icon: DollarSign,      page: 'OffCyclePayments' },

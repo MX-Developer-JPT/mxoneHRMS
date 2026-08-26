@@ -2,7 +2,7 @@
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { FileText, DollarSign, Printer, TrendingUp, TrendingDown } from 'lucide-react';
+import { FileText, DollarSign, Printer, TrendingUp, TrendingDown, Download, Loader2 } from 'lucide-react';
 import { openPayslipPrintWindow } from '../utils/payslipPrint';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -21,6 +21,7 @@ export default function Payslips() {
   const [payrolls, setPayrolls] = useState([]);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(null);
+  const [downloading, setDownloading] = useState(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -48,6 +49,30 @@ export default function Payslips() {
       console.error('Error printing payslip:', error);
     }
     setPrinting(null);
+  };
+
+  const handleDownloadOriginal = async (payrollId) => {
+    setDownloading(payrollId);
+    try {
+      const response = await base44.functions.invoke('getPayslipFileUrl', { payroll_id: payrollId });
+      const rd = response?.data || response;
+      if (rd?.success) {
+        if (rd.url) {
+          window.open(rd.url, '_blank', 'noopener,noreferrer');
+        } else if (rd.base64) {
+          const byteChars = atob(rd.base64);
+          const bytes = new Uint8Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+          const blob = new Blob([bytes], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          window.open(url, '_blank', 'noopener,noreferrer');
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        }
+      }
+    } catch (error) {
+      console.error('Error downloading original payslip:', error);
+    }
+    setDownloading(null);
   };
 
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
@@ -144,6 +169,17 @@ export default function Payslips() {
                       <Printer className="w-4 h-4 mr-2" />
                       {printing === payroll.id ? 'Generating...' : 'View / Print Payslip'}
                     </Button>
+                    {payroll.payslip_source === 'bulk_upload' && (
+                      <Button
+                        onClick={() => handleDownloadOriginal(payroll.id)}
+                        className="w-full"
+                        variant="ghost"
+                        disabled={downloading === payroll.id}
+                      >
+                        {downloading === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                        {downloading === payroll.id ? 'Opening...' : 'Download Original PDF'}
+                      </Button>
+                    )}
                   </CardContent>
                 </Card>
               );

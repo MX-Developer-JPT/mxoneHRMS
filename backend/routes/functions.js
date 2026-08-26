@@ -12,6 +12,7 @@ import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnf
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { extractPayslipFields } from '../utils/payslipExtract.js';
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -4564,6 +4565,148 @@ router.post('/:name', async (req, res) => {
         processed++;
       }
       return res.json({ success:true, processed, message:`Processed payroll for ${processed} employees` });
+    }
+
+    /* ── Bulk Payslip Upload — review, release, and resolution endpoints ──
+       The actual upload/decrypt/extract happens in routes/payslipUpload.js
+       (needs multipart file handling, which functions.js's JSON-body
+       dispatcher doesn't support) — these JSON-only cases cover everything
+       after that: listing past batches, per-batch file detail for the
+       dashboard/error export, manually resolving an unmapped file, and
+       releasing processed payslips to employees. ── */
+    case 'getPayslipUploadBatches': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const rows = await all("SELECT id,data FROM entities WHERE type='PayslipUploadBatch' ORDER BY created_at DESC LIMIT 100");
+      const batches = rows.map(r => { const d = JSON.parse(r.data); const { files, ...summary } = d; return summary; });
+      return res.json({ success: true, batches });
+    }
+
+    case 'getPayslipUploadBatchDetail': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { batch_id: gpbBatchId } = p;
+      if (!gpbBatchId) return res.json({ success: false, error: 'batch_id required' });
+      const row = await one("SELECT data FROM entities WHERE type='PayslipUploadBatch' AND id=$1", [gpbBatchId]);
+      if (!row) return res.json({ success: false, error: 'Batch not found' });
+      return res.json({ success: true, batch: JSON.parse(row.data) });
+    }
+
+    // HR manually maps a file that came in as 'unmapped' (no employee code
+    // match) to a chosen employee. Re-reads the original PDF from wherever
+    // it was stored during upload and retries the same decrypt→extract→
+    // validate→write pipeline as the bulk endpoint, using the CHOSEN
+    // employee's own code as the password (an unmapped file's filename
+    // didn't match anyone, but the password may still be a real employee
+    // code HR can identify by eye).
+    case 'resolvePayslipUploadFile': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { batch_id: rpBatchId, file_id: rpFileId, user_id: rpUserId } = p;
+      if (!rpBatchId || !rpFileId || !rpUserId) return res.json({ success: false, error: 'batch_id, file_id, and user_id required' });
+      const batchRow = await one("SELECT id,data FROM entities WHERE type='PayslipUploadBatch' AND id=$1", [rpBatchId]);
+      if (!batchRow) return res.json({ success: false, error: 'Batch not found' });
+      const batch = JSON.parse(batchRow.data);
+      const fileEntry = (batch.files || []).find(f => f.id === rpFileId);
+      if (!fileEntry) return res.json({ success: false, error: 'File not found in this batch' });
+      if (!fileEntry.file_url && !fileEntry.file_base64) return res.json({ success: false, error: 'Original file is no longer available — please re-upload it for this employee instead' });
+
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [rpUserId]);
+      if (!empRow) return res.json({ success: false, error: 'Employee not found' });
+      const emp = JSON.parse(empRow.data);
+
+      let buffer;
+      try {
+        if (fileEntry.file_base64) buffer = Buffer.from(fileEntry.file_base64, 'base64');
+        else {
+          const fetchRes = await fetch(fileEntry.file_url);
+          buffer = Buffer.from(await fetchRes.arrayBuffer());
+        }
+      } catch (e) { return res.json({ success: false, error: 'Could not re-read the stored PDF: ' + e.message }); }
+
+      const { PDFParse, PasswordException } = await import('pdf-parse');
+      const empCode = String(emp.employee_code || '').trim().toUpperCase();
+      let text = '';
+      const parser = new PDFParse({ data: buffer, password: empCode });
+      try {
+        const result = await parser.getText();
+        text = result.text || '';
+      } catch (e) {
+        await parser.destroy().catch(() => {});
+        if (e instanceof PasswordException) return res.json({ success: false, error: `Could not unlock this PDF with ${emp.display_name || 'this employee'}'s code (${empCode})` });
+        return res.json({ success: false, error: 'Could not read this PDF: ' + e.message });
+      }
+      await parser.destroy().catch(() => {});
+
+      const rpFields = extractPayslipFields(text);
+      const rpExistingRow = await one(
+        "SELECT id FROM entities WHERE type='Payroll' AND user_id=$1 AND data::jsonb->>'month'=$2 AND data::jsonb->>'year'=$3",
+        [rpUserId, String(batch.month), String(batch.year)]
+      );
+      const rpNow = new Date().toISOString();
+      const rpPayrollId = rpExistingRow?.id || uuidv4();
+      const rpPayrollData = {
+        id: rpPayrollId, user_id: rpUserId, month: batch.month, year: batch.year,
+        basic_salary: rpFields.basic_salary ?? 0, hra: rpFields.hra ?? 0, conveyance: rpFields.conveyance ?? 0,
+        special_allowance: rpFields.special_allowance ?? 0, gross_salary: rpFields.gross_salary ?? 0,
+        deductions: { pf: rpFields.pf ?? 0, esi: rpFields.esi ?? 0, lop: 0, tds: rpFields.tds ?? 0, loan: rpFields.loan_deduction ?? 0, professional_tax: rpFields.professional_tax ?? 0, other: rpFields.other_deductions ?? 0 },
+        employer_contributions: { pf: rpFields.employer_pf ?? 0, esi: rpFields.employer_esi ?? 0 },
+        total_deductions: rpFields.total_deductions ?? 0, net_salary: rpFields.net_salary ?? 0,
+        working_days: rpFields.payable_days ?? null, present_days: rpFields.present_days ?? null,
+        loss_of_pay_days: rpFields.lop_days ?? 0, loss_of_pay_amount: 0,
+        incentive: rpFields.incentive ?? 0, overtime: rpFields.overtime ?? 0, bonus: rpFields.bonus ?? 0,
+        status: 'processed', processed_by: cu.id, processed_at: rpNow,
+        employee_code: emp.employee_code, department: emp.department || null, designation: emp.designation || null,
+        payslip_source: 'bulk_upload', payslip_file_url: fileEntry.file_url || null,
+        payslip_upload_batch_id: rpBatchId, payslip_uploaded_by: cu.id, payslip_uploaded_at: rpNow,
+        payslip_extraction_warnings: [],
+      };
+      if (rpExistingRow) await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(rpPayrollData), rpExistingRow.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Payroll',$2,'processed',$3)", [rpPayrollId, rpUserId, JSON.stringify(rpPayrollData)]);
+
+      fileEntry.status = 'mapped'; fileEntry.user_id = rpUserId; fileEntry.employee_name = emp.display_name || '';
+      fileEntry.employee_code = empCode; fileEntry.error = null; fileEntry.payroll_id = rpPayrollId;
+      fileEntry.resolved_by = cu.id; fileEntry.resolved_at = rpNow;
+      batch.counts.unmapped = Math.max(0, (batch.counts.unmapped || 0) - 1);
+      batch.counts.mapped = (batch.counts.mapped || 0) + 1;
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(batch), batchRow.id]);
+
+      return res.json({ success: true, payroll_id: rpPayrollId });
+    }
+
+    // "Release" = flip a processed (uploaded but not yet employee-visible)
+    // Payroll record's status to 'paid' — the same status flag
+    // PayrollManagement.jsx's own mark-as-paid flow uses, and the only
+    // status Payslips.jsx shows to the employee. Lets HR choose exactly
+    // which employees see their payslip now vs. hold back for review.
+    case 'releasePayslips': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { payroll_ids: relIds } = p;
+      if (!Array.isArray(relIds) || !relIds.length) return res.json({ success: false, error: 'payroll_ids array required' });
+      let released = 0;
+      for (const pid of relIds) {
+        const row = await one("SELECT id,data FROM entities WHERE type='Payroll' AND id=$1", [pid]);
+        if (!row) continue;
+        const d = JSON.parse(row.data);
+        if (d.status === 'paid') continue;
+        const upd = { ...d, status: 'paid', payment_date: d.payment_date || new Date().toISOString(), released_by: cu.id, released_at: new Date().toISOString() };
+        await run("UPDATE entities SET data=$1,status='paid',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
+        await notify(d.user_id, { title: 'Payslip Available', message: `Your payslip for ${upd.month}/${upd.year} is now available.`, type: 'success', link: '/Payslips' }).catch(() => {});
+        released++;
+      }
+      return res.json({ success: true, released });
+    }
+
+    // Fresh short-lived download URL for a Payroll's uploaded source PDF —
+    // the employee it belongs to, or HR/admin, only. Regenerated on demand
+    // rather than trusting the (long-lived but still ideally not
+    // indefinitely reused) URL stored on the record.
+    case 'getPayslipFileUrl': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { payroll_id: gpfId } = p;
+      const row = await one("SELECT data FROM entities WHERE type='Payroll' AND id=$1", [gpfId]);
+      if (!row) return res.json({ success: false, error: 'Payroll record not found' });
+      const d = JSON.parse(row.data);
+      if (d.user_id !== cu.id && !(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'Not authorized' });
+      if (!d.payslip_file_url && !d.payslip_file_base64) return res.json({ success: false, error: 'No uploaded payslip file for this record' });
+      return res.json({ success: true, url: d.payslip_file_url || null, base64: d.payslip_file_url ? null : d.payslip_file_base64 });
     }
 
     case 'importSalaryStructures': {
