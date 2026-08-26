@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Edit2, Trash2, MapPin, Loader2, Download, Users, ChevronDown, UserCog, AlertCircle } from 'lucide-react';
+import { Plus, Edit2, Trash2, MapPin, Loader2, Download, Users, ChevronDown, UserCog, AlertCircle, Building2, Search, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
@@ -19,6 +19,7 @@ export default function LocationMaster() {
   const { user } = useAuth();
   const [locations, setLocations] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -40,21 +41,29 @@ export default function LocationMaster() {
     );
   };
   const [expandedLocation, setExpandedLocation] = useState(null);
+  const [empSearchQuery, setEmpSearchQuery] = useState('');
   const [selectedEmployees, setSelectedEmployees] = useState(new Set());
   const [assignDialog, setAssignDialog] = useState(null); // { employees: [...], targetLocation }
   const [assignValue, setAssignValue] = useState('');
   const [assigning, setAssigning] = useState(false);
 
+  const [deptAssignDialog, setDeptAssignDialog] = useState(false);
+  const [deptAssignDept, setDeptAssignDept] = useState('');
+  const [deptAssignLocation, setDeptAssignLocation] = useState('');
+  const [deptAssigning, setDeptAssigning] = useState(false);
+
   useEffect(() => { loadData(); }, []);
 
   const loadData = async () => {
     try {
-      const [locData, empData] = await Promise.all([
+      const [locData, empData, deptData] = await Promise.all([
         base44.entities.AppLocation.list('-created_date'),
         base44.entities.Employee.list(),
+        base44.entities.Department.list('-created_date'),
       ]);
       setLocations(locData);
       setEmployees(empData);
+      setDepartments(deptData);
       setLoading(false);
     } catch (err) {
       console.error(err);
@@ -62,11 +71,57 @@ export default function LocationMaster() {
     }
   };
 
+  // Falls back to department names actually present on employee records
+  // (rather than only the Department master list) so this still works for
+  // orgs whose employees carry a free-text department that was never
+  // formally added as a Department entity.
+  const departmentNames = [...new Set([
+    ...departments.map(d => d.name).filter(Boolean),
+    ...employees.map(e => e.department).filter(Boolean),
+  ])].sort();
+
+  const getEmployeesInDepartment = (deptName) => employees.filter(e => e.department === deptName);
+
+  const openDeptAssign = () => {
+    setDeptAssignDept('');
+    setDeptAssignLocation('');
+    setDeptAssignDialog(true);
+  };
+
+  const confirmDeptAssign = async () => {
+    if (!deptAssignDept || !deptAssignLocation) return;
+    const emps = getEmployeesInDepartment(deptAssignDept);
+    if (!emps.length) { toast.error(`No employees found in "${deptAssignDept}"`); return; }
+    setDeptAssigning(true);
+    try {
+      const newLocation = deptAssignLocation === NO_LOCATION ? '' : deptAssignLocation;
+      await Promise.all(emps.map(e => base44.entities.Employee.update(e.id, { work_location: newLocation })));
+      toast.success(`${emps.length} employee(s) in ${deptAssignDept} moved to ${newLocation || 'no location'}`);
+      setDeptAssignDialog(false);
+      await loadData();
+    } catch (err) {
+      toast.error('Error assigning location by department');
+    }
+    setDeptAssigning(false);
+  };
+
   const getEmployeesAtLocation = (locationName) => {
     return employees.filter(e => e.work_location === locationName);
   };
 
   const unassignedEmployees = employees.filter(e => !e.work_location);
+
+  const empSearchMatches = (() => {
+    const q = empSearchQuery.trim().toLowerCase();
+    if (!q) return null;
+    return employees.filter(e =>
+      (e.display_name || '').toLowerCase().includes(q)
+      || (e.employee_code || '').toLowerCase().includes(q)
+      || (e.department || '').toLowerCase().includes(q)
+      || (e.designation || '').toLowerCase().includes(q)
+      || (e.work_location || '').toLowerCase().includes(q)
+    );
+  })();
 
   const toggleSelect = (empId) => {
     setSelectedEmployees(prev => {
@@ -217,7 +272,10 @@ export default function LocationMaster() {
             <h1 className="text-2xl font-bold text-foreground">Location Master</h1>
             <p className="text-muted-foreground mt-1">Manage office locations and view employees by site</p>
           </div>
-          <Button onClick={openNew}><Plus className="w-4 h-4 mr-2" />Add Location</Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={openDeptAssign}><Building2 className="w-4 h-4 mr-2" />Assign by Department</Button>
+            <Button onClick={openNew}><Plus className="w-4 h-4 mr-2" />Add Location</Button>
+          </div>
         </div>
 
         <Tabs defaultValue="locations">
@@ -276,6 +334,41 @@ export default function LocationMaster() {
 
           <TabsContent value="employees">
             <div className="space-y-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  className="pl-9 pr-9"
+                  placeholder="Search employees by name, code, department, designation, or location…"
+                  value={empSearchQuery}
+                  onChange={e => setEmpSearchQuery(e.target.value)}
+                />
+                {empSearchQuery && (
+                  <button onClick={() => setEmpSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              {empSearchMatches ? (
+                <Card>
+                  <CardHeader><CardTitle className="text-base">Search Results ({empSearchMatches.length})</CardTitle></CardHeader>
+                  <CardContent>
+                    {empSearchMatches.length === 0 ? (
+                      <p className="text-center text-muted-foreground py-6">No employees match "{empSearchQuery}"</p>
+                    ) : (
+                      <EmployeeLocationTable
+                        emps={empSearchMatches}
+                        employees={employees}
+                        selected={selectedEmployees}
+                        onToggle={toggleSelect}
+                        onAssignOne={(emp) => openAssign([emp])}
+                        onAssignSelected={(emps) => openAssign(emps)}
+                      />
+                    )}
+                  </CardContent>
+                </Card>
+              ) : (
+              <>
               {/* Unassigned employees — need an initial location assignment */}
               {unassignedEmployees.length > 0 && (
                 <Card className="border-amber-300">
@@ -355,6 +448,8 @@ export default function LocationMaster() {
               {locations.length === 0 && (
                 <p className="text-center text-muted-foreground py-8">No locations configured yet</p>
               )}
+              </>
+              )}
             </div>
           </TabsContent>
         </Tabs>
@@ -385,6 +480,52 @@ export default function LocationMaster() {
                 <Button onClick={confirmAssign} disabled={assigning || !assignValue}>
                   {assigning ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
                   Save
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Assign by Department dialog — bulk-set work_location for every
+            employee whose department matches, in one action, instead of
+            selecting employees one location-group at a time. */}
+        <Dialog open={deptAssignDialog} onOpenChange={setDeptAssignDialog}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader><DialogTitle>Assign Location by Department</DialogTitle></DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label>Department</Label>
+                <Select value={deptAssignDept} onValueChange={setDeptAssignDept}>
+                  <SelectTrigger><SelectValue placeholder="Select a department" /></SelectTrigger>
+                  <SelectContent>
+                    {departmentNames.map(name => (
+                      <SelectItem key={name} value={name}>{name} ({getEmployeesInDepartment(name).length})</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Work Location</Label>
+                <Select value={deptAssignLocation} onValueChange={setDeptAssignLocation}>
+                  <SelectTrigger><SelectValue placeholder="Select a location" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_LOCATION}>— No Location —</SelectItem>
+                    {locations.filter(l => l.is_active !== false).map(l => (
+                      <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {deptAssignDept && (
+                <p className="text-xs text-muted-foreground">
+                  This will set the work location for all {getEmployeesInDepartment(deptAssignDept).length} employee(s) in "{deptAssignDept}", including anyone already assigned elsewhere.
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setDeptAssignDialog(false)}>Cancel</Button>
+                <Button onClick={confirmDeptAssign} disabled={deptAssigning || !deptAssignDept || !deptAssignLocation}>
+                  {deptAssigning ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                  Assign
                 </Button>
               </div>
             </div>
