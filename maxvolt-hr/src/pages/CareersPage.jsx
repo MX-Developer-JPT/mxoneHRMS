@@ -9,9 +9,68 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Briefcase, MapPin, Clock, Users, Search, ChevronRight, Calendar, CheckCircle2, Upload, Loader2, ArrowLeft } from 'lucide-react';
+import { Briefcase, MapPin, Clock, Users, Search, ChevronRight, Calendar, CheckCircle2, Upload, Loader2, ArrowLeft, Sparkles, Building2, IndianRupee, GraduationCap, FileText } from 'lucide-react';
 import { format, isPast } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import ReactMarkdown from 'react-markdown';
+
+// Job descriptions come out of the AI generator as Markdown (**Job Title:**
+// Sr. Executive, etc.) — used raw as a plain-text preview snippet, the
+// literal asterisks and headers show up verbatim. Strips the common
+// Markdown syntax down to plain words for a clean one/two-line teaser.
+function stripMarkdown(text) {
+  return String(text || '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/^[-*]\s+/gm, '')
+    .replace(/^-{3,}$/gm, '')
+    .replace(/\n+/g, ' ')
+    .trim();
+}
+
+// The AI job description opens with a run of "**Label:** value" lines
+// (Job Title, Department, Employment Type, Location, Experience Required,
+// Number of Openings, Salary Range, ...) followed by a "---" and the actual
+// narrative (responsibilities, requirements). Pulled out into a structured
+// grid so those key facts (title, department, CTC, etc.) are immediately
+// visible instead of buried as plain text inside a paragraph — the
+// remaining narrative still renders as normal Markdown below it.
+const JD_FIELD_ICONS = {
+  'job title': Briefcase, 'department': Building2, 'employment type': Clock,
+  'location': MapPin, 'experience required': Clock, 'number of openings': Users,
+  'number of positions': Users, 'salary range': IndianRupee, 'qualification': GraduationCap,
+};
+function parseJdFields(jd) {
+  const lines = String(jd || '').split(/\r?\n/);
+  const fields = [];
+  const rest = [];
+  const fieldRe = /^\*\*(.+?):?\*\*\s*:?\s*(.+)$/;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^-{3,}$/.test(trimmed)) continue; // drop the "---" separator entirely
+    const m = trimmed.match(fieldRe);
+    if (m && m[2].trim() && m[1].trim().split(' ').length <= 4) {
+      fields.push({ label: m[1].trim(), value: m[2].trim() });
+    } else {
+      rest.push(line);
+    }
+  }
+  return { fields, body: rest.join('\n').trim() };
+}
+
+const jdMarkdownComponents = {
+  p:      ({ children }) => <p className="my-2.5 leading-relaxed text-gray-700">{children}</p>,
+  ul:     ({ children }) => <ul className="my-2.5 ml-5 list-disc space-y-1 text-gray-700">{children}</ul>,
+  ol:     ({ children }) => <ol className="my-2.5 ml-5 list-decimal space-y-1 text-gray-700">{children}</ol>,
+  li:     ({ children }) => <li className="leading-relaxed">{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold text-gray-900">{children}</strong>,
+  h1:     ({ children }) => <h3 className="text-base font-bold text-gray-900 mt-5 mb-2 first:mt-0">{children}</h3>,
+  h2:     ({ children }) => <h3 className="text-base font-bold text-gray-900 mt-5 mb-2 first:mt-0">{children}</h3>,
+  h3:     ({ children }) => <h4 className="text-sm font-bold text-gray-900 mt-4 mb-1.5 first:mt-0">{children}</h4>,
+  hr:     () => <hr className="my-5 border-gray-200" />,
+  a:      ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-orange-600 hover:underline">{children}</a>,
+};
 
 const EMPTY_FORM = {
   full_name: '', email: '', phone: '', current_city: '',
@@ -23,18 +82,37 @@ const EMPTY_FORM = {
 
 function Header({ onBack }) {
   return (
-    <div className="bg-white border-b shadow-sm sticky top-0 z-10">
+    <div className="bg-white/95 backdrop-blur border-b sticky top-0 z-10">
       <div className="max-w-5xl mx-auto px-4 py-4 flex items-center gap-4">
         {onBack && (
-          <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+          <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-lg transition-colors">
             <ArrowLeft className="w-5 h-5 text-gray-600" />
           </button>
         )}
         <img src="/favicon.svg?v=6" alt="Maxvolt Energy" className="h-10 object-contain" />
         <div>
-          <h1 className="text-xl font-bold text-gray-900">Careers at Maxvolt Energy</h1>
+          <h1 className="text-lg font-bold text-gray-900 leading-tight">Careers at Maxvolt Energy</h1>
           <p className="text-gray-500 text-xs">Build the future of energy with us</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Warm gradient hero banner — sits above the job list only, giving the
+// portal a recognizable "company careers page" identity instead of opening
+// straight into a plain list.
+function Hero() {
+  return (
+    <div className="bg-gradient-to-br from-orange-500 via-orange-500 to-amber-600 text-white">
+      <div className="max-w-5xl mx-auto px-4 py-12 sm:py-16">
+        <div className="inline-flex items-center gap-1.5 bg-white/15 text-white text-xs font-medium px-3 py-1 rounded-full mb-4">
+          <Sparkles className="w-3.5 h-3.5" /> We're hiring
+        </div>
+        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Join Maxvolt Energy Industries</h1>
+        <p className="text-orange-50 mt-3 max-w-xl text-base leading-relaxed">
+          Power the future of energy with a team that's building it. Explore open roles across the organization.
+        </p>
       </div>
     </div>
   );
@@ -57,8 +135,8 @@ function JobListPage({ jobs, loading, onSelect }) {
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
       <div>
-        <h2 className="text-2xl font-bold text-gray-900">Open Positions</h2>
-        <p className="text-gray-500 mt-1">Find your next opportunity at Maxvolt Energy Industries Limited</p>
+        <h2 className="text-xl font-bold text-gray-900">Open Positions</h2>
+        <p className="text-gray-500 text-sm mt-1">Find your next opportunity at Maxvolt Energy Industries Limited</p>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3">
@@ -92,23 +170,28 @@ function JobListPage({ jobs, loading, onSelect }) {
         </div>
       ) : (
         <div className="space-y-4">
-          {filtered.map(job => (
-            <Card key={job.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => onSelect(job.id)}>
+          {filtered.map(job => {
+            const rawJd = job.ai_job_description || job.job_description || '';
+            const { fields: jdFields, body: jdBody } = parseJdFields(rawJd);
+            const salaryField = jdFields.find(f => /salary/i.test(f.label));
+            return (
+            <Card key={job.id} className="group hover:shadow-lg hover:border-orange-200 transition-all cursor-pointer border-gray-200" onClick={() => onSelect(job.id)}>
               <CardContent className="p-6">
                 <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2 mb-2">
-                      <h2 className="text-lg font-bold text-gray-900">{job.position_title}</h2>
+                      <h2 className="text-lg font-bold text-gray-900 group-hover:text-orange-600 transition-colors">{job.position_title}</h2>
                       {job.employment_type && <Badge className="bg-orange-100 text-orange-700 border-0">{empTypeLabel(job.employment_type)}</Badge>}
                     </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
-                      {job.department && <span className="flex items-center gap-1"><Briefcase className="w-3.5 h-3.5" />{job.department}</span>}
+                    <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm text-gray-500 mb-3">
+                      {job.department && <span className="flex items-center gap-1"><Building2 className="w-3.5 h-3.5" />{job.department}</span>}
                       {job.location && <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{job.location}</span>}
                       {job.experience_required && <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{job.experience_required}</span>}
                       {job.number_of_positions && <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" />{job.number_of_positions} position(s)</span>}
+                      {salaryField && <span className="flex items-center gap-1 font-medium text-gray-700"><IndianRupee className="w-3.5 h-3.5" />{salaryField.value}</span>}
                     </div>
-                    {(job.ai_job_description || job.job_description) && (
-                      <p className="text-sm text-gray-600 line-clamp-2">{(job.ai_job_description || job.job_description).slice(0, 200)}</p>
+                    {jdBody && (
+                      <p className="text-sm text-gray-600 line-clamp-2">{stripMarkdown(jdBody).slice(0, 200)}</p>
                     )}
                     {job.required_skills?.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-3">
@@ -130,7 +213,8 @@ function JobListPage({ jobs, loading, onSelect }) {
                 </div>
               </CardContent>
             </Card>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -240,6 +324,7 @@ function JobDetailPage({ jobId, onBack }) {
   );
 
   const jd = job.ai_job_description || job.job_description || '';
+  const { fields: jdFields, body: jdBody } = parseJdFields(jd);
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
@@ -273,13 +358,38 @@ function JobDetailPage({ jobId, onBack }) {
         </CardContent>
       </Card>
 
-      {/* Job Description */}
-      {jd && (
+      {/* Key Details — Job Title, Department, CTC/Salary Range, etc. pulled
+          out of the description text into a clearly labeled grid, instead
+          of being buried as inline sentences. */}
+      {jdFields.length > 0 && (
         <Card>
           <CardContent className="p-6">
-            <h2 className="text-lg font-bold text-gray-900 mb-4">About This Role</h2>
-            <div className="prose prose-sm max-w-none text-gray-700 whitespace-pre-wrap leading-relaxed">
-              {jd}
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Role Details</h2>
+            <div className="grid sm:grid-cols-2 gap-x-6 gap-y-4">
+              {jdFields.map((f, i) => {
+                const Icon = JD_FIELD_ICONS[f.label.toLowerCase()] || FileText;
+                return (
+                  <div key={i} className="flex items-start gap-3">
+                    <div className="p-2 bg-orange-50 rounded-lg shrink-0"><Icon className="w-4 h-4 text-orange-600" /></div>
+                    <div className="min-w-0">
+                      <p className="text-xs text-gray-500">{f.label}</p>
+                      <p className="text-sm font-semibold text-gray-900 break-words">{f.value}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Job Description narrative — responsibilities, requirements, etc. */}
+      {jdBody && (
+        <Card>
+          <CardContent className="p-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-2">About This Role</h2>
+            <div className="max-w-none">
+              <ReactMarkdown components={jdMarkdownComponents}>{jdBody}</ReactMarkdown>
             </div>
           </CardContent>
         </Card>
@@ -387,7 +497,10 @@ export default function CareersPage() {
       <Header onBack={jobId ? handleBack : null} />
       {jobId
         ? <JobDetailPage jobId={jobId} onBack={handleBack} />
-        : <JobListPage jobs={jobs} loading={loading} onSelect={handleSelectJob} />
+        : <>
+            <Hero />
+            <JobListPage jobs={jobs} loading={loading} onSelect={handleSelectJob} />
+          </>
       }
       <div className="border-t bg-white py-4 text-center text-xs text-gray-400 mt-10">
         © {new Date().getFullYear()} Maxvolt Energy Industries Limited · All rights reserved
