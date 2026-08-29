@@ -266,7 +266,12 @@ export default function AppSettings() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4 md:p-6">
-      <div className="max-w-2xl mx-auto space-y-6">
+      {/* pb-8 on top of Layout's own dynamically-measured bottom-nav spacer —
+          belt-and-suspenders extra clearance specifically for this page's
+          final destructive-action button (Delete Account), so it can never
+          end up partially behind the fixed mobile tab bar even if the
+          shared spacer under-measures on a given device. */}
+      <div className="max-w-2xl mx-auto space-y-6 pb-8">
         <div className="flex items-center gap-3">
           <Settings className="w-7 h-7 text-blue-600" />
           <div>
