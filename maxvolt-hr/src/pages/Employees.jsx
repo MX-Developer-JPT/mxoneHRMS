@@ -73,6 +73,14 @@ export default function Employees() {
         updatedEmpRecords = updatedEmpRecords.filter(e => downstreamIds.has(e.user_id));
       }
 
+      // Name lookup for "Reports to" — lets HR/admin/management (who see the
+      // full org in a flat/department view, not the manager-only Direct/
+      // Indirect grouping) still immediately see who each employee is
+      // assigned under, e.g. an employee reporting to a manager who
+      // themself reports up through the chain to whoever's viewing.
+      const nameByUserId = {};
+      users.forEach(u => { nameByUserId[u.id] = u.display_name || u.full_name; });
+
       const enrichedEmps = updatedEmpRecords
         .filter(emp => emp.status === 'active')
         .map(emp => {
@@ -81,6 +89,7 @@ export default function Employees() {
             ...emp,
             user: user ? { ...user, display_name: user.display_name || user.full_name } : user,
             _isDirectReport: userRole === 'manager' ? directIds.has(emp.user_id) : undefined,
+            _managerName: emp.reporting_manager_id ? (nameByUserId[emp.reporting_manager_id] || null) : null,
           };
         })
         // HR/admin/recruiter are operators of the app, not employees — the
@@ -343,6 +352,12 @@ export default function Employees() {
                                 <div className="flex items-center gap-2 text-gray-600">
                                   <Phone className="w-4 h-4" />
                                   <span>{emp.phone}</span>
+                                </div>
+                              )}
+                              {emp._managerName && (
+                                <div className="flex items-center gap-2 text-gray-600 min-w-0">
+                                  <Users className="w-4 h-4" />
+                                  <span className="truncate">Reports to: {emp._managerName}</span>
                                 </div>
                               )}
                               {emp.date_of_joining && (

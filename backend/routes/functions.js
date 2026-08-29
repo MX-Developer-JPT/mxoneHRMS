@@ -1047,6 +1047,43 @@ async function getScopedUserIds(cu) {
   return [cu.id];
 }
 
+// Full downstream hierarchy (direct + indirect reports, recursively) below
+// managerUserId — the backend counterpart of maxvolt-hr/src/lib/hierarchy.js
+// resolveHierarchy(). Deliberately separate from getScopedUserIds/
+// canAccessEmployee above: those two gate APPROVAL/ACTION authority and must
+// stay direct-reports-only (a manager approves only their own direct
+// reports' requests — see the warning on lib/hierarchy.js). This one is for
+// pure VISIBILITY endpoints (team attendance calendars, org rosters) where a
+// manager should see their whole downstream team, matching what
+// Employees.jsx/AllAttendance.jsx already do with client-side hierarchy
+// resolution — used to fix cases where the backend independently re-scoped
+// to direct-only and silently dropped indirect reports' data.
+async function getVisibleUserIds(cu) {
+  if (!cu) return [];
+  if (await hasRole(cu, MGR_ROLES)) return null; // HR/admin/management — unrestricted, full org
+  if (await hasRole(cu, ['manager'])) {
+    const rows = await all("SELECT user_id,data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND status='active'");
+    const index = new Map();
+    for (const r of rows) {
+      if (!r.mgr) continue;
+      if (!index.has(r.mgr)) index.set(r.mgr, []);
+      index.get(r.mgr).push(r.user_id);
+    }
+    const downstream = new Set();
+    const queue = [...(index.get(cu.id) || [])];
+    const visited = new Set();
+    while (queue.length) {
+      const uid = queue.shift();
+      if (visited.has(uid)) continue;
+      visited.add(uid);
+      downstream.add(uid);
+      for (const r of (index.get(uid) || [])) if (!visited.has(r)) queue.push(r);
+    }
+    return [...downstream];
+  }
+  return [cu.id];
+}
+
 const parseEntities = (rows) => rows.map(r => JSON.parse(r.data));
 
 // Shared adoption-analytics computation, used by both getAdoptionDashboard
@@ -4190,7 +4227,7 @@ router.post('/:name', async (req, res) => {
       if (p.scope === 'all' && isMgmtUser) {
         rows = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' ORDER BY created_at DESC LIMIT 300");
       } else if (p.scope === 'all' && isTeamManager) {
-        const teamIds = await getScopedUserIds(cu); // manager's own reports
+        const teamIds = await getVisibleUserIds(cu); // manager's whole downstream team
         rows = teamIds.length
           ? await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND user_id=ANY($1) ORDER BY created_at DESC LIMIT 300", [teamIds])
           : [];
@@ -6994,11 +7031,13 @@ router.post('/:name', async (req, res) => {
     case 'getAllAttendance': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { date, user_id: uid, date_from, date_to } = p;
-      if (uid && !(await canAccessEmployee(cu, uid))) return res.status(403).json({ error: 'Access denied' });
-      // A manager only ever sees their own direct reports — never a
-      // requested user_id outside that set, and never the whole org when no
-      // user_id is given. null means unrestricted (HR/admin/management).
-      const scopedIds = await getScopedUserIds(cu);
+      // Visibility, not approval authority — a manager sees their WHOLE
+      // downstream team's attendance (direct + indirect reports), matching
+      // Employees.jsx/AllAttendance.jsx's own hierarchy resolution and the
+      // "management sees the whole org" expectation. null means unrestricted
+      // (HR/admin/management).
+      const scopedIds = await getVisibleUserIds(cu);
+      if (uid && scopedIds && !scopedIds.includes(uid)) return res.status(403).json({ error: 'Access denied' });
       if (scopedIds && !scopedIds.length) return res.json({ records: [] });
 
       // SQL-level date filtering for performance
@@ -10751,12 +10790,13 @@ ${contextBlock || 'No employee context available — answer from general policy 
     case 'getMISData': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       // null = unrestricted (HR/admin/management). An array = a manager's
-      // direct reports only — every headcount/attendance/leave/performance
-      // query below is filtered to it. Org-financial sections that don't map
-      // to "my team" (recruitment pipeline, asset inventory, payroll cost,
-      // helpdesk tickets, exits) are simply omitted for a scoped caller
-      // rather than showing company-wide figures under a "team MIS" label.
-      const scopedIds = await getScopedUserIds(cu);
+      // WHOLE downstream team (direct + indirect reports) — every
+      // headcount/attendance/leave/performance query below is filtered to
+      // it. Org-financial sections that don't map to "my team" (recruitment
+      // pipeline, asset inventory, payroll cost, helpdesk tickets, exits)
+      // are simply omitted for a scoped caller rather than showing
+      // company-wide figures under a "team MIS" label.
+      const scopedIds = await getVisibleUserIds(cu);
 
       const today      = new Date().toISOString().slice(0, 10);
       const now        = new Date();
@@ -11071,9 +11111,31 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const monthStart = `${y}-${String(m).padStart(2,'0')}-01`;
       const monthEnd   = new Date(y, m, 0).toISOString().slice(0, 10); // last day of month
 
-      // Employees list — filter to manager's team when manager_id provided
+      // Employees list — filter to manager's WHOLE downstream team (direct
+      // + indirect reports) when manager_id is provided, not just direct
+      // reports — a manager should see everyone under them in the chain
+      // (e.g. their direct report's own reports), matching how
+      // Employees.jsx/AllAttendance.jsx already resolve team visibility.
       let allEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
-      if (manager_id) allEmps = allEmps.filter(e => e.reporting_manager_id === manager_id);
+      if (manager_id) {
+        const gtcIndex = new Map();
+        for (const e of allEmps) {
+          if (!e.reporting_manager_id) continue;
+          if (!gtcIndex.has(e.reporting_manager_id)) gtcIndex.set(e.reporting_manager_id, []);
+          gtcIndex.get(e.reporting_manager_id).push(e.user_id);
+        }
+        const gtcDownstream = new Set();
+        const gtcQueue = [...(gtcIndex.get(manager_id) || [])];
+        const gtcVisited = new Set();
+        while (gtcQueue.length) {
+          const uid = gtcQueue.shift();
+          if (gtcVisited.has(uid)) continue;
+          gtcVisited.add(uid);
+          gtcDownstream.add(uid);
+          for (const r of (gtcIndex.get(uid) || [])) if (!gtcVisited.has(r)) gtcQueue.push(r);
+        }
+        allEmps = allEmps.filter(e => gtcDownstream.has(e.user_id));
+      }
       const employees = allEmps.map(e => ({ user_id: e.user_id, display_name: e.display_name, department: e.department, employee_code: e.employee_code }));
 
       // Approved leaves for the month
@@ -13106,10 +13168,11 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       });
       // Not already scoped by a specific employee_user_id lookup above —
       // apply the caller's own team scope. null = unrestricted (HR/admin/
-      // management); manager only sees reviews for their own reports or
-      // that they personally submitted; anyone else sees only their own.
+      // management); manager sees reviews for their whole downstream team
+      // (visibility) or that they personally submitted; anyone else sees
+      // only their own.
       if (!gprEmpUid) {
-        const gprScopedIds = await getScopedUserIds(cu);
+        const gprScopedIds = await getVisibleUserIds(cu);
         if (gprScopedIds) gprReviews = gprReviews.filter(r => gprScopedIds.includes(r.user_id) || r.manager_id === cu.id);
       }
       return res.json({ success: true, reviews: gprReviews });
@@ -13726,7 +13789,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     /* ── Attrition Risk (predictive) ─────────────────── */
     case 'getAttritionRisk': {
       if (!(await hasRole(cu, [...MGR_ROLES, 'manager']))) return res.status(403).json({ error: 'Manager/HR access required' });
-      const arScopedIds = await getScopedUserIds(cu); // null = org-wide (HR/admin/management); array = manager's own reports
+      const arScopedIds = await getVisibleUserIds(cu); // null = org-wide (HR/admin/management); array = manager's whole downstream team
       const now = new Date();
       const today = now.toISOString().slice(0, 10);
       const d90 = new Date(now.getTime() - 90 * 864e5).toISOString().slice(0, 10);
@@ -14988,11 +15051,11 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       const fd    = from_date || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
       const td    = to_date   || now.toISOString().slice(0, 10);
       // null = unrestricted (HR/admin/management, honours the department
-      // filter param as before). An array = a manager's direct reports —
-      // every report type below is scoped to it regardless of what
+      // filter param as before). An array = a manager's whole downstream
+      // team — every report type below is scoped to it regardless of what
       // department the caller requested (a manager doesn't get to pick a
       // different department, only ever their own team).
-      const scopedIds = await getScopedUserIds(cu);
+      const scopedIds = await getVisibleUserIds(cu);
       const byScope = (rows, userField = 'user_id') => {
         let r = scopedIds ? rows.filter(row => scopedIds.includes(row[userField])) : rows;
         if (department && department !== 'all') r = r.filter(row => row.department === department);
