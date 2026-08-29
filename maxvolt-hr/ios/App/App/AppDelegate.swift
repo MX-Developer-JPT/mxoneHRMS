@@ -1,14 +1,60 @@
 import UIKit
 import Capacitor
+import Network
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
 
+    // This app loads its content live from the network (capacitor.config.json
+    // server.url) rather than bundling it locally, so a page load that fails
+    // while offline (e.g. walking out of WiFi/cellular coverage — shows up as
+    // NSURLErrorDomain -1003, "server with the specified hostname could not
+    // be found") leaves a blank WKWebView with nothing to retry it; without
+    // this, the only way to recover was to force-quit and reopen the app.
+    // Watches for the device's network path going from unusable back to
+    // usable and reloads the web content automatically at that moment, so
+    // it self-heals instead.
+    private let networkMonitor = NWPathMonitor()
+    private var lastPathSatisfied = true
+
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        startNetworkMonitor()
         return true
+    }
+
+    private func startNetworkMonitor() {
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            guard let self = self else { return }
+            let satisfied = path.status == .satisfied
+            if satisfied && !self.lastPathSatisfied {
+                // Small delay so the interface has actually stabilized
+                // before retrying, rather than racing a link that's still
+                // coming up.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.reloadWebViewIfNeeded()
+                }
+            }
+            self.lastPathSatisfied = satisfied
+        }
+        networkMonitor.start(queue: DispatchQueue(label: "com.maxvolt.hr.networkMonitor"))
+    }
+
+    private func reloadWebViewIfNeeded() {
+        guard let bridgeVC = window?.rootViewController as? CAPBridgeViewController,
+              let webView = bridgeVC.bridge?.webView else { return }
+        // .reload() only reliably has something to reload once a page has
+        // actually committed — after a FAILED provisional navigation (the
+        // exact case this is recovering from) there may be nothing for it to
+        // repeat. Issue a fresh .load() instead: webView.url still reflects
+        // the last-attempted address in that case; the hardcoded fallback
+        // matches capacitor.config.json's server.url for the rare case it's
+        // nil (e.g. the very first launch failed before anything loaded).
+        let target = webView.url ?? URL(string: "https://maxone.maxvoltenergy.com")
+        if let target = target {
+            webView.load(URLRequest(url: target))
+        }
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
