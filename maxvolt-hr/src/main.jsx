@@ -49,3 +49,25 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 if (import.meta.env.PROD) {
   window.addEventListener('load', () => { registerServiceWorker() })
 }
+
+// Native shell only (Capacitor). This app loads its UI over the network from
+// a remote server.url rather than bundling it locally, so the native launch
+// screen would otherwise disappear almost instantly (as soon as the WKWebView
+// is created) and hand off to a BLANK WHITE WebView for however long the
+// network fetch + first render takes — on a cold relaunch (e.g. iOS killing
+// a backgrounded app that was doing background location tracking, then
+// relaunching it later) with weak signal, that can be several seconds of
+// blank white instead of the branded splash. launchAutoHide:false in
+// capacitor.config.json keeps the native splash on screen until this code
+// explicitly hides it, once the page has actually loaded.
+if (window.Capacitor?.isNativePlatform?.()) {
+  const hideSplash = () => {
+    import('@capacitor/splash-screen')
+      .then(({ SplashScreen }) => SplashScreen.hide())
+      .catch(() => {});
+  };
+  window.addEventListener('load', () => requestAnimationFrame(hideSplash));
+  // Bounded fallback — if 'load' never fires (e.g. genuinely offline with no
+  // cached content), don't leave the user stuck on the splash forever.
+  setTimeout(hideSplash, 10000);
+}
