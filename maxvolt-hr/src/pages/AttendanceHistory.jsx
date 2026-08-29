@@ -15,6 +15,7 @@ import { Link } from 'react-router-dom';
 
 export default function AttendanceHistory() {
   const [user, setUser] = useState(null);
+  const [dateOfJoining, setDateOfJoining] = useState(null);
   const [attendanceData, setAttendanceData] = useState([]);
   const [holidays, setHolidays] = useState([]);
   const [selectedDay, setSelectedDay] = useState(null);
@@ -30,12 +31,14 @@ export default function AttendanceHistory() {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
 
-      const [records, holidayRecords] = await Promise.all([
+      const [records, holidayRecords, empRecords] = await Promise.all([
         base44.entities.Attendance.filter({ user_id: currentUser.id }, '-date', 500),
-        base44.entities.Holiday.list()
+        base44.entities.Holiday.list(),
+        base44.entities.Employee.filter({ user_id: currentUser.id }),
       ]);
       setAttendanceData(records);
       setHolidays(holidayRecords);
+      setDateOfJoining(empRecords?.[0]?.date_of_joining || null);
       setLoading(false);
     } catch (error) {
       console.error('Error loading attendance:', error);
@@ -73,8 +76,11 @@ export default function AttendanceHistory() {
         else if (att.status === 'leave') leave++;
         totalHours += att.working_hours || 0;
       } else {
-        // No record: if not sunday and not holiday, count as absent
-        if (!isSunday(day) && !isHoliday(day)) {
+        // No record: if not sunday, not holiday, and not before this
+        // employee's own joining date, count as absent.
+        const dayStr = format(day, 'yyyy-MM-dd');
+        const isPreJoining = dateOfJoining && dayStr < dateOfJoining;
+        if (!isSunday(day) && !isHoliday(day) && !isPreJoining) {
           absent++;
         }
       }
@@ -91,6 +97,8 @@ export default function AttendanceHistory() {
 
   const statusColors = {
     present: 'bg-green-100 text-green-800',
+    on_duty: 'bg-teal-100 text-teal-800',
+    work_from_home: 'bg-cyan-100 text-cyan-800',
     absent: 'bg-red-100 text-red-800',
     half_day: 'bg-yellow-100 text-yellow-800',
     leave: 'bg-blue-100 text-blue-800',
@@ -123,6 +131,7 @@ export default function AttendanceHistory() {
               currentMonth={currentMonth}
               onMonthChange={setCurrentMonth}
               onDayClick={handleDayClick}
+              dateOfJoining={dateOfJoining}
             />
           </CardContent>
         </Card>

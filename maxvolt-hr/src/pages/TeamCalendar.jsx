@@ -13,6 +13,8 @@ import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, isToday, i
 
 const STATUS_CONFIG = {
   present: { label: 'Present', color: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300', dot: 'bg-green-500' },
+  on_duty: { label: 'On Duty', color: 'bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300', dot: 'bg-teal-500' },
+  work_from_home: { label: 'WFH', color: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300', dot: 'bg-cyan-500' },
   absent: { label: 'Absent', color: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300', dot: 'bg-red-500' },
   leave: { label: 'On Leave', color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300', dot: 'bg-yellow-500' },
   half_day: { label: 'Half Day', color: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300', dot: 'bg-orange-500' },
@@ -96,11 +98,13 @@ export default function TeamCalendar() {
     // Leave
     if (leaveMap[dateStr]) return leaveMap[dateStr] === 'half_day' ? 'half_day' : 'leave';
 
-    // Attendance record
+    // Attendance record — on_duty and work_from_home stay their own status
+    // (STATUS_CONFIG has dedicated entries for both) rather than collapsing
+    // into 'present', so they're actually distinguishable on the calendar.
     const rec = attendance[dateStr];
     if (rec) {
       if (rec === 'half_day') return 'half_day';
-      if (rec === 'present' || rec === 'on_duty') return 'present';
+      if (rec === 'late' || rec === 'short_attendance') return 'present';
       return rec;
     }
 
@@ -118,7 +122,7 @@ export default function TeamCalendar() {
     let presentCount = 0, absentCount = 0, leaveCount = 0;
     filteredEmployees.forEach(emp => {
       const status = getStatusForDay(emp.user_id, today);
-      if (status === 'present' || status === 'half_day') presentCount++;
+      if (['present', 'half_day', 'on_duty', 'work_from_home'].includes(status)) presentCount++;
       else if (status === 'absent') absentCount++;
       else if (status === 'leave') leaveCount++;
     });

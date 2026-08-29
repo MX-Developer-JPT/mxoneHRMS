@@ -1,11 +1,13 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, Coffee } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, Coffee, Briefcase, Home } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter, addMonths, subMonths } from 'date-fns';
 
 const statusConfig = {
   present: { color: 'bg-green-100 text-green-800 border-green-200', icon: CheckCircle },
+  on_duty: { color: 'bg-teal-100 text-teal-800 border-teal-300', icon: Briefcase },
+  work_from_home: { color: 'bg-cyan-100 text-cyan-800 border-cyan-300', icon: Home },
   absent: { color: 'bg-red-100 text-red-800 border-red-200', icon: XCircle },
   half_day: { color: 'bg-yellow-100 text-yellow-800 border-yellow-200', icon: Clock },
   leave: { color: 'bg-blue-100 text-blue-800 border-blue-200', icon: Coffee },
@@ -14,7 +16,7 @@ const statusConfig = {
   present_leave: { color: 'bg-teal-100 text-teal-800 border-teal-300', icon: CheckCircle }
 };
 
-export default function AttendanceCalendar({ attendanceData, holidays = [], currentMonth, onMonthChange, onDayClick }) {
+export default function AttendanceCalendar({ attendanceData, holidays = [], currentMonth, onMonthChange, onDayClick, dateOfJoining }) {
 
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(currentMonth);
@@ -76,9 +78,12 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
             let status = attendance?.status || null;
             // Detect approved leave day: present status with leave notes
             const isApprovedLeaveDay = status === 'present' && attendance?.notes?.toLowerCase().includes('approved leave');
+            // A day before the employee's own joining date has no record for
+            // a real reason — they weren't employed yet — never guessed absent.
+            const isPreJoining = !status && dateOfJoining && format(day, 'yyyy-MM-dd') < dateOfJoining;
 
-            // Mark as absent if past, no record, not sunday, not holiday
-            if (!status && (isPast || isTodayDay) && !isWeekend && !isHol) {
+            // Mark as absent if past, no record, not sunday, not holiday, not pre-joining
+            if (!status && (isPast || isTodayDay) && !isWeekend && !isHol && !isPreJoining) {
               status = 'absent';
             } else if (!status && isWeekend) {
               status = 'week_off';

@@ -53,7 +53,7 @@ function fmtDate(y, m, d) {
   return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
 }
 
-function AttendanceCalendar({ userId }) {
+function AttendanceCalendar({ userId, dateOfJoining }) {
   const now = new Date();
   const [calYear, setCalYear] = useState(now.getFullYear());
   const [calMonth, setCalMonth] = useState(now.getMonth() + 1);
@@ -90,12 +90,17 @@ function AttendanceCalendar({ userId }) {
   const firstDow = new Date(calYear, calMonth - 1, 1).getDay(); // 0=Sun
   const monthName = new Date(calYear, calMonth - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
-  // Tally summary
+  // Tally summary — a day that hasn't happened yet, or that falls before
+  // this employee's own joining date, must never be counted as Absent just
+  // because there's no Attendance row for it (there never will be).
+  const todayStr = fmtDate(now.getFullYear(), now.getMonth() + 1, now.getDate());
   let present = 0, absent = 0, halfDay = 0, lop = 0, leave = 0, other = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     const ds = fmtDate(calYear, calMonth, d);
     const dow = new Date(calYear, calMonth - 1, d).getDay();
     if (dow === 0) continue;
+    if (ds > todayStr) continue;
+    if (dateOfJoining && ds < dateOfJoining) continue;
     const r = records[ds];
     if (!r) { absent++; continue; }
     const s = r.status;
@@ -365,7 +370,7 @@ export default function EmployeeDetailDialog({ employee, onClose }) {
 
           {/* ── Attendance tab ── */}
           <TabsContent value="attendance" className="mt-3">
-            <AttendanceCalendar userId={emp.user_id} />
+            <AttendanceCalendar userId={emp.user_id} dateOfJoining={emp.date_of_joining} />
           </TabsContent>
         </Tabs>
       </DialogContent>
