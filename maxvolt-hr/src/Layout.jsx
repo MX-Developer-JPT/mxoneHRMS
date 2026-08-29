@@ -112,6 +112,14 @@ const managementMenuGroups = [
     { name: 'Talent Grid (9-Box)',      icon: Grid3x3,         page: 'TalentGrid' },
     { name: 'Skill Grid',               icon: LayoutGrid,      page: 'SkillGrid' },
   ]},
+  // "My Team"/"Team Attendance" above are scoped to the management viewer's
+  // own downstream hierarchy (direct + indirect reports) — these two are the
+  // same pages with ?scope=org, giving an explicit, separately-labeled
+  // org-wide view alongside the team-scoped default.
+  { label: 'Organisation', items: [
+    { name: 'All Employees',            icon: Users,           page: 'Employees?scope=org' },
+    { name: 'All Attendance',           icon: BarChart3,       page: 'AllAttendance?scope=org' },
+  ]},
   { label: 'AI Insights', items: [
     { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
     { name: 'AskMax AI',                icon: Sparkles,        page: 'AskMax' },

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { base44 } from '@/api/base44Client';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -70,7 +70,14 @@ const EMP_STATUS_CAL_COLORS = {
 
 export default function AllAttendance() {
   const navigate = useNavigate();
+  // ?scope=org opts a manager/management viewer OUT of their own team scope
+  // and into the unrestricted org-wide attendance view — powers the
+  // separate "All Attendance" nav entry (Layout.jsx) alongside the default
+  // team-scoped "Team Attendance" one, both pointing at this same page.
+  const [searchParams] = useSearchParams();
+  const forceOrgScope = searchParams.get('scope') === 'org';
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [isTeamScoped, setIsTeamScoped] = useState(false); // drives the page title only — actual filtering happens in loadData
   const [attendanceMap, setAttendanceMap] = useState({});
   const [employees, setEmployees] = useState([]);
   const [departments, setDepartments] = useState([]);
@@ -163,6 +170,7 @@ export default function AllAttendance() {
 
       const currentUser = await base44.auth.me();
       const userRole = currentUser.custom_role || currentUser.role;
+      setIsTeamScoped(['manager', 'management'].includes(userRole) && !forceOrgScope);
 
       const [empRecords, usersResp, attendanceResp, deptRecords] = await Promise.all([
         // 5000, not the 500 several other pages use — this is the org-wide
@@ -180,17 +188,20 @@ export default function AllAttendance() {
       const dayRecords = attendanceResp.data?.records || [];
       let emps = empRecords.map(e => ({ ...e, _user: users.find(u => u.id === e.user_id) }));
 
-      if (userRole === 'manager') {
-        // Visibility is hierarchical (direct + indirect reports), not just
-        // direct reports — a manager can see their whole downstream team's
-        // attendance. This page has no approve/reject action, so there's no
-        // approval-authority concern here; that's enforced independently on
-        // the actual approval pages (Leave/Regularisation/Reimbursement/
-        // GatePass) and again server-side regardless of what this shows.
+      // Both 'manager' and 'management' default to their own team here —
+      // "Team Attendance" means their WHOLE downstream hierarchy (direct +
+      // indirect reports), not just direct reports or the entire org. Only
+      // HR/admin, and a manager/management viewer on the separate org-wide
+      // "All Attendance" nav entry (?scope=org), see everyone unfiltered.
+      // This page has no approve/reject action, so there's no
+      // approval-authority concern here; that's enforced independently on
+      // the actual approval pages (Leave/Regularisation/Reimbursement/
+      // GatePass) and again server-side regardless of what this shows.
+      if (['manager', 'management'].includes(userRole) && !forceOrgScope) {
         const { directIds, downstreamIds } = resolveHierarchy(currentUser.id, empRecords);
         emps = emps.map(e => ({ ...e, _isDirectReport: directIds.has(e.user_id) })).filter(e => downstreamIds.has(e.user_id));
       }
-      // hr, admin, management see all employees — no filtering
+      // hr, admin see all employees always; management/manager see all only with ?scope=org
 
       const map = {};
       dayRecords.forEach(r => { map[r.user_id] = r; });
@@ -445,8 +456,10 @@ export default function AllAttendance() {
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">All Attendance</h1>
-            <p className="text-sm text-gray-500 mt-0.5">Biometric + Selfie attendance for all active employees</p>
+            <h1 className="text-2xl font-bold text-gray-900">{isTeamScoped ? 'Team Attendance' : 'All Attendance'}</h1>
+            <p className="text-sm text-gray-500 mt-0.5">
+              {isTeamScoped ? "Biometric + Selfie attendance for your team (direct and indirect reports)" : 'Biometric + Selfie attendance for all active employees'}
+            </p>
           </div>
           {/* flex-wrap so every action (Analytics, Mark Absent, Muster, Report)
               stays reachable on narrow phones instead of overflowing off-screen */}

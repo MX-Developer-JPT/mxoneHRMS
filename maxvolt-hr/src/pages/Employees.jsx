@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -17,6 +18,12 @@ const DIRECT_GROUP = 'Direct Reports — you approve their requests';
 const INDIRECT_GROUP = 'Indirect Reports — visibility only, approved by their own manager';
 
 export default function Employees() {
+  // ?scope=org opts a manager/management viewer OUT of their own team scope
+  // and into the unrestricted org-wide directory — powers the separate
+  // "All Employees" nav entry (Layout.jsx) alongside the default team-scoped
+  // "My Team" one, both pointing at this same page.
+  const [searchParams] = useSearchParams();
+  const forceOrgScope = searchParams.get('scope') === 'org';
   const [employees, setEmployees] = useState([]);
   const [filteredEmployees, setFilteredEmployees] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -58,26 +65,29 @@ export default function Employees() {
       let updatedEmpRecords = await base44.entities.Employee.list('-created_date', 5000);
 
       const userRole = currentUser.custom_role || currentUser.role;
-      // Only 'manager' (scoped middle management) is restricted here —
-      // 'management' (top-level: director/CEO/MD) sees the full org, same
-      // as HR/admin. A manager sees their WHOLE downstream hierarchy
-      // (direct + indirect reports), not just direct reports — visibility
-      // and approval authority are different things; direct/indirect is
-      // tagged per-employee below and drives the Direct/Indirect grouping,
-      // never who can approve what (that's enforced independently on each
-      // approval page, and again server-side regardless of what this page
-      // shows).
+      // Both 'manager' (scoped middle management) and 'management' (top-level:
+      // director/CEO/MD) see their own team by default here — "My Team" means
+      // their WHOLE downstream hierarchy (direct + indirect reports,
+      // recursively), not just direct reports or the entire org. Only HR/admin
+      // (and a manager/management viewer who explicitly navigated to the
+      // separate "All Employees" nav entry, ?scope=org) see the unrestricted
+      // org-wide directory. Visibility and approval authority are different
+      // things; direct/indirect is tagged per-employee below and drives the
+      // Direct/Indirect grouping, never who can approve what (that's enforced
+      // independently on each approval page, and again server-side regardless
+      // of what this page shows).
+      const isTeamScoped = ['manager', 'management'].includes(userRole) && !forceOrgScope;
       let directIds = new Set(), downstreamIds = new Set();
-      if (userRole === 'manager') {
+      if (isTeamScoped) {
         ({ directIds, downstreamIds } = resolveHierarchy(currentUser.id, updatedEmpRecords));
         updatedEmpRecords = updatedEmpRecords.filter(e => downstreamIds.has(e.user_id));
       }
 
-      // Name lookup for "Reports to" — lets HR/admin/management (who see the
-      // full org in a flat/department view, not the manager-only Direct/
-      // Indirect grouping) still immediately see who each employee is
-      // assigned under, e.g. an employee reporting to a manager who
-      // themself reports up through the chain to whoever's viewing.
+      // Name lookup for "Reports to" — lets a viewer seeing a flat/department
+      // view (HR/admin, or a manager/management viewer on the org-wide "All
+      // Employees" page) still immediately see who each employee is assigned
+      // under, e.g. an employee reporting to a manager who themself reports
+      // up through the chain to whoever's viewing.
       const nameByUserId = {};
       users.forEach(u => { nameByUserId[u.id] = u.display_name || u.full_name; });
 
@@ -88,7 +98,7 @@ export default function Employees() {
           return {
             ...emp,
             user: user ? { ...user, display_name: user.display_name || user.full_name } : user,
-            _isDirectReport: userRole === 'manager' ? directIds.has(emp.user_id) : undefined,
+            _isDirectReport: isTeamScoped ? directIds.has(emp.user_id) : undefined,
             _managerName: emp.reporting_manager_id ? (nameByUserId[emp.reporting_manager_id] || null) : null,
           };
         })
@@ -188,12 +198,13 @@ export default function Employees() {
     setExporting(false);
   };
 
-  // A manager's "My Team" is grouped by Direct vs Indirect report instead of
-  // department — the distinction the whole hierarchical-visibility model
-  // hinges on (requirement: direct reports are who this manager can
-  // approve for; indirect reports are visible but approved by someone
-  // else). Everyone else (HR/admin/management) keeps the department view.
-  const isManagerView = currentUser && (currentUser.custom_role || currentUser.role) === 'manager';
+  // A team-scoped viewer's "My Team" is grouped by Direct vs Indirect report
+  // instead of department — the distinction the whole hierarchical-
+  // visibility model hinges on (requirement: direct reports are who this
+  // person can approve for; indirect reports are visible but approved by
+  // someone else). HR/admin, and a manager/management viewer on the
+  // separate org-wide "All Employees" page, keep the department view.
+  const isManagerView = currentUser && ['manager', 'management'].includes(currentUser.custom_role || currentUser.role) && !forceOrgScope;
   const departmentGroups = filteredEmployees.reduce((groups, emp) => {
     const dept = isManagerView
       ? (emp._isDirectReport ? DIRECT_GROUP : INDIRECT_GROUP)
@@ -212,8 +223,10 @@ export default function Employees() {
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h1 className="text-3xl font-bold">Employee Directory</h1>
-            <p className="text-gray-600 mt-1">Manage and view employee information</p>
+            <h1 className="text-3xl font-bold">{isManagerView ? 'My Team' : 'Employee Directory'}</h1>
+            <p className="text-gray-600 mt-1">
+              {isManagerView ? 'Everyone in your reporting chain, direct and indirect' : 'Manage and view employee information'}
+            </p>
           </div>
           {((currentUser?.custom_role || currentUser?.role) === 'admin' || (currentUser?.custom_role || currentUser?.role) === 'hr') && (
             <Button onClick={handleExportAll} disabled={exporting} variant="outline" className="gap-2">
