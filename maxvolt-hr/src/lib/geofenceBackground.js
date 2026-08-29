@@ -19,6 +19,9 @@ let watcherId = null;
 let fences = []; // ALL active configured locations — attendance triggers at any of them, not just the employee's assigned one
 let currentFenceId = null; // which fence we're currently checked into, if any
 let lastKnownInProgress = null; // null = unknown yet; avoids resending 'enter' every location tick once we know we're in
+let refreshIntervalId = null;
+let lastLocation = null; // { location, platformTag } from the most recent native fix — replayed against freshly-refreshed fence data below
+let refreshInFlight = false;
 
 const distMetres = (lat1, lng1, lat2, lng2) => {
   const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
@@ -143,7 +146,10 @@ export async function startBackgroundGeofence() {
           console.warn('[geofenceBackground] watcher error:', error.code, error.message);
           return;
         }
-        if (location) handleLocation(location, platformTag).catch(() => {});
+        if (location) {
+          lastLocation = { location, platformTag };
+          handleLocation(location, platformTag).catch(() => {});
+        }
       }
     );
 
@@ -159,6 +165,17 @@ export async function startBackgroundGeofence() {
         apiBase: window.location.origin,
       }).catch(() => {});
     }
+
+    // `fences` was only ever fetched once, at watcher-start — an HR/admin
+    // edit to a location's coordinates (Location Master) while this watcher
+    // was already running would never be picked up until the employee
+    // restarted tracking (toggle off/on, or relaunch), even though they
+    // hadn't moved anywhere. Periodically re-fetch and, since a config edit
+    // alone doesn't generate a new native location fix (the device hasn't
+    // moved), re-evaluate the last known position against the refreshed
+    // fences immediately rather than waiting for the next real GPS update.
+    if (refreshIntervalId) clearInterval(refreshIntervalId);
+    refreshIntervalId = setInterval(() => { refreshFences(platformTag).catch(() => {}); }, 2 * 60 * 1000);
 
     return { started: true, fences };
   } catch (e) {
@@ -186,6 +203,9 @@ export async function stopBackgroundGeofence() {
     } catch { /* best-effort */ }
   }
 
+  if (refreshIntervalId) { clearInterval(refreshIntervalId); refreshIntervalId = null; }
+  lastLocation = null;
+
   if (!watcherId) return;
   try {
     const { registerPlugin } = await import('@capacitor/core');
@@ -196,6 +216,28 @@ export async function stopBackgroundGeofence() {
   fences = [];
   currentFenceId = null;
   lastKnownInProgress = null;
+}
+
+// Re-fetches configured fences and, if they actually changed, re-evaluates
+// the most recent known location against them right away — this is what
+// lets an HR/admin coordinate edit in Location Master take effect for an
+// employee already mid-session, without them needing to physically move (the
+// thing that would otherwise be needed to generate a fresh native location
+// fix) or restart tracking.
+async function refreshFences(platformTag) {
+  if (refreshInFlight || !watcherId) return;
+  refreshInFlight = true;
+  try {
+    const fenceRes = await base44.functions.invoke('getMyGeofence', {});
+    const d = fenceRes.data || fenceRes;
+    if (!d?.success || !d.geofence_eligible || !Array.isArray(d.all_fences) || !d.all_fences.length) return;
+    const changed = JSON.stringify(d.all_fences) !== JSON.stringify(fences);
+    fences = d.all_fences;
+    if (changed && lastLocation) {
+      await handleLocation(lastLocation.location, lastLocation.platformTag ?? platformTag);
+    }
+  } catch { /* next refresh tick will retry */ }
+  finally { refreshInFlight = false; }
 }
 
 // Nearest configured location the current position falls inside, if any —
