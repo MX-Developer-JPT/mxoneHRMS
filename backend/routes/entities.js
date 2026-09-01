@@ -146,6 +146,22 @@ const APPROVAL_SCOPED_TYPES = new Set(['GatePass', 'Reimbursement', 'AttendanceR
 // these two statuses, so any authenticated user (any role) could PATCH any
 // employee's gate pass to "departed"/"returned" directly.
 const GATE_LOG_TRANSITIONS = new Set(['departed', 'returned']);
+// Except for GatePass, every one of these approval-scoped types must clear
+// the reporting manager's own approval before HR/management can act — only
+// admin retains a blanket override. An employee with no reporting manager
+// configured at all is the one exception (there'd otherwise be no one who
+// could ever clear that first step for them).
+async function hasManagerCleared(type, current) {
+  if (!current.user_id) return true; // no owner to resolve a manager for — nothing to gate on
+  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [current.user_id]);
+  const emp = empRow ? JSON.parse(empRow.data) : null;
+  if (!emp?.reporting_manager_id) return true;
+  if (type === 'Leave') return (current.current_approval_level || 1) > 1 || current.status === 'approved';
+  if (type === 'AttendanceRegularisation') return current.status === 'manager_approved';
+  if (type === 'Reimbursement') return !!current.manager_approved_by;
+  return true;
+}
+
 async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   if (!APPROVAL_SCOPED_TYPES.has(type)) return true;
   if (!newStatus || newStatus === current.status) return true;
@@ -166,7 +182,13 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
     return false;
   }
 
-  if (['hr', 'admin', 'management'].includes(role)) return true;
+  if (['hr', 'admin', 'management'].includes(role)) {
+    if (role !== 'admin' && type !== 'GatePass' && !(await hasManagerCleared(type, current))) {
+      res.status(403).json({ error: 'This request requires reporting manager approval first.' });
+      return false;
+    }
+    return true;
+  }
 
   if (role === 'manager') {
     const targetUserId = current.user_id;

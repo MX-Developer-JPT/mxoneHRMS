@@ -28,7 +28,7 @@ const typeDotsColors = {
   optional: 'bg-orange-500'
 };
 
-function MonthCalendar({ year, month, holidays, workingDayOverrides, onDayClick, onToggleWorkingDay }) {
+function MonthCalendar({ year, month, holidays, workingDayOverrides, onDayClick, onToggleWorkingDay, canManage }) {
   const firstDay = new Date(year, month, 1);
   const lastDay = new Date(year, month + 1, 0);
   const days = eachDayOfInterval({ start: firstDay, end: lastDay });
@@ -67,11 +67,11 @@ function MonthCalendar({ year, month, holidays, workingDayOverrides, onDayClick,
                 onClick={() => {
                   if (dayHolidays.length > 0) {
                     onDayClick(dayHolidays);
-                  } else if (isWeekend) {
+                  } else if (isWeekend && canManage) {
                     onToggleWorkingDay(dateKey, !isWorkingOverride);
                   }
                 }}
-                title={isWeekend ? (isWorkingOverride ? 'Working day (click to set as off)' : 'Off day (click to set as working)') : ''}
+                title={dayHolidays.length > 0 ? '' : isWeekend && canManage ? (isWorkingOverride ? 'Working day (click to set as off)' : 'Off day (click to set as working)') : ''}
               >
                 <span className={`font-medium ${dayHolidays.length > 0 ? 'text-blue-700' : isWeekend && isWorkingOverride ? 'text-green-700' : ''}`}>
                   {day.getDate()}
@@ -95,6 +95,7 @@ function MonthCalendar({ year, month, holidays, workingDayOverrides, onDayClick,
 const LOCATIONS = ['Ghaziabad', 'Delhi', 'All'];
 
 export default function HolidayCalendar() {
+  const [canManage, setCanManage] = useState(false); // HR/admin only — everyone else gets a view-only calendar
   const [holidays, setHolidays] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [editingHoliday, setEditingHoliday] = useState(null);
@@ -128,10 +129,12 @@ export default function HolidayCalendar() {
 
   const loadData = async () => {
     try {
-      const [holidayData, deptData] = await Promise.all([
+      const [currentUser, holidayData, deptData] = await Promise.all([
+        base44.auth.me(),
         base44.entities.Holiday.filter({ year: selectedYear }, 'date'),
         base44.entities.Department.list(),
       ]);
+      setCanManage(['hr', 'admin'].includes(currentUser.custom_role || currentUser.role));
       setHolidays(holidayData);
       setAllDepartments(deptData);
       setLoading(false);
@@ -140,6 +143,11 @@ export default function HolidayCalendar() {
       setLoading(false);
     }
   };
+
+  // Next several holidays from today onward — the quick "what's coming up"
+  // view-only users asked for, shown above the full year grid/list.
+  const todayStr = format(new Date(), 'yyyy-MM-dd');
+  const upcomingHolidays = holidays.filter(h => h.date >= todayStr).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 6);
 
   const handleToggleWorkingDay = (dateKey, makeWorking) => {
     const updated = { ...workingDayOverrides };
@@ -261,7 +269,7 @@ export default function HolidayCalendar() {
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold">Holiday Calendar</h1>
-            <p className="text-gray-600 mt-1 text-sm md:text-base">Manage company holidays and events</p>
+            <p className="text-gray-600 mt-1 text-sm md:text-base">{canManage ? 'Manage company holidays and events' : 'Upcoming company holidays — view only'}</p>
           </div>
           <div className="flex gap-2 w-full sm:w-auto flex-wrap">
             <Select value={selectedYear.toString()} onValueChange={(v) => setSelectedYear(parseInt(v))}>
@@ -274,9 +282,11 @@ export default function HolidayCalendar() {
                 ))}
               </SelectContent>
             </Select>
-            <Button variant="outline" size="sm" onClick={() => setShowSaturdayPanel(p => !p)}>
-              <ToggleLeft className="w-4 h-4 mr-1" /> Saturday Settings
-            </Button>
+            {canManage && (
+              <Button variant="outline" size="sm" onClick={() => setShowSaturdayPanel(p => !p)}>
+                <ToggleLeft className="w-4 h-4 mr-1" /> Saturday Settings
+              </Button>
+            )}
             <div className="flex border rounded-md overflow-hidden">
               <Button
                 variant={viewMode === 'calendar' ? 'default' : 'ghost'}
@@ -295,7 +305,7 @@ export default function HolidayCalendar() {
                 <List className="w-4 h-4" />
               </Button>
             </div>
-            <Dialog open={showForm} onOpenChange={(open) => {
+            {canManage && <Dialog open={showForm} onOpenChange={(open) => {
               setShowForm(open);
               if (!open) {
                 setEditingHoliday(null);
@@ -408,12 +418,12 @@ export default function HolidayCalendar() {
                   </div>
                 </form>
               </DialogContent>
-            </Dialog>
+            </Dialog>}
           </div>
         </div>
 
         {/* Saturday Settings Panel */}
-        {showSaturdayPanel && (
+        {canManage && showSaturdayPanel && (
           <Card className="border-amber-200 bg-amber-50">
             <CardContent className="p-4">
               <div className="flex flex-wrap items-center gap-3">
@@ -467,13 +477,35 @@ export default function HolidayCalendar() {
           </Card>
         </div>
 
+        {/* Upcoming Holidays — the quick "what's coming up" summary */}
+        {upcomingHolidays.length > 0 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Upcoming Holidays</CardTitle>
+            </CardHeader>
+            <CardContent className="p-3 pt-0">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {upcomingHolidays.map(h => (
+                  <div key={h.id} className="flex items-center gap-2 p-2 rounded-lg border bg-gray-50">
+                    <div className={`w-2 h-2 rounded-full shrink-0 ${typeDotsColors[h.type]}`} />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{h.name}</p>
+                      <p className="text-xs text-gray-500">{safeDate(h.date, 'EEE, MMM d, yyyy')}{h.is_half_day ? ' · Half Day' : ''}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Legend */}
         {viewMode === 'calendar' && (
           <div className="flex gap-4 flex-wrap items-center">
             <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-blue-500" /><span className="text-xs text-gray-600">Public Holiday</span></div>
             <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-green-500" /><span className="text-xs text-gray-600">Company Holiday / Working Weekend</span></div>
             <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-orange-500" /><span className="text-xs text-gray-600">Optional</span></div>
-            <span className="text-xs text-gray-400">· Click on any Sat/Sun to toggle it as a working day</span>
+            {canManage && <span className="text-xs text-gray-400">· Click on any Sat/Sun to toggle it as a working day</span>}
           </div>
         )}
 
@@ -489,6 +521,7 @@ export default function HolidayCalendar() {
                 workingDayOverrides={workingDayOverrides}
                 onDayClick={setSelectedDayHolidays}
                 onToggleWorkingDay={handleToggleWorkingDay}
+                canManage={canManage}
               />
             ))}
           </div>

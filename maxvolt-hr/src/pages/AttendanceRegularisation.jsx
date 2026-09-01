@@ -11,8 +11,10 @@ import { Badge } from "@/components/ui/badge";
 import { Plus, Clock, FileText, AlertCircle, CheckCircle2, XCircle, RotateCcw, Upload, Edit, Calendar } from 'lucide-react';
 import MultiDateCalendarPicker from '@/components/attendance/MultiDateCalendarPicker';
 import { toast } from 'sonner';
-import { format } from 'date-fns';
+import { format, isSameMonth } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import MonthRequestFilter from '@/components/requests/MonthRequestFilter';
+import RequestMiniCalendar from '@/components/requests/RequestMiniCalendar';
 
 const REASON_OPTIONS = [
   { value: 'missed_punch', label: 'Missed Punch' },
@@ -24,12 +26,12 @@ const REASON_OPTIONS = [
 ];
 
 const statusConfig = {
-  pending: { color: 'bg-yellow-100 text-yellow-800', icon: Clock, label: 'Pending' },
-  manager_approved: { color: 'bg-blue-100 text-blue-800', icon: CheckCircle2, label: 'Manager Approved' },
-  hr_approved: { color: 'bg-indigo-100 text-indigo-800', icon: CheckCircle2, label: 'HR Approved' },
-  completed: { color: 'bg-green-100 text-green-800', icon: CheckCircle2, label: 'Completed' },
-  rejected: { color: 'bg-red-100 text-red-800', icon: XCircle, label: 'Rejected' },
-  sent_back: { color: 'bg-orange-100 text-orange-800', icon: RotateCcw, label: 'Sent Back' }
+  pending: { color: 'bg-yellow-100 text-yellow-800', dot: 'bg-yellow-500', icon: Clock, label: 'Pending' },
+  manager_approved: { color: 'bg-blue-100 text-blue-800', dot: 'bg-blue-500', icon: CheckCircle2, label: 'Manager Approved' },
+  hr_approved: { color: 'bg-indigo-100 text-indigo-800', dot: 'bg-indigo-500', icon: CheckCircle2, label: 'HR Approved' },
+  completed: { color: 'bg-green-100 text-green-800', dot: 'bg-green-500', icon: CheckCircle2, label: 'Completed' },
+  rejected: { color: 'bg-red-100 text-red-800', dot: 'bg-red-500', icon: XCircle, label: 'Rejected' },
+  sent_back: { color: 'bg-orange-100 text-orange-800', dot: 'bg-orange-500', icon: RotateCcw, label: 'Sent Back' }
 };
 
 // Manager decision, distinct from the request's overall status — the
@@ -66,6 +68,9 @@ export default function AttendanceRegularisation() {
   const [saving, setSaving] = useState(false);
   const [bulkDates, setBulkDates] = useState([]);
   const [bulkMode, setBulkMode] = useState(false);
+  const [historyMonth, setHistoryMonth] = useState(new Date());
+  const [historyView, setHistoryView] = useState('list');
+  const [calDayReqs, setCalDayReqs] = useState(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -279,12 +284,33 @@ export default function AttendanceRegularisation() {
           ))}
         </div>
 
-        {/* Requests List */}
+        {/* Requests List — current month by default */}
         <Card>
-          <CardHeader><CardTitle>My Requests</CardTitle></CardHeader>
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <CardTitle>My Requests</CardTitle>
+            <MonthRequestFilter monthDate={historyMonth} onMonthChange={setHistoryMonth} viewMode={historyView} onViewModeChange={setHistoryView} />
+          </CardHeader>
           <CardContent>
+            {(() => {
+              const monthReqs = requests.filter(r => r.attendance_date && isSameMonth(new Date(r.attendance_date), historyMonth));
+              if (historyView === 'calendar') {
+                return (
+                  <>
+                    <RequestMiniCalendar
+                      monthDate={historyMonth}
+                      items={monthReqs}
+                      getDate={r => r.attendance_date}
+                      getColor={r => (statusConfig[r.status] || statusConfig.pending).dot}
+                      onDayClick={setCalDayReqs}
+                    />
+                    {monthReqs.length === 0 && <p className="text-center text-gray-400 py-6">No requests in {historyMonth.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}</p>}
+                  </>
+                );
+              }
+              return (
             <div className="space-y-3">
-              {requests.map(req => {
+              {monthReqs.length === 0 && <p className="text-center text-gray-400 py-6">No requests in {historyMonth.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}</p>}
+              {monthReqs.map(req => {
                 const cfg = statusConfig[req.status] || statusConfig.pending;
                 const StatusIcon = cfg.icon;
                 return (
@@ -331,16 +357,32 @@ export default function AttendanceRegularisation() {
                   </div>
                 );
               })}
-              {requests.length === 0 && (
-                <div className="text-center py-12">
-                  <FileText className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                  <p className="text-gray-500">No regularisation requests yet</p>
-                  <p className="text-sm text-gray-400">Click "New Request" to raise one</p>
-                </div>
-              )}
             </div>
+              );
+            })()}
           </CardContent>
         </Card>
+
+        {/* Calendar day detail dialog */}
+        <Dialog open={!!calDayReqs} onOpenChange={() => setCalDayReqs(null)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader><DialogTitle>Request{calDayReqs?.length > 1 ? 's' : ''} on {calDayReqs?.[0] && safeDate(calDayReqs[0].attendance_date, 'MMMM d, yyyy')}</DialogTitle></DialogHeader>
+            <div className="space-y-2">
+              {calDayReqs?.map(req => {
+                const cfg = statusConfig[req.status] || statusConfig.pending;
+                return (
+                  <div key={req.id} className="border rounded-lg p-3">
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-sm">{REASON_OPTIONS.find(r => r.value === req.reason_category)?.label || req.reason_category}</p>
+                      <Badge className={cfg.color}>{cfg.label}</Badge>
+                    </div>
+                    {req.reason && <p className="text-xs text-gray-500 mt-1">{req.reason}</p>}
+                  </div>
+                );
+              })}
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Form Dialog */}
         <Dialog open={showForm} onOpenChange={open => { if (!open) closeForm(); }}>

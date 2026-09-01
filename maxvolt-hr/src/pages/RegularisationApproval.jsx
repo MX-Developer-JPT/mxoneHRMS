@@ -290,9 +290,15 @@ export default function RegularisationApproval() {
                 // manager — an indirect report (visible via the downstream
                 // hierarchy filter above) never gets bulk actions either.
                 const empIsDirectReport = isHR || isDirectReport(uid, user?.id, employees);
+                // HR/management may only act once the reporting manager has
+                // approved — mirrors the same rule now enforced server-side
+                // in processRegularisation — unless this employee has no
+                // reporting manager configured at all, the one fallback that
+                // still lets HR act directly so the request never gets stuck.
+                const empHasManager = !!employees.find(e => e.user_id === uid)?.reporting_manager_id;
                 const actionableIds = empReqs
                   .filter(r => isHR
-                    ? (r.status === 'pending' || r.status === 'manager_approved')
+                    ? (r.status === 'manager_approved' || (r.status === 'pending' && !empHasManager))
                     : (empIsDirectReport && (r.status === 'pending' || r.status === 'sent_back')))
                   .map(r => r.id);
                 return (
@@ -331,8 +337,9 @@ export default function RegularisationApproval() {
                       {empReqs.map(req => {
                         const cfg = statusConfig[req.status] || statusConfig.pending;
                         const canManagerAct = !isHR && empIsDirectReport && (req.status === 'pending' || req.status === 'sent_back');
-                        const canHRAct = isHR && (req.status === 'manager_approved' || req.status === 'pending');
+                        const canHRAct = isHR && (req.status === 'manager_approved' || (req.status === 'pending' && !empHasManager));
                         const canAct = canManagerAct || canHRAct;
+                        const awaitingManager = isHR && !canHRAct && req.status === 'pending';
                         const isSelected = bulkSelected.includes(req.id);
                         return (
                           <div key={req.id} className={`p-4 transition-colors ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
@@ -358,6 +365,7 @@ export default function RegularisationApproval() {
                               </div>
                               <div className="flex items-center gap-2 flex-wrap">
                                 <Badge className={cfg.color}>{cfg.label}</Badge>
+                                {awaitingManager && <Badge className="bg-gray-100 text-gray-600">Awaiting Manager Approval</Badge>}
                                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setSelectedRequest(req)}>
                                   <Eye className="w-3 h-3 mr-1" /> Details
                                 </Button>

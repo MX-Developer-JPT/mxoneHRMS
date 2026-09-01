@@ -11,8 +11,10 @@ import { Plus, Receipt, DollarSign } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
-import { format } from 'date-fns';
+import { format, isSameMonth } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import MonthRequestFilter from '@/components/requests/MonthRequestFilter';
+import RequestMiniCalendar from '@/components/requests/RequestMiniCalendar';
 
 export default function Reimbursements() {
   const [user, setUser] = useState(null);
@@ -29,6 +31,9 @@ export default function Reimbursements() {
     description: ''
   });
   const [receiptFile, setReceiptFile] = useState(null);
+  const [historyMonth, setHistoryMonth] = useState(new Date());
+  const [historyView, setHistoryView] = useState('list');
+  const [calDayClaims, setCalDayClaims] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -243,13 +248,31 @@ export default function Reimbursements() {
         </div>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <CardTitle>Claims History</CardTitle>
+            <MonthRequestFilter monthDate={historyMonth} onMonthChange={setHistoryMonth} viewMode={historyView} onViewModeChange={setHistoryView} />
           </CardHeader>
           <CardContent>
+            {(() => {
+              const monthClaims = reimbursements.filter(c => c.expense_date && isSameMonth(new Date(c.expense_date), historyMonth));
+              if (historyView === 'calendar') {
+                return (
+                  <>
+                    <RequestMiniCalendar
+                      monthDate={historyMonth}
+                      items={monthClaims}
+                      getDate={c => c.expense_date}
+                      getColor={c => c.status === 'approved' || c.status === 'paid' ? 'bg-green-500' : c.status === 'rejected' ? 'bg-red-500' : c.status === 'manager_approved' ? 'bg-blue-500' : 'bg-yellow-500'}
+                      onDayClick={setCalDayClaims}
+                    />
+                    {monthClaims.length === 0 && <p className="text-center text-gray-500 py-6">No expense claims in {historyMonth.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}</p>}
+                  </>
+                );
+              }
+              return (
             <div className="space-y-3">
-              {reimbursements.length > 0 ? (
-                reimbursements.map(claim => (
+              {monthClaims.length > 0 ? (
+                monthClaims.map(claim => (
                   <div key={claim.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
                     <div className="flex flex-wrap justify-between items-start gap-4">
                       <div className="flex-1 min-w-0">
@@ -295,12 +318,33 @@ export default function Reimbursements() {
                   </div>
                 ))
               ) : (
-                <p className="text-center text-gray-500 py-8">No expense claims yet</p>
+                <p className="text-center text-gray-500 py-8">No expense claims in {historyMonth.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}</p>
               )}
             </div>
+              );
+            })()}
           </CardContent>
         </Card>
       </div>
+
+      {/* Calendar day detail dialog */}
+      <Dialog open={!!calDayClaims} onOpenChange={() => setCalDayClaims(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Claims on {calDayClaims?.[0] && safeDate(calDayClaims[0].expense_date, 'MMMM d, yyyy')}</DialogTitle></DialogHeader>
+          <div className="space-y-2">
+            {calDayClaims?.map(claim => (
+              <div key={claim.id} className="border rounded-lg p-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="font-medium text-sm capitalize">{(claim.expense_type || '').replace('_', ' ')}</p>
+                  <Badge className={statusColors[claim.status]}>{claim.status.toUpperCase()}</Badge>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">₹{(claim.amount || 0).toLocaleString()} — {claim.description}</p>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <DocViewerModal
         open={!!viewerDoc}
         url={viewerDoc?.url}

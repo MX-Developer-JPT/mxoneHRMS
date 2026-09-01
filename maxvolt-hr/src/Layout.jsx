@@ -53,6 +53,7 @@ const employeeMenuGroups = [
   { label: 'Leave', items: [
     { name: 'Apply Leave',     icon: FileText,        page: 'Leave' },
     { name: 'Comp-Off',        icon: CalendarPlus,    page: 'CompOff' },
+    { name: 'Holiday Calendar', icon: Calendar,       page: 'HolidayCalendar' },
   ]},
   { label: 'Payroll', items: [
     { name: 'My Payslips',     icon: CreditCard,      page: 'Payslips' },
@@ -139,6 +140,7 @@ const managementMenuGroups = [
   ]},
   { label: 'My Work', items: [
     { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
+    { name: 'Holiday Calendar',         icon: Calendar,        page: 'HolidayCalendar' },
     { name: 'My Payslips',              icon: CreditCard,      page: 'Payslips' },
     { name: 'My Documents',             icon: FolderOpen,      page: 'Documents' },
     { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
@@ -203,6 +205,7 @@ const managerMenuGroups = [
   ]},
   { label: 'My Work', items: [
     { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
+    { name: 'Holiday Calendar',         icon: Calendar,        page: 'HolidayCalendar' },
     { name: 'Gate Pass',                icon: ShieldCheck,     page: 'GatePassRequest' },
     { name: 'My Payslips',              icon: CreditCard,      page: 'Payslips' },
     { name: 'My Documents',             icon: FolderOpen,      page: 'Documents' },

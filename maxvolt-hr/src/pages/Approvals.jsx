@@ -7,8 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { FileText, DollarSign, Check, X, Download, LogOut, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 import { toast } from 'sonner';
-import { format } from 'date-fns';
+import { format, isSameMonth } from 'date-fns';
 import { safeDate, safeTime } from '@/lib/dateUtils';
+import MonthRequestFilter from '@/components/requests/MonthRequestFilter';
 
 export default function Approvals() {
   const [user, setUser] = useState(null);
@@ -24,6 +25,7 @@ export default function Approvals() {
   const [viewerDoc, setViewerDoc] = useState(null);
   const [processing, setProcessing] = useState({});
   const [workflows, setWorkflows] = useState({});
+  const [historyMonth, setHistoryMonth] = useState(new Date());
 
   useEffect(() => { loadData(); }, []);
 
@@ -393,6 +395,13 @@ export default function Approvals() {
                   {regularisations.length > 0 ? regularisations.map(reg => {
                     const emp = employees.find(e => e.user_id === reg.user_id);
                     const reasonLabels = { missed_punch: 'Missed Punch', biometric_failure: 'Biometric Failure', official_duty: 'Official Duty', work_from_home: 'Work from Home', emergency: 'Emergency', other: 'Other' };
+                    // HR/management may only act once the reporting manager has
+                    // approved (mirrors the same rule now enforced server-side
+                    // in processRegularisation) — unless the employee has no
+                    // reporting manager configured at all, the one fallback
+                    // that still lets HR act directly so the request never
+                    // gets stuck with no possible approver.
+                    const awaitingManager = isHR && reg.status !== 'manager_approved' && !!emp?.reporting_manager_id;
                     return (
                       <div key={reg.id} className="border rounded-lg p-4">
                         <div className="flex justify-between items-start gap-4 flex-wrap">
@@ -413,14 +422,18 @@ export default function Approvals() {
                               <Badge className="mt-1 bg-blue-100 text-blue-800">Manager Approved</Badge>
                             )}
                           </div>
-                          <div className="flex gap-2">
-                            <Button onClick={() => handleRegAction(reg.id, 'approve')} size="sm" className="bg-green-600 hover:bg-green-700" disabled={processing[reg.id]}>
-                              <Check className="w-4 h-4 mr-1" /> {isHR ? 'HR Approve' : 'Approve'}
-                            </Button>
-                            <Button onClick={() => handleRegAction(reg.id, 'reject')} size="sm" variant="destructive" disabled={processing[reg.id]}>
-                              <X className="w-4 h-4 mr-1" /> Reject
-                            </Button>
-                          </div>
+                          {awaitingManager ? (
+                            <Badge className="bg-gray-100 text-gray-600">Awaiting Manager Approval</Badge>
+                          ) : (
+                            <div className="flex gap-2">
+                              <Button onClick={() => handleRegAction(reg.id, 'approve')} size="sm" className="bg-green-600 hover:bg-green-700" disabled={processing[reg.id]}>
+                                <Check className="w-4 h-4 mr-1" /> {isHR ? 'HR Approve' : 'Approve'}
+                              </Button>
+                              <Button onClick={() => handleRegAction(reg.id, 'reject')} size="sm" variant="destructive" disabled={processing[reg.id]}>
+                                <X className="w-4 h-4 mr-1" /> Reject
+                              </Button>
+                            </div>
+                          )}
                         </div>
                       </div>
                     );
@@ -495,6 +508,13 @@ export default function Approvals() {
                   )}
                   {reimbursements.length > 0 && reimbursements.map(reimb => {
                       const emp = employees.find(e => e.user_id === reimb.user_id);
+                      // HR may only give the FINAL approval once the reporting
+                      // manager has already approved (built-in flow only —
+                      // a configurable workflow's own step assignment,
+                      // enforced in handleReimbursementApproval, governs
+                      // that case instead) — unless the employee has no
+                      // reporting manager configured at all.
+                      const awaitingManager = isHR && !workflows.expense?.steps?.length && reimb.status === 'pending' && !!emp?.reporting_manager_id;
                       return (
                         <div key={reimb.id} className="border rounded-lg p-4">
                           <div className="flex justify-between items-start gap-4 flex-wrap">
@@ -523,14 +543,18 @@ export default function Approvals() {
                                 </Button>
                               )}
                             </div>
-                            <div className="flex gap-2">
-                              <Button onClick={() => handleReimbursementApproval(reimb.id, 'approve')} disabled={processing[reimb.id]} size="sm" className="bg-green-600 hover:bg-green-700">
-                                <Check className="w-4 h-4 mr-1" /> {isHR ? 'Final Approve' : 'Approve'}
-                              </Button>
-                              <Button onClick={() => handleReimbursementApproval(reimb.id, 'reject')} disabled={processing[reimb.id]} size="sm" variant="destructive">
-                                <X className="w-4 h-4 mr-1" /> Reject
-                              </Button>
-                            </div>
+                            {awaitingManager ? (
+                              <Badge className="bg-gray-100 text-gray-600 shrink-0">Awaiting Manager Approval</Badge>
+                            ) : (
+                              <div className="flex gap-2">
+                                <Button onClick={() => handleReimbursementApproval(reimb.id, 'approve')} disabled={processing[reimb.id]} size="sm" className="bg-green-600 hover:bg-green-700">
+                                  <Check className="w-4 h-4 mr-1" /> {isHR ? 'Final Approve' : 'Approve'}
+                                </Button>
+                                <Button onClick={() => handleReimbursementApproval(reimb.id, 'reject')} disabled={processing[reimb.id]} size="sm" variant="destructive">
+                                  <X className="w-4 h-4 mr-1" /> Reject
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -555,11 +579,16 @@ export default function Approvals() {
                 </CardHeader>
                 {showReimbHistory && (
                   <CardContent>
-                    {reimbursementHistory.length === 0 ? (
-                      <p className="text-center text-muted-foreground py-6">No expense history</p>
+                    <div className="mb-3">
+                      <MonthRequestFilter monthDate={historyMonth} onMonthChange={setHistoryMonth} />
+                    </div>
+                    {(() => {
+                      const monthHistory = reimbursementHistory.filter(r => r.expense_date && isSameMonth(new Date(r.expense_date), historyMonth));
+                      return monthHistory.length === 0 ? (
+                      <p className="text-center text-muted-foreground py-6">No expense history in {historyMonth.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}</p>
                     ) : (
                       <div className="space-y-3">
-                        {reimbursementHistory.map(reimb => {
+                        {monthHistory.map(reimb => {
                           const emp = employees.find(e => e.user_id === reimb.user_id);
                           return (
                             <div key={reimb.id} className="border rounded-lg p-4 opacity-80">
@@ -589,7 +618,8 @@ export default function Approvals() {
                           );
                         })}
                       </div>
-                    )}
+                      );
+                    })()}
                   </CardContent>
                 )}
               </Card>

@@ -5,10 +5,12 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { format } from 'date-fns';
+import { format, startOfMonth, endOfMonth } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import { LogOut, LogIn, Clock, History, Search, Filter } from 'lucide-react';
 import { resolveHierarchy } from '@/lib/hierarchy';
+import MonthRequestFilter from '@/components/requests/MonthRequestFilter';
+import RequestMiniCalendar from '@/components/requests/RequestMiniCalendar';
 
 const STATUS_COLORS = {
   pending_approval: 'bg-yellow-100 text-yellow-800',
@@ -18,6 +20,16 @@ const STATUS_COLORS = {
   returned: 'bg-green-100 text-green-800',
   auto_closed: 'bg-purple-100 text-purple-800',
   cancelled: 'bg-gray-100 text-gray-800',
+};
+
+const STATUS_DOTS = {
+  pending_approval: 'bg-yellow-500',
+  approved: 'bg-blue-500',
+  rejected: 'bg-red-500',
+  departed: 'bg-orange-500',
+  returned: 'bg-green-500',
+  auto_closed: 'bg-purple-500',
+  cancelled: 'bg-gray-500',
 };
 
 const STATUS_LABELS = {
@@ -44,9 +56,19 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  // Current month by default (matches the same "current month, browse
+  // previous via a filter" convention as Leave/Regularisation/Reimbursements) —
+  // the explicit date inputs below still let anyone pick any custom range.
+  const [monthDate, setMonthDate] = useState(new Date());
+  const [useCustomRange, setUseCustomRange] = useState(false);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [viewMode, setViewMode] = useState('list');
+  const [calDayPasses, setCalDayPasses] = useState(null);
   const [selected, setSelected] = useState(null);
+
+  const effectiveFrom = useCustomRange ? dateFrom : format(startOfMonth(monthDate), 'yyyy-MM-dd');
+  const effectiveTo   = useCustomRange ? dateTo   : format(endOfMonth(monthDate), 'yyyy-MM-dd');
 
   useEffect(() => {
     loadData();
@@ -89,8 +111,8 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
     const matchSearch = !search || u?.full_name?.toLowerCase().includes(search.toLowerCase());
     const matchStatus = statusFilter === 'all' || p.status === statusFilter;
     const passDate = p.request_date || p.created_date?.slice(0, 10);
-    const matchFrom = !dateFrom || passDate >= dateFrom;
-    const matchTo = !dateTo || passDate <= dateTo;
+    const matchFrom = !effectiveFrom || passDate >= effectiveFrom;
+    const matchTo = !effectiveTo || passDate <= effectiveTo;
     return matchSearch && matchStatus && matchFrom && matchTo;
   });
 
@@ -99,15 +121,25 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
   return (
     <div>
       {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3 mb-4 flex-wrap">
+      <div className="flex flex-col sm:flex-row gap-3 mb-3 flex-wrap items-start sm:items-center">
         {showEmployeeName && (
           <div className="relative flex-1 min-w-[160px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input className="pl-9" placeholder="Search employee..." value={search} onChange={e => setSearch(e.target.value)} />
           </div>
         )}
-        <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-auto" placeholder="From date" />
-        <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-auto" placeholder="To date" />
+        {!useCustomRange && (
+          <MonthRequestFilter monthDate={monthDate} onMonthChange={setMonthDate} viewMode={viewMode} onViewModeChange={setViewMode} />
+        )}
+        <Button size="sm" variant="ghost" className="text-xs h-8" onClick={() => setUseCustomRange(v => !v)}>
+          <Filter className="w-3.5 h-3.5 mr-1" /> {useCustomRange ? 'Use Month Filter' : 'Custom Date Range'}
+        </Button>
+        {useCustomRange && (
+          <>
+            <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-auto" placeholder="From date" />
+            <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-auto" placeholder="To date" />
+          </>
+        )}
       </div>
 
       <div className="flex gap-2 mb-4 flex-wrap">
@@ -123,8 +155,24 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
         ))}
       </div>
 
-      {/* List */}
-      {filteredPasses.length === 0 ? (
+      {/* Calendar view */}
+      {!useCustomRange && viewMode === 'calendar' ? (
+        <>
+          <RequestMiniCalendar
+            monthDate={monthDate}
+            items={filteredPasses}
+            getDate={p => p.request_date || p.created_date?.slice(0, 10)}
+            getColor={p => STATUS_DOTS[p.status] || 'bg-gray-500'}
+            onDayClick={setCalDayPasses}
+          />
+          {filteredPasses.length === 0 && (
+            <div className="text-center py-12 text-gray-400">
+              <History className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p>No gate pass records found.</p>
+            </div>
+          )}
+        </>
+      ) : filteredPasses.length === 0 ? (
         <div className="text-center py-12 text-gray-400">
           <History className="w-10 h-10 mx-auto mb-3 opacity-30" />
           <p>No gate pass records found.</p>
@@ -258,6 +306,24 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
               )}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Calendar day detail dialog */}
+      <Dialog open={!!calDayPasses} onOpenChange={() => setCalDayPasses(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Gate Passes on {calDayPasses?.[0] && safeDate(calDayPasses[0].request_date || calDayPasses[0].created_date, 'MMMM d, yyyy')}</DialogTitle></DialogHeader>
+          <div className="space-y-2">
+            {calDayPasses?.map(pass => (
+              <div key={pass.id} className="border rounded-lg p-3 cursor-pointer hover:bg-gray-50" onClick={() => { setSelected(pass); setCalDayPasses(null); }}>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {showEmployeeName && <p className="font-medium text-sm">{users[pass.employee_user_id]?.full_name || 'Unknown'}</p>}
+                  <Badge className={STATUS_COLORS[pass.status]}>{STATUS_LABELS[pass.status]}</Badge>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">{pass.reason}</p>
+              </div>
+            ))}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

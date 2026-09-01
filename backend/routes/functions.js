@@ -1943,7 +1943,14 @@ async function runLeaveAction(cu, leaveId, action, note) {
         else if (curStep.approver_type === 'hr') authorized = isHR;
         else if (curStep.approver_type === 'specific_user') authorized = curStep.specific_user_id === actorId;
       } else authorized = isHR;
-    } else if (curLevel === 1) authorized = emp.reporting_manager_id === actorId || isHR;
+    } else if (curLevel === 1) {
+      // Level 1 is the reporting manager's own approval — HR/management may
+      // no longer stand in for them here (only admin, via the baseline
+      // above, can). The one exception is an employee with no reporting
+      // manager configured at all: there'd otherwise be no one who could
+      // ever act on level 1, so HR is allowed to step in for that case only.
+      authorized = emp.reporting_manager_id ? emp.reporting_manager_id === actorId : isHR;
+    }
     else if (curLevel === 2) authorized = isHR;
   }
   if (!authorized) return { httpStatus: 403, body: { success: false, error: `This request is at approval level ${curLevel} — you are not the approver for this step` } };
@@ -8382,6 +8389,22 @@ router.post('/:name', async (req, res) => {
       const isFullApprover = await hasRole(cu, MGR_ROLES);
       const isTeamManager  = !isFullApprover && await hasRole(cu, ['manager']) && await canAccessEmployee(cu, reg.user_id);
       if (!isFullApprover && !isTeamManager) return res.status(403).json({ error: 'Access denied — not authorized to act on this request' });
+
+      // HR/management may only act once the reporting manager has approved
+      // (status 'manager_approved') — admin keeps override power, and an
+      // employee with no reporting manager configured falls straight
+      // through to HR since there'd otherwise be no one who could ever
+      // clear that first step.
+      if (isFullApprover && reg.status !== 'manager_approved') {
+        const isAdmin = await hasRole(cu, ['admin']);
+        if (!isAdmin) {
+          const prRegEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [reg.user_id]);
+          const prRegEmp = prRegEmpRow ? JSON.parse(prRegEmpRow.data) : null;
+          if (prRegEmp?.reporting_manager_id) {
+            return res.status(403).json({ error: 'This request requires reporting manager approval first.' });
+          }
+        }
+      }
 
       // Marks the actual Attendance record for reg.date as present (or the
       // specific requested status) once the reporting manager has approved

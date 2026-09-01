@@ -13,6 +13,9 @@ import MobileSelect from '@/components/MobileSelect';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import { toast } from 'sonner';
+import MonthRequestFilter from '@/components/requests/MonthRequestFilter';
+import RequestMiniCalendar from '@/components/requests/RequestMiniCalendar';
+import { isSameMonth } from 'date-fns';
 
 const STATUS_COLORS = {
   pending: 'bg-yellow-100 text-yellow-800',
@@ -52,6 +55,9 @@ export default function Leave() {
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState(null);
   const [documentFile, setDocumentFile] = useState(null);
+  const [historyMonth, setHistoryMonth] = useState(new Date());
+  const [historyView, setHistoryView] = useState('list');
+  const [calDayLeaves, setCalDayLeaves] = useState(null);
 
   const [formData, setFormData] = useState({
     leave_policy_id: '',
@@ -341,14 +347,33 @@ export default function Leave() {
           </div>
         </div>
 
-        {/* Leave History */}
+        {/* Leave History — current month by default, browse previous months
+            or switch to a calendar view via MonthRequestFilter. */}
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <CardTitle className="text-lg">Leave History</CardTitle>
+            <MonthRequestFilter monthDate={historyMonth} onMonthChange={setHistoryMonth} viewMode={historyView} onViewModeChange={setHistoryView} />
           </CardHeader>
           <CardContent>
+            {(() => {
+              const monthLeaves = leaveRequests.filter(l => l.start_date && isSameMonth(new Date(l.start_date), historyMonth));
+              if (historyView === 'calendar') {
+                return (
+                  <>
+                    <RequestMiniCalendar
+                      monthDate={historyMonth}
+                      items={monthLeaves}
+                      getDate={l => l.start_date}
+                      getColor={l => l.status === 'approved' ? 'bg-green-500' : l.status === 'rejected' ? 'bg-red-500' : 'bg-yellow-500'}
+                      onDayClick={setCalDayLeaves}
+                    />
+                    {monthLeaves.length === 0 && <p className="text-center text-muted-foreground py-6">No leave requests in {historyMonth.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}</p>}
+                  </>
+                );
+              }
+              return (
             <div className="space-y-3">
-              {leaveRequests.length > 0 ? leaveRequests.map(leave => {
+              {monthLeaves.length > 0 ? monthLeaves.map(leave => {
                 const policy = leavePolicies.find(p => p.id === leave.leave_policy_id);
                 return (
                   <div key={leave.id} className="border rounded-lg p-4">
@@ -401,12 +426,36 @@ export default function Leave() {
                   </div>
                 );
               }) : (
-                <p className="text-center text-gray-500 py-8">No leave requests yet</p>
+                <p className="text-center text-gray-500 py-8">No leave requests in {historyMonth.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}</p>
               )}
             </div>
+              );
+            })()}
           </CardContent>
         </Card>
       </div>
+
+      {/* Calendar day detail dialog */}
+      <Dialog open={!!calDayLeaves} onOpenChange={() => setCalDayLeaves(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Leave{calDayLeaves?.length > 1 ? 's' : ''} on {calDayLeaves?.[0] && safeDate(calDayLeaves[0].start_date, 'MMMM d, yyyy')}</DialogTitle></DialogHeader>
+          <div className="space-y-2">
+            {calDayLeaves?.map(leave => {
+              const policy = leavePolicies.find(p => p.id === leave.leave_policy_id);
+              return (
+                <div key={leave.id} className="border rounded-lg p-3">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium text-sm">{leave.is_wfh || leave.leave_type === 'work_from_home' ? 'Work From Home' : policy?.name}</p>
+                    <Badge className={STATUS_COLORS[leave.status]}>{leave.status.toUpperCase()}</Badge>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">{safeDate(leave.start_date, 'MMM d')} – {safeDate(leave.end_date, 'MMM d, yyyy')} ({leave.total_days} day{leave.total_days !== 1 ? 's' : ''})</p>
+                  {leave.reason && <p className="text-xs text-gray-400 mt-1">{leave.reason}</p>}
+                </div>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Apply Leave Dialog */}
       <Dialog open={showForm} onOpenChange={(open) => { if (!open) { setShowForm(false); resetForm(); } }}>
