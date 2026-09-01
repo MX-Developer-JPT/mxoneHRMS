@@ -29,6 +29,7 @@ export default function MarkAttendance() {
   const [user, setUser] = useState(null);
   const [employee, setEmployee] = useState(null);
   const [todayAttendance, setTodayAttendance] = useState(null);
+  const [todayGatePass, setTodayGatePass] = useState(null); // most recent live gate pass for today, if any
   const [location, setLocation] = useState(null);
   const [locationDetails, setLocationDetails] = useState(null);
   const [locationAddress, setLocationAddress] = useState('');
@@ -172,6 +173,14 @@ export default function MarkAttendance() {
       if (attendance.length > 0) {
         setTodayAttendance(attendance[0]);
       }
+
+      try {
+        const gatePasses = await base44.entities.GatePass.filter({ employee_user_id: currentUser.id, request_date: today });
+        const live = gatePasses.filter(g => ['approved', 'departed', 'returned', 'auto_closed'].includes(g.status));
+        // Most recently created live gate pass for today, if more than one.
+        live.sort((a, b) => String(b.created_date || '').localeCompare(String(a.created_date || '')));
+        setTodayGatePass(live[0] || null);
+      } catch { /* gate pass status is a nicety here, not load-blocking */ }
 
       setLoading(false);
     } catch (error) {
@@ -675,6 +684,20 @@ export default function MarkAttendance() {
             <CardTitle className="text-lg md:text-xl">Today's Attendance</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 md:space-y-6">
+            {todayGatePass?.status === 'departed' && (
+              <div className="flex items-center gap-3 bg-orange-50 border border-orange-200 rounded-lg p-3 md:p-4">
+                <LogOut className="w-5 h-5 text-orange-600 flex-shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-semibold text-sm md:text-base text-orange-800">
+                    You're Currently Out{safeDate(todayGatePass.departure_time, 'h:mm a') ? ` — since ${safeDate(todayGatePass.departure_time, 'h:mm a')}` : ''}
+                  </p>
+                  <p className="text-xs md:text-sm text-orange-700">
+                    Gate pass{todayGatePass.outing_type ? ` — ${todayGatePass.outing_type.replace(/_/g, ' ')}` : ''}
+                    {todayGatePass.reason ? `: ${todayGatePass.reason}` : ''}
+                  </p>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
               <div className="space-y-2">
                 <p className="text-sm text-gray-600">Date</p>

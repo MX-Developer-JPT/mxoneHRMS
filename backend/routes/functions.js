@@ -5192,6 +5192,19 @@ router.post('/:name', async (req, res) => {
       // fallback below is gated on this.
       const reportTodayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 
+      // Gate pass overlay — same "highlight, don't override the real
+      // attendance status" treatment as exportAttendanceMuster above.
+      const reportGatePassRows = parseEntities(await all(
+        "SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date' >= $1 AND data::jsonb->>'request_date' <= $2",
+        [monthStart, monthEnd]
+      )).filter(g => ['departed', 'returned', 'auto_closed'].includes(g.status));
+      const reportGatePassMap = {};
+      const reportOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+      for (const g of reportGatePassRows) {
+        if (!g.employee_user_id || !g.request_date) continue;
+        reportGatePassMap[`${g.employee_user_id}|${g.request_date}`] = g;
+      }
+
       const toMinutes = (t) => {
         if (!t) return 0;
         const [h, mi] = String(t).split(':').map(Number);
@@ -5274,7 +5287,12 @@ router.post('/:name', async (req, res) => {
           // a generic "L" when available; `cell` (category) still drives
           // coloring via dayStatusColor below, unchanged.
           const displayCell = cell === 'L' ? (rec?.leave_policy_code || rec?.leave_policy_name || 'L') : cell;
-          dayDetails.push({ cell, displayCell, workedMins, otMins: isOTEligible ? otMins : 0, hhmm: hhmm(workedMins), othhmm: hhmm(isOTEligible ? otMins : 0) });
+          const gatePass = reportGatePassMap[`${emp.user_id}|${dateStr}`] || null;
+          dayDetails.push({
+            cell, displayCell: gatePass ? `${displayCell}⛩` : displayCell,
+            workedMins, otMins: isOTEligible ? otMins : 0, hhmm: hhmm(workedMins), othhmm: hhmm(isOTEligible ? otMins : 0),
+            gatePass,
+          });
         }
 
         const totalWorkingHrs = (totalWorkingMins / 60).toFixed(2);
@@ -5326,7 +5344,7 @@ router.post('/:name', async (req, res) => {
       wsAR.getCell('A2').fill = arFill('2D6A9F');
       wsAR.getCell('A2').alignment = { vertical:'middle' };
       wsAR.mergeCells(2, 7, 2, totalInfoCols);
-      wsAR.getCell(2, 7).value = 'P=Present  PR=Present (Regularised)  L*=Late  A=Absent  L=Leave  H=Holiday  HD=Half Day  OD=On Duty  WFH=Work from Home  OFF=Week Off';
+      wsAR.getCell(2, 7).value = 'P=Present  PR=Present (Regularised)  L*=Late  A=Absent  L=Leave  H=Holiday  HD=Half Day  OD=On Duty  WFH=Work from Home  OFF=Week Off  ⛩=Gate Pass issued (hover cell for outing details)';
       wsAR.getCell(2, 7).font = arFont(false, 'FFFFFF', 8);
       wsAR.getCell(2, 7).fill = arFill('2D6A9F');
       wsAR.getCell(2, 7).alignment = { vertical:'middle' };
@@ -5381,10 +5399,15 @@ router.post('/:name', async (req, res) => {
           const isDayHours  = ci >= 6 + daysInMonth && ci < 6 + daysInMonth * 2;
           const isSummary   = ci >= 6 + daysInMonth * 2;
           if (isDayStatus) {
-            const statusColor = dayStatusColor(dayCategoryCodes[ci - 6]);
+            const dd = dayDetails[ci - 6];
+            const statusColor = dd?.gatePass ? 'FDBA74' : dayStatusColor(dayCategoryCodes[ci - 6]);
             cell.fill = arFill(statusColor);
             cell.font = arFont(true, '222222', 8);
             cell.alignment = { horizontal:'center', vertical:'middle' };
+            if (dd?.gatePass) {
+              const label = reportOutingLabels[dd.gatePass.outing_type] || dd.gatePass.outing_type || 'Gate Pass';
+              cell.note = `Gate Pass — ${label}${dd.gatePass.reason ? `: ${dd.gatePass.reason}` : ''}`;
+            }
           } else if (isDayHours) {
             cell.font = arFont(false, '555555', 8);
             cell.alignment = { horizontal:'center', vertical:'middle' };
@@ -5460,6 +5483,21 @@ router.post('/:name', async (req, res) => {
         mShiftCache[s.id] = s;
         if (s.is_default) mDefaultShift = s;
       });
+
+      // Gate pass overlay — days where the employee took a gate pass (any
+      // completed/live outing) get highlighted in the muster even though
+      // their attendance status is still 'present' (e.g. a short break that
+      // stayed within the no-deduction window). Keyed by user_id|date.
+      const mGatePassRows = parseEntities(await all(
+        "SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date' >= $1 AND data::jsonb->>'request_date' <= $2",
+        [monthStart, monthEnd]
+      )).filter(g => ['departed', 'returned', 'auto_closed'].includes(g.status));
+      const mGatePassMap = {};
+      const mOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+      for (const g of mGatePassRows) {
+        if (!g.employee_user_id || !g.request_date) continue;
+        mGatePassMap[`${g.employee_user_id}|${g.request_date}`] = g;
+      }
       const mWorkingDaysFor = (emp) => {
         const shift = (emp?.shift_id && mShiftCache[emp.shift_id]) || mDefaultShift;
         return Array.isArray(shift?.days) && shift.days.length ? shift.days : (mDefaultShift.days || mFallbackDays);
@@ -5575,7 +5613,7 @@ router.post('/:name', async (req, res) => {
       Object.assign(r2.getCell(1), { font:mF(false,'475569',8), fill:mFl('F8FAFC'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
       // Row 3 — legend
-      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   PR = Present (Regularised)   A = Absent   HD = Half Day   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   WFH = Work From Home   SA = Short Attendance   (OD and WFH count toward the Present total)']);
+      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   PR = Present (Regularised)   A = Absent   HD = Half Day   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   WFH = Work From Home   SA = Short Attendance   ⛩ = Gate Pass issued that day (hover cell for outing details)   (OD and WFH count toward the Present total)']);
       r3.height = 15; wsM.mergeCells(3,1,3,totCols);
       Object.assign(r3.getCell(1), { font:mF(false,'1E40AF',8), fill:mFl('EFF6FF'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
@@ -5608,14 +5646,21 @@ router.post('/:name', async (req, res) => {
         const codes = [];        // category codes — drive counting AND coloring, unchanged semantics
         const displayCodes = []; // what's actually printed in the cell
 
+        const gatePassDays = new Set(); // day indices (1-based) with a gate pass, for cell fill/notes below
         for (let d=1; d<=daysInMonth; d++) {
           const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
           const code = mStatusCode(empRecs[ds], ds, empRecs, workingDays, emp.date_of_joining);
           codes.push(code);
+          const gatePass = mGatePassMap[`${emp.user_id}|${ds}`];
+          if (gatePass) gatePassDays.add(d);
           // Show the specific leave type (e.g. "CL"/"Casual Leave") instead
           // of a generic "L" — the category code above still drives
-          // counting/coloring so this is display-only.
-          displayCodes.push(code === 'L' ? (empRecs[ds]?.leave_policy_code || empRecs[ds]?.leave_policy_name || 'L') : code);
+          // counting/coloring so this is display-only. A gate-pass day gets
+          // a "⛩" suffix regardless of underlying status — still counted
+          // exactly as its real code (present/half-day/etc.) above, this is
+          // purely a visual highlight.
+          const baseDisplay = code === 'L' ? (empRecs[ds]?.leave_policy_code || empRecs[ds]?.leave_policy_name || 'L') : code;
+          displayCodes.push(gatePass && baseDisplay ? `${baseDisplay}⛩` : baseDisplay);
           if (code==='P'||code==='P*'||code==='SA') pC++;
           else if (code==='A') aC++;
           else if (code==='L') lC++;
@@ -5638,13 +5683,21 @@ router.post('/:name', async (req, res) => {
 
         codes.forEach((code,i) => {
           const cell = dr.getCell(INFO+1+i);
+          const dayNum = i + 1;
+          const onGatePass = gatePassDays.has(dayNum);
           cell.value = displayCodes[i];
           Object.assign(cell, {
-            font:    mF(true, mTextDark(code), 7),
-            fill:    mFl(mStatusFill(code)),
+            font:    mF(true, onGatePass ? '1A1A1A' : mTextDark(code), 7),
+            fill:    mFl(onGatePass ? 'FDBA74' : mStatusFill(code)), // amber highlight overrides the normal status color
             alignment: mCtr,
             border:  { top:{style:'thin',color:{argb:'FFFFFFFF'}}, left:{style:'thin',color:{argb:'FFFFFFFF'}}, bottom:{style:'thin',color:{argb:'FFFFFFFF'}}, right:{style:'thin',color:{argb:'FFFFFFFF'}} },
           });
+          if (onGatePass) {
+            const ds = `${y}-${String(m).padStart(2,'0')}-${String(dayNum).padStart(2,'0')}`;
+            const gp = mGatePassMap[`${emp.user_id}|${ds}`];
+            const label = mOutingLabels[gp.outing_type] || gp.outing_type || 'Gate Pass';
+            cell.note = `Gate Pass — ${label}${gp.reason ? `: ${gp.reason}` : ''}`;
+          }
         });
 
         [pC,aC,lC,hdC,woC,phC,odC,wfhC,totalWorked].forEach((v,i) => {
@@ -5748,6 +5801,20 @@ router.post('/:name', async (req, res) => {
         return Array.isArray(shift?.days) && shift.days.length ? shift.days : (swDefaultShift.days || swFallbackDays);
       };
       const swTodayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+
+      // Gate pass overlay — same treatment as exportAttendanceMuster/
+      // exportAttendanceReport above, surfaced here as its own column since
+      // this register is already one row per employee per day.
+      const swGatePassRows = parseEntities(await all(
+        "SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date' >= $1 AND data::jsonb->>'request_date' <= $2",
+        [swMonthStart, swMonthEnd]
+      )).filter(g => ['departed', 'returned', 'auto_closed'].includes(g.status));
+      const swGatePassMap = {};
+      const swOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+      for (const g of swGatePassRows) {
+        if (!g.employee_user_id || !g.request_date) continue;
+        swGatePassMap[`${g.employee_user_id}|${g.request_date}`] = g;
+      }
       const swInferredStatus = (ds, workingDays, doj) => {
         // Before the employee's own joining date — never a real status.
         if (doj && ds < doj) return '';
@@ -5781,7 +5848,7 @@ router.post('/:name', async (req, res) => {
         { header:'First Check-in', width:14 }, { header:'Last Check-out', width:14 },
         { header:'Total Hours', width:11 }, { header:'Method', width:12 },
         { header:'Check-in Location', width:32 }, { header:'Check-out Location', width:32 },
-        { header:'Status', width:12 },
+        { header:'Status', width:12 }, { header:'Gate Pass', width:32 },
       ];
       cols.forEach((c, i) => { wsSw.getColumn(i+1).width = c.width; });
 
@@ -5797,7 +5864,7 @@ router.post('/:name', async (req, res) => {
 
       // Row 3 — legend
       wsSw.mergeCells(3,1,3,cols.length);
-      Object.assign(wsSw.getCell(3,1), { value:'Method reflects how the day was punched — Biometric device sync, Geofence auto check-in/out, Selfie check-in/out, or Manual/regularised entry. Location shown for Selfie and Geofence days only.', font:swF(false,'1E40AF',8), fill:swFl('EFF6FF'), alignment:swLft, border:swBd() });
+      Object.assign(wsSw.getCell(3,1), { value:'Method reflects how the day was punched — Biometric device sync, Geofence auto check-in/out, Selfie check-in/out, or Manual/regularised entry. Location shown for Selfie and Geofence days only. Gate Pass column shows any outing logged that day, with "OUT NOW" for a pass still open.', font:swF(false,'1E40AF',8), fill:swFl('EFF6FF'), alignment:swLft, border:swBd() });
       wsSw.getRow(3).height = 15;
 
       // Row 4 — column headers
@@ -5820,6 +5887,10 @@ router.post('/:name', async (req, res) => {
           const weekday = swWeekdayNames[new Date(swY, swM-1, d).getDay()];
           const method = swMethod(rec);
           const status = rec?.status || (rec ? '' : swInferredStatus(ds, workingDays, emp.date_of_joining));
+          const gatePass = swGatePassMap[`${emp.user_id}|${ds}`] || null;
+          const gatePassText = gatePass
+            ? `${gatePass.status === 'departed' ? 'OUT NOW — ' : ''}${swOutingLabels[gatePass.outing_type] || gatePass.outing_type || 'Gate Pass'}${gatePass.reason ? ` — ${gatePass.reason}` : ''}`
+            : '';
 
           const row = wsSw.getRow(swRowNum++);
           const vals = [
@@ -5829,6 +5900,7 @@ router.post('/:name', async (req, res) => {
             (method==='Selfie'||method==='Geofence') ? swLocation(rec?.check_in_location) : '',
             (method==='Selfie'||method==='Geofence') ? swLocation(rec?.check_out_location) : '',
             status ? status.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) : '',
+            gatePassText,
           ];
           vals.forEach((v, ci) => { row.getCell(ci+1).value = v; });
           row.height = 16;
@@ -5847,6 +5919,12 @@ router.post('/:name', async (req, res) => {
           if (status && STATUS_COLOR[status]) {
             const sc = row.getCell(14);
             sc.fill = swFl(STATUS_COLOR[status]);
+          }
+          if (gatePass) {
+            const gc = row.getCell(15);
+            gc.font = swF(true, '9A3412', 8);
+            gc.fill = swFl('FDBA74');
+            gc.alignment = swLft;
           }
         }
       }
@@ -7075,7 +7153,40 @@ router.post('/:name', async (req, res) => {
           (r.status === 'regularised' || r.regularised ? 1 : 0);
         if (score(rec) > score(prev)) best[key] = rec;
       }
-      return res.json({ records: Object.values(best) });
+
+      // Gate pass overlay — keyed by user_id, not folded into the Attendance
+      // record itself, so it still surfaces for an employee who has stepped
+      // out but has no Attendance row yet for the day (e.g. checked in via
+      // biometric earlier, gate pass logged separately). Only computed for a
+      // single-day query (the common case — AllAttendance.jsx/My Attendance
+      // both request one `date` at a time); a date-range query gets none,
+      // since "currently out" only makes sense for one specific day.
+      let gatePasses = {};
+      if (date) {
+        let gpQuery = "SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date'=$1";
+        const gpParams = [date];
+        if (uid) { gpQuery += ` AND data::jsonb->>'employee_user_id'=$2`; gpParams.push(uid); }
+        const gpRows = await all(gpQuery, gpParams);
+        let gpRecords = gpRows.map(r => JSON.parse(r.data)).filter(g => g.employee_user_id);
+        if (scopedIds) gpRecords = gpRecords.filter(g => scopedIds.includes(g.employee_user_id));
+        // Only outings that are actually live/relevant for a "gate pass today"
+        // view — a rejected/cancelled/still-pending request shouldn't show.
+        gpRecords = gpRecords.filter(g => ['approved', 'departed', 'returned', 'auto_closed'].includes(g.status));
+        for (const g of gpRecords) {
+          const prev = gatePasses[g.employee_user_id];
+          if (!prev || String(g.created_date || '') > String(prev.created_date || '')) {
+            gatePasses[g.employee_user_id] = {
+              status: g.status, outing_type: g.outing_type, reason: g.reason,
+              departure_time: g.departure_time, return_time: g.return_time,
+              expected_return_time: g.expected_return_time,
+              is_out: g.status === 'departed',
+              created_date: g.created_date,
+            };
+          }
+        }
+      }
+
+      return res.json({ records: Object.values(best), gate_passes: gatePasses });
     }
 
     case 'syncManagerRoles': {

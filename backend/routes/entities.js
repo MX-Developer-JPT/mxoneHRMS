@@ -888,6 +888,40 @@ router.patch('/:type/:id', async (req, res) => {
             type: 'info', link: '/AssetTracking',
           });
         }
+      } else if (type === 'GatePass' && req.body.status && req.body.status !== current.status && ['departed', 'returned'].includes(req.body.status)) {
+        // Gate-log transitions (mark-out/mark-in by the gate admin) — notify
+        // the employee themselves ("you're currently out" / "welcome back")
+        // and their reporting manager, so both see live outing status
+        // without having to open All Attendance / Gate Admin Dashboard.
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [updated.employee_user_id]);
+        const emp = empRow ? JSON.parse(empRow.data) : null;
+        const empName = emp?.display_name || 'Employee';
+        const managerId = emp?.reporting_manager_id;
+        const outingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+        const outingLabel = outingLabels[updated.outing_type] || updated.outing_type || 'outing';
+        if (req.body.status === 'departed') {
+          await notifyMany([updated.employee_user_id].filter(Boolean), {
+            title: "You're Currently Out",
+            message: `Your gate pass (${outingLabel}) is active — you're marked out${updated.reason ? `: ${updated.reason}` : '.'}`,
+            type: 'info', link: '/GatePassRequest',
+          });
+          await notifyMany([managerId].filter(Boolean), {
+            title: `${empName} is Currently Out`,
+            message: `${empName} has stepped out on a gate pass (${outingLabel})${updated.reason ? ` — ${updated.reason}` : '.'}`,
+            type: 'info', link: '/AllAttendance',
+          });
+        } else {
+          await notifyMany([updated.employee_user_id].filter(Boolean), {
+            title: 'Welcome Back',
+            message: `Your gate pass outing (${outingLabel}) has been marked as returned.`,
+            type: 'success', link: '/GatePassRequest',
+          });
+          await notifyMany([managerId].filter(Boolean), {
+            title: `${empName} Has Returned`,
+            message: `${empName} is back from their gate pass outing (${outingLabel}).`,
+            type: 'success', link: '/AllAttendance',
+          });
+        }
       } else if (type === 'Candidate' && req.body.status === 'rejected' && current.status !== 'rejected' && updated.email) {
         // Candidates aren't app users — there's no in-app notification target,
         // only email. Previously a rejection only changed the status field

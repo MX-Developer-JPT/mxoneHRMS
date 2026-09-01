@@ -33,6 +33,11 @@ const STATUS_COLORS = {
 // everything else still falls back to the raw status.replace('_',' ').
 const STATUS_LABELS = { on_duty: 'OD', work_from_home: 'WFH' };
 
+const GATE_PASS_OUTING_LABELS = {
+  official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing',
+  half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave',
+};
+
 function toDateStr(val) {
   if (!val) return '';
   return String(val).slice(0, 10);
@@ -79,6 +84,7 @@ export default function AllAttendance() {
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [isTeamScoped, setIsTeamScoped] = useState(false); // drives the page title only — actual filtering happens in loadData
   const [attendanceMap, setAttendanceMap] = useState({});
+  const [gatePasses, setGatePasses] = useState({}); // user_id -> { status, outing_type, reason, is_out, ... } for the selected date
   const [employees, setEmployees] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [shiftMap, setShiftMap] = useState({});
@@ -165,6 +171,7 @@ export default function AllAttendance() {
         const map = {};
         dayRecords.forEach(r => { map[r.user_id] = r; });
         setAttendanceMap(map);
+        setGatePasses(attendanceResp.data?.gate_passes || {});
         return;
       }
 
@@ -219,6 +226,7 @@ export default function AllAttendance() {
 
       setEmployees(emps);
       setAttendanceMap(map);
+      setGatePasses(attendanceResp.data?.gate_passes || {});
       setDepartments(deptRecords.map(d => ({ value: d.name, label: d.name })));
     } catch (e) {
       if (!silent) toast.error('Failed to load attendance: ' + e.message);
@@ -232,7 +240,8 @@ export default function AllAttendance() {
   const rows = useMemo(() => {
     return employees.map(emp => {
       const record = attendanceMap[emp.user_id];
-      if (record) return { ...record, _emp: emp };
+      const gatePass = gatePasses[emp.user_id] || null;
+      if (record) return { ...record, _emp: emp, _gatePass: gatePass };
       const offStatus = scheduledOffStatus(emp, date, holidaySet, shiftMap, defaultShift);
       return {
         id: `virtual_${emp.user_id}`,
@@ -242,9 +251,10 @@ export default function AllAttendance() {
         working_hours: 0,
         _virtual: true,
         _emp: emp,
+        _gatePass: gatePass,
       };
     });
-  }, [employees, attendanceMap, date, holidaySet, shiftMap, defaultShift]);
+  }, [employees, attendanceMap, gatePasses, date, holidaySet, shiftMap, defaultShift]);
 
   // Which configured location a biometric device belongs to — e.g. punches
   // from a "Biomatrice 2" or "LabourAtt" device mean the employee is
@@ -271,6 +281,7 @@ export default function AllAttendance() {
 
   const filtered = useMemo(() => {
     return rows.filter(r => {
+      if (statusFilter === 'gate_pass') return !!r._gatePass;
       const displayStatus = getDisplayStatus(r);
       if (statusFilter !== 'all' && displayStatus !== statusFilter) return false;
       if (deptFilter !== 'all' && r._emp?.department !== deptFilter) return false;
@@ -308,6 +319,8 @@ export default function AllAttendance() {
     late: rows.filter(r => r.late_minutes > 0 || r.late_arrival_minutes > 0).length,
     earlyOut: rows.filter(r => r.early_departure || r.early_departure_minutes > 0).length,
     totalHours: rows.reduce((s, r) => s + (r.working_hours || 0), 0),
+    gatePass: rows.filter(r => r._gatePass).length,
+    currentlyOut: rows.filter(r => r._gatePass?.is_out).length,
   }), [rows]);
 
   const toggleDept = (dept) => setCollapsedDepts(p => ({ ...p, [dept]: !p[dept] }));
@@ -524,6 +537,7 @@ export default function AllAttendance() {
             { label: 'On Leave', value: stats.leave, color: 'text-blue-600', filter: 'leave' },
             { label: 'Late', value: stats.late, color: 'text-orange-600' },
             { label: 'Early Out', value: stats.earlyOut, color: 'text-amber-600' },
+            { label: 'On Gate Pass', value: stats.gatePass, color: 'text-orange-600', filter: 'gate_pass' },
           ].map(s => (
             <Card
               key={s.label}
@@ -562,6 +576,7 @@ export default function AllAttendance() {
                 { value: 'week_off', label: 'Week Off' },
                 { value: 'on_duty', label: 'OD (Outduty)' },
                 { value: 'work_from_home', label: 'WFH' },
+                { value: 'gate_pass', label: 'On Gate Pass' },
               ]} />
               <MobileSelect value={deptFilter} onValueChange={setDeptFilter} label="Department" className="w-[160px]" options={[
                 { value: 'all', label: 'All Departments' },
@@ -875,6 +890,16 @@ export default function AllAttendance() {
                             <Badge className={`text-xs border ${STATUS_COLORS[displayStatus] || 'bg-gray-100 text-gray-700'}`}>
                               {STATUS_LABELS[displayStatus] || displayStatus.replace('_', ' ')}
                             </Badge>
+                            {record._gatePass && (
+                              <Badge
+                                className={`text-xs border ${record._gatePass.is_out ? 'bg-orange-100 text-orange-800 border-orange-300 animate-pulse' : 'bg-sky-100 text-sky-800 border-sky-200'}`}
+                                title={record._gatePass.reason || ''}
+                              >
+                                {record._gatePass.is_out ? '🚪 Out' : 'Gate Pass'}
+                                {(GATE_PASS_OUTING_LABELS[record._gatePass.outing_type] || record._gatePass.outing_type) &&
+                                  ` — ${GATE_PASS_OUTING_LABELS[record._gatePass.outing_type] || record._gatePass.outing_type}`}
+                              </Badge>
+                            )}
                             {record.regularised && (
                               <Badge className="text-xs bg-violet-100 text-violet-800 border border-violet-200" title="Marked present after regularisation approval">
                                 Regularised

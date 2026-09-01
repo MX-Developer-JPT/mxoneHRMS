@@ -79,19 +79,21 @@ export default function CompOff() {
         </Button>
       </div>
 
-      {/* Balance + quick stats */}
-      <div className="grid grid-cols-3 gap-3">
-        <Card><CardContent className="pt-5 flex items-center gap-3">
-          <div className="p-2.5 rounded-full bg-violet-100 text-violet-600"><Wallet className="w-5 h-5" /></div>
-          <div><p className="text-xs text-gray-500">Available balance</p><p className="text-xl font-bold text-gray-800">{data.balance} day{data.balance === 1 ? '' : 's'}</p></div>
+      {/* Balance + quick stats — stacked (icon above label/value) rather than
+          side-by-side, so the label never gets clipped in a narrow 3-up
+          column on mobile. */}
+      <div className="grid grid-cols-3 gap-2 sm:gap-3">
+        <Card><CardContent className="p-3 sm:pt-5 sm:px-4 flex flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+          <div className="p-2 sm:p-2.5 rounded-full bg-violet-100 text-violet-600 shrink-0"><Wallet className="w-4 h-4 sm:w-5 sm:h-5" /></div>
+          <div className="min-w-0"><p className="text-[11px] sm:text-xs text-gray-500 leading-tight">Available balance</p><p className="text-lg sm:text-xl font-bold text-gray-800 whitespace-nowrap">{data.balance} day{data.balance === 1 ? '' : 's'}</p></div>
         </CardContent></Card>
-        <Card><CardContent className="pt-5 flex items-center gap-3">
-          <div className="p-2.5 rounded-full bg-amber-100 text-amber-600"><Clock className="w-5 h-5" /></div>
-          <div><p className="text-xs text-gray-500">Pending requests</p><p className="text-xl font-bold text-gray-800">{data.mine.filter(m => m.status === 'pending').length}</p></div>
+        <Card><CardContent className="p-3 sm:pt-5 sm:px-4 flex flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+          <div className="p-2 sm:p-2.5 rounded-full bg-amber-100 text-amber-600 shrink-0"><Clock className="w-4 h-4 sm:w-5 sm:h-5" /></div>
+          <div className="min-w-0"><p className="text-[11px] sm:text-xs text-gray-500 leading-tight">Pending requests</p><p className="text-lg sm:text-xl font-bold text-gray-800">{data.mine.filter(m => m.status === 'pending').length}</p></div>
         </CardContent></Card>
-        <Card><CardContent className="pt-5 flex items-center gap-3">
-          <div className="p-2.5 rounded-full bg-green-100 text-green-600"><CheckCircle2 className="w-5 h-5" /></div>
-          <div><p className="text-xs text-gray-500">Approved (all time)</p><p className="text-xl font-bold text-gray-800">{data.mine.filter(m => m.status === 'approved').length}</p></div>
+        <Card><CardContent className="p-3 sm:pt-5 sm:px-4 flex flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+          <div className="p-2 sm:p-2.5 rounded-full bg-green-100 text-green-600 shrink-0"><CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5" /></div>
+          <div className="min-w-0"><p className="text-[11px] sm:text-xs text-gray-500 leading-tight">Approved (all time)</p><p className="text-lg sm:text-xl font-bold text-gray-800">{data.mine.filter(m => m.status === 'approved').length}</p></div>
         </CardContent></Card>
       </div>
 
