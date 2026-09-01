@@ -757,9 +757,20 @@ export default function AllAttendance() {
                               </div>
                               <div className="text-center min-w-[64px]">
                                 <p className="text-[10px] text-gray-400 uppercase tracking-wide leading-none mb-0.5">Last Out</p>
-                                <p className={`text-sm font-semibold ${lastOut ? 'text-red-600' : (record.is_in_progress || record.status === 'in_progress') ? 'text-green-500' : 'text-gray-300'}`}>
-                                  {lastOut ? safeTime(lastOut) : (record.is_in_progress || record.status === 'in_progress') ? '● Active' : '—'}
-                                </p>
+                                {/* is_in_progress must win over a stale lastOut — that
+                                    value only ever reflects the LAST *completed*
+                                    session's checkout, so an employee who checked
+                                    out then checked back in later the same day
+                                    (new session) still has an old lastOut sitting
+                                    there even though they're genuinely active again. */}
+                                {(() => {
+                                  const isActive = record.is_in_progress || record.status === 'in_progress';
+                                  return (
+                                    <p className={`text-sm font-semibold ${isActive ? 'text-green-500' : lastOut ? 'text-red-600' : 'text-gray-300'}`}>
+                                      {isActive ? '● Active' : lastOut ? safeTime(lastOut) : '—'}
+                                    </p>
+                                  );
+                                })()}
                               </div>
                             </div>
 

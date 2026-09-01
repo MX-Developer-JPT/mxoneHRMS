@@ -219,9 +219,17 @@ export default function AttendanceHistory() {
                             <p className="font-medium text-sm">{safeDate(a.date, 'EEE, MMM d, yyyy')}</p>
                             <div className="flex flex-wrap gap-2 text-xs text-gray-500 mt-1">
                               {a.check_in_time && <span className="text-green-600">In: {safeTime(a.check_in_time)}</span>}
-                              {a.check_out_time
-                                ? <span className="text-red-500">Out: {safeTime(a.check_out_time)}</span>
-                                : isWorking && <span className="text-green-500 flex items-center gap-0.5"><Activity className="w-3 h-3" /> Working</span>
+                              {/* is_in_progress takes priority over a stale
+                                  check_out_time — that field only ever
+                                  reflects the LAST *completed* session's
+                                  checkout (see buildSessions), so after a
+                                  check-out then a NEW check-in later the
+                                  same day, check_out_time is still sitting
+                                  there from the earlier session even though
+                                  a fresh session is genuinely active. */}
+                              {isWorking
+                                ? <span className="text-green-500 flex items-center gap-0.5"><Activity className="w-3 h-3" /> Working</span>
+                                : a.check_out_time && <span className="text-red-500">Out: {safeTime(a.check_out_time)}</span>
                               }
                               {sessionCount > 1 && <span className="text-blue-500">{sessionCount} sessions</span>}
                               {totalBreakMins > 0 && (

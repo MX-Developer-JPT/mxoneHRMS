@@ -572,17 +572,34 @@ export default function MarkAttendance() {
     return <div className="flex items-center justify-center h-screen">Loading...</div>;
   }
 
-  const isCheckedIn = todayAttendance && todayAttendance.check_in_time && !todayAttendance.check_out_time;
-  const isCheckedOut = todayAttendance && todayAttendance.check_out_time;
+  // is_in_progress (from the multi-session engine — buildSessions/
+  // computeStatusFromSessions) is the authoritative "are they mid-session
+  // right now" flag, not merely "check_out_time is set" — an employee can
+  // check in (selfie), check out (biometric), then check in AGAIN later the
+  // same day (biometric) and start a brand new session. check_in_time/
+  // check_out_time on the record only ever reflect the FIRST session's
+  // check-in and the LAST *completed* session's check-out respectively
+  // (see buildSessions in attendancelog.js) — after that third punch,
+  // check_out_time is still sitting there from session 1, so checking it
+  // alone kept showing "checked out" / "Attendance Marked for Today" even
+  // though the employee had genuinely started a new session.
+  // Falls back to the old check_in/check_out heuristic only for records
+  // predating this field (is_in_progress genuinely absent, not just false).
+  const isCheckedIn = !!todayAttendance && (
+    todayAttendance.is_in_progress === true ||
+    (todayAttendance.is_in_progress == null && !!todayAttendance.check_in_time && !todayAttendance.check_out_time)
+  );
+  const isCheckedOut = !!todayAttendance && !!todayAttendance.check_in_time && !isCheckedIn;
   // A same-day Attendance record can already exist with no check_in_time —
   // e.g. a holiday/week_off/leave/absent placeholder, or a stray record from
   // a failed sync — and canCheckIn used to require todayAttendance to be
   // completely absent, so those employees got no Check In button at all
   // (not checked-in, not checked-out, nothing to click). The backend
   // (markSelfieAttendance) already merges into any existing same-day record
-  // via the raw_punches engine, so the only real gate here is "no check-in
-  // recorded yet".
-  const canCheckIn = !todayAttendance || !todayAttendance.check_in_time;
+  // via the raw_punches engine, so the real gate here is "not currently
+  // mid-session" — not "never checked in at all today", which used to block
+  // a legitimate second check-in (new session) after an earlier checkout.
+  const canCheckIn = !todayAttendance || !isCheckedIn;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
@@ -770,7 +787,7 @@ export default function MarkAttendance() {
                         )}
                         </div>
                         )}
-                        {!todayAttendance.check_out_time && todayAttendance.check_in_time && (
+                        {isCheckedIn && (
                         <div className="bg-blue-50 p-3 rounded-lg text-sm text-blue-800">
                         <p>
                         <strong>Checked in at: {safeDate(todayAttendance.check_in_time, 'h:mm a')}</strong>
@@ -826,7 +843,13 @@ export default function MarkAttendance() {
             {canCheckIn && (
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 md:p-4 mb-4">
                 <p className="text-sm font-medium text-yellow-800">
-                  You have not checked in today
+                  {/* Distinguishes "never checked in today" from "checked out
+                      earlier, can start a new session" — canCheckIn now
+                      covers both (see isCheckedIn above), so the message
+                      needs to too. */}
+                  {todayAttendance?.check_in_time
+                    ? "You're checked out — check in again to start a new session"
+                    : 'You have not checked in today'}
                 </p>
               </div>
             )}
