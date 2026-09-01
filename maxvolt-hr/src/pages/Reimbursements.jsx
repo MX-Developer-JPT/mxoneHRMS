@@ -90,9 +90,21 @@ export default function Reimbursements() {
 
   const statusColors = {
     pending: 'bg-yellow-100 text-yellow-800',
+    manager_approved: 'bg-blue-100 text-blue-800',
     approved: 'bg-green-100 text-green-800',
     rejected: 'bg-red-100 text-red-800',
     paid: 'bg-blue-100 text-blue-800'
+  };
+
+  // Manager decision, distinct from the request's overall status —
+  // manager_approved_by is only ever set once the manager stage has been
+  // approved (set in Approvals.jsx's built-in flow / the configurable
+  // workflow's level-1 reporting_manager step), regardless of what happens
+  // at HR's final stage afterwards.
+  const managerApprovalStatus = (claim) => {
+    if (claim.manager_approved_by) return { label: 'Manager Approved', className: 'bg-green-100 text-green-700 border-green-200' };
+    if (claim.status === 'rejected') return { label: 'Manager Rejected', className: 'bg-red-100 text-red-700 border-red-200' };
+    return { label: 'Manager Not Approved Yet', className: 'bg-gray-100 text-gray-600 border-gray-200' };
   };
 
   const expenseTypes = [
@@ -247,6 +259,7 @@ export default function Reimbursements() {
                           <Badge className={statusColors[claim.status]}>
                             {claim.status.toUpperCase()}
                           </Badge>
+                          {(() => { const m = managerApprovalStatus(claim); return m ? <Badge className={m.className}>{m.label}</Badge> : null; })()}
                         </div>
                         <p className="text-sm text-gray-600 mb-1">
                           {safeDate(claim.expense_date, 'MMM d, yyyy')}

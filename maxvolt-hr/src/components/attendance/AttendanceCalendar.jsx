@@ -16,7 +16,7 @@ const statusConfig = {
   present_leave: { color: 'bg-teal-100 text-teal-800 border-teal-300', icon: CheckCircle }
 };
 
-export default function AttendanceCalendar({ attendanceData, holidays = [], currentMonth, onMonthChange, onDayClick, dateOfJoining }) {
+export default function AttendanceCalendar({ attendanceData, holidays = [], currentMonth, onMonthChange, onDayClick, dateOfJoining, gatePasses = {} }) {
 
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(currentMonth);
@@ -94,6 +94,11 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
             const displayStatus = isApprovedLeaveDay ? 'present_leave' : status;
             const config = displayStatus ? statusConfig[displayStatus] : null;
             const Icon = config?.icon;
+            // Only a gate pass that actually reached "departed" (i.e. the
+            // employee genuinely left, not merely an approved-but-unused
+            // pass) gets marked here — matches the map AttendanceHistory.jsx
+            // builds (already filtered to departed/returned/auto_closed).
+            const gatePass = gatePasses[format(day, 'yyyy-MM-dd')] || null;
 
             return (
               <button
@@ -109,11 +114,17 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
                   displayStatus?.replace(/_/g, ' '),
                   attendance.regularised && 'Regularised',
                   attendance.working_hours > 0 && `${attendance.working_hours.toFixed(1)}h`,
+                  gatePass && `Gate Pass — ${(gatePass.outing_type || '').replace(/_/g, ' ')}${gatePass.reason ? `: ${gatePass.reason}` : ''}`,
                 ].filter(Boolean).join(' · ') : undefined}
               >
                 {attendance?.regularised && (
                   <span
                     className="absolute top-0.5 right-0.5 w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-violet-500"
+                  />
+                )}
+                {gatePass && (
+                  <span
+                    className="absolute top-0.5 left-0.5 w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-orange-500"
                   />
                 )}
                 <div className="text-[11px] sm:text-sm font-semibold leading-none">{format(day, 'd')}</div>
@@ -134,6 +145,12 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
               <span className="capitalize">{status === 'present_leave' ? 'Present (On Leave)' : status.replace('_', ' ')}</span>
             </div>
           ))}
+          {Object.keys(gatePasses).length > 0 && (
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <div className="w-3 h-3 sm:w-4 sm:h-4 rounded-full bg-orange-500" />
+              <span>Gate Pass (departed)</span>
+            </div>
+          )}
         </div>
       </div>
     </Card>

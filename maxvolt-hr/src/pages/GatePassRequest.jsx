@@ -34,6 +34,16 @@ const STATUS_LABELS = {
   cancelled: 'Cancelled',
 };
 
+// Manager decision, distinct from the request's overall status — 'approved'
+// here just means the request cleared the manager-approval gate; it can
+// still move on to departed/returned/auto_closed afterwards.
+const managerApprovalStatus = (status) => {
+  if (status === 'rejected') return { label: 'Manager Rejected', className: 'bg-red-100 text-red-700 border-red-200' };
+  if (status === 'pending_approval') return { label: 'Manager Not Approved Yet', className: 'bg-gray-100 text-gray-600 border-gray-200' };
+  if (status === 'cancelled') return null; // never reached a manager decision either way
+  return { label: 'Manager Approved', className: 'bg-green-100 text-green-700 border-green-200' };
+};
+
 const OUTING_TYPES = [
   { value: 'official_outing', label: 'Official Outing', desc: 'No LOP deduction — full day present' },
   { value: 'unofficial_outing', label: 'Unofficial Outing', desc: 'Half day LOP deducted' },
@@ -270,9 +280,12 @@ export default function GatePassRequest() {
                       </p>
                     )}
                   </div>
-                  <Badge className={STATUS_COLORS[pass.status]}>
-                    {STATUS_LABELS[pass.status]}
-                  </Badge>
+                  <div className="flex flex-col items-end gap-1.5">
+                    <Badge className={STATUS_COLORS[pass.status]}>
+                      {STATUS_LABELS[pass.status]}
+                    </Badge>
+                    {(() => { const m = managerApprovalStatus(pass.status); return m ? <Badge className={m.className}>{m.label}</Badge> : null; })()}
+                  </div>
                 </div>
               </CardContent>
             </Card>

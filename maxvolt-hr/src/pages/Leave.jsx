@@ -22,6 +22,18 @@ const STATUS_COLORS = {
   withdrawn: 'bg-gray-100 text-gray-800'
 };
 
+// Manager decision, distinct from the request's overall status — the first
+// approval level is the reporting manager (or HR standing in for them);
+// still shown even on a multi-level request still awaiting a later level.
+const managerApprovalStatus = (leave) => {
+  if (leave.status === 'rejected') return { label: 'Manager Rejected', className: 'bg-red-100 text-red-700 border-red-200' };
+  if (leave.status === 'cancelled' || leave.status === 'withdrawn') return null;
+  if (leave.status === 'approved' || (leave.current_approval_level || 1) > 1) {
+    return { label: 'Manager Approved', className: 'bg-green-100 text-green-700 border-green-200' };
+  }
+  return { label: 'Manager Not Approved Yet', className: 'bg-gray-100 text-gray-600 border-gray-200' };
+};
+
 const POLICY_COLORS = {
   CL: 'bg-blue-100 text-blue-700',
   EL: 'bg-green-100 text-green-700',
@@ -352,6 +364,7 @@ export default function Leave() {
                           {leave.current_approval_level === 2 && leave.status === 'pending' && (
                             <Badge className="bg-blue-100 text-blue-700">Level 2 Review</Badge>
                           )}
+                          {(() => { const m = managerApprovalStatus(leave); return m ? <Badge className={m.className}>{m.label}</Badge> : null; })()}
                         </div>
                         <p className="text-sm text-gray-600">
                           {safeDate(leave.start_date, 'MMM d')} – {safeDate(leave.end_date, 'MMM d, yyyy')}

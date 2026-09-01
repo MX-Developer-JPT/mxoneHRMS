@@ -5,7 +5,7 @@ import AttendanceCalendar from '../components/attendance/AttendanceCalendar';
 import AttendanceDetailsDialog from '../components/attendance/AttendanceDetailsDialog';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter, getDay } from 'date-fns';
 import { safeDate, safeTime } from '@/lib/dateUtils';
-import { ClipboardList, Coffee, Activity, Fingerprint, MapPin, Camera } from 'lucide-react';
+import { ClipboardList, Coffee, Activity, Fingerprint, MapPin, Camera, DoorOpen } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod } from '@/lib/attendanceSource';
 
@@ -18,6 +18,7 @@ export default function AttendanceHistory() {
   const [dateOfJoining, setDateOfJoining] = useState(null);
   const [attendanceData, setAttendanceData] = useState([]);
   const [holidays, setHolidays] = useState([]);
+  const [gatePasses, setGatePasses] = useState({}); // 'yyyy-MM-dd' -> gate pass, only for days the employee actually departed
   const [selectedDay, setSelectedDay] = useState(null);
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [loading, setLoading] = useState(true);
@@ -31,14 +32,28 @@ export default function AttendanceHistory() {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
 
-      const [records, holidayRecords, empRecords] = await Promise.all([
+      const [records, holidayRecords, empRecords, gatePassRecords] = await Promise.all([
         base44.entities.Attendance.filter({ user_id: currentUser.id }, '-date', 500),
         base44.entities.Holiday.list(),
         base44.entities.Employee.filter({ user_id: currentUser.id }),
+        base44.entities.GatePass.filter({ employee_user_id: currentUser.id }, '-created_date', 500),
       ]);
       setAttendanceData(records);
       setHolidays(holidayRecords);
       setDateOfJoining(empRecords?.[0]?.date_of_joining || null);
+
+      // Only mark a day when the employee actually departed on that gate
+      // pass — 'approved' (awaiting departure) or 'pending_approval'/
+      // 'rejected'/'cancelled' passes never left the gate and shouldn't be
+      // shown as a real outing. "Actually departed" == has a departure_time,
+      // which every status past 'approved' (departed/returned/auto_closed)
+      // carries. Last one wins per date if there was more than one that day.
+      const gpMap = {};
+      gatePassRecords
+        .filter(g => g.departure_time && ['departed', 'returned', 'auto_closed'].includes(g.status))
+        .forEach(g => { gpMap[g.request_date] = g; });
+      setGatePasses(gpMap);
+
       setLoading(false);
     } catch (error) {
       console.error('Error loading attendance:', error);
@@ -132,6 +147,7 @@ export default function AttendanceHistory() {
               onMonthChange={setCurrentMonth}
               onDayClick={handleDayClick}
               dateOfJoining={dateOfJoining}
+              gatePasses={gatePasses}
             />
           </CardContent>
         </Card>
@@ -208,6 +224,7 @@ export default function AttendanceHistory() {
                     const isWorking = a.is_in_progress || a.status === 'in_progress';
                     const sessionCount = a.session_count || sessions.length;
                     const method = getAttendanceMethod(a);
+                    const gatePass = gatePasses[String(a.date).slice(0, 10)] || null;
                     return (
                       <div
                         key={a.id}
@@ -232,6 +249,11 @@ export default function AttendanceHistory() {
                                 : a.check_out_time && <span className="text-red-500">Out: {safeTime(a.check_out_time)}</span>
                               }
                               {sessionCount > 1 && <span className="text-blue-500">{sessionCount} sessions</span>}
+                              {gatePass && (
+                                <span className="text-orange-600 flex items-center gap-0.5" title={gatePass.reason || ''}>
+                                  <DoorOpen className="w-3 h-3" /> Gate Pass{gatePass.outing_type ? ` — ${gatePass.outing_type.replace(/_/g, ' ')}` : ''}
+                                </span>
+                              )}
                               {totalBreakMins > 0 && (
                                 <span className="text-amber-600 flex items-center gap-0.5">
                                   <Coffee className="w-3 h-3" /> Break: {fmtMins(totalBreakMins)}

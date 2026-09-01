@@ -32,6 +32,18 @@ const statusConfig = {
   sent_back: { color: 'bg-orange-100 text-orange-800', icon: RotateCcw, label: 'Sent Back' }
 };
 
+// Manager decision, distinct from the request's overall status — the
+// existing statusConfig above already covers manager_approved as its own
+// status, but 'pending' and 'rejected' alone don't say whether the manager
+// specifically has acted, so derive it here from the fields processRegularisation
+// actually sets: manager_approved_at only ever gets set on a manager approval.
+const managerApprovalStatus = (req) => {
+  if (req.manager_approved_at) return { label: 'Manager Approved', className: 'bg-green-100 text-green-700 border-green-200' };
+  if (req.status === 'rejected') return { label: 'Manager Rejected', className: 'bg-red-100 text-red-700 border-red-200' };
+  if (req.status === 'sent_back') return { label: 'Manager Sent Back for Correction', className: 'bg-orange-100 text-orange-700 border-orange-200' };
+  return { label: 'Manager Not Approved Yet', className: 'bg-gray-100 text-gray-600 border-gray-200' };
+};
+
 const emptyForm = {
   attendance_date: '',
   requested_check_in: '',
@@ -297,6 +309,7 @@ export default function AttendanceRegularisation() {
                           <StatusIcon className="w-3 h-3" />
                           {cfg.label}
                         </Badge>
+                        {(() => { const m = managerApprovalStatus(req); return m ? <Badge className={m.className}>{m.label}</Badge> : null; })()}
                         {(req.status === 'pending' || req.status === 'sent_back') && (
                           <Button size="sm" variant="outline" onClick={() => handleEdit(req)} className="min-h-[44px] text-xs">
                             <Edit className="w-3 h-3 mr-1" /> Edit
