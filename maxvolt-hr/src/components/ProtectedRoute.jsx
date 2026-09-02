@@ -8,18 +8,23 @@ const DefaultFallback = () => (
   </div>
 );
 
-// Shown when the server can't be reached at all (network drop, backend
-// cold-start) — distinct from "session expired" because the token is still
-// valid; the user should retry, not be sent through the login screen.
+// Shown when the server can't be reached at all (client offline, network
+// drop, backend cold-start) — distinct from "session expired" because the
+// token is still valid; the user should retry, not be sent through the
+// login screen. A full page reload (not just re-running the auth check) is
+// deliberate here: it's the most robust recovery from whatever state the
+// app was in when connectivity dropped, and matches what a plain "please
+// check your internet" prompt is expected to offer.
 const NetworkErrorFallback = ({ message, onRetry }) => (
   <div className="fixed inset-0 flex items-center justify-center bg-slate-50 px-6">
     <div className="max-w-sm w-full text-center">
-      <p className="text-slate-700 font-medium mb-4">{message || 'Could not reach the server.'}</p>
+      <p className="text-slate-900 font-semibold text-lg mb-1.5">Please check your internet connection</p>
+      <p className="text-slate-500 text-sm mb-5">{message || 'Could not reach the server.'}</p>
       <button
-        onClick={onRetry}
-        className="px-4 py-2 rounded-md bg-slate-900 text-white text-sm font-medium hover:bg-slate-800"
+        onClick={() => { onRetry?.(); window.location.reload(); }}
+        className="px-5 py-2.5 rounded-md bg-slate-900 text-white text-sm font-medium hover:bg-slate-800"
       >
-        Retry
+        Reload
       </button>
     </div>
   </div>

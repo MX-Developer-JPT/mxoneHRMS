@@ -40,13 +40,32 @@ function generateOTP() {
 router.get('/me', async (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'No token' });
+
+  // JWT verification and the DB lookup are deliberately two separate
+  // try/catch blocks, not one shared catch — a single catch around both
+  // meant ANY failure (a bad/expired token, but ALSO a transient DB
+  // connection drop, pool timeout, or brief Postgres restart) came back as
+  // the same 401 "Invalid or expired token". The frontend (AuthContext's
+  // checkUserAuth) treats 401 as a genuine "this session really is
+  // invalid" signal and clears the token, logging the user out — so a
+  // momentary server/DB connectivity blip was silently logging out
+  // perfectly valid sessions instead of surfacing a retry prompt. Only an
+  // actual bad token should ever produce 401 here; a DB error is a server
+  // problem (503), which the frontend already knows to treat as "can't
+  // reach the server right now" rather than "you're logged out".
+  let decoded;
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    decoded = jwt.verify(token, JWT_SECRET);
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+  try {
     const user = await one('SELECT * FROM users WHERE id = $1', [decoded.id]);
     if (!user) return res.status(401).json({ error: 'User not found' });
     res.json(formatUser(user));
-  } catch {
-    res.status(401).json({ error: 'Invalid or expired token' });
+  } catch (e) {
+    console.error('[auth] /me user lookup failed (not a token problem):', e.message);
+    res.status(503).json({ error: 'Server temporarily unavailable — please try again' });
   }
 });
 
