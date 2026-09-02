@@ -102,6 +102,14 @@ function pickNumber(nums, mode) {
     // nonzero arrear was present.
     if (nums.length >= 4) return toNum(nums[1]) + toNum(nums[2]);
     if (nums.length === 3) return toNum(nums[1]); // [Actual, Earned, YTD] — no arrear this month
+    // [Actual, Earned] — a payslip layout with no YTD column still prints
+    // both figures; this previously fell through to nums[0] (Actual),
+    // silently overstating this row exactly whenever LOP made Actual and
+    // Earned differ. Earned (nums[1]) is still the 2nd number here.
+    if (nums.length === 2) return toNum(nums[1]);
+    // A single bare number really does mean the layout only prints one
+    // figure for this row at all (no Actual/Earned split) — that number IS
+    // the value, not a "Actual we should've ignored."
     return toNum(nums[0]);
   }
   return toNum(nums[0]);
