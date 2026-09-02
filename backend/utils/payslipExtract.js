@@ -174,6 +174,34 @@ export function extractPayslipFields(text) {
     const v = fallbackAmount(flat, ['gross']) ?? fallbackAmount(flat, ['total', 'earning']);
     if (v != null) fields.gross_salary = v;
   }
+  // Real payslips from this generator can carry many more earnings rows
+  // than NUMERIC_FIELDS enumerates by name — GWI, LTA Allowance, Books,
+  // Gym, Car Maintenance, Hard Furnishing, Education Allowance, Personal
+  // Pay, and others seen in practice, with more likely to appear as pay
+  // structures change. Rather than chase every possible label (fragile,
+  // and silently wrong again the next time HR adds a new allowance type),
+  // fold whatever isn't individually itemized into special_allowance so
+  // basic+hra+conveyance+special_allowance+incentive+overtime+bonus always
+  // reconciles to the payslip's own printed Total Earnings — verified
+  // against real payslips where the itemized components alone summed to
+  // barely 60% of gross, silently dropping the rest.
+  if (fields.gross_salary != null) {
+    const itemizedSum = (fields.basic_salary || 0) + (fields.hra || 0) + (fields.conveyance || 0)
+      + (fields.special_allowance || 0) + (fields.incentive || 0) + (fields.overtime || 0) + (fields.bonus || 0);
+    const residual = fields.gross_salary - itemizedSum;
+    if (residual !== 0) fields.special_allowance = (fields.special_allowance || 0) + residual;
+  }
+  // Same reconciliation on the deductions side — e.g. "LOAN AND ADVANCES"
+  // (seen on real payslips) isn't one of loan_deduction's matched label
+  // variants, silently dropping it from total_deductions' itemized
+  // breakdown even though total_deductions itself (read straight off its
+  // own printed line) was already correct.
+  if (fields.total_deductions != null) {
+    const itemizedDed = (fields.pf || 0) + (fields.esi || 0) + (fields.professional_tax || 0)
+      + (fields.tds || 0) + (fields.loan_deduction || 0) + (fields.other_deductions || 0);
+    const dedResidual = fields.total_deductions - itemizedDed;
+    if (dedResidual !== 0) fields.other_deductions = (fields.other_deductions || 0) + dedResidual;
+  }
   for (const [key, labels] of TEXT_FIELDS) {
     for (const label of labels) {
       // Real payslips (e.g. "EMPLOYEE ID MVE00002") often have no
