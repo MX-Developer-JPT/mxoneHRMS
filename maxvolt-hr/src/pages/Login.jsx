@@ -156,6 +156,8 @@ export default function Login() {
           <a href="/TermsOfService" className="hover:underline underline-offset-2">Terms of Service</a>
           {" · "}
           <a href="/DeleteAccountRequest" className="hover:underline underline-offset-2">Delete Account</a>
+          {" · "}
+          <a href="/Support" className="hover:underline underline-offset-2">Support</a>
         </p>
 
         <p className="text-center text-xs text-muted-foreground/50 mt-2">

@@ -16388,6 +16388,78 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       return res.json({ success: true, request_id: reqId });
     }
 
+    // Public, unauthenticated on purpose — same reasoning as
+    // requestAccountDeletion above: App Store / Play Store review (and just
+    // good practice) expects a working support contact path reachable
+    // without a login, since someone locked out of their account is
+    // exactly who needs this most. Files a reviewable request and emails
+    // both HR and the requester, rather than trying to auto-resolve anything.
+    case 'submitSupportRequest': {
+      const { name, email, subject, message } = p;
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
+        return res.status(400).json({ error: 'A valid email address is required' });
+      }
+      if (!String(message || '').trim()) {
+        return res.status(400).json({ error: 'Please describe what you need help with' });
+      }
+      const reqId = uuidv4();
+      const d = {
+        id: reqId,
+        name: (name || '').trim().slice(0, 200),
+        email: String(email).trim().toLowerCase(),
+        subject: (subject || '').trim().slice(0, 200) || 'Support Request',
+        message: String(message).trim().slice(0, 5000),
+        status: 'open',
+        // Populated when a logged-in user reaches this page (App Settings /
+        // Helpdesk link carry their session) — null for the public login-page
+        // path, where there's no token to identify them by.
+        user_id: cu?.id || null,
+        submitted_at: new Date().toISOString(),
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'SupportRequest',$2,'open',$3)", [reqId, d.user_id, JSON.stringify(d)]);
+
+      try {
+        await sendEmail({
+          to: 'hr@maxvoltenergy.com',
+          subject: `[Support] ${d.subject} — ${d.name || d.email}`,
+          html: `<div style="font-family:Arial,sans-serif;font-size:14px">
+            <p>A support request was submitted${d.user_id ? ' from inside the app' : ' from the public support page'}.</p>
+            <p><strong>Name:</strong> ${d.name || '—'}</p>
+            <p><strong>Email:</strong> ${d.email}</p>
+            <p><strong>Subject:</strong> ${d.subject}</p>
+            <p><strong>Message:</strong></p>
+            <p style="white-space:pre-wrap">${d.message}</p>
+            <p style="color:#888;font-size:12px">Request ID: ${reqId}</p>
+          </div>`,
+          meta: { type: 'support_request' },
+        });
+      } catch (e) { console.error('[support-request] HR notify failed:', e.message); }
+
+      try {
+        await sendEmail({
+          to: d.email,
+          subject: 'We received your support request — Maxvolt One',
+          html: `<div style="font-family:Arial,sans-serif;font-size:14px">
+            <p>Hi${d.name ? ' ' + d.name : ''},</p>
+            <p>We've received your support request and our team will get back to you shortly.</p>
+            <p style="color:#888;font-size:12px">Reference: ${reqId}</p>
+          </div>`,
+        });
+      } catch (e) { console.error('[support-request] confirmation email failed:', e.message); }
+
+      // Notify HR/admin in-app too, for anyone already logged in and watching notifications.
+      try {
+        const hrRows = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+        for (const hr of hrRows) await notify(hr.id, {
+          title: 'New Support Request',
+          message: `${d.name || d.email}: ${d.subject}`,
+          type: 'info', link: '/AdminPanel',
+        });
+      } catch (e) { console.error('[support-request] in-app notify failed:', e.message); }
+
+      return res.json({ success: true, request_id: reqId });
+    }
+
     /* ── Adoption analytics — event logging + dashboard ──────────────────
        Lightweight usage-event log (entities type='UsageEvent') that
        powers the Admin Panel's Adoption Dashboard: activation, active-user

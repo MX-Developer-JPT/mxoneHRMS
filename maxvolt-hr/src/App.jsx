@@ -39,6 +39,7 @@ import ApplyForJob from './pages/ApplyForJob';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
 import DeleteAccountRequest from './pages/DeleteAccountRequest';
+import Support from './pages/Support';
 import CareersPage from './pages/CareersPage';
 import OfferAcceptPage from './pages/OfferAcceptPage';
 import CandidateDocumentPortal from './pages/CandidateDocumentPortal';
@@ -535,6 +536,7 @@ function App() {
           <Route path="/PrivacyPolicy" element={<PrivacyPolicy />} />
           <Route path="/TermsOfService" element={<TermsOfService />} />
           <Route path="/DeleteAccountRequest" element={<DeleteAccountRequest />} />
+          <Route path="/Support" element={<Support />} />
           <Route path="/PublicJobBoard" element={<PublicJobBoard />} />
           <Route path="/ApplyForJob" element={<ApplyForJob />} />
           <Route path="/PublicBusinessCard" element={<PublicBusinessCard />} />
