@@ -171,8 +171,27 @@ Firebase Console can give you:
    real system-tray notifications on iOS from that point on, same code
    path as Android.
 
-No `AppDelegate.swift` edits needed — the plugin handles the APNs↔FCM
-token exchange internally.
+`AppDelegate.swift` DOES need two small delegate methods (already added —
+see `didRegisterForRemoteNotificationsWithDeviceToken`/
+`didFailToRegisterForRemoteNotificationsWithError`): the plugin's native
+Swift code (`FirebaseMessagingPlugin.swift`) only picks up the APNs device
+token by listening for Capacitor's own `.capacitorDidRegisterForRemoteNotifications`
+notification — that notification is never posted unless the app's
+AppDelegate explicitly forwards it there. Without those two methods,
+`registerForRemoteNotifications()` still "succeeds" from iOS's own point of
+view, but the resulting device token has nowhere to go, no FCM token is
+ever produced, and the app silently never receives a single push
+notification — with no error anywhere to explain why. If you're seeing
+"notifications not showing" on iOS on a build from before this fix, that's
+almost certainly why; rebuild and reinstall.
+
+Also double-check §2.3 above was actually done in Xcode — `project.pbxproj`
+has no `CODE_SIGN_ENTITLEMENTS`/`aps-environment` trace unless the Push
+Notifications capability has been added there at least once (it writes an
+`App.entitlements` file and wires it into the build settings itself; don't
+hand-create one). Without it, APNs will refuse to actually deliver
+notifications to the device even once the AppDelegate/token side above is
+correct.
 
 ---
 
@@ -220,6 +239,30 @@ employee in the toggle's own description.
   `@transistorsoft/capacitor-background-geolocation`, which has true native
   geofence regions and a production license fee, if the free option stops
   being maintained).
+
+### iOS-specific gotchas (if "background geofencing isn't working")
+- **"Always" permission needs a second app launch to fully escalate.** On
+  iOS 13+, Apple only shows the "When In Use" prompt on the very first
+  permission request even when the app asks for Always — the "Always"
+  upgrade prompt only appears on a *later* `requestAlwaysAuthorization()`
+  call once status is already `.authorizedWhenInUse` (see
+  `addWatcher` in the plugin's `Plugin.swift`). `ensureBackgroundGeofence`
+  (`Layout.jsx`) re-runs this on every app resume, so it does self-heal,
+  but only the *next* time the app is opened/resumed after the first
+  grant — check Settings ▸ Maxvolt One ▸ Location is actually set to
+  **Always**, not "While Using the App", if tracking stops the moment the
+  app backgrounds.
+- **Force-quitting the app from the app switcher stops tracking**, and it
+  will **not** auto-resume in the background afterward. This plugin uses
+  continuous location updates (`allowsBackgroundLocationUpdates`), which
+  iOS keeps alive indefinitely while merely backgrounded — but a
+  user-initiated force-quit (swipe up/away in the app switcher) is treated
+  by iOS as "don't restart this for background location," unlike region
+  monitoring or significant-location-change, which iOS *does* relaunch an
+  app for even after a force-quit. If employees habitually swipe the app
+  away, tracking will need them to reopen it (this is an iOS platform
+  behavior, not a bug in this app's code) — see the `@transistorsoft`
+  alternative noted above if true survive-force-quit behavior is required.
 
 ### Testing
 1. Enable the toggle on a real device (simulators don't reliably deliver

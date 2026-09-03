@@ -79,6 +79,23 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Called when the application is about to terminate. Save data if appropriate. See also applicationDidEnterBackground:.
     }
 
+    // Required for push notifications to work at all — @capacitor-firebase/messaging's
+    // native plugin (FirebaseMessagingPlugin.swift) only picks up the APNs
+    // device token by listening for Capacitor's own `.capacitorDidRegisterForRemoteNotifications`
+    // notification; that notification is never posted unless THIS delegate
+    // method explicitly forwards it. Without it, UIApplication.registerForRemoteNotifications()
+    // (called by the plugin) still "succeeds" from iOS's point of view, but the
+    // resulting device token has nowhere to go — Messaging.messaging().apnsToken
+    // never gets set, no FCM token is ever produced, and the app silently never
+    // receives a single push notification, with no error surfaced anywhere.
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications, object: deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications, object: error)
+    }
+
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
         // Called when the app was launched with a url. Feel free to add additional processing here,
         // but if you want the App API to support tracking app url opens, make sure to keep this call
