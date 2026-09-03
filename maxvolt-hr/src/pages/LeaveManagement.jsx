@@ -287,6 +287,21 @@ export default function LeaveManagement() {
       const buf = await file.arrayBuffer();
       const XLSX = await import('xlsx');
       const wb = XLSX.read(buf, { type: 'array' });
+      // A full multi-sheet Leave Book ledger (e.g. "LEAVE DETAILS JAN-DEC.xlsx",
+      // sheets: Other EMP Data / Manager Leave Data / Intern Leave data / Left
+      // Employee) is a completely different format from this simple single-sheet
+      // importer — it has no "Employee Code" column at all (uses "Card No"
+      // instead), so every row would silently fail to match here. Detect that
+      // specific file shape up front and point at the right tool instead of
+      // just reporting "no rows found" with no explanation.
+      const LEAVE_BOOK_SHEET_NAMES = new Set(['other emp data', 'manager leave data', 'intern leave data', 'left employee']);
+      const looksLikeLeaveBook = wb.SheetNames.some(n => LEAVE_BOOK_SHEET_NAMES.has(n.trim().toLowerCase()));
+      if (looksLikeLeaveBook) {
+        toast.error('This looks like the full Leave Book ledger (multiple sheets) — use "Import Leave History" on the Leave History tab instead, which reads all of its sheets.', { duration: 10000 });
+        setImportingBalances(false);
+        e.target.value = '';
+        return;
+      }
       const ws = wb.Sheets[wb.SheetNames[0]];
       const parsed = XLSX.utils.sheet_to_json(ws, { defval: '' });
       const rows = parsed
@@ -424,7 +439,7 @@ export default function LeaveManagement() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-xs text-gray-500 mb-3">Download the template to get every active employee with their current balances pre-filled, edit the leave-type columns (e.g. CL/SL/EL), then re-upload to update balances in bulk. Existing used/pending days are preserved — only the total allocation changes.</p>
+                  <p className="text-xs text-gray-500 mb-3">Download the template to get every active employee with their current balances pre-filled, edit the leave-type columns (e.g. CL/SL/EL), then re-upload to update balances in bulk. Existing used/pending days are preserved — only the total allocation changes. <strong>Have the full multi-sheet Leave Book ledger instead</strong> (e.g. "LEAVE DETAILS JAN-DEC.xlsx")? Use <strong>Import Leave History</strong> on the Leave History tab — this simple importer only reads one sheet and won't accept it.</p>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
