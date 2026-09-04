@@ -24,6 +24,13 @@ export default function ShiftManagement() {
   const [deptAssignments, setDeptAssignments] = useState({});
   const [deptAssigning, setDeptAssigning] = useState(false);
   const [employeeSearch, setEmployeeSearch] = useState('');
+  // HR/admin/management: full access (shift definitions + assign anyone).
+  // A department shift manager (Employee.is_shift_manager): assignment only,
+  // scoped to their own department — see loadData/assignEmployeeShift.
+  const [isPrivileged, setIsPrivileged] = useState(true);
+  const [myDepartment, setMyDepartment] = useState(null);
+  const [canAccess, setCanAccess] = useState(true); // false once loadData confirms neither privileged nor a granted shift manager
+  const [accessChecked, setAccessChecked] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     start_time: '',
@@ -40,13 +47,16 @@ export default function ShiftManagement() {
 
   const loadData = async () => {
     try {
-      const shiftsData = await base44.entities.Shift.list();
-      const empsData = await base44.entities.Employee.list();
-      
+      const [currentUser, shiftsData, empsData] = await Promise.all([
+        base44.auth.me(),
+        base44.entities.Shift.list(),
+        base44.entities.Employee.list(),
+      ]);
+
       // Fetch users to enrich employee data
       const usersResponse = await base44.functions.invoke('getAllUsers', {});
       const allUsers = usersResponse.data.users;
-      
+
       // NOTE: shift assignment intentionally still includes HR/admin/recruiter
       // — they're operators of the app for org-chart/directory/headcount
       // purposes, but still need a shift assigned for attendance calculation.
@@ -55,8 +65,28 @@ export default function ShiftManagement() {
         user: allUsers.find(u => u.id === emp.user_id)
       }));
 
+      const role = currentUser.custom_role || currentUser.role;
+      const privileged = ['hr', 'admin', 'management'].includes(role);
+      const ownEmp = enrichedEmps.find(e => e.user_id === currentUser.id) || null;
+      const isShiftManager = !privileged && !!ownEmp?.is_shift_manager;
+      setIsPrivileged(privileged);
+      setCanAccess(privileged || isShiftManager);
+      setMyDepartment(ownEmp?.department || null);
+      // A department shift manager only ever sees/acts on their own
+      // department's roster — the backend enforces this independently
+      // (assignEmployeeShift), this is just so the UI doesn't even show
+      // employees they couldn't act on anyway. Anyone with neither
+      // privileged access nor the shift-manager grant sees nothing at all
+      // (this page has no nav-level gate, so it's reachable by direct URL).
+      const scopedEmps = privileged
+        ? enrichedEmps
+        : isShiftManager
+          ? enrichedEmps.filter(e => e.department === ownEmp.department)
+          : [];
+
       setShifts(shiftsData);
-      setEmployees(enrichedEmps);
+      setEmployees(scopedEmps);
+      setAccessChecked(true);
     } catch (error) {
       console.error('Error loading data:', error);
     }
@@ -133,14 +163,20 @@ export default function ShiftManagement() {
     }
   };
 
+  // Both assignment paths go through the assignEmployeeShift function (not
+  // a raw Employee.update) so the department-scoped shift-manager
+  // authorization is enforced server-side identically for HR/admin and for
+  // a granted shift manager — see backend/routes/functions.js.
   const assignShift = async (employeeId, shiftId) => {
     try {
-      await base44.entities.Employee.update(employeeId, { shift_id: shiftId });
+      const res = await base44.functions.invoke('assignEmployeeShift', { employee_ids: [employeeId], shift_id: shiftId === 'none' ? null : shiftId });
+      const d = res.data || res;
+      if (!d.success) { toast.error(d.error || 'Failed to assign shift'); return; }
       toast.success('Shift assigned successfully');
       loadData();
     } catch (error) {
       console.error('Error assigning shift:', error);
-      toast.error('Failed to assign shift');
+      toast.error(error.message || 'Failed to assign shift');
     }
   };
 
@@ -151,11 +187,12 @@ export default function ShiftManagement() {
     try {
       let count = 0;
       for (const [dept, shiftId] of toAssign) {
-        const deptEmps = employees.filter(e => e.status === 'active' && e.department === dept);
-        await Promise.all(deptEmps.map(emp =>
-          base44.entities.Employee.update(emp.id, { shift_id: shiftId === 'none' ? null : shiftId })
-        ));
-        count += deptEmps.length;
+        const deptEmpIds = employees.filter(e => e.status === 'active' && e.department === dept).map(e => e.id);
+        if (!deptEmpIds.length) continue;
+        const res = await base44.functions.invoke('assignEmployeeShift', { employee_ids: deptEmpIds, shift_id: shiftId === 'none' ? null : shiftId });
+        const d = res.data || res;
+        if (!d.success) throw new Error(d.error || `Failed to assign shift for ${dept}`);
+        count += d.updated;
       }
       toast.success(`Shift assigned to ${count} employee${count !== 1 ? 's' : ''} across ${toAssign.length} department${toAssign.length !== 1 ? 's' : ''}`);
       setShowDeptDialog(false);
@@ -165,6 +202,21 @@ export default function ShiftManagement() {
       toast.error('Failed to assign shifts: ' + e.message);
     } finally {
       setDeptAssigning(false);
+    }
+  };
+
+  const toggleShiftManager = async (emp) => {
+    const next = !emp.is_shift_manager;
+    try {
+      const res = await base44.functions.invoke('setShiftManager', { employee_id: emp.id, is_shift_manager: next });
+      const d = res.data || res;
+      if (!d.success) { toast.error(d.error || 'Failed to update'); return; }
+      toast.success(next
+        ? `${emp.display_name || emp.user?.full_name} can now reassign shifts within ${emp.department || 'their department'}`
+        : `Shift-management rights revoked for ${emp.display_name || emp.user?.full_name}`);
+      loadData();
+    } catch (e) {
+      toast.error(e.message || 'Failed to update');
     }
   };
 
@@ -250,6 +302,18 @@ export default function ShiftManagement() {
       })
     : activeEmployees;
 
+  if (accessChecked && !canAccess) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6 flex items-center justify-center">
+        <div className="text-center max-w-sm">
+          <AlertCircle className="w-10 h-10 mx-auto text-gray-400 mb-3" />
+          <h2 className="font-semibold text-gray-800 mb-1">Access Denied</h2>
+          <p className="text-sm text-gray-500">You don't have shift-management access. Ask HR/Admin to grant you shift-manager rights for your department if you need to reassign shifts for your team.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -328,8 +392,10 @@ export default function ShiftManagement() {
               </DialogContent>
             </Dialog>
 
-            {/* Import Shift Assignments dialog */}
-            <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+            {/* Import Shift Assignments dialog — HR/admin only (no per-row
+                department check in importShiftAssignments, so this stays
+                out of a department shift manager's reduced toolset). */}
+            {isPrivileged && <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
               <DialogTrigger asChild>
                 <Button variant="outline" onClick={() => { setImportRows([]); setImportResult(null); }}>
                   <Upload className="w-4 h-4 mr-2" />
@@ -399,9 +465,12 @@ export default function ShiftManagement() {
                   )}
                 </div>
               </DialogContent>
-            </Dialog>
+            </Dialog>}
 
-            <Dialog open={showDialog} onOpenChange={setShowDialog}>
+            {/* Shift definitions (create/edit) stay HR/admin-only — a
+                department shift manager may only assign/reassign EXISTING
+                shifts, never define new ones or change shared shift settings. */}
+            {isPrivileged && <Dialog open={showDialog} onOpenChange={setShowDialog}>
               <DialogTrigger asChild>
                 <Button onClick={() => { setEditingShift(null); resetForm(); }}>
                   <Plus className="w-4 h-4 mr-2" />
@@ -449,6 +518,12 @@ export default function ShiftManagement() {
                       onChange={(e) => setFormData({ ...formData, end_time: e.target.value })}
                       required
                     />
+                    {/* Overnight shift note — end <= start (e.g. 20:00 -> 08:00) is fully
+                        supported: attendance/late/overtime/gate-pass calculations all
+                        correctly anchor the shift's end to the day AFTER it started. */}
+                    {formData.start_time && formData.end_time && formData.end_time <= formData.start_time && (
+                      <p className="text-xs text-indigo-600 mt-1">Overnight shift — ends at {formData.end_time} the following day.</p>
+                    )}
                   </div>
                   <div>
                     <Label>Grace Period (minutes)</Label>
@@ -469,7 +544,7 @@ export default function ShiftManagement() {
                 </div>
               </form>
             </DialogContent>
-            </Dialog>
+            </Dialog>}
           </div>
         </div>
 
@@ -488,14 +563,16 @@ export default function ShiftManagement() {
                       {shift.start_time} - {shift.end_time}
                     </p>
                   </div>
-                  <div className="flex gap-2">
-                    <Button size="icon" variant="ghost" onClick={() => handleEdit(shift)}>
-                      <Edit className="w-4 h-4" />
-                    </Button>
-                    <Button size="icon" variant="ghost" onClick={() => handleDelete(shift.id)}>
-                      <Trash2 className="w-4 h-4 text-red-600" />
-                    </Button>
-                  </div>
+                  {isPrivileged && (
+                    <div className="flex gap-2">
+                      <Button size="icon" variant="ghost" onClick={() => handleEdit(shift)}>
+                        <Edit className="w-4 h-4" />
+                      </Button>
+                      <Button size="icon" variant="ghost" onClick={() => handleDelete(shift.id)}>
+                        <Trash2 className="w-4 h-4 text-red-600" />
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -541,22 +618,40 @@ export default function ShiftManagement() {
                       </div>
                     </div>
                   </div>
-                  <Select
-                    value={emp.shift_id || 'none'}
-                    onValueChange={(value) => assignShift(emp.id, value === 'none' ? null : value)}
-                  >
-                    <SelectTrigger className="w-full sm:w-64">
-                      <SelectValue placeholder="Select Shift" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No Shift</SelectItem>
-                      {shifts.map(shift => (
-                        <SelectItem key={shift.id} value={shift.id}>
-                          {shift.name} ({shift.start_time} - {shift.end_time})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Select
+                      value={emp.shift_id || 'none'}
+                      onValueChange={(value) => assignShift(emp.id, value === 'none' ? null : value)}
+                    >
+                      <SelectTrigger className="w-full sm:w-64">
+                        <SelectValue placeholder="Select Shift" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No Shift</SelectItem>
+                        {shifts.map(shift => (
+                          <SelectItem key={shift.id} value={shift.id}>
+                            {shift.name} ({shift.start_time} - {shift.end_time})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {/* Grants this employee the right to reassign shifts for
+                        their own department's employees — see
+                        assignEmployeeShift/setShiftManager on the backend.
+                        HR/admin-only control. */}
+                    {isPrivileged && (
+                      <Button
+                        size="sm"
+                        variant={emp.is_shift_manager ? 'default' : 'outline'}
+                        className={emp.is_shift_manager ? 'bg-indigo-600 hover:bg-indigo-700' : ''}
+                        onClick={() => toggleShiftManager(emp)}
+                        title={`${emp.is_shift_manager ? 'Revoke' : 'Grant'} shift-management rights for ${emp.department || 'their department'}`}
+                      >
+                        <Users className="w-3.5 h-3.5 mr-1" />
+                        {emp.is_shift_manager ? 'Shift Manager' : 'Make Shift Manager'}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
               {filteredEmployees.length === 0 && (

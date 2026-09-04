@@ -3,7 +3,7 @@
 // 2. Employees who checked in but never checked out before 2 AM the next day → marked absent.
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
-import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours } from '../routes/attendancelog.js';
+import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, isOvernightShift, shiftEndDateTime } from '../routes/attendancelog.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -11,6 +11,26 @@ const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', '
 // "Today" in IST as YYYY-MM-DD, optionally shifted by a number of whole days.
 function istDateString(dayOffset = 0) {
   return new Date(Date.now() + IST_OFFSET_MS + dayOffset * 86400000).toISOString().slice(0, 10);
+}
+
+// Grace window after an overnight shift's real (next-day) end time before
+// the "forgot to check out" sweeps below are willing to force-close it —
+// otherwise a night-shift employee legitimately still mid-shift (e.g. their
+// 20:00->08:00 shift's Sep-1-dated record, checked at 2 AM Sep 2 while
+// they're still hours from checkout) would get auto-closed hours before
+// their shift even ends. Matches the ~2h the day-shift "2 AM cutoff" already
+// gives an 18:00 shift end before this job would otherwise run into it.
+const OVERNIGHT_CLOSE_GRACE_MS = 2 * 60 * 60 * 1000;
+
+// True if an open (still in-progress) session belonging to this shift+date
+// hasn't actually reached its own shift end yet — i.e. the sweep calling
+// this should leave it alone rather than force-closing a legitimately
+// still-open overnight shift.
+function stillWithinOvernightShift(dateStr, shift) {
+  if (!isOvernightShift(shift)) return false;
+  const expectedEnd = shiftEndDateTime(dateStr, shift).getTime();
+  const nowIST = Date.now() + IST_OFFSET_MS;
+  return nowIST < expectedEnd + OVERNIGHT_CLOSE_GRACE_MS;
 }
 
 async function getDefaultShift() {
@@ -147,6 +167,7 @@ export async function closeUnfinishedSessions(targetDate) {
       empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
     }
     const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+    if (stillWithinOvernightShift(date, shift)) continue; // legitimately still mid-shift, not forgotten
     const halfDayHours = await getHalfDayOverrideHours(date, shift);
 
     const sessionData = closeTrailingOpenSession(rawPunches);
@@ -217,6 +238,7 @@ export async function closeStaleOpenSessions() {
       empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
     }
     const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+    if (stillWithinOvernightShift(d.date, shift)) continue; // legitimately still mid-shift, not forgotten
     const halfDayHours = await getHalfDayOverrideHours(d.date, shift);
 
     const sessionData = closeTrailingOpenSession(rawPunches);
@@ -286,13 +308,19 @@ export async function closeStaleGeofenceSessions() {
     const openedMs = new Date(openSession.check_in).getTime();
     if (!isFinite(openedMs)) continue;
     const hoursOpen = (nowIST.getTime() - openedMs) / 3600000;
-    if (hoursOpen < STALE_GEOFENCE_SESSION_HOURS) continue;
 
     if (!(d.user_id in empCache)) {
       const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
       empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
     }
     const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+    // A flat 10h threshold wrongly flags a normal overnight shift (e.g.
+    // 20:00->08:00 = 12h) as "stale" hours before it's actually done —
+    // use whichever is longer: the default threshold, or this employee's
+    // own scheduled shift length plus a couple hours' buffer.
+    const staleThresholdHours = Math.max(STALE_GEOFENCE_SESSION_HOURS, Number(shift?.working_hours || 9) + 2);
+    if (hoursOpen < staleThresholdHours) continue;
+    if (stillWithinOvernightShift(date, shift)) continue; // legitimately still mid-shift, not stale
     const halfDayHours = await getHalfDayOverrideHours(date, shift);
 
     const rawPunches = [...(d.raw_punches || []), { time: nowIso, device_direction: 'OUT' }];
@@ -498,17 +526,24 @@ export async function sendPreShiftReminders() {
 
 export async function sendShiftEndReminders() {
   const date = istDateString(0);
-  const nowMin = nowISTMinutes();
+  // A still-open record from YESTERDAY needs checking too — an overnight
+  // shift (e.g. 20:00 -> 08:00) files its record under the day it STARTED,
+  // so by the time its end time actually arrives, istDateString(0) has
+  // already rolled over to the next calendar day and a today-only query
+  // would never find it, meaning this reminder simply never fired for any
+  // overnight-shift employee.
+  const yesterday = istDateString(-1);
 
   const rows = await all(
-    "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'is_in_progress'='true'",
-    [date]
+    "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' = ANY($1) AND data::jsonb->>'is_in_progress'='true'",
+    [[date, yesterday]]
   );
   if (rows.length === 0) return { date, checked: 0, sent: 0 };
 
   const defaultShift = await getDefaultShift();
   const empCache = {};
   let sent = 0;
+  const nowMs = Date.now() + IST_OFFSET_MS;
 
   for (const row of rows) {
     const d = JSON.parse(row.data);
@@ -519,10 +554,13 @@ export async function sendShiftEndReminders() {
       empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
     }
     const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
-    const endMin = toMinutes(shift.end_time || defaultShift.end_time);
-    const windowStart = endMin + END_REMINDER_GRACE_MIN;
-    const windowEnd = windowStart + END_REMINDER_WINDOW_MIN;
-    if (nowMin < windowStart || nowMin >= windowEnd) continue;
+    // Real datetime comparison (not clock-minutes-of-day) — correctly
+    // anchors an overnight shift's end to the day AFTER d.date, and works
+    // identically for a same-day shift (shiftEndDateTime is a no-op then).
+    const endMs = shiftEndDateTime(d.date, shift).getTime();
+    const windowStart = endMs + END_REMINDER_GRACE_MIN * 60000;
+    const windowEnd = windowStart + END_REMINDER_WINDOW_MIN * 60000;
+    if (nowMs < windowStart || nowMs >= windowEnd) continue;
 
     await notifyUser(d.user_id, {
       title: "Don't forget to check out",

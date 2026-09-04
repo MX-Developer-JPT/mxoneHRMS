@@ -15,17 +15,10 @@
 //               (NOT 'returned'), attendance still closed out as half_day
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
+import { shiftEndDateTime } from '../routes/attendancelog.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-function nowISTMinutes() {
-  const nowIST = new Date(Date.now() + IST_OFFSET_MS);
-  return nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
-}
-function toMinutes(hhmm) {
-  const [h, m] = String(hhmm || '00:00').split(':').map(Number);
-  return (h || 0) * 60 + (m || 0);
-}
 function istNowISO() {
   return new Date(Date.now() + IST_OFFSET_MS).toISOString();
 }
@@ -65,7 +58,7 @@ async function getHrAdminUserIds() {
 }
 
 export async function closeUnreturnedGatePasses() {
-  const nowMin = nowISTMinutes();
+  const nowMs = Date.now() + IST_OFFSET_MS;
   const nowISO = istNowISO();
   const today = istDateString();
 
@@ -87,8 +80,15 @@ export async function closeUnreturnedGatePasses() {
     }
     const emp = empCache[pass.employee_user_id];
     const shift = await getShiftForEmployee(emp, defaultShift);
-    const endMin = toMinutes(shift.end_time || defaultShift.end_time || '18:00');
-    if (nowMin < endMin) continue; // this employee's shift hasn't ended yet
+    // Real datetime comparison, anchored to the day the gate pass was
+    // requested — correctly lands an overnight shift's (e.g. 20:00->08:00)
+    // end on the day AFTER request_date instead of comparing bare
+    // clock-minutes, which previously read almost any evening time as
+    // "past" an 08:00 end (480 minutes) and closed the pass out within
+    // minutes of departure.
+    const passDateForShift = pass.request_date || today;
+    const endMs = shiftEndDateTime(passDateForShift, { ...defaultShift, ...shift }).getTime();
+    if (nowMs < endMs) continue; // this employee's shift hasn't ended yet
 
     const outingType = pass.outing_type;
     const isHalfDayType = outingType === 'half_day';

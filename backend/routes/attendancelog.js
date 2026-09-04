@@ -45,6 +45,59 @@ async function authMiddleware(req, res, next) {
   next();
 }
 
+// A shift "crosses midnight" (night shift, e.g. 20:00 -> 08:00) when its end
+// time is numerically <= its start time on the clock — the end genuinely
+// falls on the calendar day AFTER the day the shift started.
+export function isOvernightShift(shift) {
+  const toMins = (t) => { const [h, m] = String(t || '00:00').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+  return toMins(shift?.end_time) <= toMins(shift?.start_time);
+}
+
+// Real Date the shift for `dateStr` is expected to END — correctly landing
+// on the day AFTER `dateStr` for an overnight shift (e.g. a 20:00 -> 08:00
+// shift dated Sep 1 ends 08:00 on Sep 2, not "08:00 Sep 1", which would be
+// BEFORE the shift even started). Returned as a real UTC-instant Date built
+// from the "store IST digits as UTC" convention timestamps use throughout
+// this app, so it can be compared directly against `new Date(Date.now() +
+// IST_OFFSET_MS)` the way callers already compute "now" in IST.
+export function shiftEndDateTime(dateStr, shift) {
+  const [eh, em] = String(shift?.end_time || '18:00').split(':').map(Number);
+  const end = new Date(dateStr + 'T00:00:00Z');
+  end.setUTCHours(eh || 0, em || 0, 0, 0);
+  if (isOvernightShift(shift)) end.setUTCDate(end.getUTCDate() + 1);
+  return end;
+}
+
+// Which Attendance record does this punch actually belong to? For a normal
+// day shift it's always "today" (punchDate). For an overnight shift, a punch
+// that lands in the early-morning hours with no record yet for today is very
+// likely last night's closing punch (check-in filed under yesterday's date,
+// physically punched after midnight) rather than the start of a brand-new
+// session — reroute it to yesterday's record, but ONLY while that record is
+// still open (is_in_progress); a fresh check-in should always start today's
+// own record even on an overnight shift, never get silently appended to an
+// already-closed previous day.
+async function resolveAttendanceRow(userId, punchDate, shift) {
+  const sameDay = await one(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1",
+    [userId, punchDate]
+  );
+  if (sameDay || !isOvernightShift(shift)) return { date: punchDate, row: sameDay };
+
+  const y = new Date(punchDate + 'T00:00:00Z');
+  y.setUTCDate(y.getUTCDate() - 1);
+  const yesterday = y.toISOString().slice(0, 10);
+  const prevDay = await one(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1",
+    [userId, yesterday]
+  );
+  if (prevDay) {
+    const pd = JSON.parse(prevDay.data);
+    if (pd.is_in_progress) return { date: yesterday, row: prevDay };
+  }
+  return { date: punchDate, row: null };
+}
+
 // Resolve shift for an employee (by shift_id or default shift)
 async function getShift(empData) {
   if (empData?.shift_id) {
@@ -308,6 +361,7 @@ export function computeStatusFromSessions(sessionData, shift, effectiveShiftHour
   const { total_working_minutes, is_in_progress, check_in_time, check_out_time } = sessionData;
   const shiftStart = toMins(shift.start_time || '09:00');
   const shiftEnd   = toMins(shift.end_time   || '18:00');
+  const overnight  = shiftEnd <= shiftStart; // e.g. 20:00 -> 08:00 crosses midnight
   const grace      = Number(shift.grace_period_minutes || 15);
   const shiftHours = effectiveShiftHours > 0 ? Number(effectiveShiftHours) : Number(shift.working_hours || 9);
 
@@ -330,7 +384,15 @@ export function computeStatusFromSessions(sessionData, shift, effectiveShiftHour
   }
 
   if (check_in_time) {
-    const firstInMins = isoToMins(check_in_time);
+    let firstInMins = isoToMins(check_in_time);
+    // Overnight shift, arrived after midnight: a clock-time at or before the
+    // shift's own end (e.g. 00:30 for a 20:00->08:00 shift) is really an
+    // extremely late arrival on the day AFTER the shift started, not an
+    // impossibly-early one — shift it a full day forward so it compares
+    // correctly against shiftStart+grace instead of never registering as late.
+    // An arrival BEFORE shiftStart same evening (e.g. 19:30, early) is left
+    // alone — only the early-morning window is ambiguous enough to need this.
+    if (overnight && firstInMins !== null && firstInMins <= shiftEnd) firstInMins += 24 * 60;
     if (firstInMins !== null && firstInMins > shiftStart + grace) {
       late_minutes = firstInMins - shiftStart - grace;
       if (status === 'present') status = 'late';
@@ -460,14 +522,11 @@ async function processRecord(record) {
     };
   }
 
-  // 3. Find or create today's Attendance record
-  const row = await one(
-    "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1",
-    [userId, punchDate]
-  );
-
+  // 3. Find or create the Attendance record this punch belongs to — for an
+  // overnight shift that's not always punchDate itself (see resolveAttendanceRow).
   const shift = await getShift(empData);
-  const halfDayHours = await getHalfDayOverrideHours(punchDate, shift);
+  const { date: attDate, row } = await resolveAttendanceRow(userId, punchDate, shift);
+  const halfDayHours = await getHalfDayOverrideHours(attDate, shift);
   const newPunch = { time: punchIso, device_direction: direction };
 
   if (!row) {
@@ -477,7 +536,7 @@ async function processRecord(record) {
     const { status } = statusResult;
     const id = uuidv4();
     const attData = {
-      id, user_id: userId, date: punchDate,
+      id, user_id: userId, date: attDate,
       source: 'biometric', biometric_synced: true, device_id: deviceName,
       employee_code: empData?.employee_code || codeStr,
       ...sd, ...statusResult,

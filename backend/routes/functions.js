@@ -6,7 +6,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
-import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours } from './attendancelog.js';
+import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
@@ -3823,7 +3823,24 @@ router.post('/:name', async (req, res) => {
         if (dist > allowed) return res.json({ success: false, error: `Reported position is ${Math.round(dist)}m from ${ngFence.name} (allowed ${Math.round(allowed)}m)`, code: 'OUTSIDE_FENCE' });
       }
 
-      const ngAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, evDate]);
+      // Resolve shift up front — an overnight shift (e.g. 20:00 -> 08:00)
+      // needs it to know whether an 'exit' event with nothing open for
+      // today is actually the closing punch of a still-open session dated
+      // YESTERDAY (checked in last night, walking out past midnight),
+      // rather than a plain "not checked in". An 'enter' event still
+      // always starts a fresh record dated today, even on an overnight shift.
+      let ngShiftForDate = { start_time: '09:00', end_time: '18:00' };
+      if (ngEmp.shift_id) {
+        const ngShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [ngEmp.shift_id]);
+        if (ngShiftRow) ngShiftForDate = JSON.parse(ngShiftRow.data);
+      }
+      let ngAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, evDate]);
+      let ngAttDate = evDate;
+      if (!ngAttRow && event === 'exit' && isOvernightShift(ngShiftForDate)) {
+        const ngYest = new Date(new Date(evDate + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
+        const ngPrevRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, ngYest]);
+        if (ngPrevRow && JSON.parse(ngPrevRow.data).is_in_progress) { ngAttRow = ngPrevRow; ngAttDate = ngYest; }
+      }
       const ngAtt = ngAttRow ? JSON.parse(ngAttRow.data) : null;
       if (ngAtt?.status === 'regularised' || ngAtt?.regularised) return res.json({ success: false, error: 'This day has been manually regularised by HR — geofence events are ignored' });
 
@@ -3869,19 +3886,15 @@ router.post('/:name', async (req, res) => {
       }
 
       const sessionData = buildSessions(rawPunches);
-      let shift = { start_time: '09:00', end_time: '18:00', working_hours: 8, grace_period_minutes: 15 };
-      if (ngEmp.shift_id) {
-        const shRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [ngEmp.shift_id]);
-        if (shRow) shift = JSON.parse(shRow.data);
-      }
-      const ngHalfDayHours = await getHalfDayOverrideHours(evDate, shift);
+      const shift = { working_hours: 8, grace_period_minutes: 15, ...ngShiftForDate };
+      const ngHalfDayHours = await getHalfDayOverrideHours(ngAttDate, shift);
       const statusResult = computeStatusFromSessions(sessionData, shift, ngHalfDayHours);
       const { status } = statusResult;
 
       const locPayload = { latitude: Number(latitude) || null, longitude: Number(longitude) || null, accuracy: Number(accuracy) || null, location_address: ngFence?.name || location_name || 'Geofence' };
       const naId = ngAtt?.id || uuidv4();
       const attData = {
-        ...(ngAtt || {}), id: naId, user_id: cu.id, date: evDate,
+        ...(ngAtt || {}), id: naId, user_id: cu.id, date: ngAttDate,
         ...sessionData,
         // "Last Out" should read as still-active while a session is open, not a stale
         // timestamp from a session that already ended earlier today.
@@ -3937,7 +3950,28 @@ router.post('/:name', async (req, res) => {
       const saNowIST = new Date(Date.now() + 5.5 * 3600000);
       const saToday = saNowIST.toISOString().slice(0, 10);
 
-      const saAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, saToday]);
+      // Resolve the employee's shift up front (not after, as before) — an
+      // overnight shift (e.g. 20:00 -> 08:00) needs it to know whether a
+      // checkout with no open record dated "today" is actually the closing
+      // punch of a still-open session dated YESTERDAY, rather than a
+      // straightforward "not checked in" error. A fresh check-in still
+      // always starts a brand-new record dated today, even on an overnight
+      // shift — only a checkout/lookup with nothing open today falls back.
+      let saShift = { start_time: '09:00', end_time: '18:00', working_hours: 8, grace_period_minutes: 15 };
+      const saEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+      const saEmp = saEmpRow ? JSON.parse(saEmpRow.data) : {};
+      if (saEmp.shift_id) {
+        const saShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [saEmp.shift_id]);
+        if (saShiftRow) saShift = JSON.parse(saShiftRow.data);
+      }
+
+      let saAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, saToday]);
+      let saAttDate = saToday;
+      if (!saAttRow && isOvernightShift(saShift)) {
+        const saYest = new Date(new Date(saToday + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
+        const saPrevRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, saYest]);
+        if (saPrevRow && JSON.parse(saPrevRow.data).is_in_progress) { saAttRow = saPrevRow; saAttDate = saYest; }
+      }
       const saAtt = saAttRow ? JSON.parse(saAttRow.data) : null;
       if (saAtt?.status === 'regularised' || saAtt?.regularised) return res.json({ success: false, error: 'This day has been manually regularised by HR — selfie punches are ignored' });
       const saReason = saEvent === 'in' ? saReasonIn : (saAtt?.selfie_reason || null);
@@ -3958,14 +3992,7 @@ router.post('/:name', async (req, res) => {
       }
 
       const saSessionData = buildSessions(saRawPunches);
-      let saShift = { start_time: '09:00', end_time: '18:00', working_hours: 8, grace_period_minutes: 15 };
-      const saEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
-      const saEmp = saEmpRow ? JSON.parse(saEmpRow.data) : {};
-      if (saEmp.shift_id) {
-        const saShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [saEmp.shift_id]);
-        if (saShiftRow) saShift = JSON.parse(saShiftRow.data);
-      }
-      const saHalfDayHours = await getHalfDayOverrideHours(saToday, saShift);
+      const saHalfDayHours = await getHalfDayOverrideHours(saAttDate, saShift);
       const saStatusResult = computeStatusFromSessions(saSessionData, saShift, saHalfDayHours);
       // WFH/OD are proper attendance statuses (filterable/reportable), not a
       // note bolted onto 'present' — override whatever the normal
@@ -3979,7 +4006,7 @@ router.post('/:name', async (req, res) => {
 
       const saId = saAtt?.id || uuidv4();
       const saAttData = {
-        ...(saAtt || {}), id: saId, user_id: cu.id, date: saToday,
+        ...(saAtt || {}), id: saId, user_id: cu.id, date: saAttDate,
         ...saSessionData,
         check_out_time: saSessionData.is_in_progress ? null : saSessionData.check_out_time,
         ...saStatusResult, status: saFinalStatus, selfie_reason: saReason, shift_id: saEmp.shift_id || null,
@@ -7778,6 +7805,67 @@ router.post('/:name', async (req, res) => {
         }
       }
       return res.json({ success:true, marked });
+    }
+
+    // Reassigns Shift for one or more employees. HR/admin/management may
+    // target anyone; a plain employee/manager who's been granted
+    // Employee.is_shift_manager may ONLY target employees in their own
+    // department (never a department other than their own, and never
+    // shift definitions themselves — creating/editing/deleting Shift rows
+    // stays HR/admin-only via the existing generic entity route).
+    case 'assignEmployeeShift': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { employee_ids: aesEmpIds, shift_id: aesShiftId } = p;
+      const aesIds = Array.isArray(aesEmpIds) ? aesEmpIds.filter(Boolean) : [];
+      if (!aesIds.length) return res.json({ success: false, error: 'employee_ids is required' });
+
+      const aesTargetRows = await all("SELECT id, data FROM entities WHERE type='Employee' AND id = ANY($1)", [aesIds]);
+      if (!aesTargetRows.length) return res.json({ success: false, error: 'No matching employees found' });
+
+      const aesIsPrivileged = await hasRole(cu, MGR_ROLES);
+      if (!aesIsPrivileged) {
+        const aesActorRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+        const aesActor = aesActorRow ? JSON.parse(aesActorRow.data) : null;
+        if (!aesActor?.is_shift_manager || !aesActor.department) {
+          return res.status(403).json({ error: 'Access denied — shift management access required' });
+        }
+        const aesOutsideDept = aesTargetRows.some(r => (JSON.parse(r.data).department || '') !== aesActor.department);
+        if (aesOutsideDept) {
+          return res.status(403).json({ error: `Access denied — you may only reassign shifts within your own department (${aesActor.department})` });
+        }
+      }
+
+      // shift_id may be explicitly null (unassign, revert to the default
+      // shift) — only reject when the key is entirely missing/malformed.
+      if (aesShiftId !== null && aesShiftId !== undefined) {
+        const aesShiftRow = await one("SELECT id FROM entities WHERE type='Shift' AND id=$1", [aesShiftId]);
+        if (!aesShiftRow) return res.json({ success: false, error: 'Shift not found' });
+      }
+
+      let aesUpdated = 0;
+      for (const row of aesTargetRows) {
+        const ed = JSON.parse(row.data);
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [
+          JSON.stringify({ ...ed, shift_id: aesShiftId ?? null }), row.id,
+        ]);
+        aesUpdated++;
+      }
+      return res.json({ success: true, updated: aesUpdated });
+    }
+
+    // Grants or revokes department-scoped shift-management rights for one
+    // employee — HR/admin/management only. The grantee can then reassign
+    // Shift for employees within their OWN department (see assignEmployeeShift above)
+    // without needing full HR access.
+    case 'setShiftManager': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { employee_id: ssmEmpId, is_shift_manager: ssmFlag } = p;
+      if (!ssmEmpId) return res.json({ success: false, error: 'employee_id is required' });
+      const ssmRow = await one("SELECT id, data FROM entities WHERE type='Employee' AND id=$1", [ssmEmpId]);
+      if (!ssmRow) return res.json({ success: false, error: 'Employee not found' });
+      const ssmData = { ...JSON.parse(ssmRow.data), is_shift_manager: !!ssmFlag };
+      await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(ssmData), ssmRow.id]);
+      return res.json({ success: true });
     }
 
     case 'runAttendanceAutomation': {

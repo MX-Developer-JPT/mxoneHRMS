@@ -464,6 +464,7 @@ export default function Layout({ children, currentPageName }) {
   const [employeeDisplayName, setEmployeeDisplayName]= useState('');
   const [employeeDepartment,  setEmployeeDepartment] = useState('');
   const [myClearanceDepts,    setMyClearanceDepts]   = useState([]);
+  const [isShiftManager,      setIsShiftManager]     = useState(false);
   const [moreSheetOpen,       setMoreSheetOpen]      = useState(false);
   const [pullDistance,        setPullDistance]       = useState(0);
   const [isRefreshing,        setIsRefreshing]       = useState(false);
@@ -641,6 +642,7 @@ export default function Layout({ children, currentPageName }) {
         if (empRecords.length > 0) {
           if (empRecords[0].display_name) setEmployeeDisplayName(empRecords[0].display_name);
           if (empRecords[0].department)   setEmployeeDepartment(empRecords[0].department);
+          setIsShiftManager(!!empRecords[0].is_shift_manager);
           // Mandatory profile photo — covers both employees imported via
           // Import Employees (which never sets this field at all) and anyone
           // else missing one, regardless of how their record was created.
@@ -800,6 +802,15 @@ export default function Layout({ children, currentPageName }) {
   // clearance department, so it's never duplicated in the nav.
   if (myClearanceDepts.length > 0 && !isHR && !isManager && !isTopManagement) {
     menuGroups = [...menuGroups, { label: 'Clearance', items: [{ name: 'Exit Management', icon: LogOut, page: 'ExitManagement' }] }];
+  }
+  // Unlike Exit Management, Shift Management isn't already in every role's
+  // base menu — only HR/admin's (line ~262 above) has it. Add it for
+  // anyone else (plain employee, manager, top management, recruiter, gate
+  // admin) HR has specifically granted Employee.is_shift_manager, scoped
+  // server-side to their own department (see assignEmployeeShift in
+  // functions.js).
+  if (isShiftManager && !isHR) {
+    menuGroups = [...menuGroups, { label: 'Shift', items: [{ name: 'Shift Management', icon: Clock, page: 'ShiftManagement' }] }];
   }
   if (isAdmin) {
     menuGroups = [...menuGroups, { label: 'Administration', items: [
