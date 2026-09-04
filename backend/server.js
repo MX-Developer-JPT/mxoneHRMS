@@ -92,11 +92,25 @@ async function bootstrapFromEnv() {
     const bcrypt = (await import('bcryptjs')).default;
     const { v4: uuid } = await import('uuid');
 
-    const adminEmail    = process.env.ADMIN_EMAIL;
+    // Normalized to lowercase — every other place in the app that creates a
+    // user (registration, admin "create user", employee import) already does
+    // this before insert; this bootstrap path didn't, so an ADMIN_EMAIL with
+    // any uppercase letters got stored as-is. Every lookup elsewhere
+    // (password reset, login) matches on a lowercased email with a
+    // case-sensitive `=`, so that admin account could log in fine (login
+    // also lowercases before comparing) but silently never matched on
+    // password reset's "does this email exist" check — no error anywhere,
+    // it just found no user and did nothing.
+    const adminEmail    = process.env.ADMIN_EMAIL?.toLowerCase().trim();
     const adminPassword = process.env.ADMIN_PASSWORD;
     const adminName     = process.env.ADMIN_NAME || 'Admin';
     if (adminEmail && adminPassword) {
-      const existing = await one('SELECT id FROM users WHERE email=$1', [adminEmail]);
+      // Case-insensitive lookup so an account created before this
+      // normalization fix (stored with whatever casing ADMIN_EMAIL
+      // happened to have) is found and corrected in place, rather than
+      // this insert-if-not-found logic creating a second, duplicate admin
+      // row alongside it the next time the server restarts.
+      const existing = await one('SELECT id, email FROM users WHERE LOWER(email)=$1', [adminEmail]);
       if (!existing) {
         const hash = bcrypt.hashSync(adminPassword, 10);
         await run(
@@ -104,6 +118,9 @@ async function bootstrapFromEnv() {
           [uuid(), adminEmail, hash, adminName, adminName]
         );
         console.log(`✓ Admin user restored from env: ${adminEmail}`);
+      } else if (existing.email !== adminEmail) {
+        await run('UPDATE users SET email=$1, updated_at=NOW()::TEXT WHERE id=$2', [adminEmail, existing.id]);
+        console.log(`✓ Normalized admin email casing: ${existing.email} → ${adminEmail}`);
       }
     }
 

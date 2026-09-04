@@ -183,7 +183,14 @@ router.post('/reset-password-request', async (req, res) => {
   if (!email) return;
   try {
     const norm = email.toLowerCase().trim();
-    const user = await one('SELECT * FROM users WHERE email = $1', [norm]);
+    // Case-insensitive lookup — every current insert path lowercases first,
+    // but a row created before that was consistent (see the admin-bootstrap
+    // fix in server.js) could still have mixed-case email, in which case an
+    // exact `=` match would silently find nothing and this request would
+    // (correctly, by this endpoint's own design for unregistered emails)
+    // no-op — except the account genuinely exists, it just never got a
+    // reset link because of the casing mismatch.
+    const user = await one('SELECT * FROM users WHERE LOWER(email) = $1', [norm]);
     if (!user) return;
     const token = uuidv4();
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -211,7 +218,16 @@ router.post('/reset-password', async (req, res) => {
     return res.status(400).json({ error: 'Reset link has expired. Please request a new one.' });
   }
   const hash = bcrypt.hashSync(pwd, 10);
-  await run('UPDATE users SET password=$1, updated_at=NOW()::TEXT WHERE email=$2', [hash, record.email]);
+  // Case-insensitive, matching the lookup fix above — record.email is
+  // always lowercase (set from the requester's normalized input), but
+  // users.email might not be for a row from before that was consistently
+  // enforced everywhere. An exact `=` here would silently update zero rows
+  // and still report success, leaving the password completely unchanged.
+  const upd = await run('UPDATE users SET password=$1, updated_at=NOW()::TEXT WHERE LOWER(email)=$2', [hash, record.email]);
+  if (!upd.rowCount) {
+    await run('DELETE FROM reset_tokens WHERE token = $1', [resetToken]);
+    return res.status(400).json({ error: 'Could not find the account for this reset link. Please request a new one.' });
+  }
   await run('DELETE FROM reset_tokens WHERE token = $1', [resetToken]);
   res.json({ success: true });
 });
