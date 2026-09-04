@@ -116,6 +116,8 @@ export default function AttendanceHistory() {
 
   const statusColors = {
     present: 'bg-green-100 text-green-800',
+    late: 'bg-orange-100 text-orange-800',
+    short_attendance: 'bg-rose-100 text-rose-800',
     on_duty: 'bg-teal-100 text-teal-800',
     work_from_home: 'bg-cyan-100 text-cyan-800',
     absent: 'bg-red-100 text-red-800',

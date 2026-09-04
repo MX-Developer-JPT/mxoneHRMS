@@ -11478,9 +11478,23 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       // Attendance records for the month
       const attendance = {};
       const attRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
+      // A raw status of 'in_progress' is only ever trustworthy for TODAY's
+      // own date — a still-open session on a PAST day means the closing
+      // punch was missed (and either already was, or will shortly be,
+      // force-closed by the auto-close sweep). Left as-is, TeamCalendar.jsx
+      // (no per-record date/is_in_progress context to re-derive this
+      // client-side, unlike the employee's own AttendanceCalendar) had no
+      // 'in_progress' entry in its STATUS_CONFIG and rendered such a day as
+      // plain "No Record" instead of Present/Absent — same underlying bug
+      // as the employee's calendar, one manager/HR-facing layer further in.
+      const gtcTodayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
       for (const att of attRows) {
         if (!attendance[att.user_id]) attendance[att.user_id] = {};
-        attendance[att.user_id][att.date] = att.status || (att.check_in_time ? 'present' : 'absent');
+        let st = att.status || (att.check_in_time ? 'present' : 'absent');
+        if (st === 'in_progress' && att.date !== gtcTodayIST) {
+          st = (att.working_hours > 0 || att.total_working_minutes > 0) ? 'present' : 'absent';
+        }
+        attendance[att.user_id][att.date] = st;
       }
 
       // Holidays

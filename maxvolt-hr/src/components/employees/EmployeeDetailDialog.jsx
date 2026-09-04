@@ -7,6 +7,7 @@ import { base44 } from '@/api/base44Client';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import { User, Mail, Phone, Briefcase, Calendar, MapPin, Shield, Users, CreditCard, Building2, Heart, ShieldCheck, ChevronLeft, ChevronRight } from 'lucide-react';
+import { effectiveStatus } from '@/lib/attendanceSource';
 
 const Field = ({ label, value, colSpan }) => (
   <div className={`min-w-0 ${colSpan ? 'col-span-2' : ''}`}>
@@ -34,19 +35,27 @@ const statusColors = {
 };
 
 const ATT_COLORS = {
-  present:       { bg: 'bg-green-500',  text: 'text-white',      label: 'P' },
-  late:          { bg: 'bg-yellow-400', text: 'text-white',      label: 'L' },
-  on_duty:       { bg: 'bg-blue-400',   text: 'text-white',      label: 'OD' },
-  work_from_home:{ bg: 'bg-cyan-400',   text: 'text-white',      label: 'WFH' },
-  half_day:      { bg: 'bg-amber-300',  text: 'text-gray-800',   label: 'HD' },
-  absent:        { bg: 'bg-red-500',    text: 'text-white',      label: 'A' },
-  lop:           { bg: 'bg-red-700',    text: 'text-white',      label: 'LOP' },
-  week_off:      { bg: 'bg-gray-200',   text: 'text-gray-500',   label: 'WO' },
-  holiday:       { bg: 'bg-purple-200', text: 'text-purple-800', label: 'H' },
-  leave:         { bg: 'bg-indigo-300', text: 'text-white',      label: 'LV' },
-  approved_leave:{ bg: 'bg-indigo-400', text: 'text-white',      label: 'AL' },
-  sunday:        { bg: 'bg-gray-100',   text: 'text-gray-400',   label: 'S' },
-  no_record:     { bg: 'bg-gray-50',    text: 'text-gray-300',   label: '' },
+  present:          { bg: 'bg-green-500',  text: 'text-white',      label: 'P' },
+  late:             { bg: 'bg-orange-400', text: 'text-white',      label: 'L' },
+  short_attendance: { bg: 'bg-rose-400',   text: 'text-white',      label: 'SA' },
+  on_duty:          { bg: 'bg-blue-400',   text: 'text-white',      label: 'OD' },
+  work_from_home:   { bg: 'bg-cyan-400',   text: 'text-white',      label: 'WFH' },
+  half_day:         { bg: 'bg-amber-300',  text: 'text-gray-800',   label: 'HD' },
+  absent:           { bg: 'bg-red-500',    text: 'text-white',      label: 'A' },
+  lop:              { bg: 'bg-red-700',    text: 'text-white',      label: 'LOP' },
+  week_off:         { bg: 'bg-gray-200',   text: 'text-gray-500',   label: 'WO' },
+  holiday:          { bg: 'bg-purple-200', text: 'text-purple-800', label: 'H' },
+  leave:            { bg: 'bg-indigo-300', text: 'text-white',      label: 'LV' },
+  approved_leave:   { bg: 'bg-indigo-400', text: 'text-white',      label: 'AL' },
+  // Only ever reaches here for TODAY's own date — effectiveStatus() below
+  // re-maps a stale 'in_progress' on a past day to present/absent, the
+  // same rule the employee's own Attendance History calendar applies.
+  // Previously absent from this map entirely, so it fell straight through
+  // to no_record ("no attendance at all") for HR/management viewing an
+  // employee's profile — same underlying bug, one role layer further in.
+  in_progress:      { bg: 'bg-amber-400',  text: 'text-white',      label: '●' },
+  sunday:           { bg: 'bg-gray-100',   text: 'text-gray-400',   label: 'S' },
+  no_record:        { bg: 'bg-gray-50',    text: 'text-gray-300',   label: '' },
 };
 
 function fmtDate(y, m, d) {
@@ -103,7 +112,7 @@ function AttendanceCalendar({ userId, dateOfJoining }) {
     if (dateOfJoining && ds < dateOfJoining) continue;
     const r = records[ds];
     if (!r) { absent++; continue; }
-    const s = r.status;
+    const s = effectiveStatus(r);
     if (['present','late','on_duty','work_from_home'].includes(s)) present++;
     else if (s === 'half_day') halfDay++;
     else if (['absent','lop'].includes(s)) { absent++; if (s === 'lop') lop++; }
@@ -160,7 +169,7 @@ function AttendanceCalendar({ userId, dateOfJoining }) {
             if (isSun) {
               style = ATT_COLORS.sunday;
             } else if (rec) {
-              const s = rec.status;
+              const s = effectiveStatus(rec);
               if (ATT_COLORS[s]) style = ATT_COLORS[s];
               else if (!s && rec.check_in_time) style = ATT_COLORS.present;
             }
@@ -171,7 +180,7 @@ function AttendanceCalendar({ userId, dateOfJoining }) {
             return (
               <div
                 key={ds}
-                title={rec?.status ? rec.status.replace(/_/g,' ') : (isSun ? 'Sunday' : 'No record')}
+                title={rec ? (effectiveStatus(rec) || '').replace(/_/g,' ') : (isSun ? 'Sunday' : 'No record')}
                 className={`rounded-lg aspect-square flex flex-col items-center justify-center text-center cursor-default ${style.bg} ${style.text} ${isToday ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
               >
                 <span className="text-xs font-bold leading-none">{day}</span>

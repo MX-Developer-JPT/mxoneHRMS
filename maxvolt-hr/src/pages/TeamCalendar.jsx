@@ -18,8 +18,14 @@ const STATUS_CONFIG = {
   absent: { label: 'Absent', color: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300', dot: 'bg-red-500' },
   leave: { label: 'On Leave', color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300', dot: 'bg-yellow-500' },
   half_day: { label: 'Half Day', color: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300', dot: 'bg-orange-500' },
+  short_attendance: { label: 'Short Attendance', color: 'bg-orange-100 text-orange-900 dark:bg-orange-900/40 dark:text-orange-200', dot: 'bg-orange-600' },
   holiday: { label: 'Holiday', color: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300', dot: 'bg-purple-500' },
   week_off: { label: 'Week Off', color: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400', dot: 'bg-gray-400' },
+  // Only ever reaches here for TODAY's own date — the backend
+  // (getTeamCalendar) re-maps a stale 'in_progress' on a past day to
+  // present/absent before it's sent down, so this is genuinely "still
+  // working right now", not a stuck flag.
+  in_progress: { label: 'In Progress', color: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300', dot: 'bg-amber-500' },
   no_record: { label: 'No Record', color: 'bg-gray-50 text-gray-400', dot: 'bg-gray-300' },
 };
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, Coffee, Briefcase, Home, Activity } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, Coffee, Briefcase, Home, Activity, AlarmClockOff, TimerOff } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter, addMonths, subMonths } from 'date-fns';
@@ -7,6 +7,14 @@ import { effectiveStatus } from '@/lib/attendanceSource';
 
 const statusConfig = {
   present: { color: 'bg-green-100 text-green-800 border-green-200', icon: CheckCircle },
+  // Late and Short Attendance are real values computeStatusFromSessions can
+  // return (a late arrival past shift start + grace; a day closed out with
+  // real but under-half-shift working minutes) — previously absent from
+  // this map entirely, so both silently fell through to the plain
+  // white/no-icon default below, reading as "no record" the same way the
+  // in_progress gap once did.
+  late: { color: 'bg-orange-100 text-orange-800 border-orange-300', icon: AlarmClockOff },
+  short_attendance: { color: 'bg-rose-100 text-rose-800 border-rose-300', icon: TimerOff },
   on_duty: { color: 'bg-teal-100 text-teal-800 border-teal-300', icon: Briefcase },
   work_from_home: { color: 'bg-cyan-100 text-cyan-800 border-cyan-300', icon: Home },
   absent: { color: 'bg-red-100 text-red-800 border-red-200', icon: XCircle },
@@ -126,6 +134,7 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
                   displayStatus?.replace(/_/g, ' '),
                   attendance.regularised && 'Regularised',
                   attendance.working_hours > 0 && `${attendance.working_hours.toFixed(1)}h`,
+                  attendance.early_departure && `Early departure${attendance.early_departure_minutes > 0 ? ` — ${attendance.early_departure_minutes}m` : ''}`,
                   gatePass && `Gate Pass — ${(gatePass.outing_type || '').replace(/_/g, ' ')}${gatePass.reason ? `: ${gatePass.reason}` : ''}`,
                 ].filter(Boolean).join(' · ') : undefined}
               >
@@ -137,6 +146,15 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
                 {gatePass && (
                   <span
                     className="absolute top-0.5 left-0.5 w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-orange-500"
+                  />
+                )}
+                {/* Early departure is a flag alongside a real status (present/
+                    late/etc.), not its own status value — a small corner dot
+                    rather than its own cell color, same treatment as the
+                    Regularised/Gate Pass markers above. */}
+                {attendance?.early_departure && (
+                  <span
+                    className="absolute bottom-0.5 right-0.5 w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-pink-500"
                   />
                 )}
                 <div className="text-[11px] sm:text-sm font-semibold leading-none">{format(day, 'd')}</div>
@@ -161,6 +179,12 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
             <div className="flex items-center gap-1.5 sm:gap-2">
               <div className="w-3 h-3 sm:w-4 sm:h-4 rounded-full bg-orange-500" />
               <span>Gate Pass (departed)</span>
+            </div>
+          )}
+          {attendanceData.some(a => a.early_departure) && (
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <div className="w-3 h-3 sm:w-4 sm:h-4 rounded-full bg-pink-500" />
+              <span>Early Departure</span>
             </div>
           )}
         </div>
