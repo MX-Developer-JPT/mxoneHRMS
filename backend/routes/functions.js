@@ -6,7 +6,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
-import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift } from './attendancelog.js';
+import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
@@ -5187,14 +5187,14 @@ router.post('/:name', async (req, res) => {
     /* ── Attendance Report Export (session time + overtime) ── */
     case 'exportAttendanceReport': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
-      const { month, year } = p;
+      const { month, year, night_shift_only: arNightOnly } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const m = parseInt(month), y = parseInt(year);
       const monthStart = `${y}-${String(m).padStart(2,'0')}-01`;
       const monthEnd   = new Date(y, m, 0).toISOString().slice(0,10);
       const daysInMonth = new Date(y, m, 0).getDate();
 
-      const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      let employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
       const attRows   = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
 
       // Build attendance map: user_id → date → record
@@ -5215,6 +5215,12 @@ router.post('/:name', async (req, res) => {
       const getShift = (shiftId) => shiftId ? (shiftCache[shiftId] || null) : null;
 
       const defaultShift = parseEntities(await all("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'='true' OR data::jsonb->>'name' LIKE '%General%') LIMIT 1"))[0] || null;
+
+      // Night Shift Management's "Export Report" — restricts to employees
+      // explicitly assigned an overnight shift (never the default shift,
+      // even if it happens to be overnight, since only an EXPLICIT
+      // assignment means this employee is actually on nights).
+      if (arNightOnly) employees = employees.filter(e => { const sh = getShift(e.shift_id); return sh && isOvernightShift(sh); });
       const FALLBACK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
       const WEEKDAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
       const reportHolidaySet = new Set(parseEntities(await all(
@@ -5365,7 +5371,7 @@ router.post('/:name', async (req, res) => {
       const totalInfoCols = 6 + daysInMonth * 2 + 6;
       wsAR.mergeCells(1, 1, 1, totalInfoCols);
       const arTitle = wsAR.getCell('A1');
-      arTitle.value = `ATTENDANCE REPORT — ${monthLabel.toUpperCase()}   |   Maxvolt Energy Industries Limited`;
+      arTitle.value = `${arNightOnly ? 'NIGHT SHIFT ATTENDANCE REPORT' : 'ATTENDANCE REPORT'} — ${monthLabel.toUpperCase()}   |   Maxvolt Energy Industries Limited`;
       arTitle.font = { name:'Arial', bold:true, color:{argb:'FFFFFFFF'}, size:13 };
       arTitle.fill = arFill('1A3C5E');
       arTitle.alignment = { horizontal:'center', vertical:'middle' };
@@ -5482,13 +5488,13 @@ router.post('/:name', async (req, res) => {
 
       const arBuffer = await wbAR.xlsx.writeBuffer();
       const arBase64 = Buffer.from(arBuffer).toString('base64');
-      return res.json({ success: true, base64: arBase64, filename: `Attendance_Report_${monthLabel.replace(' ','_')}.xlsx`, total_employees: rows.length, format: 'xlsx' });
+      return res.json({ success: true, base64: arBase64, filename: `${arNightOnly ? 'Night_Shift_Attendance_Report' : 'Attendance_Report'}_${monthLabel.replace(' ','_')}.xlsx`, total_employees: rows.length, format: 'xlsx' });
     }
 
     /* ── Attendance Muster Export (styled Excel) ─────────── */
     case 'exportAttendanceMuster': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
-      const { month, year } = p;
+      const { month, year, night_shift_only: mNightOnly } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const m = parseInt(month), y = parseInt(year);
       const monthStart  = `${y}-${String(m).padStart(2,'0')}-01`;
@@ -5496,7 +5502,7 @@ router.post('/:name', async (req, res) => {
       const daysInMonth = new Date(y, m, 0).getDate();
       const monthLabel  = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
-      const mEmps   = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      let mEmps   = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
       const mAttRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
 
       const mAttMap = {};
@@ -5517,6 +5523,9 @@ router.post('/:name', async (req, res) => {
         mShiftCache[s.id] = s;
         if (s.is_default) mDefaultShift = s;
       });
+      // Night Shift Management's "Export Muster" — restricted to employees
+      // explicitly assigned an overnight shift.
+      if (mNightOnly) mEmps = mEmps.filter(e => e.shift_id && mShiftCache[e.shift_id] && isOvernightShift(mShiftCache[e.shift_id]));
 
       // Gate pass overlay — days where the employee took a gate pass (any
       // completed/live outing) get highlighted in the muster even though
@@ -5637,7 +5646,7 @@ router.post('/:name', async (req, res) => {
       for (let s=1; s<=SUMM;        s++) wsM.getColumn(INFO+daysInMonth+s).width = 5.5;
 
       // Row 1 — title
-      const r1 = wsM.addRow([`ATTENDANCE MUSTER ROLL — ${monthLabel.toUpperCase()}`]);
+      const r1 = wsM.addRow([`${mNightOnly ? 'NIGHT SHIFT MUSTER ROLL' : 'ATTENDANCE MUSTER ROLL'} — ${monthLabel.toUpperCase()}`]);
       r1.height = 28; wsM.mergeCells(1,1,1,totCols);
       Object.assign(r1.getCell(1), { font:mF(true,'FFFFFF',13), fill:mFl('1A3C5E'), alignment:mCtr });
 
@@ -5758,7 +5767,7 @@ router.post('/:name', async (req, res) => {
       tRow.eachCell(cell => Object.assign(cell, { font:mF(true,'FFFFFF',9), fill:mFl('1A3C5E'), alignment:mCtr, border:mBd() }));
 
       const mBuf = await wbM.xlsx.writeBuffer();
-      return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`Attendance_Muster_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
+      return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`${mNightOnly ? 'Night_Shift_Muster' : 'Attendance_Muster'}_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
     }
 
     // Swipe-detail register: one row per employee per calendar day, showing
@@ -5769,7 +5778,7 @@ router.post('/:name', async (req, res) => {
     // (biometric has no location signal to show).
     case 'exportSwipeDetails': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
-      const { month, year, department: swdDept } = p;
+      const { month, year, department: swdDept, night_shift_only: swNightOnly } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const swM = parseInt(month), swY = parseInt(year);
       const swMonthStart = `${swY}-${String(swM).padStart(2,'0')}-01`;
@@ -5834,6 +5843,9 @@ router.post('/:name', async (req, res) => {
         const shift = (emp?.shift_id && swShiftCache[emp.shift_id]) || swDefaultShift;
         return Array.isArray(shift?.days) && shift.days.length ? shift.days : (swDefaultShift.days || swFallbackDays);
       };
+      // Night Shift Management's "Export Swipe Details" — restricted to
+      // employees explicitly assigned an overnight shift.
+      if (swNightOnly) swEmps = swEmps.filter(e => e.shift_id && swShiftCache[e.shift_id] && isOvernightShift(swShiftCache[e.shift_id]));
       const swTodayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 
       // Gate pass overlay — same treatment as exportAttendanceMuster/
@@ -5888,7 +5900,7 @@ router.post('/:name', async (req, res) => {
 
       // Row 1 — title
       wsSw.mergeCells(1,1,1,cols.length);
-      Object.assign(wsSw.getCell(1,1), { value:`ATTENDANCE SWIPE DETAILS — ${swMonthLabel.toUpperCase()}`, font:swF(true,'FFFFFF',13), fill:swFl('1A3C5E'), alignment:swCtr });
+      Object.assign(wsSw.getCell(1,1), { value:`${swNightOnly ? 'NIGHT SHIFT SWIPE DETAILS' : 'ATTENDANCE SWIPE DETAILS'} — ${swMonthLabel.toUpperCase()}`, font:swF(true,'FFFFFF',13), fill:swFl('1A3C5E'), alignment:swCtr });
       wsSw.getRow(1).height = 28;
 
       // Row 2 — meta
@@ -5966,7 +5978,7 @@ router.post('/:name', async (req, res) => {
       const swBuf = await wbSw.xlsx.writeBuffer();
       return res.json({
         success: true, base64: Buffer.from(swBuf).toString('base64'),
-        filename: `Swipe_Details_${swMonthLabel.replace(' ','_')}.xlsx`,
+        filename: `${swNightOnly ? 'Night_Shift_Swipe_Details' : 'Swipe_Details'}_${swMonthLabel.replace(' ','_')}.xlsx`,
         total_employees: swEmps.length, total_rows: swRowNum - 5, format: 'xlsx',
       });
     }
@@ -7805,6 +7817,95 @@ router.post('/:name', async (req, res) => {
         }
       }
       return res.json({ success:true, marked });
+    }
+
+    // Night Shift Management's live dashboard — one row per employee
+    // explicitly assigned an overnight shift (e.g. 20:00 -> 08:00), showing
+    // whether they're currently checked in, not yet checked in for a shift
+    // that's already started, still open past their expected checkout, or
+    // simply not on shift right now (daytime gap between last night's end
+    // and tonight's start). HR/admin/management see everyone; a department
+    // shift manager (Employee.is_shift_manager) sees only their own
+    // department, same scoping as assignEmployeeShift.
+    case 'getNightShiftDashboard': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const nsdIsPrivileged = await hasRole(cu, MGR_ROLES);
+      let nsdDeptScope = null;
+      if (!nsdIsPrivileged) {
+        const nsdActorRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+        const nsdActor = nsdActorRow ? JSON.parse(nsdActorRow.data) : null;
+        if (!nsdActor?.is_shift_manager || !nsdActor.department) return res.status(403).json({ error: 'Access denied — shift management access required' });
+        nsdDeptScope = nsdActor.department;
+      }
+
+      const nsdEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
+        .filter(e => nsdDeptScope ? e.department === nsdDeptScope : true);
+      const nsdShiftRows = await all("SELECT data FROM entities WHERE type='Shift'");
+      const nsdShiftById = {};
+      nsdShiftRows.forEach(r => { const s = JSON.parse(r.data); nsdShiftById[s.id] = s; });
+
+      const nsdNightEmps = nsdEmps
+        .map(e => ({ emp: e, shift: e.shift_id ? nsdShiftById[e.shift_id] : null }))
+        .filter(x => x.shift && isOvernightShift(x.shift));
+      if (!nsdNightEmps.length) return res.json({ success: true, rows: [], as_of: new Date().toISOString() });
+
+      const nsdToMins = (t) => { const [h, mi] = String(t || '00:00').split(':').map(Number); return (h || 0) * 60 + (mi || 0); };
+      const nsdNowIST = new Date(Date.now() + 5.5 * 3600000);
+      const nsdToday = nsdNowIST.toISOString().slice(0, 10);
+      const nsdYesterday = new Date(nsdNowIST.getTime() - 86400000).toISOString().slice(0, 10);
+      const nsdNowMin = nsdNowIST.getUTCHours() * 60 + nsdNowIST.getUTCMinutes();
+
+      const nsdUserIds = nsdNightEmps.map(x => x.emp.user_id).filter(Boolean);
+      const nsdAttRows = nsdUserIds.length
+        ? await all("SELECT user_id, data FROM entities WHERE type='Attendance' AND user_id = ANY($1) AND data::jsonb->>'date' = ANY($2)", [nsdUserIds, [nsdToday, nsdYesterday]])
+        : [];
+      const nsdAttByKey = new Map(nsdAttRows.map(r => [`${r.user_id}|${JSON.parse(r.data).date}`, JSON.parse(r.data)]));
+
+      const nsdRows = nsdNightEmps.map(({ emp, shift }) => {
+        const shiftStart = nsdToMins(shift.start_time), shiftEnd = nsdToMins(shift.end_time);
+        // Which calendar date's record is "the shift currently relevant to
+        // right now"? If we're at/after tonight's start time, tonight's
+        // shift (dated today) is the one in play; if we're still before
+        // this shift's own end time (early-morning tail), last night's
+        // shift (dated yesterday) is still the relevant one. Otherwise
+        // (the daytime gap between last night's end and tonight's start)
+        // there's no currently-relevant shift at all.
+        let expectedDate = null;
+        if (nsdNowMin >= shiftStart) expectedDate = nsdToday;
+        else if (nsdNowMin < shiftEnd) expectedDate = nsdYesterday;
+
+        const grace = Number(shift.grace_period_minutes ?? 15);
+        const att = expectedDate ? nsdAttByKey.get(`${emp.user_id}|${expectedDate}`) : null;
+        let status;
+        if (att?.is_in_progress) {
+          const expectedEndMs = shiftEndDateTime(expectedDate, shift).getTime();
+          status = (Date.now() + 5.5 * 3600000) > expectedEndMs + grace * 60000 ? 'overdue_checkout' : 'checked_in';
+        } else if (att) {
+          status = 'checked_out';
+        } else if (expectedDate === nsdToday) {
+          status = nsdNowMin >= shiftStart + grace ? 'not_checked_in' : 'upcoming';
+        } else if (expectedDate === nsdYesterday) {
+          // No record at all for what should've been last night's shift —
+          // more meaningfully "absent" than "not checked in yet", since
+          // that whole shift window has already passed.
+          status = 'absent';
+        } else {
+          status = 'off_shift'; // daytime gap — not currently expected on shift
+        }
+
+        return {
+          employee_id: emp.id, user_id: emp.user_id,
+          name: emp.display_name || emp.full_name || '', employee_code: emp.employee_code || '',
+          department: emp.department || '', designation: emp.designation || '',
+          shift_name: shift.name || '', shift_start: shift.start_time, shift_end: shift.end_time,
+          status, expected_date: expectedDate,
+          check_in_time: att?.check_in_time || null, check_out_time: att?.check_out_time || null,
+          working_hours: att?.working_hours ?? null,
+        };
+      }).sort((a, b) => (a.department || '').localeCompare(b.department || '') || a.name.localeCompare(b.name));
+
+      const counts = nsdRows.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, {});
+      return res.json({ success: true, rows: nsdRows, counts, as_of: new Date().toISOString() });
     }
 
     // Reassigns Shift for one or more employees. HR/admin/management may

@@ -260,6 +260,7 @@ const hrMenuGroups = [
     { name: 'Biometric Logs',          icon: Clock,           page: 'AttendanceLogDashboard' },
     { name: 'Field Duty Tracking',     icon: Route,           page: 'FieldDuty' },
     { name: 'Shift Management',        icon: UserCog,         page: 'ShiftManagement' },
+    { name: 'Night Shift Management',  icon: Moon,            page: 'NightShiftManagement' },
     { name: 'Attendance Exemption',    icon: ShieldOff,       page: 'AttendanceExemption' },
     { name: 'Geofence Eligibility',    icon: Radar,           page: 'GeofenceEligibility' },
     { name: 'Field Duty Eligibility',  icon: Route,           page: 'FieldDutyEligibility' },
@@ -810,7 +811,10 @@ export default function Layout({ children, currentPageName }) {
   // server-side to their own department (see assignEmployeeShift in
   // functions.js).
   if (isShiftManager && !isHR) {
-    menuGroups = [...menuGroups, { label: 'Shift', items: [{ name: 'Shift Management', icon: Clock, page: 'ShiftManagement' }] }];
+    menuGroups = [...menuGroups, { label: 'Shift', items: [
+      { name: 'Shift Management', icon: Clock, page: 'ShiftManagement' },
+      { name: 'Night Shift Management', icon: Moon, page: 'NightShiftManagement' },
+    ] }];
   }
   if (isAdmin) {
     menuGroups = [...menuGroups, { label: 'Administration', items: [

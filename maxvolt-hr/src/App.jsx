@@ -27,6 +27,7 @@ const EmployeeDocuments = lazy(() => import('./pages/EmployeeDocuments'));
 import OnboardingForm from './pages/OnboardingForm';
 const HelpdeskCategoryManagement = lazy(() => import('./pages/HelpdeskCategoryManagement'));
 const ShiftManagement = lazy(() => import('./pages/ShiftManagement'));
+const NightShiftManagement = lazy(() => import('./pages/NightShiftManagement'));
 const DepartmentManagement = lazy(() => import('./pages/DepartmentManagement'));
 const HolidayCalendar = lazy(() => import('./pages/HolidayCalendar'));
 const AnnouncementManagement = lazy(() => import('./pages/AnnouncementManagement'));
@@ -284,6 +285,11 @@ const AuthenticatedApp = () => {
       <Route path="/ShiftManagement" element={
         <LayoutWrapper currentPageName="ShiftManagement">
           <ShiftManagement />
+        </LayoutWrapper>
+      } />
+      <Route path="/NightShiftManagement" element={
+        <LayoutWrapper currentPageName="NightShiftManagement">
+          <NightShiftManagement />
         </LayoutWrapper>
       } />
       <Route path="/DepartmentManagement" element={
