@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Search, Building2, Clock, AlertTriangle, Fingerprint, Camera, MapPin, RefreshCw, ChevronDown, ChevronUp, Download, UserX, FileSpreadsheet, Coffee, BarChart3, CalendarDays, List, ChevronLeft, ChevronRight, Loader2, Wrench } from 'lucide-react';
-import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, getGeofenceDetail, scheduledOffStatus } from '@/lib/attendanceSource';
+import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, getGeofenceDetail, scheduledOffStatus, isCurrentlyInProgress } from '@/lib/attendanceSource';
 
 const METHOD_SHORT_LABEL = { biometric: 'Bio', geofence: 'Geo', selfie: 'Selfie', manual: 'Manual' };
 import { format } from 'date-fns';
@@ -779,7 +779,12 @@ export default function AllAttendance() {
                                     (new session) still has an old lastOut sitting
                                     there even though they're genuinely active again. */}
                                 {(() => {
-                                  const isActive = record.is_in_progress || record.status === 'in_progress';
+                                  // Only genuinely TODAY's record can be "Active" — a
+                                  // stale is_in_progress on a past day (missed closing
+                                  // punch not yet auto-closed, or auto-closed but a
+                                  // later punch reopened the raw timeline) must never
+                                  // read as still active once that day is over.
+                                  const isActive = isCurrentlyInProgress(record);
                                   return (
                                     <p className={`text-sm font-semibold ${isActive ? 'text-green-500' : lastOut ? 'text-red-600' : 'text-gray-300'}`}>
                                       {isActive ? '● Active' : lastOut ? safeTime(lastOut) : '—'}

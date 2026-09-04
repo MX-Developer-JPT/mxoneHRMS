@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, Coffee, Briefca
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter, addMonths, subMonths } from 'date-fns';
+import { effectiveStatus } from '@/lib/attendanceSource';
 
 const statusConfig = {
   present: { color: 'bg-green-100 text-green-800 border-green-200', icon: CheckCircle },
@@ -82,7 +83,11 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
             const isWeekend = isSunday(day);
             const isHol = isHoliday(day);
 
-            let status = attendance?.status || null;
+            // effectiveStatus re-maps a stale 'in_progress' on a PAST day to
+            // present/absent (whatever the day would read as once properly
+            // closed) — a day is never shown as still "in progress" once the
+            // calendar has moved on past it. See attendanceSource.js.
+            let status = attendance ? effectiveStatus(attendance) : null;
             // Detect approved leave day: present status with leave notes
             const isApprovedLeaveDay = status === 'present' && attendance?.notes?.toLowerCase().includes('approved leave');
             // A day before the employee's own joining date has no record for

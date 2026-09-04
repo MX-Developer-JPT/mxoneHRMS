@@ -8,7 +8,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { MapPin, Camera, Clock, Coffee, ArrowDownCircle, ArrowUpCircle, Timer, Fingerprint, Activity } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
-import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, getGeofenceDetail } from '@/lib/attendanceSource';
+import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, getGeofenceDetail, isCurrentlyInProgress, effectiveStatus } from '@/lib/attendanceSource';
 
 const METHOD_ICON = { biometric: Fingerprint, geofence: MapPin, selfie: Camera, manual: Clock };
 const METHOD_BADGE_CLASS = {
@@ -64,7 +64,13 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
   // checked in via selfie, checked out via biometric) — otherwise the
   // single combined badge below already says it.
   const methodsDiffer = !!record.check_out_time && checkInMethod.key !== checkOutMethod.key;
-  const isWorking = record.is_in_progress || record.status === 'in_progress';
+  // Only genuinely TODAY's record can be "Currently Working" — a stale
+  // is_in_progress/status on a past day (missed closing punch not yet
+  // auto-closed, or auto-closed but a later punch reopened the raw
+  // timeline) must never read as still in progress once that day is over.
+  // See attendanceSource.js.
+  const isWorking = isCurrentlyInProgress(record);
+  const displayStatus = effectiveStatus(record);
 
   // Unified display sessions list
   const displaySessions = richSessions.length > 0
@@ -107,8 +113,8 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
               <p className="text-xl font-bold">{employee?.display_name || employee?.user?.display_name || employee?.user?.full_name}</p>
               <p className="text-gray-600">{employee?.designation}</p>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
-                <Badge className={statusColors[record.status] || 'bg-gray-100 text-gray-700'}>
-                  {(record.status || '').replace(/_/g, ' ').toUpperCase()}
+                <Badge className={statusColors[displayStatus] || 'bg-gray-100 text-gray-700'}>
+                  {(displayStatus || '').replace(/_/g, ' ').toUpperCase()}
                 </Badge>
                 {record.regularised && (
                   <Badge className="bg-violet-100 text-violet-800 border border-violet-200" title="Marked present after regularisation approval">

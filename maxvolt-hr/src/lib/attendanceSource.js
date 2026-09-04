@@ -72,6 +72,44 @@ export function scheduledOffStatus(emp, dateStr, holidaySet, shiftMap, defaultSh
   return days.includes(weekday) ? null : 'week_off';
 }
 
+// IST "today" as YYYY-MM-DD — matches the store-IST-digits-as-UTC convention
+// every date/timestamp on an Attendance record already uses.
+export function istToday() {
+  return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+}
+
+// A record's raw is_in_progress/status==='in_progress' flag is only ever
+// trustworthy for TODAY's own record. A still-open session on a PAST day
+// means the closing punch was missed — the day is over regardless of what
+// the stored flag says, and either already was (or will shortly be) force-
+// closed by the nightly/30-min auto-close sweep. Without this check, a
+// record that slipped through auto-close — or was auto-closed but a LATER
+// late-arriving punch reopened its raw punch timeline without the frontend
+// knowing — kept showing "Currently Working" / an in-progress badge
+// indefinitely, well after the day it belongs to had ended. An explicitly
+// auto_closed_reason is an even stronger signal: that day was deliberately
+// finalized and must never read as still in progress.
+export function isCurrentlyInProgress(record) {
+  if (!record) return false;
+  if (record.auto_closed_reason) return false;
+  if (record.date !== istToday()) return false;
+  return !!(record.is_in_progress || record.status === 'in_progress');
+}
+
+// Display status for a record whose raw `status` field is the literal
+// string 'in_progress'. For TODAY that's genuinely current and is returned
+// as-is. For any PAST day (see isCurrentlyInProgress above) it's re-mapped
+// to what the day would read as once properly closed, using the same
+// zero-vs-nonzero-worked-minutes rule computeStatusFromSessions applies
+// server-side — good enough for display without needing the employee's
+// shift on the client, and prevents a stale flag from ever appearing to
+// still be "in progress" once the calendar page has moved on to a new day.
+export function effectiveStatus(record) {
+  if (!record) return null;
+  if (record.status !== 'in_progress' || isCurrentlyInProgress(record)) return record.status;
+  return (record.working_hours > 0 || record.total_working_minutes > 0) ? 'present' : 'absent';
+}
+
 // Statuses that count as "the employee was present" for headline stats —
 // deliberately includes 'late'/'work_from_home'/'short_attendance', which
 // several report cards previously left out of their present-vs-absent split,

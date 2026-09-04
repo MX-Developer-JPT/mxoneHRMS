@@ -7,7 +7,7 @@ import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter
 import { safeDate, safeTime } from '@/lib/dateUtils';
 import { ClipboardList, Coffee, Activity, Fingerprint, MapPin, Camera, DoorOpen } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
-import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod } from '@/lib/attendanceSource';
+import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, effectiveStatus, isCurrentlyInProgress } from '@/lib/attendanceSource';
 
 const METHOD_SHORT_LABEL = { biometric: 'Biometric', geofence: 'Geofence', selfie: 'Selfie', manual: 'Manual' };
 import { Button } from "@/components/ui/button";
@@ -85,10 +85,14 @@ export default function AttendanceHistory() {
       if (isAfter(day, today)) return; // skip future days
       const att = attendanceData.find(a => isSameDay(new Date(a.date), day));
       if (att) {
-        if (['present','late','on_duty','work_from_home','short_attendance'].includes(att.status)) present++;
-        else if (att.status === 'half_day') present += 0.5;
-        else if (att.status === 'absent') absent++;
-        else if (att.status === 'leave') leave++;
+        // effectiveStatus so a past day stuck on a stale 'in_progress' flag
+        // still counts correctly (present/absent) instead of falling into
+        // neither present nor absent — see attendanceSource.js.
+        const st = effectiveStatus(att);
+        if (['present','late','on_duty','work_from_home','short_attendance'].includes(st)) present++;
+        else if (st === 'half_day') present += 0.5;
+        else if (st === 'absent') absent++;
+        else if (st === 'leave') leave++;
         totalHours += att.working_hours || 0;
       } else {
         // No record: if not sunday, not holiday, and not before this
@@ -222,7 +226,13 @@ export default function AttendanceHistory() {
                     const sessions = a.sessions || (a.punch_sessions?.filter(s => s.punch_in || s.session_number) || []);
                     const totalWorkMins = a.total_working_minutes ?? (a.working_hours ? Math.round(a.working_hours * 60) : 0);
                     const totalBreakMins = a.total_break_minutes ?? (a.break_hours ? Math.round(a.break_hours * 60) : 0);
-                    const isWorking = a.is_in_progress || a.status === 'in_progress';
+                    // Only genuinely TODAY's record can be "Working" — a
+                    // stale is_in_progress on a past day (missed closing
+                    // punch, not yet auto-closed, or auto-closed already)
+                    // must never read as still in progress. See
+                    // attendanceSource.js.
+                    const isWorking = isCurrentlyInProgress(a);
+                    const displayStatus = effectiveStatus(a);
                     const sessionCount = a.session_count || sessions.length;
                     const method = getAttendanceMethod(a);
                     const gatePass = gatePasses[String(a.date).slice(0, 10)] || null;
@@ -299,8 +309,8 @@ export default function AttendanceHistory() {
                             <p className="text-xl font-bold text-blue-600">
                               {totalWorkMins > 0 ? fmtMins(totalWorkMins) : (isWorking ? '●' : '-')}
                             </p>
-                            <Badge className={statusColors[a.status] || 'bg-gray-100 text-gray-700'}>
-                              {(a.status || '').replace(/_/g, ' ').toUpperCase()}
+                            <Badge className={statusColors[displayStatus] || 'bg-gray-100 text-gray-700'}>
+                              {(displayStatus || '').replace(/_/g, ' ').toUpperCase()}
                             </Badge>
                             {a.regularised && (
                               <Badge className="ml-1 bg-violet-100 text-violet-800 border-violet-200" title="Marked present after regularisation approval">

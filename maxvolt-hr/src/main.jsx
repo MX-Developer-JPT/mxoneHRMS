@@ -6,16 +6,19 @@ import { registerServiceWorker } from '@/utils/pwa'
 
 // A lazy-loaded route chunk can 404 after a new deploy replaces dist/ with
 // fresh content-hashed filenames while this tab still references the old
-// ones ("Failed to fetch dynamically imported module"). Vite fires this
-// event in that exact case — reload once to pick up the new build. The
-// sessionStorage guard prevents a reload loop if the failure is a genuine
-// network/offline issue rather than a stale deploy.
+// ones ("Failed to fetch dynamically imported module"). This app deploys
+// several times a day, and an unprompted window.location.reload() here used
+// to fire the instant that happened — on a native shell pulling its UI live
+// from the server (see the Capacitor note below), that meant the app could
+// yank itself out from under the employee mid check-in/mid-form with no
+// warning, repeatedly on a busy deploy day, reading as "the app keeps
+// crashing". Never reload without the user asking for it: swallow the event
+// (Vite's own unhandled-rejection default is suppressed) and let the failed
+// import surface normally — React.lazy/Suspense throws, the nearest
+// ErrorBoundary catches it and shows a page with an explicit "Reload Page"
+// button instead of reloading on its own.
 window.addEventListener('vite:preloadError', (event) => {
   event.preventDefault();
-  if (!sessionStorage.getItem('vite_reload_once')) {
-    sessionStorage.setItem('vite_reload_once', '1');
-    window.location.reload();
-  }
 });
 
 // iOS Safari bug (still present as of iOS 17/18): position:fixed; bottom:0

@@ -8,29 +8,19 @@ let swRegistration = null;
 export async function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return null;
   try {
-    // A previously-controlling SW means this is a return visit, not a
-    // brand-new install — only in that case do we want a future SW handover
-    // to force a reload (on first-ever install, reloading right after the
-    // page just finished loading would be a jarring, pointless flash).
-    const hadController = !!navigator.serviceWorker.controller;
-
     swRegistration = await navigator.serviceWorker.register('/sw.js');
 
-    if (hadController) {
-      let refreshed = false;
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (refreshed) return;
-        refreshed = true;
-        window.location.reload();
-      });
-    }
-
-    // The user previously had to manually refresh to see new features —
-    // this was because the app never actively checked for a newer
-    // service-worker version. Force a check every time the app is opened
-    // or brought back to the foreground; if the server has a newer sw.js,
-    // it installs, self-activates (see sw.js skipWaiting/clients.claim),
-    // fires 'controllerchange' above, and the page reloads automatically.
+    // A newer service worker taking control used to force an immediate,
+    // unprompted window.location.reload() here. This app deploys several
+    // times a day, and document.addEventListener('visibilitychange') below
+    // fires that check every time the employee switches back to the app —
+    // e.g. returning from the camera during a selfie check-in, or just
+    // unlocking their phone — so the reload could land at literally any
+    // moment, wiping out whatever they were mid-way through and reading as
+    // the app randomly crashing/restarting. A newer SW still installs and
+    // takes over (skipWaiting/clients.claim in sw.js) so the NEXT natural
+    // reload/relaunch already picks up the new version — no forced reload
+    // needed, ever.
     swRegistration.update().catch(() => {});
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') swRegistration?.update().catch(() => {});
