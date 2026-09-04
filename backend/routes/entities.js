@@ -20,6 +20,50 @@ const SENSITIVE_TYPES = new Set([
   'Reimbursement',
 ]);
 const PRIVILEGED_ROLES = new Set(['hr', 'admin', 'management']);
+// LeaveBalance is the one SENSITIVE_TYPE that must never be self-editable,
+// even by its own owner — every other sensitive type's "own record" carve-
+// out below is intentional (an employee reading/updating their own Document,
+// Loan application, etc.), but a leave balance is a system-computed running
+// total, not something an employee ever legitimately edits directly. The
+// generic own-record exception used to let a plain employee PATCH literally
+// any field of their own LeaveBalance (including `available`) — which is
+// exactly what Leave.jsx's client-side "deduct on submit / restore on
+// cancel" calls were doing, non-atomically, from the browser. That's the
+// root of imported balances drifting: two racing submits (or a submit whose
+// follow-up balance PATCH never completes) reading/writing the same row with
+// no locking. Fixed at the source: PATCH now requires HR/admin/management
+// for LeaveBalance, full stop, and the actual reserve/release bookkeeping
+// moved server-side into the Leave create/cancel/delete paths below (see
+// reserveLeaveBalance/releaseLeaveReservation), atomic and race-free.
+const SELF_EDIT_EXEMPT_TYPES = new Set(['LeaveBalance']);
+
+// Leave balance reservation model: `available` is decremented (and
+// `pending_approval` incremented by the same amount) the INSTANT a Leave
+// request is created as 'pending' — not deferred to approval — so a second
+// concurrent request against the same balance can never be approved past
+// what's actually left. Approval (runLeaveAction in functions.js) then just
+// moves the reserved days from pending_approval to used, leaving `available`
+// where creation already put it. Rejection/cancellation/deletion of a still-
+// pending request releases that reservation back via releaseLeaveReservation
+// — the single place that does this arithmetic, so it can never drift out of
+// sync between the different ways a pending leave can end.
+async function reserveLeaveBalance(userId, leavePolicyId, year, days, client) {
+  if (!userId || !leavePolicyId || !days) return;
+  const balRows = (await client.query("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [userId])).rows;
+  const balRow = balRows.map(r => ({ id: r.id, d: JSON.parse(r.data) })).find(x => x.d.leave_policy_id === leavePolicyId && x.d.year === year);
+  if (!balRow) return; // no matching balance row — nothing to reserve against (checkLeaveBalanceSufficiency already let a 0-balance request through as a pre-existing edge case)
+  const upd = { ...balRow.d, available: Math.max((balRow.d.available || 0) - days, 0), pending_approval: (balRow.d.pending_approval || 0) + days };
+  await client.query("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), balRow.id]);
+}
+
+async function releaseLeaveReservation(userId, leavePolicyId, year, days) {
+  if (!userId || !leavePolicyId || !days) return;
+  const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [userId]);
+  const balRow = balRows.map(r => ({ id: r.id, d: JSON.parse(r.data) })).find(x => x.d.leave_policy_id === leavePolicyId && x.d.year === year);
+  if (!balRow) return;
+  const upd = { ...balRow.d, available: (balRow.d.available || 0) + days, pending_approval: Math.max((balRow.d.pending_approval || 0) - days, 0) };
+  await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), balRow.id]);
+}
 
 // Live DB lookup (not the JWT's embedded role, which can go stale for the
 // life of a 30-day token if the user is later promoted/demoted) — mirrors
@@ -558,6 +602,19 @@ router.post('/:type', async (req, res) => {
           `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
           [id, type, data.user_id ?? null, data.status ?? null, data.is_active !== false ? 1 : 0, JSON.stringify(data)]
         );
+        // Reserve the requested days against the balance the instant a
+        // normal (self-service, still-'pending') Leave is created — same
+        // advisory lock, same transaction as the sufficiency check above, so
+        // the two can never race. Scoped to status==='pending' specifically:
+        // HRApplyOnBehalf.jsx creates a Leave already 'approved' (HR applying
+        // on an employee's behalf, decided on the spot) and does its own
+        // direct used/available adjustment for that case — reserving here
+        // too would double-deduct it.
+        const isWfhLeave = type === 'Leave' && (data.is_wfh || data.leave_type === 'work_from_home');
+        if (type === 'Leave' && !isWfhLeave && data.status === 'pending' && data.user_id && data.leave_policy_id && data.total_days) {
+          const leaveYear = new Date(data.start_date || Date.now()).getFullYear();
+          await reserveLeaveBalance(data.user_id, data.leave_policy_id, leaveYear, data.total_days, client);
+        }
         const { rows } = await client.query('SELECT * FROM entities WHERE id=$1', [id]);
         return rows[0];
       });
@@ -727,7 +784,7 @@ router.patch('/:type/:id', async (req, res) => {
   // manager-of-report read exception here (canAccessSensitive), since that
   // exists so a manager can SEE a report's LeaveBalance/Reimbursement, not
   // edit arbitrary fields of it.
-  if (!isScopedTransition && SENSITIVE_TYPES.has(type) && row.user_id !== cu.id) {
+  if (!isScopedTransition && SENSITIVE_TYPES.has(type) && (row.user_id !== cu.id || SELF_EDIT_EXEMPT_TYPES.has(type))) {
     const role = await getEffectiveRole(cu);
     if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
   }
@@ -767,6 +824,20 @@ router.patch('/:type/:id', async (req, res) => {
     [JSON.stringify(updated), updated.user_id ?? row.user_id, updated.status ?? row.status,
      updated.is_active !== false ? 1 : 0, id]
   );
+
+  // Releasing a still-'pending' Leave's reservation (see reserveLeaveBalance
+  // above) — only when it was actually reserved: a WFH request never drew
+  // from a balance, and a request already approved/rejected had its
+  // reservation resolved by runLeaveAction already, not here. This covers
+  // both the employee's own self-service cancel (Leave.jsx) and an HR/
+  // manager-initiated withdrawal, since both land here as a bare status PATCH.
+  if (type === 'Leave' && current.status === 'pending' && ['cancelled', 'withdrawn'].includes(req.body.status)
+      && !(current.is_wfh || current.leave_type === 'work_from_home') && current.leave_policy_id && current.total_days) {
+    try {
+      const leaveYear = new Date(current.start_date || Date.now()).getFullYear();
+      await releaseLeaveReservation(current.user_id, current.leave_policy_id, leaveYear, current.total_days);
+    } catch (e) { console.error(`[entities] leave balance release failed for ${id}:`, e.message); }
+  }
 
   const newRow = await one('SELECT * FROM entities WHERE id=$1', [id]);
 
@@ -984,6 +1055,22 @@ router.delete('/:type/:id', async (req, res) => {
       if (!PRIVILEGED_ROLES.has(genRole)) return res.status(403).json({ error: 'Access denied — not your record' });
     }
   }
+
+  // Deleting a still-'pending' Leave must release its reservation first
+  // (see reserveLeaveBalance) — the row (and the days it reserved) is about
+  // to disappear entirely, so without this the reservation would be lost
+  // for good, permanently understating the employee's real available balance.
+  if (type === 'Leave') {
+    const lvRow = await one('SELECT data FROM entities WHERE type=$1 AND id=$2', [type, id]);
+    const lv = lvRow ? JSON.parse(lvRow.data) : null;
+    if (lv && lv.status === 'pending' && !(lv.is_wfh || lv.leave_type === 'work_from_home') && lv.leave_policy_id && lv.total_days) {
+      try {
+        const leaveYear = new Date(lv.start_date || Date.now()).getFullYear();
+        await releaseLeaveReservation(lv.user_id, lv.leave_policy_id, leaveYear, lv.total_days);
+      } catch (e) { console.error(`[entities] leave balance release failed for deleted ${id}:`, e.message); }
+    }
+  }
+
   const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   cacheInvalidate(type);

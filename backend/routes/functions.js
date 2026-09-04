@@ -2044,6 +2044,11 @@ async function runLeaveAction(cu, leaveId, action, note) {
       // spanning two years (normal after year one, since accrual creates
       // one row per year) could have whichever row Postgres happens to
       // return first silently decremented instead of the correct year's.
+      // `available` is deliberately NOT touched here — it was already
+      // reserved (decremented) the instant this Leave was created as
+      // 'pending' (see reserveLeaveBalance in entities.js); this final
+      // approval just moves those already-reserved days from
+      // pending_approval into used.
       try {
         const balYear = new Date(lv.start_date).getFullYear();
         const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [lv.user_id]);
@@ -2068,6 +2073,10 @@ async function runLeaveAction(cu, leaveId, action, note) {
   if (action === 'reject') {
     const upd = { ...lv, status: 'rejected', rejected_by: actorId, rejected_by_name: actorName, rejected_at: now, rejection_reason: note || '', approval_history: [...(lv.approval_history || []), { action: 'rejected', by: actorId, by_name: actorName, at: now, note: note || '' }] };
     await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
+    // Restores the days reserveLeaveBalance deducted at creation — correct
+    // now that creation always reserves (previously this restored days that
+    // were never actually deducted anywhere, silently inflating `available`
+    // by total_days on every rejection).
     try {
       const balYear = new Date(lv.start_date).getFullYear();
       const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [lv.user_id]);

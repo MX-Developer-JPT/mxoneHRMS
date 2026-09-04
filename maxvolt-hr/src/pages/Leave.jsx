@@ -182,6 +182,16 @@ export default function Leave() {
         attachmentUrl = file_url;
       }
 
+      // Balance reservation (available -= days, pending_approval += days) now
+      // happens atomically server-side as part of this same create call (see
+      // reserveLeaveBalance in entities.js) — no longer a separate follow-up
+      // PATCH from here. That second step used to read the balance row and
+      // write it back non-atomically with no locking, so two near-simultaneous
+      // submits (or a submit whose follow-up PATCH never completed) could
+      // silently drop or double-apply a deduction — the direct cause of an
+      // imported balance drifting out of sync afterward. It's also no longer
+      // reachable from here at all: LeaveBalance now requires HR/admin/
+      // management to PATCH, even for the record's own owner.
       await base44.entities.Leave.create({
         user_id: user.id,
         leave_policy_id: isWFH ? null : formData.leave_policy_id,
@@ -200,21 +210,6 @@ export default function Leave() {
         applied_on: new Date().toISOString(),
         approval_history: []
       });
-
-      // Deduct from pending balance (skip for WFH — no leave balance used)
-      if (!isWFH) {
-        const currentYear = new Date().getFullYear();
-        const balRecs = await base44.entities.LeaveBalance.filter({
-          user_id: user.id, leave_policy_id: formData.leave_policy_id, year: currentYear
-        });
-        if (balRecs.length > 0) {
-          const lb = balRecs[0];
-          await base44.entities.LeaveBalance.update(lb.id, {
-            pending_approval: (lb.pending_approval || 0) + totalDays,
-            available: Math.max((lb.available || 0) - totalDays, 0)
-          });
-        }
-      }
 
       // Notify manager/HR about new leave request
       if (employee?.reporting_manager_id) {
@@ -239,19 +234,12 @@ export default function Leave() {
 
   const handleCancel = async (leave) => {
     if (!window.confirm('Cancel this leave request?')) return;
+    // Balance release (available += days, pending_approval -= days) now
+    // happens atomically as part of this same status PATCH server-side (see
+    // releaseLeaveReservation in entities.js) — the separate follow-up
+    // LeaveBalance PATCH this used to make is gone for the same reason noted
+    // in handleSubmit above.
     await base44.entities.Leave.update(leave.id, { status: 'cancelled' });
-    // Restore balance
-    const currentYear = new Date().getFullYear();
-    const balRecs = await base44.entities.LeaveBalance.filter({
-      user_id: user.id, leave_policy_id: leave.leave_policy_id, year: currentYear
-    });
-    if (balRecs.length > 0) {
-      const lb = balRecs[0];
-      await base44.entities.LeaveBalance.update(lb.id, {
-        pending_approval: Math.max((lb.pending_approval || 0) - leave.total_days, 0),
-        available: (lb.available || 0) + leave.total_days
-      });
-    }
     toast.success('Leave request cancelled');
     loadData();
   };
