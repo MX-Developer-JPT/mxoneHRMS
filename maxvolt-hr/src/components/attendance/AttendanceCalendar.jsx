@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, Coffee, Briefcase, Home } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, Coffee, Briefcase, Home, Activity } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter, addMonths, subMonths } from 'date-fns';
@@ -13,7 +13,14 @@ const statusConfig = {
   leave: { color: 'bg-blue-100 text-blue-800 border-blue-200', icon: Coffee },
   holiday: { color: 'bg-purple-100 text-purple-800 border-purple-200', icon: Coffee },
   week_off: { color: 'bg-gray-100 text-gray-800 border-gray-200', icon: Coffee },
-  present_leave: { color: 'bg-teal-100 text-teal-800 border-teal-300', icon: CheckCircle }
+  present_leave: { color: 'bg-teal-100 text-teal-800 border-teal-300', icon: CheckCircle },
+  // A record whose session never got a closing punch (still is_in_progress)
+  // used to fall through statusConfig[status] as undefined — config stayed
+  // null, so the cell rendered with none of the styling below (plain white,
+  // no icon), reading as "no attendance at all" even for a day the employee
+  // was genuinely present and working, e.g. still open pending the nightly
+  // auto-close sweep, or a missed final punch on a past day.
+  in_progress: { color: 'bg-amber-100 text-amber-800 border-amber-300', icon: Activity },
 };
 
 export default function AttendanceCalendar({ attendanceData, holidays = [], currentMonth, onMonthChange, onDayClick, dateOfJoining, gatePasses = {} }) {
