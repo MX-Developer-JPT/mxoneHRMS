@@ -87,6 +87,7 @@ const employeeMenuGroups = [
   ]},
   { label: 'Account', items: [
     { name: 'Gate Pass',       icon: ShieldCheck,     page: 'GatePassRequest' },
+    { name: 'My Visitors',     icon: Users,           page: 'MyVisitors' },
     { name: 'My Exit',         icon: LogOut,          page: 'MyExit' },
     { name: 'My Profile',      icon: User2,           page: 'Profile' },
     { name: 'App Settings',    icon: SlidersHorizontal, page: 'AppSettings' },
@@ -112,6 +113,7 @@ const managementMenuGroups = [
     { name: 'Org Chart',                icon: Network,         page: 'OrgChart' },
     { name: 'Talent Grid (9-Box)',      icon: Grid3x3,         page: 'TalentGrid' },
     { name: 'Skill Grid',               icon: LayoutGrid,      page: 'SkillGrid' },
+    { name: 'Visitor Management',       icon: Users,           page: 'VisitorManagement' },
   ]},
   // "My Team"/"Team Attendance" above are scoped to the management viewer's
   // own downstream hierarchy (direct + indirect reports) — these two are the
@@ -141,6 +143,7 @@ const managementMenuGroups = [
   { label: 'My Work', items: [
     { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
     { name: 'Holiday Calendar',         icon: Calendar,        page: 'HolidayCalendar' },
+    { name: 'My Visitors',              icon: Users,           page: 'MyVisitors' },
     { name: 'My Payslips',              icon: CreditCard,      page: 'Payslips' },
     { name: 'My Documents',             icon: FolderOpen,      page: 'Documents' },
     { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
@@ -192,6 +195,7 @@ const managerMenuGroups = [
     { name: 'Confirmation',             icon: UserCheck,       page: 'ConfirmationManagement' },
     { name: 'Team Calendar',            icon: Calendar,        page: 'TeamCalendar' },
     { name: 'Org Chart',                icon: Network,         page: 'OrgChart' },
+    { name: 'Visitor Management',       icon: Users,           page: 'VisitorManagement' },
   ]},
   { label: 'Team Insights', items: [
     { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
@@ -207,6 +211,7 @@ const managerMenuGroups = [
     { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
     { name: 'Holiday Calendar',         icon: Calendar,        page: 'HolidayCalendar' },
     { name: 'Gate Pass',                icon: ShieldCheck,     page: 'GatePassRequest' },
+    { name: 'My Visitors',              icon: Users,           page: 'MyVisitors' },
     { name: 'My Payslips',              icon: CreditCard,      page: 'Payslips' },
     { name: 'My Documents',             icon: FolderOpen,      page: 'Documents' },
     { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
@@ -331,6 +336,8 @@ const hrMenuGroups = [
     { name: 'Asset Tracking',          icon: Laptop,          page: 'AssetTracking' },
     { name: 'Holiday Calendar',        icon: Calendar,        page: 'HolidayCalendar' },
     { name: 'Gate Pass Management',    icon: ShieldCheck,     page: 'GatePassManagement' },
+    { name: 'Visitor Management',      icon: Users,           page: 'VisitorManagement' },
+    { name: 'My Visitors',             icon: UserPlus,        page: 'MyVisitors' },
     { name: 'Team Calendar',           icon: Calendar,        page: 'TeamCalendar' },
   ]},
   { label: 'Analytics & Planning', items: [
@@ -369,6 +376,7 @@ const recruiterMenuGroups = [
   ]},
   { label: 'My Work', items: [
     { name: 'Apply Leave',              icon: FileText,        page: 'Leave' },
+    { name: 'My Visitors',              icon: Users,           page: 'MyVisitors' },
     { name: 'My Payslips',              icon: CreditCard,      page: 'Payslips' },
     { name: 'My Documents',             icon: FolderOpen,      page: 'Documents' },
     { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
@@ -393,6 +401,7 @@ const recruiterMenuGroups = [
 const gateAdminMenuGroups = [
   { label: '', items: [
     { name: 'Gate Admin', icon: ShieldCheck, page: 'GateAdminDashboard' },
+    { name: 'Visitor Management', icon: Users, page: 'VisitorManagement' },
     { name: 'My Profile', icon: User2,       page: 'GateAdminProfile' },
   ]},
 ];
@@ -865,6 +874,7 @@ export default function Layout({ children, currentPageName }) {
     : isGateAdmin
     ? [
         { label: 'Gate Admin', icon: ShieldCheck,     page: 'GateAdminDashboard', path: '/GateAdminDashboard' },
+        { label: 'Visitors',   icon: Users,            page: 'VisitorManagement', path: '/VisitorManagement' },
         { label: 'Profile',    icon: User2,            page: 'GateAdminProfile',  path: '/GateAdminProfile' },
       ]
     : [
