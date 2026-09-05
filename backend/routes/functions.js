@@ -7740,7 +7740,12 @@ router.post('/:name', async (req, res) => {
         const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1", [userId, date]);
         if (existing) {
           const d = JSON.parse(existing.data);
-          if (d.status === 'regularised' || d.regularised) { skipped++; continue; }
+          // A day HR/admin manually corrected via adminSetAttendance
+          // (admin_marked: true) is a deliberate override, same as an
+          // approved regularisation — re-syncing raw device logs must never
+          // silently overwrite it. Without this, "reprocess attendance from
+          // stored logs" would revert every manual fix on its next run.
+          if (d.status === 'regularised' || d.regularised || d.admin_marked) { skipped++; continue; }
           // Per-side method attribution: this sync's own raw device punches
           // for the day fully recompute check_in_time/check_out_time (sd,
           // spread below) regardless of what side they actually came from —
@@ -7778,7 +7783,7 @@ router.post('/:name', async (req, res) => {
         }
       }
 
-      return res.json({ success: true, total_logs: logsInRange.length, groups_processed: Object.keys(groups).length, attendance_updated: updated, attendance_created: created, skipped_regularised: skipped });
+      return res.json({ success: true, total_logs: logsInRange.length, groups_processed: Object.keys(groups).length, attendance_updated: updated, attendance_created: created, skipped_regularised_or_admin_marked: skipped });
     }
 
     case 'closeOpenSessions': {
@@ -8029,13 +8034,19 @@ router.post('/:name', async (req, res) => {
       );
       const halfDayMap = await getHalfDayHolidayMap(monthStart, monthEnd);
 
-      let processedCount = 0, skippedRegularised = 0, skippedNoPunches = 0;
+      let processedCount = 0, skippedRegularised = 0, skippedAdminMarked = 0, skippedNoPunches = 0;
       const preview = [];
       const updateQueue = [];
 
       for (const row of attRows) {
         const d = JSON.parse(row.data);
         if (d.status === 'regularised' || d.regularised) { skippedRegularised++; continue; }
+        // A day HR/admin manually corrected via adminSetAttendance
+        // (admin_marked: true) is a deliberate override, same as an
+        // approved regularisation — a bulk recompute must never silently
+        // revert it. Without this, "Reprocess Month Attendance" would undo
+        // every manual fix on its next run.
+        if (d.admin_marked) { skippedAdminMarked++; continue; }
 
         // Build raw punches: use stored raw_punches or synthesise from check_in/check_out
         let punches = d.raw_punches && d.raw_punches.length > 0 ? d.raw_punches : null;
@@ -8078,19 +8089,20 @@ router.post('/:name', async (req, res) => {
       const rangeLabel = monthsToProcess.length === 1
         ? new Date(monthsToProcess[0].y, monthsToProcess[0].m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' })
         : `${new Date(monthsToProcess[0].y, monthsToProcess[0].m-1, 1).toLocaleString('en-IN', { month: 'short', year: 'numeric' })} – ${new Date(lastM.y, lastM.m-1, 1).toLocaleString('en-IN', { month: 'short', year: 'numeric' })}`;
-      const skipped = skippedRegularised + skippedNoPunches;
+      const skipped = skippedRegularised + skippedAdminMarked + skippedNoPunches;
       return res.json({
         success: true, dry_run,
         total_records: attRows.length,
         processed: processedCount,
         skipped,
         skipped_regularised: skippedRegularised,
+        skipped_admin_marked: skippedAdminMarked,
         skipped_no_punch_data: skippedNoPunches,
         months_processed: monthsToProcess.length,
         preview: dry_run ? preview.slice(0, 50) : undefined,
         message: dry_run
-          ? `Preview: ${processedCount} of ${attRows.length} records would be reprocessed for ${rangeLabel} (${skippedRegularised} regularised, ${skippedNoPunches} no punch data)`
-          : `Reprocessed ${processedCount} of ${attRows.length} attendance records for ${rangeLabel}`,
+          ? `Preview: ${processedCount} of ${attRows.length} records would be reprocessed for ${rangeLabel} (${skippedRegularised} regularised, ${skippedAdminMarked} manually edited, ${skippedNoPunches} no punch data)`
+          : `Reprocessed ${processedCount} of ${attRows.length} attendance records for ${rangeLabel} (${skippedAdminMarked} manually edited record(s) preserved)`,
       });
     }
 
