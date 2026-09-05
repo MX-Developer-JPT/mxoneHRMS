@@ -11,7 +11,7 @@ import {
   ChevronLeft, ChevronRight, Eye, Key, AlertTriangle, X, Check,
   BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2,
   Bot, Sparkles, ExternalLink, Zap, Fingerprint, Copy, RotateCcw, Globe, Code2,
-  ScrollText, Clock, Download, Settings2, ChevronsUpDown, CalendarClock, Activity
+  ScrollText, Clock, Download, Settings2, ChevronsUpDown, CalendarClock, Activity, Bell
 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -785,6 +785,194 @@ function EmailTab() {
             {sending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Send className="w-4 h-4 mr-1" />}
             Send Test
           </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Send Notification Tab ───────────────────────────────────
+// Deliberately narrow: subject + body only, no attachments/links/type
+// picker — a quick broadcast tool, not a replacement for Announcements
+// (which supports rich content, audience targeting rules, etc.). Sends a
+// plain in-app notification (+ push, same as every other notification in
+// this app) via sendAdminNotification — never an email.
+function NotifyTab() {
+  const [target, setTarget] = useState('all');
+  const [employees, setEmployees] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [selectedEmp, setSelectedEmp] = useState('');
+  const [empOpen, setEmpOpen] = useState(false);
+  const [selectedDept, setSelectedDept] = useState('');
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [sending, setSending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    base44.entities.Employee.filter({ status: 'active' }).then(setEmployees).catch(() => {});
+    base44.entities.Department.list().then(setDepartments).catch(() => {});
+  }, []);
+
+  const activeEmployeeCount = employees.length;
+  const deptEmployeeCount = selectedDept ? employees.filter(e => e.department === selectedDept).length : 0;
+
+  const canSend = subject.trim() && body.trim() &&
+    (target === 'all' || (target === 'employee' && selectedEmp) || (target === 'department' && selectedDept));
+
+  const targetSummary = target === 'all'
+    ? `all ${activeEmployeeCount} active employee(s)`
+    : target === 'employee'
+    ? employees.find(e => e.user_id === selectedEmp)?.display_name || 'the selected employee'
+    : `everyone in ${selectedDept || 'the selected department'} (${deptEmployeeCount} employee(s))`;
+
+  const doSend = async () => {
+    setConfirming(false);
+    setSending(true);
+    setResult(null);
+    try {
+      const res = await base44.functions.invoke('sendAdminNotification', {
+        target,
+        user_id: target === 'employee' ? selectedEmp : undefined,
+        department: target === 'department' ? selectedDept : undefined,
+        subject: subject.trim(),
+        body: body.trim(),
+      });
+      const d = res.data || res;
+      if (d.success) {
+        toast.success(`Notification sent to ${d.sent} employee(s)`);
+        setResult(d);
+        setSubject(''); setBody('');
+      } else {
+        toast.error(d.error || 'Failed to send notification');
+      }
+    } catch (e) { toast.error(e.message); }
+    finally { setSending(false); }
+  };
+
+  return (
+    <div className="max-w-xl space-y-5">
+      <div className="border rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Bell className="w-5 h-5 text-primary" />
+          <h3 className="font-semibold">Send Notification</h3>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Sends a plain in-app (+ push) notification — subject and body only, no email. For richer broadcasts with attachments or audience rules, use Announcements instead.
+        </p>
+
+        <div className="space-y-1">
+          <Label className="text-xs">Send To</Label>
+          <select
+            className="w-full border rounded-md px-3 py-2 text-sm bg-background focus:ring-2 ring-primary outline-none"
+            value={target}
+            onChange={e => setTarget(e.target.value)}
+          >
+            <option value="all">All Employees</option>
+            <option value="employee">Single Employee</option>
+            <option value="department">Specific Department</option>
+          </select>
+        </div>
+
+        {target === 'employee' && (
+          <div className="space-y-1">
+            <Label className="text-xs">Employee</Label>
+            <Popover open={empOpen} onOpenChange={setEmpOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
+                  {employees.find(e => e.user_id === selectedEmp)?.display_name || 'Select employee...'}
+                  <ChevronsUpDown className="w-4 h-4 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[350px] p-0">
+                <Command>
+                  <CommandInput placeholder="Search employee..." />
+                  <CommandList>
+                    <CommandEmpty>No employee found</CommandEmpty>
+                    <CommandGroup>
+                      {employees.map(emp => (
+                        <CommandItem key={emp.user_id} value={emp.display_name} onSelect={() => { setSelectedEmp(emp.user_id); setEmpOpen(false); }}>
+                          {emp.display_name} <span className="text-xs text-muted-foreground ml-1">— {emp.department}</span>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+          </div>
+        )}
+
+        {target === 'department' && (
+          <div className="space-y-1">
+            <Label className="text-xs">Department</Label>
+            <select
+              className="w-full border rounded-md px-3 py-2 text-sm bg-background focus:ring-2 ring-primary outline-none"
+              value={selectedDept}
+              onChange={e => setSelectedDept(e.target.value)}
+            >
+              <option value="">Select department...</option>
+              {departments.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
+            </select>
+            {selectedDept && <p className="text-xs text-muted-foreground">{deptEmployeeCount} active employee(s) in this department</p>}
+          </div>
+        )}
+
+        <div className="space-y-1">
+          <Label className="text-xs">Subject</Label>
+          <Input value={subject} onChange={e => setSubject(e.target.value)} placeholder="Notification subject" className="h-9 text-sm" maxLength={200} />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Body</Label>
+          <textarea
+            className="w-full border rounded-md px-3 py-2 text-sm bg-background focus:ring-2 ring-primary outline-none resize-none"
+            rows={4}
+            value={body}
+            onChange={e => setBody(e.target.value)}
+            placeholder="Notification message"
+            maxLength={1000}
+          />
+        </div>
+
+        <Button size="sm" onClick={() => setConfirming(true)} disabled={!canSend || sending}>
+          {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+          Send Notification
+        </Button>
+
+        {result && (
+          <div className="rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 p-3 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <p className="text-sm text-emerald-800 dark:text-emerald-300 font-medium">Sent to {result.sent} of {result.total} recipient(s)</p>
+          </div>
+        )}
+      </div>
+
+      {confirming && (
+        <ConfirmDialogGeneric
+          title="Send Notification"
+          message={`Send this notification to ${targetSummary}?`}
+          confirmLabel="Send"
+          onConfirm={doSend}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Generic (non-destructive) confirm dialog — ConfirmDialog above is styled
+// specifically for destructive/delete actions (red button, trash icon);
+// this is the same shape for a neutral confirm like "send this broadcast".
+function ConfirmDialogGeneric({ title, message, confirmLabel, onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-background rounded-xl shadow-2xl p-6 max-w-sm mx-4 text-center space-y-4">
+        {title && <h3 className="font-semibold text-base">{title}</h3>}
+        <p className="text-sm text-muted-foreground">{message}</p>
+        <div className="flex gap-3 justify-center">
+          <Button variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
+          <Button size="sm" onClick={onConfirm}>{confirmLabel || 'Confirm'}</Button>
         </div>
       </div>
     </div>
@@ -2386,6 +2574,7 @@ export default function AdminPanel() {
     { id: 'att_import', label: 'Attendance Import',  icon: Download },
     { id: 'att_manual', label: 'Manual Attendance',  icon: CalendarClock },
     { id: 'stats',      label: 'Statistics',         icon: BarChart3 },
+    { id: 'notify',     label: 'Send Notification',  icon: Bell },
     { id: 'email',      label: 'Email Settings',     icon: Mail },
     { id: 'ai',         label: 'AI Settings',        icon: Bot },
     { id: 'api',        label: 'API Integration',    icon: Fingerprint },
@@ -2428,6 +2617,7 @@ export default function AdminPanel() {
       {tab === 'emp'        && <EmployeeAttrsTab />}
       {tab === 'att_import' && <AttendanceImportTab />}
       {tab === 'att_manual' && <ManualAttendanceTab />}
+      {tab === 'notify'     && <NotifyTab />}
       {tab === 'email'      && <EmailTab />}
       {tab === 'ai'         && <AITab />}
       {tab === 'api'        && <ApiIntegrationTab />}

@@ -16832,6 +16832,42 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       return res.json({ success: true, sent, total: userIds.length });
     }
 
+    /* ── Admin Panel: broadcast a plain in-app notification (subject + body
+       only, no email) to all employees, one specific employee, or everyone
+       in a department. Admin-only, matching AdminPanel.jsx's own page-level
+       gate (every other tab there is admin-only too). Deliberately narrow
+       — this is NOT a general announcement/email tool (Announcements
+       already exists for that); it's a quick "notify" broadcast, so it
+       only ever writes to the notifications table + push, same as every
+       other in-app notification in this app. ── */
+    case 'sendAdminNotification': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { target, user_id: sanUserId, department: sanDept, subject: sanSubject, body: sanBody } = p;
+      if (!['all', 'employee', 'department'].includes(target)) return res.json({ success: false, error: 'target must be all, employee, or department' });
+      if (!sanSubject?.trim() || !sanBody?.trim()) return res.json({ success: false, error: 'Subject and body are required' });
+
+      let recipientIds = [];
+      if (target === 'all') {
+        recipientIds = (await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'")).map(r => r.user_id).filter(Boolean);
+      } else if (target === 'employee') {
+        if (!sanUserId) return res.json({ success: false, error: 'user_id is required for target=employee' });
+        recipientIds = [sanUserId];
+      } else {
+        if (!sanDept) return res.json({ success: false, error: 'department is required for target=department' });
+        recipientIds = (await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department'=$1", [sanDept])).map(r => r.user_id).filter(Boolean);
+      }
+      if (!recipientIds.length) return res.json({ success: false, error: 'No matching recipients found' });
+
+      let sent = 0;
+      for (const uid of recipientIds) {
+        try {
+          await notify(uid, { title: sanSubject.trim(), message: sanBody.trim(), type: 'info', link: '/Dashboard' });
+          sent++;
+        } catch (e) { console.error('[sendAdminNotification] failed for', uid, e.message); }
+      }
+      return res.json({ success: true, sent, total: recipientIds.length });
+    }
+
     /* ══════════════════════════════════════════════════════════════════
        Visitor Management — Gate Admin role expansion (see "MaxVolt One —
        Visitor & Gate Management" proposal, Phase 1, and the follow-up

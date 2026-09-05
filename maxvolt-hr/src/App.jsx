@@ -544,8 +544,13 @@ const AuthenticatedApp = () => {
 
 
 function App() {
+  // defaultTheme="light" (not "system") — a fresh install/first login must
+  // always start in light mode regardless of the device's OS theme setting,
+  // per explicit product decision. enableSystem stays on so the explicit
+  // "System" option in AppSettings.jsx's theme picker keeps working for
+  // anyone who deliberately chooses it afterward.
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+    <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
     <QueryClientProvider client={queryClientInstance}>
       <Router>
         <Routes>
