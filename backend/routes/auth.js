@@ -80,13 +80,39 @@ router.post('/login', async (req, res) => {
   const token = signToken(user);
   res.json({ token, user: formatUser(user) });
 
-  // Fire-and-forget adoption-analytics login event — recorded server-side
-  // (not from the client) so activation/active-user numbers can't be
-  // skipped by a client that never calls the event-logging endpoint.
-  const eventId = uuidv4();
-  run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'UsageEvent',$2,'active',$3)", [
-    eventId, user.id, JSON.stringify({ id: eventId, user_id: user.id, event_type: 'login', module: null, feature: null, meta: null, timestamp: new Date().toISOString() }),
-  ]).catch(e => console.error('[auth] login event log failed:', e.message));
+  // Fire-and-forget: adoption-analytics login event (recorded server-side,
+  // not from the client, so activation/active-user numbers can't be skipped
+  // by a client that never calls the event-logging endpoint) AND the guided
+  // App Walkthrough's auto-trigger for a genuinely first-ever login.
+  //
+  // "First login" is derived from this SAME UsageEvent login history rather
+  // than a new last_login_at column: if no prior 'login' UsageEvent exists
+  // for this user, this is their first one, ever. That means anyone who has
+  // logged in before this feature shipped already has login history and is
+  // correctly treated as an existing employee (no auto-popup) — only a
+  // brand-new account's very first login creates a 'pending'
+  // AppTourProgress row, which the frontend picks up via getMyTourStatus
+  // and shows the walkthrough for. An admin can separately re-trigger it
+  // for anyone (existing or not) via setEmployeeTourStatus in the Admin
+  // Panel — that path doesn't touch this first-login check at all.
+  (async () => {
+    try {
+      const priorLogin = await one("SELECT id FROM entities WHERE type='UsageEvent' AND user_id=$1 AND data::jsonb->>'event_type'='login' LIMIT 1", [user.id]);
+      if (!priorLogin) {
+        const existingTour = await one("SELECT id FROM entities WHERE type='AppTourProgress' AND user_id=$1", [user.id]);
+        if (!existingTour) {
+          const tourId = uuidv4();
+          const tourData = { id: tourId, user_id: user.id, status: 'pending', current_step: 0, created_at: new Date().toISOString() };
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AppTourProgress',$2,'pending',$3)", [tourId, user.id, JSON.stringify(tourData)]);
+        }
+      }
+    } catch (e) { console.error('[auth] first-login tour bootstrap failed:', e.message); }
+
+    const eventId = uuidv4();
+    await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'UsageEvent',$2,'active',$3)", [
+      eventId, user.id, JSON.stringify({ id: eventId, user_id: user.id, event_type: 'login', module: null, feature: null, meta: null, timestamp: new Date().toISOString() }),
+    ]).catch(e => console.error('[auth] login event log failed:', e.message));
+  })();
 });
 
 // POST /api/auth/register

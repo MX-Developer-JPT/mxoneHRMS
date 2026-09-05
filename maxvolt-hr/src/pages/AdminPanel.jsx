@@ -11,7 +11,7 @@ import {
   ChevronLeft, ChevronRight, Eye, Key, AlertTriangle, X, Check,
   BarChart3, Table2, UserCog, Shield, Mail, Send, CheckCircle2, XCircle, Loader2,
   Bot, Sparkles, ExternalLink, Zap, Fingerprint, Copy, RotateCcw, Globe, Code2,
-  ScrollText, Clock, Download, Settings2, ChevronsUpDown, CalendarClock, Activity, Bell
+  ScrollText, Clock, Download, Settings2, ChevronsUpDown, CalendarClock, Activity, Bell, Compass, PlayCircle
 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -975,6 +975,143 @@ function ConfirmDialogGeneric({ title, message, confirmLabel, onConfirm, onCance
           <Button size="sm" onClick={onConfirm}>{confirmLabel || 'Confirm'}</Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── App Walkthrough Tab ──────────────────────────────────────
+// Manages the interactive guided-tour feature (see components/tour/AppTour.jsx
+// and lib/appTour.js) — distinct from Employee Training/"My Training" (the
+// formal Learning & Development module). A brand-new employee's very first
+// login auto-triggers this; this tab is for the two other cases: turning it
+// on for an EXISTING employee who never got it, and REPEATING it for anyone
+// (the "enable" and "repeat" actions are literally the same reset).
+const TOUR_STATUS_LABELS = { not_started: 'Not Started', pending: 'Pending (will show next login)', in_progress: 'In Progress', completed: 'Completed', skipped: 'Skipped' };
+const TOUR_STATUS_COLORS = {
+  not_started: 'bg-gray-100 text-gray-600', pending: 'bg-amber-100 text-amber-800',
+  in_progress: 'bg-blue-100 text-blue-800', completed: 'bg-emerald-100 text-emerald-800', skipped: 'bg-gray-100 text-gray-500',
+};
+
+function WalkthroughTab() {
+  const [statuses, setStatuses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [actioningId, setActioningId] = useState(null);
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkRunning, setBulkRunning] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await base44.functions.invoke('getEmployeeTourStatuses', {});
+      const d = res.data || res;
+      setStatuses(d.success ? d.statuses : []);
+    } catch (e) { toast.error(e.message); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = statuses.filter(s =>
+    !search || (s.display_name + s.employee_code + s.department).toLowerCase().includes(search.toLowerCase())
+  );
+
+  const enableFor = async (userId) => {
+    setActioningId(userId);
+    try {
+      const res = await base44.functions.invoke('setEmployeeTourStatus', { user_id: userId });
+      const d = res.data || res;
+      if (d.success) { toast.success('Walkthrough will show for this employee on next login'); load(); }
+      else toast.error(d.error || 'Failed to enable');
+    } catch (e) { toast.error(e.message); }
+    finally { setActioningId(null); }
+  };
+
+  const enableForAll = async () => {
+    setBulkConfirm(false);
+    setBulkRunning(true);
+    try {
+      const res = await base44.functions.invoke('setAllEmployeesTourStatus', {});
+      const d = res.data || res;
+      if (d.success) { toast.success(`Enabled for ${d.updated} employee(s)`); load(); }
+      else toast.error(d.error || 'Failed to enable for all');
+    } catch (e) { toast.error(e.message); }
+    finally { setBulkRunning(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="border rounded-xl p-5 space-y-2">
+        <div className="flex items-center gap-2">
+          <Compass className="w-5 h-5 text-primary" />
+          <h3 className="font-semibold">App Walkthrough</h3>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          A brand-new employee's very first login automatically shows the guided walkthrough. Use the actions below to turn it on for an
+          existing employee who never saw it, or to have anyone go through it again.
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="relative max-w-xs flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input className="pl-9 h-9" placeholder="Search employees…" value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <Button size="sm" variant="outline" onClick={() => setBulkConfirm(true)} disabled={bulkRunning}>
+          {bulkRunning ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <PlayCircle className="w-4 h-4 mr-1.5" />}
+          Enable for All Employees
+        </Button>
+      </div>
+
+      {loading ? <p className="text-sm text-muted-foreground p-4">Loading…</p> : (
+        <div className="overflow-x-auto rounded-xl border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50">
+              <tr>
+                {['Name', 'Code', 'Department', 'Status', 'Completed', 'Action'].map(h => (
+                  <th key={h} className="text-left px-4 py-2.5 font-medium text-muted-foreground">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {filtered.map(s => (
+                <tr key={s.user_id} className="hover:bg-muted/30">
+                  <td className="px-4 py-2.5 font-medium">{s.display_name || '—'}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground text-xs">{s.employee_code}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground text-xs">{s.department}</td>
+                  <td className="px-4 py-2.5">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TOUR_STATUS_COLORS[s.tour_status] || 'bg-gray-100 text-gray-600'}`}>
+                      {TOUR_STATUS_LABELS[s.tour_status] || s.tour_status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-muted-foreground text-xs">
+                    {s.completed_at ? new Date(s.completed_at).toLocaleDateString('en-IN') : '—'}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <Button size="sm" variant="outline" disabled={actioningId === s.user_id} onClick={() => enableFor(s.user_id)}>
+                      {actioningId === s.user_id ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5 mr-1" />}
+                      {s.tour_status === 'not_started' ? 'Enable' : 'Repeat'}
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+              {!filtered.length && (
+                <tr><td colSpan={6} className="text-center py-8 text-muted-foreground text-sm">No employees found</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {bulkConfirm && (
+        <ConfirmDialogGeneric
+          title="Enable Walkthrough for All Employees"
+          message={`This will show the guided walkthrough on next login for all ${statuses.length} active employee(s), including anyone who already completed or skipped it. Continue?`}
+          confirmLabel="Enable for All"
+          onConfirm={enableForAll}
+          onCancel={() => setBulkConfirm(false)}
+        />
+      )}
     </div>
   );
 }
@@ -2575,6 +2712,7 @@ export default function AdminPanel() {
     { id: 'att_manual', label: 'Manual Attendance',  icon: CalendarClock },
     { id: 'stats',      label: 'Statistics',         icon: BarChart3 },
     { id: 'notify',     label: 'Send Notification',  icon: Bell },
+    { id: 'walkthrough',label: 'App Walkthrough',    icon: Compass },
     { id: 'email',      label: 'Email Settings',     icon: Mail },
     { id: 'ai',         label: 'AI Settings',        icon: Bot },
     { id: 'api',        label: 'API Integration',    icon: Fingerprint },
@@ -2618,6 +2756,7 @@ export default function AdminPanel() {
       {tab === 'att_import' && <AttendanceImportTab />}
       {tab === 'att_manual' && <ManualAttendanceTab />}
       {tab === 'notify'     && <NotifyTab />}
+      {tab === 'walkthrough' && <WalkthroughTab />}
       {tab === 'email'      && <EmailTab />}
       {tab === 'ai'         && <AITab />}
       {tab === 'api'        && <ApiIntegrationTab />}

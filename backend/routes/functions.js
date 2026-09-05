@@ -16869,6 +16869,99 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     /* ══════════════════════════════════════════════════════════════════
+       App Walkthrough — interactive guided tour of the app's own features
+       (distinct from EmployeeTraining/"My Training", which is the formal
+       Learning & Development module). One AppTourProgress row per user_id:
+       status pending -> in_progress -> completed (or skipped any time).
+       Auto-created as 'pending' on a genuinely first-ever login (see
+       backend/routes/auth.js's /login route) so a brand-new employee is
+       walked through the app the first time they sign in. An admin can
+       separately (re-)enable it for anyone, existing employee or not, via
+       setEmployeeTourStatus below — that's also how "repeat the training
+       for a specific user" is satisfied: it's the exact same reset. ── */
+    case 'getMyTourStatus': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const row = await one("SELECT data FROM entities WHERE type='AppTourProgress' AND user_id=$1", [cu.id]);
+      return res.json({ success: true, tour: row ? JSON.parse(row.data) : null });
+    }
+
+    case 'updateMyTourProgress': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { action: utpAction, current_step: utpStep } = p;
+      if (!['advance', 'skip', 'complete'].includes(utpAction)) return res.json({ success: false, error: 'action must be advance, skip, or complete' });
+      const row = await one("SELECT id,data FROM entities WHERE type='AppTourProgress' AND user_id=$1", [cu.id]);
+      if (!row) return res.json({ success: false, error: 'No tour in progress' });
+      const d = JSON.parse(row.data);
+      const now = new Date().toISOString();
+      const status = utpAction === 'skip' ? 'skipped' : utpAction === 'complete' ? 'completed' : 'in_progress';
+      const upd = {
+        ...d, status, current_step: utpAction === 'advance' ? (utpStep ?? d.current_step) : d.current_step,
+        ...(status === 'in_progress' && !d.started_at ? { started_at: now } : {}),
+        ...(status === 'completed' ? { completed_at: now } : {}),
+        ...(status === 'skipped' ? { skipped_at: now } : {}),
+      };
+      await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [status, JSON.stringify(upd), row.id]);
+      return res.json({ success: true, tour: upd });
+    }
+
+    // Admin Panel's "App Walkthrough" management tab — every active
+    // employee with their current tour status, so an admin can see who's
+    // done it, skipped it, or never had it at all.
+    case 'getEmployeeTourStatuses': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const emps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const tourRows = await all("SELECT user_id, data FROM entities WHERE type='AppTourProgress'");
+      const tourByUser = new Map(tourRows.map(r => [r.user_id, JSON.parse(r.data)]));
+      const statuses = emps.filter(e => e.user_id).map(e => ({
+        user_id: e.user_id, display_name: e.display_name, employee_code: e.employee_code, department: e.department,
+        tour_status: tourByUser.get(e.user_id)?.status || 'not_started',
+        completed_at: tourByUser.get(e.user_id)?.completed_at || null,
+      }));
+      return res.json({ success: true, statuses });
+    }
+
+    // Enable/reset the walkthrough for one specific user — sets (or
+    // resets) their AppTourProgress to 'pending' from step 0, so it shows
+    // again the next time they open the app. Used for BOTH "enable this
+    // training for an existing employee" and "repeat this training for a
+    // specific user" — there's no meaningful difference between the two
+    // from the data's point of view, only in why an admin clicked it.
+    case 'setEmployeeTourStatus': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { user_id: setUserId } = p;
+      if (!setUserId) return res.json({ success: false, error: 'user_id is required' });
+      const existing = await one("SELECT id,data FROM entities WHERE type='AppTourProgress' AND user_id=$1", [setUserId]);
+      const now = new Date().toISOString();
+      const data = {
+        id: existing ? JSON.parse(existing.data).id : uuidv4(), user_id: setUserId,
+        status: 'pending', current_step: 0, triggered_by: cu.id, triggered_at: now,
+      };
+      if (existing) await run("UPDATE entities SET status='pending', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(data), existing.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AppTourProgress',$2,'pending',$3)", [data.id, setUserId, JSON.stringify(data)]);
+      return res.json({ success: true });
+    }
+
+    // Bulk "enable for all existing employees" — same reset, applied to
+    // every active employee at once.
+    case 'setAllEmployeesTourStatus': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const userIds = (await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'")).map(r => r.user_id).filter(Boolean);
+      const existingRows = await all("SELECT id,user_id,data FROM entities WHERE type='AppTourProgress' AND user_id = ANY($1)", [userIds]);
+      const existingByUser = new Map(existingRows.map(r => [r.user_id, r.id]));
+      const now = new Date().toISOString();
+      let updated = 0;
+      for (const uid of userIds) {
+        const existingId = existingByUser.get(uid);
+        const entityId = existingId || uuidv4();
+        const data = { id: entityId, user_id: uid, status: 'pending', current_step: 0, triggered_by: cu.id, triggered_at: now };
+        if (existingId) await run("UPDATE entities SET status='pending', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(data), existingId]);
+        else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AppTourProgress',$2,'pending',$3)", [entityId, uid, JSON.stringify(data)]);
+        updated++;
+      }
+      return res.json({ success: true, updated, total: userIds.length });
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
        Visitor Management — Gate Admin role expansion (see "MaxVolt One —
        Visitor & Gate Management" proposal, Phase 1, and the follow-up
        location-scoping functional requirements). One Visitor entity

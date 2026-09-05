@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import NotificationBell from '@/components/NotificationBell';
 import ErrorBoundary from '@/components/ErrorBoundary';
+import AppTour from '@/components/tour/AppTour';
 // Lazy, not static — these previously loaded their full component tree (and,
 // for Dashboard, every role-specific dashboard variant plus its data-fetch
 // burst) into the main bundle for every user on every page, regardless of
@@ -440,6 +441,7 @@ function NavItem({ item, isActive, onClick }) {
     <Link
       to={createPageUrl(item.page)}
       onClick={onClick}
+      data-tour-page={item.page}
       className={`
         flex items-center gap-2.5 px-3 py-[9px] rounded-xl text-[13.5px] font-medium
         transition-all duration-150 select-none group
@@ -922,7 +924,7 @@ export default function Layout({ children, currentPageName }) {
         </span>
 
         {/* Right: Notifications */}
-        <div className="flex items-center justify-end gap-1 w-24">
+        <div className="flex items-center justify-end gap-1 w-24" data-tour="notif-bell">
           <NotificationBell />
         </div>
       </div>
@@ -997,10 +999,11 @@ export default function Layout({ children, currentPageName }) {
           className="px-2 py-2 border-t border-[#E0E0E5] dark:border-[#38383A] space-y-0.5"
           style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.5rem)' }}
         >
-          <div className="px-1 flex justify-end mb-1">
+          <div className="px-1 flex justify-end mb-1" data-tour="notif-bell">
             <NotificationBell placement="sidebar" />
           </div>
           <button
+            data-tour="theme-toggle"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             className="w-full flex items-center gap-2.5 px-3 py-[9px] rounded-xl text-[13.5px] font-medium text-[#6E6E73] dark:text-[#8E8E93] hover:bg-[#F2F2F7] dark:hover:bg-white/5 hover:text-[#1D1D1F] dark:hover:text-white transition-colors"
           >
@@ -1383,6 +1386,7 @@ export default function Layout({ children, currentPageName }) {
         </DialogContent>
       </Dialog>
 
+      <AppTour user={user} />
     </div>
   );
 }
