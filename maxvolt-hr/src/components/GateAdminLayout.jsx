@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
-import { ShieldCheck, User2, LogOut, Menu, X } from 'lucide-react';
+import { ShieldCheck, User2, LogOut, Menu, X, Users } from 'lucide-react';
 
 export default function GateAdminLayout({ children, currentPageName }) {
   const [user, setUser] = useState(null);
@@ -17,8 +17,17 @@ export default function GateAdminLayout({ children, currentPageName }) {
     await base44.auth.logout();
   };
 
+  // This is the layout every Gate Admin page (GateAdminDashboard,
+  // GateAdminProfile) actually renders inside — a separate, hardcoded nav
+  // from the main Layout.jsx used everywhere else. VisitorManagement itself
+  // still renders through the main Layout (so it works for HR/admin/
+  // management too, who have no nav link to it per their own request), but
+  // without an entry point HERE a real Gate Admin had no way to ever reach
+  // it — the "Visitor Management" item added to Layout.jsx's own gate-admin
+  // menu was correct but effectively unreachable dead code for this role.
   const menuItems = [
     { name: 'Gate Dashboard', icon: ShieldCheck, path: '/GateAdminDashboard', page: 'GateAdminDashboard' },
+    { name: 'Visitor Management', icon: Users, path: '/VisitorManagement', page: 'VisitorManagement' },
     { name: 'My Profile', icon: User2, path: '/GateAdminProfile', page: 'GateAdminProfile' },
   ];
 
