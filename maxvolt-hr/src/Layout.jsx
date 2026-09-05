@@ -113,7 +113,6 @@ const managementMenuGroups = [
     { name: 'Org Chart',                icon: Network,         page: 'OrgChart' },
     { name: 'Talent Grid (9-Box)',      icon: Grid3x3,         page: 'TalentGrid' },
     { name: 'Skill Grid',               icon: LayoutGrid,      page: 'SkillGrid' },
-    { name: 'Visitor Management',       icon: Users,           page: 'VisitorManagement' },
   ]},
   // "My Team"/"Team Attendance" above are scoped to the management viewer's
   // own downstream hierarchy (direct + indirect reports) — these two are the
@@ -195,7 +194,6 @@ const managerMenuGroups = [
     { name: 'Confirmation',             icon: UserCheck,       page: 'ConfirmationManagement' },
     { name: 'Team Calendar',            icon: Calendar,        page: 'TeamCalendar' },
     { name: 'Org Chart',                icon: Network,         page: 'OrgChart' },
-    { name: 'Visitor Management',       icon: Users,           page: 'VisitorManagement' },
   ]},
   { label: 'Team Insights', items: [
     { name: 'Attrition Risk (AI)',      icon: ShieldAlert,     page: 'AttritionRisk' },
@@ -336,7 +334,6 @@ const hrMenuGroups = [
     { name: 'Asset Tracking',          icon: Laptop,          page: 'AssetTracking' },
     { name: 'Holiday Calendar',        icon: Calendar,        page: 'HolidayCalendar' },
     { name: 'Gate Pass Management',    icon: ShieldCheck,     page: 'GatePassManagement' },
-    { name: 'Visitor Management',      icon: Users,           page: 'VisitorManagement' },
     { name: 'My Visitors',             icon: UserPlus,        page: 'MyVisitors' },
     { name: 'Team Calendar',           icon: Calendar,        page: 'TeamCalendar' },
   ]},
