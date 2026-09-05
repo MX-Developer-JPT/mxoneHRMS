@@ -18,6 +18,15 @@ const SENSITIVE_TYPES = new Set([
   'Payroll', 'PayrollConfiguration', 'SalaryStructure', 'Loan', 'InsuranceClaim',
   'POSHRecord', 'TaxDeclaration', 'Form16', 'BankDetail', 'LeaveBalance', 'Document',
   'Reimbursement',
+  // Visitor is location-scoped (a Duhai gate admin must never be able to
+  // list an E82 visitor by calling the generic list/filter API directly,
+  // per the Visitor Management location-isolation requirement). Every
+  // legitimate read now goes through functions.js's getMyVisitors (self) or
+  // getVisitorsScoped (gate admin/HR, location-filtered server-side)
+  // instead — this just closes the generic route as a bypass. The default
+  // fallback below (owner-only) is a safe, never-leaks-cross-location floor
+  // for any caller that still hits this route directly.
+  'Visitor',
 ]);
 const PRIVILEGED_ROLES = new Set(['hr', 'admin', 'management']);
 // LeaveBalance is the one SENSITIVE_TYPE that must never be self-editable,

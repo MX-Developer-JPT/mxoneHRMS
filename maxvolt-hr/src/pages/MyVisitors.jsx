@@ -10,10 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { safeDate, safeTime } from '@/lib/dateUtils';
+import { generateVisitorPassImage, downloadBlob, shareOrDownloadPass } from '@/lib/visitorPass';
 import { toast } from 'sonner';
 import {
   UserPlus, Users, Check, X, ChevronsUpDown, Car, MapPin, Clock,
-  Building2, Phone, QrCode, XCircle,
+  Building2, Phone, QrCode, XCircle, Download, Share2, Mail,
 } from 'lucide-react';
 import VisitorQRCode from '@/components/visitor/VisitorQRCode';
 
@@ -36,14 +37,15 @@ const CATEGORIES = [
 ];
 
 const emptyForm = {
-  visitor_name: '', mobile_number: '', company: '', visitor_category: 'guest', purpose: '',
-  expected_arrival: '', expected_departure: '', host_user_id: '', vehicle_number: '',
+  visitor_name: '', mobile_number: '', visitor_email: '', company: '', visitor_category: 'guest', purpose: '',
+  expected_arrival: '', expected_departure: '', host_user_id: '', location_name: '', vehicle_number: '',
   meeting_location: '', special_instructions: '',
 };
 
 export default function MyVisitors() {
   const [user, setUser] = useState(null);
   const [employees, setEmployees] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [visitors, setVisitors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -52,6 +54,9 @@ export default function MyVisitors() {
   const [hostOpen, setHostOpen] = useState(false);
   const [actioningId, setActioningId] = useState(null);
   const [qrVisitor, setQrVisitor] = useState(null);
+  const [passImageUrl, setPassImageUrl] = useState(null);
+  const [passBlob, setPassBlob] = useState(null);
+  const [passLoading, setPassLoading] = useState(false);
   const [tab, setTab] = useState('mine'); // 'mine' | 'hosting'
 
   useEffect(() => { loadData(); }, []);
@@ -59,14 +64,17 @@ export default function MyVisitors() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [me, emps, allVisitors] = await Promise.all([
+      const [me, emps, locs, res] = await Promise.all([
         base44.auth.me(),
         base44.entities.Employee.filter({ status: 'active' }),
-        base44.entities.Visitor.list('-created_date', 500),
+        base44.entities.AppLocation.filter({ is_active: true }),
+        base44.functions.invoke('getMyVisitors', {}),
       ]);
+      const d = res.data || res;
       setUser(me);
       setEmployees(emps);
-      setVisitors(allVisitors);
+      setLocations(locs);
+      setVisitors(d.success ? d.visitors : []);
       setForm(f => ({ ...f, host_user_id: f.host_user_id || me.id }));
     } catch (e) {
       console.error('MyVisitors loadData:', e.message);
@@ -82,8 +90,8 @@ export default function MyVisitors() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.visitor_name || !form.mobile_number || !form.purpose || !form.expected_arrival) {
-      toast.error('Visitor name, mobile number, purpose and expected arrival are required');
+    if (!form.visitor_name || !form.mobile_number || !form.purpose || !form.expected_arrival || !form.location_name) {
+      toast.error('Visitor name, mobile number, purpose, office location and expected arrival are required');
       return;
     }
     setSubmitting(true);
@@ -136,6 +144,39 @@ export default function MyVisitors() {
 
   const empName = (uid) => employees.find(e => e.user_id === uid)?.display_name || '';
 
+  const openPass = async (visitor) => {
+    setQrVisitor(visitor);
+    setPassImageUrl(null);
+    setPassBlob(null);
+    setPassLoading(true);
+    try {
+      const location = locations.find(l => l.name === visitor.location_name) || null;
+      const blob = await generateVisitorPassImage(visitor, location);
+      setPassBlob(blob);
+      setPassImageUrl(URL.createObjectURL(blob));
+    } catch (e) {
+      console.error('Pass generation failed:', e.message);
+      toast.error('Could not generate the pass image');
+    }
+    setPassLoading(false);
+  };
+
+  const closePass = () => {
+    if (passImageUrl) URL.revokeObjectURL(passImageUrl);
+    setQrVisitor(null); setPassImageUrl(null); setPassBlob(null);
+  };
+
+  const handleDownloadPass = () => {
+    if (!passBlob || !qrVisitor) return;
+    downloadBlob(passBlob, `Visitor_Pass_${qrVisitor.visitor_name.replace(/\s+/g, '_')}.png`);
+  };
+
+  const handleSharePass = async () => {
+    if (!passBlob || !qrVisitor) return;
+    const result = await shareOrDownloadPass(passBlob, `Visitor_Pass_${qrVisitor.visitor_name.replace(/\s+/g, '_')}.png`, `Visitor Pass — ${qrVisitor.visitor_name}`);
+    if (result === 'downloaded') toast.info('Sharing not supported here — pass downloaded instead');
+  };
+
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
 
   const list = tab === 'mine' ? myInvites : hostingForMe;
@@ -166,7 +207,7 @@ export default function MyVisitors() {
                   <div key={v.id} className="flex flex-wrap items-center justify-between gap-2 bg-white rounded-lg p-3 border border-amber-200">
                     <div className="min-w-0">
                       <p className="font-medium text-sm">{v.visitor_name} {v.company && <span className="text-gray-400 font-normal">— {v.company}</span>}</p>
-                      <p className="text-xs text-gray-500">{v.purpose} · Invited by {v.created_by_name}{v.source === 'walk_in' ? ' · Walk-in at gate' : ''}</p>
+                      <p className="text-xs text-gray-500">{v.purpose} · {v.location_name} · Invited by {v.created_by_name}{v.source === 'walk_in' ? ' · Walk-in at gate' : ''}</p>
                     </div>
                     <div className="flex gap-2 shrink-0">
                       <Button size="sm" disabled={actioningId === v.id} onClick={() => handleApproval(v, 'approve')} className="bg-green-600 hover:bg-green-700">
@@ -198,6 +239,10 @@ export default function MyVisitors() {
                     <Input value={form.mobile_number} onChange={e => setForm({ ...form, mobile_number: e.target.value })} required />
                   </div>
                   <div>
+                    <Label>Visitor Email</Label>
+                    <Input type="email" value={form.visitor_email} onChange={e => setForm({ ...form, visitor_email: e.target.value })} />
+                  </div>
+                  <div>
                     <Label>Company / Organisation</Label>
                     <Input value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} />
                   </div>
@@ -206,6 +251,13 @@ export default function MyVisitors() {
                     <Select value={form.visitor_category} onValueChange={v => setForm({ ...form, visitor_category: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>{CATEGORIES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Office Location *</Label>
+                    <Select value={form.location_name} onValueChange={v => setForm({ ...form, location_name: v })}>
+                      <SelectTrigger><SelectValue placeholder="Select location..." /></SelectTrigger>
+                      <SelectContent>{locations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}</SelectContent>
                     </Select>
                   </div>
                   <div className="sm:col-span-2">
@@ -224,7 +276,7 @@ export default function MyVisitors() {
                     <Label>Employee / Host *</Label>
                     <Popover open={hostOpen} onOpenChange={setHostOpen}>
                       <PopoverTrigger asChild>
-                        <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
+                        <Button type="button" variant="outline" role="combobox" className="w-full justify-between font-normal">
                           {form.host_user_id === user?.id ? `${user?.full_name} (You)` : (empName(form.host_user_id) || 'Select host...')}
                           <ChevronsUpDown className="w-4 h-4 opacity-50" />
                         </Button>
@@ -251,7 +303,7 @@ export default function MyVisitors() {
                     <Input value={form.vehicle_number} onChange={e => setForm({ ...form, vehicle_number: e.target.value })} />
                   </div>
                   <div>
-                    <Label>Meeting Location</Label>
+                    <Label>Meeting Location (within office)</Label>
                     <Input value={form.meeting_location} onChange={e => setForm({ ...form, meeting_location: e.target.value })} />
                   </div>
                   <div className="sm:col-span-2">
@@ -290,14 +342,16 @@ export default function MyVisitors() {
                   <div key={v.id} className="border rounded-lg p-3">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="font-medium text-sm flex items-center gap-2">
+                        <p className="font-medium text-sm flex items-center gap-2 flex-wrap">
                           {v.visitor_name}
                           <Badge className={STATUS_COLORS[v.status] || 'bg-gray-100 text-gray-700'}>{STATUS_LABELS[v.status] || v.status}</Badge>
+                          {v.location_name && <Badge variant="outline" className="flex items-center gap-1"><MapPin className="w-3 h-3" />{v.location_name}</Badge>}
                         </p>
-                        <p className="text-xs text-gray-500 mt-1">
-                          {v.company && <span className="inline-flex items-center gap-1 mr-3"><Building2 className="w-3 h-3" />{v.company}</span>}
-                          <span className="inline-flex items-center gap-1 mr-3"><Phone className="w-3 h-3" />{v.mobile_number}</span>
-                          <span className="inline-flex items-center gap-1 mr-3"><Clock className="w-3 h-3" />{safeDate(v.expected_arrival, 'dd MMM, h:mm a')}</span>
+                        <p className="text-xs text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                          {v.company && <span className="inline-flex items-center gap-1"><Building2 className="w-3 h-3" />{v.company}</span>}
+                          <span className="inline-flex items-center gap-1"><Phone className="w-3 h-3" />{v.mobile_number}</span>
+                          {v.visitor_email && <span className="inline-flex items-center gap-1"><Mail className="w-3 h-3" />{v.visitor_email}</span>}
+                          <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3" />{safeDate(v.expected_arrival, 'dd MMM, h:mm a')}</span>
                           {v.vehicle_number && <span className="inline-flex items-center gap-1"><Car className="w-3 h-3" />{v.vehicle_number}</span>}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">{v.purpose}{tab === 'mine' ? ` · Host: ${v.host_name}` : ` · Invited by: ${v.created_by_name}`}</p>
@@ -313,7 +367,7 @@ export default function MyVisitors() {
                       </div>
                       <div className="flex gap-2 shrink-0">
                         {v.status === 'approved' && v.qr_code && (
-                          <Button size="sm" variant="outline" onClick={() => setQrVisitor(v)}>
+                          <Button size="sm" variant="outline" onClick={() => openPass(v)}>
                             <QrCode className="w-3.5 h-3.5 mr-1" /> QR Pass
                           </Button>
                         )}
@@ -343,14 +397,27 @@ export default function MyVisitors() {
       </div>
 
       {qrVisitor && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setQrVisitor(null)}>
-          <div className="bg-white rounded-xl p-6 max-w-xs w-full text-center space-y-3" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={closePass}>
+          <div className="bg-white rounded-xl p-5 max-w-sm w-full text-center space-y-3" onClick={e => e.stopPropagation()}>
             <p className="font-semibold">{qrVisitor.visitor_name}'s Visitor Pass</p>
             <div className="flex justify-center">
-              <VisitorQRCode value={qrVisitor.qr_code} size={220} />
+              {passLoading ? (
+                <div className="w-full h-80 bg-gray-100 rounded-lg animate-pulse flex items-center justify-center text-gray-400 text-sm">Generating pass...</div>
+              ) : passImageUrl ? (
+                <img src={passImageUrl} alt="Visitor Pass" className="w-full rounded-lg border" />
+              ) : (
+                <VisitorQRCode value={qrVisitor.qr_code} size={220} />
+              )}
             </div>
-            <p className="text-xs text-gray-500">Show this QR code at the gate for check-in</p>
-            <Button variant="outline" size="sm" onClick={() => setQrVisitor(null)}>Close</Button>
+            <div className="flex gap-2 justify-center">
+              <Button size="sm" disabled={!passBlob} onClick={handleDownloadPass} className="bg-blue-600 hover:bg-blue-700">
+                <Download className="w-3.5 h-3.5 mr-1.5" /> Download
+              </Button>
+              <Button size="sm" variant="outline" disabled={!passBlob} onClick={handleSharePass}>
+                <Share2 className="w-3.5 h-3.5 mr-1.5" /> Share
+              </Button>
+            </div>
+            <Button variant="ghost" size="sm" onClick={closePass}>Close</Button>
           </div>
         </div>
       )}

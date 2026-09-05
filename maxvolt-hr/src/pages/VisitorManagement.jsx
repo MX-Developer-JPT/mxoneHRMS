@@ -14,10 +14,25 @@ import { toast } from 'sonner';
 import {
   Users, UserPlus, QrCode, LogIn, LogOut, Search, Clock, Car, Building2, Phone,
   AlertTriangle, ChevronsUpDown, Camera, ShieldAlert, History as HistoryIcon, RefreshCw,
+  MapPin, Download, Share2,
 } from 'lucide-react';
 import VisitorQRCode from '@/components/visitor/VisitorQRCode';
 import VisitorQRScanner from '@/components/visitor/VisitorQRScanner';
 import AttendanceCameraCapture from '@/components/attendance/AttendanceCameraCapture';
+import { generateVisitorPassImage, downloadBlob, shareOrDownloadPass } from '@/lib/visitorPass';
+
+// Friendly copy for verifyVisitorQR's status enum — anything not listed
+// (e.g. 'valid') just proceeds straight to the check-in/out flow with no
+// extra messaging needed.
+const VERIFY_STATUS_MESSAGES = {
+  invalid: 'Pass not recognized.',
+  wrong_location: null, // uses the server's own message (names the correct location)
+  pending_approval: 'This visitor has not been approved by their host yet.',
+  rejected: 'This visit was rejected — entry is blocked.',
+  cancelled: 'This visit was cancelled.',
+  already_used: 'This pass was already used — the visitor has already checked out.',
+  expired: 'This pass has expired (past the expected departure window without an arrival).',
+};
 
 const STATUS_COLORS = {
   pending_approval: 'bg-yellow-100 text-yellow-800',
@@ -45,17 +60,20 @@ const istDate = (s) => { if (!s) return null; const d = new Date(String(s).repla
 const istNow = () => istDate(nowIST());
 const todayStr = () => nowIST().slice(0, 10);
 
-const emptyWalkIn = { visitor_name: '', mobile_number: '', company: '', visitor_category: 'guest', purpose: '', host_user_id: '', vehicle_number: '' };
+const emptyWalkIn = { visitor_name: '', mobile_number: '', visitor_email: '', company: '', visitor_category: 'guest', purpose: '', host_user_id: '', location_name: '', vehicle_number: '' };
 
 export default function VisitorManagement() {
   const [user, setUser] = useState(null);
   const [employees, setEmployees] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [myLocations, setMyLocations] = useState(null); // null = unrestricted/not a location-scoped gate admin
   const [visitors, setVisitors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('dashboard'); // dashboard | currently_inside | history
   const [dashFilter, setDashFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [historyStatus, setHistoryStatus] = useState('all');
+  const [historyLocation, setHistoryLocation] = useState('all');
 
   const [showWalkIn, setShowWalkIn] = useState(false);
   const [walkInForm, setWalkInForm] = useState(emptyWalkIn);
@@ -71,22 +89,37 @@ export default function VisitorManagement() {
   const [idProof, setIdProof] = useState('');
   const [actioningId, setActioningId] = useState(null);
   const [qrVisitor, setQrVisitor] = useState(null);
+  const [passImageUrl, setPassImageUrl] = useState(null);
+  const [passBlob, setPassBlob] = useState(null);
+  const [passLoading, setPassLoading] = useState(false);
   const [showHeadcount, setShowHeadcount] = useState(false);
 
   const role = user?.custom_role || user?.role;
   const canOperate = ['gate_admin', 'hr', 'admin', 'management'].includes(role);
+  const isGateAdmin = role === 'gate_admin';
 
   const loadData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [me, emps, allVisitors] = await Promise.all([
+      const [me, emps, locs] = await Promise.all([
         base44.auth.me(),
         base44.entities.Employee.filter({ status: 'active' }),
-        base44.entities.Visitor.list('-created_date', 1000),
+        base44.entities.AppLocation.filter({ is_active: true }),
       ]);
       setUser(me);
       setEmployees(emps);
-      setVisitors(allVisitors);
+      setLocations(locs);
+      const myRole = me.custom_role || me.role;
+      const [visRes, locRes] = await Promise.all([
+        base44.functions.invoke('getVisitorsScoped', {}),
+        myRole === 'gate_admin' ? base44.functions.invoke('getGateAdminLocations', {}) : Promise.resolve(null),
+      ]);
+      const vd = visRes.data || visRes;
+      setVisitors(vd.success ? vd.visitors : []);
+      if (locRes) {
+        const ld = locRes.data || locRes;
+        setMyLocations(ld.success ? ld.locations : null);
+      }
     } catch (e) {
       console.error('VisitorManagement loadData:', e.message);
     }
@@ -94,6 +127,15 @@ export default function VisitorManagement() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Pre-fill the walk-in form's location the moment we know the acting gate
+  // admin's own assignment — only when it's unambiguous (exactly one
+  // assigned location); otherwise they must pick explicitly.
+  useEffect(() => {
+    if (isGateAdmin && Array.isArray(myLocations) && myLocations.length === 1) {
+      setWalkInForm(f => ({ ...f, location_name: f.location_name || myLocations[0] }));
+    }
+  }, [isGateAdmin, myLocations]);
 
   const empName = (uid) => employees.find(e => e.user_id === uid)?.display_name || '';
 
@@ -115,17 +157,18 @@ export default function VisitorManagement() {
     const term = search.trim().toLowerCase();
     return visitors.filter(v => {
       if (historyStatus !== 'all' && v.status !== historyStatus) return false;
+      if (historyLocation !== 'all' && v.location_name !== historyLocation) return false;
       if (!term) return true;
       return [v.visitor_name, v.mobile_number, v.company, v.vehicle_number, v.host_name].some(f => (f || '').toLowerCase().includes(term));
     });
-  }, [visitors, search, historyStatus]);
+  }, [visitors, search, historyStatus, historyLocation]);
 
   const resetWalkIn = () => { setWalkInForm(emptyWalkIn); setWalkInPhoto(null); };
 
   const handleWalkInSubmit = async (e) => {
     e.preventDefault();
-    if (!walkInForm.visitor_name || !walkInForm.mobile_number || !walkInForm.purpose || !walkInForm.host_user_id) {
-      toast.error('Visitor name, mobile number, purpose and the employee to meet are required');
+    if (!walkInForm.visitor_name || !walkInForm.mobile_number || !walkInForm.purpose || !walkInForm.host_user_id || !walkInForm.location_name) {
+      toast.error('Visitor name, mobile number, purpose, office location and the employee to meet are required');
       return;
     }
     setSubmitting(true);
@@ -165,10 +208,27 @@ export default function VisitorManagement() {
     }
   };
 
-  const handleScan = (code) => {
+  // Authoritative server-side check before acting on a scanned pass — the
+  // client's own `visitors` list is already location-filtered for a scoped
+  // gate admin, so a cross-location pass wouldn't even be in it (it would
+  // look like "not found" rather than the more honest, spec-required
+  // "wrong location" message) — verifyVisitorQR checks the RAW record and
+  // names the correct reason. This also double-checks expiry/used/cancelled
+  // status right at scan time rather than trusting a client list that may
+  // be a few seconds stale.
+  const handleScan = async (code) => {
     setShowScanner(false);
-    const match = visitors.find(v => v.qr_code === code);
-    handleResolvedVisitor(match);
+    try {
+      const res = await base44.functions.invoke('verifyVisitorQR', { qr_code: code });
+      const d = res.data || res;
+      if (!d.success) { toast.error(d.message || 'Verification failed'); return; }
+      if (d.status === 'wrong_location') { toast.error(d.message); return; }
+      const msg = VERIFY_STATUS_MESSAGES[d.status];
+      if (msg) { toast.error(msg); return; }
+      handleResolvedVisitor(d.visitor);
+    } catch (err) {
+      toast.error(err.message || 'Verification failed');
+    }
   };
 
   const doCheckIn = async () => {
@@ -208,10 +268,43 @@ export default function VisitorManagement() {
     }
   };
 
+  const openPass = async (visitor) => {
+    setQrVisitor(visitor);
+    setPassImageUrl(null);
+    setPassBlob(null);
+    setPassLoading(true);
+    try {
+      const location = locations.find(l => l.name === visitor.location_name) || null;
+      const blob = await generateVisitorPassImage(visitor, location);
+      setPassBlob(blob);
+      setPassImageUrl(URL.createObjectURL(blob));
+    } catch (e) {
+      console.error('Pass generation failed:', e.message);
+      toast.error('Could not generate the pass image');
+    }
+    setPassLoading(false);
+  };
+
+  const closePass = () => {
+    if (passImageUrl) URL.revokeObjectURL(passImageUrl);
+    setQrVisitor(null); setPassImageUrl(null); setPassBlob(null);
+  };
+
+  const handleDownloadPass = () => {
+    if (!passBlob || !qrVisitor) return;
+    downloadBlob(passBlob, `Visitor_Pass_${qrVisitor.visitor_name.replace(/\s+/g, '_')}.png`);
+  };
+
+  const handleSharePass = async () => {
+    if (!passBlob || !qrVisitor) return;
+    const result = await shareOrDownloadPass(passBlob, `Visitor_Pass_${qrVisitor.visitor_name.replace(/\s+/g, '_')}.png`, `Visitor Pass — ${qrVisitor.visitor_name}`);
+    if (result === 'downloaded') toast.info('Sharing not supported here — pass downloaded instead');
+  };
+
   const exportHistoryCsv = () => {
-    const headers = ['Visitor', 'Mobile', 'Company', 'Purpose', 'Host', 'Status', 'Expected Arrival', 'Check In', 'Check Out', 'Vehicle'];
+    const headers = ['Visitor', 'Mobile', 'Company', 'Location', 'Purpose', 'Host', 'Status', 'Expected Arrival', 'Check In', 'Check Out', 'Vehicle'];
     const rows = filteredHistory.map(v => [
-      v.visitor_name, v.mobile_number, v.company || '', v.purpose || '', v.host_name || '',
+      v.visitor_name, v.mobile_number, v.company || '', v.location_name || '', v.purpose || '', v.host_name || '',
       STATUS_LABELS[v.status] || v.status, safeDate(v.expected_arrival, 'dd MMM yyyy h:mm a'),
       v.check_in_time ? safeDate(v.check_in_time, 'dd MMM yyyy h:mm a') : '', v.check_out_time ? safeDate(v.check_out_time, 'dd MMM yyyy h:mm a') : '',
       v.vehicle_number || '',
@@ -235,6 +328,7 @@ export default function VisitorManagement() {
           <p className="font-medium text-sm flex items-center gap-2 flex-wrap">
             {v.visitor_name}
             <Badge className={STATUS_COLORS[v.status] || 'bg-gray-100 text-gray-700'}>{STATUS_LABELS[v.status] || v.status}</Badge>
+            {v.location_name && <Badge variant="outline" className="flex items-center gap-1"><MapPin className="w-3 h-3" />{v.location_name}</Badge>}
             {isOverdue(v) && <Badge className="bg-red-100 text-red-800 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />Overdue</Badge>}
           </p>
           <p className="text-xs text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
@@ -260,7 +354,7 @@ export default function VisitorManagement() {
               </Button>
             )}
             {v.qr_code && v.status === 'approved' && (
-              <Button size="sm" variant="outline" onClick={() => setQrVisitor(v)}><QrCode className="w-3.5 h-3.5" /></Button>
+              <Button size="sm" variant="outline" onClick={() => openPass(v)}><QrCode className="w-3.5 h-3.5" /></Button>
             )}
           </div>
         )}
@@ -276,7 +370,14 @@ export default function VisitorManagement() {
             <div className="p-3 bg-blue-600 rounded-xl"><Users className="w-6 h-6 text-white" /></div>
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Visitor Management</h1>
-              <p className="text-gray-500 text-sm">{new Date().toDateString()}</p>
+              <p className="text-gray-500 text-sm">
+                {new Date().toDateString()}
+                {isGateAdmin && (
+                  <span className="ml-2">
+                    · {Array.isArray(myLocations) ? `You manage: ${myLocations.join(', ') || 'no locations assigned'}` : 'All locations (unrestricted)'}
+                  </span>
+                )}
+              </p>
             </div>
           </div>
           <div className="flex gap-2 flex-wrap">
@@ -356,6 +457,13 @@ export default function VisitorManagement() {
                     {Object.entries(STATUS_LABELS).map(([k, l]) => <SelectItem key={k} value={k}>{l}</SelectItem>)}
                   </SelectContent>
                 </Select>
+                <Select value={historyLocation} onValueChange={setHistoryLocation}>
+                  <SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Locations</SelectItem>
+                    {locations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 <Button variant="outline" size="sm" onClick={exportHistoryCsv}><HistoryIcon className="w-3.5 h-3.5 mr-1.5" />Export CSV</Button>
               </div>
             </CardHeader>
@@ -374,7 +482,21 @@ export default function VisitorManagement() {
             <div><Label>Name *</Label><Input value={walkInForm.visitor_name} onChange={e => setWalkInForm({ ...walkInForm, visitor_name: e.target.value })} required /></div>
             <div className="grid grid-cols-2 gap-3">
               <div><Label>Mobile Number *</Label><Input value={walkInForm.mobile_number} onChange={e => setWalkInForm({ ...walkInForm, mobile_number: e.target.value })} required /></div>
+              <div><Label>Email</Label><Input type="email" value={walkInForm.visitor_email} onChange={e => setWalkInForm({ ...walkInForm, visitor_email: e.target.value })} /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
               <div><Label>Company</Label><Input value={walkInForm.company} onChange={e => setWalkInForm({ ...walkInForm, company: e.target.value })} /></div>
+              <div>
+                <Label>Office Location *</Label>
+                <Select value={walkInForm.location_name} onValueChange={v => setWalkInForm({ ...walkInForm, location_name: v })}>
+                  <SelectTrigger><SelectValue placeholder="Select location..." /></SelectTrigger>
+                  <SelectContent>
+                    {(Array.isArray(myLocations) ? locations.filter(l => myLocations.includes(l.name)) : locations).map(l => (
+                      <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -441,7 +563,7 @@ export default function VisitorManagement() {
               <div className="bg-gray-50 rounded-lg p-3 text-sm">
                 <p className="font-semibold">{checkInTarget.visitor_name}</p>
                 <p className="text-gray-500">{checkInTarget.company} · Meeting {checkInTarget.host_name}</p>
-                <p className="text-gray-500">{checkInTarget.purpose}</p>
+                <p className="text-gray-500">{checkInTarget.purpose} · {checkInTarget.location_name}</p>
               </div>
               <div>
                 <Label>ID Proof Reference</Label>
@@ -468,11 +590,27 @@ export default function VisitorManagement() {
 
       {/* QR pass viewer */}
       {qrVisitor && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setQrVisitor(null)}>
-          <div className="bg-white rounded-xl p-6 max-w-xs w-full text-center space-y-3" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={closePass}>
+          <div className="bg-white rounded-xl p-5 max-w-sm w-full text-center space-y-3" onClick={e => e.stopPropagation()}>
             <p className="font-semibold">{qrVisitor.visitor_name}'s Visitor Pass</p>
-            <div className="flex justify-center"><VisitorQRCode value={qrVisitor.qr_code} size={220} /></div>
-            <Button variant="outline" size="sm" onClick={() => setQrVisitor(null)}>Close</Button>
+            <div className="flex justify-center">
+              {passLoading ? (
+                <div className="w-full h-80 bg-gray-100 rounded-lg animate-pulse flex items-center justify-center text-gray-400 text-sm">Generating pass...</div>
+              ) : passImageUrl ? (
+                <img src={passImageUrl} alt="Visitor Pass" className="w-full rounded-lg border" />
+              ) : (
+                <VisitorQRCode value={qrVisitor.qr_code} size={220} />
+              )}
+            </div>
+            <div className="flex gap-2 justify-center">
+              <Button size="sm" disabled={!passBlob} onClick={handleDownloadPass} className="bg-blue-600 hover:bg-blue-700">
+                <Download className="w-3.5 h-3.5 mr-1.5" /> Download
+              </Button>
+              <Button size="sm" variant="outline" disabled={!passBlob} onClick={handleSharePass}>
+                <Share2 className="w-3.5 h-3.5 mr-1.5" /> Share
+              </Button>
+            </div>
+            <Button variant="ghost" size="sm" onClick={closePass}>Close</Button>
           </div>
         </div>
       )}

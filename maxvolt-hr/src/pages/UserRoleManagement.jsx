@@ -42,6 +42,7 @@ export default function UserRoleManagement() {
   const [employees, setEmployees] = useState({});
   const [managerOpen, setManagerOpen] = useState(false);
   const [departments, setDepartments] = useState([]);
+  const [appLocations, setAppLocations] = useState([]);
 
   // Bulk: reassign reporting manager for a whole department
   const [bulkDept, setBulkDept] = useState('');
@@ -83,15 +84,19 @@ export default function UserRoleManagement() {
       setUsers(allUsers);
       setFilteredUsers(allUsers);
 
-      // Load employee records and departments
-      const [empList, deptList] = await Promise.all([
+      // Load employee records, departments, and Location Master (for
+      // gate-admin location assignment — reuses the same AppLocation list
+      // every other part of the app uses, never a separate hardcoded list).
+      const [empList, deptList, locList] = await Promise.all([
         base44.entities.Employee.list(),
-        base44.entities.Department.list()
+        base44.entities.Department.list(),
+        base44.entities.AppLocation.filter({ is_active: true }),
       ]);
       const empMap = {};
       empList.forEach(e => { empMap[e.user_id] = e; });
       setEmployees(empMap);
       setDepartments(deptList);
+      setAppLocations(locList);
     } catch (error) {
       toast.error('Failed to load users');
     } finally {
@@ -99,7 +104,7 @@ export default function UserRoleManagement() {
     }
   };
 
-  const openEdit = (user) => {
+  const openEdit = async (user) => {
     const emp = employees[user.id] || {};
     setEditUser(user);
     setEditForm({
@@ -116,7 +121,23 @@ export default function UserRoleManagement() {
       personal_email: emp.personal_email || '',
       work_location: emp.work_location || '',
       reporting_manager_id: emp.reporting_manager_id || '',
+      restrict_locations: false,
+      gate_admin_locations: [],
     });
+    // Gate admin location scoping — a separate small entity (see
+    // setGateAdminLocations in functions.js), not part of the
+    // User/Employee fields updateUserDetails already handles. `locations`
+    // comes back null when never configured — restrict_locations starts
+    // OFF (unrestricted) in that case, so simply saving other unrelated
+    // field edits can never accidentally lock a never-configured gate
+    // admin out of every location (see handleSave below).
+    if ((user.custom_role || user.role) === 'gate_admin') {
+      try {
+        const res = await base44.functions.invoke('getGateAdminLocations', { user_id: user.id });
+        const d = res.data || res;
+        setEditForm(f => ({ ...f, restrict_locations: Array.isArray(d.locations), gate_admin_locations: d.locations || [] }));
+      } catch { /* leave restrict_locations false — treat as unconfigured */ }
+    }
   };
 
   const handleSave = async () => {
@@ -139,6 +160,17 @@ export default function UserRoleManagement() {
         userUpdates,
         employeeUpdates,
       });
+
+      if (editForm.role === 'gate_admin') {
+        await base44.functions.invoke('setGateAdminLocations', {
+          user_id: editUser.id,
+          // Toggle off -> null (unrestricted, deletes the row). Toggle on ->
+          // whichever locations are actually checked, even if that's zero
+          // (an admin explicitly restricting someone to nothing, however
+          // unusual, is a deliberate choice this doesn't second-guess).
+          locations: editForm.restrict_locations ? (editForm.gate_admin_locations || []) : null,
+        });
+      }
 
       toast.success('User updated successfully');
       setEditUser(null);
@@ -509,6 +541,44 @@ export default function UserRoleManagement() {
                 </SelectContent>
               </Select>
             </div>
+
+            {editForm.role === 'gate_admin' && (
+              <div className="space-y-2 border rounded-lg p-3 bg-orange-50/50">
+                <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editForm.restrict_locations}
+                    onChange={e => setEditForm(f => ({ ...f, restrict_locations: e.target.checked }))}
+                  />
+                  Restrict this Gate Admin to specific location(s)
+                </label>
+                <p className="text-xs text-gray-500">
+                  Unchecked = this Gate Admin can see and manage visitors/gate passes at every location (default,
+                  matches existing behavior). Checked = restricted to only the location(s) selected below —
+                  reused from the Location Master, so any location added there becomes available here too.
+                </p>
+                {editForm.restrict_locations && (
+                  <div className="grid grid-cols-2 gap-1.5 pt-1 max-h-40 overflow-y-auto">
+                    {appLocations.map(loc => (
+                      <label key={loc.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={editForm.gate_admin_locations?.includes(loc.name)}
+                          onChange={e => setEditForm(f => ({
+                            ...f,
+                            gate_admin_locations: e.target.checked
+                              ? [...(f.gate_admin_locations || []), loc.name]
+                              : (f.gate_admin_locations || []).filter(n => n !== loc.name),
+                          }))}
+                        />
+                        {loc.name}
+                      </label>
+                    ))}
+                    {appLocations.length === 0 && <p className="text-xs text-gray-400 col-span-2">No locations configured in Location Master yet.</p>}
+                  </div>
+                )}
+              </div>
+            )}
 
             <hr />
             <p className="text-xs text-gray-500 font-semibold uppercase tracking-wide">Employee Details</p>

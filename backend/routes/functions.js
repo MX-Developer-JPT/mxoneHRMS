@@ -16822,28 +16822,91 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
 
     /* ══════════════════════════════════════════════════════════════════
        Visitor Management — Gate Admin role expansion (see "MaxVolt One —
-       Visitor & Gate Management" proposal, Phase 1). One Visitor entity
+       Visitor & Gate Management" proposal, Phase 1, and the follow-up
+       location-scoping functional requirements). One Visitor entity
        carries a visit end-to-end: pending_approval -> approved/rejected ->
        checked_in -> checked_out (or cancelled any time before check-in).
        host_user_id is whichever employee the visitor is meeting — picked
        freely by whoever submits the invite (a receptionist/EA can invite
        on someone else's behalf), so approval authority here is NOT the
        usual reporting-manager hierarchy; it's "the host on this specific
-       record, or a privileged role." Every mutation below is its own
-       dedicated case (not the generic entities.js PATCH route) precisely
-       because that decoupled host relationship doesn't fit the
-       reporting-hierarchy assumptions the generic route's approval
-       scaffolding already makes for Leave/GatePass/Reimbursement/
-       AttendanceRegularisation — kept fully separate to avoid touching
-       that shared, already-hardened authorization logic. ── */
+       record, a privileged role, or a gate admin whose assigned location
+       matches." Every mutation below is its own dedicated case (not the
+       generic entities.js PATCH route) precisely because that decoupled
+       host relationship doesn't fit the reporting-hierarchy assumptions
+       the generic route's approval scaffolding already makes for Leave/
+       GatePass/Reimbursement/AttendanceRegularisation — kept fully
+       separate to avoid touching that shared, already-hardened
+       authorization logic. Reads of type='Visitor' also go through the
+       generic entities.js route ONLY for a privileged caller now (see
+       SENSITIVE_TYPES in entities.js) — every other caller (plain
+       employee, gate admin) must use one of the scoped reads below
+       (getMyVisitors / getVisitorsScoped), so location isolation can't be
+       bypassed by calling the generic list API directly with a different
+       URL/parameters. ──
+
+       Location scoping: a location is identified by AppLocation.name (the
+       Location Master is the single source of truth — see LocationMaster.jsx
+       — never a locally-hardcoded list). A gate admin's own allowed
+       locations live in a small dedicated GateAdminLocation entity (one row
+       per user_id, {locations: [name,...]}) rather than on Employee (a
+       gate_admin account isn't guaranteed to have an Employee row at all)
+       or on the users table (a real SQL table — adding a column there is a
+       migration; this app's convention for new per-user capability data is
+       a flexible JSON entity instead, e.g. is_shift_manager/BlockedVisitor
+       earlier in this file). No GateAdminLocation row for a user (never
+       configured) means unrestricted — the same backward-compatible
+       default used for is_shift_manager-style rollouts — so existing gate
+       admins keep working exactly as before until an admin explicitly
+       assigns them specific locations via setGateAdminLocations. ── */
+
+    // Returns null (not configured — unrestricted) or an array of
+    // AppLocation names this gate admin may operate on.
+    async function getGateAdminAssignedLocations(userId) {
+      const row = await one("SELECT data FROM entities WHERE type='GateAdminLocation' AND user_id=$1", [userId]);
+      if (!row) return null;
+      const d = JSON.parse(row.data);
+      return Array.isArray(d.locations) ? d.locations : null;
+    }
+
+    // May `cu` operate (approve/check-in/check-out) on a visit at
+    // `locationName`? MGR_ROLES: always. gate_admin: only if unconfigured
+    // (back-compat) or locationName is in their assigned list. Anyone else: no.
+    async function canOperateAtLocation(cu, locationName) {
+      if (await hasRole(cu, MGR_ROLES)) return true;
+      if (!(await hasRole(cu, ['gate_admin']))) return false;
+      const assigned = await getGateAdminAssignedLocations(cu.id);
+      if (assigned === null) return true; // never configured — unrestricted
+      return assigned.includes(locationName);
+    }
+
+    async function validateVisitorLocation(locationName) {
+      if (!locationName) return 'Office location is required';
+      const loc = await one("SELECT id FROM entities WHERE type='AppLocation' AND data::jsonb->>'name'=$1 AND COALESCE(data::jsonb->>'is_active','true')<>'false'", [locationName]);
+      if (!loc) return `"${locationName}" is not a configured office location`;
+      return null;
+    }
+
+    async function getGateAdminUserIdsForLocation(locationName) {
+      const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role)='gate_admin'");
+      const out = [];
+      for (const r of rows) {
+        const assigned = await getGateAdminAssignedLocations(r.id);
+        if (assigned === null || assigned.includes(locationName)) out.push(r.id);
+      }
+      return out;
+    }
+
     case 'createVisitorInvite': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { visitor_name, mobile_number, company, visitor_category, purpose,
+      const { visitor_name, mobile_number, visitor_email, company, visitor_category, purpose,
         expected_arrival, expected_departure, host_user_id: cviHostId,
-        vehicle_number, meeting_location, special_instructions } = p;
+        location_name: cviLocation, vehicle_number, meeting_location, special_instructions } = p;
       if (!visitor_name || !mobile_number || !purpose || !expected_arrival) {
         return res.json({ success: false, error: 'Visitor name, mobile number, purpose and expected arrival are required' });
       }
+      const cviLocErr = await validateVisitorLocation(cviLocation);
+      if (cviLocErr) return res.json({ success: false, error: cviLocErr });
       const cviBlocked = await one("SELECT id FROM entities WHERE type='BlockedVisitor' AND data::jsonb->>'mobile_number'=$1", [String(mobile_number).trim()]);
       if (cviBlocked) return res.json({ success: false, error: 'This visitor is restricted — contact HR/admin to proceed', code: 'RESTRICTED' });
 
@@ -16866,11 +16929,12 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       const selfHosted = hostId === cu.id;
       const cviNow = new Date().toISOString();
       const cviData = {
-        id: cviId, visitor_name, mobile_number: String(mobile_number).trim(), company: company || '',
+        id: cviId, visitor_name, mobile_number: String(mobile_number).trim(), visitor_email: visitor_email || '', company: company || '',
         visitor_category: visitor_category || 'guest', purpose,
         host_user_id: hostId, host_name: hostName,
         created_by: cu.id, created_by_name: cu.full_name,
         source: 'pre_registered',
+        location_name: cviLocation,
         expected_arrival, expected_departure: expected_departure || null,
         vehicle_number: vehicle_number || '', meeting_location: meeting_location || '', special_instructions: special_instructions || '',
         status: selfHosted ? 'approved' : 'pending_approval',
@@ -16879,18 +16943,27 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Visitor',$2,$3,$4)", [cviId, hostId, cviData.status, JSON.stringify(cviData)]);
       if (!selfHosted) {
-        await notify(hostId, { title: 'Visitor Approval Needed', message: `${cu.full_name} invited ${visitor_name}${company ? ` (${company})` : ''} to meet you — please approve or reject.`, type: 'info', link: '/MyVisitors' });
+        await notify(hostId, { title: 'Visitor Approval Needed', message: `${cu.full_name} invited ${visitor_name}${company ? ` (${company})` : ''} to meet you at ${cviLocation} — please approve or reject.`, type: 'info', link: '/MyVisitors' });
+      }
+      // Route to the Gate Admin(s) assigned to this location, in addition to
+      // the host, so it surfaces in their Visitor Management queue right away
+      // regardless of the host's own approval decision timing.
+      for (const gid of await getGateAdminUserIdsForLocation(cviLocation)) {
+        await notify(gid, { title: 'New Visitor Request', message: `${visitor_name}${company ? ` (${company})` : ''} invited to ${cviLocation} — awaiting host approval.`, type: 'info', link: '/VisitorManagement' });
       }
       return res.json({ success: true, visitor: cviData });
     }
 
     case 'registerWalkInVisitor': {
       if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
-      const { visitor_name, mobile_number, company, visitor_category, purpose,
-        host_user_id: rwvHostId, vehicle_number, photo_url: rwvPhoto } = p;
+      const { visitor_name, mobile_number, visitor_email, company, visitor_category, purpose,
+        host_user_id: rwvHostId, location_name: rwvLocation, vehicle_number, photo_url: rwvPhoto } = p;
       if (!visitor_name || !mobile_number || !purpose || !rwvHostId) {
         return res.json({ success: false, error: 'Visitor name, mobile number, purpose and the employee to meet are required' });
       }
+      const rwvLocErr = await validateVisitorLocation(rwvLocation);
+      if (rwvLocErr) return res.json({ success: false, error: rwvLocErr });
+      if (!(await canOperateAtLocation(cu, rwvLocation))) return res.status(403).json({ error: `You are not assigned to ${rwvLocation}` });
       const rwvBlocked = await one("SELECT id FROM entities WHERE type='BlockedVisitor' AND data::jsonb->>'mobile_number'=$1", [String(mobile_number).trim()]);
       if (rwvBlocked) return res.json({ success: false, error: 'This visitor is restricted — contact HR/admin to proceed', code: 'RESTRICTED' });
 
@@ -16899,11 +16972,12 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
 
       const rwvId = uuidv4();
       const rwvData = {
-        id: rwvId, visitor_name, mobile_number: String(mobile_number).trim(), company: company || '',
+        id: rwvId, visitor_name, mobile_number: String(mobile_number).trim(), visitor_email: visitor_email || '', company: company || '',
         visitor_category: visitor_category || 'guest', purpose,
         host_user_id: rwvHostId, host_name: hostUser.full_name,
         created_by: cu.id, created_by_name: cu.full_name,
         source: 'walk_in',
+        location_name: rwvLocation,
         // IST-digits-as-UTC (matches Attendance's check_in_time convention)
         // since this is displayed via safeTime/safeDate on the frontend,
         // unlike the plain-UTC audit timestamps (approved_at etc.) below.
@@ -16912,7 +16986,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         status: 'pending_approval',
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Visitor',$2,'pending_approval',$3)", [rwvId, rwvHostId, JSON.stringify(rwvData)]);
-      await notify(rwvHostId, { title: 'Visitor Waiting at Gate', message: `${visitor_name}${company ? ` from ${company}` : ''} is at the gate to meet you — please approve or reject.`, type: 'info', link: '/MyVisitors' });
+      await notify(rwvHostId, { title: 'Visitor Waiting at Gate', message: `${visitor_name}${company ? ` from ${company}` : ''} is at the ${rwvLocation} gate to meet you — please approve or reject.`, type: 'info', link: '/MyVisitors' });
       return res.json({ success: true, visitor: rwvData });
     }
 
@@ -16924,14 +16998,18 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       if (!avaRow) return res.json({ success: false, error: 'Visitor record not found' });
       const av = JSON.parse(avaRow.data);
       if (av.status !== 'pending_approval') return res.json({ success: false, error: `Already ${(av.status || '').replace(/_/g, ' ')}` });
-      const avaAuthorized = av.host_user_id === cu.id || await hasRole(cu, MGR_ROLES);
-      if (!avaAuthorized) return res.status(403).json({ error: 'Only the host (or HR/admin/management) may approve this visitor' });
+      // The host always may; otherwise an operator (HR/admin/management, or
+      // a gate admin assigned to this visit's own location) may act "where
+      // applicable" per the functional spec — e.g. a walk-in whose host is
+      // slow to respond can still be cleared by the gate admin on duty there.
+      const avaAuthorized = av.host_user_id === cu.id || await canOperateAtLocation(cu, av.location_name);
+      if (!avaAuthorized) return res.status(403).json({ error: 'Only the host, or an operator assigned to this location, may approve this visitor' });
 
       const avaNow = new Date().toISOString();
       if (avaAction === 'approve') {
         const upd = { ...av, status: 'approved', qr_code: uuidv4(), approved_by: cu.id, approved_by_name: cu.full_name, approved_at: avaNow };
         await run("UPDATE entities SET status='approved', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), avaId]);
-        await notify(av.created_by, { title: 'Visitor Approved', message: `${av.visitor_name} has been approved and can now check in at the gate.`, type: 'success', link: '/MyVisitors' });
+        await notify(av.created_by, { title: 'Visitor Approved', message: `${av.visitor_name} has been approved and can now check in at the ${av.location_name} gate.`, type: 'success', link: '/MyVisitors' });
         return res.json({ success: true, status: 'approved' });
       }
       const upd = { ...av, status: 'rejected', rejected_by: cu.id, rejected_by_name: cu.full_name, rejected_at: avaNow, rejection_reason: avaNote || '' };
@@ -16946,12 +17024,42 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       const cnvRow = await one("SELECT id,data FROM entities WHERE type='Visitor' AND id=$1", [cnvId]);
       if (!cnvRow) return res.json({ success: false, error: 'Visitor record not found' });
       const cv = JSON.parse(cnvRow.data);
-      const cnvAuthorized = cv.created_by === cu.id || cv.host_user_id === cu.id || await hasRole(cu, [...MGR_ROLES, 'gate_admin']);
+      const cnvAuthorized = cv.created_by === cu.id || cv.host_user_id === cu.id || await canOperateAtLocation(cu, cv.location_name);
       if (!cnvAuthorized) return res.status(403).json({ error: 'Access denied' });
       if (!['pending_approval', 'approved'].includes(cv.status)) return res.json({ success: false, error: `Cannot cancel a visit that is already ${(cv.status || '').replace(/_/g, ' ')}` });
       const upd = { ...cv, status: 'cancelled', cancelled_by: cu.id, cancelled_by_name: cu.full_name, cancelled_at: new Date().toISOString() };
       await run("UPDATE entities SET status='cancelled', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), cnvId]);
       return res.json({ success: true });
+    }
+
+    // Read-only pre-check for the gate admin's QR scanner — reports a
+    // specific status (including 'wrong_location', so a Duhai gate admin
+    // scanning an E82 pass gets an explicit, honest reason) WITHOUT mutating
+    // anything. visitorCheckIn/visitorCheckOut re-verify all of this
+    // themselves too (defense in depth — this endpoint existing doesn't
+    // become the only gate).
+    case 'verifyVisitorQR': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { qr_code: vqrCode } = p;
+      if (!vqrCode) return res.json({ success: false, status: 'invalid', message: 'No QR code provided' });
+      const vqrRow = await one("SELECT data FROM entities WHERE type='Visitor' AND data::jsonb->>'qr_code'=$1", [vqrCode]);
+      if (!vqrRow) return res.json({ success: true, status: 'invalid', message: 'Pass not recognized' });
+      const v = JSON.parse(vqrRow.data);
+      if (!(await canOperateAtLocation(cu, v.location_name))) {
+        return res.json({ success: true, status: 'wrong_location', message: `This pass belongs to ${v.location_name} — not your assigned location`, visitor: v });
+      }
+      let status = 'valid';
+      if (v.status === 'cancelled') status = 'cancelled';
+      else if (v.status === 'rejected') status = 'rejected';
+      else if (v.status === 'checked_out') status = 'already_used';
+      else if (v.status === 'checked_in') status = 'checked_in';
+      else if (v.status === 'pending_approval') status = 'pending_approval';
+      if (v.status === 'approved') {
+        const nowIstMs = Date.now() + 5.5 * 3600000;
+        const expiryMs = v.expected_departure ? new Date(v.expected_departure.replace(/Z$/, '')).getTime() : null;
+        status = (expiryMs && nowIstMs > expiryMs) ? 'expired' : 'valid';
+      }
+      return res.json({ success: true, status, visitor: v });
     }
 
     case 'visitorCheckIn': {
@@ -16963,6 +17071,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         : await one("SELECT id,data FROM entities WHERE type='Visitor' AND id=$1", [vciId]);
       if (!vciRow) return res.json({ success: false, error: 'Visitor record not found' });
       const v = JSON.parse(vciRow.data);
+      if (!(await canOperateAtLocation(cu, v.location_name))) return res.status(403).json({ error: `This pass belongs to ${v.location_name} — not your assigned location` });
       if (v.status === 'pending_approval') return res.json({ success: false, error: 'Awaiting host approval — cannot check in yet' });
       if (v.status === 'rejected') return res.json({ success: false, error: 'This visit was rejected — check-in is blocked' });
       if (v.status === 'checked_in') return res.json({ success: false, error: 'Already checked in' });
@@ -16977,7 +17086,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         vehicle_number: vciVeh || v.vehicle_number || '',
       };
       await run("UPDATE entities SET status='checked_in', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), vciRow.id]);
-      await notify(v.host_user_id, { title: 'Your Visitor Has Arrived', message: `${v.visitor_name}${v.company ? ` (${v.company})` : ''} has checked in at the gate.`, type: 'info', link: '/MyVisitors' });
+      await notify(v.host_user_id, { title: 'Your Visitor Has Arrived', message: `${v.visitor_name}${v.company ? ` (${v.company})` : ''} has checked in at the ${v.location_name} gate.`, type: 'info', link: '/MyVisitors' });
       return res.json({ success: true, visitor: upd });
     }
 
@@ -16990,12 +17099,78 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         : await one("SELECT id,data FROM entities WHERE type='Visitor' AND id=$1", [vcoId]);
       if (!vcoRow) return res.json({ success: false, error: 'Visitor record not found' });
       const v = JSON.parse(vcoRow.data);
+      if (!(await canOperateAtLocation(cu, v.location_name))) return res.status(403).json({ error: `This pass belongs to ${v.location_name} — not your assigned location` });
       if (v.status !== 'checked_in') return res.json({ success: false, error: v.status === 'checked_out' ? 'Already checked out' : 'Visitor is not currently checked in' });
 
       // IST-digits-as-UTC, same reasoning as check_in_time above.
       const upd = { ...v, status: 'checked_out', check_out_time: new Date(Date.now() + 5.5 * 3600000).toISOString(), check_out_by: cu.id, check_out_by_name: cu.full_name };
       await run("UPDATE entities SET status='checked_out', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), vcoRow.id]);
       return res.json({ success: true, visitor: upd });
+    }
+
+    // Employee self-service read — replaces the frontend calling the
+    // generic Visitor list directly (now access-restricted for a
+    // non-privileged caller, see SENSITIVE_TYPES in entities.js). Returns
+    // exactly what MyVisitors.jsx needs: invites this user created, plus
+    // ones where they're the host (may differ — a receptionist inviting on
+    // someone else's behalf).
+    case 'getMyVisitors': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const rows = await all("SELECT data FROM entities WHERE type='Visitor' AND (data::jsonb->>'created_by'=$1 OR data::jsonb->>'host_user_id'=$1) ORDER BY created_at DESC LIMIT 500", [cu.id]);
+      return res.json({ success: true, visitors: rows.map(r => JSON.parse(r.data)) });
+    }
+
+    // Gate Admin / HR / admin / management read — the ONLY way (besides the
+    // now-locked-down generic route, unrestricted for privileged roles only)
+    // to list Visitor rows in bulk. MGR_ROLES get everything; a gate admin
+    // gets only their assigned location(s), enforced here server-side —
+    // not just by what VisitorManagement.jsx chooses to render.
+    case 'getVisitorsScoped': {
+      if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
+      const rows = await all("SELECT data FROM entities WHERE type='Visitor' ORDER BY created_at DESC LIMIT 2000");
+      let visitors = rows.map(r => JSON.parse(r.data));
+      if (!(await hasRole(cu, MGR_ROLES))) {
+        const assigned = await getGateAdminAssignedLocations(cu.id);
+        if (assigned !== null) visitors = visitors.filter(v => assigned.includes(v.location_name));
+      }
+      return res.json({ success: true, visitors });
+    }
+
+    /* ── Gate Admin location assignment (functional requirement §3) — a
+       gate admin's access is restricted to whichever AppLocation name(s)
+       are assigned here. Admin-only to change; a gate admin may read their
+       OWN assignment (so VisitorManagement.jsx can show "you manage: X, Y"
+       and pre-fill the walk-in form's location when there's exactly one). ── */
+    case 'setGateAdminLocations': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { user_id: sglUserId, locations: sglLocations } = p;
+      if (!sglUserId) return res.json({ success: false, error: 'user_id is required' });
+      // Explicit null means "clear the restriction" (back to unrestricted —
+      // the same as never having configured this gate admin at all), not
+      // "restrict to zero locations". Deletes the row rather than saving an
+      // empty array so getGateAdminAssignedLocations correctly reads it back
+      // as unconfigured (null).
+      if (sglLocations === null) {
+        await run("DELETE FROM entities WHERE type='GateAdminLocation' AND user_id=$1", [sglUserId]);
+        return res.json({ success: true });
+      }
+      if (!Array.isArray(sglLocations)) return res.json({ success: false, error: 'locations must be an array or null' });
+      const validLocs = (await all("SELECT data::jsonb->>'name' AS name FROM entities WHERE type='AppLocation'")).map(r => r.name);
+      const invalid = sglLocations.filter(l => !validLocs.includes(l));
+      if (invalid.length) return res.json({ success: false, error: `Unknown location(s): ${invalid.join(', ')}` });
+      const existing = await one("SELECT id FROM entities WHERE type='GateAdminLocation' AND user_id=$1", [sglUserId]);
+      const sglData = { user_id: sglUserId, locations: sglLocations, updated_by: cu.id, updated_at: new Date().toISOString() };
+      if (existing) await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(sglData), existing.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'GateAdminLocation',$2,'active',$3)", [uuidv4(), sglUserId, JSON.stringify(sglData)]);
+      return res.json({ success: true });
+    }
+
+    case 'getGateAdminLocations': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const targetId = p.user_id || cu.id;
+      if (targetId !== cu.id && !(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const locations = await getGateAdminAssignedLocations(targetId);
+      return res.json({ success: true, locations }); // null = unconfigured/unrestricted
     }
 
     /* ── Restricted visitor list (proposal §8/§9) — a mobile number here
