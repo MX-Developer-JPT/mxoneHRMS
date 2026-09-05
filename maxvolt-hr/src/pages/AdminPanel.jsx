@@ -144,24 +144,49 @@ const ROLES = [
 ];
 const roleColor = (role) => ROLES.find(r => r.value === role)?.color || 'bg-gray-100 text-gray-700';
 
-function UserFormModal({ title, initial, onSave, onClose, isNew, canEditEmail }) {
+function UserFormModal({ title, initial, onSave, onClose, isNew, canEditEmail, appLocations = [] }) {
   const [form, setForm] = useState({
     full_name: initial?.full_name || '',
     email: initial?.email || '',
     role: initial?.role || 'employee',
     password: '',
   });
+  // Gate Admin location scoping — same GateAdminLocation entity/toggle
+  // pattern as UserRoleManagement.jsx's edit dialog (see setGateAdminLocations
+  // in functions.js). Off (default) leaves a gate admin unrestricted —
+  // every location, same as before this feature existed.
+  const [restrictLocations, setRestrictLocations] = useState(false);
+  const [gateAdminLocations, setGateAdminLocationsState] = useState([]);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   // Changing an existing account's login email is admin-only — creating a
   // brand-new account still needs it (that's a different action, not a
   // change), so this only locks the field in edit mode for non-admins.
   const emailLocked = !isNew && !canEditEmail;
 
+  useEffect(() => {
+    if (!isNew && initial?.role === 'gate_admin') {
+      base44.functions.invoke('getGateAdminLocations', { user_id: initial.id })
+        .then(res => {
+          const d = res.data || res;
+          setRestrictLocations(Array.isArray(d.locations));
+          setGateAdminLocationsState(d.locations || []);
+        })
+        .catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleSubmit = () => {
     if (!form.email) return toast.error('Email is required');
     if (isNew && form.password.length < 6) return toast.error('Password must be at least 6 characters');
     const payload = { full_name: form.full_name, email: form.email, role: form.role };
     if (isNew) payload.password = form.password;
+    // Carried alongside the user payload but pulled out by the caller
+    // (handleCreate/handleSaveEdit) before hitting the plain /admin/users
+    // route — location assignment is a separate call (setGateAdminLocations).
+    if (form.role === 'gate_admin') {
+      payload._gateAdminLocations = restrictLocations ? gateAdminLocations : null;
+    }
     onSave(payload);
   };
 
@@ -193,6 +218,33 @@ function UserFormModal({ title, initial, onSave, onClose, isNew, canEditEmail })
               {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
           </div>
+          {form.role === 'gate_admin' && (
+            <div className="space-y-2 border rounded-lg p-3 bg-green-50/50">
+              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                <input type="checkbox" checked={restrictLocations} onChange={e => setRestrictLocations(e.target.checked)} />
+                Restrict to specific office location(s)
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Unchecked = this Gate Admin can manage visitors and gate passes at every location (default).
+                Checked = restricted to only the location(s) selected below, from the Location Master.
+              </p>
+              {restrictLocations && (
+                <div className="grid grid-cols-2 gap-1.5 pt-1 max-h-40 overflow-y-auto">
+                  {appLocations.map(loc => (
+                    <label key={loc.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={gateAdminLocations.includes(loc.name)}
+                        onChange={e => setGateAdminLocationsState(prev => e.target.checked ? [...prev, loc.name] : prev.filter(n => n !== loc.name))}
+                      />
+                      {loc.name}
+                    </label>
+                  ))}
+                  {appLocations.length === 0 && <p className="text-xs text-muted-foreground col-span-2">No locations configured in Location Master yet.</p>}
+                </div>
+              )}
+            </div>
+          )}
           {isNew && (
             <div>
               <Label className="text-sm font-medium">Password <span className="text-red-500">*</span></Label>
@@ -223,6 +275,7 @@ function UsersTab() {
   const [pwdModal, setPwdModal]       = useState(null);
   const [confirm, setConfirm]         = useState(null);
   const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [appLocations, setAppLocations] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true); setSelected(new Set());
@@ -232,6 +285,9 @@ function UsersTab() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  // Location Master, reused as-is for Gate Admin location assignment below
+  // — never a separate hardcoded list.
+  useEffect(() => { base44.entities.AppLocation.filter({ is_active: true }).then(setAppLocations).catch(() => {}); }, []);
 
   const filtered = users.filter(u =>
     search ? (u.email + u.full_name + u.role).toLowerCase().includes(search.toLowerCase()) : true
@@ -244,16 +300,30 @@ function UsersTab() {
   };
   const toggleOne = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  const handleSaveEdit = async (data) => {
+  // Pulls the Gate Admin location-assignment field (see UserFormModal) out
+  // of the payload before it hits the plain /admin/users route (which
+  // knows nothing about it) and applies it as its own call.
+  const applyGateAdminLocations = async (userId, data) => {
+    if (!('_gateAdminLocations' in data)) return;
     try {
-      await adminFetch(`/users/${editUser.id}`, { method: 'PATCH', body: JSON.stringify(data) });
+      await base44.functions.invoke('setGateAdminLocations', { user_id: userId, locations: data._gateAdminLocations });
+    } catch (e) { toast.error(`User saved, but location assignment failed: ${e.message}`); }
+  };
+
+  const handleSaveEdit = async (data) => {
+    const { _gateAdminLocations, ...userPayload } = data;
+    try {
+      await adminFetch(`/users/${editUser.id}`, { method: 'PATCH', body: JSON.stringify(userPayload) });
+      await applyGateAdminLocations(editUser.id, data);
       toast.success('User updated'); setEditUser(null); load();
     } catch(e) { toast.error(e.message); }
   };
 
   const handleCreate = async (data) => {
+    const { _gateAdminLocations, ...userPayload } = data;
     try {
-      await adminFetch('/users', { method: 'POST', body: JSON.stringify(data) });
+      const created = await adminFetch('/users', { method: 'POST', body: JSON.stringify(userPayload) });
+      await applyGateAdminLocations(created.id, data);
       toast.success('User created'); setNewUserForm(false); load();
     } catch(e) { toast.error(e.message); }
   };
@@ -348,8 +418,8 @@ function UsersTab() {
         <p className="text-xs text-muted-foreground mt-2">{selected.size} user(s) selected</p>
       )}
 
-      {editUser && <UserFormModal title={`Edit User — ${editUser.email}`} initial={editUser} onSave={handleSaveEdit} onClose={() => setEditUser(null)} canEditEmail={isAdmin} />}
-      {newUserForm && <UserFormModal title="Create New User" isNew onSave={handleCreate} onClose={() => setNewUserForm(false)} />}
+      {editUser && <UserFormModal title={`Edit User — ${editUser.email}`} initial={editUser} onSave={handleSaveEdit} onClose={() => setEditUser(null)} canEditEmail={isAdmin} appLocations={appLocations} />}
+      {newUserForm && <UserFormModal title="Create New User" isNew onSave={handleCreate} onClose={() => setNewUserForm(false)} appLocations={appLocations} />}
       {pwdModal && <PasswordModal user={pwdModal} onSave={handlePasswordReset} onClose={() => setPwdModal(null)} />}
       {confirm && <ConfirmDialog message={`Delete user "${confirm.email}"? This cannot be undone.`} onConfirm={() => handleDelete(confirm.id)} onCancel={() => setConfirm(null)} />}
       {bulkConfirm && (
