@@ -62,7 +62,6 @@ const GatePassApproval = lazy(() => import('./pages/GatePassApproval'));
 import GateAdminDashboard from './pages/GateAdminDashboard';
 const GatePassManagement = lazy(() => import('./pages/GatePassManagement'));
 import GateAdminProfile from './pages/GateAdminProfile';
-import GateAdminLayout from './components/GateAdminLayout';
 import RoleBasedRedirect from './components/RoleBasedRedirect';
 const AskMax = lazy(() => import('./pages/AskMax'));
 import { pushSupported, getPushState, enablePush } from '@/utils/pwa';
@@ -437,9 +436,9 @@ const AuthenticatedApp = () => {
         </LayoutWrapper>
       } />
       <Route path="/GateAdminDashboard" element={
-        <GateAdminLayout currentPageName="GateAdminDashboard">
+        <LayoutWrapper currentPageName="GateAdminDashboard">
           <GateAdminDashboard />
-        </GateAdminLayout>
+        </LayoutWrapper>
       } />
       <Route path="/GatePassManagement" element={
         <LayoutWrapper currentPageName="GatePassManagement">
@@ -447,9 +446,9 @@ const AuthenticatedApp = () => {
         </LayoutWrapper>
       } />
       <Route path="/GateAdminProfile" element={
-        <GateAdminLayout currentPageName="GateAdminProfile">
+        <LayoutWrapper currentPageName="GateAdminProfile">
           <GateAdminProfile />
-        </GateAdminLayout>
+        </LayoutWrapper>
       } />
       <Route path="/PerformanceManagement" element={
         <LayoutWrapper currentPageName="PerformanceManagement">
