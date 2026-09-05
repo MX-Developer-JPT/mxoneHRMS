@@ -42,7 +42,7 @@ async function getShiftForEmployee(emp, defaultShift) {
 // deliberately rather than shared, since one lives in frontend bundle scope
 // and the other here; if the frontend rule changes, update both.
 function calculateLOP(outingType, departureTime, returnTime) {
-  if (outingType === 'official_outing') return { lopDays: 0, status: 'present' };
+  if (outingType === 'official_outing' || outingType === 'travelling_to_another_office') return { lopDays: 0, status: 'present' };
   if (outingType === 'short_break') {
     if (!returnTime || !departureTime) return { lopDays: 0.5, status: 'half_day' };
     const durationHrs = (new Date(returnTime) - new Date(departureTime)) / 3600000;

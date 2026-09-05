@@ -204,6 +204,31 @@ const GATE_LOG_TRANSITIONS = new Set(['departed', 'returned']);
 // admin retains a blanket override. An employee with no reporting manager
 // configured at all is the one exception (there'd otherwise be no one who
 // could ever clear that first step for them).
+// Same GateAdminLocation entity/rule as Visitor Management's location
+// scoping (see functions.js) — one row per user_id, {locations:[name,...]}.
+// null = never configured = unrestricted (every location), for the same
+// backward-compatible reason: an existing gate admin must keep working
+// exactly as before until an admin explicitly narrows them to specific
+// location(s). Duplicated here (rather than imported from functions.js)
+// since entities.js and functions.js are separate route files with no
+// existing cross-import of this kind — keeps this route self-contained.
+async function getGateAdminAssignedLocations(userId) {
+  const row = await one("SELECT data FROM entities WHERE type='GateAdminLocation' AND user_id=$1", [userId]);
+  if (!row) return null;
+  const d = JSON.parse(row.data);
+  return Array.isArray(d.locations) ? d.locations : null;
+}
+
+async function getGateAdminUserIdsForLocation(locationName) {
+  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role)='gate_admin'");
+  const out = [];
+  for (const r of rows) {
+    const assigned = await getGateAdminAssignedLocations(r.id);
+    if (assigned === null || assigned.includes(locationName)) out.push(r.id);
+  }
+  return out;
+}
+
 async function hasManagerCleared(type, current) {
   if (!current.user_id) return true; // no owner to resolve a manager for — nothing to gate on
   const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [current.user_id]);
@@ -230,7 +255,24 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   const role = uRow?.custom_role || uRow?.role || cu.custom_role || cu.role;
 
   if (isGateLogTransition) {
-    if (['hr', 'admin', 'gate_admin'].includes(role)) return true;
+    if (['hr', 'admin'].includes(role)) return true;
+    if (role === 'gate_admin') {
+      // A "travelling to another office" pass is tied to a specific
+      // departure location (current_location) — a gate admin restricted to
+      // one office must not be able to mark departure/return for a pass
+      // leaving from a DIFFERENT office. Every other outing type has no
+      // location of its own, so this check only applies to this one type —
+      // unaffected gate passes keep the original unrestricted-to-any-gate-
+      // admin behavior.
+      if (current.outing_type === 'travelling_to_another_office' && current.current_location) {
+        const assigned = await getGateAdminAssignedLocations(cu.id);
+        if (assigned !== null && !assigned.includes(current.current_location)) {
+          res.status(403).json({ error: `You are not assigned to ${current.current_location} — this gate pass belongs to another office` });
+          return false;
+        }
+      }
+      return true;
+    }
     res.status(403).json({ error: 'Access denied — gate admin access required' });
     return false;
   }
@@ -990,6 +1032,24 @@ router.patch('/:type/:id', async (req, res) => {
             type: 'info', link: '/AssetTracking',
           });
         }
+      } else if (type === 'GatePass' && req.body.status === 'approved' && current.status !== 'approved' && updated.outing_type === 'travelling_to_another_office' && updated.current_location) {
+        // Manager just cleared a "travelling to another office" gate pass —
+        // route it to whichever gate admin(s) are assigned to the
+        // DEPARTURE office (current_location), not a blanket broadcast to
+        // every gate admin, so it actually lands in the right office's
+        // queue the way every other outing type already implicitly does
+        // (any gate admin can already see/act on those — this type is the
+        // one exception with a real office to route to).
+        const emp = updated.employee_user_id
+          ? JSON.parse((await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [updated.employee_user_id]))?.data || '{}')
+          : {};
+        const empName = emp?.display_name || 'An employee';
+        const gateAdminIds = await getGateAdminUserIdsForLocation(updated.current_location);
+        await notifyMany(gateAdminIds, {
+          title: 'Inter-Office Travel — Gate Pass Approved',
+          message: `${empName}'s gate pass to travel from ${updated.current_location} to ${updated.destination_location || 'another office'} was approved by their manager — awaiting departure.`,
+          type: 'info', link: '/GateAdminDashboard',
+        });
       } else if (type === 'GatePass' && req.body.status && req.body.status !== current.status && ['departed', 'returned'].includes(req.body.status)) {
         // Gate-log transitions (mark-out/mark-in by the gate admin) — notify
         // the employee themselves ("you're currently out" / "welcome back")
@@ -999,7 +1059,7 @@ router.patch('/:type/:id', async (req, res) => {
         const emp = empRow ? JSON.parse(empRow.data) : null;
         const empName = emp?.display_name || 'Employee';
         const managerId = emp?.reporting_manager_id;
-        const outingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+        const outingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
         const outingLabel = outingLabels[updated.outing_type] || updated.outing_type || 'outing';
         if (req.body.status === 'departed') {
           await notifyMany([updated.employee_user_id].filter(Boolean), {

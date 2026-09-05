@@ -36,6 +36,7 @@ const STATUS_LABELS = { on_duty: 'OD', work_from_home: 'WFH' };
 const GATE_PASS_OUTING_LABELS = {
   official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing',
   half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave',
+  travelling_to_another_office: 'Travelling to Another Office',
 };
 
 function toDateStr(val) {

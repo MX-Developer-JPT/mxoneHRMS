@@ -40,11 +40,15 @@ const OUTING_LABELS = {
   half_day: 'Half Day',
   short_break: 'Short Break',
   early_leave: 'Early Leave',
+  travelling_to_another_office: 'Travelling to Another Office',
 };
 
 function calculateLOP(outingType, departureTime, returnTime) {
-  // official_outing: no LOP, full day present
-  if (outingType === 'official_outing') return { lopDays: 0, status: 'present' };
+  // official_outing / travelling_to_another_office: official business, no
+  // LOP, full day present — same treatment as official_outing rather than
+  // the generic half-day-LOP default below, since inter-office travel is
+  // work, not personal time off.
+  if (outingType === 'official_outing' || outingType === 'travelling_to_another_office') return { lopDays: 0, status: 'present' };
 
   // short_break: within 3 hours = no deduction, else half day
   if (outingType === 'short_break') {
@@ -86,7 +90,26 @@ export default function GateAdminDashboard() {
       allEmployees.forEach(e => { empMap[e.user_id] = e; });
       setUser(currentUser);
       setEmployees(empMap);
-      setPasses(allPasses.filter(p => p.status !== 'pending_approval'));
+
+      let visible = allPasses.filter(p => p.status !== 'pending_approval');
+      // Location scoping applies ONLY to "travelling to another office"
+      // passes — every other outing type has no office of its own and stays
+      // visible to any gate admin, unchanged. A restricted gate admin who
+      // isn't assigned the departure office wouldn't be allowed to act on
+      // it anyway (enforced server-side in entities.js) — filtering it out
+      // here too avoids showing a card they'd just get a 403 clicking.
+      const role = currentUser.custom_role || currentUser.role;
+      if (role === 'gate_admin') {
+        try {
+          const locRes = await base44.functions.invoke('getGateAdminLocations', {});
+          const locData = locRes.data || locRes;
+          const assigned = locData.success ? locData.locations : null;
+          if (Array.isArray(assigned)) {
+            visible = visible.filter(p => p.outing_type !== 'travelling_to_another_office' || assigned.includes(p.current_location));
+          }
+        } catch { /* unrestricted on any lookup failure — never hide passes due to a transient error */ }
+      }
+      setPasses(visible);
     } catch (e) {
       console.error('GateAdminDashboard loadData:', e.message);
     } finally {
@@ -258,6 +281,9 @@ export default function GateAdminDashboard() {
                           {pass.outing_type && <Badge variant="outline" className="text-[10px]">{OUTING_LABELS[pass.outing_type] || pass.outing_type}</Badge>}
                           {pass.reason && <p className="text-xs text-gray-500 max-w-xs truncate">{pass.reason}</p>}
                         </div>
+                        {pass.outing_type === 'travelling_to_another_office' && (
+                          <p className="text-xs text-indigo-600 mt-0.5">{pass.current_location} → {pass.destination_location}</p>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-3 flex-wrap">
@@ -306,6 +332,9 @@ export default function GateAdminDashboard() {
                           {pass.outing_type && <Badge variant="outline" className="text-[10px]">{OUTING_LABELS[pass.outing_type] || pass.outing_type}</Badge>}
                           {pass.reason && <p className="text-xs text-gray-500">{pass.reason}</p>}
                         </div>
+                        {pass.outing_type === 'travelling_to_another_office' && (
+                          <p className="text-xs text-indigo-600 mt-0.5">{pass.current_location} → {pass.destination_location}</p>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-4 flex-wrap">
@@ -345,6 +374,9 @@ export default function GateAdminDashboard() {
                   </div>
                 </div>
                 {selected.outing_type && <p><span className="font-medium text-gray-600">Type:</span> <Badge variant="outline">{OUTING_LABELS[selected.outing_type] || selected.outing_type}</Badge></p>}
+                {selected.outing_type === 'travelling_to_another_office' && (
+                  <p><span className="font-medium text-gray-600">Route:</span> {selected.current_location} → {selected.destination_location}</p>
+                )}
                 <p><span className="font-medium text-gray-600">Reason:</span> {selected.reason || '—'}</p>
                 <p><span className="font-medium text-gray-600">Requested:</span> {safeDate(selected.created_date, 'dd MMM yyyy, h:mm a')}</p>
                 {selected.expected_return_time && <p><span className="font-medium text-gray-600">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, h:mm a')}</p>}

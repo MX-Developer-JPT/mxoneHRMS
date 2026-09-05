@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
-import { LogOut, LogIn, Clock, CheckCircle2, XCircle, AlertCircle, Plus, History, Car, Bike, Route } from 'lucide-react';
+import { LogOut, LogIn, Clock, CheckCircle2, XCircle, AlertCircle, Plus, History, Car, Bike, Route, MapPin } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { toast } from 'sonner';
@@ -50,15 +50,17 @@ const OUTING_TYPES = [
   { value: 'half_day', label: 'Half Day', desc: 'Half day LOP deducted' },
   { value: 'short_break', label: 'Short Break', desc: 'No deduction if returned within 3 hours, else half day LOP' },
   { value: 'early_leave', label: 'Early Leave', desc: 'Half day LOP deducted' },
+  { value: 'travelling_to_another_office', label: 'Travelling to Another Office', desc: 'No LOP deduction — after your manager approves, routed to the gate admin at your current office' },
 ];
 
 export default function GatePassRequest() {
   const [user, setUser] = useState(null);
   const [myPasses, setMyPasses] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler' });
+  const [form, setForm] = useState({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler', current_location: '', destination_location: '' });
   const [activeTab, setActiveTab] = useState('active');
 
   useEffect(() => {
@@ -69,14 +71,27 @@ export default function GatePassRequest() {
     setLoading(true);
     const currentUser = await base44.auth.me();
     setUser(currentUser);
-    const passes = await base44.entities.GatePass.filter({ employee_user_id: currentUser.id });
+    const [passes, locs] = await Promise.all([
+      base44.entities.GatePass.filter({ employee_user_id: currentUser.id }),
+      base44.entities.AppLocation.filter({ is_active: true }),
+    ]);
     passes.sort((a, b) => new Date(b.created_date) - new Date(a.created_date));
     setMyPasses(passes);
+    setLocations(locs);
     setLoading(false);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const isTravelling = form.outing_type === 'travelling_to_another_office';
+    if (isTravelling && (!form.current_location || !form.destination_location)) {
+      toast.error('Select both your current location and where you are travelling to');
+      return;
+    }
+    if (isTravelling && form.current_location === form.destination_location) {
+      toast.error('Current location and destination must be different');
+      return;
+    }
     setSubmitting(true);
     const empRecords = await base44.entities.Employee.filter({ user_id: user.id });
     const emp = empRecords?.[0];
@@ -93,6 +108,7 @@ export default function GatePassRequest() {
       manager_user_id: emp?.reporting_manager_id || null,
       lop_deduction_days: 0,
       ...(isOfficial ? { vehicle_type: form.vehicle_type } : {}),
+      ...(isTravelling ? { current_location: form.current_location, destination_location: form.destination_location } : {}),
     });
 
     // Official outing: start Field Duty GPS tracking immediately, without waiting for
@@ -117,7 +133,7 @@ export default function GatePassRequest() {
       }
     }
 
-    setForm({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler' });
+    setForm({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler', current_location: '', destination_location: '' });
     setShowForm(false);
     await loadData();
     setSubmitting(false);
@@ -167,6 +183,36 @@ export default function GatePassRequest() {
                   {OUTING_TYPES.find(o => o.value === form.outing_type)?.desc}
                 </p>
               </div>
+              {form.outing_type === 'travelling_to_another_office' && (
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 space-y-3">
+                  <Label className="flex items-center gap-1.5 text-indigo-800">
+                    <MapPin className="w-4 h-4" /> Route
+                  </Label>
+                  <p className="text-xs text-indigo-700 -mt-2">
+                    After your manager approves, this request is routed straight to the gate admin at your current office.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs text-gray-600">Current Location *</Label>
+                      <Select value={form.current_location} onValueChange={v => setForm(f => ({ ...f, current_location: v }))}>
+                        <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                        <SelectContent>
+                          {locations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-gray-600">Travelling To *</Label>
+                      <Select value={form.destination_location} onValueChange={v => setForm(f => ({ ...f, destination_location: v }))}>
+                        <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                        <SelectContent>
+                          {locations.filter(l => l.name !== form.current_location).map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </div>
+              )}
               {form.outing_type === 'official_outing' && (
                 <div className="rounded-lg border border-orange-200 bg-orange-50 p-3">
                   <Label className="flex items-center gap-1.5 text-orange-800">
@@ -257,6 +303,9 @@ export default function GatePassRequest() {
                         </Badge>
                       )}
                     </div>
+                    {pass.outing_type === 'travelling_to_another_office' && (
+                      <p className="text-sm text-indigo-600 flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {pass.current_location} → {pass.destination_location}</p>
+                    )}
                     {pass.reason && <p className="font-medium text-gray-900 dark:text-gray-100">{pass.reason}</p>}
                     <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                       Requested: {safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}
