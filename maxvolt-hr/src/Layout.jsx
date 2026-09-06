@@ -482,25 +482,12 @@ export default function Layout({ children, currentPageName }) {
 
   const touchStartY = useRef(0);
   const contentRef  = useRef(null);
-  const bottomNavRef = useRef(null);
-  // Measured directly from the rendered <nav>, rather than guessed from CSS
-  // env(safe-area-inset-bottom)/heuristics — those guesses (4.5rem, then
-  // 6rem, then 8rem) kept coming up short on real devices, most likely
-  // because env(safe-area-inset-bottom) isn't reliably accurate on every
-  // Android WebView. offsetHeight reflects however this exact bar actually
-  // rendered on this exact device, safe-area padding included, so the
-  // content spacer below can never be undersized relative to it.
-  const [bottomNavHeight, setBottomNavHeight] = useState(0);
-  useEffect(() => {
-    if (!bottomNavRef.current || typeof ResizeObserver === 'undefined') return;
-    const el = bottomNavRef.current;
-    // offsetHeight (not contentRect, which excludes padding/border) — the
-    // bar's safe-area clearance is applied as padding, so it must be included.
-    const ro = new ResizeObserver(() => setBottomNavHeight(el.offsetHeight));
-    ro.observe(el);
-    setBottomNavHeight(el.offsetHeight);
-    return () => ro.disconnect();
-  }, []);
+  // NOTE: the bottom tab bar used to be position:fixed, which needed its
+  // rendered height measured (ResizeObserver) so a same-sized spacer could
+  // be guessed into the content below it — that measurement is gone now
+  // that the bar is a real in-flow flex sibling of the content pane (see
+  // the wrapper around it further down), which makes overlap structurally
+  // impossible instead of relying on a matched guess.
 
   const handleTouchStart = useCallback((e) => {
     if (contentRef.current?.scrollTop === 0)
@@ -886,7 +873,17 @@ export default function Layout({ children, currentPageName }) {
   const currentTabActive = primaryTabs.some(t => t.page === currentPageName);
 
   return (
-    <div className="flex h-dvh bg-background overflow-hidden">
+    // flex-col on mobile / flex-row on desktop: the mobile bottom tab bar
+    // (below) is now a real flex sibling that occupies actual layout space
+    // instead of a position:fixed overlay guessed-around with a spacer div.
+    // The previous fixed+spacer approach needed the spacer's height to
+    // exactly match the bar's rendered height on every device/browser, and
+    // in practice it kept coming up short (buttons at the end of a page
+    // staying covered, with no more scroll room to reveal them) — this
+    // restructure removes that whole category of bug: the browser itself
+    // computes the split between scrollable content and the bar, the same
+    // way it already does for the desktop sidebar layout.
+    <div className="flex flex-col lg:flex-row h-dvh bg-background overflow-hidden">
 
       {/* ── Mobile header — iOS Navigation Bar ──────────────── */}
       {/* Background/border were hardcoded to the light-mode iOS system
@@ -1035,26 +1032,20 @@ export default function Layout({ children, currentPageName }) {
         </div>
       </aside>
 
-      {/* ── Main content ─────────────────────────────────────── */}
+      {/* ── Main content + mobile bottom tab bar ────────────────
+          `lg:contents` makes this wrapper disappear from layout on desktop
+          (its two children — the content pane and the nav — become direct
+          flex items of the row above, exactly like before this restructure),
+          while on mobile it's a real flex column: the content pane is
+          flex-1/min-h-0 (fills whatever height the tab bar doesn't use) and
+          the tab bar is a normal in-flow row after it. This is what
+          guarantees the tab bar can never cover the last bit of scrollable
+          content — there is no fixed height to out-guess any more. */}
+      <div className="flex-1 min-h-0 flex flex-col lg:contents">
       <div
         ref={contentRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden bg-background overscroll-y-contain"
-        style={{
-          WebkitOverflowScrolling: 'touch',
-          // Tells the BROWSER'S OWN "scroll this focused element into view"
-          // behavior (fired natively when an <input>/<button> receives
-          // focus, e.g. tapping into a form field near the bottom of a
-          // page) to leave this much room at the bottom edge — without it,
-          // that native scroll only guarantees the focused element itself
-          // clears the visible area, with no idea our fixed bottom tab bar
-          // exists, so a Save button sitting right after the last field
-          // ends up scrolled to exactly where the tab bar covers it. This
-          // is the same measured height (real device offsetHeight, not a
-          // guessed constant) as the manual bottom spacer below.
-          scrollPaddingBottom: bottomNavHeight > 0
-            ? `calc(${bottomNavHeight}px + var(--vv-bottom-inset, 0px) + 1.5rem)`
-            : 'calc(8rem + env(safe-area-inset-bottom) + var(--vv-bottom-inset, 0px))',
-        }}
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden bg-background overscroll-y-contain"
+        style={{ WebkitOverflowScrolling: 'touch' }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -1090,25 +1081,11 @@ export default function Layout({ children, currentPageName }) {
         {mountedTabs.has('Leave')          && <div style={{ display: currentPageName === 'Leave'          ? 'block' : 'none' }}><ErrorBoundary><LeavePage /></ErrorBoundary></div>}
         {mountedTabs.has('Profile')        && <div style={{ display: currentPageName === 'Profile'        ? 'block' : 'none' }}><ErrorBoundary><ProfilePage /></ErrorBoundary></div>}
 
-        {/* Mobile bottom spacer — must exceed the fixed tab bar's real
-            rendered height so the last item on any page scrolls clear of it
-            and stays tappable. Three rounds of guessing this from CSS
-            (4.5rem, 6rem, 8rem, each trying to account for
-            env(safe-area-inset-bottom)) still left content hidden behind
-            the bar on real devices — that value isn't reliably accurate on
-            every Android WebView. Now measured directly: bottomNavHeight is
-            the bar's actual offsetHeight (safe-area padding included,
-            whatever it resolved to on this exact device), tracked via a
-            ResizeObserver above. var(--vv-bottom-inset) is added on top
-            since that's a separate additional offset the bar itself is
-            positioned with (an iOS Safari toolbar quirk), plus a flat 1.5rem
-            margin for comfortable clearance. Falls back to a generous fixed
-            value if the bar hasn't been measured yet (first paint) or
-            ResizeObserver is unavailable. */}
-        <div
-          className="lg:hidden"
-          style={{ height: bottomNavHeight > 0 ? `calc(${bottomNavHeight}px + var(--vv-bottom-inset, 0px) + 1.5rem)` : 'calc(8rem + env(safe-area-inset-bottom) + var(--vv-bottom-inset, 0px))' }}
-        />
+        {/* Small flat clearance below the last item — purely cosmetic
+            breathing room now, not load-bearing: the tab bar below is a
+            real in-flow sibling (see the wrapper comment above), so it can
+            never overlap scrollable content regardless of its own height. */}
+        <div className="lg:hidden h-4" />
       </div>
 
       {/* ── "More" bottom sheet (iOS style) ─────────────────── */}
@@ -1259,20 +1236,17 @@ export default function Layout({ children, currentPageName }) {
 
       {/* ── Mobile bottom tab bar — iOS style ───────────────── */}
       {/* Solid, theme-aware background that fills through the safe-area inset so
-          the whole bar reads as one unit flush to the bottom of the screen — the
-          previous translucent grey blended into the page background and looked
-          like the bar was floating with an empty gap beneath it.
-          bottom: var(--vv-bottom-inset) (set in main.jsx) instead of plain
-          bottom:0 — iOS Safari resolves position:fixed;bottom:0 against its
-          LAYOUT viewport (which reserves space for the browser's own bottom
-          toolbar, even when not shown / even in standalone PWA mode), leaving
-          a gap the height of that reserved space. Tracking window.visualViewport
-          gives the actual visible bottom edge. */}
+          the whole bar reads as one unit flush to the bottom of the screen.
+          No longer position:fixed — it's a real in-flow flex sibling of the
+          content pane now (see the wrapper comment above), so it always sits
+          exactly at the true bottom of the flex column and content can never
+          be trapped behind it. That also retires the old `bottom:
+          var(--vv-bottom-inset)` iOS-toolbar workaround — an in-flow element
+          at the end of a `height: 100dvh` column already tracks the real
+          visible bottom edge without needing a manual offset. */}
       <nav
-        ref={bottomNavRef}
-        className="lg:hidden fixed left-0 right-0 z-40 bg-white dark:bg-[#1C1C1E] border-t border-black/10 dark:border-white/10"
+        className="lg:hidden flex-shrink-0 bg-white dark:bg-[#1C1C1E] border-t border-black/10 dark:border-white/10"
         style={{
-          bottom: 'var(--vv-bottom-inset, 0px)',
           paddingBottom: 'env(safe-area-inset-bottom)',
         }}
       >
@@ -1330,6 +1304,7 @@ export default function Layout({ children, currentPageName }) {
           </button>
         </div>
       </nav>
+      </div>
 
       {/* One-time, acknowledgment-only background-location disclosure — shown
           before the OS permission dialog for eligible employees, per Google
