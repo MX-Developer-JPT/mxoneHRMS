@@ -95,6 +95,27 @@
     scroll-behavior: smooth;
     height: 100%;
     overflow: hidden;
+    /* Blocks pinch-zoom and double-tap-to-zoom gestures at the CSS level —
+       more reliable across engines than the viewport meta's
+       user-scalable=no alone (some WebKit versions ignore that for
+       accessibility). The app is meant to behave like a native app screen,
+       never a zoomable web page. */
+    touch-action: pan-x pan-y;
+  }
+
+  /* iOS Safari/WKWebView auto-zooms the whole page in when a focused
+     input/textarea/select's COMPUTED font-size is under 16px — completely
+     independent of the viewport meta or touch-action above. Several inputs
+     across the app (e.g. Layout.jsx's nav search box) use a smaller
+     Tailwind text-[..px] utility for visual density, which is exactly what
+     was triggering the "app zooms in when I tap the search bar" bug.
+     Force every text input back up to 16px specifically on phone-width
+     viewports (where this bug applies) — !important is deliberate here
+     since it has to win over per-input Tailwind utility classes. */
+  @media (max-width: 767px) {
+    input, textarea, select {
+      font-size: 16px !important;
+    }
   }
 
   body {

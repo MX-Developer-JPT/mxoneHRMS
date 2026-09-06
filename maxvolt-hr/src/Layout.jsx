@@ -889,15 +889,21 @@ export default function Layout({ children, currentPageName }) {
     <div className="flex h-dvh bg-background overflow-hidden">
 
       {/* ── Mobile header — iOS Navigation Bar ──────────────── */}
+      {/* Background/border were hardcoded to the light-mode iOS system
+          color via inline style, which — unlike a Tailwind class — has no
+          dark: variant to respond to, so this bar stayed light gray no
+          matter what theme was active. Driven off resolvedTheme instead,
+          matching the dark surface color (#1C1C1E) used elsewhere in this
+          file (e.g. the bottom nav bar's dark:bg-[#1C1C1E]). */}
       <div
         className="lg:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4"
         style={{
           paddingTop: 'env(safe-area-inset-top)',
           height: 'calc(3rem + env(safe-area-inset-top))',
-          background: 'rgba(242,242,247,0.85)',
+          background: resolvedTheme === 'dark' ? 'rgba(28,28,30,0.85)' : 'rgba(242,242,247,0.85)',
           backdropFilter: 'saturate(180%) blur(20px)',
           WebkitBackdropFilter: 'saturate(180%) blur(20px)',
-          borderBottom: '0.5px solid rgba(0,0,0,0.12)',
+          borderBottom: resolvedTheme === 'dark' ? '0.5px solid rgba(255,255,255,0.12)' : '0.5px solid rgba(0,0,0,0.12)',
         }}
       >
         {/* Left: Back button or Logo */}
@@ -1033,7 +1039,22 @@ export default function Layout({ children, currentPageName }) {
       <div
         ref={contentRef}
         className="flex-1 overflow-y-auto overflow-x-hidden bg-background overscroll-y-contain"
-        style={{ WebkitOverflowScrolling: 'touch' }}
+        style={{
+          WebkitOverflowScrolling: 'touch',
+          // Tells the BROWSER'S OWN "scroll this focused element into view"
+          // behavior (fired natively when an <input>/<button> receives
+          // focus, e.g. tapping into a form field near the bottom of a
+          // page) to leave this much room at the bottom edge — without it,
+          // that native scroll only guarantees the focused element itself
+          // clears the visible area, with no idea our fixed bottom tab bar
+          // exists, so a Save button sitting right after the last field
+          // ends up scrolled to exactly where the tab bar covers it. This
+          // is the same measured height (real device offsetHeight, not a
+          // guessed constant) as the manual bottom spacer below.
+          scrollPaddingBottom: bottomNavHeight > 0
+            ? `calc(${bottomNavHeight}px + var(--vv-bottom-inset, 0px) + 1.5rem)`
+            : 'calc(8rem + env(safe-area-inset-bottom) + var(--vv-bottom-inset, 0px))',
+        }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}

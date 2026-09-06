@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- maximum-scale=1/user-scalable=no is the belt to index.css's
+         touch-action + forced 16px input font-size suspenders — this app is
+         meant to behave like a native screen, never a zoomable web page. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 
     <!-- PWA / theme -->
     <meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)" />
