@@ -31,7 +31,7 @@ import pushRouter           from './routes/push.js';
 import payslipUploadRouter  from './routes/payslipUpload.js';
 import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, sendPreShiftReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
-import { closeUnreturnedGatePasses } from './cron/gatePassAutomation.js';
+import { closeUnreturnedGatePasses, closeStaleGatePassRequests } from './cron/gatePassAutomation.js';
 import { sendConfirmationDueReminders } from './cron/confirmationAutomation.js';
 import { sendExitClearanceReminders } from './cron/exitClearanceReminders.js';
 import { sendAbsentLeaveReminders, sendRegularisationReminders, sendCelebrationNotifications, sendUpcomingHolidayReminders } from './cron/dailyReminders.js';
@@ -349,8 +349,14 @@ cron.schedule('*/5 * * * *', () => {
 // Closes any gate pass still "departed" once that employee's own shift has
 // ended, so a forgotten/never-returning outing doesn't stay "Currently
 // Outside" forever. See gatePassAutomation.js for the per-outing-type rule.
+// Also closes any gate pass still "pending_approval"/"approved" once the
+// day it was requested for has fully passed, so a request the manager never
+// actioned (or approved but the employee never actually used) doesn't sit
+// in Active Passes indefinitely either — GatePassRequest.jsx's own
+// "active" definition covers all three statuses, not just "departed".
 cron.schedule('*/15 * * * *', () => {
   closeUnreturnedGatePasses().catch(err => console.error('[gatepass-auto-close] failed:', err));
+  closeStaleGatePassRequests().catch(err => console.error('[gatepass-stale-close] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
 // ── Candidate reminders — every 15 minutes ───────────────────

@@ -2,6 +2,13 @@
 // Closes out any gate pass still 'departed' (marked out by the gate admin,
 // never marked back in) once the employee's own shift has ended, so a
 // forgotten/never-returning outing doesn't stay "Currently Outside" forever.
+// Also closes out any gate pass still 'pending_approval' (manager never
+// actioned it) or 'approved' (manager cleared it, but the employee never
+// actually left — no gate admin ever marked departure) once the DAY it was
+// requested for has fully passed — see closeStaleGatePassRequests below.
+// GatePassRequest.jsx treats all three of these statuses as "active" (its
+// own activePasses filter), so left unattended they'd otherwise sit in an
+// employee's Active Passes list indefinitely.
 //
 // Per-outing-type closing rule (mirrors GateAdminDashboard.jsx's own
 // calculateLOP exactly, fed the employee's shift-end time as the return
@@ -139,6 +146,76 @@ export async function closeUnreturnedGatePasses() {
         sendPushToUser(uid, { title, message, type: 'warning', link: '/GatePassRequest' });
       }
     } catch (e) { console.error('[gatepass-auto-close] notify failed:', e.message); }
+
+    closed++;
+  }
+  return { checked: rows.length, closed };
+}
+
+// Closes out any gate pass still 'pending_approval' or 'approved' once the
+// calendar day it was requested for (request_date, IST) has fully passed —
+// the employee never actually left on it (no departure_time), so there's no
+// LOP/attendance consequence to compute; this purely stops a stale request
+// from sitting in "Active Passes" forever once its day is over. A simple
+// "the date has passed" cutoff (rather than the per-employee shift-end math
+// closeUnreturnedGatePasses uses for 'departed') is deliberate: a request
+// that was never approved, or approved but never acted on, has no actual
+// departure time to reason about — only whether the day it was FOR is done.
+export async function closeStaleGatePassRequests() {
+  const today = istDateString();
+
+  const rows = await all(
+    "SELECT id, data FROM entities WHERE type='GatePass' AND status IN ('pending_approval','approved') AND COALESCE(data::jsonb->>'request_date','') < $1",
+    [today]
+  );
+  if (rows.length === 0) return { checked: 0, closed: 0 };
+
+  const empCache = {};
+  const hrAdminIds = await getHrAdminUserIds();
+  let closed = 0;
+
+  for (const row of rows) {
+    const pass = JSON.parse(row.data);
+    if (!pass.employee_user_id) continue;
+
+    if (!(pass.employee_user_id in empCache)) {
+      const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pass.employee_user_id]);
+      empCache[pass.employee_user_id] = empRow ? JSON.parse(empRow.data) : null;
+    }
+    const emp = empCache[pass.employee_user_id];
+    const wasPending = pass.status === 'pending_approval';
+
+    const updatedPass = {
+      ...pass,
+      status: 'auto_closed',
+      auto_closed: true,
+      auto_closed_reason: wasPending
+        ? 'Manager never actioned this request — auto-closed at day end'
+        : 'Approved but never marked departed — auto-closed at day end',
+    };
+    await run("UPDATE entities SET status='auto_closed', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(updatedPass), row.id]);
+
+    try {
+      const { sendPushToUser } = await import('../utils/push.js');
+      const empName = emp?.display_name || 'An employee';
+      const recipients = new Set([pass.employee_user_id]);
+      // Only bother HR/manager for the "manager never actioned it" case —
+      // an approved-but-unused pass closing out silently is a non-event for
+      // anyone but the employee themselves.
+      if (wasPending) {
+        hrAdminIds.forEach(id => recipients.add(id));
+        if (emp?.reporting_manager_id) recipients.add(emp.reporting_manager_id);
+      }
+      const title = 'Gate Pass Auto-Closed';
+      const message = wasPending
+        ? `${empName}'s gate pass request for ${pass.request_date} expired unactioned and was auto-closed.`
+        : `Your gate pass for ${pass.request_date} was approved but never used — auto-closed at day end.`;
+      for (const uid of recipients) {
+        const nid = uuidv4();
+        await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [nid, uid, title, message, 'info', '/GatePassRequest']);
+        sendPushToUser(uid, { title, message, type: 'info', link: '/GatePassRequest' });
+      }
+    } catch (e) { console.error('[gatepass-stale-close] notify failed:', e.message); }
 
     closed++;
   }
