@@ -96,14 +96,15 @@ export default function GateAdminDashboard() {
       // location (current_location — picked from Location Master when the
       // employee requests it, GatePassRequest.jsx), regardless of outing
       // type, so a Duhai gate admin only ever sees gate passes departing
-      // from Duhai. Falls back to the employee's assigned office
-      // (Employee.work_location) for older passes created before this field
-      // existed on every type. A restricted gate admin who isn't assigned
-      // that office wouldn't be allowed to act on it anyway (enforced
-      // server-side in entities.js) — filtering it out here too avoids
-      // showing a card they'd just get a 403 clicking. A pass with no
-      // location resolvable at all stays visible to everyone (nothing to
-      // scope against — same backward-compatible default the server uses).
+      // from Duhai. Deliberately NO fallback to Employee.work_location for
+      // older passes that predate this field — that was tried and reverted:
+      // work_location isn't guaranteed configured or accurate for every
+      // employee, and silently hiding a perfectly valid gate pass (with the
+      // gate admin then unable to mark that employee in/out at all) because
+      // of stale/absent assignment data is worse than just leaving an old
+      // pass unrestricted, same as before location scoping existed. A pass
+      // with no current_location of its own stays visible to every gate
+      // admin, matching the server-side check in entities.js exactly.
       const role = currentUser.custom_role || currentUser.role;
       if (role === 'gate_admin') {
         try {
@@ -111,10 +112,7 @@ export default function GateAdminDashboard() {
           const locData = locRes.data || locRes;
           const assigned = locData.success ? locData.locations : null;
           if (Array.isArray(assigned)) {
-            visible = visible.filter(p => {
-              const loc = p.current_location || empMap[p.user_id || p.employee_user_id]?.work_location;
-              return !loc || assigned.includes(loc);
-            });
+            visible = visible.filter(p => !p.current_location || assigned.includes(p.current_location));
           }
         } catch { /* unrestricted on any lookup failure — never hide passes due to a transient error */ }
       }

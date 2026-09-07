@@ -1,5 +1,16 @@
 import 'dotenv/config';
 import express from 'express';
+// Monkey-patches express.Router (side-effect import, must load before any
+// router below is created) so a rejected promise inside an `async (req,
+// res) => {...}` route handler is automatically forwarded to Express's
+// error-handling middleware instead of becoming an unhandled promise
+// rejection. Express 4 (this app's version) does NOT do this on its own —
+// every route across this whole app is a bare `async` handler with no
+// try/catch, so a single transient failure (e.g. a DB connection timeout —
+// exactly what took the whole server down, see the unhandledRejection
+// handler below) inside ANY one of them was one Node fatal-crash away from
+// killing every other in-flight/future request until Railway restarted it.
+import 'express-async-errors';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -26,6 +37,31 @@ import { sendExitClearanceReminders } from './cron/exitClearanceReminders.js';
 import { sendAbsentLeaveReminders, sendRegularisationReminders, sendCelebrationNotifications, sendUpcomingHolidayReminders } from './cron/dailyReminders.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Last-resort safety net for anything that ISN'T an Express route (a
+// fire-and-forget call missing its own .catch, a cron job's internals
+// throwing outside the .catch() already wrapped around each cron.schedule
+// callback below, a background push/notify call, etc.) — express-async-
+// errors above only covers request handlers. This is exactly the gap that
+// crashed the server: a `Connection terminated due to connection timeout`
+// from a transient Supabase hiccup surfaced as an unhandled rejection and
+// took the ENTIRE process down (killing every in-flight request, not just
+// the one that hit the DB timeout) until Railway restarted the container —
+// visible in production as a full outage rather than one failed request.
+// Log and keep running instead: a single request/job failing is recoverable
+// (the client sees an error, a cron job just tries again next tick); the
+// whole server going down over it is strictly worse. uncaughtException is
+// handled the same way — Node's usual advice to exit afterward assumes the
+// process may be in a corrupted state, but for this app (no in-memory state
+// that write-through-to-Postgres operations depend on staying consistent
+// across requests) staying up and logging is the safer default for an
+// unattended production server than repeatedly crash-looping.
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] Unhandled promise rejection (server stays up):', reason?.stack || reason?.message || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[process] Uncaught exception (server stays up):', err?.stack || err?.message || err);
+});
 
 // ── Auto-start Ollama + pull model ───────────────────────────
 async function ensureOllama() {
@@ -247,6 +283,22 @@ if (process.env.NODE_ENV === 'production') {
 } else {
   app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 }
+
+// Global error-handling middleware — the landing point for every error
+// express-async-errors now forwards here (see the import at the top).
+// Express recognizes this as an error handler purely by its 4-arg
+// signature (req/res/next alone would make it a normal middleware that
+// never runs). Must be registered LAST, after every route/static handler.
+// Logs and responds with a plain 500 instead of leaving the request
+// hanging or, as happened before this, letting the error escape as an
+// unhandled rejection and take the whole process down.
+app.use((err, req, res, _next) => {
+  console.error(`[express] Unhandled error on ${req.method} ${req.originalUrl}:`, err?.stack || err?.message || err);
+  if (res.headersSent) return; // response already started streaming — nothing more we can send
+  res.status(err?.status || err?.statusCode || 500).json({
+    error: process.env.NODE_ENV === 'production' ? 'Internal server error' : (err?.message || 'Internal server error'),
+  });
+});
 
 const server = app.listen(PORT, () => {
   console.log(`\n✓ Maxvolt One Backend  http://localhost:${PORT}  [${process.env.NODE_ENV || 'development'}]`);

@@ -258,20 +258,20 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
     if (['hr', 'admin'].includes(role)) return true;
     if (role === 'gate_admin') {
       // Every gate pass now carries its own departure location
-      // (current_location — the employee picks it from Location Master when
-      // requesting, GatePassRequest.jsx) regardless of outing type, so it's
-      // always what determines which gate admin may act on it: a Duhai gate
-      // admin should only ever see/manage gate passes departing from Duhai.
-      // Falls back to the employee's assigned office (Employee.work_location)
-      // for older passes created before this field existed on every type.
-      let gateLocation = current.current_location;
-      if (!gateLocation) {
-        const empUserId = current.user_id || current.employee_user_id;
-        if (empUserId) {
-          const empRow = await one("SELECT data::jsonb->>'work_location' AS loc FROM entities WHERE type='Employee' AND user_id=$1", [empUserId]);
-          gateLocation = empRow?.loc || null;
-        }
-      }
+      // (current_location — the employee explicitly picks it from Location
+      // Master when requesting, GatePassRequest.jsx) regardless of outing
+      // type, so it's what determines which gate admin may act on it: a
+      // Duhai gate admin should only ever see/manage gate passes departing
+      // from Duhai. Deliberately NO fallback to the employee's own
+      // Employee.work_location for older passes that predate this field —
+      // that was tried and reverted: work_location is inferred/assignment
+      // data that isn't guaranteed to be configured or accurate for every
+      // employee, and silently gating a real gate-in/out action on it
+      // blocked gate admins from marking employees in on perfectly valid
+      // gate passes. A pass with no explicit current_location of its own
+      // stays unrestricted (any gate admin can act on it) — exactly the
+      // original behavior before location scoping existed at all.
+      const gateLocation = current.current_location;
       if (gateLocation) {
         const assigned = await getGateAdminAssignedLocations(cu.id);
         if (assigned !== null && !assigned.includes(gateLocation)) {
