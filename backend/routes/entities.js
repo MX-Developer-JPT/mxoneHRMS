@@ -258,16 +258,24 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
     if (['hr', 'admin'].includes(role)) return true;
     if (role === 'gate_admin') {
       // A "travelling to another office" pass is tied to a specific
-      // departure location (current_location) — a gate admin restricted to
-      // one office must not be able to mark departure/return for a pass
-      // leaving from a DIFFERENT office. Every other outing type has no
-      // location of its own, so this check only applies to this one type —
-      // unaffected gate passes keep the original unrestricted-to-any-gate-
-      // admin behavior.
-      if (current.outing_type === 'travelling_to_another_office' && current.current_location) {
+      // departure location (current_location) — use that. Every other
+      // outing type has no location of its own on the pass itself, so it's
+      // scoped to the employee's own assigned office (Employee.work_location,
+      // set via Location Master) instead — a Duhai gate admin should only
+      // ever see/manage Duhai employees' gate passes, of any outing type,
+      // not just inter-office travel ones.
+      const gateLocation = current.outing_type === 'travelling_to_another_office'
+        ? current.current_location
+        : await (async () => {
+            const empUserId = current.user_id || current.employee_user_id;
+            if (!empUserId) return null;
+            const empRow = await one("SELECT data::jsonb->>'work_location' AS loc FROM entities WHERE type='Employee' AND user_id=$1", [empUserId]);
+            return empRow?.loc || null;
+          })();
+      if (gateLocation) {
         const assigned = await getGateAdminAssignedLocations(cu.id);
-        if (assigned !== null && !assigned.includes(current.current_location)) {
-          res.status(403).json({ error: `You are not assigned to ${current.current_location} — this gate pass belongs to another office` });
+        if (assigned !== null && !assigned.includes(gateLocation)) {
+          res.status(403).json({ error: `You are not assigned to ${gateLocation} — this gate pass belongs to another office` });
           return false;
         }
       }

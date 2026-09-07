@@ -92,12 +92,17 @@ export default function GateAdminDashboard() {
       setEmployees(empMap);
 
       let visible = allPasses.filter(p => p.status !== 'pending_approval');
-      // Location scoping applies ONLY to "travelling to another office"
-      // passes — every other outing type has no office of its own and stays
-      // visible to any gate admin, unchanged. A restricted gate admin who
-      // isn't assigned the departure office wouldn't be allowed to act on
-      // it anyway (enforced server-side in entities.js) — filtering it out
-      // here too avoids showing a card they'd just get a 403 clicking.
+      // Location scoping: a "travelling to another office" pass carries its
+      // own departure location (current_location); every other outing type
+      // is scoped by the employee's own assigned office (Employee.work_location,
+      // set via Location Master) instead — so a Duhai gate admin only ever
+      // sees Duhai employees' gate passes, of any outing type. A restricted
+      // gate admin who isn't assigned that office wouldn't be allowed to act
+      // on it anyway (enforced server-side in entities.js) — filtering it
+      // out here too avoids showing a card they'd just get a 403 clicking.
+      // Passes for an employee with no work_location configured stay
+      // visible to everyone (nothing to scope against — same
+      // backward-compatible default the server uses).
       const role = currentUser.custom_role || currentUser.role;
       if (role === 'gate_admin') {
         try {
@@ -105,7 +110,12 @@ export default function GateAdminDashboard() {
           const locData = locRes.data || locRes;
           const assigned = locData.success ? locData.locations : null;
           if (Array.isArray(assigned)) {
-            visible = visible.filter(p => p.outing_type !== 'travelling_to_another_office' || assigned.includes(p.current_location));
+            visible = visible.filter(p => {
+              const loc = p.outing_type === 'travelling_to_another_office'
+                ? p.current_location
+                : empMap[p.user_id || p.employee_user_id]?.work_location;
+              return !loc || assigned.includes(loc);
+            });
           }
         } catch { /* unrestricted on any lookup failure — never hide passes due to a transient error */ }
       }
