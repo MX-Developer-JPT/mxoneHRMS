@@ -92,17 +92,18 @@ export default function GateAdminDashboard() {
       setEmployees(empMap);
 
       let visible = allPasses.filter(p => p.status !== 'pending_approval');
-      // Location scoping: a "travelling to another office" pass carries its
-      // own departure location (current_location); every other outing type
-      // is scoped by the employee's own assigned office (Employee.work_location,
-      // set via Location Master) instead — so a Duhai gate admin only ever
-      // sees Duhai employees' gate passes, of any outing type. A restricted
-      // gate admin who isn't assigned that office wouldn't be allowed to act
-      // on it anyway (enforced server-side in entities.js) — filtering it
-      // out here too avoids showing a card they'd just get a 403 clicking.
-      // Passes for an employee with no work_location configured stay
-      // visible to everyone (nothing to scope against — same
-      // backward-compatible default the server uses).
+      // Location scoping: every gate pass now carries its own departure
+      // location (current_location — picked from Location Master when the
+      // employee requests it, GatePassRequest.jsx), regardless of outing
+      // type, so a Duhai gate admin only ever sees gate passes departing
+      // from Duhai. Falls back to the employee's assigned office
+      // (Employee.work_location) for older passes created before this field
+      // existed on every type. A restricted gate admin who isn't assigned
+      // that office wouldn't be allowed to act on it anyway (enforced
+      // server-side in entities.js) — filtering it out here too avoids
+      // showing a card they'd just get a 403 clicking. A pass with no
+      // location resolvable at all stays visible to everyone (nothing to
+      // scope against — same backward-compatible default the server uses).
       const role = currentUser.custom_role || currentUser.role;
       if (role === 'gate_admin') {
         try {
@@ -111,9 +112,7 @@ export default function GateAdminDashboard() {
           const assigned = locData.success ? locData.locations : null;
           if (Array.isArray(assigned)) {
             visible = visible.filter(p => {
-              const loc = p.outing_type === 'travelling_to_another_office'
-                ? p.current_location
-                : empMap[p.user_id || p.employee_user_id]?.work_location;
+              const loc = p.current_location || empMap[p.user_id || p.employee_user_id]?.work_location;
               return !loc || assigned.includes(loc);
             });
           }
@@ -291,8 +290,10 @@ export default function GateAdminDashboard() {
                           {pass.outing_type && <Badge variant="outline" className="text-[10px]">{OUTING_LABELS[pass.outing_type] || pass.outing_type}</Badge>}
                           {pass.reason && <p className="text-xs text-gray-500 max-w-xs truncate">{pass.reason}</p>}
                         </div>
-                        {pass.outing_type === 'travelling_to_another_office' && (
+                        {pass.outing_type === 'travelling_to_another_office' ? (
                           <p className="text-xs text-indigo-600 mt-0.5">{pass.current_location} → {pass.destination_location}</p>
+                        ) : pass.current_location && (
+                          <p className="text-xs text-blue-600 mt-0.5">{pass.current_location}</p>
                         )}
                       </div>
                     </div>
@@ -342,8 +343,10 @@ export default function GateAdminDashboard() {
                           {pass.outing_type && <Badge variant="outline" className="text-[10px]">{OUTING_LABELS[pass.outing_type] || pass.outing_type}</Badge>}
                           {pass.reason && <p className="text-xs text-gray-500">{pass.reason}</p>}
                         </div>
-                        {pass.outing_type === 'travelling_to_another_office' && (
+                        {pass.outing_type === 'travelling_to_another_office' ? (
                           <p className="text-xs text-indigo-600 mt-0.5">{pass.current_location} → {pass.destination_location}</p>
+                        ) : pass.current_location && (
+                          <p className="text-xs text-blue-600 mt-0.5">{pass.current_location}</p>
                         )}
                       </div>
                     </div>
@@ -384,8 +387,10 @@ export default function GateAdminDashboard() {
                   </div>
                 </div>
                 {selected.outing_type && <p><span className="font-medium text-gray-600">Type:</span> <Badge variant="outline">{OUTING_LABELS[selected.outing_type] || selected.outing_type}</Badge></p>}
-                {selected.outing_type === 'travelling_to_another_office' && (
+                {selected.outing_type === 'travelling_to_another_office' ? (
                   <p><span className="font-medium text-gray-600">Route:</span> {selected.current_location} → {selected.destination_location}</p>
+                ) : selected.current_location && (
+                  <p><span className="font-medium text-gray-600">Departing from:</span> {selected.current_location}</p>
                 )}
                 <p><span className="font-medium text-gray-600">Reason:</span> {selected.reason || '—'}</p>
                 <p><span className="font-medium text-gray-600">Requested:</span> {safeDate(selected.created_date, 'dd MMM yyyy, h:mm a')}</p>

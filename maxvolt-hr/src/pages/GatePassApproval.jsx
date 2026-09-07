@@ -175,8 +175,10 @@ export default function GatePassApproval() {
                           {pass.outing_type && <Badge variant="outline" className="text-xs">{pass.outing_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</Badge>}
                           {pass.reason && <p className="text-gray-700 dark:text-gray-300 break-words">{pass.reason}</p>}
                         </div>
-                        {pass.outing_type === 'travelling_to_another_office' && (
+                        {pass.outing_type === 'travelling_to_another_office' ? (
                           <p className="text-sm text-indigo-600 mt-0.5">{pass.current_location} → {pass.destination_location}</p>
+                        ) : pass.current_location && (
+                          <p className="text-sm text-blue-600 mt-0.5">Departing from {pass.current_location}</p>
                         )}
                         <p className="text-sm text-gray-400 mt-1">
                           Requested: {safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}
@@ -221,8 +223,10 @@ export default function GatePassApproval() {
               <div className="bg-gray-50 rounded-lg p-4 space-y-2">
                 <p><span className="font-medium">Employee:</span> {employees[selected.employee_user_id]?.display_name || 'Unknown'}{employees[selected.employee_user_id]?.employee_code && ` (${employees[selected.employee_user_id].employee_code})`}</p>
                 <p><span className="font-medium">Outing Type:</span> <Badge variant="outline">{selected.outing_type?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'N/A'}</Badge></p>
-                {selected.outing_type === 'travelling_to_another_office' && (
+                {selected.outing_type === 'travelling_to_another_office' ? (
                   <p><span className="font-medium">Route:</span> {selected.current_location} → {selected.destination_location}</p>
+                ) : selected.current_location && (
+                  <p><span className="font-medium">Departing from:</span> {selected.current_location}</p>
                 )}
                 <p><span className="font-medium">Reason:</span> {selected.reason || '—'}</p>
                 <p><span className="font-medium">Requested:</span> {safeDate(selected.created_date, 'dd MMM yyyy, hh:mm a')}</p>

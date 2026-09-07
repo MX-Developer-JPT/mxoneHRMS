@@ -257,21 +257,21 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   if (isGateLogTransition) {
     if (['hr', 'admin'].includes(role)) return true;
     if (role === 'gate_admin') {
-      // A "travelling to another office" pass is tied to a specific
-      // departure location (current_location) — use that. Every other
-      // outing type has no location of its own on the pass itself, so it's
-      // scoped to the employee's own assigned office (Employee.work_location,
-      // set via Location Master) instead — a Duhai gate admin should only
-      // ever see/manage Duhai employees' gate passes, of any outing type,
-      // not just inter-office travel ones.
-      const gateLocation = current.outing_type === 'travelling_to_another_office'
-        ? current.current_location
-        : await (async () => {
-            const empUserId = current.user_id || current.employee_user_id;
-            if (!empUserId) return null;
-            const empRow = await one("SELECT data::jsonb->>'work_location' AS loc FROM entities WHERE type='Employee' AND user_id=$1", [empUserId]);
-            return empRow?.loc || null;
-          })();
+      // Every gate pass now carries its own departure location
+      // (current_location — the employee picks it from Location Master when
+      // requesting, GatePassRequest.jsx) regardless of outing type, so it's
+      // always what determines which gate admin may act on it: a Duhai gate
+      // admin should only ever see/manage gate passes departing from Duhai.
+      // Falls back to the employee's assigned office (Employee.work_location)
+      // for older passes created before this field existed on every type.
+      let gateLocation = current.current_location;
+      if (!gateLocation) {
+        const empUserId = current.user_id || current.employee_user_id;
+        if (empUserId) {
+          const empRow = await one("SELECT data::jsonb->>'work_location' AS loc FROM entities WHERE type='Employee' AND user_id=$1", [empUserId]);
+          gateLocation = empRow?.loc || null;
+        }
+      }
       if (gateLocation) {
         const assigned = await getGateAdminAssignedLocations(cu.id);
         if (assigned !== null && !assigned.includes(gateLocation)) {
@@ -1040,22 +1040,25 @@ router.patch('/:type/:id', async (req, res) => {
             type: 'info', link: '/AssetTracking',
           });
         }
-      } else if (type === 'GatePass' && req.body.status === 'approved' && current.status !== 'approved' && updated.outing_type === 'travelling_to_another_office' && updated.current_location) {
-        // Manager just cleared a "travelling to another office" gate pass —
-        // route it to whichever gate admin(s) are assigned to the
-        // DEPARTURE office (current_location), not a blanket broadcast to
-        // every gate admin, so it actually lands in the right office's
-        // queue the way every other outing type already implicitly does
-        // (any gate admin can already see/act on those — this type is the
-        // one exception with a real office to route to).
+      } else if (type === 'GatePass' && req.body.status === 'approved' && current.status !== 'approved' && updated.current_location) {
+        // Manager just cleared a gate pass — route it to whichever gate
+        // admin(s) are assigned to the DEPARTURE office (current_location,
+        // picked from Location Master on every gate pass request now), not
+        // a blanket broadcast to every gate admin, so it lands in the right
+        // office's queue regardless of outing type.
         const emp = updated.employee_user_id
           ? JSON.parse((await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [updated.employee_user_id]))?.data || '{}')
           : {};
         const empName = emp?.display_name || 'An employee';
         const gateAdminIds = await getGateAdminUserIdsForLocation(updated.current_location);
-        await notifyMany(gateAdminIds, {
+        const isTravelling = updated.outing_type === 'travelling_to_another_office';
+        await notifyMany(gateAdminIds, isTravelling ? {
           title: 'Inter-Office Travel — Gate Pass Approved',
           message: `${empName}'s gate pass to travel from ${updated.current_location} to ${updated.destination_location || 'another office'} was approved by their manager — awaiting departure.`,
+          type: 'info', link: '/GateAdminDashboard',
+        } : {
+          title: 'Gate Pass Approved — Awaiting Departure',
+          message: `${empName}'s gate pass (${updated.outing_type ? updated.outing_type.replace(/_/g, ' ') : 'outing'}) at ${updated.current_location} was approved by their manager — awaiting departure.`,
           type: 'info', link: '/GateAdminDashboard',
         });
       } else if (type === 'GatePass' && req.body.status && req.body.status !== current.status && ['departed', 'returned'].includes(req.body.status)) {

@@ -71,25 +71,38 @@ export default function GatePassRequest() {
     setLoading(true);
     const currentUser = await base44.auth.me();
     setUser(currentUser);
-    const [passes, locs] = await Promise.all([
+    const [passes, locs, empRecords] = await Promise.all([
       base44.entities.GatePass.filter({ employee_user_id: currentUser.id }),
       base44.entities.AppLocation.filter({ is_active: true }),
+      base44.entities.Employee.filter({ user_id: currentUser.id }),
     ]);
     passes.sort((a, b) => new Date(b.created_date) - new Date(a.created_date));
     setMyPasses(passes);
     setLocations(locs);
+    // Pre-fill the departure-location dropdown with the employee's own
+    // assigned office (Location Master) — still editable, just saves the
+    // common case (departing from your usual office) a click.
+    const homeLocation = empRecords?.[0]?.work_location || '';
+    if (homeLocation) setForm(f => ({ ...f, current_location: homeLocation }));
     setLoading(false);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     const isTravelling = form.outing_type === 'travelling_to_another_office';
-    if (isTravelling && (!form.current_location || !form.destination_location)) {
-      toast.error('Select both your current location and where you are travelling to');
+    // Departure location is required for EVERY outing type now, not just
+    // "travelling to another office" — it's how the request gets routed to
+    // the right office's gate admin (see GateAdminDashboard/entities.js).
+    if (!form.current_location) {
+      toast.error('Select which office you are departing from');
+      return;
+    }
+    if (isTravelling && !form.destination_location) {
+      toast.error('Select where you are travelling to');
       return;
     }
     if (isTravelling && form.current_location === form.destination_location) {
-      toast.error('Current location and destination must be different');
+      toast.error('Departure location and destination must be different');
       return;
     }
     setSubmitting(true);
@@ -107,8 +120,9 @@ export default function GatePassRequest() {
       manager_approval_status: 'pending',
       manager_user_id: emp?.reporting_manager_id || null,
       lop_deduction_days: 0,
+      current_location: form.current_location,
       ...(isOfficial ? { vehicle_type: form.vehicle_type } : {}),
-      ...(isTravelling ? { current_location: form.current_location, destination_location: form.destination_location } : {}),
+      ...(isTravelling ? { destination_location: form.destination_location } : {}),
     });
 
     // Official outing: start Field Duty GPS tracking immediately, without waiting for
@@ -133,7 +147,9 @@ export default function GatePassRequest() {
       }
     }
 
-    setForm({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler', current_location: '', destination_location: '' });
+    // Keep the departure location pre-filled for the next request (usually
+    // the same office) instead of clearing it back to blank.
+    setForm({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler', current_location: form.current_location, destination_location: '' });
     setShowForm(false);
     await loadData();
     setSubmitting(false);
@@ -183,24 +199,33 @@ export default function GatePassRequest() {
                   {OUTING_TYPES.find(o => o.value === form.outing_type)?.desc}
                 </p>
               </div>
-              {form.outing_type === 'travelling_to_another_office' && (
-                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 space-y-3">
-                  <Label className="flex items-center gap-1.5 text-indigo-800">
-                    <MapPin className="w-4 h-4" /> Route
-                  </Label>
-                  <p className="text-xs text-indigo-700 -mt-2">
-                    After your manager approves, this request is routed straight to the gate admin at your current office.
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <Label className="text-xs text-gray-600">Current Location *</Label>
-                      <Select value={form.current_location} onValueChange={v => setForm(f => ({ ...f, current_location: v }))}>
-                        <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
-                        <SelectContent>
-                          {locations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
+
+              {/* Departure location — asked for EVERY outing type, not just
+                  "Travelling to Another Office". This is how the request
+                  gets routed to the right gate admin: whichever office is
+                  selected here, only the gate admin(s) assigned to that
+                  office (Admin Panel → Add/Edit User) can see and act on
+                  this gate pass once your manager approves it. */}
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 space-y-3">
+                <Label className="flex items-center gap-1.5 text-blue-800">
+                  <MapPin className="w-4 h-4" /> Departure Location *
+                </Label>
+                <p className="text-xs text-blue-700 -mt-2">
+                  After your manager approves, this request is routed to the gate admin assigned to this office.
+                </p>
+                <div className={`grid grid-cols-1 gap-3 ${form.outing_type === 'travelling_to_another_office' ? 'sm:grid-cols-2' : ''}`}>
+                  <div>
+                    <Label className="text-xs text-gray-600">
+                      {form.outing_type === 'travelling_to_another_office' ? 'Departing From *' : 'Office *'}
+                    </Label>
+                    <Select value={form.current_location} onValueChange={v => setForm(f => ({ ...f, current_location: v }))}>
+                      <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                      <SelectContent>
+                        {locations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {form.outing_type === 'travelling_to_another_office' && (
                     <div>
                       <Label className="text-xs text-gray-600">Travelling To *</Label>
                       <Select value={form.destination_location} onValueChange={v => setForm(f => ({ ...f, destination_location: v }))}>
@@ -210,7 +235,17 @@ export default function GatePassRequest() {
                         </SelectContent>
                       </Select>
                     </div>
-                  </div>
+                  )}
+                </div>
+              </div>
+              {form.outing_type === 'travelling_to_another_office' && (
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+                  <Label className="flex items-center gap-1.5 text-indigo-800">
+                    <MapPin className="w-4 h-4" /> Route
+                  </Label>
+                  <p className="text-xs text-indigo-700 mt-1">
+                    {form.current_location || 'Your departure office'} → {form.destination_location || 'destination'}
+                  </p>
                 </div>
               )}
               {form.outing_type === 'official_outing' && (
@@ -303,8 +338,10 @@ export default function GatePassRequest() {
                         </Badge>
                       )}
                     </div>
-                    {pass.outing_type === 'travelling_to_another_office' && (
+                    {pass.outing_type === 'travelling_to_another_office' ? (
                       <p className="text-sm text-indigo-600 flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {pass.current_location} → {pass.destination_location}</p>
+                    ) : pass.current_location && (
+                      <p className="text-sm text-blue-600 flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {pass.current_location}</p>
                     )}
                     {pass.reason && <p className="font-medium text-gray-900 dark:text-gray-100">{pass.reason}</p>}
                     <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
