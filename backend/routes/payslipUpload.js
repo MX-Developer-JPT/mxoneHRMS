@@ -187,6 +187,23 @@ router.post('/', memUpload.array('files', 500), async (req, res) => {
     if (extracted.net_salary == null) fileResult.warnings.push('Could not extract Net Salary — review the record before releasing it');
     if (extracted.gross_salary == null) fileResult.warnings.push('Could not extract Gross Salary — review the record before releasing it');
 
+    // Internal consistency check: Gross - Total Deductions should equal the
+    // document's own printed Net Salary. Every payslip layout labels its
+    // Actual/Earned/Arrear/YTD columns a little differently, so no single
+    // regex heuristic can be guaranteed right for every generator — this
+    // catches the SYMPTOM (component values don't reconcile with the
+    // document's own bottom-line figure) regardless of which specific field
+    // extraction actually went wrong, without silently trusting a
+    // self-inconsistent read. ₹5 tolerance absorbs rounding on paise-level
+    // figures; anything past that is a real mismatch worth a human glance.
+    if (extracted.gross_salary != null && extracted.total_deductions != null && extracted.net_salary != null) {
+      const impliedNet = extracted.gross_salary - extracted.total_deductions;
+      const diff = Math.abs(impliedNet - extracted.net_salary);
+      if (diff > 5) {
+        fileResult.warnings.push(`Extracted figures don't reconcile: Gross (₹${extracted.gross_salary.toLocaleString('en-IN')}) − Deductions (₹${extracted.total_deductions.toLocaleString('en-IN')}) = ₹${impliedNet.toLocaleString('en-IN')}, but the document's own Net Salary reads ₹${extracted.net_salary.toLocaleString('en-IN')} — one or more component values were likely misread; verify before releasing`);
+      }
+    }
+
     const monthWarning = monthMismatch(extracted.payroll_month_in_doc, month, year);
     if (monthWarning) fileResult.warnings.push(monthWarning);
 

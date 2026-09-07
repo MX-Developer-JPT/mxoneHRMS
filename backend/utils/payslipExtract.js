@@ -49,9 +49,13 @@ const NUMERIC_FIELDS = [
   ['other_deductions', ['other deduction'], 'first'],
   ['total_deductions', ['total deduction', 'total deductions'], 'first'],
   ['net_salary', ['net salary', 'net pay', 'take home', 'net amount', 'net amount payable', 'amount payable', 'total net payable', 'net salary payable', 'take home salary', 'net earnings', 'net payable'], 'first'],
-  ['payable_days', ['payable days', 'pay\\s*days'], 'first'],
-  ['present_days', ['present days', 'days present', 'days worked'], 'first'],
-  ['lop_days', ['loss of pay days', 'lwp days', '\\blop\\b days', 'lop\\b'], 'first'],
+  // 'working days' is this app's OWN generated payslip's label for the same
+  // figure (see the Payslip HTML template in functions.js) — tried last, as
+  // a fallback, so an externally-generated payslip's more specific
+  // "Payable Days"/"Pay Days" (if present) still wins when both exist.
+  ['payable_days', ['payable days', 'pay\\s*days', 'working days', 'total days'], 'first'],
+  ['present_days', ['present days', 'days present', 'days worked', 'no\\.? of days? present'], 'first'],
+  ['lop_days', ['loss of pay days', 'leave without pay days', 'lwp days', '\\blop\\b days', 'days\\s*lop', 'lop\\b'], 'first'],
   ['employer_pf', ['employer pf', 'employer.{0,3}s? contribution.{0,20}pf'], 'first'],
   ['employer_esi', ['employer esi', 'employer.{0,3}s? contribution.{0,20}esi'], 'first'],
 ];

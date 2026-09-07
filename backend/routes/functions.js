@@ -4775,6 +4775,17 @@ router.post('/:name', async (req, res) => {
       }
       if (rpFields.net_salary == null) rpWarnings.push('Could not extract Net Salary — review the record before releasing it');
       if (rpFields.gross_salary == null) rpWarnings.push('Could not extract Gross Salary — review the record before releasing it');
+      // Same internal-consistency check as the bulk-upload path (routes/
+      // payslipUpload.js) — catches a misread component even when no single
+      // field came back null, by checking the extracted figures reconcile
+      // with the document's own printed Net Salary.
+      if (rpFields.gross_salary != null && rpFields.total_deductions != null && rpFields.net_salary != null) {
+        const rpImpliedNet = rpFields.gross_salary - rpFields.total_deductions;
+        const rpDiff = Math.abs(rpImpliedNet - rpFields.net_salary);
+        if (rpDiff > 5) {
+          rpWarnings.push(`Extracted figures don't reconcile: Gross (₹${rpFields.gross_salary.toLocaleString('en-IN')}) − Deductions (₹${rpFields.total_deductions.toLocaleString('en-IN')}) = ₹${rpImpliedNet.toLocaleString('en-IN')}, but the document's own Net Salary reads ₹${rpFields.net_salary.toLocaleString('en-IN')} — one or more component values were likely misread; verify before releasing`);
+        }
+      }
       const rpNow = new Date().toISOString();
       const rpPayrollId = rpExistingRow?.id || uuidv4();
       const rpPayrollData = {

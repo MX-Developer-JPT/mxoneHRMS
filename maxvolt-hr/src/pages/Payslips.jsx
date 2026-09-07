@@ -2,7 +2,7 @@
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { FileText, DollarSign, Printer, TrendingUp, TrendingDown, Download, Loader2 } from 'lucide-react';
+import { FileText, DollarSign, Printer, TrendingUp, TrendingDown, Download, Loader2, KeyRound } from 'lucide-react';
 import { openPayslipPrintWindow } from '../utils/payslipPrint';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -94,6 +94,28 @@ export default function Payslips() {
           <p className="text-gray-600 mt-1">View and print your salary slips</p>
         </div>
 
+        {/* Uploaded (HR bulk-upload) payslip PDFs are the original file HR
+            uploaded — still password-protected exactly as HR received it —
+            so anyone downloading the original needs to know the password
+            before they hit a locked-PDF prompt with no explanation. */}
+        {sorted.some(p => p.payslip_source === 'bulk_upload') && (
+          <Card className="border-amber-200 bg-amber-50">
+            <CardContent className="p-4 flex items-start gap-3">
+              <div className="p-2 bg-amber-100 rounded-full shrink-0"><KeyRound className="w-5 h-5 text-amber-600" /></div>
+              <div className="text-sm">
+                <p className="font-semibold text-amber-900">Password-protected payslip PDF</p>
+                <p className="text-amber-800 mt-0.5">
+                  The "Download Original PDF" file is locked. The default password is your{' '}
+                  <span className="font-semibold">Employee Code</span>
+                  {user?.employee_code || sorted.find(p => p.employee_code)?.employee_code
+                    ? <> (<span className="font-mono font-semibold">{user?.employee_code || sorted.find(p => p.employee_code)?.employee_code}</span>)</>
+                    : null}.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Summary */}
         {payrolls.length > 0 && (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
@@ -170,15 +192,20 @@ export default function Payslips() {
                       {printing === payroll.id ? 'Generating...' : 'View / Print Payslip'}
                     </Button>
                     {payroll.payslip_source === 'bulk_upload' && (
-                      <Button
-                        onClick={() => handleDownloadOriginal(payroll.id)}
-                        className="w-full"
-                        variant="ghost"
-                        disabled={downloading === payroll.id}
-                      >
-                        {downloading === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
-                        {downloading === payroll.id ? 'Opening...' : 'Download Original PDF'}
-                      </Button>
+                      <>
+                        <Button
+                          onClick={() => handleDownloadOriginal(payroll.id)}
+                          className="w-full"
+                          variant="ghost"
+                          disabled={downloading === payroll.id}
+                        >
+                          {downloading === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                          {downloading === payroll.id ? 'Opening...' : 'Download Original PDF'}
+                        </Button>
+                        <p className="text-xs text-gray-400 flex items-center gap-1 justify-center -mt-1">
+                          <KeyRound className="w-3 h-3" /> Locked with your Employee Code{payroll.employee_code ? ` (${payroll.employee_code})` : ''}
+                        </p>
+                      </>
                     )}
                   </CardContent>
                 </Card>

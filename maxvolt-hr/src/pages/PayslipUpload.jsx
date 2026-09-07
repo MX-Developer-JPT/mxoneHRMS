@@ -180,7 +180,7 @@ export default function PayslipUpload() {
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Bulk Payslip Upload</h1>
         <p className="text-slate-500 text-sm mt-1">
-          Upload a month's password-protected payslip PDFs (filename = Employee Code). They're auto-decrypted, mapped to employees, and fed into Payroll — review, then release to employees when ready.
+          Upload a month's password-protected payslip PDFs — filename AND password must both be the Employee Code (e.g. <span className="font-mono">EMP001.pdf</span>, opened with password <span className="font-mono">EMP001</span>). They're auto-decrypted, mapped to employees, and fed into Payroll — review, then release to employees when ready. Employees see the same password reminder when they download their original PDF from My Payslips.
         </p>
       </div>
 
