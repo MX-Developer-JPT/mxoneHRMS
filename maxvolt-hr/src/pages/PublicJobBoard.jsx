@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Briefcase, MapPin, Clock, Users, Search, ChevronRight, Calendar } from 'lucide-react';
-import { format, isPast } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 
 export default function PublicJobBoard() {
@@ -13,23 +12,32 @@ export default function PublicJobBoard() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterDept, setFilterDept] = useState('all');
-  const [departments, setDepartments] = useState([]);
+
+  // Department names shown as filter chips are derived from the jobs
+  // actually loaded (same pattern CareersPage.jsx uses) rather than a
+  // separate Department.list() fetch — one less authenticated call for an
+  // anonymous visitor to silently fail on (see loadJobs below).
+  const departments = [...new Set(jobs.map(j => j.department).filter(Boolean))];
 
   useEffect(() => {
     loadJobs();
-    base44.entities.Department.list().then(setDepartments).catch(() => {});
   }, []);
 
   const loadJobs = async () => {
     try {
-      const allJobs = await base44.entities.JobRequisition.list('-published_date', 500);
-      const active = allJobs.filter(j => {
-        const isPublished = j.is_published === true || j.status === 'published' || j.status === 'approved';
-        const notExpired = !j.application_deadline || !isPast(new Date(j.application_deadline));
-        const notClosed  = !['closed', 'cancelled', 'rejected', 'hr_rejected', 'manager_rejected'].includes(j.status);
-        return isPublished && notExpired && notClosed;
-      });
-      setJobs(active);
+      // Public endpoint (no auth) — this page is browsed by external
+      // candidates with no HRMS login at all. base44.entities.JobRequisition
+      // .list(...) used to be called here instead, which hits the generic
+      // entities route that requires a valid JWT and 401s for anyone
+      // without one — silently swallowed below, so every external visitor
+      // just saw an empty job board while it kept working for whoever
+      // happened to test it already logged into the HRMS in the same
+      // browser. The published/not-expired/not-closed filtering also now
+      // happens server-side (getPublishedJobs, functions.js) rather than
+      // after the fact here.
+      const res = await base44.functions.invoke('getPublishedJobs', {});
+      const data = res.data || res;
+      setJobs(data?.success ? (data.jobs || []) : []);
     } catch (e) {
       console.error(e);
     }
@@ -75,13 +83,13 @@ export default function PublicJobBoard() {
             </Button>
             {departments.map(d => (
               <Button
-                key={d.id}
+                key={d}
                 size="sm"
-                variant={filterDept === d.name ? 'default' : 'outline'}
-                onClick={() => setFilterDept(d.name)}
-                className={filterDept === d.name ? 'bg-orange-500 hover:bg-orange-600' : ''}
+                variant={filterDept === d ? 'default' : 'outline'}
+                onClick={() => setFilterDept(d)}
+                className={filterDept === d ? 'bg-orange-500 hover:bg-orange-600' : ''}
               >
-                {d.name}
+                {d}
               </Button>
             ))}
           </div>

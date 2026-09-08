@@ -11138,6 +11138,30 @@ ${contextBlock || 'No employee context available — answer from general policy 
       return res.json(row ? { job: JSON.parse(row.data) } : { job: null });
     }
 
+    // Public careers page (maxone.maxvoltenergy.com/career) — deliberately
+    // no auth check, same as getPublishedJob above: an external candidate
+    // browsing open positions has no HRMS login/JWT at all. CareersPage.jsx
+    // used to fetch every JobRequisition via the generic authenticated
+    // entities list route (base44.entities.JobRequisition.list(...)), which
+    // 401s for anyone without a valid token — silently swallowed by the
+    // frontend's catch, so the page just showed "No open positions found"
+    // to every external visitor while still working for anyone who
+    // happened to already be logged into the HRMS in the same browser
+    // (masking the bug for internal testers). Same published/not-expired/
+    // not-closed filter CareersPage.jsx was already applying client-side,
+    // just moved server-side where it can actually run for a public caller.
+    case 'getPublishedJobs': {
+      const rows = await all("SELECT data FROM entities WHERE type='JobRequisition'");
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const jobs = rows.map(r => JSON.parse(r.data)).filter(j => {
+        const isPublished = j.is_published === true || j.status === 'published' || j.status === 'approved';
+        const notExpired = !j.application_deadline || j.application_deadline.slice(0, 10) >= todayStr;
+        const notClosed = !['closed', 'cancelled', 'rejected', 'hr_rejected', 'manager_rejected'].includes(j.status);
+        return isPublished && notExpired && notClosed;
+      }).sort((a, b) => new Date(b.published_date || 0) - new Date(a.published_date || 0));
+      return res.json({ success: true, jobs });
+    }
+
     case 'saveSaturdaySettings': {
       // Was referencing an undefined `body` variable (should have been `p`)
       // — threw a ReferenceError on every call, silently swallowed by the

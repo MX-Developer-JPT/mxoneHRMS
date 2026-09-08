@@ -10,7 +10,6 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { Briefcase, MapPin, Clock, Users, Search, ChevronRight, Calendar, CheckCircle2, Upload, Loader2, ArrowLeft, Sparkles, Building2, IndianRupee, GraduationCap, FileText } from 'lucide-react';
-import { format, isPast } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import ReactMarkdown from 'react-markdown';
 
@@ -476,14 +475,19 @@ export default function CareersPage() {
   useEffect(() => {
     (async () => {
       try {
-        const allJobs = await base44.entities.JobRequisition.list('-published_date', 500);
-        const active = allJobs.filter(j => {
-          const isPublished = j.is_published === true || j.status === 'published' || j.status === 'approved';
-          const notExpired = !j.application_deadline || !isPast(new Date(j.application_deadline));
-          const notClosed = !['closed', 'cancelled', 'rejected', 'hr_rejected', 'manager_rejected'].includes(j.status);
-          return isPublished && notExpired && notClosed;
-        });
-        setJobs(active);
+        // Public endpoint (no auth) — this page is browsed by external
+        // candidates with no HRMS login at all. base44.entities.JobRequisition
+        // .list(...) used to be called here instead, which hits the generic
+        // entities route that requires a valid JWT and 401s for anyone
+        // without one — silently swallowed below, so every external visitor
+        // just saw "No open positions found" while it kept working for
+        // whoever happened to test it already logged into the HRMS in the
+        // same browser. The published/not-expired/not-closed filtering also
+        // now happens server-side (getPublishedJobs, functions.js) rather
+        // than after the fact here.
+        const res = await base44.functions.invoke('getPublishedJobs', {});
+        const data = res.data || res;
+        setJobs(data?.success ? (data.jobs || []) : []);
       } catch (e) { console.error(e); }
       setLoading(false);
     })();
