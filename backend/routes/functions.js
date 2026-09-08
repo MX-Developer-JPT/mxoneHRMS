@@ -2518,7 +2518,16 @@ router.post('/:name', async (req, res) => {
 
       const balRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [uid]);
       const bal = balRows.map(r=>JSON.parse(r.data)).find(b=>b.leave_policy_id===leave_policy_id && b.year === year);
-      const available_balance = bal?.available ?? 999;
+      // No matching balance row (never accrued/imported for this policy+year)
+      // means nothing is actually available to draw against — defaulting
+      // this to 999 previously told the employee "Valid — 999 days
+      // available" and let them submit, only for the real enforcement gate
+      // (checkLeaveBalanceSufficiency in entities.js, which correctly
+      // defaults to 0) to reject it moments later with a confusing
+      // "0 available" error that contradicted what this validation just
+      // said. Matching that same 0 default here means an employee with no
+      // real balance is told plainly, before they even try to submit.
+      const available_balance = bal?.available ?? 0;
 
       if (adjusted_days > available_balance) errors.push(`Insufficient balance. Available: ${available_balance}, Requested: ${adjusted_days}`);
       if (adjusted_days > 30) errors.push('Cannot exceed 30 days at once');

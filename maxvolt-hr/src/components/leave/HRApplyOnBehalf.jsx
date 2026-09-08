@@ -62,10 +62,19 @@ export default function HRApplyOnBehalf({ employees, leavePolicies, loadData, us
 
     const days = form.half_day ? 0.5 : differenceInDays(end, start) + 1;
 
-    // Check balance
+    // Check balance — hard stop, not an "apply anyway?" override. The
+    // server enforces this unconditionally for every Leave creation
+    // regardless of caller/status (checkLeaveBalanceSufficiency in
+    // entities.js has no HR/role exception), so a confirm() that let HR
+    // proceed past this used to just trade one failure for a more
+    // confusing one a moment later — Leave.create would still get
+    // rejected with a 400, after HR had already been told "ok, applying
+    // anyway". No one, including HR applying on an employee's behalf, can
+    // create a leave request past the real available balance.
     const bal = balances.find(b => b.leave_policy_id === form.leave_policy_id);
     if (bal && days > (bal.available || 0)) {
-      if (!confirm(`This employee only has ${bal.available} day(s) available. Apply anyway?`)) return;
+      toast.error(`This employee only has ${bal.available || 0} day(s) available for ${getPolicyName(form.leave_policy_id)} — cannot apply for ${days} day(s).`);
+      return;
     }
 
     setSubmitting(true);
