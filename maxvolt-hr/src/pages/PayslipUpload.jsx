@@ -23,7 +23,7 @@ const CURRENT_YEAR = new Date().getFullYear();
 const YEARS = [CURRENT_YEAR + 1, CURRENT_YEAR, CURRENT_YEAR - 1, CURRENT_YEAR - 2];
 
 const STATUS_META = {
-  mapped:               { label: 'Mapped',              color: 'bg-green-100 text-green-800',   icon: CheckCircle2 },
+  mapped:               { label: 'Mapped & Released',   color: 'bg-green-100 text-green-800',   icon: CheckCircle2 },
   mapped_needs_review:  { label: 'Mapped (Review)',     color: 'bg-amber-100 text-amber-800',    icon: AlertTriangle },
   unmapped:             { label: 'Unmapped',             color: 'bg-slate-200 text-slate-700',    icon: Users },
   duplicate:            { label: 'Duplicate',            color: 'bg-blue-100 text-blue-800',      icon: Copy },
@@ -136,7 +136,11 @@ export default function PayslipUpload() {
     }
   };
 
-  const mappedFiles = (result?.files || []).filter(f => f.status === 'mapped' || f.status === 'mapped_needs_review');
+  // A clean match (no extraction warnings) is now auto-released straight to
+  // the employee (backend/routes/payslipUpload.js) — only files that still
+  // need a human look (warnings) or predate this change (no `released`
+  // field at all) are release candidates here.
+  const mappedFiles = (result?.files || []).filter(f => (f.status === 'mapped' || f.status === 'mapped_needs_review') && !f.released);
   const filteredMappedFiles = releaseSearch.trim()
     ? mappedFiles.filter(f => {
         const q = releaseSearch.toLowerCase();
@@ -180,7 +184,7 @@ export default function PayslipUpload() {
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Bulk Payslip Upload</h1>
         <p className="text-slate-500 text-sm mt-1">
-          Upload a month's password-protected payslip PDFs — filename AND password must both be the Employee Code (e.g. <span className="font-mono">EMP001.pdf</span>, opened with password <span className="font-mono">EMP001</span>). They're auto-decrypted, mapped to employees, and fed into Payroll — review, then release to employees when ready. Employees see the same password reminder when they download their original PDF from My Payslips.
+          Upload a month's password-protected payslip PDFs — filename AND password must both be the Employee Code (e.g. <span className="font-mono">EMP001.pdf</span>, opened with password <span className="font-mono">EMP001</span>). They're auto-decrypted and mapped to the matching employee; a clean match with no discrepancies is released to that employee immediately — they can view/download it from My Payslips right away, no extra step. Only a file flagged for review below (mismatched code/name, a month mismatch, or figures that don't reconcile) needs you to check it and release it manually. Employees see the same password reminder when they download their original PDF from My Payslips.
         </p>
       </div>
 
@@ -302,7 +306,7 @@ export default function PayslipUpload() {
       {mappedFiles.length > 0 && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base">3. Release Payslips to Employees</CardTitle>
+            <CardTitle className="text-base">3. Review &amp; Release Flagged Payslips</CardTitle>
             <Button variant="outline" size="sm" onClick={selectAllMapped}>
               {filteredMappedFiles.length > 0 && filteredMappedFiles.every(f => selectedForRelease.has(f.payroll_id)) ? 'Deselect All' : 'Select All'}
             </Button>

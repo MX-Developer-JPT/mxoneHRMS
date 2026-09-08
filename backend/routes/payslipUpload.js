@@ -46,6 +46,23 @@ async function requireHR(req, res) {
   return cu;
 }
 
+// Mirrors functions.js's own notify() helper — duplicated rather than
+// imported since this route file has no existing cross-import from
+// functions.js (same self-contained-route-file convention used elsewhere
+// in this app, e.g. the gate-admin location helpers in entities.js).
+async function notify(userId, { title, message, type = 'info', link = '' }) {
+  if (!userId) return;
+  try {
+    const nid = uuidv4();
+    await run(
+      "INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)",
+      [nid, userId, title, message, type, link || null]
+    );
+    const { sendPushToUser } = await import('../utils/push.js');
+    sendPushToUser(userId, { title, message, type, link }); // fire-and-forget
+  } catch { /* best-effort — a failed notification must never block the upload itself */ }
+}
+
 // ── One batch = one upload operation (a month's worth of files) ──────────
 router.post('/', memUpload.array('files', 500), async (req, res) => {
   const cu = await requireHR(req, res);
@@ -88,7 +105,7 @@ router.post('/', memUpload.array('files', 500), async (req, res) => {
 
   const batchId = uuidv4();
   const results = [];
-  const counts = { total: files.length, mapped: 0, unmapped: 0, duplicate: 0, invalid: 0, password_failed: 0, extraction_failed: 0 };
+  const counts = { total: files.length, mapped: 0, released: 0, unmapped: 0, duplicate: 0, invalid: 0, password_failed: 0, extraction_failed: 0 };
 
   for (const file of files) {
     const codeGuess = String(file.originalname || '').replace(/\.pdf$/i, '').trim().toUpperCase();
@@ -238,6 +255,21 @@ router.post('/', memUpload.array('files', 500), async (req, res) => {
     // produces (see functions.js), plus the source PDF reference. Overwrites
     // in place when replacing an existing record so history/ids stay stable.
     const now = new Date().toISOString();
+    // The filename IS the employee code — that match against Employee.employee_code
+    // (empByCode above) is the whole routing mechanism: a clean match (no
+    // extraction warnings) means this payslip is confidently the right
+    // employee's, for the right month, with figures that reconcile — nothing
+    // left that genuinely needs a human to look at before the employee sees
+    // it. Auto-releasing straight to 'paid' (the only status Payslips.jsx
+    // shows to an employee) is what actually finishes "map by employee code
+    // → routed to that employee → they can view/download it" as ONE action,
+    // instead of silently parking every upload at 'processed' pending a
+    // separate manual Release step HR has to remember to come back and do —
+    // previously the ONLY way anything reached an employee, however clean
+    // the match. A record that DOES have warnings (mismatched name/code,
+    // month mismatch, unreconciled figures, large variance) still lands at
+    // 'processed' and needs that manual review + release, exactly as before.
+    const autoRelease = fileResult.warnings.length === 0;
     const payrollData = {
       id: existingPayrollId || uuidv4(), user_id: emp.user_id, month, year,
       basic_salary: extracted.basic_salary ?? 0, hra: extracted.hra ?? 0, conveyance: extracted.conveyance ?? 0,
@@ -251,20 +283,30 @@ router.post('/', memUpload.array('files', 500), async (req, res) => {
       working_days: extracted.payable_days ?? null, present_days: extracted.present_days ?? null,
       loss_of_pay_days: extracted.lop_days ?? 0, loss_of_pay_amount: 0,
       incentive: extracted.incentive ?? 0, overtime: extracted.overtime ?? 0, bonus: extracted.bonus ?? 0,
-      status: 'processed', processed_by: cu.id, processed_at: now,
+      status: autoRelease ? 'paid' : 'processed', processed_by: cu.id, processed_at: now,
+      ...(autoRelease ? { payment_date: now, released_by: cu.id, released_at: now } : {}),
       employee_code: emp.employee_code, department: emp.department || null, designation: emp.designation || null,
       payslip_source: 'bulk_upload', payslip_file_url: fileUrl, payslip_file_base64: base64 || undefined,
       payslip_upload_batch_id: batchId, payslip_uploaded_by: cu.id, payslip_uploaded_at: now,
       payslip_extraction_warnings: fileResult.warnings,
     };
     if (existingPayrollId) {
-      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(payrollData), existingPayrollId]);
+      await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(payrollData), payrollData.status, existingPayrollId]);
     } else {
-      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Payroll',$2,'processed',$3)", [payrollData.id, emp.user_id, JSON.stringify(payrollData)]);
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Payroll',$2,$3,$4)", [payrollData.id, emp.user_id, payrollData.status, JSON.stringify(payrollData)]);
+    }
+    if (autoRelease) {
+      await notify(emp.user_id, {
+        title: 'Payslip Available',
+        message: `Your payslip for ${month}/${year} is now available.`,
+        type: 'success', link: '/Payslips',
+      });
     }
     fileResult.payroll_id = payrollData.id;
     fileResult.status = fileResult.warnings.length ? 'mapped_needs_review' : 'mapped';
+    fileResult.released = autoRelease;
     counts.mapped++;
+    if (autoRelease) counts.released++;
     results.push(fileResult);
   }
 

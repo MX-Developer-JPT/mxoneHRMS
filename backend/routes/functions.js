@@ -4821,6 +4821,13 @@ router.post('/:name', async (req, res) => {
       }
       const rpNow = new Date().toISOString();
       const rpPayrollId = rpExistingRow?.id || uuidv4();
+      // Same auto-release principle as the bulk-upload path (payslipUpload.js):
+      // no warnings means nothing here needs a human second look before the
+      // employee sees it — and HR just manually confirmed the employee this
+      // file belongs to, which is an even more direct confirmation than a
+      // filename match. Publishes straight to 'paid' instead of parking it
+      // at 'processed' pending a separate Release click.
+      const rpAutoRelease = rpWarnings.length === 0;
       const rpPayrollData = {
         id: rpPayrollId, user_id: rpUserId, month: batch.month, year: batch.year,
         basic_salary: rpFields.basic_salary ?? 0, hra: rpFields.hra ?? 0, conveyance: rpFields.conveyance ?? 0,
@@ -4831,14 +4838,18 @@ router.post('/:name', async (req, res) => {
         working_days: rpFields.payable_days ?? null, present_days: rpFields.present_days ?? null,
         loss_of_pay_days: rpFields.lop_days ?? 0, loss_of_pay_amount: 0,
         incentive: rpFields.incentive ?? 0, overtime: rpFields.overtime ?? 0, bonus: rpFields.bonus ?? 0,
-        status: 'processed', processed_by: cu.id, processed_at: rpNow,
+        status: rpAutoRelease ? 'paid' : 'processed', processed_by: cu.id, processed_at: rpNow,
+        ...(rpAutoRelease ? { payment_date: rpNow, released_by: cu.id, released_at: rpNow } : {}),
         employee_code: emp.employee_code, department: emp.department || null, designation: emp.designation || null,
         payslip_source: 'bulk_upload', payslip_file_url: fileEntry.file_url || null,
         payslip_upload_batch_id: rpBatchId, payslip_uploaded_by: cu.id, payslip_uploaded_at: rpNow,
         payslip_extraction_warnings: rpWarnings,
       };
-      if (rpExistingRow) await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(rpPayrollData), rpExistingRow.id]);
-      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Payroll',$2,'processed',$3)", [rpPayrollId, rpUserId, JSON.stringify(rpPayrollData)]);
+      if (rpExistingRow) await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(rpPayrollData), rpPayrollData.status, rpExistingRow.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Payroll',$2,$3,$4)", [rpPayrollId, rpUserId, rpPayrollData.status, JSON.stringify(rpPayrollData)]);
+      if (rpAutoRelease) {
+        await notify(rpUserId, { title: 'Payslip Available', message: `Your payslip for ${batch.month}/${batch.year} is now available.`, type: 'success', link: '/Payslips' });
+      }
 
       fileEntry.status = rpWarnings.length ? 'mapped_needs_review' : 'mapped';
       fileEntry.user_id = rpUserId; fileEntry.employee_name = emp.display_name || '';
@@ -4846,8 +4857,10 @@ router.post('/:name', async (req, res) => {
       fileEntry.warnings = rpWarnings;
       fileEntry.gross_salary = rpFields.gross_salary ?? null; fileEntry.net_salary = rpFields.net_salary ?? null;
       fileEntry.resolved_by = cu.id; fileEntry.resolved_at = rpNow;
+      fileEntry.released = rpAutoRelease;
       batch.counts.unmapped = Math.max(0, (batch.counts.unmapped || 0) - 1);
       batch.counts.mapped = (batch.counts.mapped || 0) + 1;
+      if (rpAutoRelease) batch.counts.released = (batch.counts.released || 0) + 1;
       await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(batch), batchRow.id]);
 
       return res.json({ success: true, payroll_id: rpPayrollId });
