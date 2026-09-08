@@ -13,6 +13,7 @@ import {
 import { format, startOfMonth, endOfMonth } from 'date-fns';
 import { safeDate, safeTime } from '@/lib/dateUtils';
 import { isAnnouncementForEmployee } from '@/lib/announcementAudience';
+import { PRESENT_LIKE_STATUSES } from '@/lib/attendanceSource';
 
 export default function EmployeeDashboard({ user }) {
   const [data, setData] = useState(null);
@@ -76,7 +77,15 @@ export default function EmployeeDashboard({ user }) {
     }
     const uniqueAtt = Object.values(byDate);
 
-    const presentDays = uniqueAtt.filter(a => ['present', 'half_day', 'on_duty'].includes(a.status)).length;
+    // PRESENT_LIKE_STATUSES (attendanceSource.js, the shared source of truth
+    // used by AllAttendance/AttendanceReports/ManagementDashboard) already
+    // covers present/late/on_duty/work_from_home/short_attendance — this
+    // local list previously only had present/on_duty, silently not counting
+    // an employee who was late or worked from home as present on their own
+    // dashboard. half_day is kept as an addition on top (a distinct partial-
+    // presence status PRESENT_LIKE_STATUSES deliberately excludes, but this
+    // stat has always counted it and nothing asked for that to change).
+    const presentDays = uniqueAtt.filter(a => PRESENT_LIKE_STATUSES.includes(a.status) || a.status === 'half_day').length;
     const absentDays  = uniqueAtt.filter(a => a.status === 'absent').length;
     const leaveDays   = uniqueAtt.filter(a => a.status === 'leave').length;
 
