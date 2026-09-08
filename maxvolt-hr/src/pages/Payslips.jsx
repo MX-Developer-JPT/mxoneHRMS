@@ -65,6 +65,29 @@ export default function Payslips() {
     })();
   }, []);
 
+  // Dropping target="_blank" (previous attempt) relies on Capacitor's
+  // WebViewClient implicitly recognizing a real https:// URL as "external"
+  // and handing it to the system — still didn't open anything for real
+  // users on-device. @capacitor/browser's Browser.open() is Capacitor's
+  // own PURPOSE-BUILT plugin for exactly this (Chrome Custom Tabs on
+  // Android, SFSafariViewController on iOS) — a genuine native API call,
+  // not a web-platform window-opening API, so it isn't subject to any of
+  // the popup-blocker/window-creation restrictions window.open() and
+  // target="_blank" both ran into. Only works with a real http(s) URL, not
+  // a blob: one (an external browser process can't reach a blob: URL that
+  // only exists inside this page's own JS) — used for the uploaded
+  // original's presigned bucket URL, which is exactly that.
+  const openInSystemBrowser = async (url) => {
+    try {
+      const { Browser } = await import('@capacitor/browser');
+      await Browser.open({ url });
+      return true;
+    } catch (e) {
+      console.error('Browser.open failed:', e.message);
+      return false;
+    }
+  };
+
   useEffect(() => { loadData(); }, []);
 
   const loadData = async () => {
@@ -103,8 +126,22 @@ export default function Payslips() {
       const response = await base44.functions.invoke('getPayslipFileUrl', { payroll_id: payrollId });
       const rd = response?.data || response;
       if (rd?.success && rd.url) {
-        setReadyLinks(prev => ({ ...prev, [payrollId]: { url: rd.url, label: 'Open Payslip' } }));
+        // Real https:// URL — the common case (bucket storage configured).
+        // On native, hand it straight to the system browser via the
+        // Capacitor plugin instead of rendering a link at all; on web, the
+        // already-working real-<a>-link path.
+        if (isNative) {
+          const opened = await openInSystemBrowser(rd.url);
+          if (!opened) toast.error('Could not open the payslip — please try again.');
+        } else {
+          setReadyLinks(prev => ({ ...prev, [payrollId]: { url: rd.url, label: 'Open Payslip' } }));
+        }
       } else if (rd?.success && rd.base64) {
+        // No bucket configured — the raw PDF was stored inline as base64.
+        // Browser.open() can't reach a blob: URL from outside the page, so
+        // this fallback stays on the same-window-navigation link even on
+        // native (still an improvement over target="_blank", which never
+        // worked there either).
         const url = base64ToBlobUrl(rd.base64, 'application/pdf');
         setReadyLinks(prev => ({ ...prev, [payrollId]: { url, label: 'Open Payslip' } }));
       } else {
