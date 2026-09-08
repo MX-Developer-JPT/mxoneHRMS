@@ -4,44 +4,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileText, DollarSign, Printer, TrendingUp, TrendingDown, Download, Loader2, KeyRound } from 'lucide-react';
 import { buildPayslipPageHtml } from '../utils/payslipPrint';
-import { openPdfBlob } from '../utils/letterhead';
-import { format } from 'date-fns';
-import { safeDate } from '@/lib/dateUtils';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 
-// window.open() — even called synchronously in direct response to a click —
-// doesn't reliably do anything useful here: desktop browsers can still
-// popup-block a call made after an `await` (the payslip data always has to
-// be fetched first), and inside this app's native Android/iOS shell
-// (Capacitor), window.open() has no WebChromeClient.onCreateWindow handling
-// wired up at all, so it silently does nothing on EITHER platform,
-// regardless of timing — that's why the previous synchronous-window
-// attempt still didn't fix this. A synthetic <a> click, by contrast, is
-// this app's own already-proven pattern for exactly this (openPdfBlob,
-// used the same way — called after an await — by OfferLetters.jsx/
-// Recruitment.jsx's Preview buttons, which do work): it's real DOM
-// navigation, not a script-initiated new-window request, so neither a
-// browser's popup blocker nor Capacitor's default WebView setup ever
-// treats it as something to block.
-function openUrlViaAnchor(url) {
-  const a = document.createElement('a');
-  a.href = url;
-  a.target = '_blank';
-  a.rel = 'noopener';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
-
-// Same technique as openPdfBlob (letterhead.js) — a synthetic <a> click on
-// an object URL — just for the system-generated payslip's HTML (opened for
-// viewing/printing) instead of a PDF (opened for viewing/downloading).
-function openHtmlBlob(html) {
-  const blob = new Blob([html], { type: 'text/html' });
-  const url = URL.createObjectURL(blob);
-  openUrlViaAnchor(url);
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+function base64ToBlobUrl(base64, mime) {
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  return URL.createObjectURL(new Blob([bytes], { type: mime }));
 }
 
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -58,6 +26,20 @@ export default function Payslips() {
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(null);
   const [downloading, setDownloading] = useState(null);
+  // Once a payslip's actual file/HTML is ready, its URL lands here and the
+  // "View..." button is replaced by a real, plain <a href> the user taps
+  // themselves — deliberately NOT auto-triggered via window.open() or a
+  // synthetic .click(). Both of those are script-initiated navigation,
+  // which is exactly the category of action a desktop popup blocker exists
+  // to stop, and which this app's native Android/iOS shell (Capacitor's
+  // default WebView, no window.open()/onCreateWindow support wired up at
+  // all) never reliably honors either — two rounds of trying to paper over
+  // that with cleverer timing or a different JS API still didn't fix it.
+  // An actual rendered <a> the user physically taps is a real link click,
+  // handled by the browser/WebView exactly like any other link already
+  // working throughout this app (in-app navigation, etc.) — nothing left
+  // to silently block.
+  const [readyLinks, setReadyLinks] = useState({}); // { [payrollId]: { url, label } }
 
   useEffect(() => { loadData(); }, []);
 
@@ -79,7 +61,8 @@ export default function Payslips() {
       const response = await base44.functions.invoke('generatePayslip', { payroll_id: payrollId });
       const rd = response?.data || response;
       if (rd?.success) {
-        openHtmlBlob(buildPayslipPageHtml(rd));
+        const url = URL.createObjectURL(new Blob([buildPayslipPageHtml(rd)], { type: 'text/html' }));
+        setReadyLinks(prev => ({ ...prev, [payrollId]: { url, label: 'Open Payslip' } }));
       } else {
         toast.error(rd?.error || 'Failed to generate payslip.');
       }
@@ -96,9 +79,10 @@ export default function Payslips() {
       const response = await base44.functions.invoke('getPayslipFileUrl', { payroll_id: payrollId });
       const rd = response?.data || response;
       if (rd?.success && rd.url) {
-        openUrlViaAnchor(rd.url);
+        setReadyLinks(prev => ({ ...prev, [payrollId]: { url: rd.url, label: 'Open Payslip' } }));
       } else if (rd?.success && rd.base64) {
-        openPdfBlob(rd.base64, 'Payslip.pdf');
+        const url = base64ToBlobUrl(rd.base64, 'application/pdf');
+        setReadyLinks(prev => ({ ...prev, [payrollId]: { url, label: 'Open Payslip' } }));
       } else {
         toast.error(rd?.error || 'This payslip is not available to download.');
       }
@@ -204,17 +188,26 @@ export default function Payslips() {
                       // request: for an uploaded month, the original IS the
                       // payslip — nothing else is shown alongside it.
                       <>
-                        {payroll.payment_date && (
-                          <p className="text-xs text-gray-400">Paid on {safeDate(payroll.payment_date, 'MMM d, yyyy')}</p>
+                        {readyLinks[payroll.id] ? (
+                          <a
+                            href={readyLinks[payroll.id].url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex w-full items-center justify-center rounded-md bg-primary text-primary-foreground h-10 px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            {readyLinks[payroll.id].label}
+                          </a>
+                        ) : (
+                          <Button
+                            onClick={() => handleDownloadOriginal(payroll.id)}
+                            className="w-full"
+                            disabled={downloading === payroll.id}
+                          >
+                            {downloading === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                            {downloading === payroll.id ? 'Preparing...' : 'View Payslip'}
+                          </Button>
                         )}
-                        <Button
-                          onClick={() => handleDownloadOriginal(payroll.id)}
-                          className="w-full"
-                          disabled={downloading === payroll.id}
-                        >
-                          {downloading === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
-                          {downloading === payroll.id ? 'Opening...' : 'View Payslip'}
-                        </Button>
                         <p className="text-xs text-gray-400 flex items-center gap-1 justify-center">
                           <KeyRound className="w-3 h-3" /> Locked with your Employee Code{payroll.employee_code ? ` (${payroll.employee_code})` : ''}
                         </p>
@@ -239,18 +232,27 @@ export default function Payslips() {
                             <span className="font-bold text-green-600 text-base">₹{netPay.toLocaleString('en-IN')}</span>
                           </div>
                         </div>
-                        {payroll.payment_date && (
-                          <p className="text-xs text-gray-400">Paid on {safeDate(payroll.payment_date, 'MMM d, yyyy')}</p>
+                        {readyLinks[payroll.id] ? (
+                          <a
+                            href={readyLinks[payroll.id].url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex w-full items-center justify-center rounded-md border border-input bg-background h-10 px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors"
+                          >
+                            <Printer className="w-4 h-4 mr-2" />
+                            {readyLinks[payroll.id].label}
+                          </a>
+                        ) : (
+                          <Button
+                            onClick={() => handlePrint(payroll.id)}
+                            className="w-full"
+                            variant="outline"
+                            disabled={printing === payroll.id}
+                          >
+                            <Printer className="w-4 h-4 mr-2" />
+                            {printing === payroll.id ? 'Generating...' : 'View / Print Payslip'}
+                          </Button>
                         )}
-                        <Button
-                          onClick={() => handlePrint(payroll.id)}
-                          className="w-full"
-                          variant="outline"
-                          disabled={printing === payroll.id}
-                        >
-                          <Printer className="w-4 h-4 mr-2" />
-                          {printing === payroll.id ? 'Generating...' : 'View / Print Payslip'}
-                        </Button>
                       </>
                     )}
                   </CardContent>
