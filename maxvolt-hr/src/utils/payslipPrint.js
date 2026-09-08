@@ -33,9 +33,12 @@ export function buildPayslipPageHtml(data) {
   return buildLetterheadHtml(title, contentHtml, extraStyles);
 }
 
-export function openPayslipPrintWindow(data) {
+// `existingWin` — see openLetterheadPrintWindow's own doc comment: pass a
+// window already opened synchronously at click-time to avoid the browser
+// silently blocking a popup opened only after this data finishes loading.
+export function openPayslipPrintWindow(data, existingWin = null) {
   const { contentHtml, extraStyles, title } = _buildPayslipParts(data);
-  openLetterheadPrintWindow(title, contentHtml, extraStyles);
+  return openLetterheadPrintWindow(title, contentHtml, extraStyles, true, existingWin);
 }
 
 function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonuses = [] }) {

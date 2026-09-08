@@ -7,6 +7,20 @@ import { openPayslipPrintWindow } from '../utils/payslipPrint';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import { Badge } from "@/components/ui/badge";
+import { toast } from 'sonner';
+
+// Opens a blank window SYNCHRONOUSLY, in direct response to the click that
+// triggered it — before any async fetch — then returns it for the caller to
+// populate/navigate once the real content is ready. Doing this only after
+// an `await` (the payslip data fetch) is what silently failed before: many
+// browsers only honor window.open() as tied to the original user gesture
+// while it's still on the call stack from that click; once a promise has
+// resolved, they treat the same call as an unrequested popup and block it
+// with no exception and no visible sign anything happened at all.
+function openBlankWindow() {
+  try { return window.open('', '_blank', 'width=900,height=720'); }
+  catch { return null; }
+}
 
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -37,40 +51,60 @@ export default function Payslips() {
     setLoading(false);
   };
 
+  const POPUP_BLOCKED_MSG = 'Your browser blocked the payslip window — allow pop-ups for this site and try again.';
+
   const handlePrint = async (payrollId) => {
     setPrinting(payrollId);
+    // Opened NOW, synchronously — see openBlankWindow's comment above.
+    const win = openBlankWindow();
+    if (win) { try { win.document.write('<p style="font-family:sans-serif;padding:48px;text-align:center;color:#666">Loading payslip…</p>'); win.document.close(); } catch { /* ignore */ } }
     try {
       const response = await base44.functions.invoke('generatePayslip', { payroll_id: payrollId });
       const rd = response?.data || response;
       if (rd?.success) {
-        openPayslipPrintWindow(rd);
+        const opened = openPayslipPrintWindow(rd, win);
+        if (!opened) toast.error(POPUP_BLOCKED_MSG);
+      } else {
+        win?.close();
+        toast.error(rd?.error || 'Failed to generate payslip.');
       }
     } catch (error) {
+      win?.close();
       console.error('Error printing payslip:', error);
+      toast.error('Failed to generate payslip: ' + error.message);
     }
     setPrinting(null);
   };
 
   const handleDownloadOriginal = async (payrollId) => {
     setDownloading(payrollId);
+    const win = openBlankWindow();
+    if (win) { try { win.document.write('<p style="font-family:sans-serif;padding:48px;text-align:center;color:#666">Loading payslip…</p>'); win.document.close(); } catch { /* ignore */ } }
     try {
       const response = await base44.functions.invoke('getPayslipFileUrl', { payroll_id: payrollId });
       const rd = response?.data || response;
-      if (rd?.success) {
+      if (rd?.success && (rd.url || rd.base64)) {
         if (rd.url) {
-          window.open(rd.url, '_blank', 'noopener,noreferrer');
+          if (win) win.location.href = rd.url;
+          else if (!window.open(rd.url, '_blank', 'noopener,noreferrer')) toast.error(POPUP_BLOCKED_MSG);
         } else if (rd.base64) {
           const byteChars = atob(rd.base64);
           const bytes = new Uint8Array(byteChars.length);
           for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
           const blob = new Blob([bytes], { type: 'application/pdf' });
           const url = URL.createObjectURL(blob);
-          window.open(url, '_blank', 'noopener,noreferrer');
+          if (win) win.location.href = url;
+          else if (!window.open(url, '_blank', 'noopener,noreferrer')) toast.error(POPUP_BLOCKED_MSG);
           setTimeout(() => URL.revokeObjectURL(url), 60000);
         }
+      } else {
+        win?.close();
+        toast.error(rd?.error || 'This payslip is not available to download.');
       }
     } catch (error) {
+      win?.close();
       console.error('Error downloading original payslip:', error);
+      toast.error('Failed to open payslip: ' + error.message);
     }
     setDownloading(null);
   };

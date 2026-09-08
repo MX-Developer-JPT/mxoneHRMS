@@ -5168,10 +5168,16 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'generatePayslip': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { payroll_id } = p;
       const pRow = await one("SELECT data FROM entities WHERE type='Payroll' AND id=$1", [payroll_id]);
       if (!pRow) return res.json({ success:false, error:'Payroll record not found' });
       const payroll = JSON.parse(pRow.data);
+      // Payroll is a SENSITIVE_TYPE (entities.js) for exactly this reason —
+      // this case had no ownership/role check at all, so any authenticated
+      // user could view/print ANY employee's payslip by passing a different
+      // payroll_id, not just their own.
+      if (payroll.user_id !== cu.id && !(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'Not authorized to view this payslip' });
 
       const eRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [payroll.user_id]);
       const employee = eRow ? JSON.parse(eRow.data) : {};

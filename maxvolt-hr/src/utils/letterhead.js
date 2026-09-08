@@ -137,12 +137,27 @@ export function openPdfBlob(base64, filename, { download = false } = {}) {
 
 /**
  * Wraps content in a full letterhead page and opens a print window.
+ *
+ * `existingWin` lets a caller pass an ALREADY-open window (opened
+ * synchronously, in direct response to the click, before any async data
+ * fetch) instead of this function opening one itself. That matters: most
+ * callers here fetch the document's data via an async functions.invoke()
+ * first and only call this afterward — by the time that promise resolves,
+ * enough browsers no longer treat window.open() as tied to the original
+ * user gesture and silently block it (no exception, `win` is just null),
+ * which used to throw here (`win.document.write` on null) the instant a
+ * user's browser did that — caught by the caller's try/catch and logged to
+ * console, with nothing at all shown to the user, who just saw the
+ * button's loading state reset with no explanation. Falls back to opening
+ * its own window (the original behavior) when no existingWin is passed, and
+ * still guards against a null result either way instead of throwing.
  */
-export function openLetterheadPrintWindow(title, contentHtml, extraStyles = '', autoPrint = true) {
+export function openLetterheadPrintWindow(title, contentHtml, extraStyles = '', autoPrint = true, existingWin = null) {
   const html = buildLetterheadHtml(title, contentHtml, extraStyles);
-  const win = window.open('', '_blank', 'width=900,height=720');
+  const win = existingWin || window.open('', '_blank', 'width=900,height=720');
+  if (!win || win.closed) return null;
   win.document.write(html);
   win.document.close();
-  if (autoPrint) setTimeout(() => win.print(), 500);
+  if (autoPrint) setTimeout(() => { try { win.print(); } catch { /* window may have been closed by the user already */ } }, 500);
   return win;
 }
