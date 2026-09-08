@@ -3,23 +3,45 @@ import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileText, DollarSign, Printer, TrendingUp, TrendingDown, Download, Loader2, KeyRound } from 'lucide-react';
-import { openPayslipPrintWindow } from '../utils/payslipPrint';
+import { buildPayslipPageHtml } from '../utils/payslipPrint';
+import { openPdfBlob } from '../utils/letterhead';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 
-// Opens a blank window SYNCHRONOUSLY, in direct response to the click that
-// triggered it — before any async fetch — then returns it for the caller to
-// populate/navigate once the real content is ready. Doing this only after
-// an `await` (the payslip data fetch) is what silently failed before: many
-// browsers only honor window.open() as tied to the original user gesture
-// while it's still on the call stack from that click; once a promise has
-// resolved, they treat the same call as an unrequested popup and block it
-// with no exception and no visible sign anything happened at all.
-function openBlankWindow() {
-  try { return window.open('', '_blank', 'width=900,height=720'); }
-  catch { return null; }
+// window.open() — even called synchronously in direct response to a click —
+// doesn't reliably do anything useful here: desktop browsers can still
+// popup-block a call made after an `await` (the payslip data always has to
+// be fetched first), and inside this app's native Android/iOS shell
+// (Capacitor), window.open() has no WebChromeClient.onCreateWindow handling
+// wired up at all, so it silently does nothing on EITHER platform,
+// regardless of timing — that's why the previous synchronous-window
+// attempt still didn't fix this. A synthetic <a> click, by contrast, is
+// this app's own already-proven pattern for exactly this (openPdfBlob,
+// used the same way — called after an await — by OfferLetters.jsx/
+// Recruitment.jsx's Preview buttons, which do work): it's real DOM
+// navigation, not a script-initiated new-window request, so neither a
+// browser's popup blocker nor Capacitor's default WebView setup ever
+// treats it as something to block.
+function openUrlViaAnchor(url) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+// Same technique as openPdfBlob (letterhead.js) — a synthetic <a> click on
+// an object URL — just for the system-generated payslip's HTML (opened for
+// viewing/printing) instead of a PDF (opened for viewing/downloading).
+function openHtmlBlob(html) {
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  openUrlViaAnchor(url);
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -51,25 +73,17 @@ export default function Payslips() {
     setLoading(false);
   };
 
-  const POPUP_BLOCKED_MSG = 'Your browser blocked the payslip window — allow pop-ups for this site and try again.';
-
   const handlePrint = async (payrollId) => {
     setPrinting(payrollId);
-    // Opened NOW, synchronously — see openBlankWindow's comment above.
-    const win = openBlankWindow();
-    if (win) { try { win.document.write('<p style="font-family:sans-serif;padding:48px;text-align:center;color:#666">Loading payslip…</p>'); win.document.close(); } catch { /* ignore */ } }
     try {
       const response = await base44.functions.invoke('generatePayslip', { payroll_id: payrollId });
       const rd = response?.data || response;
       if (rd?.success) {
-        const opened = openPayslipPrintWindow(rd, win);
-        if (!opened) toast.error(POPUP_BLOCKED_MSG);
+        openHtmlBlob(buildPayslipPageHtml(rd));
       } else {
-        win?.close();
         toast.error(rd?.error || 'Failed to generate payslip.');
       }
     } catch (error) {
-      win?.close();
       console.error('Error printing payslip:', error);
       toast.error('Failed to generate payslip: ' + error.message);
     }
@@ -78,31 +92,17 @@ export default function Payslips() {
 
   const handleDownloadOriginal = async (payrollId) => {
     setDownloading(payrollId);
-    const win = openBlankWindow();
-    if (win) { try { win.document.write('<p style="font-family:sans-serif;padding:48px;text-align:center;color:#666">Loading payslip…</p>'); win.document.close(); } catch { /* ignore */ } }
     try {
       const response = await base44.functions.invoke('getPayslipFileUrl', { payroll_id: payrollId });
       const rd = response?.data || response;
-      if (rd?.success && (rd.url || rd.base64)) {
-        if (rd.url) {
-          if (win) win.location.href = rd.url;
-          else if (!window.open(rd.url, '_blank', 'noopener,noreferrer')) toast.error(POPUP_BLOCKED_MSG);
-        } else if (rd.base64) {
-          const byteChars = atob(rd.base64);
-          const bytes = new Uint8Array(byteChars.length);
-          for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
-          const blob = new Blob([bytes], { type: 'application/pdf' });
-          const url = URL.createObjectURL(blob);
-          if (win) win.location.href = url;
-          else if (!window.open(url, '_blank', 'noopener,noreferrer')) toast.error(POPUP_BLOCKED_MSG);
-          setTimeout(() => URL.revokeObjectURL(url), 60000);
-        }
+      if (rd?.success && rd.url) {
+        openUrlViaAnchor(rd.url);
+      } else if (rd?.success && rd.base64) {
+        openPdfBlob(rd.base64, 'Payslip.pdf');
       } else {
-        win?.close();
         toast.error(rd?.error || 'This payslip is not available to download.');
       }
     } catch (error) {
-      win?.close();
       console.error('Error downloading original payslip:', error);
       toast.error('Failed to open payslip: ' + error.message);
     }
