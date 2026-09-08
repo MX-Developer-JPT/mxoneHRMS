@@ -2833,18 +2833,42 @@ router.post('/:name', async (req, res) => {
           if (!policyId) { missingPolicyCodes.add(lt); continue; }
           const key = `${row.userId}:${policyId}`;
           const existing = balByKey.get(key);
-          const newVals = {
-            total_allocated: stats.total_allocated, accrued_this_year: stats.earned,
-            used: stats.taken, available: stats.available, carried_forward: stats.opening,
-          };
           if (existing) {
+            // The ledger's own `available` figure (stats.available) is
+            // computed purely from ITS OWN opening/earned/taken columns — it
+            // has no concept of a leave request an employee has in-flight
+            // ('pending') in the app right now, which reserveLeaveBalance
+            // (entities.js) already deducted from `available` and added to
+            // `pending_approval` the instant it was submitted. Trusting the
+            // ledger's `available` verbatim here would silently erase that
+            // reservation from `available` while leaving `pending_approval`
+            // untouched — inflating available by exactly the pending amount
+            // (letting an employee over-apply past their real balance) or,
+            // just as easily, understating it, depending on which way the
+            // ledger's own figures happen to differ that import. Re-derive
+            // `available` around the app's own live pending_approval instead
+            // of the ledger's number, the same way every other balance-
+            // mutating path in this app already does (reserveLeaveBalance,
+            // runLeaveAction, importLeaveBalances) — this import stays the
+            // definitive source for `used` (this ledger's whole purpose),
+            // just not for `available` when a live reservation exists.
             const ex = existing.data;
+            const pendingApproval = ex.pending_approval || 0;
+            const reconciledAvailable = Math.max(stats.available - pendingApproval, 0);
+            const newVals = {
+              total_allocated: stats.total_allocated, accrued_this_year: stats.earned,
+              used: stats.taken, available: reconciledAvailable, carried_forward: stats.opening,
+            };
             const changed = ['total_allocated', 'accrued_this_year', 'used', 'available', 'carried_forward'].some(f => (ex[f] || 0) !== (newVals[f] || 0));
             if (changed) {
               balUpdates.push([JSON.stringify({ ...ex, ...newVals }), existing.id]);
               balUpdated++;
             } else balUnchanged++;
           } else {
+            const newVals = {
+              total_allocated: stats.total_allocated, accrued_this_year: stats.earned,
+              used: stats.taken, available: stats.available, carried_forward: stats.opening,
+            };
             const id = uuidv4();
             balInserts.push([id, row.userId, JSON.stringify({
               id, user_id: row.userId, leave_policy_id: policyId, year: row.row_year,
