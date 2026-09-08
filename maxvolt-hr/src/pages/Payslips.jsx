@@ -40,6 +40,30 @@ export default function Payslips() {
   // working throughout this app (in-app navigation, etc.) — nothing left
   // to silently block.
   const [readyLinks, setReadyLinks] = useState({}); // { [payrollId]: { url, label } }
+  // target="_blank" (a real anchor, tapped by the user) is what actually
+  // fixed this on desktop/web — but inside this app's native Android/iOS
+  // shell (Capacitor's WebView), target="_blank" needs the SAME
+  // window-creation support window.open() needed and never had
+  // (WebChromeClient.onCreateWindow), so it does nothing there either,
+  // regardless of it being a real click. What DOES work on native: a
+  // normal same-window navigation to a URL outside the app's own origin —
+  // Capacitor's WebViewClient intercepts that and hands it to the system
+  // (opens the system browser / PDF viewer via an Android Intent, or the
+  // iOS equivalent) instead of trying to load it inside the app's own
+  // WebView, no custom window handling required at all. Dropping target
+  // (and the now-meaningless rel) achieves that — but ONLY on native,
+  // since the same change on desktop would replace the SPA tab with the
+  // PDF instead of opening a new one, regressing what's already confirmed
+  // working there.
+  const [isNative, setIsNative] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { Capacitor } = await import('@capacitor/core');
+        setIsNative(Capacitor.isNativePlatform());
+      } catch { /* not running inside the native shell */ }
+    })();
+  }, []);
 
   useEffect(() => { loadData(); }, []);
 
@@ -191,8 +215,7 @@ export default function Payslips() {
                         {readyLinks[payroll.id] ? (
                           <a
                             href={readyLinks[payroll.id].url}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                            {...(isNative ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
                             className="inline-flex w-full items-center justify-center rounded-md bg-primary text-primary-foreground h-10 px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
                           >
                             <Download className="w-4 h-4 mr-2" />
@@ -235,8 +258,7 @@ export default function Payslips() {
                         {readyLinks[payroll.id] ? (
                           <a
                             href={readyLinks[payroll.id].url}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                            {...(isNative ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
                             className="inline-flex w-full items-center justify-center rounded-md border border-input bg-background h-10 px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors"
                           >
                             <Printer className="w-4 h-4 mr-2" />
