@@ -161,50 +161,62 @@ export default function Payslips() {
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <div className="space-y-1.5 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Gross Salary</span>
-                        <span className="font-semibold">₹{(payroll.gross_salary || 0).toLocaleString('en-IN')}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Deductions</span>
-                        <span className="font-semibold text-red-600">-₹{totalDed.toLocaleString('en-IN')}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Days Present</span>
-                        <span className="font-semibold">{payroll.present_days || 0}/{payroll.working_days || 0}</span>
-                      </div>
-                      <div className="pt-2 border-t flex justify-between">
-                        <span className="font-bold">Net Take-Home</span>
-                        <span className="font-bold text-green-600 text-base">₹{netPay.toLocaleString('en-IN')}</span>
-                      </div>
-                    </div>
-                    {payroll.payment_date && (
-                      <p className="text-xs text-gray-400">Paid on {safeDate(payroll.payment_date, 'MMM d, yyyy')}</p>
-                    )}
-                    <Button
-                      onClick={() => handlePrint(payroll.id)}
-                      className="w-full"
-                      variant="outline"
-                      disabled={printing === payroll.id}
-                    >
-                      <Printer className="w-4 h-4 mr-2" />
-                      {printing === payroll.id ? 'Generating...' : 'View / Print Payslip'}
-                    </Button>
-                    {payroll.payslip_source === 'bulk_upload' && (
+                    {payroll.payslip_source === 'bulk_upload' ? (
+                      // HR uploaded the employee's real payslip for this month —
+                      // show only that original document, not a salary
+                      // breakdown or the separately-generated system payslip
+                      // (a different document, in this app's own template,
+                      // built from the same extracted figures). Per explicit
+                      // request: for an uploaded month, the original IS the
+                      // payslip — nothing else is shown alongside it.
                       <>
+                        {payroll.payment_date && (
+                          <p className="text-xs text-gray-400">Paid on {safeDate(payroll.payment_date, 'MMM d, yyyy')}</p>
+                        )}
                         <Button
                           onClick={() => handleDownloadOriginal(payroll.id)}
                           className="w-full"
-                          variant="ghost"
                           disabled={downloading === payroll.id}
                         >
                           {downloading === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
-                          {downloading === payroll.id ? 'Opening...' : 'Download Original PDF'}
+                          {downloading === payroll.id ? 'Opening...' : 'View Payslip'}
                         </Button>
-                        <p className="text-xs text-gray-400 flex items-center gap-1 justify-center -mt-1">
+                        <p className="text-xs text-gray-400 flex items-center gap-1 justify-center">
                           <KeyRound className="w-3 h-3" /> Locked with your Employee Code{payroll.employee_code ? ` (${payroll.employee_code})` : ''}
                         </p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="space-y-1.5 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Gross Salary</span>
+                            <span className="font-semibold">₹{(payroll.gross_salary || 0).toLocaleString('en-IN')}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Deductions</span>
+                            <span className="font-semibold text-red-600">-₹{totalDed.toLocaleString('en-IN')}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Days Present</span>
+                            <span className="font-semibold">{payroll.present_days || 0}/{payroll.working_days || 0}</span>
+                          </div>
+                          <div className="pt-2 border-t flex justify-between">
+                            <span className="font-bold">Net Take-Home</span>
+                            <span className="font-bold text-green-600 text-base">₹{netPay.toLocaleString('en-IN')}</span>
+                          </div>
+                        </div>
+                        {payroll.payment_date && (
+                          <p className="text-xs text-gray-400">Paid on {safeDate(payroll.payment_date, 'MMM d, yyyy')}</p>
+                        )}
+                        <Button
+                          onClick={() => handlePrint(payroll.id)}
+                          className="w-full"
+                          variant="outline"
+                          disabled={printing === payroll.id}
+                        >
+                          <Printer className="w-4 h-4 mr-2" />
+                          {printing === payroll.id ? 'Generating...' : 'View / Print Payslip'}
+                        </Button>
                       </>
                     )}
                   </CardContent>
