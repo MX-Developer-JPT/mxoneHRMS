@@ -11890,7 +11890,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     // Generates the exact multi-sheet workbook importEmployeeData expects
     // (Employee_Profile / Salary_Structure / Statutory_Info / Bank_Details /
-    // PF_Nominee / Insurance_Policies / Leave_Balances — see normKey() and
+    // PF_Nominee / Insurance_Policies — leave balances are deliberately
+    // excluded, see the note further down — see normKey() and
     // parseSheet() above), prefilled with every current employee's data so
     // HR can re-download, edit in place, and re-upload rather than
     // reconstructing the sheet from scratch. The previous version of this
@@ -11907,18 +11908,12 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const getEmps = getEmpRows.map(r => JSON.parse(r.data)).sort((a, b) => (a.employee_code || '').localeCompare(b.employee_code || ''));
       const getUserIds = getEmps.map(e => e.user_id).filter(Boolean);
 
-      const [getSalRows, getBankRows, getLeaveRows, getPolicyRows] = await Promise.all([
+      const [getSalRows, getBankRows] = await Promise.all([
         getUserIds.length ? all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND user_id = ANY($1) AND status='active'", [getUserIds]) : [],
         getUserIds.length ? all("SELECT user_id,data FROM entities WHERE type='BankDetails' AND user_id = ANY($1)", [getUserIds]) : [],
-        getUserIds.length ? all("SELECT user_id,data FROM entities WHERE type='LeaveBalance' AND user_id = ANY($1)", [getUserIds]) : [],
-        all("SELECT data FROM entities WHERE type='LeavePolicy'"),
       ]);
       const getSalByUser = {};  getSalRows.forEach(r  => { if (!(r.user_id in getSalByUser))  getSalByUser[r.user_id]  = JSON.parse(r.data); });
       const getBankByUser = {}; getBankRows.forEach(r => { if (!(r.user_id in getBankByUser)) getBankByUser[r.user_id] = JSON.parse(r.data); });
-      const getLeaveByUser = {}; getLeaveRows.forEach(r => { (getLeaveByUser[r.user_id] ||= []).push(JSON.parse(r.data)); });
-      const getPolicies = [];
-      getPolicyRows.forEach(r => { const pl = JSON.parse(r.data); if (pl.code) getPolicies.push(pl); });
-      getPolicies.sort((a, b) => String(a.code).localeCompare(String(b.code)));
 
       const ExcelJSt = await import('exceljs');
       const wbT = new ExcelJSt.default.Workbook();
@@ -12040,29 +12035,13 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         ];
       }) : [['jane.doe@company.com', 'Group Health', 'Star Health', 'POL123456', 500000, '2027-03-31', 'John Doe', 'Spouse', '1996-04-12']]);
 
-      // ── Leave_Balances — one sheet per active leave policy (code-sorted),
-      // named "Leave_Balances", "Leave_Balances (2)", "Leave_Balances (3)"...
-      // exactly like the source file's CL/EL split. importEmployeeData
-      // discovers any number of these dynamically. ────────────────────────
-      const leaveHeaders = [
-        'personal_email*', 'leave_policy_code*', 'year*', 'total_allocated', 'accrued_this_year', 'used',
-        'carried_forward', 'last_accrual_month', 'last_accrual_year',
-      ];
-      const leavePoliciesForSheets = getPolicies.length ? getPolicies : [{ code: 'CL', id: null }];
-      leavePoliciesForSheets.forEach((pol, i) => {
-        const sheetName = i === 0 ? 'Leave_Balances' : `Leave_Balances (${i + 1})`;
-        const rowsOut = getEmps.length ? getEmps.map(e => {
-          const lb = (getLeaveByUser[e.user_id] || []).find(b => b.leave_policy_id === pol.id);
-          if (!lb) return null;
-          return [
-            getPersonalEmail(e), pol.code || '', lb.year ?? '', lb.total_allocated ?? '', lb.accrued_this_year ?? '',
-            lb.used ?? '', lb.carried_forward ?? '', lb.last_accrual_month ?? '', lb.last_accrual_year ?? '',
-          ];
-        }).filter(Boolean) : [];
-        addTSheet(sheetName, leaveHeaders, rowsOut.length ? rowsOut : [[
-          'jane.doe@company.com', pol.code || 'CL', new Date().getFullYear(), 12, 3, 1, 0, new Date().getMonth() + 1, new Date().getFullYear(),
-        ]]);
-      });
+      // Leave balances are DELIBERATELY excluded from this template —
+      // importEmployeeData never reads a Leave_Balances sheet (per explicit
+      // requirement, that function imports every other employee detail but
+      // leaves balances alone entirely). Including one here would wrongly
+      // suggest editing it feeds back into an import; the only supported
+      // way to set/update leave balances is the dedicated Leave History
+      // page (importLeaveHistory / importLeaveBalances above).
 
       const bufT = await wbT.xlsx.writeBuffer();
       return res.json({
@@ -12190,14 +12169,15 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const bankSheet = parseSheet('Bank_Details');
       const pfNomineeSheet = parseSheet('PF_Nominee');
       const insuranceSheet = parseSheet('Insurance_Policies');
-      // Leave balance sheets are optional — not every source file carries them.
-      // A source file may split leave balances across several sheets, one per
-      // policy (e.g. "Leave_Balances" for CL, "Leave_Balances (2)" for EL,
-      // "Leave_Balances (3)" for a third policy, ...) — discover all of them
-      // dynamically instead of hardcoding a fixed count of two.
-      const leaveSheetNames = wb.SheetNames.filter(n => /^leave[\s_-]*balances?(\s*\(\d+\))?$/i.test(n.trim()));
-      let leaveRowsRaw = [];
-      for (const sn of leaveSheetNames) leaveRowsRaw = leaveRowsRaw.concat(parseSheet(sn));
+      // Leave balances are DELIBERATELY never read from this import, even
+      // if the source file has a Leave_Balances sheet — per explicit
+      // requirement, this function imports every other employee detail but
+      // leaves balances alone entirely; the only supported way to set/update
+      // them is the dedicated Leave History page (importLeaveHistory /
+      // importLeaveBalances above), which already has its own — more
+      // careful — reconciliation against live pending/used figures. A
+      // Leave_Balances sheet in the uploaded file, if present, is simply
+      // ignored.
 
       if (!profiles.length) return res.json({ success: false, error: 'Employee_Profile sheet is empty or missing' });
 
@@ -12236,25 +12216,6 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       for (const r of insuranceSheet) {
         const em = String(r['personal_email'] || '').toLowerCase().trim();
         if (em) insuranceByEmail[em] = r;
-      }
-
-      // Leave balances keyed by personal_email, if the sheet(s) exist
-      const leaveByEmail = {};
-      for (const r of leaveRowsRaw) {
-        const em = String(r['personal_email'] || '').toLowerCase().trim();
-        if (!em) continue;
-        if (!leaveByEmail[em]) leaveByEmail[em] = [];
-        leaveByEmail[em].push(r);
-      }
-
-      // Leave_Balances rows are keyed by leave_policy_code (e.g. "CL"/"EL"),
-      // resolved against the real LeavePolicy list so they can actually be
-      // written as LeaveBalance entities below (mirrors importLeaveBalances'
-      // code→policy resolution).
-      const leavePolicyRows = await all("SELECT data FROM entities WHERE type='LeavePolicy'");
-      const leavePolicyByCode = new Map();
-      for (const r of leavePolicyRows) {
-        try { const pl = JSON.parse(r.data); if (pl.code) leavePolicyByCode.set(String(pl.code).trim().toUpperCase(), pl); } catch { /* skip */ }
       }
 
       const DEFAULT_PASSWORD = 'Maxvolt@1234';
@@ -12318,7 +12279,6 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const bank = code ? (bankByCode[code] || null) : null;
         const pfNom = email ? (pfNomineeByEmail[email] || null) : null;
         const ins   = email ? (insuranceByEmail[email] || null) : null;
-        const leave = email ? (leaveByEmail[email] || []) : [];
         if (!sal) warnings.push({ row: rowNum, code, message: `${name} (${code}): No salary data found` });
         if (!bank && !sal?.bank_account) warnings.push({ row: rowNum, code, message: `${name} (${code}): No bank details found` });
 
@@ -12341,7 +12301,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           address: normWs(row['Address'] || row['address']),
           is_attendance_exempt: String(row['is_attendance_exempt']).toLowerCase() === 'true',
           status: normWs(row['status']) || 'active',
-          sal, stat, bank, pfNom, ins, leave,
+          sal, stat, bank, pfNom, ins,
           valid: rowErrors.length === 0,
         };
       });
@@ -12423,7 +12383,6 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const empUpdates = [];    // [dataJson, entityId]
       const salInserts = [];    // [id, userId, dataJson]
       const bankInserts = [];   // [id, userId, dataJson]
-      const leaveInserts = [];  // { userId, policyId, year, raw }
 
       let newEmployeesCount = 0, updatedEmployeesCount = 0, noChangeCount = 0;
       let newUserAccountsCount = 0, syncedUserAccountsCount = 0;
@@ -12630,17 +12589,6 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         if (hasBank && userId) {
           bankInserts.push({ userId, empId, accountNum, ifscCode, bankName, branchName });
         }
-
-        // Leave balances — one row per policy code found for this employee's email
-        if (userId && row.leave.length) {
-          for (const lr of row.leave) {
-            const policyCode = String(lr['leave_policy_code'] || '').trim().toUpperCase();
-            const policy = policyCode ? leavePolicyByCode.get(policyCode) : null;
-            const year = parseInt(lr['year'], 10);
-            if (!policy || !year) continue; // unresolvable policy code or missing year — skip this row only
-            leaveInserts.push({ userId, policyId: policy.id, year, raw: lr });
-          }
-        }
       }
 
       // Bulk INSERT new users
@@ -12723,70 +12671,6 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         }
       }
 
-      // Leave balances — bulk pre-load existing rows for every touched
-      // user+policy+year combo, then diff-update or create (same pattern as
-      // salary/bank above). `used`/`pending_approval` are always preserved
-      // from the existing row (never reset by an import), matching
-      // importLeaveBalances' existing convention, so available reflects real
-      // remaining balance rather than wiping out days already taken/pending.
-      const leaveInsertRows = [];
-      const leaveUpdateRows = [];
-      let leaveCreated = 0, leaveUpdated = 0, leaveUnchanged = 0;
-      if (leaveInserts.length) {
-        const leaveUserIds = [...new Set(leaveInserts.map(r => r.userId))];
-        const existingLeaveRows = await all("SELECT id, user_id, data FROM entities WHERE type='LeaveBalance' AND user_id = ANY($1)", [leaveUserIds]);
-        const existingLeaveByKey = new Map();
-        for (const r of existingLeaveRows) {
-          try {
-            const d = JSON.parse(r.data);
-            existingLeaveByKey.set(`${r.user_id}|${d.leave_policy_id}|${d.year}`, { id: r.id, data: d });
-          } catch { /* skip unparsable row */ }
-        }
-        for (const li of leaveInserts) {
-          const key = `${li.userId}|${li.policyId}|${li.year}`;
-          const raw = li.raw;
-          const rawFields = {
-            total_allocated: raw['total_allocated'], accrued_this_year: raw['accrued_this_year'],
-            carried_forward: raw['carried_forward'], last_accrual_month: raw['last_accrual_month'],
-            last_accrual_year: raw['last_accrual_year'],
-          };
-          // `used` is deliberately NOT taken from the file — it's live data
-          // owned by the leave-approval flow, not something a directory
-          // re-import should ever overwrite.
-          const existing = existingLeaveByKey.get(key);
-          if (existing) {
-            const ex = existing.data;
-            const merged = { ...ex };
-            let changed = false;
-            for (const [k, rawV] of Object.entries(rawFields)) {
-              if (rawV === '' || rawV === null || rawV === undefined) continue;
-              const v = toNum(rawV);
-              if (merged[k] !== v) { merged[k] = v; changed = true; }
-            }
-            const usedNow = merged.used || 0;
-            const pendingNow = merged.pending_approval || 0;
-            const available = Math.max((merged.total_allocated || 0) + (merged.accrued_this_year || 0) + (merged.carried_forward || 0) - usedNow - pendingNow, 0);
-            if (merged.available !== available) { merged.available = available; changed = true; }
-            if (changed) { leaveUpdateRows.push([JSON.stringify(merged), existing.id]); leaveUpdated++; }
-            else leaveUnchanged++;
-          } else {
-            const id = uuidv4();
-            const totalAllocated = toNum(raw['total_allocated']);
-            const accruedThisYear = toNum(raw['accrued_this_year']);
-            const carriedForward = toNum(raw['carried_forward']);
-            const available = Math.max(totalAllocated + accruedThisYear + carriedForward, 0);
-            leaveInsertRows.push([id, li.userId, JSON.stringify({
-              id, user_id: li.userId, leave_policy_id: li.policyId, year: li.year,
-              total_allocated: totalAllocated, accrued_this_year: accruedThisYear,
-              used: 0, pending_approval: 0, carried_forward: carriedForward, available,
-              last_accrual_month: raw['last_accrual_month'] ? toNum(raw['last_accrual_month']) : undefined,
-              last_accrual_year: raw['last_accrual_year'] ? toNum(raw['last_accrual_year']) : undefined,
-            })]);
-            leaveCreated++;
-          }
-        }
-      }
-
       const bankInsertRows = [];
       const bankUpdateRows = [];
       let bankCreated = 0, bankUpdated = 0, bankUnchanged = 0;
@@ -12836,11 +12720,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         bulkInsertEntities('Employee', empInserts),
         bulkInsertEntities('SalaryStructure', salInsertRows),
         bulkInsertEntities('BankDetails', bankInsertRows),
-        bulkInsertEntities('LeaveBalance', leaveInsertRows),
         bulkUpdateEntities(empUpdates),
         bulkUpdateEntities(bankUpdateRows),
         bulkUpdateEntities(salUpdateRows),
-        bulkUpdateEntities(leaveUpdateRows),
       ]);
 
       // Post-import — promote reporting managers to the scoped 'manager' role
@@ -12906,9 +12788,6 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           salary_structure_created: salCreated,
           salary_structure_updated: salUpdated,
           salary_structure_unchanged: salUnchanged,
-          leave_balances_created: leaveCreated,
-          leave_balances_updated: leaveUpdated,
-          leave_balances_unchanged: leaveUnchanged,
         },
         errors: importErrors, warnings,
         message: `Processed ${profiles.length} records: ${newEmployeesCount} new, ${updatedEmployeesCount} updated, ${noChangeCount} unchanged, ${autoConfirmedCount} auto-confirmed from probation, ${skippedRows.length} skipped. ${bankCreated} bank detail(s) created, ${bankUpdated} updated. ${salCreated} salary structure(s) created, ${salUpdated} updated. ${managersPromoted} promoted to manager role. Default password for new accounts: ${DEFAULT_PASSWORD}`,

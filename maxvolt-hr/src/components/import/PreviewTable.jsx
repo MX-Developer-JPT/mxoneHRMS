@@ -77,7 +77,10 @@ export default function PreviewTable({ preview }) {
       <SheetTable title="PF Nominee" rows={preview.pf_nominee} errors={errsBySheet['PF_Nominee'] || []} />
       <SheetTable title="Insurance Policies" rows={preview.insurance_policies} errors={errsBySheet['Insurance_Policies'] || []} />
       <SheetTable title="Salary Structure" rows={preview.salary_structure} errors={errsBySheet['Salary_Structure'] || []} />
-      <SheetTable title="Leave Balances" rows={preview.leave_balances} errors={errsBySheet['Leave_Balances'] || []} />
+      {/* Leave balances are deliberately never imported by this page — a
+          Leave_Balances sheet, if present in the uploaded file, is ignored
+          entirely. The only supported way to set/update leave balances is
+          the dedicated Leave History page. */}
     </div>
   );
 }

@@ -40,7 +40,14 @@ const managerApprovalStatus = (leave) => {
 const POLICY_COLORS = {
   CL: 'bg-blue-100 text-blue-700',
   EL: 'bg-green-100 text-green-700',
-  SL: 'bg-purple-100 text-purple-700'
+  SL: 'bg-purple-100 text-purple-700',
+  // Compensatory Off — the LeavePolicy created (find-or-create) and credited
+  // automatically the moment a comp-off claim is approved (functions.js).
+  // From that point on it's a genuinely ordinary LeavePolicy/LeaveBalance
+  // pair, so it already shows up here and is applicable for exactly like
+  // CL/EL/SL with no special-casing needed — this is just its own color
+  // instead of falling back to the generic gray badge.
+  CO: 'bg-amber-100 text-amber-700',
 };
 
 export default function Leave() {

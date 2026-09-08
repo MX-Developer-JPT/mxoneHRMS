@@ -182,11 +182,11 @@ export default function ImportEmployees() {
               <ul className="text-sm text-blue-700 space-y-1 list-disc list-inside">
                 <li><strong>{preview.total_employees}</strong> employee profiles</li>
                 <li><strong>{preview.salary_structure?.length || 0}</strong> salary structures</li>
-                <li><strong>{preview.leave_balances?.length || 0}</strong> leave balance records</li>
                 <li><strong>{preview.insurance_policies?.length || 0}</strong> insurance policy records</li>
               </ul>
               <p className="text-sm text-blue-700 mt-2">
-                Employee <strong>user accounts will be created immediately</strong> with all records (profile, salary, bank details, leave balances) linked. Each employee gets a temporary default password.
+                Employee <strong>user accounts will be created immediately</strong> with all records (profile, salary, bank details) linked. Each employee gets a temporary default password.
+                Leave balances are never imported here — use the Leave History page to set or update them.
               </p>
             </div>
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
