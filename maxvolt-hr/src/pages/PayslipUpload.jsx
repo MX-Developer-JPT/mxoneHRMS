@@ -23,7 +23,7 @@ const CURRENT_YEAR = new Date().getFullYear();
 const YEARS = [CURRENT_YEAR + 1, CURRENT_YEAR, CURRENT_YEAR - 1, CURRENT_YEAR - 2];
 
 const STATUS_META = {
-  mapped:               { label: 'Mapped & Released',   color: 'bg-green-100 text-green-800',   icon: CheckCircle2 },
+  mapped:               { label: 'Mapped',              color: 'bg-green-100 text-green-800',   icon: CheckCircle2 },
   mapped_needs_review:  { label: 'Mapped (Review)',     color: 'bg-amber-100 text-amber-800',    icon: AlertTriangle },
   unmapped:             { label: 'Unmapped',             color: 'bg-slate-200 text-slate-700',    icon: Users },
   duplicate:            { label: 'Duplicate',            color: 'bg-blue-100 text-blue-800',      icon: Copy },
@@ -56,9 +56,26 @@ export default function PayslipUpload() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [employees, setEmployees] = useState([]);
   const [releaseSearch, setReleaseSearch] = useState('');
+  // Every still-processed bulk-uploaded payslip awaiting release, across
+  // every batch ever uploaded — NOT scoped to the just-completed upload's
+  // `result` (see getPendingPayslipReleases' own comment, functions.js, for
+  // why that scoping was the actual bug behind employees missing from this
+  // search).
+  const [pendingReleases, setPendingReleases] = useState([]);
+  const [loadingPending, setLoadingPending] = useState(true);
   const fileInputRef = useRef(null);
 
-  useEffect(() => { loadBatches(); loadEmployees(); }, []);
+  useEffect(() => { loadBatches(); loadEmployees(); loadPendingReleases(); }, []);
+
+  const loadPendingReleases = async () => {
+    setLoadingPending(true);
+    try {
+      const res = await base44.functions.invoke('getPendingPayslipReleases', {});
+      const d = res?.data || res;
+      if (d?.success) setPendingReleases(d.items || []);
+    } catch (e) { /* non-fatal — the section just stays empty/stale until retried */ }
+    setLoadingPending(false);
+  };
 
   const loadEmployees = async () => {
     try {
@@ -95,6 +112,7 @@ export default function PayslipUpload() {
       setFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = '';
       loadBatches();
+      loadPendingReleases();
     } catch (e) {
       toast.error('Upload failed: ' + e.message);
     } finally {
@@ -128,6 +146,7 @@ export default function PayslipUpload() {
           } : f),
         }));
         loadBatches();
+        loadPendingReleases();
       } else {
         toast.error(d?.error || 'Failed to assign this payslip');
       }
@@ -136,17 +155,16 @@ export default function PayslipUpload() {
     }
   };
 
-  // A clean match (no extraction warnings) is now auto-released straight to
-  // the employee (backend/routes/payslipUpload.js) — only files that still
-  // need a human look (warnings) or predate this change (no `released`
-  // field at all) are release candidates here.
-  const mappedFiles = (result?.files || []).filter(f => (f.status === 'mapped' || f.status === 'mapped_needs_review') && !f.released);
+  // Every mapped-but-not-yet-released payslip, from ANY batch — see
+  // getPendingPayslipReleases' comment (functions.js) and pendingReleases'
+  // own comment above for why this is no longer scoped to just the most
+  // recent upload.
   const filteredMappedFiles = releaseSearch.trim()
-    ? mappedFiles.filter(f => {
+    ? pendingReleases.filter(f => {
         const q = releaseSearch.toLowerCase();
         return (f.employee_name || '').toLowerCase().includes(q) || (f.employee_code || '').toLowerCase().includes(q);
       })
-    : mappedFiles;
+    : pendingReleases;
 
   const selectAllMapped = () => {
     const allVisibleSelected = filteredMappedFiles.length > 0 && filteredMappedFiles.every(f => selectedForRelease.has(f.payroll_id));
@@ -167,6 +185,7 @@ export default function PayslipUpload() {
       if (d?.success) {
         toast.success(`Released ${d.released} payslip(s) to employees`);
         setSelectedForRelease(new Set());
+        loadPendingReleases();
       } else {
         toast.error(d?.error || 'Failed to release payslips');
       }
@@ -184,7 +203,7 @@ export default function PayslipUpload() {
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Bulk Payslip Upload</h1>
         <p className="text-slate-500 text-sm mt-1">
-          Upload a month's password-protected payslip PDFs — filename AND password must both be the Employee Code (e.g. <span className="font-mono">EMP001.pdf</span>, opened with password <span className="font-mono">EMP001</span>). They're auto-decrypted and mapped to the matching employee; a clean match with no discrepancies is released to that employee immediately — they can view/download it from My Payslips right away, no extra step. Only a file flagged for review below (mismatched code/name, a month mismatch, or figures that don't reconcile) needs you to check it and release it manually. Employees see the same password reminder when they download their original PDF from My Payslips.
+          Upload a month's password-protected payslip PDFs — filename AND password must both be the Employee Code (e.g. <span className="font-mono">EMP001.pdf</span>, opened with password <span className="font-mono">EMP001</span>). They're auto-decrypted, mapped to the matching employee, and fed into Payroll — review, then choose exactly who to release to below. An employee is only notified and able to view/download their payslip once you release it to them, never automatically. Employees see the same password reminder when they download their original PDF from My Payslips.
         </p>
       </div>
 
@@ -303,17 +322,17 @@ export default function PayslipUpload() {
         </Card>
       )}
 
-      {mappedFiles.length > 0 && (
+      {(pendingReleases.length > 0 || loadingPending) && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base">3. Review &amp; Release Flagged Payslips</CardTitle>
+            <CardTitle className="text-base">3. Release Payslips to Employees</CardTitle>
             <Button variant="outline" size="sm" onClick={selectAllMapped}>
               {filteredMappedFiles.length > 0 && filteredMappedFiles.every(f => selectedForRelease.has(f.payroll_id)) ? 'Deselect All' : 'Select All'}
             </Button>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-slate-500">
-              Choose which employees should be able to see and download their payslip now. Unselected employees' payslips stay hidden until you release them.
+              Every mapped payslip still awaiting release, from any upload batch. Choose which employees should be able to see and download their payslip now — unselected employees' payslips stay hidden until you release them.
             </p>
             <div className="relative">
               <Search className="w-4 h-4 absolute left-2.5 top-2.5 text-slate-400" />
@@ -325,16 +344,18 @@ export default function PayslipUpload() {
               />
             </div>
             <div className="border rounded-lg divide-y max-h-80 overflow-y-auto">
-              {filteredMappedFiles.length === 0 && (
-                <p className="text-sm text-slate-400 px-3 py-4 text-center">No employees match "{releaseSearch}"</p>
-              )}
-              {filteredMappedFiles.map(f => (
+              {loadingPending ? (
+                <p className="text-sm text-slate-400 px-3 py-4 text-center flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</p>
+              ) : filteredMappedFiles.length === 0 ? (
+                <p className="text-sm text-slate-400 px-3 py-4 text-center">{releaseSearch ? `No employees match "${releaseSearch}"` : 'Nothing awaiting release.'}</p>
+              ) : filteredMappedFiles.map(f => (
                 <label key={f.payroll_id} className="flex items-center gap-3 px-3 py-2 hover:bg-slate-50 cursor-pointer">
                   <Checkbox checked={selectedForRelease.has(f.payroll_id)} onCheckedChange={() => toggleRelease(f.payroll_id)} />
                   <span className="font-mono text-xs text-slate-500 w-20">{f.employee_code}</span>
                   <span className="flex-1 text-sm">{f.employee_name}</span>
+                  <span className="text-xs text-slate-400 w-20">{MONTHS[(f.month || 1) - 1]?.slice(0, 3)} {f.year}</span>
                   <span className="text-sm text-slate-600 tabular-nums w-24 text-right">{f.net_salary != null ? `₹${f.net_salary.toLocaleString('en-IN')}` : '—'}</span>
-                  <StatusBadge status={f.status} />
+                  {f.warnings?.length > 0 ? <StatusBadge status="mapped_needs_review" /> : <StatusBadge status="mapped" />}
                 </label>
               ))}
             </div>
