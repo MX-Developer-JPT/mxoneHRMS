@@ -624,7 +624,7 @@ export default function AllAttendance() {
             const recordedIds = new Set(dayRecs.map(r => r.user_id));
             const leave = dayRecs.filter(r => r.status === 'leave').length;
             const halfDay = dayRecs.filter(r => r.status === 'half_day').length;
-            const present = dayRecs.filter(r => !['leave','half_day','absent'].includes(r.status) && (r.check_in_time || ['present','late','on_duty','work_from_home'].includes(r.status))).length;
+            const present = dayRecs.filter(r => !['leave','half_day','absent'].includes(r.status) && (r.check_in_time || ['present','late','on_duty','work_from_home','short_attendance'].includes(r.status))).length;
             // Employees with no record on a day they weren't even scheduled to
             // work (a declared Holiday, or outside their Shift's working days —
             // typically Sunday) are on a paid day off, not absent.

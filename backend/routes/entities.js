@@ -705,7 +705,7 @@ router.post('/:type', async (req, res) => {
             message = `${empName} has applied for ${data.total_days || ''} day(s) of leave (${data.start_date || ''} – ${data.end_date || ''}).`;
             link    = '/Approvals';
           } else if (type === 'GatePass') {
-            const labels = { official_outing:'Official Outing', unofficial_outing:'Unofficial Outing', half_day:'Half Day', short_break:'Short Break', early_leave:'Early Leave' };
+            const labels = { official_outing:'Official Outing', unofficial_outing:'Unofficial Outing', half_day:'Half Day', short_break:'Short Break', early_leave:'Early Leave', travelling_to_another_office:'Travelling to Another Office' };
             title   = `Gate Pass Request from ${empName}`;
             message = `${empName} has requested a gate pass (${labels[data.outing_type] || data.outing_type || 'outing'}).`;
             link    = '/Approvals';

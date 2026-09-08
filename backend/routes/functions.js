@@ -5292,7 +5292,7 @@ router.post('/:name', async (req, res) => {
         [monthStart, monthEnd]
       )).filter(g => ['departed', 'returned', 'auto_closed'].includes(g.status));
       const reportGatePassMap = {};
-      const reportOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+      const reportOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
       for (const g of reportGatePassRows) {
         if (!g.employee_user_id || !g.request_date) continue;
         reportGatePassMap[`${g.employee_user_id}|${g.request_date}`] = g;
@@ -5368,6 +5368,12 @@ router.post('/:name', async (req, res) => {
               totalPresent++;
             }
             else if (s === 'absent') { cell = 'A'; totalAbsent++; }
+            // short_attendance = worked less than half the shift — LOP, same
+            // treatment as the payroll engine and the swipe-details export
+            // give this status elsewhere in this file. Previously fell
+            // through to the bare check_in_time branch below and was shown
+            // as a full present day ('P') here, disagreeing with both.
+            else if (s === 'short_attendance') { cell = 'SA'; totalAbsent++; }
             else if (rec.check_in_time) { cell = rec.regularised ? 'PR' : 'P'; totalPresent++; }
             else { cell = 'A'; totalAbsent++; }
 
@@ -5589,7 +5595,7 @@ router.post('/:name', async (req, res) => {
         [monthStart, monthEnd]
       )).filter(g => ['departed', 'returned', 'auto_closed'].includes(g.status));
       const mGatePassMap = {};
-      const mOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+      const mOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
       for (const g of mGatePassRows) {
         if (!g.employee_user_id || !g.request_date) continue;
         mGatePassMap[`${g.employee_user_id}|${g.request_date}`] = g;
@@ -5909,7 +5915,7 @@ router.post('/:name', async (req, res) => {
         [swMonthStart, swMonthEnd]
       )).filter(g => ['departed', 'returned', 'auto_closed'].includes(g.status));
       const swGatePassMap = {};
-      const swOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+      const swOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
       for (const g of swGatePassRows) {
         if (!g.employee_user_id || !g.request_date) continue;
         swGatePassMap[`${g.employee_user_id}|${g.request_date}`] = g;
@@ -6776,7 +6782,14 @@ router.post('/:name', async (req, res) => {
                 daysPresent += 0.5; daysHalfDay++;
               } else if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home') {
                 daysPresent++;
-              } else if (s === 'absent' || s === 'lop') {
+              } else if (s === 'absent' || s === 'lop' || s === 'short_attendance') {
+                // short_attendance = worked less than half the shift (below
+                // even the half_day bar) — matches the payroll engine's own
+                // treatment of the same status (processPayroll, this same
+                // file). Previously fell through to the bare check_in_time
+                // branch below and was paid as a full present day here,
+                // producing a daysPresent/LOP figure that disagreed with the
+                // actual payroll run for the same employee/month.
                 daysAbsent += 1 + (rec.lop_deduction_days || 0);
               } else if (s === 'week_off' || s === 'holiday' || s === 'leave' || s === 'approved_leave') {
                 // paid/off — no LOP
@@ -9143,13 +9156,24 @@ router.post('/:name', async (req, res) => {
         all("SELECT data FROM entities WHERE type='Leave' AND status='pending'"),
         all("SELECT data FROM entities WHERE type='Reimbursement' AND status='pending'"),
         all("SELECT data FROM entities WHERE type='AttendanceRegularisation' AND status='manager_approved'"),
-        all("SELECT data FROM entities WHERE type='Ticket' AND status IN ('open','in_progress')"),
+        // NOT IN ('resolved','closed') rather than IN ('open','in_progress') —
+        // an 'escalated' ticket (escalateHelpdeskTicket) is neither of those
+        // two but is very much still open, and was previously dropped from
+        // this "open tickets" count entirely. Matches the definition used
+        // everywhere else "open ticket" is computed in this file.
+        all("SELECT data FROM entities WHERE type='Ticket' AND status NOT IN ('resolved','closed')"),
         all("SELECT data FROM entities WHERE type='Candidate' AND status IN ('applied','screening','interview_scheduled')"),
         all("SELECT data FROM entities WHERE type='Announcement' AND status='published' ORDER BY created_at DESC LIMIT 3"),
         all("SELECT data FROM entities WHERE type='Payroll' AND status='draft' AND (data::jsonb->>'month')::int=$1 AND (data::jsonb->>'year')::int=$2", [ghdsMonth, ghdsYear]),
         all("SELECT data FROM entities WHERE type='LeavePolicy' AND is_active=1"),
         all("SELECT data FROM entities WHERE type='Asset'"),
-        all("SELECT data FROM entities WHERE type='Exit' AND status IN ('submitted','manager_approved','in_notice','clearance_pending','clearance_done','fnf_pending')"),
+        // 'hr_approved' and the real F&F in-flight statuses (fnf_prepared/
+        // fnf_verified/fnf_hr_approved/fnf_finance_processed/
+        // fnf_employee_accepted — see lib/exitStatus.js's FNF_STATUSES) were
+        // missing here, so an exit case actively in F&F dropped out of this
+        // "in-flight exits" count the moment F&F started, right when it most
+        // needs tracking.
+        all("SELECT data FROM entities WHERE type='Exit' AND status IN ('submitted','manager_approved','in_notice','clearance_pending','clearance_done','hr_approved','fnf_prepared','fnf_verified','fnf_hr_approved','fnf_finance_processed','fnf_employee_accepted','fnf_pending')"),
         all("SELECT data FROM entities WHERE type='ComplianceDeadline' AND status != 'completed'"),
         all("SELECT data FROM entities WHERE type='JobRequisition' AND status IN ('approved','published')"),
       ]);
@@ -9222,9 +9246,15 @@ router.post('/:name', async (req, res) => {
 
       const assets = assetRows.map(r => JSON.parse(r.data));
       const totalAssets = assets.length;
-      const assignedAssets = assets.filter(a => a.status === 'assigned').length;
+      // 'signed' is a sub-state of 'assigned' (AssetCheckoutDialog.jsx sets it
+      // once the employee completes the digital acknowledgment), not a
+      // separate lifecycle branch — AssetTracking.jsx/MyAssets.jsx already
+      // treat both alike (ACTIVE_ASSIGNMENT_STATUSES). Checking 'assigned'
+      // only meant an asset dropped out of these counts the moment it was
+      // actually signed for.
+      const assignedAssets = assets.filter(a => ['assigned', 'signed'].includes(a.status)).length;
       const availableAssets = assets.filter(a => a.status === 'available').length;
-      const overdueReturns = assets.filter(a => a.status === 'assigned' && a.return_date && a.return_date < ghdsToday).length;
+      const overdueReturns = assets.filter(a => ['assigned', 'signed'].includes(a.status) && a.return_date && a.return_date < ghdsToday).length;
 
       const exits = exitRows.map(r => JSON.parse(r.data));
       const complianceDeadlines = complianceDeadlineRows.map(r => JSON.parse(r.data));
@@ -9262,8 +9292,18 @@ router.post('/:name', async (req, res) => {
       const today = new Date();
       const compRows = await all("SELECT data FROM entities WHERE type='Compliance'");
       const records = compRows.map(r => JSON.parse(r.data));
-      const empRows2 = await all("SELECT data FROM entities WHERE type='Employee'");
-      const activeEmps = empRows2.map(r => JSON.parse(r.data)).filter(e => e.employee_status === 'active' || !e.employee_status);
+      // Filtered on `status` (the Employee entity's own currently-employed
+      // flag, same field every other active-headcount query in this file
+      // uses — e.g. "type='Employee' AND status='active'" elsewhere) rather
+      // than `employee_status`, a DIFFERENT field that holds probation/
+      // confirmation/trainee/pending_onboarding/terminated — it's never set
+      // to the literal 'active', so this used to include every resigned/
+      // terminated/retired employee still in the table (matched the
+      // `!e.employee_status` fallback) while excluding anyone currently on
+      // probation or already confirmed, corrupting the per-head PF/ESI/
+      // gratuity exposure this feeds into in both directions at once.
+      const empRows2 = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
+      const activeEmps = empRows2.map(r => JSON.parse(r.data));
 
       const insights = [], recommendations = [];
 
@@ -10838,7 +10878,7 @@ Maxvolt One was built by Jai Pratap Tyagi, who served as its Application Owner a
 
           // Pending items
           const pendingRegs = (await all("SELECT id FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1 AND status='pending'", [uid])).length;
-          const openTickets = (await all("SELECT id FROM entities WHERE type='HelpdeskTicket' AND user_id=$1 AND status NOT IN ('resolved','closed')", [uid])).length;
+          const openTickets = (await all("SELECT id FROM entities WHERE type='Ticket' AND user_id=$1 AND status NOT IN ('resolved','closed')", [uid])).length;
           const activeLoans = (await all("SELECT data FROM entities WHERE type='Loan' AND user_id=$1 AND status IN ('approved','active')", [uid])).map(r => JSON.parse(r.data));
           const pendingBits = [];
           if (pendingRegs) pendingBits.push(`${pendingRegs} pending regularisation(s)`);
@@ -10850,7 +10890,12 @@ Maxvolt One was built by Jai Pratap Tyagi, who served as its Application Owner a
           const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
           const attRows = (await all("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' >= $2", [uid, monthStart])).map(r => JSON.parse(r.data));
           if (attRows.length) {
-            const present = attRows.filter(a => a.status === 'present').length;
+            // late/on_duty/work_from_home/short_attendance (PRESENT_LIKE_STATUSES)
+            // previously matched only literal 'present' here — an employee who
+            // worked from home all month was told by the AI that they had 0
+            // days present, which the model would then (wrongly) characterize
+            // as poor attendance.
+            const present = attRows.filter(a => ['present', 'late', 'on_duty', 'work_from_home', 'short_attendance'].includes(a.status)).length;
             const half = attRows.filter(a => a.status === 'half_day').length;
             const absent = attRows.filter(a => a.status === 'absent').length;
             parts.push(`THIS MONTH ATTENDANCE: ${present} present, ${half} half-day, ${absent} absent (${attRows.length} days recorded).`);
@@ -11269,7 +11314,10 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
       const allTickets = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Ticket'"));
       const tickets = {
-        openTickets:     allTickets.filter(t => t.status === 'open').length,
+        // NOT IN ('resolved','closed') — an 'in_progress' or 'escalated'
+        // ticket is still open; matching only the literal 'open' status
+        // dropped both from this count.
+        openTickets:     allTickets.filter(t => !['resolved','closed'].includes(t.status)).length,
         resolvedTickets: allTickets.filter(t => ['resolved','closed'].includes(t.status)).length,
         byCategory: Object.entries(allTickets.reduce((acc, t) => { const c = t.category||'General'; acc[c]=(acc[c]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
       };
@@ -11277,12 +11325,16 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const allAssets = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Asset'"));
       const assets = {
         total:        allAssets.length,
-        assigned:     allAssets.filter(a => a.status === 'assigned').length,
+        // 'signed' is a sub-state of 'assigned' (see the getHRDashboardSummary
+        // comment above) — omitting it here undercounted assigned assets and
+        // let a signed-for asset slip through as neither assigned nor
+        // available below.
+        assigned:     allAssets.filter(a => ['assigned', 'signed'].includes(a.status)).length,
         available:    allAssets.filter(a => ['available','in_stock'].includes(a.status)).length,
         underRepair:  allAssets.filter(a => ['under_repair','repair'].includes(a.status)).length,
         discarded:    allAssets.filter(a => ['discarded','retired'].includes(a.status)).length,
         commonAssets: allAssets.filter(a => a.is_common || a.assignment_type === 'shared').length,
-        overdueReturns: allAssets.filter(a => a.expected_return_date && a.expected_return_date < today && a.status === 'assigned').length,
+        overdueReturns: allAssets.filter(a => a.expected_return_date && a.expected_return_date < today && ['assigned', 'signed'].includes(a.status)).length,
         totalValue:   allAssets.reduce((s, a) => s + (a.purchase_cost || 0), 0),
         byType: Object.entries(allAssets.reduce((acc, a) => { const t = a.asset_type||a.category||'Other'; acc[t]=(acc[t]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
       };
@@ -11296,14 +11348,30 @@ ${contextBlock || 'No employee context available — answer from general policy 
         .filter(e => e.resignation_date && e.last_working_date)
         .map(e => (new Date(e.last_working_date) - new Date(e.resignation_date)) / 86400000)
         .filter(d => d >= 0);
+      // Mirrors lib/exitStatus.js's own canonical status groups (duplicated
+      // rather than imported — this route file has no existing cross-import
+      // of frontend lib code, same convention as e.g. getGateAdminAssignedLocations
+      // being duplicated between entities.js/functions.js). 'fnf_done' was a
+      // phantom value nothing in the app ever writes (real terminal state is
+      // 'completed'), and 'fnf_pending' as an EXACT match misses every real
+      // in-flight F&F status the backend actually sets (fnf_prepared/
+      // fnf_verified/fnf_hr_approved/fnf_finance_processed/
+      // fnf_employee_accepted) — this MIS card previously always read 0
+      // regardless of real F&F backlog, and "pending"/"completed" both
+      // double-counted a status ('fnf_done') that can never occur while
+      // never recognizing a real completed exit's actual value ('completed'
+      // was already handled, so that part worked — the bug was silently
+      // harmless there, but genuinely wrong for fnfPending).
+      const EXIT_FNF_STATUSES = ['fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted', 'fnf_pending'];
+      const EXIT_CLOSED_STATUSES = ['completed', 'withdrawn', 'cancelled', 'manager_rejected', 'hr_rejected'];
       const exits = {
         total:     allExits.length,
-        pending:   allExits.filter(e => !['completed','fnf_done'].includes(e.status)).length,
-        completed: allExits.filter(e => ['completed','fnf_done'].includes(e.status)).length,
+        pending:   allExits.filter(e => !EXIT_CLOSED_STATUSES.includes(e.status)).length,
+        completed: allExits.filter(e => e.status === 'completed').length,
         inNotice:  allExits.filter(e => e.status === 'in_notice').length,
         clearancePending: allExits.filter(e => e.status === 'clearance_pending').length,
-        fnfPending: allExits.filter(e => e.status === 'fnf_pending').length,
-        completedMonth: allExits.filter(e => ['completed','fnf_done'].includes(e.status) && e._updated_at && e._updated_at.slice(0, 7) === today.slice(0, 7)).length,
+        fnfPending: allExits.filter(e => EXIT_FNF_STATUSES.includes(e.status)).length,
+        completedMonth: allExits.filter(e => e.status === 'completed' && e._updated_at && e._updated_at.slice(0, 7) === today.slice(0, 7)).length,
         avgNoticeDays: noticeDurations.length ? Math.round(noticeDurations.reduce((s, d) => s + d, 0) / noticeDurations.length) : 0,
         byType: Object.entries(allExits.reduce((acc, e) => { const t = e.exit_type||'Unknown'; acc[t]=(acc[t]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count })),
       };
@@ -11408,7 +11476,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
           month: label,
           headcount: allEmpsForTrend.filter(e => {
             if (!e.date_of_joining || e.date_of_joining > monthEnd) return false;
-            const exit = allExitsForTrend.find(x => x.user_id === e.user_id && ['completed', 'fnf_done'].includes(x.status));
+            const exit = allExitsForTrend.find(x => x.user_id === e.user_id && x.status === 'completed');
             return !exit || !exit.last_working_date || exit.last_working_date > monthEnd;
           }).length,
         }));
@@ -14129,8 +14197,17 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     /* ── Helpdesk SLA ────────────────────────────────── */
     case 'getHelpdeskStats': {
-      const tktRows = await all("SELECT data FROM entities WHERE type='HelpdeskTicket'");
-      const tickets = tktRows.map(r => JSON.parse(r.data));
+      // Tickets are entity type 'Ticket' (Helpdesk.jsx: base44.entities.Ticket.
+      // create/update — matches entities.js's own APPROVAL_TYPES/notification
+      // hooks). This queried the never-written type 'HelpdeskTicket' instead,
+      // so this whole SLA panel always computed over zero rows. Also pulls in
+      // the row's own created_at COLUMN (DB-managed timestamp) rather than
+      // t.created_at, which doesn't exist inside the JSON blob at all —
+      // Helpdesk.jsx never sets it — so "hours open"/SLA-overdue and average
+      // resolution time were unconditionally NaN/0 even before the type fix.
+      // resolved_at doesn't exist either; Helpdesk.jsx writes resolved_date.
+      const tktRows = await all("SELECT data, created_at FROM entities WHERE type='Ticket'");
+      const tickets = tktRows.map(r => ({ ...JSON.parse(r.data), created_at: JSON.parse(r.data).created_at || r.created_at }));
       const now = new Date();
       const stats = { total: tickets.length, open: 0, in_progress: 0, resolved: 0, closed: 0, overdue: 0, avg_resolution_hours: 0 };
       let totalResolvedHours = 0, resolvedCount = 0;
@@ -14138,7 +14215,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const s = (t.status||'open').toLowerCase().replace(/\s+/g,'_');
         if (s === 'open') stats.open++;
         else if (s === 'in_progress') stats.in_progress++;
-        else if (s === 'resolved') { stats.resolved++; if (t.created_at && t.resolved_at) { totalResolvedHours += (new Date(t.resolved_at)-new Date(t.created_at))/(1000*60*60); resolvedCount++; } }
+        else if (s === 'resolved') { stats.resolved++; if (t.created_at && t.resolved_date) { totalResolvedHours += (new Date(t.resolved_date)-new Date(t.created_at))/(1000*60*60); resolvedCount++; } }
         else if (s === 'closed') stats.closed++;
         // SLA: tickets open > 24h are overdue
         if (['open','in_progress'].includes(s) && t.created_at) {
@@ -14153,7 +14230,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     case 'escalateHelpdeskTicket': {
       const { ticket_id: tktId, escalated_to, reason: tktReason } = p;
-      const tktRow = await one("SELECT id,data FROM entities WHERE type='HelpdeskTicket' AND id=$1", [tktId]);
+      const tktRow = await one("SELECT id,data FROM entities WHERE type='Ticket' AND id=$1", [tktId]);
       if (!tktRow) return res.json({ success: false, error: 'Ticket not found' });
       const tkt = JSON.parse(tktRow.data);
       const tktUpd = { ...tkt, status: 'escalated', escalated_to, escalation_reason: tktReason, escalated_at: new Date().toISOString() };
@@ -14235,7 +14312,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const latestPayslip = edPayroll ? JSON.parse(edPayroll.data) : null;
 
       // Open helpdesk tickets
-      const edTickets = (await all("SELECT data FROM entities WHERE type='HelpdeskTicket' AND user_id=$1 AND status NOT IN ('resolved','closed')", [edUid])).map(r=>JSON.parse(r.data));
+      const edTickets = (await all("SELECT data FROM entities WHERE type='Ticket' AND user_id=$1 AND status NOT IN ('resolved','closed')", [edUid])).map(r=>JSON.parse(r.data));
 
       // Tax declaration status
       const currentFY = new Date().getMonth() >= 3 ? `${new Date().getFullYear()}-${new Date().getFullYear()+1}` : `${new Date().getFullYear()-1}-${new Date().getFullYear()}`;
@@ -14373,7 +14450,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const recentAtt = (await all("SELECT user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1", [d60])).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
       const absentByUser = recentAtt.reduce((m, a) => { if (['absent', 'half_day'].includes(a.status)) m[a.user_id] = (m[a.user_id] || 0) + 1; return m; }, {});
 
-      const openTix = (await all("SELECT user_id FROM entities WHERE type='HelpdeskTicket' AND status NOT IN ('resolved','closed')"))
+      const openTix = (await all("SELECT user_id FROM entities WHERE type='Ticket' AND status NOT IN ('resolved','closed')"))
         .reduce((m, r) => { m[r.user_id] = (m[r.user_id] || 0) + 1; return m; }, {});
 
       // Latest salary structure per user → compensation staleness
@@ -15648,7 +15725,14 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
           for (const a of attRows) {
             if (!byUser[a.user_id]) byUser[a.user_id] = { present: 0, absent: 0, leave: 0, half_day: 0, hours: 0 };
             const s = a.status || (a.check_in_time ? 'present' : 'absent');
-            if (s === 'present')  { byUser[a.user_id].present++;  byUser[a.user_id].hours += (a.working_hours || 0); }
+            // late/on_duty/work_from_home/short_attendance (PRESENT_LIKE_STATUSES,
+            // lib/attendanceSource.js) previously matched none of these four
+            // branches at all — those days were counted as neither present,
+            // absent, half-day, nor leave, so a row's Present+Absent+Leave+
+            // Half Day never summed to the days actually recorded, and Avg
+            // Work Hrs (hours / present) divided real worked hours by an
+            // undercounted present figure, inflating it.
+            if (['present', 'late', 'on_duty', 'work_from_home', 'short_attendance'].includes(s)) { byUser[a.user_id].present++;  byUser[a.user_id].hours += (a.working_hours || 0); }
             else if (s === 'absent')   byUser[a.user_id].absent++;
             else if (s === 'leave')    byUser[a.user_id].leave++;
             else if (s === 'half_day') { byUser[a.user_id].half_day++; byUser[a.user_id].hours += (a.working_hours || 0); }
@@ -15781,17 +15865,28 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         }
 
         case 'asset_assignment': {
-          const assets = parseEntities(await all("SELECT data FROM entities WHERE type='Asset' AND data::jsonb->>'status'='assigned'"));
+          // Two bugs compounded here: (1) 'signed' — the state
+          // AssetCheckoutDialog.jsx moves an asset to once the employee
+          // completes the digital acknowledgment, and treated as a synonym
+          // for 'assigned' everywhere else (AssetTracking.jsx's
+          // ACTIVE_ASSIGNMENT_STATUSES) — was excluded by the exact-match
+          // status filter, dropping every signed-for asset from this export
+          // entirely; (2) every field read as `a.assigned_to` when the real
+          // field AssetCheckoutDialog.jsx/AssetTracking.jsx actually write is
+          // `assigned_to_user_id`, so even an asset that DID match status
+          // 'assigned' had a blank "Assigned To"/Department and was silently
+          // dropped by both the scopedIds and department filters below.
+          const assets = parseEntities(await all("SELECT data FROM entities WHERE type='Asset' AND data::jsonb->>'status' IN ('assigned','signed')"));
           const emps   = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
           const empMap = Object.fromEntries(emps.map(e => [e.user_id, e]));
           let filtered = assets;
-          if (scopedIds) filtered = filtered.filter(a => scopedIds.includes(a.assigned_to));
-          if (department && department !== 'all') filtered = filtered.filter(a => empMap[a.assigned_to]?.department === department);
+          if (scopedIds) filtered = filtered.filter(a => scopedIds.includes(a.assigned_to_user_id));
+          if (department && department !== 'all') filtered = filtered.filter(a => empMap[a.assigned_to_user_id]?.department === department);
           return res.json({
             report_type,
             columns: ['Asset ID','Asset Name','Type','Brand','Serial No','Assigned To','Department','Assigned Date','Expected Return'],
             rows: filtered.map(a => {
-              const e = empMap[a.assigned_to] || {};
+              const e = empMap[a.assigned_to_user_id] || {};
               return [
                 a.asset_id||a.id||'', a.asset_name||a.name||'', a.asset_type||a.category||'',
                 a.brand||'', a.serial_number||'',
@@ -16351,7 +16446,11 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
       })();
 
       // ── Key KPIs ──────────────────────────────────────────────────
-      const openRequisitions  = reqs.filter(r => ['approved','published'].includes(r.status)).length;
+      // Matches reqHealth's own "open positions" definition just above
+      // (which already includes 'on_hold') — this KPI previously left
+      // on_hold out, so it could show a smaller number than the Requisition
+      // Health table listed directly below it in the same response.
+      const openRequisitions  = reqs.filter(r => ['approved','published','on_hold'].includes(r.status)).length;
       const closedThisPeriod  = reqs.filter(r => r.status === 'closed' && (r.closed_date || '') >= since).length;
       const offerAcceptRate   = totalOffers > 0 ? Math.round(accepted/totalOffers*100) : 0;
       const totalCandidates   = cands.length;

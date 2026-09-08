@@ -1905,7 +1905,13 @@ const MA_STATUS_COLORS = {
   on_duty: 'bg-teal-100 text-teal-800 border-teal-300',
   work_from_home: 'bg-cyan-100 text-cyan-800 border-cyan-300',
 };
-const MA_STATUS_OPTIONS = ['present', 'half_day', 'leave', 'absent', 'holiday', 'week_off', 'on_duty', 'work_from_home'];
+// Includes 'late'/'short_attendance' — MA_STATUS_COLORS above already has
+// entries for both (the calendar correctly color-codes a late/short-attendance
+// day), but this list previously didn't, so opening the editor for such a day
+// silently defaulted the Status dropdown to "Present" (openEditor's fallback
+// below only trusts a record's real status if it's in this list) instead of
+// showing the day's actual status.
+const MA_STATUS_OPTIONS = ['present', 'late', 'short_attendance', 'half_day', 'leave', 'absent', 'holiday', 'week_off', 'on_duty', 'work_from_home'];
 
 function addMinutesHM(hm, mins) {
   const [h, m] = String(hm || '00:00').split(':').map(Number);

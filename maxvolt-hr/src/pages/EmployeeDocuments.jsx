@@ -139,7 +139,10 @@ export default function EmployeeDocuments() {
     setDownloading(false);
   };
 
-  const activeEmployees = employees.filter(e => e.status !== 'resigned' && e.status !== 'terminated');
+  // LeftEmployees.jsx's own LEFT_STATUSES (the canonical "has left" set) also
+  // includes 'retired' — missing it here left a retired employee still
+  // showing up as pickable in this "active employees" list.
+  const activeEmployees = employees.filter(e => !['resigned', 'terminated', 'retired'].includes(e.status));
 
   const filteredEmployees = activeEmployees.filter(emp => {
     const name = getUserName(emp.user_id).toLowerCase();

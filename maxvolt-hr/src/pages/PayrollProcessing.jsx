@@ -8,8 +8,26 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Calculator, CheckCircle, Send, FileDown, Edit2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { PRESENT_LIKE_STATUSES } from '@/lib/attendanceSource';
 
 const WORKING_DAYS = 26;
+
+// Days worth of pay a single Attendance record counts toward presentDays —
+// mirrors the shared PRESENT_LIKE_STATUSES definition (present, late,
+// on_duty, work_from_home, short_attendance all count as a full day; the
+// backend's own payroll engine — functions.js's processPayroll — additionally
+// treats short_attendance as LOP, which this simpler client-side calculator
+// doesn't attempt to replicate) plus half_day at half a day. This previously
+// only matched a literal status === 'present', silently treating every late
+// arrival, WFH day, on-duty day, and half-day as a full absence — understating
+// presentDays (and therefore gross pay, since pay here is a straight
+// presentDays/WORKING_DAYS ratio of the structure) by up to a full day's pay
+// per affected attendance record.
+function dayWeight(status) {
+  if (PRESENT_LIKE_STATUSES.includes(status)) return 1;
+  if (status === 'half_day') return 0.5;
+  return 0;
+}
 
 // Calculate one employee's payroll from their salary structure + attendance.
 // If is_manual_override, all amounts are 0 — HR fills them in the preview.
@@ -134,7 +152,7 @@ export default function PayrollProcessing() {
         if (!structure) continue;
 
         const empAtt      = attendance.filter(a => a.user_id === employee.id);
-        const presentDays = empAtt.filter(a => a.status === 'present').length;
+        const presentDays = empAtt.reduce((sum, a) => sum + dayWeight(a.status), 0);
         const empLoan     = loans.find(l => l.user_id === employee.id);
         const loanDed     = empLoan?.monthly_deduction || 0;
         const empBonus    = bonuses.find(b => b.user_id === employee.id);

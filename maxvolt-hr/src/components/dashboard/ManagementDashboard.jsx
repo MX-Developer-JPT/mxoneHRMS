@@ -46,7 +46,10 @@ export default function ManagementDashboard({ user }) {
       // pulling only 4 by recency could leave the widget empty even when
       // older announcements actually targeted at this manager exist.
       base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 30).catch(() => []),
-      base44.entities.Asset.filter({ status: 'assigned' }).catch(() => []),
+      // 'signed' is a sub-state of 'assigned' (AssetCheckoutDialog.jsx sets it
+      // once the employee completes the digital acknowledgment) — matching
+      // AssetTracking.jsx/MyAssets.jsx's ACTIVE_ASSIGNMENT_STATUSES.
+      base44.entities.Asset.filter({ status: { $in: ['assigned', 'signed'] } }).catch(() => []),
       base44.entities.EmployeeTraining.filter({ status: 'in_progress' }).catch(() => []),
       base44.entities.Employee.filter({ user_id: user.id }).catch(() => []),
     ]);

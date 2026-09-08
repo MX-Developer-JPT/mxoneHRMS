@@ -49,7 +49,12 @@ export default function EmployeeDashboard({ user }) {
       base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 30).catch(() => []),
       base44.entities.AttendanceRegularisation.filter({ user_id: user.id, status: 'pending' }).catch(() => []),
       base44.entities.TrainingNotification.filter({ user_id: user.id, is_read: false }, '-created_date', 10).catch(() => []),
-      base44.entities.Asset.filter({ assigned_to_user_id: user.id, status: 'assigned' }).catch(() => []),
+      // 'signed' (AssetCheckoutDialog.jsx, once the employee completes the
+      // digital acknowledgment) is a sub-state of 'assigned', not a separate
+      // branch — matching AssetTracking.jsx/MyAssets.jsx's own
+      // ACTIVE_ASSIGNMENT_STATUSES. Exact-matching 'assigned' alone dropped
+      // a signed-for asset off this employee's own dashboard.
+      base44.entities.Asset.filter({ assigned_to_user_id: user.id, status: { $in: ['assigned', 'signed'] } }).catch(() => []),
       base44.entities.Employee.filter({ user_id: user.id }).catch(() => []),
     ]);
 

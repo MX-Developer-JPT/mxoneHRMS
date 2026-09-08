@@ -351,7 +351,7 @@ export default function Approvals() {
                 <div className="space-y-3">
                   {gatePasses.length > 0 ? gatePasses.map(gp => {
                     const emp = employees.find(e => e.user_id === gp.employee_user_id);
-                    const outingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave' };
+                    const outingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
                     return (
                       <div key={gp.id} className="border rounded-lg p-4">
                         <div className="flex justify-between items-start gap-4 flex-wrap">

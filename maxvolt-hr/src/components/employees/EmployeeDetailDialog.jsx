@@ -113,7 +113,12 @@ function AttendanceCalendar({ userId, dateOfJoining }) {
     const r = records[ds];
     if (!r) { absent++; continue; }
     const s = effectiveStatus(r);
-    if (['present','late','on_duty','work_from_home'].includes(s)) present++;
+    // short_attendance (PRESENT_LIKE_STATUSES, lib/attendanceSource.js) was
+    // missing here — it matched none of the branches below and silently
+    // landed in `other`, which this component never displays, so a short-
+    // attendance day just vanished from the monthly tally instead of
+    // counting as present.
+    if (['present','late','on_duty','work_from_home','short_attendance'].includes(s)) present++;
     else if (s === 'half_day') halfDay++;
     else if (['absent','lop'].includes(s)) { absent++; if (s === 'lop') lop++; }
     else if (['leave','approved_leave'].includes(s)) leave++;

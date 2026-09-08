@@ -25,6 +25,12 @@ import { safeDate } from '@/lib/dateUtils';
 import { resolveHierarchy } from '@/lib/hierarchy';
 import { deriveOverallExitStatus, OVERALL_STATUS_COLORS } from '@/lib/exitStatus';
 
+// Every real in-flight F&F status (mirrors lib/exitStatus.js's FNF_STATUSES)
+// — an exit case is genuinely in F&F the moment it's fnf_prepared, not only
+// at the legacy 'fnf_pending' value nothing in the app actually writes
+// (see backend/routes/functions.js, processExitFnFPrepare et al.).
+const FNF_IN_FLIGHT_STATUSES = ['fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted', 'fnf_pending'];
+
 const STATUS_CONFIG = {
   submitted:              { label: 'Submitted',            color: 'bg-blue-100 text-blue-800' },
   manager_approved:       { label: 'Mgr Approved',         color: 'bg-yellow-100 text-yellow-800' },
@@ -211,7 +217,7 @@ export default function ExitManagement() {
     const inNotice = all.filter(e => e.status === 'in_notice').length;
     const clearancePending = all.filter(e => ['clearance_pending','clearance_done'].includes(e.status)).length;
     const completedMonth = all.filter(e => e.status === 'completed' && new Date(e.last_working_date || 0) >= thisMonthStart).length;
-    const fnfPending = all.filter(e => e.status === 'fnf_pending').length;
+    const fnfPending = all.filter(e => FNF_IN_FLIGHT_STATUSES.includes(e.status)).length;
 
     // Dept-wise
     const deptMap = {};
@@ -250,7 +256,8 @@ export default function ExitManagement() {
   const filteredExits = useMemo(() => enriched.filter(ex => {
     const q = search.toLowerCase();
     const matchSearch = !q || ex.user?.full_name?.toLowerCase().includes(q) || ex.employee?.employee_code?.toLowerCase().includes(q) || ex.employee?.department?.toLowerCase().includes(q);
-    const matchStatus = statusFilter === 'all' || ex.status === statusFilter;
+    const matchStatus = statusFilter === 'all'
+      || (statusFilter === 'fnf_pending' ? FNF_IN_FLIGHT_STATUSES.includes(ex.status) : ex.status === statusFilter);
     return matchSearch && matchStatus;
   }), [enriched, search, statusFilter]);
 

@@ -261,7 +261,7 @@ export default function LeaveManagement() {
     // Loaded on demand — xlsx is a ~430KB chunk this page shouldn't pay for
     // until someone actually clicks a Template/Export/Import action.
     const XLSX = await import('xlsx');
-    const activeEmployees = employees.filter(e => e.status !== 'resigned' && e.status !== 'terminated');
+    const activeEmployees = employees.filter(e => !['resigned', 'terminated', 'retired'].includes(e.status));
     const currentYear = new Date().getFullYear();
     const header = ['Employee Code', 'Employee Name', 'Department', 'Designation', ...leavePolicies.map(p => p.code)];
     const rows = activeEmployees.map(emp => {
@@ -455,7 +455,7 @@ export default function LeaveManagement() {
                         </tr>
                       </thead>
                       <tbody>
-                        {employees.filter(e => e.status !== 'resigned' && e.status !== 'terminated').map(emp => (
+                        {employees.filter(e => !['resigned', 'terminated', 'retired'].includes(e.status)).map(emp => (
                           <tr key={emp.id} className="border-b hover:bg-gray-50 transition-colors">
                             <td className="py-2 pr-4">
                               <div className="font-medium text-gray-900">{emp.display_name}</div>
