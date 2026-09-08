@@ -17095,7 +17095,20 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     case 'getMyTourStatus': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const row = await one("SELECT data FROM entities WHERE type='AppTourProgress' AND user_id=$1", [cu.id]);
-      return res.json({ success: true, tour: row ? JSON.parse(row.data) : null });
+      // A new user's very first login creates this tour row 'pending'
+      // immediately (see /login in auth.js) — but per explicit requirement,
+      // the walkthrough itself must not actually START until that new user
+      // has cleared their forced password change AND uploaded a profile
+      // photo (Layout.jsx's own forced-photo dialog gates on the same
+      // Employee.profile_picture_url field). AppTour.jsx re-checks this
+      // alongside its own gate re-triggers (password change / photo
+      // upload completing) rather than only once at mount, so the tour
+      // starts the moment both are actually satisfied instead of only on
+      // a later reload.
+      const gmtsUserRow = await one('SELECT must_change_password FROM users WHERE id=$1', [cu.id]);
+      const gmtsEmpRow = await one("SELECT data::jsonb->>'profile_picture_url' AS photo FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+      const onboarding_ready = !gmtsUserRow?.must_change_password && !!gmtsEmpRow?.photo;
+      return res.json({ success: true, tour: row ? JSON.parse(row.data) : null, onboarding_ready });
     }
 
     case 'updateMyTourProgress': {

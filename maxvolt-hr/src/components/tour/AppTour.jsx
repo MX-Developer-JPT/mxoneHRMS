@@ -30,7 +30,7 @@ function waitForElement(selector, timeoutMs = FIND_TIMEOUT_MS) {
   });
 }
 
-export default function AppTour({ user }) {
+export default function AppTour({ user, recheckKey }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [active, setActive] = useState(false);
@@ -42,17 +42,29 @@ export default function AppTour({ user }) {
 
   const role = user?.custom_role || user?.role;
 
-  // One-time check on login/app load — has this user got a pending/
-  // in-progress walkthrough? Deliberately checked once per mount (Layout.jsx
-  // renders AppTour once for the whole authenticated session), not on every
-  // navigation.
+  // Checks for a pending/in-progress walkthrough — but a NEW user's tour
+  // must not actually start until they've cleared their forced password
+  // change and uploaded a profile photo (getMyTourStatus's own
+  // onboarding_ready flag, computed server-side against the same fields
+  // ForceChangePassword/Layout.jsx's forced-photo dialog gate on). Layout.jsx
+  // is mounted the whole time those two forced flows are still blocking the
+  // screen, so this effect's first run can genuinely see onboarding_ready:
+  // false — deliberately NOT a one-shot check in that case: `user` changes
+  // identity after a password change (App.jsx's checkAppState() refetches
+  // it), and `recheckKey` is Layout.jsx's own photoRequiredEmpId (null the
+  // instant the forced photo dialog resolves) — both re-run this effect,
+  // so the tour starts the moment onboarding actually completes rather than
+  // only on a later reload. checkedRef only latches once the tour has
+  // actually been shown, so it can't reopen itself later just because
+  // `user`/recheckKey happen to change again after that (e.g. any other
+  // profile edit).
   useEffect(() => {
     if (!user || checkedRef.current) return;
-    checkedRef.current = true;
     base44.functions.invoke('getMyTourStatus', {}).then(res => {
       const d = res.data || res;
       const tour = d?.tour;
-      if (tour && (tour.status === 'pending' || tour.status === 'in_progress')) {
+      if (tour && (tour.status === 'pending' || tour.status === 'in_progress') && d.onboarding_ready) {
+        checkedRef.current = true;
         const roleSteps = getTourStepsForRole(role);
         setSteps(roleSteps);
         setStepIndex(Math.min(tour.current_step || 0, roleSteps.length - 1));
@@ -60,7 +72,7 @@ export default function AppTour({ user }) {
       }
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, [user, recheckKey]);
 
   const locateStep = useCallback(async (index, stepList) => {
     const stepDef = stepList[index];

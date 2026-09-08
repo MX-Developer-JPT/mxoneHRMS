@@ -255,7 +255,17 @@ const AuthenticatedApp = () => {
   return (
     <>
     {user?.must_change_password && (
-      <ForceChangePassword onDone={() => checkAppState()} />
+      // A full reload (not just checkAppState()) — Layout.jsx fetches its
+      // own local `user`/Employee state once on its own mount
+      // (`useEffect(() => { loadUser(); }, [])`) with no wiring back to
+      // AuthContext's `user` this component reads, so that local copy
+      // (which is what AppTour.jsx's onboarding-gate re-check actually
+      // watches) would otherwise stay stuck on must_change_password:true
+      // even after the change succeeds. A reload re-runs everything fresh
+      // — including AppTour's own mount check — which is what actually
+      // lets the walkthrough start the moment this step (the other being
+      // uploading a profile photo) is done, per explicit requirement.
+      <ForceChangePassword onDone={() => window.location.reload()} />
     )}
     <Routes>
       {/* Public auth routes — guarded so an active session never sees the login form again */}

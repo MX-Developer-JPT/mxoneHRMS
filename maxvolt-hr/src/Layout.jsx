@@ -1382,7 +1382,14 @@ export default function Layout({ children, currentPageName }) {
         </DialogContent>
       </Dialog>
 
-      <AppTour user={user} />
+      {/* recheckKey: photoRequiredEmpId goes null the instant the forced
+          profile-photo dialog below resolves — AppTour re-checks its
+          onboarding gate (must_change_password cleared + photo uploaded)
+          whenever this changes, on top of `user` itself changing after a
+          forced password change, so a brand-new user's walkthrough starts
+          the moment both are actually done instead of waiting for a
+          later reload. */}
+      <AppTour user={user} recheckKey={photoRequiredEmpId} />
     </div>
   );
 }
