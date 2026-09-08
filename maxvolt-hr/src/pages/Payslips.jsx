@@ -12,6 +12,26 @@ function base64ToBlobUrl(base64, mime) {
   return URL.createObjectURL(new Blob([bytes], { type: mime }));
 }
 
+// Module-level (not component state) and awaited FRESH at the moment of
+// each click, rather than trusting a React state variable set by a
+// useEffect on mount. That state has an inherent race: the dynamic
+// import('@capacitor/core') it depends on is asynchronous, so there's a
+// real window right after this page mounts where `isNative` state is still
+// its default `false` — if the user taps "View Payslip" before that
+// effect has resolved (routine on a slower phone, or just a fast tap),
+// the click handler captured the stale `false` and silently took the web
+// code path forever after, even inside the native app — reaching "Open
+// Payslip" and doing nothing on tap is exactly what that looks like.
+// Cached in a module-level promise (computed once, reused by every call)
+// so awaiting it here is instant on every call after the very first.
+let _nativeCheck = null;
+function isNativePlatform() {
+  if (!_nativeCheck) {
+    _nativeCheck = import('@capacitor/core').then(({ Capacitor }) => Capacitor.isNativePlatform()).catch(() => false);
+  }
+  return _nativeCheck;
+}
+
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 const statusColors = {
@@ -40,30 +60,16 @@ export default function Payslips() {
   // working throughout this app (in-app navigation, etc.) — nothing left
   // to silently block.
   const [readyLinks, setReadyLinks] = useState({}); // { [payrollId]: { url, label } }
-  // target="_blank" (a real anchor, tapped by the user) is what actually
-  // fixed this on desktop/web — but inside this app's native Android/iOS
-  // shell (Capacitor's WebView), target="_blank" needs the SAME
-  // window-creation support window.open() needed and never had
-  // (WebChromeClient.onCreateWindow), so it does nothing there either,
-  // regardless of it being a real click. What DOES work on native: a
-  // normal same-window navigation to a URL outside the app's own origin —
-  // Capacitor's WebViewClient intercepts that and hands it to the system
-  // (opens the system browser / PDF viewer via an Android Intent, or the
-  // iOS equivalent) instead of trying to load it inside the app's own
-  // WebView, no custom window handling required at all. Dropping target
-  // (and the now-meaningless rel) achieves that — but ONLY on native,
-  // since the same change on desktop would replace the SPA tab with the
-  // PDF instead of opening a new one, regressing what's already confirmed
-  // working there.
+  // Rendered links (the readyLinks fallback path, for blob: URLs Browser.open
+  // can't reach) still need to know native-ness for their target attribute
+  // — this state is ONLY for that render decision. It's fine if it's a tick
+  // behind on first paint; nothing reads it before the isNativePlatform()
+  // promise above has almost certainly already resolved (module load, not
+  // component mount). The actual click handlers below never trust this
+  // state — they always await isNativePlatform() fresh, which is the fix
+  // for the real bug (see isNativePlatform's own comment).
   const [isNative, setIsNative] = useState(false);
-  useEffect(() => {
-    (async () => {
-      try {
-        const { Capacitor } = await import('@capacitor/core');
-        setIsNative(Capacitor.isNativePlatform());
-      } catch { /* not running inside the native shell */ }
-    })();
-  }, []);
+  useEffect(() => { isNativePlatform().then(setIsNative); }, []);
 
   // Dropping target="_blank" (previous attempt) relies on Capacitor's
   // WebViewClient implicitly recognizing a real https:// URL as "external"
@@ -129,8 +135,11 @@ export default function Payslips() {
         // Real https:// URL — the common case (bucket storage configured).
         // On native, hand it straight to the system browser via the
         // Capacitor plugin instead of rendering a link at all; on web, the
-        // already-working real-<a>-link path.
-        if (isNative) {
+        // already-working real-<a>-link path. Awaited FRESH here (not the
+        // `isNative` render-state) — see isNativePlatform's own comment for
+        // why that state could be stale at exactly this moment.
+        const native = await isNativePlatform();
+        if (native) {
           const opened = await openInSystemBrowser(rd.url);
           if (!opened) toast.error('Could not open the payslip — please try again.');
         } else {
