@@ -1,36 +1,12 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileText, DollarSign, Printer, TrendingUp, TrendingDown, Download, Loader2, KeyRound } from 'lucide-react';
 import { buildPayslipPageHtml } from '../utils/payslipPrint';
+import DocViewerModal from '../components/DocViewerModal';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
-
-function base64ToBlobUrl(base64, mime) {
-  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-  return URL.createObjectURL(new Blob([bytes], { type: mime }));
-}
-
-// Module-level (not component state) and awaited FRESH at the moment of
-// each click, rather than trusting a React state variable set by a
-// useEffect on mount. That state has an inherent race: the dynamic
-// import('@capacitor/core') it depends on is asynchronous, so there's a
-// real window right after this page mounts where `isNative` state is still
-// its default `false` — if the user taps "View Payslip" before that
-// effect has resolved (routine on a slower phone, or just a fast tap),
-// the click handler captured the stale `false` and silently took the web
-// code path forever after, even inside the native app — reaching "Open
-// Payslip" and doing nothing on tap is exactly what that looks like.
-// Cached in a module-level promise (computed once, reused by every call)
-// so awaiting it here is instant on every call after the very first.
-let _nativeCheck = null;
-function isNativePlatform() {
-  if (!_nativeCheck) {
-    _nativeCheck = import('@capacitor/core').then(({ Capacitor }) => Capacitor.isNativePlatform()).catch(() => false);
-  }
-  return _nativeCheck;
-}
 
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -46,53 +22,21 @@ export default function Payslips() {
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(null);
   const [downloading, setDownloading] = useState(null);
-  // Once a payslip's actual file/HTML is ready, its URL lands here and the
-  // "View..." button is replaced by a real, plain <a href> the user taps
-  // themselves — deliberately NOT auto-triggered via window.open() or a
-  // synthetic .click(). Both of those are script-initiated navigation,
-  // which is exactly the category of action a desktop popup blocker exists
-  // to stop, and which this app's native Android/iOS shell (Capacitor's
-  // default WebView, no window.open()/onCreateWindow support wired up at
-  // all) never reliably honors either — two rounds of trying to paper over
-  // that with cleverer timing or a different JS API still didn't fix it.
-  // An actual rendered <a> the user physically taps is a real link click,
-  // handled by the browser/WebView exactly like any other link already
-  // working throughout this app (in-app navigation, etc.) — nothing left
-  // to silently block.
-  const [readyLinks, setReadyLinks] = useState({}); // { [payrollId]: { url, label } }
-  // Rendered links (the readyLinks fallback path, for blob: URLs Browser.open
-  // can't reach) still need to know native-ness for their target attribute
-  // — this state is ONLY for that render decision. It's fine if it's a tick
-  // behind on first paint; nothing reads it before the isNativePlatform()
-  // promise above has almost certainly already resolved (module load, not
-  // component mount). The actual click handlers below never trust this
-  // state — they always await isNativePlatform() fresh, which is the fix
-  // for the real bug (see isNativePlatform's own comment).
-  const [isNative, setIsNative] = useState(false);
-  useEffect(() => { isNativePlatform().then(setIsNative); }, []);
-
-  // Dropping target="_blank" (previous attempt) relies on Capacitor's
-  // WebViewClient implicitly recognizing a real https:// URL as "external"
-  // and handing it to the system — still didn't open anything for real
-  // users on-device. @capacitor/browser's Browser.open() is Capacitor's
-  // own PURPOSE-BUILT plugin for exactly this (Chrome Custom Tabs on
-  // Android, SFSafariViewController on iOS) — a genuine native API call,
-  // not a web-platform window-opening API, so it isn't subject to any of
-  // the popup-blocker/window-creation restrictions window.open() and
-  // target="_blank" both ran into. Only works with a real http(s) URL, not
-  // a blob: one (an external browser process can't reach a blob: URL that
-  // only exists inside this page's own JS) — used for the uploaded
-  // original's presigned bucket URL, which is exactly that.
-  const openInSystemBrowser = async (url) => {
-    try {
-      const { Browser } = await import('@capacitor/browser');
-      await Browser.open({ url });
-      return true;
-    } catch (e) {
-      console.error('Browser.open failed:', e.message);
-      return false;
-    }
-  };
+  // Every other document type in this app (Aadhar card, offer letters,
+  // announcements, reimbursement receipts...) already opens reliably on
+  // desktop AND inside the native Android/iOS app via THIS SAME component
+  // — an in-app modal that renders the file with a plain <iframe>/<img>
+  // inside a Dialog already open on the current page, instead of trying to
+  // open a NEW window/tab/browser for it. That's the actual difference
+  // from every previous payslip-specific attempt here (window.open(),
+  // target="_blank", even the native Browser plugin): none of those ever
+  // needed to exist in the first place, because opening a second
+  // window/tab/external app was never required to VIEW a document — only
+  // DocViewerModal's own Download button (a real <a href download>, a
+  // secondary action) still opens externally, and that's fine even if it
+  // doesn't on some platform, since viewing already succeeded via the
+  // iframe by then.
+  const [viewerDoc, setViewerDoc] = useState(null); // { url, title } | null
 
   useEffect(() => { loadData(); }, []);
 
@@ -108,14 +52,17 @@ export default function Payslips() {
     setLoading(false);
   };
 
-  const handlePrint = async (payrollId) => {
-    setPrinting(payrollId);
+  const handlePrint = async (payroll) => {
+    setPrinting(payroll.id);
     try {
-      const response = await base44.functions.invoke('generatePayslip', { payroll_id: payrollId });
+      const response = await base44.functions.invoke('generatePayslip', { payroll_id: payroll.id });
       const rd = response?.data || response;
       if (rd?.success) {
+        // Blob URL — an iframe rendering it is same-document content, not a
+        // new browsing context, so this works exactly like passing a real
+        // URL would (see DocViewerModal's own isPdf/iframe branch).
         const url = URL.createObjectURL(new Blob([buildPayslipPageHtml(rd)], { type: 'text/html' }));
-        setReadyLinks(prev => ({ ...prev, [payrollId]: { url, label: 'Open Payslip' } }));
+        setViewerDoc({ url, title: `Payslip — ${monthNames[(payroll.month || 1) - 1]} ${payroll.year}` });
       } else {
         toast.error(rd?.error || 'Failed to generate payslip.');
       }
@@ -126,33 +73,17 @@ export default function Payslips() {
     setPrinting(null);
   };
 
-  const handleDownloadOriginal = async (payrollId) => {
-    setDownloading(payrollId);
+  const handleDownloadOriginal = async (payroll) => {
+    setDownloading(payroll.id);
     try {
-      const response = await base44.functions.invoke('getPayslipFileUrl', { payroll_id: payrollId });
+      const response = await base44.functions.invoke('getPayslipFileUrl', { payroll_id: payroll.id });
       const rd = response?.data || response;
       if (rd?.success && rd.url) {
-        // Real https:// URL — the common case (bucket storage configured).
-        // On native, hand it straight to the system browser via the
-        // Capacitor plugin instead of rendering a link at all; on web, the
-        // already-working real-<a>-link path. Awaited FRESH here (not the
-        // `isNative` render-state) — see isNativePlatform's own comment for
-        // why that state could be stale at exactly this moment.
-        const native = await isNativePlatform();
-        if (native) {
-          const opened = await openInSystemBrowser(rd.url);
-          if (!opened) toast.error('Could not open the payslip — please try again.');
-        } else {
-          setReadyLinks(prev => ({ ...prev, [payrollId]: { url: rd.url, label: 'Open Payslip' } }));
-        }
+        setViewerDoc({ url: rd.url, title: `Payslip — ${monthNames[(payroll.month || 1) - 1]} ${payroll.year}` });
       } else if (rd?.success && rd.base64) {
-        // No bucket configured — the raw PDF was stored inline as base64.
-        // Browser.open() can't reach a blob: URL from outside the page, so
-        // this fallback stays on the same-window-navigation link even on
-        // native (still an improvement over target="_blank", which never
-        // worked there either).
-        const url = base64ToBlobUrl(rd.base64, 'application/pdf');
-        setReadyLinks(prev => ({ ...prev, [payrollId]: { url, label: 'Open Payslip' } }));
+        const bytes = Uint8Array.from(atob(rd.base64), c => c.charCodeAt(0));
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        setViewerDoc({ url, title: `Payslip — ${monthNames[(payroll.month || 1) - 1]} ${payroll.year}` });
       } else {
         toast.error(rd?.error || 'This payslip is not available to download.');
       }
@@ -193,7 +124,7 @@ export default function Payslips() {
               <div className="text-sm">
                 <p className="font-semibold text-amber-900">Password-protected payslip PDF</p>
                 <p className="text-amber-800 mt-0.5">
-                  The "Download Original PDF" file is locked. The default password is your{' '}
+                  This file is locked. The default password is your{' '}
                   <span className="font-semibold">Employee Code</span>
                   {user?.employee_code || sorted.find(p => p.employee_code)?.employee_code
                     ? <> (<span className="font-mono font-semibold">{user?.employee_code || sorted.find(p => p.employee_code)?.employee_code}</span>)</>
@@ -258,25 +189,14 @@ export default function Payslips() {
                       // request: for an uploaded month, the original IS the
                       // payslip — nothing else is shown alongside it.
                       <>
-                        {readyLinks[payroll.id] ? (
-                          <a
-                            href={readyLinks[payroll.id].url}
-                            {...(isNative ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
-                            className="inline-flex w-full items-center justify-center rounded-md bg-primary text-primary-foreground h-10 px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
-                          >
-                            <Download className="w-4 h-4 mr-2" />
-                            {readyLinks[payroll.id].label}
-                          </a>
-                        ) : (
-                          <Button
-                            onClick={() => handleDownloadOriginal(payroll.id)}
-                            className="w-full"
-                            disabled={downloading === payroll.id}
-                          >
-                            {downloading === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
-                            {downloading === payroll.id ? 'Preparing...' : 'View Payslip'}
-                          </Button>
-                        )}
+                        <Button
+                          onClick={() => handleDownloadOriginal(payroll)}
+                          className="w-full"
+                          disabled={downloading === payroll.id}
+                        >
+                          {downloading === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                          {downloading === payroll.id ? 'Opening...' : 'View Payslip'}
+                        </Button>
                         <p className="text-xs text-gray-400 flex items-center gap-1 justify-center">
                           <KeyRound className="w-3 h-3" /> Locked with your Employee Code{payroll.employee_code ? ` (${payroll.employee_code})` : ''}
                         </p>
@@ -301,26 +221,15 @@ export default function Payslips() {
                             <span className="font-bold text-green-600 text-base">₹{netPay.toLocaleString('en-IN')}</span>
                           </div>
                         </div>
-                        {readyLinks[payroll.id] ? (
-                          <a
-                            href={readyLinks[payroll.id].url}
-                            {...(isNative ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
-                            className="inline-flex w-full items-center justify-center rounded-md border border-input bg-background h-10 px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors"
-                          >
-                            <Printer className="w-4 h-4 mr-2" />
-                            {readyLinks[payroll.id].label}
-                          </a>
-                        ) : (
-                          <Button
-                            onClick={() => handlePrint(payroll.id)}
-                            className="w-full"
-                            variant="outline"
-                            disabled={printing === payroll.id}
-                          >
-                            <Printer className="w-4 h-4 mr-2" />
-                            {printing === payroll.id ? 'Generating...' : 'View / Print Payslip'}
-                          </Button>
-                        )}
+                        <Button
+                          onClick={() => handlePrint(payroll)}
+                          className="w-full"
+                          variant="outline"
+                          disabled={printing === payroll.id}
+                        >
+                          <Printer className="w-4 h-4 mr-2" />
+                          {printing === payroll.id ? 'Generating...' : 'View / Print Payslip'}
+                        </Button>
                       </>
                     )}
                   </CardContent>
@@ -337,6 +246,13 @@ export default function Payslips() {
             </CardContent>
           </Card>
         )}
+
+        <DocViewerModal
+          open={!!viewerDoc}
+          url={viewerDoc?.url}
+          title={viewerDoc?.title}
+          onClose={() => setViewerDoc(null)}
+        />
       </div>
     </div>
   );
