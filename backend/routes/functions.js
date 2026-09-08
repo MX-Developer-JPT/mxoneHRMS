@@ -4928,6 +4928,42 @@ router.post('/:name', async (req, res) => {
       const d = JSON.parse(row.data);
       if (d.user_id !== cu.id && !(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'Not authorized' });
       if (!d.payslip_file_url && !d.payslip_file_base64) return res.json({ success: false, error: 'No uploaded payslip file for this record' });
+
+      // Self-heal a record stuck on the inline-base64 fallback: it only
+      // ever got that way because isBucketConfigured() was false, or the
+      // actual putToBucket/presignGet call failed, at the exact moment
+      // THIS ONE FILE was uploaded (payslipUpload.js's catch block) — the
+      // bucket may well be properly configured now (it usually is; that
+      // catch only fires on a transient failure) but this stored record
+      // never gets revisited on its own, so it would otherwise be stuck
+      // returning a base64 blob forever. A base64-derived blob: URL is a
+      // real, permanent dead end on mobile — it only resolves inside the
+      // exact page/WebView that created it, so it can never be opened by
+      // an external browser/PDF viewer (Browser.open() on native, or even
+      // a plain link on some WebViews) the way a real bucket URL can,
+      // which is very likely the actual explanation for "still not
+      // downloadable on phone" surviving every fix to how the URL gets
+      // opened — this record was never producing a real URL to open in
+      // the first place. Upload it to the bucket now and switch the
+      // record over to a real URL going forward if we can.
+      const { isBucketConfigured: gpfuBucketConfigured, buildKey: gpfuBuildKey, putToBucket: gpfuPutToBucket, presignGet: gpfuPresignGet } = await import('../utils/bucket.js');
+      if (!d.payslip_file_url && d.payslip_file_base64 && gpfuBucketConfigured()) {
+        try {
+          const buffer = Buffer.from(d.payslip_file_base64, 'base64');
+          const key = gpfuBuildKey(`payslips/${d.user_id}/${d.year}-${String(d.month).padStart(2, '0')}`, '.pdf');
+          await gpfuPutToBucket(key, buffer, 'application/pdf');
+          const freshUrl = await gpfuPresignGet(key, { expiresIn: 31536000, filename: `Payslip_${d.employee_code || d.user_id}_${d.year}-${d.month}.pdf` });
+          const migrated = { ...d, payslip_file_url: freshUrl, payslip_file_base64: undefined };
+          await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(migrated), row.id]);
+          return res.json({ success: true, url: freshUrl, base64: null });
+        } catch (e) {
+          console.error('[getPayslipFileUrl] base64->bucket migration failed:', e.message);
+          // Fall through to the base64 response below — still viewable on
+          // desktop even though this attempt to fix it for mobile didn't
+          // take; next call will just retry the migration.
+        }
+      }
+
       return res.json({ success: true, url: d.payslip_file_url || null, base64: d.payslip_file_url ? null : d.payslip_file_base64 });
     }
 
