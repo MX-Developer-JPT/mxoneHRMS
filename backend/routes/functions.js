@@ -3047,14 +3047,32 @@ router.post('/:name', async (req, res) => {
       }
 
       if (action === 'approve') {
-        // Credit a Compensatory Off leave balance (find-or-create policy + balance)
-        let polRow = await one("SELECT id,data FROM entities WHERE type='LeavePolicy' AND data::jsonb->>'name'='Compensatory Off'");
+        // Credit a Compensatory Off leave balance (find-or-create policy + balance).
+        //
+        // The policy MUST be visible on the employee's normal Leave-application
+        // screen so they can actually spend the credited days. That screen
+        // lists `LeavePolicy.filter({ is_active: true })`, which resolves to
+        // `WHERE is_active = 1` on the entities *column* (entities.js), NOT the
+        // JSON `data.is_active` field. The original insert here set neither the
+        // column nor a boolean JSON value (`is_active: 1`), so the policy was
+        // invisible to that screen (and to every other `WHERE is_active=1`
+        // query: leave-balance import, HR dashboard, etc.) — a comp-off could
+        // be approved and credited but never applied for. Insert with the
+        // column set, store a real boolean in JSON to match LeavePolicyManager,
+        // and heal any pre-existing row that predates this fix.
+        let polRow = await one("SELECT id,data,is_active FROM entities WHERE type='LeavePolicy' AND data::jsonb->>'name'='Compensatory Off'");
         let polId;
-        if (polRow) { polId = JSON.parse(polRow.data).id || polRow.id; }
-        else {
+        if (polRow) {
+          const pd = JSON.parse(polRow.data);
+          polId = pd.id || polRow.id;
+          if (!polRow.is_active || pd.is_active !== true) {
+            await run("UPDATE entities SET is_active=1, data=$1, updated_at=NOW()::TEXT WHERE id=$2",
+              [JSON.stringify({ ...pd, is_active: true }), polRow.id]);
+          }
+        } else {
           polId = uuidv4();
-          const pol = { id: polId, name: 'Compensatory Off', code: 'CO', total_days: 0, accrual: 'earned', carry_forward: false, description: 'Earned by working on Sundays/company holidays. Credited on approval of a comp-off claim.', is_active: 1 };
-          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeavePolicy',NULL,'active',$2)", [polId, JSON.stringify(pol)]);
+          const pol = { id: polId, name: 'Compensatory Off', code: 'CO', total_days: 0, accrual: 'earned', carry_forward: false, description: 'Earned by working on Sundays/company holidays. Credited on approval of a comp-off claim.', is_active: true };
+          await run("INSERT INTO entities(id,type,user_id,status,is_active,data) VALUES($1,'LeavePolicy',NULL,'active',1,$2)", [polId, JSON.stringify(pol)]);
         }
         const coYear = new Date().getFullYear();
         const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [coRow.user_id]);
@@ -3081,9 +3099,18 @@ router.post('/:name', async (req, res) => {
 
       // Comp-off balance
       let coBalance = 0;
-      const coPolRow = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND data::jsonb->>'name'='Compensatory Off'");
+      const coPolRow = await one("SELECT id,data,is_active FROM entities WHERE type='LeavePolicy' AND data::jsonb->>'name'='Compensatory Off'");
       if (coPolRow) {
-        const coPolId = JSON.parse(coPolRow.data).id;
+        // Heal a Compensatory Off policy that was created before the
+        // is_active-column fix (see decideCompOff) so it becomes visible on
+        // the employee's Leave-application screen — otherwise a credited
+        // comp-off balance can never actually be spent.
+        const coPolData = JSON.parse(coPolRow.data);
+        if (!coPolRow.is_active || coPolData.is_active !== true) {
+          await run("UPDATE entities SET is_active=1, data=$1, updated_at=NOW()::TEXT WHERE id=$2",
+            [JSON.stringify({ ...coPolData, is_active: true }), coPolRow.id]);
+        }
+        const coPolId = coPolData.id;
         const balRows = await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [cu.id]);
         const bal = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === coPolId && b.year === new Date().getFullYear());
         coBalance = bal?.available || 0;
