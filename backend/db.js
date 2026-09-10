@@ -151,6 +151,23 @@ async function initSchema() {
     "WHERE type='GatePass' AND user_id IS NULL AND data::jsonb->>'employee_user_id' IS NOT NULL"
   );
 
+  // One-time normalization: the "Compensatory Off" LeavePolicy (auto-created
+  // by decideCompOff on the first comp-off approval) stored `is_active` as
+  // the number 1 inside `data`, whereas every policy made through
+  // LeavePolicyManager stores the boolean `true`. The employee Leave-apply
+  // screen calls LeavePolicy.filter({ is_active: true }), and the generic
+  // filter's JS pass does a strict `data.is_active === true` check — so
+  // `1 !== true` made the comp-off policy invisible there and an approved,
+  // credited comp-off balance could never actually be spent. Flip any
+  // LeavePolicy whose `data.is_active` is a truthy non-boolean (1 / "1" /
+  // "true") to a real JSON boolean; real `true` / `false` / `0` are left
+  // alone. Idempotent.
+  await pool.query(
+    "UPDATE entities " +
+    "SET data = jsonb_set(data::jsonb, '{is_active}', 'true'::jsonb)::text, updated_at = NOW()::TEXT " +
+    "WHERE type='LeavePolicy' AND data::jsonb->'is_active' IN ('1'::jsonb, '\"1\"'::jsonb, '\"true\"'::jsonb)"
+  );
+
   // One-time seed: map known biometric device names to their site, per
   // explicit instruction — 'Biomatrice 2' / 'LabourAtt' punches mean Duhai,
   // 'Biometric' punches mean Ghaziabad. Location Master already lets HR
