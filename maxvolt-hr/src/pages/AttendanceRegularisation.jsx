@@ -13,6 +13,7 @@ import MultiDateCalendarPicker from '@/components/attendance/MultiDateCalendarPi
 import { toast } from 'sonner';
 import { format, isSameMonth } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import { deriveDayStatus, DAY_STATUS_CONFIG } from '@/lib/attendanceDayStatus';
 import MonthRequestFilter from '@/components/requests/MonthRequestFilter';
 import RequestMiniCalendar from '@/components/requests/RequestMiniCalendar';
 
@@ -68,6 +69,9 @@ export default function AttendanceRegularisation() {
   const [saving, setSaving] = useState(false);
   const [bulkDates, setBulkDates] = useState([]);
   const [bulkMode, setBulkMode] = useState(false);
+  const [attendanceData, setAttendanceData] = useState([]);
+  const [holidays, setHolidays] = useState([]);
+  const [dateOfJoining, setDateOfJoining] = useState(null);
   const [historyMonth, setHistoryMonth] = useState(new Date());
   const [historyView, setHistoryView] = useState('list');
   const [calDayReqs, setCalDayReqs] = useState(null);
@@ -78,8 +82,16 @@ export default function AttendanceRegularisation() {
     try {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
-      const reqs = await base44.entities.AttendanceRegularisation.filter({ user_id: currentUser.id }, '-created_date', 200);
+      const [reqs, records, holidayRecords, empRecords] = await Promise.all([
+        base44.entities.AttendanceRegularisation.filter({ user_id: currentUser.id }, '-created_date', 200),
+        base44.entities.Attendance.filter({ user_id: currentUser.id }, '-date', 500),
+        base44.entities.Holiday.list(),
+        base44.entities.Employee.filter({ user_id: currentUser.id }),
+      ]);
       setRequests(reqs);
+      setAttendanceData(records || []);
+      setHolidays(holidayRecords || []);
+      setDateOfJoining(empRecords?.[0]?.date_of_joining || null);
     } catch (e) { console.error(e); }
     setLoading(false);
   };
@@ -412,8 +424,11 @@ export default function AttendanceRegularisation() {
                     selectedDates={bulkDates}
                     onChange={setBulkDates}
                     maxDate={new Date().toISOString().split('T')[0]}
+                    attendanceData={attendanceData}
+                    holidays={holidays}
+                    dateOfJoining={dateOfJoining}
                   />
-                  <p className="text-xs text-gray-500 mt-1">Same check-in/out time and reason will apply to all selected dates</p>
+                  <p className="text-xs text-gray-500 mt-1">Day colours show your actual attendance — same as the My Attendance page. Same check-in/out time and reason will apply to all selected dates.</p>
                 </div>
               ) : (
                 <div>
@@ -423,17 +438,35 @@ export default function AttendanceRegularisation() {
                 </div>
               )}
 
-              {/* Existing attendance display */}
-              {existingAttendance && (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm">
-                  <p className="font-medium text-amber-800 mb-1">Current Attendance Record</p>
-                  <div className="grid grid-cols-3 gap-2 text-xs text-amber-700">
-                    <div><span className="font-medium">Status:</span> {existingAttendance.status}</div>
-                    <div><span className="font-medium">In:</span> {existingAttendance.check_in_time ? safeDate(existingAttendance.check_in_time, 'HH:mm') : 'N/A'}</div>
-                    <div><span className="font-medium">Out:</span> {existingAttendance.check_out_time ? safeDate(existingAttendance.check_out_time, 'HH:mm') : 'N/A'}</div>
+              {/* Actual attendance for the selected day — same status colours as
+                  the My Attendance page, so the employee can confirm the day
+                  really needs regularising before submitting. */}
+              {!bulkMode && formData.attendance_date && !fetchingAttendance && (() => {
+                const selDay = new Date(formData.attendance_date + 'T00:00:00');
+                const rec = existingAttendance
+                  || attendanceData.find(a => String(a.date).slice(0, 10) === formData.attendance_date)
+                  || null;
+                const st = deriveDayStatus(selDay, rec, {
+                  holidayDates: holidays.map(h => h.date),
+                  dateOfJoining,
+                });
+                const cfg = st ? DAY_STATUS_CONFIG[st] : null;
+                const Icon = cfg?.icon;
+                return (
+                  <div className={`rounded-lg p-3 text-sm border ${cfg ? cfg.color : 'bg-gray-50 border-gray-200 text-gray-600'}`}>
+                    <p className="font-medium mb-1 flex items-center gap-1.5">
+                      {Icon && <Icon className="w-4 h-4" />}
+                      Attendance on {safeDate(formData.attendance_date + 'T00:00:00', 'EEE, MMM d')}: {cfg ? cfg.label : 'No record'}
+                      {rec?.regularised && <span className="ml-1 text-[11px] font-normal">(already regularised)</span>}
+                    </p>
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      <div><span className="font-medium">Status:</span> {rec?.status || '—'}</div>
+                      <div><span className="font-medium">In:</span> {rec?.check_in_time ? safeDate(rec.check_in_time, 'HH:mm') : 'N/A'}</div>
+                      <div><span className="font-medium">Out:</span> {rec?.check_out_time ? safeDate(rec.check_out_time, 'HH:mm') : 'N/A'}</div>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
               {fetchingAttendance && <p className="text-xs text-gray-400">Fetching attendance record...</p>}
 
               <div className="grid grid-cols-2 gap-4">

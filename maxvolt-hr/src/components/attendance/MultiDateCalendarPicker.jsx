@@ -1,12 +1,24 @@
-﻿import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, addMonths, subMonths, isSameDay } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import { deriveDayStatus, DAY_STATUS_CONFIG } from '@/lib/attendanceDayStatus';
 
 const DAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
-export default function MultiDateCalendarPicker({ selectedDates = [], onChange, maxDate }) {
+export default function MultiDateCalendarPicker({
+  selectedDates = [],
+  onChange,
+  maxDate,
+  // Optional: when supplied, each day cell is tinted with the employee's
+  // actual attendance status for that day — same colours as the
+  // "My Attendance" calendar — so they can see at a glance which days were
+  // absent / had a missed punch and actually need regularising.
+  attendanceData = null,
+  holidays = [],
+  dateOfJoining = null,
+}) {
   const [currentMonth, setCurrentMonth] = useState(new Date());
 
   const max = maxDate ? new Date(maxDate) : new Date();
@@ -14,6 +26,27 @@ export default function MultiDateCalendarPicker({ selectedDates = [], onChange, 
   const lastDay = endOfMonth(currentMonth);
   const days = eachDayOfInterval({ start: firstDay, end: lastDay });
   const startPad = getDay(firstDay);
+
+  const showStatus = Array.isArray(attendanceData);
+  const holidayDates = useMemo(() => holidays.map(h => h.date), [holidays]);
+  const attByDate = useMemo(() => {
+    const m = {};
+    (attendanceData || []).forEach(a => { if (a?.date) m[String(a.date).slice(0, 10)] = a; });
+    return m;
+  }, [attendanceData]);
+  const today = new Date();
+
+  // Which statuses actually appear this month — keeps the legend honest.
+  const legendStatuses = useMemo(() => {
+    if (!showStatus) return [];
+    const seen = new Set();
+    days.forEach(day => {
+      if (day > max) return;
+      const st = deriveDayStatus(day, attByDate[format(day, 'yyyy-MM-dd')], { holidayDates, dateOfJoining, today });
+      if (st && DAY_STATUS_CONFIG[st]) seen.add(st);
+    });
+    return [...seen];
+  }, [showStatus, days, max, attByDate, holidayDates, dateOfJoining]);
 
   const toggleDate = (day) => {
     if (day > max) return;
@@ -55,24 +88,50 @@ export default function MultiDateCalendarPicker({ selectedDates = [], onChange, 
             const isSelected = selectedDates.includes(dateStr);
             const isDisabled = day > max;
             const isWeekend = getDay(day) === 0 || getDay(day) === 6;
+            const dayStatus = showStatus && !isDisabled
+              ? deriveDayStatus(day, attByDate[dateStr], { holidayDates, dateOfJoining, today })
+              : null;
+            const statusCfg = dayStatus ? DAY_STATUS_CONFIG[dayStatus] : null;
+            const StatusIcon = statusCfg?.icon;
+            const att = attByDate[dateStr];
             return (
               <button
                 type="button"
                 key={dateStr}
                 disabled={isDisabled}
                 onClick={() => toggleDate(day)}
-                className={`text-center text-xs py-1.5 rounded transition-colors
-                  ${isSelected ? 'bg-blue-600 text-white font-semibold' : ''}
-                  ${!isSelected && !isDisabled ? 'hover:bg-blue-50' : ''}
+                title={statusCfg ? `${format(day, 'MMM d')} — ${statusCfg.label}${att?.working_hours > 0 ? ` · ${att.working_hours.toFixed(1)}h` : ''}${att?.regularised ? ' · Regularised' : ''}` : undefined}
+                className={`relative flex flex-col items-center justify-center gap-0.5 text-xs py-1.5 rounded border transition-colors min-h-[38px]
+                  ${isSelected ? 'bg-blue-600 text-white font-semibold border-blue-600 ring-2 ring-blue-300' : ''}
+                  ${!isSelected && statusCfg ? statusCfg.color : ''}
+                  ${!isSelected && !statusCfg ? 'border-transparent' : ''}
+                  ${!isSelected && !isDisabled && !statusCfg ? 'hover:bg-blue-50' : ''}
+                  ${!isSelected && statusCfg ? 'hover:brightness-95' : ''}
                   ${isDisabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}
-                  ${!isSelected && isWeekend ? 'text-gray-400' : ''}
+                  ${!isSelected && !statusCfg && isWeekend ? 'text-gray-400' : ''}
                 `}
               >
-                {day.getDate()}
+                <span className="leading-none font-medium">{day.getDate()}</span>
+                {!isSelected && StatusIcon && <StatusIcon className="w-3 h-3" />}
+                {att?.regularised && !isSelected && (
+                  <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-violet-500" />
+                )}
               </button>
             );
           })}
         </div>
+
+        {/* Legend — only the statuses that actually occur this month */}
+        {legendStatuses.length > 0 && (
+          <div className="flex flex-wrap gap-x-3 gap-y-1 pt-2 mt-2 border-t text-[11px] text-gray-500">
+            {legendStatuses.map(st => (
+              <span key={st} className="flex items-center gap-1">
+                <span className={`w-2.5 h-2.5 rounded border ${DAY_STATUS_CONFIG[st].color}`} />
+                {DAY_STATUS_CONFIG[st].label}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Selected dates chips */}
