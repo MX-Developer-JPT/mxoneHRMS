@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { UserPlus, CheckCircle, XCircle, FileText, Eye, Clock, Home } from 'lucide-react';
+import { UserPlus, CheckCircle, XCircle, FileText, Eye, Clock, Home, Search, X } from 'lucide-react';
 import DocViewerModal from '@/components/DocViewerModal';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
@@ -25,6 +25,7 @@ export default function OnboardingApproval() {
   const [showRejectionDialog, setShowRejectionDialog] = useState(false);
   const [viewerDoc, setViewerDoc] = useState(null);
   const [rejectionReason, setRejectionReason] = useState('');
+  const [search, setSearch] = useState('');
   const [formData, setFormData] = useState({
     employee_code: '',
     department: '',
@@ -183,6 +184,20 @@ export default function OnboardingApproval() {
     return <div className="flex items-center justify-center h-screen">Loading...</div>;
   }
 
+  // Name/email/employee-code search over the pending list — matches on
+  // whatever the row itself actually shows, so a search hit is never
+  // confusing (no matching on fields the reviewer can't see here).
+  const q = search.trim().toLowerCase();
+  const filteredPendingUsers = q
+    ? pendingUsers.filter(u => {
+        const name = [u.first_name, u.middle_name, u.last_name].filter(Boolean).join(' ') || u.full_name || '';
+        const empRecord = employees.find(e => e.user_id === u.id);
+        return name.toLowerCase().includes(q)
+          || u.email?.toLowerCase().includes(q)
+          || empRecord?.employee_code?.toLowerCase().includes(q);
+      })
+    : pendingUsers;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -192,16 +207,31 @@ export default function OnboardingApproval() {
         </div>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <CardTitle className="flex items-center gap-2">
               <UserPlus className="w-5 h-5" />
-              Pending Approvals ({pendingUsers.length})
+              Pending Approvals ({filteredPendingUsers.length}{q ? ` of ${pendingUsers.length}` : ''})
             </CardTitle>
+            <div className="relative w-full sm:w-72">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <Input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search by name, email, or employee code..."
+                className="pl-9 pr-8"
+              />
+              {search && (
+                <button type="button" onClick={() => setSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
             {pendingUsers.length > 0 ? (
+              filteredPendingUsers.length > 0 ? (
               <div className="space-y-4">
-                {pendingUsers.map(user => {
+                {filteredPendingUsers.map(user => {
                   const empRecord = employees.find(e => e.user_id === user.id);
                   return (
                     <div key={user.id} className="border rounded-lg p-4 flex justify-between items-center flex-wrap gap-3">
@@ -232,6 +262,12 @@ export default function OnboardingApproval() {
                   );
                 })}
               </div>
+              ) : (
+                <div className="text-center py-12">
+                  <Search className="w-16 h-16 mx-auto text-gray-400 mb-4" />
+                  <p className="text-gray-500">No pending approvals match "{search}"</p>
+                </div>
+              )
             ) : (
               <div className="text-center py-12">
                 <UserPlus className="w-16 h-16 mx-auto text-gray-400 mb-4" />

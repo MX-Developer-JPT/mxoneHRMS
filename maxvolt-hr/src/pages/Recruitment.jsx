@@ -577,6 +577,26 @@ const DEFAULT_FILTERS = {
 
 const RECO_ORDER = { 'Strongly Recommend': 0, 'Recommend': 1, 'Maybe': 2, 'Not Recommended': 3 };
 
+// A candidate is "for" a given Job Requisition if either linking field
+// points at it — public job-board applications (submitJobApplication) store
+// `job_id`, while the "Add Candidate" form here stores `requisition_id`, two
+// different fields for the same relationship. Candidates with neither field
+// set (older manually-added records) fall back to matching the requisition's
+// title against their free-text position_applied — the same fallback
+// getMISData already uses for this exact gap. Scoring a candidate against a
+// JD they never actually applied for produced meaningless comparisons (e.g.
+// a Sales Executive applicant scored against an HR Manager requisition), so
+// every scoring entry point below is scoped through this.
+function candidateMatchesJd(candidate, jd) {
+  if (!candidate || !jd) return false;
+  if (candidate.requisition_id) return candidate.requisition_id === jd.id;
+  if (candidate.job_id) return candidate.job_id === jd.id;
+  if (candidate.position_applied && jd.position_title) {
+    return candidate.position_applied.trim().toLowerCase() === jd.position_title.trim().toLowerCase();
+  }
+  return false;
+}
+
 export default function Recruitment() {
   const [candidates, setCandidates] = useState([]);
   const [showForm, setShowForm] = useState(false);
@@ -674,9 +694,17 @@ export default function Recruitment() {
 
   const scoreAllFiltered = async () => {
     if (!selectedJdId) { toast.error('Please select a Job Requisition first'); return; }
+    // Only candidates who actually applied for THIS vacancy — otherwise
+    // "Score All" would grab whatever's first in the currently-filtered list
+    // regardless of which role they applied for.
+    const eligible = filtered.filter(c => candidateMatchesJd(c, selectedJd));
+    if (!eligible.length) {
+      toast.error(`No candidates found who applied for "${selectedJd?.position_title || 'this vacancy'}"`);
+      return;
+    }
     setScoringAll(true);
-    const toScore = filtered.slice(0, 20); // cap at 20 to avoid rate limits
-    toast.info(`Scoring ${toScore.length} candidates against selected JD...`);
+    const toScore = eligible.slice(0, 20); // cap at 20 to avoid rate limits
+    toast.info(`Scoring ${toScore.length} candidate(s) who applied for "${selectedJd?.position_title}"...`);
     for (const c of toScore) {
       await scoreSingleCandidate(c.id);
     }
@@ -1021,7 +1049,7 @@ export default function Recruitment() {
                   >
                     {scoringAll
                       ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Scoring...</>
-                      : <><Sparkles className="w-4 h-4 mr-2" />Score All ({Math.min(filtered.length, 20)})</>
+                      : <><Sparkles className="w-4 h-4 mr-2" />Score All ({Math.min(filtered.filter(c => candidateMatchesJd(c, selectedJd)).length, 20)})</>
                     }
                   </Button>
                   {Object.keys(scores).length > 0 && (
@@ -1039,6 +1067,11 @@ export default function Recruitment() {
               )}
               {!selectedJdId && (
                 <p className="text-xs text-gray-400 italic">Select a JD above, then score candidates with AI — weighted across skills, experience, salary, notice period, and education.</p>
+              )}
+              {selectedJdId && (
+                <p className="w-full text-xs text-gray-400 italic">
+                  Only candidates who applied for "{selectedJd?.position_title}" are scored/comparable here — not the whole candidate pool.
+                </p>
               )}
             </div>
           </CardContent>
@@ -1160,7 +1193,11 @@ export default function Recruitment() {
                       )}
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
-                      {selectedJdId && (
+                      {/* Scoring is scoped to candidates who actually applied for
+                          the selected vacancy — see candidateMatchesJd above —
+                          so a mismatched candidate never gets an AI comparison
+                          against a role they never applied for. */}
+                      {selectedJdId && candidateMatchesJd(candidate, selectedJd) && (
                         <Button
                           size="sm"
                           variant="outline"
