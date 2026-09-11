@@ -52,18 +52,27 @@ export default function OnboardingApproval() {
       const usersResponse = await base44.functions.invoke('getAllUsers', {});
       const allUsers = usersResponse?.data?.users || usersResponse?.users || [];
 
-      const pending = allUsers.filter(u => {
-        const userRole = u.custom_role || u.role;
-        return userRole === 'onboarding_pending';
-      });
-      
       const [empRecords, depts, shiftList, locationList] = await Promise.all([
         base44.entities.Employee.list('-created_date', 500),
         base44.entities.Department.list(),
         base44.entities.Shift.list(),
         base44.entities.AppLocation.list(),
       ]);
-      
+
+      // A rejected-and-not-yet-resubmitted user is excluded here — HR
+      // already made a decision on their submission; leaving them in
+      // "Pending Approvals" indistinguishable from one nobody has looked at
+      // yet meant they could sit there forever, or get approved by mistake
+      // after already being rejected. onboarding_rejected is cleared back
+      // to false by OnboardingForm.jsx the moment they resubmit, which is
+      // what brings them back into this list.
+      const pending = allUsers.filter(u => {
+        const userRole = u.custom_role || u.role;
+        if (userRole !== 'onboarding_pending') return false;
+        const empRecord = empRecords.find(e => e.user_id === u.id);
+        return !empRecord?.onboarding_rejected;
+      });
+
       // Reporting manager dropdown must include every manager/management
       // user (not just top-level management) so any new hire can be
       // assigned to the person who will actually manage them.

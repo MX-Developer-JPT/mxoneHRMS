@@ -366,6 +366,12 @@ const recruiterMenuGroups = [
     { name: 'Interviews',               icon: Calendar,        page: 'InterviewManagement' },
     { name: 'Offer Letters',            icon: FileSignature,   page: 'OfferLetters' },
     { name: 'Recruitment Analytics',    icon: BarChart3,       page: 'RecruitmentAnalytics' },
+    // A recruiter owns the hire all the way through inviteJoinerToApp
+    // (Recruitment.jsx/OfferLetters.jsx) — the new joiner then registers
+    // and submits the onboarding form, which used to land somewhere only
+    // HR could see or act on, breaking the recruiter's own pipeline at the
+    // very last step.
+    { name: 'Onboarding Approval',      icon: UserPlus,        page: 'OnboardingApproval' },
   ]},
   { label: 'My Attendance', items: [
     { name: 'Mark Attendance',          icon: Clock,           page: 'MarkAttendance' },

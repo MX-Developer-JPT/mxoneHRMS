@@ -344,8 +344,12 @@ export default function OnboardingForm() {
     }
 
     // Only now — after every document upload above has actually succeeded —
-    // mark the Employee record as submitted.
-    await base44.entities.Employee.update(empId, { onboarding_submitted: true });
+    // mark the Employee record as submitted. Also clears onboarding_rejected
+    // (set by rejectUserOnboarding) so this resubmission reappears in HR's
+    // Pending Approvals list — it was hidden there the moment it was
+    // rejected specifically so a rejected-and-not-yet-fixed submission
+    // doesn't sit there looking like it's still awaiting a first decision.
+    await base44.entities.Employee.update(empId, { onboarding_submitted: true, onboarding_rejected: false });
 
     // Mark as submitted BEFORE sending email so confirmation always shows
     setAlreadySubmitted(true);

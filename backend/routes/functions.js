@@ -11879,11 +11879,25 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     /* ── Onboarding ──────────────────────────────────── */
     case 'approveUserOnboarding': {
+      // Was completely unauthenticated-callable — this sets an arbitrary
+      // user's role/custom_role to whatever the caller passes, so without
+      // this check any authenticated user (not just HR/recruiter) could
+      // call it on their own account with newUserRole:'admin' and instantly
+      // self-promote. Gated to the same roles that can see this page
+      // (Onboarding Approval, now shown to recruiters too — they own the
+      // hire through inviteJoinerToApp → registration → this approval).
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       // Accept both userId (frontend) and user_id (legacy)
       const uid = p.user_id || p.userId;
-      const role = p.custom_role || p.newUserRole || 'employee';
+      let role = p.custom_role || p.newUserRole || 'employee';
       const employeeData = p.employeeData || {};
       if (!uid) return res.status(400).json({ error: 'user_id required' });
+      // A non-admin recruiter/HR caller (recruiter/hr/management) must not
+      // be able to hand out 'admin' through this onboarding-approval path —
+      // the frontend only ever sends 'employee' here, so this only matters
+      // against a hand-crafted request; only an existing admin may promote
+      // straight to admin this way.
+      if (role === 'admin' && !(await hasRole(cu, ['admin']))) role = 'employee';
 
       await run("UPDATE users SET role=$1,custom_role=$2 WHERE id=$3", [role, role, uid]);
 
@@ -11949,13 +11963,22 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'rejectUserOnboarding': {
+      // Same unauthenticated-callable gap as approveUserOnboarding above.
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const uid = p.user_id || p.userId;
       const reason = p.reason || '';
       if (!uid) return res.status(400).json({ error: 'user_id required' });
 
       const eRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
       if (eRow) {
-        const d = { ...JSON.parse(eRow.data), onboarding_submitted:false, onboarding_rejection_reason:reason };
+        // onboarding_rejected hides this user from OnboardingApproval.jsx's
+        // Pending Approvals list until they actually resubmit — previously
+        // nothing here changed which list a user showed up in, so a
+        // rejected submission sat in "Pending" indefinitely, indistinguishable
+        // from one HR hadn't looked at yet, and reviewable/approvable again
+        // by mistake. OnboardingForm.jsx clears this flag back to false the
+        // moment the employee resubmits.
+        const d = { ...JSON.parse(eRow.data), onboarding_submitted:false, onboarding_rejected:true, onboarding_rejection_reason:reason };
         await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(d), eRow.id]);
       }
 
@@ -16646,8 +16669,9 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       // that still expects a single object.
       const scorecards = [...(sisCand.interview_scorecards || (sisCand.interview_scorecard ? [sisCand.interview_scorecard] : [])), updatedCard];
       await run("UPDATE entities SET data=$1,updated_at=$2 WHERE id=$3", [JSON.stringify({ ...sisCand, interview_scorecard: updatedCard, interview_scorecards: scorecards, status: newStatus, interviewed_at: now }), now, sisCandRow.id]);
-      // Notify HR
-      const hrUsers = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
+      // Notify HR — and recruiter/management, who now own this pipeline
+      // just as much (they're the ones who'll action select/reject next).
+      const hrUsers = await all("SELECT id FROM users WHERE role IN ('hr','admin','recruiter','management')");
       const empName = sisCand.full_name || 'Candidate';
       const recLabel = sisCard.recommendation === 'select' ? 'SELECTED' : sisCard.recommendation === 'reject' ? 'REJECTED' : 'On Hold';
       for (const hr of hrUsers) {
