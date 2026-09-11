@@ -46,6 +46,7 @@ import Support from './pages/Support';
 import CareersPage from './pages/CareersPage';
 import OfferAcceptPage from './pages/OfferAcceptPage';
 import CandidateDocumentPortal from './pages/CandidateDocumentPortal';
+import ApplicationStatusPage from './pages/ApplicationStatusPage';
 const LOPConfiguration = lazy(() => import('./pages/LOPConfiguration'));
 const MyExit = lazy(() => import('./pages/MyExit'));
 const ExitManagement = lazy(() => import('./pages/ExitManagement'));
@@ -205,7 +206,7 @@ const ForceChangePassword = ({ onDone }) => {
   );
 };
 
-const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept', '/candidate-documents'];
+const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept', '/candidate-documents', '/application-status'];
 
 // Guards the login/register/forgot-password/reset-password routes against an
 // already-authenticated session. Without this, pressing the browser/hardware
@@ -578,6 +579,7 @@ function App() {
           <Route path="/career/:jobId" element={<CareersPage />} />
           <Route path="/offer-accept/:token" element={<OfferAcceptPage />} />
           <Route path="/candidate-documents/:token" element={<CandidateDocumentPortal />} />
+          <Route path="/application-status/:token" element={<ApplicationStatusPage />} />
           {/* All other routes go through auth */}
           <Route path="*" element={
             <AuthProvider>

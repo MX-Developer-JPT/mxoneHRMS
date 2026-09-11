@@ -3,7 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Sparkles, Loader2, FileText, Mail, Phone, Building2, Briefcase, DollarSign, Clock, Bell, X } from 'lucide-react';
+import { Sparkles, Loader2, FileText, Mail, Phone, Building2, Briefcase, DollarSign, Clock, Bell, X, Users2, ClipboardCheck } from 'lucide-react';
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from 'sonner';
 import ResumeParsePanel from './ResumeParsePanel';
@@ -125,6 +125,11 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
                   <Building2 className="w-4 h-4" /> {localCandidate.department}
                 </span>
               )}
+              {localCandidate.source === 'referral' && localCandidate.referred_by_name && (
+                <span className="inline-flex items-center gap-1.5 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-0.5">
+                  <Users2 className="w-4 h-4" /> Referred by {localCandidate.referred_by_name}
+                </span>
+              )}
             </div>
 
             {/* Basic Info */}
@@ -230,6 +235,45 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
                     )}
                   </>
                 )}
+              </div>
+            )}
+
+            {/* Interview Scorecards — a candidate can go through several
+                rounds with different interviewers; interview_scorecards is
+                an array so every round's submission survives (the field
+                used to be a single object that the next round's save
+                silently overwrote). Shown newest first, side-by-side-able
+                since there are usually only 1-3 rounds. */}
+            {Array.isArray(localCandidate.interview_scorecards) && localCandidate.interview_scorecards.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-gray-600 uppercase flex items-center gap-1.5">
+                  <ClipboardCheck className="w-3.5 h-3.5" /> Interview Scorecards ({localCandidate.interview_scorecards.length})
+                </p>
+                {[...localCandidate.interview_scorecards].reverse().map((sc, i) => {
+                  const criteria = [
+                    ['technical', 'Technical'], ['communication', 'Communication'], ['cultural_fit', 'Cultural Fit'],
+                    ['problem_solving', 'Problem Solving'], ['leadership', 'Leadership'],
+                  ];
+                  const recoColor = sc.recommendation === 'select' ? 'bg-green-100 text-green-800' : sc.recommendation === 'reject' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800';
+                  return (
+                    <div key={i} className="border rounded-lg p-3 bg-gray-50 text-sm">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <span className="font-medium text-gray-800">{sc.recorded_by || 'Interviewer'}</span>
+                        <div className="flex items-center gap-2">
+                          <Badge className={recoColor}>{sc.recommendation === 'select' ? 'Select' : sc.recommendation === 'reject' ? 'Reject' : 'Hold'}</Badge>
+                          <span className="text-xs text-gray-400">{sc.recorded_at ? new Date(sc.recorded_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''}</span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-gray-600 mb-1">
+                        {criteria.map(([key, label]) => sc[key] != null && (
+                          <div key={key} className="flex justify-between"><span>{label}</span><span className="font-medium">{sc[key]}/5</span></div>
+                        ))}
+                        {sc.overall != null && <div className="flex justify-between col-span-2 border-t pt-1 mt-0.5 font-semibold text-gray-700"><span>Overall</span><span>{sc.overall}/5</span></div>}
+                      </div>
+                      {sc.notes && <p className="text-xs text-gray-500 mt-1 italic">"{sc.notes}"</p>}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

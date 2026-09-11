@@ -145,6 +145,7 @@ export default function RecruitmentAnalytics() {
   const kpis      = data?.kpis || {};
   const funnel    = data?.stage_funnel || [];
   const sources   = data?.by_source || [];
+  const referrers = data?.by_referrer || [];
   const depts     = data?.by_department || [];
   const monthly   = data?.monthly_trend || [];
   const reqHealth = data?.requisition_health || [];
@@ -479,6 +480,42 @@ export default function RecruitmentAnalytics() {
                   </div>
                 </>
               )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Top Referrers — only populated for candidates carrying a real
+            referred_by_user_id (set by the "Referred By" picker in
+            Recruitment.jsx's Add Candidate form); connects the recruitment
+            pipeline's "referral" source to who specifically gets credit,
+            which nothing previously surfaced even though payroll already
+            has a working referral-bonus disbursement path. */}
+        {activeTab === 'sources' && referrers.length > 0 && (
+          <Card>
+            <CardHeader><CardTitle>Top Referrers</CardTitle></CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b">
+                      <th className="text-left px-3 py-2.5 font-semibold text-gray-600">Employee</th>
+                      <th className="text-right px-3 py-2.5 font-semibold text-gray-600">Referred</th>
+                      <th className="text-right px-3 py-2.5 font-semibold text-gray-600">Selected</th>
+                      <th className="text-right px-3 py-2.5 font-semibold text-gray-600">Joined</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {referrers.slice(0, 10).map(r => (
+                      <tr key={r.referred_by_user_id} className="border-b hover:bg-gray-50">
+                        <td className="px-3 py-2.5 font-medium">{r.referred_by_name}</td>
+                        <td className="px-3 py-2.5 text-right font-bold text-blue-600">{r.referred}</td>
+                        <td className="px-3 py-2.5 text-right">{r.selected}</td>
+                        <td className="px-3 py-2.5 text-right font-medium text-green-700">{r.joined}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </CardContent>
           </Card>
         )}

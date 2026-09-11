@@ -658,6 +658,46 @@ function deriveDocCollectionStatus(documents) {
   return 'partially_submitted';
 }
 
+// ── Shared: rejects one Candidate row and (best-effort) emails them —
+// used by both the single-candidate reject case and the bulk-reject case
+// so the two can never drift apart. Previously rejection was done by the
+// frontend calling the generic entity-update API directly, which updated
+// the status/reason fields but never notified the candidate at all — every
+// other terminal action (offer, doc request) emails them, this one didn't.
+async function rejectOneCandidate(candRow, { reason, notes, notifyCandidate = true, actorName }) {
+  const cand = JSON.parse(candRow.data);
+  const updated = { ...cand, status: 'rejected', rejection_reason: reason || '', rejection_notes: notes || '' };
+  await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(updated), candRow.id]);
+
+  let emailSent = false, emailError = null;
+  if (notifyCandidate && cand.email) {
+    try {
+      await sendEmail({
+        to: cand.email,
+        subject: `Update on your application for ${cand.position_applied || 'the role'} — Maxvolt Energy Industries Limited`,
+        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
+          <div style="background:#1e293b;color:#fff;padding:20px;border-radius:10px 10px 0 0;text-align:center;">
+            <h2 style="margin:0;">Application Update</h2>
+          </div>
+          <div style="padding:24px;border:1px solid #e5e7eb;border-top:none;">
+            <p>Dear <strong>${cand.full_name || cand.name || 'Candidate'}</strong>,</p>
+            <p>Thank you for your interest in the <strong>${cand.position_applied || 'position'}</strong> role at Maxvolt Energy Industries Limited, and for the time you invested in the application process.</p>
+            <p>After careful consideration, we have decided to move forward with other candidates for this role${reason ? ` (${reason})` : ''}. This is by no means a reflection of your skills or experience — we simply found a closer match for this specific position at this time.</p>
+            <p>We will keep your profile on file and encourage you to apply for future openings that match your background.</p>
+            <p style="margin-top:20px;">We wish you the very best in your job search.</p>
+            <p style="font-size:13px;">Warm regards,<br/><strong>Human Resources</strong><br/>Maxvolt Energy Industries Limited</p>
+          </div>
+          <div style="background:#f9fafb;padding:12px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;text-align:center;font-size:11px;color:#999;">
+            E-82 Bulandshahr Road Industrial Area, Ghaziabad, UP – 201009
+          </div>
+        </div>`,
+      });
+      emailSent = true;
+    } catch (e) { emailError = e.message; }
+  }
+  return { candidate_id: cand.id, name: cand.full_name || cand.name, email_sent: emailSent, email_error: emailError };
+}
+
 // ── Shared: builds the exact params buildOfferLetterPdf() needs from a
 // candidate row + the same override params sendOfferLetter accepts — shared
 // by previewOfferLetterPdf and sendOfferLetter so they can never diverge.
@@ -11242,6 +11282,12 @@ ${contextBlock || 'No employee context available — answer from general policy 
       }
 
       const id = uuidv4();
+      // A candidate had no way to check where their application stood short
+      // of emailing HR — statusToken is a public, unguessable lookup key for
+      // the new self-service status page (getApplicationStatus below); sent
+      // back in the response for the frontend to show/link immediately, and
+      // best-effort emailed too (see below) so it survives a closed tab.
+      const statusToken = uuidv4();
       const d = {
         id,
         job_id: resolvedJobId,
@@ -11250,9 +11296,69 @@ ${contextBlock || 'No employee context available — answer from general policy 
         ...(candidateData || {}),
         status: 'applied',
         applied_date: new Date().toISOString(),
+        status_token: statusToken,
       };
       await run("INSERT INTO entities(id,type,status,data) VALUES($1,'Candidate','applied',$2)", [id, JSON.stringify(d)]);
-      return res.json({ success: true, application_id: id, candidate_id: id });
+
+      const appBase = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
+      const statusLink = `${appBase}/application-status/${statusToken}`;
+      if (d.email) {
+        try {
+          await sendEmail({
+            to: d.email,
+            subject: `Application Received — ${jobTitle || 'Your Application'} at Maxvolt Energy Industries Limited`,
+            html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
+              <div style="background:#ea580c;color:#fff;padding:20px;border-radius:10px 10px 0 0;text-align:center;">
+                <h2 style="margin:0;">Application Received</h2>
+              </div>
+              <div style="padding:24px;border:1px solid #e5e7eb;border-top:none;">
+                <p>Dear <strong>${d.full_name || d.name || 'Candidate'}</strong>,</p>
+                <p>Thank you for applying for <strong>${jobTitle || 'the position'}</strong>${jobDepartment ? ` in ${jobDepartment}` : ''} at Maxvolt Energy Industries Limited. We've received your application and our HR team will review it shortly.</p>
+                <div style="text-align:center;margin:24px 0;">
+                  <a href="${statusLink}" style="display:inline-block;background:#ea580c;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">Track Your Application</a>
+                </div>
+                <p style="font-size:12px;color:#888;">Bookmark this link to check your application status any time.</p>
+              </div>
+            </div>`,
+          });
+        } catch (e) { console.error('[email] Application confirmation failed:', e.message); }
+      }
+
+      return res.json({ success: true, application_id: id, candidate_id: id, status_token: statusToken, status_link: statusLink });
+    }
+
+    // Public, token-based — lets a candidate check their own application
+    // status without a login, mirroring getOfferByToken/getCandidateDocPortal.
+    // Only curated, candidate-safe fields are returned (never internal notes,
+    // AI scores, salary data, or other candidates' info).
+    case 'getApplicationStatus': {
+      const { token: gasToken } = p;
+      if (!gasToken) return res.json({ success: false, error: 'Token required' });
+      const gasRow = await one("SELECT data FROM entities WHERE type='Candidate' AND data::jsonb->>'status_token'=$1", [gasToken]);
+      if (!gasRow) return res.json({ success: false, error: 'Application not found. This link may be invalid.' });
+      const gasCand = JSON.parse(gasRow.data);
+      const STAGE_LABELS = {
+        applied: 'Application Received', screening: 'Under Screening', interview_scheduled: 'Interview Scheduled',
+        interviewed: 'Interview Completed', selected: 'Selected', offered: 'Offer Extended',
+        offer_accepted: 'Offer Accepted', joined: 'Joined', rejected: 'Not Selected', offer_declined: 'Offer Declined',
+      };
+      const STAGE_ORDER = ['applied', 'screening', 'interview_scheduled', 'interviewed', 'selected', 'offered', 'offer_accepted', 'joined'];
+      return res.json({
+        success: true,
+        status: {
+          full_name: gasCand.full_name || gasCand.name,
+          position_applied: gasCand.position_applied,
+          department: gasCand.department,
+          applied_date: gasCand.applied_date,
+          status: gasCand.status || 'applied',
+          status_label: STAGE_LABELS[gasCand.status] || (gasCand.status || 'applied').replace(/_/g, ' '),
+          is_terminal_positive: ['offered', 'offer_accepted', 'joined'].includes(gasCand.status),
+          is_rejected: ['rejected', 'offer_declined'].includes(gasCand.status),
+          stage_order: STAGE_ORDER,
+          current_stage_index: STAGE_ORDER.indexOf(gasCand.status),
+          rejection_reason: ['rejected'].includes(gasCand.status) ? (gasCand.rejection_reason || '') : '',
+        },
+      });
     }
 
     // HR-facing scan for duplicate applications that already exist in the
@@ -16367,6 +16473,21 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
         if (order >= 7) sourceMap[src].joined++;
       }
 
+      // ── Top referrers — only meaningful for source='referral' candidates
+      // that actually carry a referred_by_user_id (added alongside the
+      // "Referred By" picker in Recruitment.jsx; older referral-sourced
+      // candidates predate this field and simply won't appear here). ──
+      const referrerMap = {};
+      for (const c of cands) {
+        if (c.source !== 'referral' || !c.referred_by_user_id) continue;
+        const key = c.referred_by_user_id;
+        if (!referrerMap[key]) referrerMap[key] = { referred_by_user_id: key, referred_by_name: c.referred_by_name || 'Unknown', referred: 0, selected: 0, joined: 0 };
+        const order = stageOrder[c.status] ?? 0;
+        referrerMap[key].referred++;
+        if (order >= 4) referrerMap[key].selected++;
+        if (order >= 7) referrerMap[key].joined++;
+      }
+
       // ── Department pipeline ───────────────────────────────────────
       const deptMap = {};
       for (const c of cands) {
@@ -16463,6 +16584,7 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
         stage_funnel: STAGES.map(s => ({ stage: s, count: funnelCounts[s] || 0, at_stage: stageCounts[s] || 0 })),
         stage_conversions: conversions,
         by_source: Object.values(sourceMap).sort((a,b) => b.applied - a.applied),
+        by_referrer: Object.values(referrerMap).sort((a,b) => b.referred - a.referred),
         by_department: Object.values(deptMap).sort((a,b) => b.applied - a.applied),
         monthly_trend: Object.values(monthMap),
         requisition_health: reqHealth.slice(0, 30),
@@ -16513,9 +16635,17 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       if (!sisCandRow) return res.json({ success: false, error: 'Candidate not found' });
       const sisCand = JSON.parse(sisCandRow.data);
       const now = new Date().toISOString();
-      const updatedCard = { ...sisCard, recorded_by: cu?.full_name, recorded_at: now };
+      const updatedCard = { ...sisCard, recorded_by: cu?.full_name, recorded_by_id: cu?.id, recorded_at: now };
       const newStatus = sisCard.recommendation === 'select' ? 'selected' : sisCard.recommendation === 'reject' ? 'rejected' : 'interviewed';
-      await run("UPDATE entities SET data=$1,updated_at=$2 WHERE id=$3", [JSON.stringify({ ...sisCand, interview_scorecard: updatedCard, status: newStatus, interviewed_at: now }), now, sisCandRow.id]);
+      // interview_scorecards is an ARRAY — a candidate can go through
+      // several interview rounds with different interviewers, and the old
+      // single `interview_scorecard` field silently overwrote round 1's
+      // scorecard the moment round 2 was saved, losing it entirely. Each
+      // interviewer's submission is appended; `interview_scorecard`
+      // (singular) is kept in sync as "the latest" for any older reader
+      // that still expects a single object.
+      const scorecards = [...(sisCand.interview_scorecards || (sisCand.interview_scorecard ? [sisCand.interview_scorecard] : [])), updatedCard];
+      await run("UPDATE entities SET data=$1,updated_at=$2 WHERE id=$3", [JSON.stringify({ ...sisCand, interview_scorecard: updatedCard, interview_scorecards: scorecards, status: newStatus, interviewed_at: now }), now, sisCandRow.id]);
       // Notify HR
       const hrUsers = await all("SELECT id FROM users WHERE role IN ('hr','admin')");
       const empName = sisCand.full_name || 'Candidate';
@@ -16524,6 +16654,48 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         await notify(hr.id, { title: 'Interview Scorecard Submitted', message: `${empName} — ${recLabel} for ${sisCand.position_applied || 'position'}`, type: sisCard.recommendation === 'select' ? 'success' : 'info', link: '/recruitment' });
       }
       return res.json({ success: true, new_status: newStatus });
+    }
+
+    case 'rejectCandidate': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      const { candidate_id: rcId, reason: rcReason, notes: rcNotes, notify_candidate: rcNotify = true } = p;
+      if (!rcId) return res.json({ success: false, error: 'candidate_id required' });
+      const rcRow = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [rcId]);
+      if (!rcRow) return res.json({ success: false, error: 'Candidate not found' });
+      const result = await rejectOneCandidate(rcRow, { reason: rcReason, notes: rcNotes, notifyCandidate: rcNotify, actorName: cu?.full_name });
+      return res.json({ success: true, ...result });
+    }
+
+    // Bulk reject — same per-candidate email as rejectCandidate, just looped;
+    // used by the multi-select bulk action bar so HR doesn't have to open
+    // and reject 30 job-portal applicants for a closed role one at a time.
+    case 'bulkRejectCandidates': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      const { candidate_ids: brcIds, reason: brcReason, notes: brcNotes, notify_candidates: brcNotify = true } = p;
+      if (!Array.isArray(brcIds) || !brcIds.length) return res.json({ success: false, error: 'candidate_ids required' });
+      const brcRows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND id = ANY($1)", [brcIds]);
+      const results = [];
+      for (const row of brcRows) {
+        results.push(await rejectOneCandidate(row, { reason: brcReason, notes: brcNotes, notifyCandidate: brcNotify, actorName: cu?.full_name }));
+      }
+      return res.json({ success: true, rejected: results.length, results });
+    }
+
+    // Bulk stage move — e.g. select 10 "Applied" candidates and move them
+    // all to "Screening" at once. Deliberately does NOT send any email
+    // (unlike bulk reject) — a stage move is an internal pipeline action,
+    // not something every stage change should notify the candidate about.
+    case 'bulkUpdateCandidateStatus': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      const { candidate_ids: bucIds, status: bucStatus } = p;
+      if (!Array.isArray(bucIds) || !bucIds.length) return res.json({ success: false, error: 'candidate_ids required' });
+      if (!bucStatus) return res.json({ success: false, error: 'status required' });
+      const bucRows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND id = ANY($1)", [bucIds]);
+      for (const row of bucRows) {
+        const d = JSON.parse(row.data);
+        await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify({ ...d, status: bucStatus }), bucStatus, row.id]);
+      }
+      return res.json({ success: true, updated: bucRows.length });
     }
 
     case 'getMinimumWagesReport': {

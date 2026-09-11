@@ -9,9 +9,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from 'sonner';
-import { Plus, UserPlus, Briefcase, Building2, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy, ChevronsUpDown, Check, ClipboardCheck, ThumbsDown, LayoutGrid, List, Calendar, MessageSquare, Filter } from 'lucide-react';
+import { Plus, UserPlus, Briefcase, Building2, Mail, Phone, Eye, Sparkles, Loader2, Star, ChevronDown, ChevronUp, SlidersHorizontal, X, BarChart2, ArrowUpDown, FileCheck, Send, CalendarCheck, Copy, ChevronsUpDown, Check, ClipboardCheck, ThumbsDown, LayoutGrid, List, Calendar, MessageSquare, Filter, Upload, Users2, CheckSquare, Square } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
+import { useSearchParams } from 'react-router-dom';
 import { openPdfBlob } from '@/utils/letterhead';
 import CandidateDetailDialog from '../components/recruitment/CandidateDetailDialog';
 import CandidateScoreCard from '../components/recruitment/CandidateScoreCard';
@@ -299,7 +301,7 @@ const SCORE_COLOR = (score) => {
 const EMPTY_FORM = {
   full_name: '', email: '', phone: '', position_applied: '', department: '',
   experience_years: '', current_company: '', current_ctc: '', expected_ctc: '',
-  notice_period: '', source: 'job_portal'
+  notice_period: '', source: 'job_portal', referred_by_user_id: '',
 };
 
 function AiScoreSection({ candidate }) {
@@ -506,20 +508,32 @@ function InterviewScorecardDialog({ candidate, onClose, onRefresh }) {
 function RejectDialog({ candidate, onClose, onRefresh }) {
   const [reason, setReason] = useState('');
   const [notes, setNotes] = useState('');
+  const [notifyCandidate, setNotifyCandidate] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const handleReject = async () => {
     if (!reason) { toast.error('Select a rejection reason'); return; }
     setSaving(true);
     try {
-      await base44.entities.Candidate.update(candidate.id, {
-        status: 'rejected',
-        rejection_reason: reason,
-        rejection_notes: notes,
+      const res = await base44.functions.invoke('rejectCandidate', {
+        candidate_id: candidate.id,
+        reason,
+        notes,
+        notify_candidate: notifyCandidate,
       });
-      toast.success(`${candidate.full_name} marked as rejected`);
-      onRefresh();
-      onClose();
+      if (res.data?.success) {
+        if (notifyCandidate && candidate.email) {
+          toast.success(res.data.email_sent
+            ? `${candidate.full_name} marked as rejected — notified by email`
+            : `${candidate.full_name} marked as rejected — email failed to send${res.data.email_error ? `: ${res.data.email_error}` : ''}`);
+        } else {
+          toast.success(`${candidate.full_name} marked as rejected`);
+        }
+        onRefresh();
+        onClose();
+      } else {
+        toast.error(res.data?.error || 'Failed to reject candidate');
+      }
     } catch (e) { toast.error(e.message); }
     setSaving(false);
   };
@@ -540,11 +554,63 @@ function RejectDialog({ candidate, onClose, onRefresh }) {
         <Label className="text-xs">Additional Notes (optional)</Label>
         <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Any context to retain for records..." className="mt-1" />
       </div>
+      {candidate.email && (
+        <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+          <input type="checkbox" checked={notifyCandidate} onChange={e => setNotifyCandidate(e.target.checked)} className="rounded" />
+          Notify candidate by email ({candidate.email})
+        </label>
+      )}
       <div className="flex gap-3">
         <Button variant="outline" onClick={onClose} className="flex-1">Cancel</Button>
         <Button onClick={handleReject} disabled={saving || !reason} className="flex-1 bg-red-600 hover:bg-red-700 text-white">
           {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <ThumbsDown className="w-4 h-4 mr-2" />}
           Confirm Reject
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// Same shape as RejectDialog but for a whole selected batch — e.g. rejecting
+// every applicant for a role that just closed, instead of one at a time.
+function BulkRejectDialog({ count, onClose, onConfirm }) {
+  const [reason, setReason] = useState('');
+  const [notes, setNotes] = useState('');
+  const [notifyCandidates, setNotifyCandidates] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const handleReject = async () => {
+    if (!reason) { toast.error('Select a rejection reason'); return; }
+    setSaving(true);
+    await onConfirm({ reason, notes, notify_candidates: notifyCandidates });
+    setSaving(false);
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500">Rejecting <strong>{count}</strong> selected candidate{count === 1 ? '' : 's'}. Same reason and notes will apply to all.</p>
+      <div>
+        <Label className="text-xs">Rejection Reason *</Label>
+        <Select value={reason} onValueChange={setReason}>
+          <SelectTrigger className="mt-1"><SelectValue placeholder="Select reason..." /></SelectTrigger>
+          <SelectContent>
+            {REJECT_REASONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+      <div>
+        <Label className="text-xs">Additional Notes (optional)</Label>
+        <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Any context to retain for records..." className="mt-1" />
+      </div>
+      <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+        <input type="checkbox" checked={notifyCandidates} onChange={e => setNotifyCandidates(e.target.checked)} className="rounded" />
+        Notify each candidate by email (where an email address is on file)
+      </label>
+      <div className="flex gap-3">
+        <Button variant="outline" onClick={onClose} className="flex-1">Cancel</Button>
+        <Button onClick={handleReject} disabled={saving || !reason} className="flex-1 bg-red-600 hover:bg-red-700 text-white">
+          {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <ThumbsDown className="w-4 h-4 mr-2" />}
+          Reject {count}
         </Button>
       </div>
     </div>
@@ -610,6 +676,13 @@ export default function Recruitment() {
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [formData, setFormData] = useState(EMPTY_FORM);
   const [viewMode, setViewMode] = useState('list'); // 'list' | 'board'
+  const [resumeFile, setResumeFile] = useState(null);
+  const [addingCandidate, setAddingCandidate] = useState(false);
+  const [employees, setEmployees] = useState([]);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkActing, setBulkActing] = useState(false);
+  const [bulkRejectOpen, setBulkRejectOpen] = useState(false);
+  const [searchParams] = useSearchParams();
 
   // Stage 2: JD Scoring
   const [jobRequisitions, setJobRequisitions] = useState([]);
@@ -629,6 +702,19 @@ export default function Recruitment() {
 
   useEffect(() => { loadData(); }, []);
 
+  // Deep link from JobRequisitions.jsx's "View Pipeline" button
+  // (?requisition=<id>) — pre-selects both the candidate-list requisition
+  // filter and the AI-scoring JD, so "how's this role's hiring going" is
+  // one click instead of manually finding and setting both.
+  useEffect(() => {
+    const reqParam = searchParams.get('requisition');
+    if (reqParam && jobRequisitions.some(j => j.id === reqParam)) {
+      setFilters(prev => ({ ...prev, requisition: reqParam }));
+      handleJdChange(reqParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobRequisitions]);
+
   const checkDuplicates = async () => {
     setDupDialogOpen(true);
     setDupLoading(true);
@@ -643,12 +729,14 @@ export default function Recruitment() {
 
   const loadData = async () => {
     try {
-      const [allCandidates, allJds] = await Promise.all([
+      const [allCandidates, allJds, allEmployees] = await Promise.all([
         base44.entities.Candidate.list('-created_date', 500),
         base44.entities.JobRequisition.list('-created_date', 200),
+        base44.entities.Employee.list('-created_date', 1000),
       ]);
       setCandidates(allCandidates);
       setJobRequisitions(allJds);
+      setEmployees(allEmployees.filter(e => e.status === 'active'));
     } catch (error) {
       console.error('Error loading data:', error);
     }
@@ -715,28 +803,112 @@ export default function Recruitment() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setAddingCandidate(true);
     try {
-      await base44.entities.Candidate.create({
+      // Manually-added candidates (referrals, walk-ins, sourced profiles)
+      // previously had no way to attach a CV at all — AI scoring for them
+      // silently fell back to "form only, no CV read" forever. Upload +
+      // auto-parse here mirrors exactly what the public application form
+      // (ApplyForJob.jsx) already does.
+      let resume_url = '';
+      if (resumeFile) {
+        const { file_url } = await base44.integrations.Core.UploadFile({ file: resumeFile });
+        resume_url = file_url;
+      }
+      const referredByEmp = formData.source === 'referral' && formData.referred_by_user_id
+        ? employees.find(e => e.user_id === formData.referred_by_user_id) : null;
+
+      const created = await base44.entities.Candidate.create({
         ...formData,
         experience_years: parseFloat(formData.experience_years) || 0,
         current_ctc: parseFloat(formData.current_ctc) || 0,
         expected_ctc: parseFloat(formData.expected_ctc) || 0,
         notice_period: parseInt(formData.notice_period) || 0,
-        status: 'applied'
+        status: 'applied',
+        resume_url: resume_url || undefined,
+        referred_by_user_id: referredByEmp ? referredByEmp.user_id : undefined,
+        referred_by_name: referredByEmp ? (referredByEmp.display_name || referredByEmp.full_name) : undefined,
       });
+
+      if (resume_url && created?.id) {
+        base44.functions.invoke('parseResume', { candidate_id: created.id, resume_url, auto_triggered: true })
+          .catch(e => console.warn('Auto-parse failed silently:', e));
+      }
+
       toast.success('Candidate added successfully');
       setShowForm(false);
       setFormData(EMPTY_FORM);
+      setResumeFile(null);
       loadData();
     } catch (error) {
       toast.error('Failed to add candidate');
     }
+    setAddingCandidate(false);
   };
 
   const updateStatus = async (candidateId, newStatus) => {
     await base44.entities.Candidate.update(candidateId, { status: newStatus });
     toast.success('Status updated');
     loadData();
+  };
+
+  // Kanban drag-and-drop — the board view rendered stage columns but had no
+  // actual drag behavior; moving a candidate required opening the row and
+  // using the status dropdown instead, which is what the board's own
+  // "Kanban" look and feel implied should just be a drag.
+  const handleDragEnd = (result) => {
+    const { source, destination, draggableId } = result;
+    if (!destination) return;
+    if (destination.droppableId === source.droppableId) return;
+    updateStatus(draggableId, destination.droppableId);
+  };
+
+  // ── Bulk selection (list view) ──────────────────────────────────────
+  const toggleSelect = (id) => setSelectedIds(prev => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+  const toggleSelectAllVisible = () => setSelectedIds(prev => {
+    const visibleIds = filtered.map(c => c.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every(id => prev.has(id));
+    return allSelected ? new Set() : new Set(visibleIds);
+  });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleBulkStageMove = async (newStatus) => {
+    if (!selectedIds.size) return;
+    setBulkActing(true);
+    try {
+      const res = await base44.functions.invoke('bulkUpdateCandidateStatus', {
+        candidate_ids: [...selectedIds], status: newStatus,
+      });
+      if (res.data?.success) {
+        toast.success(`${res.data.updated} candidate(s) moved to ${newStatus.replace(/_/g, ' ')}`);
+        clearSelection();
+        loadData();
+      } else {
+        toast.error(res.data?.error || 'Bulk update failed');
+      }
+    } catch (e) { toast.error(e.message); }
+    setBulkActing(false);
+  };
+
+  const handleBulkRejectConfirm = async ({ reason, notes, notify_candidates }) => {
+    try {
+      const res = await base44.functions.invoke('bulkRejectCandidates', {
+        candidate_ids: [...selectedIds], reason, notes, notify_candidates,
+      });
+      if (res.data?.success) {
+        const emailedCount = (res.data.results || []).filter(r => r.email_sent).length;
+        toast.success(`${res.data.rejected} candidate(s) rejected${notify_candidates ? ` — ${emailedCount} notified by email` : ''}`);
+        clearSelection();
+        setBulkRejectOpen(false);
+        loadData();
+      } else {
+        toast.error(res.data?.error || 'Bulk reject failed');
+      }
+    } catch (e) { toast.error(e.message); }
   };
 
   const handleInviteJoiner = async (candidate) => {
@@ -768,22 +940,34 @@ export default function Recruitment() {
     filters.search !== '',
   ].filter(Boolean).length;
 
+  const filterRequisition = filters.requisition !== 'all' ? jobRequisitions.find(j => j.id === filters.requisition) : null;
+
   let filtered = candidates.filter(c => {
     if (filters.search && !c.full_name?.toLowerCase().includes(filters.search.toLowerCase()) &&
         !c.email?.toLowerCase().includes(filters.search.toLowerCase()) &&
         !c.current_company?.toLowerCase().includes(filters.search.toLowerCase())) return false;
     if (filters.status !== 'all' && !(Array.isArray(filters.status) ? filters.status.includes(c.status) : c.status === filters.status)) return false;
     if (filters.source !== 'all' && c.source !== filters.source) return false;
-    if (filters.requisition !== 'all' && c.requisition_id !== filters.requisition) return false;
+    // Matches on requisition_id OR job_id OR position-title fallback — see
+    // candidateMatchesJd above. Filtering by requisition_id alone silently
+    // hid every public job-board applicant (they only ever get job_id set).
+    if (filterRequisition && !candidateMatchesJd(c, filterRequisition)) return false;
     if (c.experience_years < filters.minExp || c.experience_years > filters.maxExp) return false;
     if (filters.minCtc !== '' && c.expected_ctc < parseFloat(filters.minCtc)) return false;
     if (filters.maxCtc !== '' && c.expected_ctc > parseFloat(filters.maxCtc)) return false;
     if (filters.position && !c.position_applied?.toLowerCase().includes(filters.position.toLowerCase())) return false;
     if (filters.skills) {
       const skillList = filters.skills.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      // c.skills is populated automatically the first time a resume is
+      // parsed (performResumeParse mirrors the AI-extracted skill list onto
+      // the Candidate row) — searching it means this filter finally reflects
+      // actual extracted skills, not just whatever text happens to appear in
+      // the position title or cover letter.
+      const candidateSkills = Array.isArray(c.skills) ? c.skills.map(s => String(s).toLowerCase()) : [];
       if (skillList.length > 0 && !skillList.some(sk =>
         c.position_applied?.toLowerCase().includes(sk) ||
-        c.cover_letter?.toLowerCase().includes(sk)
+        c.cover_letter?.toLowerCase().includes(sk) ||
+        candidateSkills.some(cs => cs.includes(sk))
       )) return false;
     }
     return true;
@@ -861,7 +1045,7 @@ export default function Recruitment() {
                   ))}
                   <div>
                     <Label>Source</Label>
-                    <Select value={formData.source} onValueChange={v => setFormData({ ...formData, source: v })}>
+                    <Select value={formData.source} onValueChange={v => setFormData({ ...formData, source: v, referred_by_user_id: v === 'referral' ? formData.referred_by_user_id : '' })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {['job_portal', 'referral', 'company_website', 'linkedin', 'walk_in', 'other'].map(s => (
@@ -870,6 +1054,20 @@ export default function Recruitment() {
                       </SelectContent>
                     </Select>
                   </div>
+                  {formData.source === 'referral' && (
+                    <div>
+                      <Label>Referred By *</Label>
+                      <Select value={formData.referred_by_user_id || ''} onValueChange={v => setFormData({ ...formData, referred_by_user_id: v })}>
+                        <SelectTrigger><SelectValue placeholder="Select employee..." /></SelectTrigger>
+                        <SelectContent>
+                          {employees.map(emp => (
+                            <SelectItem key={emp.user_id} value={emp.user_id}>{emp.display_name || emp.full_name} — {emp.department || 'N/A'}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-gray-400 mt-1">Links this application to the referring employee for referral-bonus tracking and analytics.</p>
+                    </div>
+                  )}
                 </div>
                   <div>
                     <Label>Job Requisition (optional)</Label>
@@ -883,9 +1081,19 @@ export default function Recruitment() {
                       </SelectContent>
                     </Select>
                   </div>
+                  <div>
+                    <Label>Resume / CV (optional)</Label>
+                    <label className="flex items-center gap-2 mt-1 cursor-pointer border-2 border-dashed border-gray-300 rounded-lg p-3 hover:border-blue-400 hover:bg-blue-50 transition-colors">
+                      <Upload className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                      <span className="text-sm text-gray-500 truncate">{resumeFile ? resumeFile.name : 'Click to upload a resume — enables AI scoring for this candidate'}</span>
+                      <input type="file" className="hidden" accept=".pdf,.doc,.docx" onChange={e => setResumeFile(e.target.files?.[0] || null)} />
+                    </label>
+                  </div>
                 <div className="flex gap-3 justify-end">
                   <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
-                  <Button type="submit">Add Candidate</Button>
+                  <Button type="submit" disabled={addingCandidate}>
+                    {addingCandidate ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Adding...</> : 'Add Candidate'}
+                  </Button>
                 </div>
               </form>
             </DialogContent>
@@ -1080,6 +1288,7 @@ export default function Recruitment() {
         {/* ── Board / Kanban View ── */}
         {viewMode === 'board' && (
           <div className="overflow-x-auto pb-2">
+            <DragDropContext onDragEnd={handleDragEnd}>
             <div className="flex gap-3 min-w-max">
               {BOARD_STAGES.map(stage => {
                 const stageCandidates = filtered.filter(c => c.status === stage.key);
@@ -1089,46 +1298,65 @@ export default function Recruitment() {
                       <span className="text-xs font-semibold text-gray-700">{stage.label}</span>
                       <span className="text-xs bg-white/70 text-gray-600 px-1.5 py-0.5 rounded-full font-bold">{stageCandidates.length}</span>
                     </div>
-                    <div className="flex-1 p-2 space-y-2 max-h-[500px] overflow-y-auto">
-                      {stageCandidates.length === 0 && (
-                        <p className="text-xs text-gray-400 text-center py-4">Empty</p>
-                      )}
-                      {stageCandidates.map(c => (
-                        <div key={c.id} className="bg-white rounded-lg p-2.5 shadow-sm border cursor-pointer hover:shadow-md transition-shadow"
-                          onClick={() => setSelectedCandidate(c)}>
-                          <p className="text-xs font-semibold text-gray-800 truncate">{c.full_name}</p>
-                          <p className="text-xs text-blue-700 font-medium truncate">{c.position_applied || jobRequisitions.find(j => j.id === c.job_id)?.position_title || '—'}</p>
-                          {(c.department || jobRequisitions.find(j => j.id === c.job_id)?.department) && (
-                            <p className="text-xs text-gray-500 truncate">{c.department || jobRequisitions.find(j => j.id === c.job_id)?.department}</p>
+                    <Droppable droppableId={stage.key}>
+                      {(provided, snapshot) => (
+                        <div
+                          ref={provided.innerRef}
+                          {...provided.droppableProps}
+                          className={`flex-1 p-2 space-y-2 max-h-[500px] overflow-y-auto transition-colors ${snapshot.isDraggingOver ? 'bg-blue-100/40' : ''}`}
+                        >
+                          {stageCandidates.length === 0 && (
+                            <p className="text-xs text-gray-400 text-center py-4">Empty</p>
                           )}
-                          {c.expected_ctc > 0 && <p className="text-xs text-gray-400 mt-1">₹{(c.expected_ctc / 100000).toFixed(1)}L</p>}
-                          <div className="flex gap-1 mt-1.5">
-                            {stage.key === 'interview_scheduled' && (
-                              <button className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded hover:bg-blue-200"
-                                onClick={e => { e.stopPropagation(); setScorecardCandidate(c); }}>
-                                Scorecard
-                              </button>
-                            )}
-                            {!['rejected','joined','offer_accepted'].includes(stage.key) && (
-                              <button className="text-xs bg-red-50 text-red-600 px-1.5 py-0.5 rounded hover:bg-red-100"
-                                onClick={e => { e.stopPropagation(); setRejectCandidate(c); }}>
-                                Reject
-                              </button>
-                            )}
-                          </div>
+                          {stageCandidates.map((c, idx) => (
+                            <Draggable key={c.id} draggableId={c.id} index={idx}>
+                              {(dragProvided, dragSnapshot) => (
+                                <div
+                                  ref={dragProvided.innerRef}
+                                  {...dragProvided.draggableProps}
+                                  {...dragProvided.dragHandleProps}
+                                  className={`bg-white rounded-lg p-2.5 shadow-sm border cursor-pointer hover:shadow-md transition-shadow ${dragSnapshot.isDragging ? 'shadow-lg ring-2 ring-blue-300' : ''}`}
+                                  onClick={() => setSelectedCandidate(c)}
+                                >
+                                  <p className="text-xs font-semibold text-gray-800 truncate">{c.full_name}</p>
+                                  <p className="text-xs text-blue-700 font-medium truncate">{c.position_applied || jobRequisitions.find(j => j.id === c.job_id)?.position_title || '—'}</p>
+                                  {(c.department || jobRequisitions.find(j => j.id === c.job_id)?.department) && (
+                                    <p className="text-xs text-gray-500 truncate">{c.department || jobRequisitions.find(j => j.id === c.job_id)?.department}</p>
+                                  )}
+                                  {c.expected_ctc > 0 && <p className="text-xs text-gray-400 mt-1">₹{(c.expected_ctc / 100000).toFixed(1)}L</p>}
+                                  <div className="flex gap-1 mt-1.5">
+                                    {stage.key === 'interview_scheduled' && (
+                                      <button className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded hover:bg-blue-200"
+                                        onClick={e => { e.stopPropagation(); setScorecardCandidate(c); }}>
+                                        Scorecard
+                                      </button>
+                                    )}
+                                    {!['rejected','joined','offer_accepted'].includes(stage.key) && (
+                                      <button className="text-xs bg-red-50 text-red-600 px-1.5 py-0.5 rounded hover:bg-red-100"
+                                        onClick={e => { e.stopPropagation(); setRejectCandidate(c); }}>
+                                        Reject
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </Draggable>
+                          ))}
+                          {provided.placeholder}
                         </div>
-                      ))}
-                    </div>
+                      )}
+                    </Droppable>
                   </div>
                 );
               })}
             </div>
+            </DragDropContext>
           </div>
         )}
 
         {/* ── List View ── */}
         {viewMode === 'list' && <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <CardTitle>
               Candidates
               <span className="ml-2 text-sm font-normal text-gray-500">({filtered.length} of {candidates.length})</span>
@@ -1136,14 +1364,44 @@ export default function Recruitment() {
                 <span className="ml-2 text-xs font-normal text-indigo-600">Sorted by match for: {selectedJd.position_title}</span>
               )}
             </CardTitle>
+            {filtered.length > 0 && (
+              <button type="button" onClick={toggleSelectAllVisible} className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700">
+                {filtered.every(c => selectedIds.has(c.id)) ? <CheckSquare className="w-4 h-4 text-blue-600" /> : <Square className="w-4 h-4" />}
+                Select all visible
+              </button>
+            )}
           </CardHeader>
+          {/* Bulk action bar — appears once at least one candidate is selected */}
+          {selectedIds.size > 0 && (
+            <div className="px-6 pb-3 flex items-center gap-2 flex-wrap bg-blue-50 border-y border-blue-100 py-2.5">
+              <Users2 className="w-4 h-4 text-blue-600" />
+              <span className="text-sm font-medium text-blue-800">{selectedIds.size} selected</span>
+              <Select onValueChange={v => handleBulkStageMove(v)} disabled={bulkActing}>
+                <SelectTrigger className="w-44 h-8 bg-white"><SelectValue placeholder="Move to stage..." /></SelectTrigger>
+                <SelectContent>
+                  {Object.keys(STATUS_COLORS).filter(s => s !== 'rejected').map(s => (
+                    <SelectItem key={s} value={s}>{s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button size="sm" variant="outline" className="h-8 border-red-200 text-red-600 hover:bg-red-50" disabled={bulkActing} onClick={() => setBulkRejectOpen(true)}>
+                <ThumbsDown className="w-3.5 h-3.5 mr-1.5" /> Reject Selected
+              </Button>
+              <Button size="sm" variant="ghost" className="h-8 text-gray-500" onClick={clearSelection}>
+                <X className="w-3.5 h-3.5 mr-1" /> Clear
+              </Button>
+            </div>
+          )}
           <CardContent>
             <div className="space-y-3">
               {filtered.length > 0 ? filtered.map(candidate => (
-                <div key={candidate.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                <div key={candidate.id} className={`border rounded-lg p-4 hover:bg-gray-50 transition-colors ${selectedIds.has(candidate.id) ? 'ring-2 ring-blue-300 bg-blue-50/30' : ''}`}>
                   <div className="flex justify-between items-start gap-4 flex-wrap">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-3 mb-2 flex-wrap">
+                        <button type="button" onClick={() => toggleSelect(candidate.id)} className="flex-shrink-0" title="Select for bulk action">
+                          {selectedIds.has(candidate.id) ? <CheckSquare className="w-5 h-5 text-blue-600" /> : <Square className="w-5 h-5 text-gray-300" />}
+                        </button>
                         <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                           <span className="text-blue-600 font-semibold">{candidate.full_name?.charAt(0).toUpperCase()}</span>
                         </div>
@@ -1172,6 +1430,11 @@ export default function Recruitment() {
                         )}
                         {candidate.source && (
                           <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">{candidate.source.replace('_', ' ')}</span>
+                        )}
+                        {candidate.source === 'referral' && candidate.referred_by_name && (
+                          <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                            <Users2 className="w-3 h-3" /> Referred by {candidate.referred_by_name}
+                          </span>
                         )}
                       </div>
                       <div className="grid md:grid-cols-4 gap-3 text-sm text-gray-600 mb-1">
@@ -1332,6 +1595,23 @@ export default function Recruitment() {
               onRefresh={loadData}
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Reject Dialog */}
+      <Dialog open={bulkRejectOpen} onOpenChange={setBulkRejectOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ThumbsDown className="w-5 h-5 text-red-600" />
+              Reject {selectedIds.size} Candidate{selectedIds.size === 1 ? '' : 's'}
+            </DialogTitle>
+          </DialogHeader>
+          <BulkRejectDialog
+            count={selectedIds.size}
+            onClose={() => setBulkRejectOpen(false)}
+            onConfirm={handleBulkRejectConfirm}
+          />
         </DialogContent>
       </Dialog>
 

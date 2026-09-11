@@ -18,6 +18,7 @@ export default function ApplyForJob() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [statusLink, setStatusLink] = useState('');
   const [aiDescription, setAiDescription] = useState('');
   const [resumeFile, setResumeFile] = useState(null);
   const [form, setForm] = useState({
@@ -127,6 +128,7 @@ export default function ApplyForJob() {
         }).catch(e => console.warn('Auto-parse failed silently:', e));
       }
 
+      setStatusLink(submitRes.data?.status_link || '');
       setSubmitted(true);
       toast.success('Application submitted successfully!');
     } catch (error) {
@@ -164,6 +166,13 @@ export default function ApplyForJob() {
           <h2 className="text-2xl font-bold text-gray-900 mb-2">Application Submitted!</h2>
           <p className="text-gray-500 mb-2">Thank you for applying for <strong>{job.position_title}</strong>.</p>
           <p className="text-gray-400 text-sm mb-6">Our HR team will review your application and get in touch with you shortly.</p>
+          {statusLink && (
+            <div className="bg-gray-50 border rounded-lg p-3 mb-6 text-left">
+              <p className="text-xs text-gray-500 mb-1">Track your application status any time:</p>
+              <a href={statusLink} className="text-sm text-blue-600 hover:underline break-all">{statusLink}</a>
+              <p className="text-xs text-gray-400 mt-1">A copy of this link was also emailed to you.</p>
+            </div>
+          )}
           <a href="/PublicJobBoard">
             <Button variant="outline">View Other Openings</Button>
           </a>

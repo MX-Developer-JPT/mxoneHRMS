@@ -10,6 +10,7 @@ import MobileSelect from '@/components/MobileSelect';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
+import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import {
   Plus, Briefcase, Check, X, Eye, Printer, Loader2,
@@ -642,6 +643,16 @@ Return ONLY the job description content as plain text with clear section headers
                               </Button>
                             </>
                           )}
+                          {/* Jumps straight into Recruitment.jsx pre-filtered to this
+                              requisition's applicants and pre-selected for AI
+                              scoring — previously "how's this role's hiring
+                              going" meant manually finding and setting both
+                              filters over there. */}
+                          <Link to={`/Recruitment?requisition=${req.id}`}>
+                            <Button size="sm" variant="outline" className="border-blue-300 text-blue-700 hover:bg-blue-50">
+                              <Users className="w-3 h-3 mr-1" /> View Pipeline
+                            </Button>
+                          </Link>
                           {canManageJD && (
                             <Button size="sm" variant="outline" className="border-indigo-300 text-indigo-700" onClick={() => openJdDialog(req)}>
                               <FileCheck className="w-3 h-3 mr-1" /> JD
