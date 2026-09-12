@@ -446,12 +446,25 @@ async function processRecord(record) {
     const IST_MS = 5.5 * 60 * 60 * 1000;
     return new Date(new Date(clean).getTime() + IST_MS).toISOString();
   })();
-  // Reject midnight — the biometric device writes 00:00:00 as a daily-reset or placeholder
+  // Skip midnight — the biometric device writes 00:00:00 as a daily-reset or placeholder
   // row when it cannot record the actual punch time. Storing it creates a ghost punch that
   // chronologically precedes the real arrival, pushing the real arrival into the check_out
   // slot in buildSessions and displaying it as "Last Out" instead of "First In".
+  //
+  // This MUST be `ok: true` (HTTP 200), not `ok: false` (HTTP 400) — a
+  // deliberate, expected skip is not a client error. MxOneSync posts one
+  // punch at a time and only advances its "last synced log id" cursor past
+  // a punch it got a success response for; a 400 here made it retry this
+  // exact id forever on every timer tick, permanently stuck and never
+  // reaching any real punch after it (confirmed: 40+ minutes of identical
+  // retries against the same log id in the sync tool's own log, zero
+  // progress). Matches the already-correct "employee not yet mapped" case
+  // just below, which is exactly this same kind of legitimate no-op skip.
   if (/T00:00:00\.000Z$/.test(punchIso)) {
-    return { ok: false, reason: 'punch_time is midnight (00:00:00) — biometric device placeholder, not a real punch. Skipped.' };
+    return {
+      ok: true, log_stored: false, attendance_updated: false,
+      note: 'punch_time is midnight (00:00:00) — biometric device placeholder, not a real punch. Skipped.',
+    };
   }
 
   const punchDate = punchIso.slice(0, 10);
