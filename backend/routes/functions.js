@@ -7451,26 +7451,53 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'syncManagerRoles': {
-      // Finds all employees who are listed as a reporting manager for someone else,
-      // and upgrades their user role from 'employee'/'onboarding_pending' to 'management'.
+      // Finds every user who is set as an Employee's reporting_manager_id
+      // (or, for older records that predate that field, the legacy
+      // reporting_manager_email) and promotes them from 'employee'/
+      // 'onboarding_pending' to 'management' so they can actually reach the
+      // Leave/Regularisation/Expense/GatePass approval screens for that
+      // report — those pages are gated on role, not on reporting_manager_id
+      // alone.
+      //
+      // This previously ONLY ever matched reporting_manager_email — which
+      // is set solely by the legacy CSV bulk-import path. Every current UI
+      // that assigns a reporting manager (UserRoleManagement.jsx's manager
+      // picker, OnboardingApproval.jsx's approval form) writes
+      // reporting_manager_id directly and never touches
+      // reporting_manager_email at all, so this button silently promoted
+      // nobody assigned through the current app — reporting managers set up
+      // the normal way stayed stuck on 'employee' with no way to approve
+      // anything, and this "fix" required a manual admin click that never
+      // actually worked. Real-time promotion the moment a manager is
+      // assigned now also happens automatically (entities.js's Employee
+      // PATCH path, and this same case's own onboarding-approval flow) —
+      // this button remains as a one-time bulk repair for every manager
+      // that was assigned before that fix existed.
       const empRows = await all("SELECT data FROM entities WHERE type='Employee'");
+      const mgrIds = new Set();
       const mgrEmails = new Set();
       for (const r of empRows) {
         const d = JSON.parse(r.data);
-        if (d.reporting_manager_email) mgrEmails.add(d.reporting_manager_email.toLowerCase().trim());
+        if (d.reporting_manager_id) mgrIds.add(d.reporting_manager_id);
+        else if (d.reporting_manager_email) mgrEmails.add(d.reporting_manager_email.toLowerCase().trim());
+      }
+      for (const email of mgrEmails) {
+        const u = await one("SELECT id FROM users WHERE LOWER(email)=$1", [email]);
+        if (u) mgrIds.add(u.id);
       }
       let promoted = 0, already = 0, notFound = 0;
-      for (const email of mgrEmails) {
-        const u = await one("SELECT id, role FROM users WHERE LOWER(email)=$1", [email]);
+      for (const mgrId of mgrIds) {
+        const u = await one('SELECT id, role, custom_role FROM users WHERE id=$1', [mgrId]);
         if (!u) { notFound++; continue; }
-        if (['admin','hr','manager','management'].includes(u.role)) { already++; continue; }
+        const effRole = u.custom_role || u.role;
+        if (['admin','hr','manager','management'].includes(effRole)) { already++; continue; }
         await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [u.id]);
         promoted++;
       }
       return res.json({
         success: true,
         message: `${promoted} manager(s) promoted to management role. ${already} already at management/higher. ${notFound} not found in users.`,
-        promoted, already, not_found: notFound, total_managers: mgrEmails.size,
+        promoted, already, not_found: notFound, total_managers: mgrIds.size,
       });
     }
 
@@ -11909,6 +11936,24 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const empId = uuidv4();
         const d = { id:empId, user_id:uid, ...employeeData, status:'active' };
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'active',$3)", [empId, uid, JSON.stringify(d)]);
+      }
+
+      // Whoever this new joiner reports to must actually be able to reach
+      // the Leave/Regularisation/Expense/GatePass approval screens for them
+      // — those pages are gated on role being manager/management/hr/admin,
+      // not on reporting_manager_id alone. Mirrors the fix in entities.js's
+      // Employee PATCH path (this onboarding-approval flow writes the
+      // Employee row directly with its own raw SQL, so it needs its own
+      // copy of the same promotion, not just a shared helper — see that
+      // file's autoPromoteReportingManager for the full history).
+      if (employeeData.reporting_manager_id) {
+        try {
+          const mgrRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [employeeData.reporting_manager_id]);
+          const mgrRole = mgrRow?.custom_role || mgrRow?.role;
+          if (mgrRow && !['admin', 'hr', 'manager', 'management'].includes(mgrRole)) {
+            await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [employeeData.reporting_manager_id]);
+          }
+        } catch (e) { console.error('[approveUserOnboarding] manager auto-promote failed:', e.message); }
       }
 
       // Send approval email + create new-joiner announcement

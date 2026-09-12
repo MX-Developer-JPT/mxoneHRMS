@@ -100,6 +100,33 @@ async function getDirectReportUserIds(managerId) {
   return new Set(rows.map(r => r.user_id));
 }
 
+// Whoever gets set as an Employee's reporting_manager_id must actually be
+// able to act on that report's approvals — Leave/GatePass/Reimbursement/
+// AttendanceRegularisation approval authorization is keyed purely on
+// reporting_manager_id matching the actor, but the NAV that gets a user to
+// LeaveManagement.jsx etc. in the first place is keyed on role/custom_role
+// being 'manager'/'management'/'hr'/'admin'. A user assigned as someone's
+// manager while still on the default 'employee' role could authorize fine
+// server-side but had no way to reach the approval screen at all.
+// Previously the only fix was an admin manually clicking "Sync Manager
+// Roles" in AdminPanel — and that function itself only ever matched the
+// legacy reporting_manager_email field, never the reporting_manager_id
+// every current UI (UserRoleManagement.jsx, OnboardingApproval.jsx) actually
+// writes, so it silently promoted nobody assigned through the current UI.
+// This runs automatically the moment reporting_manager_id is actually set,
+// so no separate admin step is ever required again. Never demotes or
+// touches anyone already at manager-or-higher.
+async function autoPromoteReportingManager(managerId) {
+  if (!managerId) return;
+  try {
+    const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [managerId]);
+    if (!u) return;
+    const role = u.custom_role || u.role;
+    if (['admin', 'hr', 'manager', 'management'].includes(role)) return;
+    await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [managerId]);
+  } catch (e) { console.error('[entities] autoPromoteReportingManager failed:', e.message); }
+}
+
 async function filterSensitive(data, cu, type) {
   if (!SENSITIVE_TYPES.has(type)) return data;
   const role = await getEffectiveRole(cu);
@@ -883,6 +910,13 @@ router.patch('/:type/:id', async (req, res) => {
     [JSON.stringify(updated), updated.user_id ?? row.user_id, updated.status ?? row.status,
      updated.is_active !== false ? 1 : 0, id]
   );
+
+  // A reporting manager being newly assigned (or changed) must actually be
+  // able to reach the approval screens for their new report — see
+  // autoPromoteReportingManager's own comment above for the full story.
+  if (type === 'Employee' && req.body.reporting_manager_id && req.body.reporting_manager_id !== current.reporting_manager_id) {
+    autoPromoteReportingManager(req.body.reporting_manager_id).catch(() => {});
+  }
 
   // Releasing a still-'pending' Leave's reservation (see reserveLeaveBalance
   // above) — only when it was actually reserved: a WFH request never drew
