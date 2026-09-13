@@ -5912,7 +5912,12 @@ router.post('/:name', async (req, res) => {
           // purely a visual highlight.
           const baseDisplay = code === 'L' ? (empRecs[ds]?.leave_policy_code || empRecs[ds]?.leave_policy_name || 'L') : code;
           displayCodes.push(gatePass && baseDisplay ? `${baseDisplay}⛩` : baseDisplay);
-          if (code==='P'||code==='P*'||code==='SA') pC++;
+          // 'PR' (regularised present, from mStatusCode's rec.regularised
+          // check) was missing here — a regularised day displayed correctly
+          // with its own color/label but silently never counted toward the
+          // Present total or totalWorked below, undercounting exactly the
+          // days a regularisation was approved to fix.
+          if (code==='P'||code==='P*'||code==='PR'||code==='SA') pC++;
           else if (code==='A') aC++;
           else if (code==='L') lC++;
           else if (code==='HD') { hdC++; pC+=0.5; aC+=0.5; }

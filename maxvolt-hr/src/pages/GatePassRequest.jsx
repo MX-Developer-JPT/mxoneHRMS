@@ -49,7 +49,10 @@ const OUTING_TYPES = [
   { value: 'unofficial_outing', label: 'Unofficial Outing', desc: 'Half day LOP deducted' },
   { value: 'half_day', label: 'Half Day', desc: 'Half day LOP deducted' },
   { value: 'short_break', label: 'Short Break', desc: 'No deduction if returned within 3 hours, else half day LOP' },
-  { value: 'early_leave', label: 'Early Leave', desc: 'Half day LOP deducted' },
+  // 'early_leave' removed as a selectable option per explicit request — the
+  // getOutingLabel()/OUTING_LABELS-style maps elsewhere (GateAdminDashboard,
+  // GatePassApproval, the muster/report exports) still recognize it so any
+  // already-submitted pass with this outing_type keeps displaying correctly.
   { value: 'travelling_to_another_office', label: 'Travelling to Another Office', desc: 'No LOP deduction — after your manager approves, routed to the gate admin at your current office' },
 ];
 

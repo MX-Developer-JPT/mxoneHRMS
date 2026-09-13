@@ -645,9 +645,20 @@ router.post('/:type', async (req, res) => {
   // themselves — closes the gap where any authenticated user could POST a
   // Loan/Leave/etc. with someone else's user_id in the body and have it
   // silently attributed to that other person.
+  //
+  // gate_admin is the one deliberate exception, scoped to Attendance only:
+  // marking an employee's return on a gate pass (GateAdminDashboard.jsx's
+  // markReturn) creates that employee's Attendance record for the day when
+  // one doesn't exist yet — a gate admin marking attendance-relevant state
+  // for someone else is exactly their job, not a privilege gap. Without
+  // this, marking departure (GatePass-only, already separately authorized
+  // via checkApprovalAuthorization's gate-log-transition branch) succeeded
+  // while marking the SAME person back in failed with a 403 the instant no
+  // Attendance row existed yet for that day.
   if (data.user_id && data.user_id !== cu.id) {
     const role = await getEffectiveRole(cu);
-    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Cannot create a record on behalf of another user' });
+    const isGateAdminAttendance = type === 'Attendance' && role === 'gate_admin';
+    if (!PRIVILEGED_ROLES.has(role) && !isGateAdminAttendance) return res.status(403).json({ error: 'Cannot create a record on behalf of another user' });
   }
 
   // SENSITIVE_TYPES also need a create-time gate — GET/PATCH/DELETE all
@@ -882,10 +893,15 @@ router.patch('/:type/:id', async (req, res) => {
   // HolidayCalendar, AppLocation — left to their existing role-gated UI);
   // this is the already-authorized scoped transition above; or the caller
   // is the record's assignee (assigned_to) — the pattern Helpdesk tickets
-  // use for support staff who aren't the ticket's original raiser.
+  // use for support staff who aren't the ticket's original raiser. gate_admin
+  // gets the same Attendance-only exception as the POST route above — marking
+  // an employee's return on a gate pass (GateAdminDashboard.jsx's markReturn)
+  // PATCHes that employee's already-existing Attendance record for the day
+  // just as often as it creates a new one, and both paths need to agree.
   if (!isScopedTransition && current.user_id && current.user_id !== cu.id && current.assigned_to !== cu.id && current.assigned_to_user_id !== cu.id) {
     const genRole = await getEffectiveRole(cu);
-    if (!PRIVILEGED_ROLES.has(genRole)) return res.status(403).json({ error: 'Access denied — not your record' });
+    const isGateAdminAttendance = type === 'Attendance' && genRole === 'gate_admin';
+    if (!PRIVILEGED_ROLES.has(genRole) && !isGateAdminAttendance) return res.status(403).json({ error: 'Access denied — not your record' });
   }
 
   const updated = { ...current, ...req.body, id };
