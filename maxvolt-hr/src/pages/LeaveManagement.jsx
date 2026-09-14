@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Zap, Loader2, Users, Download, Upload } from 'lucide-react';
+import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Zap, Loader2, Users, Download, Upload, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -64,6 +64,7 @@ export default function LeaveManagement() {
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState('pending');
   const [filterPolicy, setFilterPolicy] = useState('all');
+  const [search, setSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [leaveBalances, setLeaveBalances] = useState({}); // { userId_policyId: LeaveBalance }
@@ -388,10 +389,17 @@ export default function LeaveManagement() {
 
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
 
+  const searchQ = search.trim().toLowerCase();
   const filteredRequests = leaveRequests.filter(l => {
     const statusMatch = filterStatus === 'all' || l.status === filterStatus;
     const policyMatch = filterPolicy === 'all' || (leavePolicies.find(p => p.id === l.leave_policy_id)?.code === filterPolicy);
-    return statusMatch && policyMatch;
+    if (!statusMatch || !policyMatch) return false;
+    if (!searchQ) return true;
+    const emp = employees.find(e => e.user_id === l.user_id);
+    return (emp?.display_name || '').toLowerCase().includes(searchQ)
+      || (emp?.employee_code || '').toLowerCase().includes(searchQ)
+      || (emp?.department || '').toLowerCase().includes(searchQ)
+      || (l.reason || '').toLowerCase().includes(searchQ);
   });
 
   const pendingL1 = leaveRequests.filter(l => l.status === 'pending' && l.current_approval_level === 1).length;
@@ -672,6 +680,20 @@ export default function LeaveManagement() {
             {/* Filters */}
             <div className="flex gap-3 items-center flex-wrap">
               <Filter className="w-4 h-4 text-gray-500" />
+              <div className="relative w-full sm:w-64">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <Input
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="Search name, code, department, reason..."
+                  className="pl-9 pr-8"
+                />
+                {search && (
+                  <button type="button" onClick={() => setSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
               <Select value={filterStatus} onValueChange={setFilterStatus}>
                 <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
                 <SelectContent>

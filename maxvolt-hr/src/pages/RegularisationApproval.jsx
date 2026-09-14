@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, XCircle, RotateCcw, Clock, Filter, Users, Eye, FileText, Calendar, AlertCircle, ChevronsUpDown, Check } from 'lucide-react';
+import { CheckCircle2, XCircle, RotateCcw, Clock, Filter, Users, Eye, FileText, Calendar, AlertCircle, ChevronsUpDown, Check, Search, X } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
@@ -42,6 +42,7 @@ export default function RegularisationApproval() {
   const [actionDialog, setActionDialog] = useState(null); // { request, action }
   const [comment, setComment] = useState('');
   const [processing, setProcessing] = useState(false);
+  const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterEmployee, setFilterEmployee] = useState('all');
   const [filterDept, setFilterDept] = useState('all');
@@ -151,12 +152,20 @@ export default function RegularisationApproval() {
   const getEmployeeDept = (userId) => employees.find(e => e.user_id === userId)?.department || '';
 
 
+  const searchQ = search.trim().toLowerCase();
   const filtered = requests.filter(r => {
     const matchStatus = filterStatus === 'all' || r.status === filterStatus;
     const matchEmp = filterEmployee === 'all' || r.user_id === filterEmployee;
     const dept = getEmployeeDept(r.user_id);
     const matchDept = filterDept === 'all' || dept === filterDept;
-    return matchStatus && matchEmp && matchDept;
+    if (!matchStatus || !matchEmp || !matchDept) return false;
+    if (!searchQ) return true;
+    const emp = employees.find(e => e.user_id === r.user_id);
+    return (emp?.display_name || '').toLowerCase().includes(searchQ)
+      || (emp?.employee_code || '').toLowerCase().includes(searchQ)
+      || (dept || '').toLowerCase().includes(searchQ)
+      || (REASON_LABELS[r.reason_category] || r.reason_category || '').toLowerCase().includes(searchQ)
+      || (r.reason || '').toLowerCase().includes(searchQ);
   });
 
   const pending = filtered.filter(r => r.status === 'pending' || (isHR && r.status === 'manager_approved'));
@@ -216,6 +225,20 @@ export default function RegularisationApproval() {
 
         {/* Filters */}
         <div className="flex flex-wrap gap-3">
+          <div className="relative w-full sm:w-64">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <Input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search name, code, department, reason..."
+              className="pl-9 pr-8 bg-white"
+            />
+            {search && (
+              <button type="button" onClick={() => setSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           <Select value={filterStatus} onValueChange={setFilterStatus}>
             <SelectTrigger className="w-40 bg-white"><SelectValue placeholder="All Status" /></SelectTrigger>
             <SelectContent>

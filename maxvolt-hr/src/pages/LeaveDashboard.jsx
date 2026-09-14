@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { PieChartIcon, AlertTriangle, Users, TrendingUp } from 'lucide-react';
+import { PieChartIcon, AlertTriangle, Users, TrendingUp, Search, X } from 'lucide-react';
 import { resolveHierarchy } from '@/lib/hierarchy';
 
 const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -13,6 +14,7 @@ export default function LeaveDashboard() {
   const [deptData, setDeptData] = useState([]);
   const [nearingLimit, setNearingLimit] = useState([]);
   const [stats, setStats] = useState({ totalLeaves: 0, totalEmployees: 0, avgDays: 0 });
+  const [search, setSearch] = useState('');
 
   useEffect(() => { loadData(); }, []);
 
@@ -98,6 +100,14 @@ export default function LeaveDashboard() {
   };
 
   if (loading) return <div className="flex items-center justify-center h-64">Loading...</div>;
+
+  const searchQ = search.trim().toLowerCase();
+  const filteredNearingLimit = searchQ
+    ? nearingLimit.filter(item =>
+        item.name.toLowerCase().includes(searchQ)
+        || item.department.toLowerCase().includes(searchQ)
+        || item.policy.toLowerCase().includes(searchQ))
+    : nearingLimit;
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
@@ -191,14 +201,30 @@ export default function LeaveDashboard() {
 
         {/* Employees Nearing Annual Limit */}
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <CardTitle className="flex items-center gap-2">
               <AlertTriangle className="w-5 h-5 text-red-500" />
               Employees Nearing Annual Leave Limit (≥80%)
             </CardTitle>
+            {nearingLimit.length > 0 && (
+              <div className="relative w-full sm:w-64">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="Search name, department, leave type..."
+                  className="pl-9 pr-8"
+                />
+                {search && (
+                  <button type="button" onClick={() => setSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
           </CardHeader>
           <CardContent>
-            {nearingLimit.length > 0 ? (
+            {filteredNearingLimit.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -213,7 +239,7 @@ export default function LeaveDashboard() {
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {nearingLimit.map((item, idx) => (
+                    {filteredNearingLimit.map((item, idx) => (
                       <tr key={idx} className="hover:bg-muted/50">
                         <td className="py-3 px-2 font-medium">{item.name}</td>
                         <td className="py-3 px-2 text-muted-foreground">{item.department}</td>
@@ -232,7 +258,9 @@ export default function LeaveDashboard() {
                 </table>
               </div>
             ) : (
-              <p className="text-center text-muted-foreground py-8">No employees nearing their leave limit</p>
+              <p className="text-center text-muted-foreground py-8">
+                {nearingLimit.length > 0 ? `No results match "${search}"` : 'No employees nearing their leave limit'}
+              </p>
             )}
           </CardContent>
         </Card>
