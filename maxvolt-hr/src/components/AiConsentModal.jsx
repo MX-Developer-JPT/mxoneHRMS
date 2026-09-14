@@ -72,8 +72,14 @@ export default function AiConsentModal() {
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
-        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-5 flex items-start justify-between gap-3">
+      {/* max-h + flex-col with only the middle section scrolling — on a
+          short mobile screen (especially landscape, or with the on-screen
+          keyboard eating vertical space) the disclosure text + bullet list
+          was taller than the viewport with no way to reach the Accept/
+          Decline buttons at all, since the card had no height cap. Header
+          and footer buttons stay pinned; only the body scrolls. */}
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-5 flex items-start justify-between gap-3 flex-shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center flex-shrink-0">
               <Sparkles className="w-5 h-5 text-white" />
@@ -88,7 +94,7 @@ export default function AiConsentModal() {
           </button>
         </div>
 
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 overflow-y-auto">
           <p className="text-sm text-gray-700">
             Maxvolt One uses <strong>Groq</strong>, a third-party AI service, to power features like{' '}
             <strong>AskMax AI Assistant</strong>, resume screening, AI-generated HR letters, and HR
@@ -108,7 +114,7 @@ export default function AiConsentModal() {
           </p>
         </div>
 
-        <div className="flex gap-3 px-6 pb-6">
+        <div className="flex gap-3 px-6 pb-6 pt-1 flex-shrink-0 border-t border-gray-100">
           <button
             onClick={handleDecline}
             className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium py-2.5 rounded-lg text-sm transition-colors"

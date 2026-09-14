@@ -71,6 +71,54 @@ export default function DocViewerModal({ url, title = 'Document', open, onClose,
     if (content) { navigator.clipboard.writeText(content); }
   };
 
+  const [downloading, setDownloading] = useState(false);
+  // Same technique as utils/letterhead.js's openPdfBlob — a synthetic <a
+  // click with `download` set and NO target/rel. The Download button here
+  // used to be a plain `<a href download target="_blank">`, and mixing
+  // `download` with `target="_blank"` is exactly the mistake that
+  // component's own comment warns about: opening a new window/tab is a
+  // completely different, separately-broken code path in this app's
+  // Capacitor WebView (no window-creation delegate wired up — confirmed
+  // repeatedly this session for Payslips' own "view" flow before it was
+  // fixed to stop trying to open anything). The document VIEWS fine
+  // in-page because it never needs a new window at all; the download
+  // wasn't working for the identical reason viewing didn't. Fetching into
+  // a same-origin blob: URL first (rather than pointing the anchor at the
+  // original, often cross-origin, presigned bucket URL) also sidesteps
+  // browsers silently ignoring `download` on a cross-origin href.
+  const handleDownload = async () => {
+    if (!url) return;
+    setDownloading(true);
+    try {
+      let blobUrl = url;
+      let revoke = false;
+      if (!/^blob:/i.test(url)) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
+        const blob = await res.blob();
+        blobUrl = URL.createObjectURL(blob);
+        revoke = true;
+      }
+      // A downloaded file with no extension often shows no icon and won't
+      // auto-open in the right app on the device — title (e.g. "Payslip —
+      // Aug 2026") never carries one, so derive one from the URL when
+      // possible, else fall back to what this modal is actually rendering.
+      const urlExtMatch = /\.(pdf|jpe?g|png|gif|webp|docx?|xlsx?)(\?|$)/i.exec(url);
+      const ext = urlExtMatch ? urlExtMatch[1].toLowerCase() : (renderAsPdf ? 'pdf' : isImage ? 'jpg' : '');
+      const baseName = (title || 'document').replace(/[\\/:*?"<>|]/g, '_');
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = ext && !baseName.toLowerCase().endsWith(`.${ext}`) ? `${baseName}.${ext}` : baseName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      if (revoke) setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch (e) {
+      console.error('Download failed:', e.message);
+    }
+    setDownloading(false);
+  };
+
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose()}>
       <DialogContent className="max-w-4xl w-full h-[90vh] flex flex-col p-0 gap-0">
@@ -89,11 +137,9 @@ export default function DocViewerModal({ url, title = 'Document', open, onClose,
               </div>
             )}
             {url && (
-              <a href={url} download target="_blank" rel="noopener noreferrer">
-                <Button variant="outline" size="sm" className="gap-1">
-                  <Download className="w-3 h-3" /> Download
-                </Button>
-              </a>
+              <Button variant="outline" size="sm" className="gap-1" onClick={handleDownload} disabled={downloading}>
+                {downloading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />} Download
+              </Button>
             )}
             {!url && content && (
               <Button variant="outline" size="sm" className="gap-1" onClick={copyContent}>
