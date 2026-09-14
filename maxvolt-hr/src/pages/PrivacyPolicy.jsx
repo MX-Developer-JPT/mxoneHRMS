@@ -1,7 +1,7 @@
 import React from 'react';
 import { ShieldCheck } from 'lucide-react';
 
-const LAST_UPDATED = '7 July 2026';
+const LAST_UPDATED = '14 September 2026';
 
 function Section({ title, children }) {
   return (
@@ -106,8 +106,33 @@ export default function PrivacyPolicy() {
             <li><strong>Cloud file storage</strong> (Cloudflare R2 / Cloudinary) — to store uploaded documents, photos, and signature images.</li>
             <li><strong>Push notification delivery</strong> (Firebase Cloud Messaging / Web Push) — to deliver notifications to your device.</li>
             <li><strong>Email delivery</strong> — to send HR-related emails (offer letters, approvals, notifications).</li>
+            <li><strong>AI processing</strong> (<strong>Groq</strong>) — see Section 7A below for full detail.</li>
           </ul>
           <p>We do not share your personal data with any other third party except where required by law.</p>
+        </Section>
+
+        <Section title="7A. AI-Powered Features">
+          <p>
+            Certain optional features in the App are powered by <strong>Groq</strong>, a third-party AI
+            service, and are <strong>off by default</strong>. You must explicitly enable "AI Features" (in
+            App Settings, or the one-time prompt shown after login) before any of the data below is sent to
+            Groq — declining or ignoring that prompt leaves these features disabled and does not affect any
+            other part of the App.
+          </p>
+          <p>Once enabled, using one of these features sends the following to Groq, solely to generate that feature's response:</p>
+          <ul className="list-disc pl-5 space-y-1">
+            <li><strong>AskMax AI Assistant</strong> — the question you type, and HR data needed to answer it (e.g. your leave balance, attendance record, or — for a manager/HR user — team records you are authorized to view).</li>
+            <li><strong>Resume screening &amp; candidate scoring</strong> (used by HR/recruiters) — a job candidate's resume text and application details.</li>
+            <li><strong>AI-generated HR letters</strong> — the employee's name, employee code, designation, and department.</li>
+            <li><strong>HR insights, weekly digests, attendance summaries &amp; retention plans</strong> (used by HR/management) — aggregated workforce metrics, or an individual employee's name and attendance/performance data where the feature is about that one employee.</li>
+            <li><strong>Anonymous survey sentiment analysis</strong> — the free-text responses to an employee pulse survey (already anonymous — not linked to your identity before being sent).</li>
+          </ul>
+          <p>
+            Groq processes this data only to generate the requested output and does not use it to train
+            models on our data or for advertising. We do not send payroll, bank, tax, biometric, or
+            government-ID data to Groq under any circumstance. You can review or withdraw this consent at
+            any time from <strong>App Settings → AI Features</strong>.
+          </p>
         </Section>
 
         <Section title="8. Data Retention">

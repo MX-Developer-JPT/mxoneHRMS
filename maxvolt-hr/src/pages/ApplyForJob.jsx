@@ -21,6 +21,7 @@ export default function ApplyForJob() {
   const [statusLink, setStatusLink] = useState('');
   const [aiDescription, setAiDescription] = useState('');
   const [resumeFile, setResumeFile] = useState(null);
+  const [aiConsent, setAiConsent] = useState(false);
   const [form, setForm] = useState({
     full_name: '',
     email: '',
@@ -119,8 +120,15 @@ export default function ApplyForJob() {
         return;
       }
 
-      // Auto-trigger resume parsing if resume was uploaded and candidate ID returned
-      if (resume_url && submitRes.data?.candidate_id) {
+      // Auto-trigger resume parsing if resume was uploaded and candidate ID
+      // returned — only when the candidate actually consented (checkbox
+      // below): this sends the resume's text content to Groq, a third-party
+      // AI service, so it needs the applicant's own permission, not just
+      // HR's. Declining still submits the application and the resume file
+      // normally — HR can read it directly, or trigger AI parsing later
+      // themselves (gated on their own AI consent) from the candidate's
+      // record.
+      if (resume_url && submitRes.data?.candidate_id && aiConsent) {
         base44.functions.invoke('parseResume', {
           candidate_id: submitRes.data.candidate_id,
           resume_url,
@@ -346,6 +354,16 @@ export default function ApplyForJob() {
                         <input type="file" className="hidden" accept=".pdf,.doc,.docx" onChange={e => setResumeFile(e.target.files[0])} />
                       </label>
                     </div>
+                    {resumeFile && (
+                      <label className="flex items-start gap-2 mt-2 text-xs text-gray-500 cursor-pointer">
+                        <input type="checkbox" checked={aiConsent} onChange={e => setAiConsent(e.target.checked)} className="mt-0.5 rounded" />
+                        <span>
+                          I consent to my resume being processed by <strong>Groq</strong>, a third-party AI
+                          service, to help assess my application (extracting skills, experience, and
+                          education). Leaving this unchecked still submits my application and resume normally.
+                        </span>
+                      </label>
+                    )}
                   </div>
                   <div>
                     <Label>How did you hear about us?</Label>

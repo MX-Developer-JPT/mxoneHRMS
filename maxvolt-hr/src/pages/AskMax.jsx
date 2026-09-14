@@ -96,11 +96,16 @@ export default function AskMax() {
           ? "I'm currently being set up and will be ready soon. In the meantime, please contact HR directly for policy questions."
           : answer
       }]);
-    } catch {
+    } catch (err) {
       setAiStatus('unavailable');
+      // base44Client.js already popped the AI-consent modal for this case
+      // (window 'ai-consent-required' event) — this just gives the chat
+      // itself an accurate bubble instead of a generic connection error.
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: 'Something went wrong. Please check your connection and try again.'
+        content: err?.isAiConsentRequired
+          ? 'AskMax needs AI Features enabled to answer — accept the prompt that just appeared, or enable it later from App Settings.'
+          : 'Something went wrong. Please check your connection and try again.'
       }]);
     } finally {
       setLoading(false);

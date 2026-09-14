@@ -18,6 +18,7 @@ import Register from '@/pages/Register';
 import ForgotPassword from '@/pages/ForgotPassword';
 import ResetPassword from '@/pages/ResetPassword';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
+import AiConsentModal from '@/components/AiConsentModal';
 const AttendanceReports = lazy(() => import('./pages/AttendanceReports'));
 const AttendanceRegularisation = lazy(() => import('./pages/AttendanceRegularisation'));
 const AttendanceExemption = lazy(() => import('./pages/AttendanceExemption'));
@@ -268,6 +269,7 @@ const AuthenticatedApp = () => {
       // uploading a profile photo) is done, per explicit requirement.
       <ForceChangePassword onDone={() => window.location.reload()} />
     )}
+    {user && !user?.must_change_password && !isPublicPath && <AiConsentModal />}
     <Routes>
       {/* Public auth routes — guarded so an active session never sees the login form again */}
       <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />

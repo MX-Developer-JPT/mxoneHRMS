@@ -1030,6 +1030,24 @@ async function hasRole(cu, roles) {
 }
 const HR_ROLES = ['hr', 'admin'];
 
+// Every case below that calls callAI/callAIMessages (backend/utils/ai.js —
+// Groq, a third-party AI service) sends some of this user's or their team's
+// personal data to it: candidate resumes, employee names/attendance/
+// performance data, survey text, etc. App Store guideline 5.1.1(i)/5.1.2(i)
+// requires real, revocable permission before that happens — not just a
+// privacy-policy mention. ai_consent_given is a live DB column (not the
+// JWT's embedded claims, which can go stale for the life of a 30-day
+// token) toggled by the user themselves via getAiConsentStatus/setAiConsent
+// below and the "AI Features" section in AppSettings.jsx.
+async function requireAiConsent(cu) {
+  if (!cu) return false;
+  try {
+    const u = await one('SELECT ai_consent_given FROM users WHERE id=$1', [cu.id]);
+    return !!u?.ai_consent_given;
+  } catch { return false; }
+}
+const AI_CONSENT_ERROR = { error: 'AI_CONSENT_REQUIRED', message: 'Enable AI Features in Settings to use this.' };
+
 // Skill Grid: department-specific skill certification matrix (see the big
 // case block below for details). Declared at module scope, not inside the
 // switch body, because a switch statement is a single block — a `const`
@@ -2251,6 +2269,26 @@ router.post('/:name', async (req, res) => {
       _usersCache = users;
       _usersCacheExp = Date.now() + 60_000; // 60-second cache
       return res.json({ users });
+    }
+
+    /* ── AI Features consent (Groq — see backend/utils/ai.js) — read by
+       AppSettings.jsx's "AI Features" section and the one-time consent
+       prompt, enforced by requireAiConsent() in every AI-powered case
+       below. ── */
+    case 'getAiConsentStatus': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const row = await one('SELECT ai_consent_given, ai_consent_at FROM users WHERE id=$1', [cu.id]);
+      return res.json({ success: true, consent_given: !!row?.ai_consent_given, consent_at: row?.ai_consent_at || null });
+    }
+
+    case 'setAiConsent': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const consent = !!p.consent;
+      await run(
+        "UPDATE users SET ai_consent_given=$1, ai_consent_at=$2 WHERE id=$3",
+        [consent, consent ? new Date().toISOString() : null, cu.id]
+      );
+      return res.json({ success: true, consent_given: consent });
     }
 
     /* ── Announcement read receipts ──────────────────────
@@ -9518,7 +9556,20 @@ router.post('/:name', async (req, res) => {
 
     /* ── AI: Recruitment ─────────────────────────────── */
     case 'parseResume': {
-      const { candidate_id, resume_url } = p;
+      const { candidate_id, resume_url, auto_triggered } = p;
+      // Two distinct callers send a resume to Groq here: (1) ApplyForJob.jsx
+      // auto-triggers this right after a candidate — unauthenticated, no
+      // user account at all — submits their own resume; that consent is
+      // collected on the application form itself (see its own AI-consent
+      // checkbox), not via this app's per-user AI toggle, which has nothing
+      // to check for someone with no account. (2) An authenticated
+      // recruiter/HR explicitly (re-)triggering a parse from
+      // ResumeParsePanel — gated on THEIR own consent, since they're the
+      // one choosing to send this resume to Groq.
+      if (!auto_triggered) {
+        if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+        if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
+      }
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       const cand = cRow ? JSON.parse(cRow.data) : {};
 
@@ -9529,6 +9580,7 @@ router.post('/:name', async (req, res) => {
 
     case 'scoreAndSummariseCv': {
       if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       const { candidate_id, position_applied, department, experience_years, current_company, current_ctc, expected_ctc, notice_period } = p;
 
       // Same fix as scoreCandidate: ground this in the actual resume text
@@ -9589,6 +9641,7 @@ Return ONLY a valid JSON object (no markdown) with:
 
     case 'scoreCandidate': {
       if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       const { candidate_id, job_requisition_id } = p;
       const cRow  = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       const jdRow = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [job_requisition_id]);
@@ -10826,6 +10879,13 @@ ${sealHtml()}
         letter = templateLetters[letterType]();
         isHtml = true;
       } else {
+        // Only this branch actually sends the employee's name/code/
+        // designation/department to Groq (the templateLetters branch above
+        // is pure local string templating, no AI involved at all) — gate
+        // consent right here rather than for the whole case, so a user who
+        // hasn't opted into AI features can still generate every
+        // template-based letter type without hitting this wall.
+        if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
         const aiTypeInstructions = {
           address_proof: `an employment / address verification letter addressed to ${extra.addressed_to || 'Whom It May Concern'} for purpose: ${extra.purpose || 'general verification'}.`,
           warning: `a formal written warning letter. Subject: ${extra.subject || '[subject]'}. Details: ${extra.details || '[details]'}.`,
@@ -10935,6 +10995,7 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
 
     /* ── AI: HR Assistant ────────────────────────────── */
     case 'askMax': {
+      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       const { question = '', conversationHistory = [] } = p;
       const uid = cu?.id || p.user_id;
 
@@ -11780,6 +11841,10 @@ ${contextBlock || 'No employee context available — answer from general policy 
     }
 
     case 'getMISInsights': {
+      // MISDashboard.jsx (this case's only caller) is reachable by manager
+      // too, not just HR/admin/management — matches its own nav visibility.
+      if (!(await hasRole(cu, [...MGR_ROLES, 'manager']))) return res.status(403).json({ error: 'Manager/HR access required' });
+      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       const { metrics = {}, context = {} } = p;
       const { callAI } = await import('../utils/ai.js');
 
@@ -14714,6 +14779,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     case 'getRetentionPlan': {
       if (!(await hasRole(cu, [...MGR_ROLES, 'manager']))) return res.status(403).json({ error: 'Manager/HR access required' });
+      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       const ruid = p.user_id;
       if (!ruid) return res.json({ success: false, error: 'user_id required' });
       if (!(await canAccessEmployee(cu, ruid))) return res.status(403).json({ error: 'Access denied — not your report' });
@@ -16273,6 +16339,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
     }
 
     case 'getAttendanceNarrative': {
+      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       const { user_id, month, year } = p;
       const targetUser = user_id || cu?.id;
       if (!(await canAccessEmployee(cu, targetUser))) return res.status(403).json({ error: 'Access denied' });
@@ -16313,6 +16380,8 @@ Be specific about patterns, mention if late arrivals are a concern, if WFH is hi
     }
 
     case 'getWeeklyHRDigest': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       const now = new Date();
       const m = now.getMonth() + 1;
       const y = now.getFullYear();
@@ -16365,6 +16434,7 @@ Be actionable and highlight anything that needs HR attention. Professional tone.
 
     case 'getSurveySentiment': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       const { survey_id } = p;
       const responseRows = await all(
         "SELECT data FROM entities WHERE type='SurveyResponse' AND data::jsonb->>'survey_id'=$1",
@@ -16667,6 +16737,7 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
 
     case 'getRecruitmentInsights': {
       if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       // Takes the same summary data the client already fetched from
       // getRecruitmentMIS and asks the AI to write short, specific,
       // numbers-grounded observations from it — the narrative-insights

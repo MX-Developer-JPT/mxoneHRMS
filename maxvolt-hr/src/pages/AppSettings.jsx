@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Sun, Moon, LogOut, Trash2, Settings, Monitor, MapPin, Plus, X, Pencil, Bell, BellOff, Download, Smartphone, ShieldCheck, FileText, ChevronRight, KeyRound, Mail, Loader2, LifeBuoy } from 'lucide-react';
+import { Sun, Moon, LogOut, Trash2, Settings, Monitor, MapPin, Plus, X, Pencil, Bell, BellOff, Download, Smartphone, ShieldCheck, FileText, ChevronRight, KeyRound, Mail, Loader2, LifeBuoy, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { pushSupported, getPushState, enablePush, disablePush } from '@/utils/pwa';
 import { registerNativePush } from '@/lib/nativePush';
 
@@ -40,6 +41,12 @@ export default function AppSettings() {
   const [otpSending, setOtpSending] = useState(false);
   const [otpForm, setOtpForm] = useState({ otp_code: '', new_password: '', confirm_password: '' });
   const [otpVerifying, setOtpVerifying] = useState(false);
+
+  // AI Features consent — see AiConsentModal.jsx / requireAiConsent in
+  // functions.js. This card is the "review/change your choice later" half
+  // of that flow; the modal is the one-time initial ask.
+  const [aiConsent, setAiConsentState] = useState(null); // { given, at } | null while loading
+  const [aiConsentSaving, setAiConsentSaving] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -150,6 +157,9 @@ export default function AppSettings() {
       ]);
       setUser(currentUser);
       setLocations(locData);
+      base44.functions.invoke('getAiConsentStatus', {})
+        .then(res => setAiConsentState({ given: !!res.data?.consent_given, at: res.data?.consent_at || null }))
+        .catch(() => setAiConsentState({ given: false, at: null }));
     } catch (e) {
       // Previously silent — a session/network failure here left role-gated
       // sections (Location Management, push diagnostics) simply never
@@ -163,6 +173,23 @@ export default function AppSettings() {
   // admin-only — not HR, not any other role — per explicit instruction.
   // Unlike isAdmin() above (HR+admin), this is admin role exactly.
   const isSuperAdmin = user?.role === 'admin';
+
+  const toggleAiConsent = async () => {
+    const next = !aiConsent?.given;
+    setAiConsentSaving(true);
+    try {
+      const res = await base44.functions.invoke('setAiConsent', { consent: next });
+      if (res.data?.success) {
+        setAiConsentState({ given: next, at: next ? new Date().toISOString() : null });
+        toast.success(next ? 'AI Features enabled' : 'AI Features disabled');
+      } else {
+        toast.error('Failed to update');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Failed to update');
+    }
+    setAiConsentSaving(false);
+  };
 
   const handleSaveLocation = async () => {
     if (!locForm.name.trim()) { toast.error('Location name is required'); return; }
@@ -419,6 +446,40 @@ export default function AppSettings() {
                 </div>
               </div>
               <Button size="sm" variant="outline" onClick={openPwDialog}>Change</Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* AI Features — consent before any personal data reaches Groq
+            (backend/utils/ai.js), enforced server-side on every AI-powered
+            action (requireAiConsent in functions.js). This is the
+            review/change-your-choice-later half of that flow; the one-time
+            initial ask is AiConsentModal.jsx. */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-purple-600" /> AI Features
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between p-3 border rounded-lg gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Enable AI Features</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Powered by <strong>Groq</strong>, a third-party AI service. When enabled, features like AskMax AI
+                  Assistant, resume screening, AI-generated HR letters, and HR insights/digests send relevant data
+                  (your question, resume text, or HR records you're authorized to see) to Groq to generate a
+                  response. Off by default — everything else in the app works without this.
+                </p>
+                {aiConsent?.given && aiConsent?.at && (
+                  <p className="text-xs text-gray-400 mt-1">Enabled {new Date(aiConsent.at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                )}
+              </div>
+              {aiConsent === null ? (
+                <Loader2 className="w-4 h-4 animate-spin text-gray-400 flex-shrink-0" />
+              ) : (
+                <Switch checked={!!aiConsent.given} onCheckedChange={toggleAiConsent} disabled={aiConsentSaving} className="flex-shrink-0" />
+              )}
             </div>
           </CardContent>
         </Card>

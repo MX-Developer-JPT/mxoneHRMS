@@ -51,6 +51,19 @@ async function apiFetch(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
+    // Every AI-powered function.invoke case returns this exact shape when
+    // the caller hasn't consented to AI Features yet (requireAiConsent in
+    // functions.js) — caught centrally here, once, instead of needing every
+    // individual AI call site across the app to special-case it: gives every
+    // existing `catch(e){ toast.error(e.message) }` a real, actionable
+    // message for free, and lets <AiConsentModal/> (mounted once in App.jsx)
+    // react to the same event to offer enabling it right there.
+    if (err.error === 'AI_CONSENT_REQUIRED') {
+      window.dispatchEvent(new CustomEvent('ai-consent-required'));
+      const e = new Error(err.message || 'Enable AI Features in Settings to use this.');
+      e.status = res.status; e.data = err; e.isAiConsentRequired = true;
+      throw e;
+    }
     const e = new Error(err.error || err.message || res.statusText);
     e.status = res.status;
     e.data   = err;

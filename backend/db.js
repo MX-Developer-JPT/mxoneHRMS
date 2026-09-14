@@ -126,6 +126,14 @@ async function initSchema() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_role           TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password  BOOLEAN DEFAULT FALSE;
+    -- Explicit, revocable consent before any AI feature (Groq — see
+    -- backend/utils/ai.js) is allowed to process this user's data. Enforced
+    -- server-side (requireAiConsent in functions.js), not just hidden
+    -- client-side — App Store guideline 5.1.1(i)/5.1.2(i) requires real
+    -- permission before sending personal data to a third-party AI service,
+    -- not merely a disclosure the user can't act on.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_consent_given BOOLEAN DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_consent_at    TEXT;
   `);
 
   // files: support R2-backed rows (key reference instead of inline bytes)
