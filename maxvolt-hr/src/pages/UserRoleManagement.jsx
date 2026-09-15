@@ -66,6 +66,12 @@ export default function UserRoleManagement() {
   // One-time repair: backfill reporting_manager_id from legacy reporting_manager_email
   const [backfillRunning, setBackfillRunning] = useState(false);
 
+  // Employee codes that already collide — from before write-time checks
+  // existed on the approval/edit forms (see findEmployeeCodeConflict in
+  // functions.js). New duplicates are blocked now; this surfaces the ones
+  // that already got through.
+  const [dupCodeGroups, setDupCodeGroups] = useState([]);
+
   useEffect(() => { loadUsers(); }, []);
 
   useEffect(() => {
@@ -104,6 +110,10 @@ export default function UserRoleManagement() {
       setEmployees(empMap);
       setDepartments(deptList);
       setAppLocations(locList);
+
+      base44.functions.invoke('findDuplicateEmployeeCodes', {})
+        .then(res => setDupCodeGroups(res.data?.duplicates || []))
+        .catch(() => {}); // non-critical — the banner just won't show
     } catch (error) {
       toast.error('Failed to load users');
     } finally {
@@ -190,7 +200,9 @@ export default function UserRoleManagement() {
       setEditUser(null);
       await loadUsers();
     } catch (error) {
-      toast.error('Failed to update user');
+      // Surfaces the real reason (e.g. a duplicate employee code conflict)
+      // instead of a generic message that hides what actually went wrong.
+      toast.error(error.message || 'Failed to update user');
     } finally {
       setSaving(false);
     }
@@ -385,6 +397,51 @@ export default function UserRoleManagement() {
             <Button variant="outline" className="border-amber-300 shrink-0" disabled={backfillRunning} onClick={runBackfill}>
               {backfillRunning ? 'Running...' : 'Run Repair'}
             </Button>
+          </CardContent>
+        </Card>
+        )}
+
+        {/* Duplicate employee codes — pre-existing collisions from before
+            write-time uniqueness checking existed. Click Fix to open that
+            person's edit dialog and assign a different code. */}
+        {dupCodeGroups.length > 0 && (
+        <Card className="mb-6 border-red-200 bg-red-50">
+          <CardContent className="pt-6">
+            <div className="flex items-start gap-3 mb-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-red-900">Duplicate Employee Codes ({dupCodeGroups.length})</p>
+                <p className="text-xs text-red-800/80 mt-0.5">
+                  The same employee code is assigned to more than one person below — approvals/imports/payroll that look
+                  someone up by code can silently match the wrong person. Assign each a distinct code.
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {dupCodeGroups.map(group => (
+                <div key={group.code} className="bg-white border border-red-200 rounded-lg p-3">
+                  <p className="text-xs font-semibold text-red-700 mb-2">Code: {group.code} ({group.members.length} people)</p>
+                  <div className="space-y-1.5">
+                    {group.members.map(m => {
+                      const u = users.find(u => u.id === m.user_id);
+                      return (
+                        <div key={m.entity_id} className="flex items-center justify-between gap-2 text-sm">
+                          <div className="min-w-0">
+                            <span className="font-medium">{m.name}</span>
+                            <span className="text-gray-500 ml-2 text-xs">{m.department}{m.status ? ` · ${m.status}` : ''}{u?.email ? ` · ${u.email}` : ''}</span>
+                          </div>
+                          {u && (
+                            <Button size="sm" variant="outline" className="h-7 text-xs shrink-0 border-red-300 text-red-700 hover:bg-red-50" onClick={() => openEdit(u)}>
+                              Fix
+                            </Button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
           </CardContent>
         </Card>
         )}

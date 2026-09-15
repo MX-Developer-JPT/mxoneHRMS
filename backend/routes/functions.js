@@ -1030,6 +1030,30 @@ async function hasRole(cu, roles) {
 }
 const HR_ROLES = ['hr', 'admin'];
 
+// employee_code is meant to be each employee's unique identifier (the
+// import pipeline already treats it as the "primary key per spec" — see
+// importEmployeeData), but nothing ever stopped two different Employee
+// records from being saved with the same one through the two places it's
+// hand-typed: approveUserOnboarding's approval form and
+// UserRoleManagement.jsx's edit dialog (via updateUserDetails). Normalizes
+// the same way importEmployeeData already does (trim + uppercase) before
+// comparing, so "EMP001"/"emp001"/" EMP001 " are correctly treated as the
+// same code — inconsistent casing across records was itself letting
+// near-duplicates slip past a naive exact-string check.
+function normalizeEmpCode(code) { return String(code || '').trim().toUpperCase(); }
+
+async function findEmployeeCodeConflict(code, excludeEntityId) {
+  const norm = normalizeEmpCode(code);
+  if (!norm) return null;
+  const rows = await all("SELECT id, user_id, data FROM entities WHERE type='Employee' AND data::jsonb->>'employee_code' IS NOT NULL AND data::jsonb->>'employee_code' <> ''");
+  for (const r of rows) {
+    if (r.id === excludeEntityId) continue;
+    let d; try { d = JSON.parse(r.data); } catch { continue; }
+    if (normalizeEmpCode(d.employee_code) === norm) return { id: r.id, user_id: r.user_id, name: d.display_name || '(no name)' };
+  }
+  return null;
+}
+
 // Every case below that calls callAI/callAIMessages (backend/utils/ai.js —
 // Groq, a third-party AI service) sends some of this user's or their team's
 // personal data to it: candidate resumes, employee names/attendance/
@@ -2400,6 +2424,16 @@ router.post('/:name', async (req, res) => {
         const empRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1 LIMIT 1", [uid]);
         if (empRow) {
           const empData = JSON.parse(empRow.data);
+          // employee_code is meant to be unique per employee — see
+          // findEmployeeCodeConflict's own comment for the full story.
+          // Checked here, before the write, whenever this edit actually
+          // changes the code (not on every save regardless).
+          if (empUp.employee_code !== undefined && empUp.employee_code !== '_none') {
+            const conflict = await findEmployeeCodeConflict(empUp.employee_code, empRow.id);
+            if (conflict) {
+              return res.status(400).json({ error: `Employee code "${empUp.employee_code}" is already assigned to ${conflict.name}. Choose a different code.` });
+            }
+          }
           const updated = { ...empData };
           for (const f of empFields) {
             if (empUp[f] !== undefined) {
@@ -2529,6 +2563,34 @@ router.post('/:name', async (req, res) => {
       }
       if (wired > 0) cacheInvalidate('Employee');
       return res.json({ success: true, wired, not_found: notFound, promoted_managers: promoted });
+    }
+
+    // Diagnostic for UserRoleManagement.jsx's "Duplicate Employee Codes"
+    // banner — surfaces employee_code collisions that already exist from
+    // before findEmployeeCodeConflict started blocking new ones (the
+    // approval/edit forms had no uniqueness check at all until now). Groups
+    // by the same normalized comparison the write-time check uses, so a
+    // case/whitespace mismatch ("EMP001" vs "emp001") is correctly flagged
+    // as the same collision instead of two clean codes.
+    case 'findDuplicateEmployeeCodes': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const rows = await all("SELECT id, user_id, data FROM entities WHERE type='Employee' AND data::jsonb->>'employee_code' IS NOT NULL AND data::jsonb->>'employee_code' <> ''");
+      const groups = new Map();
+      for (const r of rows) {
+        let d; try { d = JSON.parse(r.data); } catch { continue; }
+        const norm = normalizeEmpCode(d.employee_code);
+        if (!norm) continue;
+        if (!groups.has(norm)) groups.set(norm, []);
+        groups.get(norm).push({
+          entity_id: r.id, user_id: r.user_id,
+          employee_code: d.employee_code, name: d.display_name || '(no name)',
+          department: d.department || '', status: d.status || '',
+        });
+      }
+      const duplicates = [...groups.entries()]
+        .filter(([, members]) => members.length > 1)
+        .map(([code, members]) => ({ code, members }));
+      return res.json({ success: true, duplicate_count: duplicates.length, duplicates });
     }
 
     case 'linkUserToEmployee': {
@@ -12005,9 +12067,26 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       // straight to admin this way.
       if (role === 'admin' && !(await hasRole(cu, ['admin']))) role = 'employee';
 
+      const eRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
+
+      // employee_code is meant to be unique per employee — nothing enforced
+      // that before, so the same code (a typo, or reusing one HR forgot was
+      // already assigned) could silently land on two different people. Checked
+      // here, before any write, so a real conflict never gets past this form.
+      if (employeeData.employee_code) {
+        const conflict = await findEmployeeCodeConflict(employeeData.employee_code, eRow?.id);
+        // res.status(400), not {success:false} — OnboardingApproval.jsx's
+        // handleSubmitApproval never checks response.success (it just
+        // awaits the call and shows a success toast unconditionally), only
+        // a thrown/non-2xx response reaches its catch block. Matches the
+        // sibling `!uid` check just above for the same reason.
+        if (conflict) {
+          return res.status(400).json({ error: `Employee code "${employeeData.employee_code}" is already assigned to ${conflict.name}. Choose a different code.` });
+        }
+      }
+
       await run("UPDATE users SET role=$1,custom_role=$2 WHERE id=$3", [role, role, uid]);
 
-      const eRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
       if (eRow) {
         const d = { ...JSON.parse(eRow.data), ...employeeData, status:'active' };
         await run("UPDATE entities SET data=$1,status='active' WHERE id=$2", [JSON.stringify(d), eRow.id]);
