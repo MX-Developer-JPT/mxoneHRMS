@@ -133,6 +133,19 @@ export default function Leave() {
     setValidating(false);
   };
 
+  // A half-day leave is always a single day — keep End Date locked to
+  // Start Date whenever Half Day is checked. Without this, the End Date
+  // field goes `disabled` the moment Half Day is checked (below) but
+  // handleSubmit's required-field check still demands it be non-empty —
+  // if the user checks Half Day before ever touching End Date (the
+  // natural order), the field is now both empty AND uneditable, so the
+  // form could never actually be submitted.
+  useEffect(() => {
+    if (formData.half_day && formData.start_date && formData.end_date !== formData.start_date) {
+      setFormData(f => ({ ...f, end_date: f.start_date }));
+    }
+  }, [formData.half_day, formData.start_date]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-validate when dates/policy change
   useEffect(() => {
     if (formData.leave_policy_id && formData.leave_policy_id !== WFH_ID && formData.start_date && formData.end_date) {
@@ -489,8 +502,15 @@ export default function Leave() {
               )}
             </div>
 
-            {/* Half Day Option */}
-            {!isWFH && selectedPolicy?.code === 'CL' && (
+            {/* Half Day Option — available for any leave type (WFH excepted,
+                since it doesn't draw from a balance at all). Backend
+                validation/balance deduction (validateLeaveApplication,
+                checkLeaveBalanceSufficiency) already computes half_day as
+                0.5 days generically, with no per-policy restriction — this
+                used to be hardcoded to CL only here on the frontend with no
+                backend rule behind it, so EL/SL/Compensatory Off and any
+                other leave type could never be applied for as a half day. */}
+            {!isWFH && selectedPolicy && (
               <div className="flex items-center gap-2">
                 <input type="checkbox" id="half_day" checked={formData.half_day}
                   onChange={(e) => setFormData({ ...formData, half_day: e.target.checked })}

@@ -238,12 +238,27 @@ export default function HRApplyOnBehalf({ employees, leavePolicies, loadData, us
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label>Start Date *</Label>
-                  <Input type="date" value={form.start_date} onChange={e => setForm({...form, start_date: e.target.value})} />
+                  <Input type="date" value={form.start_date}
+                    onChange={e => setForm(f => ({ ...f, start_date: e.target.value, end_date: f.half_day ? e.target.value : f.end_date }))} />
                 </div>
                 <div>
                   <Label>End Date *</Label>
-                  <Input type="date" value={form.end_date} onChange={e => setForm({...form, end_date: e.target.value})} />
+                  <Input type="date" value={form.end_date} disabled={form.half_day}
+                    onChange={e => setForm({...form, end_date: e.target.value})} />
                 </div>
+              </div>
+              {/* Half Day Option — form.half_day was already tracked in
+                  state and used in the day-count calculation below, but no
+                  checkbox ever rendered to actually set it, so HR could
+                  never apply a half-day leave on an employee's behalf at
+                  all. End Date auto-locks to Start Date while checked (a
+                  half-day leave is always a single day), same fix as the
+                  employee's own apply-leave form. */}
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="hr_half_day" checked={form.half_day}
+                  onChange={e => setForm(f => ({ ...f, half_day: e.target.checked, end_date: e.target.checked ? f.start_date : f.end_date }))}
+                  className="w-4 h-4" />
+                <Label htmlFor="hr_half_day" className="cursor-pointer">Half Day</Label>
               </div>
               <div>
                 <Label>Reason</Label>
