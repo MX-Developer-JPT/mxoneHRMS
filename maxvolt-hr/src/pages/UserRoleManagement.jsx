@@ -31,6 +31,13 @@ const ROLE_COLORS = {
 
 export default function UserRoleManagement() {
   const { user: currentUser } = useAuth();
+  // This page is now available to HR too, not just admin — a few tools
+  // stay admin-only server-side (granting the 'admin' role itself, gate-
+  // admin location scoping, the org-wide management→manager cleanup sweep,
+  // and the reporting-manager-id backfill repair), so hide/disable exactly
+  // those for an HR editor instead of letting them hit a confusing 403 on
+  // save.
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.custom_role === 'admin';
   const [users, setUsers] = useState([]);
   const [filteredUsers, setFilteredUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -162,14 +169,21 @@ export default function UserRoleManagement() {
       });
 
       if (editForm.role === 'gate_admin') {
-        await base44.functions.invoke('setGateAdminLocations', {
-          user_id: editUser.id,
-          // Toggle off -> null (unrestricted, deletes the row). Toggle on ->
-          // whichever locations are actually checked, even if that's zero
-          // (an admin explicitly restricting someone to nothing, however
-          // unusual, is a deliberate choice this doesn't second-guess).
-          locations: editForm.restrict_locations ? (editForm.gate_admin_locations || []) : null,
-        });
+        try {
+          await base44.functions.invoke('setGateAdminLocations', {
+            user_id: editUser.id,
+            // Toggle off -> null (unrestricted, deletes the row). Toggle on ->
+            // whichever locations are actually checked, even if that's zero
+            // (an admin explicitly restricting someone to nothing, however
+            // unusual, is a deliberate choice this doesn't second-guess).
+            locations: editForm.restrict_locations ? (editForm.gate_admin_locations || []) : null,
+          });
+        } catch (locErr) {
+          // Admin-only server-side — an HR editor's main update above still
+          // went through, so say so plainly rather than letting this look
+          // like the whole save failed.
+          toast.warning('User updated, but Gate Admin location restrictions require admin access to change.');
+        }
       }
 
       toast.success('User updated successfully');
@@ -353,7 +367,8 @@ export default function UserRoleManagement() {
           ))}
         </div>
 
-        {/* One-time data repair */}
+        {/* One-time data repair — admin-only server-side (backfillReportingManagerIds) */}
+        {isAdmin && (
         <Card className="mb-6 border-amber-200 bg-amber-50">
           <CardContent className="pt-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-start gap-3">
@@ -372,6 +387,7 @@ export default function UserRoleManagement() {
             </Button>
           </CardContent>
         </Card>
+        )}
 
         {/* Bulk Admin Tools */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
@@ -432,6 +448,10 @@ export default function UserRoleManagement() {
             </CardContent>
           </Card>
 
+          {/* Admin-only server-side (bulkConvertManagementToManager) — an
+              org-wide "who keeps unrestricted top-level access" sweep, not
+              routine day-to-day role management. */}
+          {isAdmin && (
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
@@ -472,6 +492,7 @@ export default function UserRoleManagement() {
               )}
             </CardContent>
           </Card>
+          )}
         </div>
 
         {/* Users Grid */}
@@ -537,7 +558,7 @@ export default function UserRoleManagement() {
               <Select value={editForm.role} onValueChange={v => setEditForm(f => ({ ...f, role: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {ROLES.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                  {ROLES.filter(r => r !== 'admin' || isAdmin).map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

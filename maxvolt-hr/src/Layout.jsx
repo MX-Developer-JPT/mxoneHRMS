@@ -817,16 +817,22 @@ export default function Layout({ children, currentPageName }) {
       { name: 'Night Shift Management', icon: Moon, page: 'NightShiftManagement' },
     ] }];
   }
-  if (isAdmin) {
-    menuGroups = [...menuGroups, { label: 'Administration', items: [
-      { name: 'User Roles',        icon: UserCog,           page: 'UserRoleManagement' },
-      { name: 'Workflow Builder',  icon: GitBranch,         page: 'WorkflowBuilder' },
-      { name: 'Admin Panel',       icon: Shield,            page: 'AdminPanel' },
-      { name: 'Import Employees',  icon: UserPlus,          page: 'ImportEmployees' },
-      { name: 'Company Policies',  icon: BookOpen,          page: 'CompanyPolicies' },
-      { name: 'Business Cards',    icon: QrCode,            page: 'BusinessCardAdmin' },
-      { name: 'Location Master',   icon: MapPin,            page: 'LocationMaster' },
-    ]}];
+  // User Roles is available to HR too, not just admin — isHR already
+  // includes admin, so this one condition covers both; the rest of
+  // Administration (Workflow Builder, Admin Panel, etc.) stays admin-only.
+  if (isHR) {
+    const adminItems = [{ name: 'User Roles', icon: UserCog, page: 'UserRoleManagement' }];
+    if (isAdmin) {
+      adminItems.push(
+        { name: 'Workflow Builder',  icon: GitBranch,         page: 'WorkflowBuilder' },
+        { name: 'Admin Panel',       icon: Shield,            page: 'AdminPanel' },
+        { name: 'Import Employees',  icon: UserPlus,          page: 'ImportEmployees' },
+        { name: 'Company Policies',  icon: BookOpen,          page: 'CompanyPolicies' },
+        { name: 'Business Cards',    icon: QrCode,            page: 'BusinessCardAdmin' },
+        { name: 'Location Master',   icon: MapPin,            page: 'LocationMaster' },
+      );
+    }
+    menuGroups = [...menuGroups, { label: 'Administration', items: adminItems }];
   }
   const menuItems = menuGroups.flatMap(g => g.items);
 

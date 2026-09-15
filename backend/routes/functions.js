@@ -2365,8 +2365,13 @@ router.post('/:name', async (req, res) => {
 
     case 'updateUserDetails': {
       // Called from UserRoleManagement.jsx with { userId, userUpdates, employeeUpdates }
-      // Also supports legacy flat params for backward compat
-      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      // Also supports legacy flat params for backward compat.
+      // HR now gets this page too, not just admin — but must never be able
+      // to grant the 'admin' role itself through it (the frontend already
+      // hides 'admin' from the role dropdown for a non-admin editor; this
+      // is the real enforcement, in case of a hand-crafted request).
+      const isCallerAdmin = await hasRole(cu, ['admin']);
+      if (!isCallerAdmin && !(await hasRole(cu, ['hr']))) return res.status(403).json({ error: 'HR/Admin access required' });
       const uid = p.userId || p.user_id || cu?.id;
       if (!uid) return res.status(400).json({ error: 'userId required' });
 
@@ -2374,9 +2379,13 @@ router.post('/:name', async (req, res) => {
       const uFields = []; const uVals = []; let upi = 0;
       const uUp = p.userUpdates || {};
       const flatFullName  = p.full_name    || uUp.full_name;
-      const flatRole      = p.role         || uUp.role;
-      const flatCustom    = p.custom_role  || uUp.custom_role || uUp.role;
+      let   flatRole      = p.role         || uUp.role;
+      let   flatCustom    = p.custom_role  || uUp.custom_role || uUp.role;
       const flatDisplay   = p.display_name || uUp.display_name;
+      if (!isCallerAdmin) {
+        if (flatRole === 'admin') flatRole = undefined;
+        if (flatCustom === 'admin') flatCustom = undefined;
+      }
       if (flatFullName)  { uFields.push(`full_name=$${++upi}`);    uVals.push(flatFullName); }
       if (flatDisplay)   { uFields.push(`display_name=$${++upi}`); uVals.push(flatDisplay); }
       if (flatRole)      { uFields.push(`role=$${++upi}`);         uVals.push(flatRole); }
