@@ -2101,6 +2101,21 @@ async function runLeaveAction(cu, leaveId, action, note) {
           if (lpRow) { const lp = JSON.parse(lpRow.data); leavePolicyName = lp.name || null; leavePolicyCode = lp.code || null; }
         }
 
+        // A half-day leave is only half taken off — the employee is expected
+        // to work the other half, and only 0.5 was deducted from their leave
+        // balance (see adjusted_days above). Writing the day's Attendance
+        // status as a plain 'leave' (a fully-off, no-LOP day everywhere that
+        // reads Attendance — AllAttendance's stats, the muster/attendance
+        // report exports, payroll's isMusterPresent/presentDays tally) made
+        // every half-day leave look like a full day off: AllAttendance's
+        // "On Leave"/"Half Day" counters, the muster's L/HD cell, and
+        // payroll's presentDays all disagreed with the 0.5-day leave balance
+        // actually recorded. 'half_day' is this codebase's existing status
+        // for "counts as 0.5 present" (it's what a biometric-detected
+        // partial day already uses), so it's the correct bucket here too —
+        // leave_id/leave_half_day still mark it as leave-driven rather than
+        // biometric, for anything that wants to tell the two apart.
+        const attStatus = lv.half_day ? 'half_day' : 'leave';
         const dates = [];
         for (let d = new Date(lv.start_date + 'T00:00:00'); d <= new Date(lv.end_date + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
           dates.push(d.toISOString().split('T')[0]);
@@ -2109,13 +2124,26 @@ async function runLeaveAction(cu, leaveId, action, note) {
           const attRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [lv.user_id, date]);
           if (attRow) {
             const existing = JSON.parse(attRow.data);
-            if (existing.check_in_time) continue; // already genuinely attended this day — don't overwrite
-            const att = { ...existing, status: 'leave', leave_id: leaveId, leave_policy_name: leavePolicyName, leave_policy_code: leavePolicyCode };
-            await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", ['leave', JSON.stringify(att), attRow.id]);
+            // Half-day leave is the one case where genuine check-in data and
+            // the leave overlay must coexist, not one replacing the other —
+            // a half-day leave is normally approved the SAME day the
+            // employee already checked in for the half they did work, so
+            // "already genuinely attended this day — don't overwrite" would
+            // otherwise skip the leave overlay entirely for exactly this
+            // case, leaving whatever raw status the biometric/geofence
+            // engine assigned (often still 'present' or 'in_progress'),
+            // which then never shows up as On Leave / Half Day anywhere
+            // that reads Attendance despite the leave balance already
+            // having been deducted. Full-day leave keeps the original
+            // skip-if-checked-in behavior — real attendance still wins
+            // there, since there's no "other half" to reconcile with.
+            if (existing.check_in_time && !lv.half_day) continue;
+            const att = { ...existing, status: attStatus, leave_id: leaveId, leave_half_day: !!lv.half_day, leave_policy_name: leavePolicyName, leave_policy_code: leavePolicyCode };
+            await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [attStatus, JSON.stringify(att), attRow.id]);
           } else {
             const attId = uuidv4();
-            const att = { id: attId, user_id: lv.user_id, date, status: 'leave', leave_id: leaveId, leave_policy_name: leavePolicyName, leave_policy_code: leavePolicyCode, created_at: now };
-            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'leave',$3)", [attId, lv.user_id, JSON.stringify(att)]);
+            const att = { id: attId, user_id: lv.user_id, date, status: attStatus, leave_id: leaveId, leave_half_day: !!lv.half_day, leave_policy_name: leavePolicyName, leave_policy_code: leavePolicyCode, created_at: now };
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [attId, lv.user_id, attStatus, JSON.stringify(att)]);
           }
         }
       } catch (e) { console.warn('Leave attendance sync on approval failed:', e.message); }

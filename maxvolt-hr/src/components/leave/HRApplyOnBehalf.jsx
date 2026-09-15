@@ -123,18 +123,25 @@ export default function HRApplyOnBehalf({ employees, leavePolicies, loadData, us
       // agrees with every other consumer of Attendance status — the report,
       // muster, and payroll's day-tally all branch on the actual leave
       // status, not just "was there any record". Skips a day that already
-      // has real check-in data rather than overwriting it.
+      // has real check-in data rather than overwriting it — EXCEPT for a
+      // half-day leave, which is normally applied for the half the employee
+      // did NOT already check in for, so it must overlay onto that existing
+      // check-in rather than being skipped entirely (matching the same fix
+      // in functions.js runLeaveAction — see the comment there). Only 0.5
+      // was deducted from the balance, so the day should read as
+      // half-present, not a full day off, everywhere Attendance is read.
+      const attStatus = form.half_day ? 'half_day' : 'leave';
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         const dateStr = d.toISOString().split('T')[0];
         const existing = await base44.entities.Attendance.filter({ user_id: selectedEmp, date: dateStr });
         if (existing.length === 0) {
           await base44.entities.Attendance.create({
-            user_id: selectedEmp, date: dateStr, status: 'leave',
+            user_id: selectedEmp, date: dateStr, status: attStatus,
             auto_marked: true, notes: `Leave applied by HR (${policy?.code || ''})`,
           });
-        } else if (!existing[0].check_in_time) {
+        } else if (!existing[0].check_in_time || form.half_day) {
           await base44.entities.Attendance.update(existing[0].id, {
-            status: 'leave', auto_marked: true, notes: `Leave applied by HR (${policy?.code || ''})`,
+            status: attStatus, auto_marked: true, notes: `Leave applied by HR (${policy?.code || ''})`,
           });
         }
       }
