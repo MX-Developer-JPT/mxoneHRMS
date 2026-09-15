@@ -3,13 +3,15 @@ import { base44 } from '@/api/base44Client';
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Search, Users, Sparkles, Building2, Briefcase, Calendar } from 'lucide-react';
+import { Search, Users, Sparkles, Building2, Briefcase, Calendar, Mail, Phone } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
 
 function EmployeeCard({ employee, user }) {
   const displayName = employee.display_name || user?.full_name || '?';
   const initials = displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
   const [imgError, setImgError] = useState(false);
+  const email = employee.user?.email;
+  const phone = employee.phone;
   return (
     <Card className="hover:shadow-md transition-shadow">
       <CardContent className="p-5 flex flex-col items-center text-center gap-3">
@@ -37,6 +39,34 @@ function EmployeeCard({ employee, user }) {
           <p className="text-xs text-gray-400 flex items-center gap-1">
             <Calendar className="w-3 h-3" /> Joined {safeDate(employee.date_of_joining, 'MMM yyyy')}
           </p>
+        )}
+        {(email || phone) && (
+          <div className="w-full pt-2 border-t border-gray-100 space-y-1.5">
+            {email && (
+              <p className="text-xs text-gray-500 flex items-center justify-center gap-1 truncate" title={email}>
+                <Mail className="w-3 h-3 flex-shrink-0" /> <span className="truncate">{email}</span>
+              </p>
+            )}
+            {phone && (
+              <p className="text-xs text-gray-500 flex items-center justify-center gap-1">
+                <Phone className="w-3 h-3 flex-shrink-0" /> {phone}
+              </p>
+            )}
+            <div className="flex items-center justify-center gap-2 pt-0.5">
+              {phone && (
+                <a href={`tel:${phone}`} onClick={e => e.stopPropagation()}
+                  className="flex items-center gap-1 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 rounded-md px-2.5 py-1.5 transition-colors">
+                  <Phone className="w-3 h-3" /> Call
+                </a>
+              )}
+              {email && (
+                <a href={`mailto:${email}`} onClick={e => e.stopPropagation()}
+                  className="flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md px-2.5 py-1.5 transition-colors">
+                  <Mail className="w-3 h-3" /> Email
+                </a>
+              )}
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -88,8 +118,13 @@ export default function EmployeeEngagementPortal() {
 
   const loadData = async () => {
     try {
-      const emps = await base44.entities.Employee.list('-date_of_joining', 500);
-      const activeEmps = emps.filter(e =>
+      const [emps, usersResp] = await Promise.all([
+        base44.entities.Employee.list('-date_of_joining', 500),
+        base44.functions.invoke('getAllUsers', {}),
+      ]);
+      const users = usersResp.data?.users || [];
+      const withUser = emps.map(e => ({ ...e, user: users.find(u => u.id === e.user_id) }));
+      const activeEmps = withUser.filter(e =>
         (!e.status || e.status === 'active' || e.status === 'on_leave') &&
         e.display_name && e.display_name.trim() !== '' &&
         e.department && e.department !== 'unassigned' && e.department !== 'pending'

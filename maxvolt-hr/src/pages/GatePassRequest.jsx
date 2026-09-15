@@ -164,6 +164,17 @@ export default function GatePassRequest() {
 
   const activePasses = myPasses.filter(p => ['pending_approval', 'approved', 'departed'].includes(p.status));
 
+  const handleCancel = async (pass) => {
+    if (!window.confirm('Cancel this gate pass request?')) return;
+    try {
+      await base44.entities.GatePass.update(pass.id, { status: 'cancelled' });
+      toast.success('Gate pass request cancelled');
+      loadData();
+    } catch (err) {
+      toast.error(err.message || 'Failed to cancel this request');
+    }
+  };
+
   return (
     <div className="p-4 sm:p-6 max-w-3xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
@@ -374,6 +385,12 @@ export default function GatePassRequest() {
                       {STATUS_LABELS[pass.status]}
                     </Badge>
                     {(() => { const m = managerApprovalStatus(pass.status); return m ? <Badge className={m.className}>{m.label}</Badge> : null; })()}
+                    {pass.status === 'pending_approval' && (
+                      <Button size="sm" variant="outline" className="text-red-600 border-red-200 hover:bg-red-50"
+                        onClick={() => handleCancel(pass)}>
+                        Cancel
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CardContent>

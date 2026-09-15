@@ -32,7 +32,8 @@ const statusConfig = {
   hr_approved: { color: 'bg-indigo-100 text-indigo-800', dot: 'bg-indigo-500', icon: CheckCircle2, label: 'HR Approved' },
   completed: { color: 'bg-green-100 text-green-800', dot: 'bg-green-500', icon: CheckCircle2, label: 'Completed' },
   rejected: { color: 'bg-red-100 text-red-800', dot: 'bg-red-500', icon: XCircle, label: 'Rejected' },
-  sent_back: { color: 'bg-orange-100 text-orange-800', dot: 'bg-orange-500', icon: RotateCcw, label: 'Sent Back' }
+  sent_back: { color: 'bg-orange-100 text-orange-800', dot: 'bg-orange-500', icon: RotateCcw, label: 'Sent Back' },
+  cancelled: { color: 'bg-gray-100 text-gray-800', dot: 'bg-gray-400', icon: XCircle, label: 'Cancelled' }
 };
 
 // Manager decision, distinct from the request's overall status — the
@@ -224,6 +225,17 @@ export default function AttendanceRegularisation() {
     setShowForm(true);
   };
 
+  const handleCancel = async (req) => {
+    if (!window.confirm('Cancel this regularisation request?')) return;
+    try {
+      await base44.entities.AttendanceRegularisation.update(req.id, { status: 'cancelled' });
+      toast.success('Regularisation request cancelled');
+      loadData();
+    } catch (err) {
+      toast.error(err.message || 'Failed to cancel this request');
+    }
+  };
+
   const closeForm = () => {
     setShowForm(false);
     setEditingRequest(null);
@@ -351,6 +363,12 @@ export default function AttendanceRegularisation() {
                         {(req.status === 'pending' || req.status === 'sent_back') && (
                           <Button size="sm" variant="outline" onClick={() => handleEdit(req)} className="min-h-[44px] text-xs">
                             <Edit className="w-3 h-3 mr-1" /> Edit
+                          </Button>
+                        )}
+                        {(req.status === 'pending' || req.status === 'sent_back') && (
+                          <Button size="sm" variant="outline" onClick={() => handleCancel(req)}
+                            className="min-h-[44px] text-xs text-red-600 border-red-200 hover:bg-red-50">
+                            Cancel
                           </Button>
                         )}
                       </div>

@@ -187,7 +187,12 @@ async function checkRegularisationLimit(res, type, data, client) {
   const countThisMonth = rows.filter(r => {
     let d;
     try { d = JSON.parse(r.data); } catch { return false; }
-    if (d.status === 'rejected') return false;
+    // Rejected doesn't count against the quota — declined, not a wasted
+    // slot. Cancelled is the same case: the employee withdrew it
+    // themselves before anyone acted on it, so it shouldn't cost them a
+    // slot either, now that self-cancel exists (checkApprovalAuthorization
+    // above).
+    if (d.status === 'rejected' || d.status === 'cancelled') return false;
     if (!r.created_at) return false;
     // created_at is Postgres CURRENT_TIMESTAMP::TEXT (UTC) — shift to IST so
     // the "calendar month" boundary matches the rest of the app's convention.
@@ -267,19 +272,54 @@ async function hasManagerCleared(type, current) {
   return true;
 }
 
+// Which pre-decision status(es) each approval-scoped type may still be
+// self-cancelled from — once an approver has actually acted (approved/
+// rejected/departed/etc.) cancelling here would leave the balance/
+// attendance bookkeeping those transitions already performed out of sync,
+// so this deliberately only covers "still awaiting a decision".
+const CANCELLABLE_STATUSES = {
+  Leave: ['pending'],
+  GatePass: ['pending_approval'],
+  AttendanceRegularisation: ['pending', 'sent_back'],
+};
+
 async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   if (!APPROVAL_SCOPED_TYPES.has(type)) return true;
   if (!newStatus || newStatus === current.status) return true;
 
   const isGateLogTransition = type === 'GatePass' && GATE_LOG_TRANSITIONS.has(newStatus);
   const isApprovalTransition = ['approved', 'rejected'].includes(newStatus);
-  if (!isGateLogTransition && !isApprovalTransition) return true;
+  // Cancelling/withdrawing was previously NOT one of the transitions this
+  // function checked — it fell through to `return true` unconditionally
+  // below, and the PATCH route's general ownership check is deliberately
+  // skipped for every status change on these types (isScopedTransition),
+  // trusting this function to have already authorized it. The combination
+  // meant ANY authenticated user could cancel ANY OTHER employee's Leave/
+  // GatePass/AttendanceRegularisation, not just their own. Now explicitly
+  // scoped: the request's own owner may always cancel it (while it's still
+  // in a cancellable, pre-decision status — see CANCELLABLE_STATUSES), and
+  // HR/admin/management may cancel on an employee's behalf, same as every
+  // other approval-scoped action here.
+  const isCancelTransition = ['cancelled', 'withdrawn'].includes(newStatus);
+  if (!isGateLogTransition && !isApprovalTransition && !isCancelTransition) return true;
 
   const cu = getCurrentUser(req);
   if (!cu) { res.status(401).json({ error: 'Unauthorized' }); return false; }
 
   const uRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
   const role = uRow?.custom_role || uRow?.role || cu.custom_role || cu.role;
+
+  if (isCancelTransition) {
+    const cancellable = CANCELLABLE_STATUSES[type];
+    if (cancellable && !cancellable.includes(current.status)) {
+      res.status(400).json({ error: `This request can no longer be cancelled — it is already ${current.status.replace(/_/g, ' ')}.` });
+      return false;
+    }
+    if (current.user_id === cu.id) return true;
+    if (['hr', 'admin', 'management'].includes(role)) return true;
+    res.status(403).json({ error: 'Access denied — you can only cancel your own request' });
+    return false;
+  }
 
   if (isGateLogTransition) {
     if (['hr', 'admin'].includes(role)) return true;
