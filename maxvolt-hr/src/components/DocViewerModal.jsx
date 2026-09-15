@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { X, Download, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -72,33 +73,33 @@ export default function DocViewerModal({ url, title = 'Document', open, onClose,
   };
 
   const [downloading, setDownloading] = useState(false);
-  // Same technique as utils/letterhead.js's openPdfBlob — a synthetic <a
-  // click with `download` set and NO target/rel. The Download button here
-  // used to be a plain `<a href download target="_blank">`, and mixing
-  // `download` with `target="_blank"` is exactly the mistake that
-  // component's own comment warns about: opening a new window/tab is a
-  // completely different, separately-broken code path in this app's
-  // Capacitor WebView (no window-creation delegate wired up — confirmed
-  // repeatedly this session for Payslips' own "view" flow before it was
-  // fixed to stop trying to open anything). The document VIEWS fine
-  // in-page because it never needs a new window at all; the download
-  // wasn't working for the identical reason viewing didn't. Fetching into
-  // a same-origin blob: URL first (rather than pointing the anchor at the
-  // original, often cross-origin, presigned bucket URL) also sidesteps
-  // browsers silently ignoring `download` on a cross-origin href.
+  // The <a download> anchor-click technique (still used below as the
+  // desktop path — utils/letterhead.js's openPdfBlob uses the same thing
+  // for offer/HR letters) turned out to still not work on-device even
+  // after dropping target="_blank" — confirmed by the user re-reporting
+  // "unable to download on phone" after that fix shipped. The actual
+  // reason: the HTML `download` attribute has NO effect at all unless the
+  // browser/WebView itself has a download manager wired up to intercept
+  // it — real desktop/mobile browsers do; this app's embedded Capacitor
+  // WKWebView/Android WebView does not (same class of gap as
+  // window.open()'s missing window-creation delegate, just for downloads
+  // instead of new windows — neither is something a plain web/JS fix can
+  // paper over on its own). The Web Share API, by contrast, IS a standard
+  // web platform API that both WKWebView (iOS 15+) and Android's Chromium
+  // WebView implement natively without any app-side native code — calling
+  // navigator.share() with a real File hands off to the OS's own Share
+  // Sheet, which has its own "Save to Files" / "Save to device" action.
+  // That's the actual download path on mobile; the anchor-download stays
+  // only as the fallback for browsers with no file-sharing support
+  // (older/desktop browsers, which already work today via the anchor).
   const handleDownload = async () => {
     if (!url) return;
     setDownloading(true);
     try {
-      let blobUrl = url;
-      let revoke = false;
-      if (!/^blob:/i.test(url)) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
-        const blob = await res.blob();
-        blobUrl = URL.createObjectURL(blob);
-        revoke = true;
-      }
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
+      const blob = await res.blob();
+
       // A downloaded file with no extension often shows no icon and won't
       // auto-open in the right app on the device — title (e.g. "Payslip —
       // Aug 2026") never carries one, so derive one from the URL when
@@ -106,15 +107,35 @@ export default function DocViewerModal({ url, title = 'Document', open, onClose,
       const urlExtMatch = /\.(pdf|jpe?g|png|gif|webp|docx?|xlsx?)(\?|$)/i.exec(url);
       const ext = urlExtMatch ? urlExtMatch[1].toLowerCase() : (renderAsPdf ? 'pdf' : isImage ? 'jpg' : '');
       const baseName = (title || 'document').replace(/[\\/:*?"<>|]/g, '_');
+      const filename = ext && !baseName.toLowerCase().endsWith(`.${ext}`) ? `${baseName}.${ext}` : baseName;
+      const mimeType = blob.type || (ext === 'pdf' ? 'application/pdf' : 'application/octet-stream');
+      const file = new File([blob], filename, { type: mimeType });
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: filename });
+          setDownloading(false);
+          return;
+        } catch (shareErr) {
+          // AbortError = the user closed the share sheet themselves — not a
+          // failure, just don't fall through to a second save prompt.
+          if (shareErr?.name === 'AbortError') { setDownloading(false); return; }
+          // Any other share failure (rare) falls through to the anchor
+          // technique below rather than dead-ending here.
+        }
+      }
+
+      const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
-      a.download = ext && !baseName.toLowerCase().endsWith(`.${ext}`) ? `${baseName}.${ext}` : baseName;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      if (revoke) setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
     } catch (e) {
       console.error('Download failed:', e.message);
+      toast.error('Download failed: ' + e.message);
     }
     setDownloading(false);
   };
