@@ -67,7 +67,11 @@ export default function GatePassApproval() {
 
     let visiblePasses;
     if (hrUser) {
-      // HR sees all passes (except pending_approval which manager hasn't touched)
+      // HR/admin/management can approve any employee's gate pass directly —
+      // unlike Leave/Reimbursement/Regularisation, GatePass approval never
+      // requires the reporting manager to act first (see checkApprovalAuthorization
+      // in entities.js), specifically so HR can cover for an unavailable
+      // manager. So HR sees every pass, pending or otherwise.
       visiblePasses = allPasses;
     } else {
       // Manager sees only their direct reports' pending passes
