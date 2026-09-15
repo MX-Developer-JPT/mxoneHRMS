@@ -73,25 +73,30 @@ export default function DocViewerModal({ url, title = 'Document', open, onClose,
   };
 
   const [downloading, setDownloading] = useState(false);
-  // The <a download> anchor-click technique (still used below as the
-  // desktop path — utils/letterhead.js's openPdfBlob uses the same thing
-  // for offer/HR letters) turned out to still not work on-device even
-  // after dropping target="_blank" — confirmed by the user re-reporting
-  // "unable to download on phone" after that fix shipped. The actual
-  // reason: the HTML `download` attribute has NO effect at all unless the
-  // browser/WebView itself has a download manager wired up to intercept
-  // it — real desktop/mobile browsers do; this app's embedded Capacitor
-  // WKWebView/Android WebView does not (same class of gap as
-  // window.open()'s missing window-creation delegate, just for downloads
-  // instead of new windows — neither is something a plain web/JS fix can
-  // paper over on its own). The Web Share API, by contrast, IS a standard
-  // web platform API that both WKWebView (iOS 15+) and Android's Chromium
-  // WebView implement natively without any app-side native code — calling
-  // navigator.share() with a real File hands off to the OS's own Share
-  // Sheet, which has its own "Save to Files" / "Save to device" action.
-  // That's the actual download path on mobile; the anchor-download stays
-  // only as the fallback for browsers with no file-sharing support
-  // (older/desktop browsers, which already work today via the anchor).
+  // The <a download> anchor-click technique (still used below as the last-
+  // resort path — utils/letterhead.js's openPdfBlob uses the same thing
+  // for offer/HR letters) doesn't work on-device: the HTML `download`
+  // attribute has no effect at all unless the browser/WebView itself has a
+  // download manager wired up to intercept it — real desktop/mobile
+  // browsers do; this app's embedded Capacitor WKWebView/Android WebView
+  // does not (same class of gap as window.open()'s missing window-creation
+  // delegate, just for downloads instead of new windows).
+  //
+  // The Web Share API is the real fix, but its file-sharing support
+  // (navigator.share({files})) is inconsistent across Android WebView
+  // versions/OEMs — confirmed working on iOS, confirmed NOT working on
+  // some Android phones even after this was added. Two things changed
+  // here to cope with that: (1) navigator.canShare()'s own pre-check is
+  // skipped and share() is attempted directly — some Android WebView
+  // builds report canShare(files) as false even when share() would have
+  // actually worked, so trusting that pre-check was itself excluding
+  // devices that could have succeeded; (2) a genuine share failure now
+  // falls through to sharing the plain URL instead (Web Share API's
+  // original text/url form, supported far more broadly and for far
+  // longer than file-sharing), which at least hands the user's own browser
+  // or a file manager app the link to fetch and save it themselves, before
+  // finally falling back to the anchor-download technique as the last
+  // resort for whatever's left (desktop browsers, where it already works).
   const handleDownload = async () => {
     if (!url) return;
     setDownloading(true);
@@ -109,22 +114,36 @@ export default function DocViewerModal({ url, title = 'Document', open, onClose,
       const baseName = (title || 'document').replace(/[\\/:*?"<>|]/g, '_');
       const filename = ext && !baseName.toLowerCase().endsWith(`.${ext}`) ? `${baseName}.${ext}` : baseName;
       const mimeType = blob.type || (ext === 'pdf' ? 'application/pdf' : 'application/octet-stream');
-      const file = new File([blob], filename, { type: mimeType });
 
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      if (typeof navigator.share === 'function') {
+        // 1) File sharing — the only path that hands the OS an actual file
+        // to save, not just a link. Attempted directly rather than gated
+        // on canShare() (see comment above); AbortError means the user
+        // closed the share sheet themselves, not a failure.
         try {
+          const file = new File([blob], filename, { type: mimeType });
           await navigator.share({ files: [file], title: filename });
           setDownloading(false);
           return;
         } catch (shareErr) {
-          // AbortError = the user closed the share sheet themselves — not a
-          // failure, just don't fall through to a second save prompt.
           if (shareErr?.name === 'AbortError') { setDownloading(false); return; }
-          // Any other share failure (rare) falls through to the anchor
-          // technique below rather than dead-ending here.
+        }
+
+        // 2) File sharing unsupported/failed — share the real URL instead
+        // (meaningless for a blob:/data: URL, which resolves to nothing
+        // outside this page, so only tried for a real remote URL).
+        if (!/^(blob:|data:)/i.test(url)) {
+          try {
+            await navigator.share({ url, title: filename });
+            setDownloading(false);
+            return;
+          } catch (shareErr2) {
+            if (shareErr2?.name === 'AbortError') { setDownloading(false); return; }
+          }
         }
       }
 
+      // 3) Last resort — reliable on desktop browsers only.
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
