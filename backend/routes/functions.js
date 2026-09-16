@@ -12751,7 +12751,6 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
             has_salary: !!r.sal, has_bank: !!(r.bank || r.sal?.bank_account),
             has_statutory: !!(r.stat || r.sal?.pan),
             has_pf_nominee: !!r.pfNom, has_insurance: !!r.ins,
-            leave_records: r.leave.length,
           })),
         });
       }
