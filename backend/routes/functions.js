@@ -1055,6 +1055,23 @@ function mapAttendanceByUserDate(rows, { truncateDate = false } = {}) {
   return map;
 }
 
+// Rebuilds sessions/raw_punches/working_hours (and the rest of
+// buildSessions' output) from a final check-in/check-out pair — used by
+// applyRegularisationToAttendance so a regularised day's "Work Sessions"
+// breakdown and Total Work actually reflect the corrected times, instead of
+// whatever the original (possibly broken) punch data produced. Deliberately
+// does NOT touch `status` — the caller always forces that to the
+// regularisation's own requested_status/'present', not whatever
+// buildSessions would infer from just an in/out pair.
+function buildSessionFieldsFromTimes(checkIn, checkOut) {
+  const punches = [];
+  if (checkIn)  punches.push({ time: checkIn,  device_direction: 'IN' });
+  if (checkOut) punches.push({ time: checkOut, device_direction: 'OUT' });
+  const sd = buildSessions(punches);
+  const { check_in_time, check_out_time, ...rest } = sd; // caller sets check_in_time/check_out_time itself
+  return rest;
+}
+
 // employee_code is meant to be each employee's unique identifier (the
 // import pipeline already treats it as the "primary key per spec" — see
 // importEmployeeData), but nothing ever stopped two different Employee
@@ -9056,13 +9073,27 @@ router.post('/:name', async (req, res) => {
 
           if (attRow) {
             const att = JSON.parse(attRow.data);
+            const finalCheckIn  = reg.requested_check_in  || att.check_in_time;
+            const finalCheckOut = reg.requested_check_out || att.check_out_time;
+            // Rebuild sessions/raw_punches/working_hours from the final
+            // check-in/out times too — previously only the top-level
+            // check_in_time/check_out_time fields got overlaid, leaving
+            // `sessions` (what the Attendance Details "Work Sessions"
+            // panel and Total Work actually read) stuck on whatever the
+            // ORIGINAL punch data produced. A regularisation correcting a
+            // bad punch (e.g. a selfie check-in immediately followed by an
+            // accidental same-instant check-out) still showed that same
+            // broken zero-duration session and a blank Total Work even
+            // after the day correctly flipped to Present.
+            const sessionFields = buildSessionFieldsFromTimes(finalCheckIn, finalCheckOut);
             const updAtt = {
               ...att,
+              ...sessionFields,
               status: reg.requested_status || 'present',
               regularised: true,
               regularisation_id,
-              check_in_time:  reg.requested_check_in  || att.check_in_time,
-              check_out_time: reg.requested_check_out || att.check_out_time,
+              check_in_time:  finalCheckIn,
+              check_out_time: finalCheckOut,
             };
             // Also repairs the DB user_id column when the row was only
             // found via its JSON field (see comment above) — otherwise the
@@ -9072,6 +9103,8 @@ router.post('/:name', async (req, res) => {
           } else {
             // Create attendance record if it doesn't exist
             const newAttId = uuidv4();
+            const finalCheckIn  = reg.requested_check_in  || null;
+            const finalCheckOut = reg.requested_check_out || null;
             const newAtt = {
               id: newAttId,
               user_id: reg.user_id,
@@ -9079,11 +9112,12 @@ router.post('/:name', async (req, res) => {
               status: reg.requested_status || 'present',
               regularised: true,
               regularisation_id,
-              check_in_time:  reg.requested_check_in  || null,
-              check_out_time: reg.requested_check_out || null,
+              ...buildSessionFieldsFromTimes(finalCheckIn, finalCheckOut),
+              check_in_time:  finalCheckIn,
+              check_out_time: finalCheckOut,
               created_at: new Date().toISOString(),
             };
-            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [newAttId, reg.user_id, JSON.stringify(newAtt)]);
+            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [newAttId, reg.user_id, newAtt.status, JSON.stringify(newAtt)]);
           }
         } catch (e) { console.warn('Attendance update on regularisation approval failed:', e.message); }
       }
@@ -9165,19 +9199,37 @@ router.post('/:name', async (req, res) => {
 
         if (attRow) {
           const att = JSON.parse(attRow.data);
-          if (att.regularised) continue; // already applied
+          const finalCheckIn  = reg.requested_check_in  || att.check_in_time;
+          const finalCheckOut = reg.requested_check_out || att.check_out_time;
+          // Previously skipped entirely once att.regularised was already
+          // true — but that flag alone doesn't mean this row's `sessions`
+          // (the Attendance Details "Work Sessions" panel/Total Work) were
+          // ever actually rebuilt from the regularised check-in/out times;
+          // that only started happening once applyRegularisationToAttendance
+          // gained buildSessionFieldsFromTimes. A row already correctly
+          // marked Present/Regularised from before that fix could still be
+          // showing a stale, broken session (e.g. a zero-duration selfie
+          // check-in/check-out pair) underneath. Recomputing sessions here
+          // is idempotent — safe to re-apply even to an already-regularised
+          // row — so this only actually WRITES anything when the rebuilt
+          // sessions differ from what's stored.
+          const sessionFields = buildSessionFieldsFromTimes(finalCheckIn, finalCheckOut);
+          if (att.regularised && JSON.stringify(att.sessions || []) === JSON.stringify(sessionFields.sessions || [])) continue; // already fully applied, nothing changed
           const updAtt = {
             ...att,
+            ...sessionFields,
             status: reg.requested_status || 'present',
             regularised: true,
             regularisation_id: reg.id,
-            check_in_time:  reg.requested_check_in  || att.check_in_time,
-            check_out_time: reg.requested_check_out || att.check_out_time,
+            check_in_time:  finalCheckIn,
+            check_out_time: finalCheckOut,
           };
           await run("UPDATE entities SET status=$1, data=$2, user_id=$3 WHERE id=$4", [updAtt.status, JSON.stringify(updAtt), reg.user_id, attRow.id]);
           fixed++;
         } else {
           const newAttId = uuidv4();
+          const finalCheckIn  = reg.requested_check_in  || null;
+          const finalCheckOut = reg.requested_check_out || null;
           const newAtt = {
             id: newAttId,
             user_id: reg.user_id,
@@ -9185,11 +9237,12 @@ router.post('/:name', async (req, res) => {
             status: reg.requested_status || 'present',
             regularised: true,
             regularisation_id: reg.id,
-            check_in_time:  reg.requested_check_in  || null,
-            check_out_time: reg.requested_check_out || null,
+            ...buildSessionFieldsFromTimes(finalCheckIn, finalCheckOut),
+            check_in_time:  finalCheckIn,
+            check_out_time: finalCheckOut,
             created_at: new Date().toISOString(),
           };
-          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [newAttId, reg.user_id, JSON.stringify(newAtt)]);
+          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [newAttId, reg.user_id, newAtt.status, JSON.stringify(newAtt)]);
           fixed++;
         }
       }
