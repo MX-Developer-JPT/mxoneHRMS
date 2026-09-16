@@ -574,6 +574,13 @@ async function processRecord(record) {
   if (data.regularised || data.admin_marked || data.leave_id || data.status === 'leave') {
     return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
   }
+  // A biometric punch must never touch a day captured by selfie or
+  // geofence — those are their own independent, deliberate attendance
+  // sources; a stray or late-arriving biometric punch (a badge scan
+  // passing the gate) is not evidence that day was wrong.
+  if (['selfie', 'geofence'].includes(data.check_in_source) || ['selfie', 'geofence'].includes(data.check_out_source)) {
+    return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_non_biometric' };
+  }
 
   // Merge new punch into the existing raw_punches list and rebuild sessions
   const existingPunches = data.raw_punches || [];
@@ -605,6 +612,17 @@ async function processRecord(record) {
   const sd = buildSessions(mergedPunches);
   const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
   const { status } = statusResult;
+
+  // Never let merging this punch make an already-complete day WORSE — a
+  // day that was already closed out correctly (real checkout, not still
+  // open) must not flip back to "still working" or lose a meaningful
+  // chunk of its recorded hours just because a single new punch shifted
+  // buildSessions' alternating pairing.
+  const wasComplete = !!data.check_out_time && !data.is_in_progress;
+  const wouldGetWorse = wasComplete && (sd.is_in_progress || !sd.check_out_time || (sd.working_hours || 0) < (data.working_hours || 0) - 0.5);
+  if (wouldGetWorse) {
+    return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_would_regress' };
+  }
 
   const updated = {
     ...data,
@@ -673,7 +691,17 @@ router.post('/reprocess', authMiddleware, async (req, res) => {
       const record = {
         employee_code: log.EmployeeCode || log.employee_code || '',
         user_id: log.user_id || null,
-        punch_time: log.LogDate,
+        // processRecord's own normalizer (`punchIso` above) treats a
+        // zone-marked timestamp as "genuinely came with an offset, shift
+        // it +5.5h into IST" — correct for a fresh device punch, but
+        // log.LogDate here has ALREADY been through that exact
+        // normalization once (it's what got stored). Feeding it back in
+        // as-is applied a SECOND +5.5h shift, silently corrupting every
+        // punch this route touched by 5.5 hours. Stripping the trailing
+        // Z/offset first makes processRecord take its "no zone marker"
+        // branch, which is a no-op re-stringify — passing the already-
+        // correct value straight through unchanged.
+        punch_time: String(log.LogDate).replace(/Z$|[+-]\d{2}:?\d{2}$/, ''),
         type: (log.Direction || log.type || 'IN').toUpperCase() === 'OUT' ? 'out' : 'in',
         device_id: log.DeviceName || log.device_id || null,
       };

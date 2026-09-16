@@ -8116,7 +8116,21 @@ router.post('/:name', async (req, res) => {
       const mappingRows = await all("SELECT data FROM entities WHERE type='BiometricCodeMapping'");
       mappingRows.forEach(r => { const m = JSON.parse(r.data); if (m.biometric_code && m.user_id) codeMap[String(m.biometric_code).toLowerCase()] = m.user_id; });
 
-      // Group punches by (userId, date) — collect raw punch list per group
+      // Group punches by (userId, calendar date-of-punch) with TOLERANCE-
+      // based dedup (1s, matching the live incremental punch path's own
+      // tolerance) instead of exact string equality on LogDate. Two
+      // AttendanceLog rows for the same physical punch that differ only by
+      // formatting/precision used to be treated as two DIFFERENT punches —
+      // a real risk after a full historical resync from the sync app — and
+      // an inflated punch count shifts buildSessions' alternating IN/OUT
+      // pairing for every punch after it, silently corrupting the whole
+      // day (a closed present day can flip to "still working", or a
+      // legitimate break gets read as a missed checkout).
+      const PUNCH_DEDUP_MS = 1000;
+      const nearDup = (list, timeStr) => {
+        const ms = new Date(timeStr).getTime();
+        return list.some(rp => Math.abs(new Date(rp.time).getTime() - ms) < PUNCH_DEDUP_MS);
+      };
       const groups = {};
       for (const log of logsInRange) {
         const codeRaw = String(log.EmployeeCode || log.employee_code || '').trim();
@@ -8125,15 +8139,15 @@ router.post('/:name', async (req, res) => {
         const punchDate = String(log.LogDate).slice(0, 10);
         const key = `${userId}_${punchDate}`;
         if (!groups[key]) groups[key] = { userId, date: punchDate, rawPunches: [], empCode: codeRaw };
-        if (!groups[key].rawPunches.some(rp => rp.time === log.LogDate))
+        if (!nearDup(groups[key].rawPunches, log.LogDate))
           groups[key].rawPunches.push({ time: log.LogDate, device_direction: String(log.Direction || log.type || 'IN').toUpperCase() });
       }
 
-      let updated = 0, created = 0, skipped = 0;
-      for (const { userId, date, rawPunches, empCode } of Object.values(groups)) {
-        if (!rawPunches.length) continue;
-
-        // Load employee + shift
+      // Employee/shift lookups are reused across both the overnight-
+      // reassignment pass below and the main processing loop.
+      const empShiftCache = {};
+      async function getEmpAndShift(userId) {
+        if (empShiftCache[userId]) return empShiftCache[userId];
         const empRow2 = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1 LIMIT 1", [userId]);
         const empData = empRow2 ? JSON.parse(empRow2.data) : {};
         let shift = { start_time: '09:00', end_time: '18:00', working_hours: 9, grace_period_minutes: 15 };
@@ -8144,6 +8158,43 @@ router.post('/:name', async (req, res) => {
           const dr = await one("SELECT data FROM entities WHERE type='Shift' AND (data::jsonb->>'is_default'='true' OR data::jsonb->>'is_default'='1') LIMIT 1");
           if (dr) shift = JSON.parse(dr.data);
         }
+        return (empShiftCache[userId] = { empData, shift });
+      }
+
+      // Overnight-shift reassignment — mirrors resolveAttendanceRow's own
+      // routing rule (attendancelog.js), ported here since reprocessing
+      // works in whole-day batches rather than one live punch at a time.
+      // A punch group whose calendar date is the START of a fresh day but
+      // whose employee is on an overnight shift with YESTERDAY's record
+      // still open (is_in_progress) is almost certainly that shift's
+      // post-midnight closing punch, not a new session — without this, a
+      // night-shift employee's post-midnight punches got bucketed onto
+      // today's date on every reprocess, splitting one continuous overnight
+      // shift into two broken partial days.
+      for (const key of Object.keys(groups)) {
+        const g = groups[key];
+        if (!g || !g.rawPunches.length) continue;
+        const { shift } = await getEmpAndShift(g.userId);
+        if (!isOvernightShift(shift)) continue;
+        const prevDateObj = new Date(g.date + 'T00:00:00Z');
+        prevDateObj.setUTCDate(prevDateObj.getUTCDate() - 1);
+        const prevDate = prevDateObj.toISOString().slice(0, 10);
+        const prevAttRow = await one("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1", [g.userId, prevDate]);
+        const prevAtt = prevAttRow ? JSON.parse(prevAttRow.data) : null;
+        if (!prevAtt?.is_in_progress) continue; // a fresh check-in always starts its own new day
+        const prevKey = `${g.userId}_${prevDate}`;
+        if (!groups[prevKey]) groups[prevKey] = { userId: g.userId, date: prevDate, rawPunches: [], empCode: g.empCode };
+        for (const rp of g.rawPunches) {
+          if (!nearDup(groups[prevKey].rawPunches, rp.time)) groups[prevKey].rawPunches.push(rp);
+        }
+        groups[key] = null; // merged into yesterday's group — this key no longer processed on its own
+      }
+
+      let updated = 0, created = 0, skipped = 0, skippedNonBiometric = 0, skippedSuspicious = 0;
+      for (const group of Object.values(groups)) {
+        if (!group || !group.rawPunches.length) continue;
+        const { userId, date, rawPunches, empCode } = group;
+        const { empData, shift } = await getEmpAndShift(userId);
 
         // Build sessions using alternating model
         const sd = buildSessions(rawPunches);
@@ -8165,6 +8216,34 @@ router.post('/:name', async (req, res) => {
           // must never silently revert the leave record back to whatever a
           // raw punch recompute would produce.
           if (d.status === 'regularised' || d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') { skipped++; continue; }
+
+          // A biometric resync must never touch a day whose check-in or
+          // check-out was captured by selfie or geofence — those are their
+          // own independent, deliberate attendance sources; a stray or
+          // late-arriving biometric punch on the same day (a badge scan
+          // passing the gate, a backlogged device entry) is not evidence
+          // the selfie/geofence-recorded day was wrong. Resetting the sync
+          // app's watermark and re-syncing its full punch history must not
+          // be able to silently overwrite a selfie or geofence day at all.
+          if (['selfie', 'geofence'].includes(d.check_in_source) || ['selfie', 'geofence'].includes(d.check_out_source)) {
+            skippedNonBiometric++; continue;
+          }
+
+          // Never let a reprocess make an already-complete day WORSE. A day
+          // that was fully closed out (a real checkout captured, not still
+          // in-progress) must not flip back to "still working" or lose a
+          // meaningful chunk of its recorded hours just because THIS
+          // batch's punch set pairs slightly differently than whatever
+          // originally produced the correct record — exactly the failure
+          // mode a full historical resync can trigger (one extra, genuine
+          // but previously-unseen punch shifts buildSessions' alternating
+          // IN/OUT pairing for everything after it). A record that's
+          // already incomplete (still open, or missing a checkout) is
+          // still allowed to improve.
+          const wasComplete = !!d.check_out_time && !d.is_in_progress;
+          const wouldGetWorse = wasComplete && (sd.is_in_progress || !sd.check_out_time || (sd.working_hours || 0) < (d.working_hours || 0) - 0.5);
+          if (wouldGetWorse) { skippedSuspicious++; continue; }
+
           // Per-side method attribution: this sync's own raw device punches
           // for the day fully recompute check_in_time/check_out_time (sd,
           // spread below) regardless of what side they actually came from —
@@ -8202,7 +8281,64 @@ router.post('/:name', async (req, res) => {
         }
       }
 
-      return res.json({ success: true, total_logs: logsInRange.length, groups_processed: Object.keys(groups).length, attendance_updated: updated, attendance_created: created, skipped_regularised_or_admin_marked: skipped });
+      return res.json({
+        success: true, total_logs: logsInRange.length, groups_processed: Object.values(groups).filter(Boolean).length,
+        attendance_updated: updated, attendance_created: created,
+        skipped_regularised_or_admin_marked: skipped,
+        skipped_non_biometric: skippedNonBiometric,
+        skipped_suspicious: skippedSuspicious,
+      });
+    }
+
+    /* ── Diagnostic: find Attendance records with a suspicious zero/near-
+       zero-duration session (check-in and check-out within 2 minutes of
+       each other) in a date range — the exact symptom of a day whose real
+       check-in/out got silently overwritten by a resync/reprocess bug
+       (fixed above) or force-closed by the nightly safety net with no real
+       checkout ever captured. There is no way to algorithmically recover
+       the employee's actual original check-in/check-out time once
+       overwritten — this codebase keeps no change-history for Attendance
+       records, and selfie check-ins don't send a notification whose
+       timestamp could serve as a fallback. This is purely a finder so
+       HR can see exactly which records need a regularisation/manual
+       correction, instead of hunting through All Attendance by eye. ── */
+    case 'findSuspiciousAttendanceRecords': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { date_from: fsaFrom, date_to: fsaTo } = p;
+      if (!fsaFrom) return res.json({ success: false, error: 'date_from is required (yyyy-MM-dd)' });
+      const fsaToDate = fsaTo || fsaFrom;
+
+      const fsaRows = await all(
+        "SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
+        [fsaFrom, fsaToDate]
+      );
+      const fsaEmpRows = await all("SELECT user_id, data FROM entities WHERE type='Employee'");
+      const fsaEmpByUser = {};
+      fsaEmpRows.forEach(r => { if (r.user_id) fsaEmpByUser[r.user_id] = JSON.parse(r.data); });
+
+      const suspicious = [];
+      for (const row of fsaRows) {
+        let d; try { d = JSON.parse(row.data); } catch { continue; }
+        if (!d.check_in_time || !d.check_out_time) continue;
+        if (d.regularised || d.admin_marked) continue; // already reviewed/corrected — not actionable
+        const gapMs = Math.abs(new Date(d.check_out_time).getTime() - new Date(d.check_in_time).getTime());
+        if (gapMs > 2 * 60 * 1000) continue; // a real, non-trivial session — not suspicious
+        const emp = fsaEmpByUser[d.user_id] || {};
+        suspicious.push({
+          user_id: d.user_id,
+          employee_name: emp.display_name || '(unknown)',
+          employee_code: emp.employee_code || '',
+          date: d.date,
+          check_in_time: d.check_in_time,
+          check_out_time: d.check_out_time,
+          status: d.status,
+          check_in_source: d.check_in_source || d.source || null,
+          check_out_source: d.check_out_source || d.source || null,
+          working_hours: d.working_hours || 0,
+        });
+      }
+      suspicious.sort((a, b) => (a.date === b.date ? (a.employee_name || '').localeCompare(b.employee_name || '') : a.date.localeCompare(b.date)));
+      return res.json({ success: true, checked: fsaRows.length, suspicious_count: suspicious.length, records: suspicious.slice(0, 1000) });
     }
 
     case 'closeOpenSessions': {
@@ -8725,6 +8861,14 @@ router.post('/:name', async (req, res) => {
         processed++;
       }
 
+      // Tolerance-based dedup (1s) — see reprocessAttendanceLogs for why
+      // exact string equality on punch time isn't safe.
+      const rmasDedupMs = 1000;
+      const rmasNearDup = (list, timeStr) => {
+        const ms = new Date(timeStr).getTime();
+        return list.some(rp => Math.abs(new Date(rp.time).getTime() - ms) < rmasDedupMs);
+      };
+
       // Upsert Attendance records — build sessions for proper status computation
       for (const { userId, date, punches } of Object.values(byDate)) {
         if (punches.length === 0) continue;
@@ -8752,15 +8896,32 @@ router.post('/:name', async (req, res) => {
           // regularised, or leave-driven day must never silently overwrite
           // it (e.g. a half-day leave's worked half genuinely punching in).
           if (d.status === 'regularised' || d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') continue;
+          // A biometric punch must never touch a day captured by selfie or
+          // geofence — see the identical guard/reasoning in
+          // reprocessAttendanceLogs. Matters here most of all: this is the
+          // LIVE ingestion path a full historical resend from the sync app
+          // actually flows through.
+          if (['selfie', 'geofence'].includes(d.check_in_source) || ['selfie', 'geofence'].includes(d.check_out_source)) continue;
 
           // Merge raw_punches: combine existing + new, then rebuild
           const prevPunches = d.raw_punches || [];
-          const mergedPunches = [...prevPunches, ...rawPunches]
-            .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
-          mergedPunches.sort((a, b) => a.time.localeCompare(b.time));
+          const mergedPunches = [];
+          for (const pch of [...prevPunches, ...rawPunches].sort((a, b) => a.time.localeCompare(b.time))) {
+            if (!rmasNearDup(mergedPunches, pch.time)) mergedPunches.push(pch);
+          }
           const sdMerged = buildSessions(mergedPunches);
           const mergedResult = computeStatusFromSessions(sdMerged, shiftS, halfDayHoursS);
           const { status: mergedStatus } = mergedResult;
+
+          // Never let this merge make an already-complete day WORSE — see
+          // the identical guard/reasoning in reprocessAttendanceLogs. A
+          // full historical resend can surface a genuine-but-previously-
+          // unseen punch that shifts buildSessions' alternating pairing;
+          // a day that was already closed out correctly must not flip
+          // back to "still working" because of it.
+          const wasComplete = !!d.check_out_time && !d.is_in_progress;
+          const wouldGetWorse = wasComplete && (sdMerged.is_in_progress || !sdMerged.check_out_time || (sdMerged.working_hours || 0) < (d.working_hours || 0) - 0.5);
+          if (wouldGetWorse) continue;
 
           const updated = {
             ...d,
@@ -8934,12 +9095,26 @@ router.post('/:name', async (req, res) => {
           jobStore.get(jobId) && jobStore.set(jobId, { ...jobStore.get(jobId), progress: `Building attendance for ${totalEntries} employee-day(s)…` });
           let records_synced = 0;
 
+          // Tolerance-based dedup (1s), matching reprocessAttendanceLogs —
+          // exact string equality let two AttendanceLog rows for the same
+          // physical punch (differing only by formatting/precision, a real
+          // risk after a full historical resync) both survive as
+          // "different" punches, inflating the count and shifting
+          // buildSessions' alternating IN/OUT pairing for the whole day.
+          const PEB_DEDUP_MS = 1000;
+          const pebNearDup = (list, timeStr) => {
+            const ms = new Date(timeStr).getTime();
+            return list.some(rp => Math.abs(new Date(rp.time).getTime() - ms) < PEB_DEDUP_MS);
+          };
+
           for (const entry of Object.values(byEmployeeDate)) {
             const { userId, date, punches } = entry;
             if (!punches.length) continue;
 
-            const uniquePunches = punches.filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
-            uniquePunches.sort((a, b) => a.time.localeCompare(b.time));
+            const uniquePunches = [];
+            for (const pch of [...punches].sort((a, b) => a.time.localeCompare(b.time))) {
+              if (!pebNearDup(uniquePunches, pch.time)) uniquePunches.push(pch);
+            }
 
             const emp   = empByUserId[userId] || {};
             const shift = (emp.shift_id && shiftById[emp.shift_id]) || defaultShift;
@@ -8965,13 +9140,23 @@ router.post('/:name', async (req, res) => {
               // — a manually-corrected, regularised, or leave-driven day must
               // never be silently overwritten by a resync of stored logs.
               if (existAtt.data.status === 'regularised' || existAtt.data.regularised || existAtt.data.admin_marked || existAtt.data.leave_id || existAtt.data.status === 'leave') continue;
+              // A biometric resync must never touch a day captured by selfie
+              // or geofence — see the identical guard/reasoning in
+              // reprocessAttendanceLogs.
+              if (['selfie', 'geofence'].includes(existAtt.data.check_in_source) || ['selfie', 'geofence'].includes(existAtt.data.check_out_source)) continue;
               const prevPunches = existAtt.data.raw_punches || [];
-              const merged = [...prevPunches, ...uniquePunches]
-                .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
-              merged.sort((a, b) => a.time.localeCompare(b.time));
+              const merged = [];
+              for (const pch of [...prevPunches, ...uniquePunches].sort((a, b) => a.time.localeCompare(b.time))) {
+                if (!pebNearDup(merged, pch.time)) merged.push(pch);
+              }
               const sdM = buildSessions(merged);
               const mergedResult = computeStatusFromSessions(sdM, shift);
               const { status: mStatus } = mergedResult;
+              // Never let a resync make an already-complete day WORSE — see
+              // the identical guard/reasoning in reprocessAttendanceLogs.
+              const wasComplete = !!existAtt.data.check_out_time && !existAtt.data.is_in_progress;
+              const wouldGetWorse = wasComplete && (sdM.is_in_progress || !sdM.check_out_time || (sdM.working_hours || 0) < (existAtt.data.working_hours || 0) - 0.5);
+              if (wouldGetWorse) continue;
               await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
                 [mStatus, JSON.stringify({ ...existAtt.data, ...attData,
                   raw_punches: merged, sessions: sdM.sessions,

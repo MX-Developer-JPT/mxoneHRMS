@@ -78,6 +78,16 @@ export default function AttendanceLogDashboard() {
   const [processing, setProcessing] = useState(false);
   const [processResult, setProcessResult] = useState(null);
 
+  // Suspicious-record finder — surfaces days whose check-in and check-out
+  // ended up within 2 minutes of each other (the exact symptom of a
+  // resync/reprocess wholesale-overwriting a selfie/geofence day, or the
+  // nightly safety net force-closing a session that never got a real
+  // checkout). The original real times can't be algorithmically recovered
+  // once overwritten — this just finds who needs a regularisation/manual
+  // correction instead of HR hunting through All Attendance by eye.
+  const [findingSuspicious, setFindingSuspicious] = useState(false);
+  const [suspiciousRecords, setSuspiciousRecords] = useState(null);
+
   // Manual import state
   const [showImport, setShowImport] = useState(false);
   const [importJson, setImportJson] = useState('');
@@ -240,7 +250,12 @@ export default function AttendanceLogDashboard() {
       const result = res.data;
       setProcessResult(result);
       if (result?.success) {
-        const msg = `Re-synced: ${result.attendance_updated || 0} updated, ${result.attendance_created || 0} created`;
+        const skippedBits = [
+          result.skipped_regularised_or_admin_marked > 0 && `${result.skipped_regularised_or_admin_marked} regularised/manual/leave preserved`,
+          result.skipped_non_biometric > 0 && `${result.skipped_non_biometric} selfie/geofence day(s) preserved`,
+          result.skipped_suspicious > 0 && `${result.skipped_suspicious} suspicious change(s) skipped`,
+        ].filter(Boolean).join(', ');
+        const msg = `Re-synced: ${result.attendance_updated || 0} updated, ${result.attendance_created || 0} created${skippedBits ? ` (${skippedBits})` : ''}`;
         toast.success(msg);
         loadLogs(1, filtersRef.current);
       } else {
@@ -252,6 +267,28 @@ export default function AttendanceLogDashboard() {
       setProcessResult({ success: false, message: msg });
     }
     setProcessing(false);
+  };
+
+  const handleFindSuspicious = async () => {
+    setFindingSuspicious(true);
+    setSuspiciousRecords(null);
+    try {
+      const res = await base44.functions.invoke('findSuspiciousAttendanceRecords', {
+        date_from: processFrom,
+        date_to: processTo,
+      });
+      const result = res.data;
+      if (result?.success) {
+        setSuspiciousRecords(result.records || []);
+        if (!result.records?.length) toast.success('No suspicious records found in this range.');
+        else toast.warning(`${result.suspicious_count} record(s) with a same-time check-in/check-out found.`);
+      } else {
+        toast.error(result?.error || 'Search failed.');
+      }
+    } catch (err) {
+      toast.error(err?.message || 'Search failed');
+    }
+    setFindingSuspicious(false);
   };
 
   // Parse TSV/CSV into records with normalised keys
@@ -427,7 +464,44 @@ export default function AttendanceLogDashboard() {
             <Button onClick={handleCloseOpenSessions} disabled={processing} variant="outline" className="border-red-300 text-red-600 hover:bg-red-50" title="Mark employees who checked in yesterday but never checked out as Absent">
               {processing ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Processing...</> : <><AlarmClock className="w-4 h-4 mr-2" />Auto-Absent (5:30AM Rule)</>}
             </Button>
+            <Button onClick={handleFindSuspicious} disabled={findingSuspicious} variant="outline" className="border-amber-400 text-amber-700 hover:bg-amber-100" title="Find records where check-in and check-out ended up within 2 minutes of each other — a sign the real times were lost to a resync/reprocess or an unclosed session">
+              {findingSuspicious ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Searching...</> : <><AlertCircle className="w-4 h-4 mr-2" />Find Same-Time In/Out Records</>}
+            </Button>
           </div>
+
+          {suspiciousRecords && suspiciousRecords.length > 0 && (
+            <div className="border border-amber-300 bg-amber-50 rounded-lg p-3 overflow-x-auto">
+              <p className="text-sm font-semibold text-amber-800 mb-2">
+                {suspiciousRecords.length} record(s) with check-in ≈ check-out — these need a regularisation or manual correction; the original real times cannot be recovered automatically.
+              </p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-amber-700 border-b border-amber-200">
+                    <th className="py-1 pr-3">Employee</th>
+                    <th className="py-1 pr-3">Code</th>
+                    <th className="py-1 pr-3">Date</th>
+                    <th className="py-1 pr-3">Check-in</th>
+                    <th className="py-1 pr-3">Check-out</th>
+                    <th className="py-1 pr-3">Status</th>
+                    <th className="py-1 pr-3">Source</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {suspiciousRecords.map((r, i) => (
+                    <tr key={i} className="border-b border-amber-100">
+                      <td className="py-1 pr-3">{r.employee_name}</td>
+                      <td className="py-1 pr-3">{r.employee_code}</td>
+                      <td className="py-1 pr-3">{r.date}</td>
+                      <td className="py-1 pr-3">{formatIST(r.check_in_time)}</td>
+                      <td className="py-1 pr-3">{formatIST(r.check_out_time)}</td>
+                      <td className="py-1 pr-3 capitalize">{r.status}</td>
+                      <td className="py-1 pr-3 capitalize">{r.check_in_source || r.check_out_source || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {/* Manual Import from eBioServer */}
           <div className="border-t border-blue-200 pt-3">
