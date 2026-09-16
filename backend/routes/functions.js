@@ -1030,6 +1030,31 @@ async function hasRole(cu, roles) {
 }
 const HR_ROLES = ['hr', 'admin'];
 
+// Some Attendance rows can legitimately exist in duplicate for the same
+// (user_id, date) — the well-known code-map mismatch case (JSON user_id
+// set, DB user_id column null, from an older biometric sync or auto-absent
+// insert) means a later lookup by the DB column alone can miss the
+// existing row and insert a second one instead of updating it. Building a
+// user→date attendance map by simple "last one in the query result wins"
+// order meant an approved regularisation (or any other legitimately more
+// authoritative row) could stay invisible in the attendance report/muster
+// if the stale row it should have replaced happened to sort after it.
+// Always prefers a regularised record — it represents the latest,
+// deliberate HR/manager decision on that day — then real check-in data,
+// mirroring getAllAttendance's own dedup scoring.
+function mapAttendanceByUserDate(rows, { truncateDate = false } = {}) {
+  const map = {};
+  const score = (r) => (r.regularised ? 8 : 0) + (r.biometric_synced ? 4 : 0) + (r.check_in_time ? 2 : 0) + (r.status && r.status !== 'absent' ? 1 : 0);
+  for (const a of rows) {
+    if (!a.user_id) continue;
+    const dateKey = truncateDate ? String(a.date).slice(0, 10) : a.date;
+    if (!map[a.user_id]) map[a.user_id] = {};
+    const prev = map[a.user_id][dateKey];
+    if (!prev || score(a) >= score(prev)) map[a.user_id][dateKey] = a;
+  }
+  return map;
+}
+
 // employee_code is meant to be each employee's unique identifier (the
 // import pipeline already treats it as the "primary key per spec" — see
 // importEmployeeData), but nothing ever stopped two different Employee
@@ -5536,12 +5561,10 @@ router.post('/:name', async (req, res) => {
       let employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
       const attRows   = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
 
-      // Build attendance map: user_id → date → record
-      const attMap = {};
-      for (const a of attRows) {
-        if (!attMap[a.user_id]) attMap[a.user_id] = {};
-        attMap[a.user_id][a.date] = a;
-      }
+      // Build attendance map: user_id → date → record (dedups any duplicate
+      // rows for the same day, preferring a regularised record — see
+      // mapAttendanceByUserDate above)
+      const attMap = mapAttendanceByUserDate(attRows);
 
       // Pre-load all shifts referenced by employees (avoids N+1 queries)
       const shiftCache = {};
@@ -5850,11 +5873,9 @@ router.post('/:name', async (req, res) => {
       let mEmps   = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
       const mAttRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
 
-      const mAttMap = {};
-      for (const a of mAttRows) {
-        if (!mAttMap[a.user_id]) mAttMap[a.user_id] = {};
-        mAttMap[a.user_id][String(a.date).slice(0,10)] = a;
-      }
+      // Dedups any duplicate rows for the same day, preferring a
+      // regularised record — see mapAttendanceByUserDate above.
+      const mAttMap = mapAttendanceByUserDate(mAttRows, { truncateDate: true });
 
       const mFallbackDays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
       const mWeekdayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -8998,8 +9019,19 @@ router.post('/:name', async (req, res) => {
       // pending. Idempotent: safe to call again on later full-approver sign-off.
       async function applyRegularisationToAttendance() {
         try {
+          // Match on the DB user_id column OR the JSON field, same as
+          // getAllAttendance's own lookup — some Attendance rows (biometric
+          // sync, or an old markAbsentEmployees insert) can have the JSON
+          // user_id set but a null DB column (a known code-map mismatch).
+          // Matching only the column here silently missed those rows: this
+          // would create a SECOND (present, regularised) Attendance row
+          // instead of updating the real one, and getAllAttendance's own
+          // dedup would then often keep the OLDER row (e.g. a biometric
+          // 'short_attendance' row scores higher than a bare regularised
+          // insert with no check-in data) — so an approved regularisation
+          // could silently never actually show as present anywhere.
           const attRow = await one(
-            "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
+            "SELECT id, data FROM entities WHERE type='Attendance' AND (user_id=$1 OR data::jsonb->>'user_id'=$1) AND data::jsonb->>'date'=$2"
           , [reg.user_id, regDate]);
 
           if (attRow) {
@@ -9012,7 +9044,11 @@ router.post('/:name', async (req, res) => {
               check_in_time:  reg.requested_check_in  || att.check_in_time,
               check_out_time: reg.requested_check_out || att.check_out_time,
             };
-            await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [updAtt.status, JSON.stringify(updAtt), attRow.id]);
+            // Also repairs the DB user_id column when the row was only
+            // found via its JSON field (see comment above) — otherwise the
+            // very next lookup for this same row (getAllAttendance,
+            // another regularisation) hits the identical mismatch again.
+            await run("UPDATE entities SET status=$1, data=$2, user_id=$3 WHERE id=$4", [updAtt.status, JSON.stringify(updAtt), reg.user_id, attRow.id]);
           } else {
             // Create attendance record if it doesn't exist
             const newAttId = uuidv4();
@@ -9101,8 +9137,10 @@ router.post('/:name', async (req, res) => {
         // got their attendance updated at all, regardless of timing.
         const regDate = (reg.attendance_date || reg.date || '').split('T')[0];
         if (!regDate) continue;
+        // Match on the DB user_id column OR the JSON field — see the same
+        // fix/comment in applyRegularisationToAttendance above.
         const attRow = await one(
-          "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2"
+          "SELECT id, data FROM entities WHERE type='Attendance' AND (user_id=$1 OR data::jsonb->>'user_id'=$1) AND data::jsonb->>'date'=$2"
         , [reg.user_id, regDate]);
 
         if (attRow) {
@@ -9116,7 +9154,7 @@ router.post('/:name', async (req, res) => {
             check_in_time:  reg.requested_check_in  || att.check_in_time,
             check_out_time: reg.requested_check_out || att.check_out_time,
           };
-          await run("UPDATE entities SET status=$1, data=$2 WHERE id=$3", [updAtt.status, JSON.stringify(updAtt), attRow.id]);
+          await run("UPDATE entities SET status=$1, data=$2, user_id=$3 WHERE id=$4", [updAtt.status, JSON.stringify(updAtt), reg.user_id, attRow.id]);
           fixed++;
         } else {
           const newAttId = uuidv4();
