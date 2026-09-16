@@ -561,9 +561,17 @@ async function processRecord(record) {
     return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: id, action: 'created', status };
   }
 
-  // 4. Update existing — never overwrite a regularised record
+  // 4. Update existing — never overwrite a regularised/admin-corrected/
+  // leave-driven record. `data.status === 'regularised'` never actually
+  // matched anything — nothing sets status to that literal string;
+  // applyRegularisationToAttendance sets status to the requested status
+  // (e.g. 'present') with a separate `regularised: true` boolean flag — so
+  // this guard silently did nothing and a real device punch landing on a
+  // regularised day (a queued punch arriving late, or the employee simply
+  // badging in again) would merge straight into it and overwrite the
+  // regularisation.
   const data = JSON.parse(row.data);
-  if (data.status === 'regularised') {
+  if (data.regularised || data.admin_marked || data.leave_id || data.status === 'leave') {
     return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
   }
 

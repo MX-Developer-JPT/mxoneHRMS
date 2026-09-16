@@ -147,7 +147,18 @@ export async function closeUnfinishedSessions(targetDate) {
 
   for (const row of rows) {
     const d = JSON.parse(row.data);
-    if (d.status === 'regularised') continue;
+    // A regularised/admin-corrected/leave-driven day must never be swept up
+    // by this safety net — checking `d.status === 'regularised'` was always
+    // wrong (nothing ever actually sets status to the literal string
+    // 'regularised'; applyRegularisationToAttendance sets status to the
+    // requested status, e.g. 'present', with a SEPARATE `regularised: true`
+    // boolean flag), so this check never matched a real regularised record
+    // and this function happily recomputed — and overwrote — its status
+    // from raw punch data, undoing the whole regularisation the moment the
+    // record's is_in_progress flag was still true (e.g. the employee's
+    // original check-out was still missing and the regularisation only
+    // corrected the check-in time).
+    if (d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') continue;
 
     // Older records may predate the multi-session model and only carry
     // check_in_time/check_out_time — seed raw_punches from those so this
@@ -221,7 +232,13 @@ export async function closeStaleOpenSessions() {
 
   for (const row of rows) {
     const d = JSON.parse(row.data);
-    if (d.status === 'regularised') continue;
+    // Same fix/reasoning as closeUnfinishedSessions above — this checked
+    // `d.status === 'regularised'`, which nothing ever actually sets, so a
+    // regularised/admin-corrected/leave-driven record still carrying
+    // is_in_progress:true (e.g. only the check-in was corrected, the
+    // original checkout was never captured) got silently recomputed and
+    // overwritten by this sweep, undoing the regularisation entirely.
+    if (d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') continue;
 
     let rawPunches = Array.isArray(d.raw_punches) && d.raw_punches.length ? d.raw_punches : [];
     if (!rawPunches.length && d.check_in_time) {
@@ -302,7 +319,10 @@ export async function closeStaleGeofenceSessions() {
 
   for (const row of rows) {
     const d = JSON.parse(row.data);
-    if (d.status === 'regularised') continue;
+    // Same fix/reasoning as closeUnfinishedSessions/closeStaleOpenSessions
+    // above — `d.status === 'regularised'` never actually matches a real
+    // regularised record.
+    if (d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') continue;
     const openSession = (d.sessions || [])[d.sessions.length - 1];
     if (!openSession?.check_in) continue;
     const openedMs = new Date(openSession.check_in).getTime();
@@ -547,7 +567,7 @@ export async function sendShiftEndReminders() {
 
   for (const row of rows) {
     const d = JSON.parse(row.data);
-    if (d.status === 'regularised' || d.checkout_reminder_sent) continue;
+    if (d.regularised || d.admin_marked || d.leave_id || d.status === 'leave' || d.checkout_reminder_sent) continue;
 
     if (!(d.user_id in empCache)) {
       const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
