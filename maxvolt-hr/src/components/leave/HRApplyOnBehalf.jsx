@@ -80,7 +80,7 @@ export default function HRApplyOnBehalf({ employees, leavePolicies, loadData, us
     setSubmitting(true);
     try {
       const policy = leavePolicies.find(p => p.id === form.leave_policy_id);
-      await base44.entities.Leave.create({
+      const createdLeave = await base44.entities.Leave.create({
         user_id: selectedEmp,
         leave_policy_id: form.leave_policy_id,
         start_date: form.start_date,
@@ -137,11 +137,13 @@ export default function HRApplyOnBehalf({ employees, leavePolicies, loadData, us
         if (existing.length === 0) {
           await base44.entities.Attendance.create({
             user_id: selectedEmp, date: dateStr, status: attStatus,
-            auto_marked: true, notes: `Leave applied by HR (${policy?.code || ''})`,
+            auto_marked: true, leave_id: createdLeave.id, leave_half_day: !!form.half_day,
+            notes: `Leave applied by HR (${policy?.code || ''})`,
           });
         } else if (!existing[0].check_in_time || form.half_day) {
           await base44.entities.Attendance.update(existing[0].id, {
-            status: attStatus, auto_marked: true, notes: `Leave applied by HR (${policy?.code || ''})`,
+            status: attStatus, auto_marked: true, leave_id: createdLeave.id, leave_half_day: !!form.half_day,
+            notes: `Leave applied by HR (${policy?.code || ''})`,
           });
         }
       }

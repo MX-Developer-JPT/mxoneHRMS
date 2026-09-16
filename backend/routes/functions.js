@@ -8141,7 +8141,13 @@ router.post('/:name', async (req, res) => {
           // approved regularisation — re-syncing raw device logs must never
           // silently overwrite it. Without this, "reprocess attendance from
           // stored logs" would revert every manual fix on its next run.
-          if (d.status === 'regularised' || d.regularised || d.admin_marked) { skipped++; continue; }
+          // Same for a leave-driven day (leave_id set — full-day leave,
+          // half-day leave, or WFH approved via Leave) — a stray/legitimate
+          // device punch that day (e.g. the worked half of a half-day
+          // leave, or someone briefly badging in on an approved leave day)
+          // must never silently revert the leave record back to whatever a
+          // raw punch recompute would produce.
+          if (d.status === 'regularised' || d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') { skipped++; continue; }
           // Per-side method attribution: this sync's own raw device punches
           // for the day fully recompute check_in_time/check_out_time (sd,
           // spread below) regardless of what side they actually came from —
@@ -8430,7 +8436,7 @@ router.post('/:name', async (req, res) => {
       );
       const halfDayMap = await getHalfDayHolidayMap(monthStart, monthEnd);
 
-      let processedCount = 0, skippedRegularised = 0, skippedAdminMarked = 0, skippedNoPunches = 0;
+      let processedCount = 0, skippedRegularised = 0, skippedAdminMarked = 0, skippedLeave = 0, skippedNoPunches = 0;
       const preview = [];
       const updateQueue = [];
 
@@ -8443,6 +8449,12 @@ router.post('/:name', async (req, res) => {
         // revert it. Without this, "Reprocess Month Attendance" would undo
         // every manual fix on its next run.
         if (d.admin_marked) { skippedAdminMarked++; continue; }
+        // A leave-driven day (leave_id set, or plain status='leave') must
+        // survive a bulk recompute too — a half-day leave in particular
+        // carries real check_in_time/raw_punches for the half the employee
+        // DID work, which would otherwise get recomputed straight back to
+        // present/late and silently lose its leave association.
+        if (d.leave_id || d.status === 'leave') { skippedLeave++; continue; }
 
         // Build raw punches: use stored raw_punches or synthesise from check_in/check_out
         let punches = d.raw_punches && d.raw_punches.length > 0 ? d.raw_punches : null;
@@ -8485,7 +8497,7 @@ router.post('/:name', async (req, res) => {
       const rangeLabel = monthsToProcess.length === 1
         ? new Date(monthsToProcess[0].y, monthsToProcess[0].m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' })
         : `${new Date(monthsToProcess[0].y, monthsToProcess[0].m-1, 1).toLocaleString('en-IN', { month: 'short', year: 'numeric' })} – ${new Date(lastM.y, lastM.m-1, 1).toLocaleString('en-IN', { month: 'short', year: 'numeric' })}`;
-      const skipped = skippedRegularised + skippedAdminMarked + skippedNoPunches;
+      const skipped = skippedRegularised + skippedAdminMarked + skippedLeave + skippedNoPunches;
       return res.json({
         success: true, dry_run,
         total_records: attRows.length,
@@ -8493,12 +8505,13 @@ router.post('/:name', async (req, res) => {
         skipped,
         skipped_regularised: skippedRegularised,
         skipped_admin_marked: skippedAdminMarked,
+        skipped_leave: skippedLeave,
         skipped_no_punch_data: skippedNoPunches,
         months_processed: monthsToProcess.length,
         preview: dry_run ? preview.slice(0, 50) : undefined,
         message: dry_run
-          ? `Preview: ${processedCount} of ${attRows.length} records would be reprocessed for ${rangeLabel} (${skippedRegularised} regularised, ${skippedAdminMarked} manually edited, ${skippedNoPunches} no punch data)`
-          : `Reprocessed ${processedCount} of ${attRows.length} attendance records for ${rangeLabel} (${skippedAdminMarked} manually edited record(s) preserved)`,
+          ? `Preview: ${processedCount} of ${attRows.length} records would be reprocessed for ${rangeLabel} (${skippedRegularised} regularised, ${skippedAdminMarked} manually edited, ${skippedLeave} on leave, ${skippedNoPunches} no punch data)`
+          : `Reprocessed ${processedCount} of ${attRows.length} attendance records for ${rangeLabel} (${skippedAdminMarked} manually edited, ${skippedLeave} on-leave record(s) preserved)`,
       });
     }
 
@@ -8717,7 +8730,11 @@ router.post('/:name', async (req, res) => {
         const existing = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [userId, date]);
         if (existing) {
           const d = JSON.parse(existing.data);
-          if (d.status === 'regularised' || d.regularised) continue;
+          // Same protections as reprocessAttendanceLogs/processMonthAttendance
+          // above — a live device punch landing on a manually-corrected,
+          // regularised, or leave-driven day must never silently overwrite
+          // it (e.g. a half-day leave's worked half genuinely punching in).
+          if (d.status === 'regularised' || d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') continue;
 
           // Merge raw_punches: combine existing + new, then rebuild
           const prevPunches = d.raw_punches || [];
@@ -8927,7 +8944,10 @@ router.post('/:name', async (req, res) => {
             const existAtt = existingAttMap[attKey];
 
             if (existAtt) {
-              if (existAtt.data.status === 'regularised' || existAtt.data.regularised) continue;
+              // Same protections as reprocessAttendanceLogs/processMonthAttendance
+              // — a manually-corrected, regularised, or leave-driven day must
+              // never be silently overwritten by a resync of stored logs.
+              if (existAtt.data.status === 'regularised' || existAtt.data.regularised || existAtt.data.admin_marked || existAtt.data.leave_id || existAtt.data.status === 'leave') continue;
               const prevPunches = existAtt.data.raw_punches || [];
               const merged = [...prevPunches, ...uniquePunches]
                 .filter((v, i, a) => a.findIndex(x => x.time === v.time) === i);
