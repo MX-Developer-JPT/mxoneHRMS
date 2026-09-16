@@ -8,6 +8,34 @@ import { JWT_SECRET } from './auth.js';
 
 const router = Router();
 
+// Some Attendance rows can legitimately exist in duplicate for the same
+// (user_id, date) — a well-known code-map mismatch (JSON user_id set, DB
+// user_id column null, from an older biometric sync or auto-absent insert)
+// meant a later lookup-by-column-only could miss the real row and insert a
+// second one instead of updating it (now fixed at every write site in
+// functions.js, but existing duplicates from before that fix can still be
+// sitting in the DB). Every OTHER Attendance consumer already dedups this
+// way — getAllAttendance's own scoring, and mapAttendanceByUserDate for the
+// report/muster exports — but this generic list/filter route (what "My
+// Attendance"/AttendanceCalendar.jsx and the Employee Detail dialog's
+// calendar actually read from) did not, so a completed regularisation could
+// still show as absent here even though every other page had already
+// self-healed. Mirrors the same scoring: regularised > admin-corrected >
+// biometric-synced > has check-in > not absent.
+function dedupAttendanceRows(rows) {
+  const score = (r) => (r.regularised ? 16 : 0) + (r.admin_marked ? 8 : 0) + (r.biometric_synced ? 4 : 0) + (r.check_in_time ? 2 : 0) + (r.status && r.status !== 'absent' ? 1 : 0);
+  const best = new Map(); // `${user_id}|${date}` -> highest-scoring row seen so far
+  const keyOrder = [];    // first-seen order of each key, so output order is otherwise unchanged
+  for (const r of rows) {
+    if (!r.user_id || !r.date) { keyOrder.push({ row: r }); continue; } // no key to dedup on — pass through as-is
+    const key = `${r.user_id}|${String(r.date).slice(0, 10)}`;
+    if (!best.has(key)) keyOrder.push({ key });
+    const prev = best.get(key);
+    if (!prev || score(r) >= score(prev)) best.set(key, r);
+  }
+  return keyOrder.map(({ row, key }) => row || best.get(key));
+}
+
 // Entity types carrying financial, statutory, or otherwise highly sensitive
 // data. Every route below additionally restricts these to HR/admin/
 // management (unrestricted) or the record's own owner — closing the gap
@@ -591,6 +619,7 @@ router.get('/:type', async (req, res) => {
     if (CACHEABLE.has(type)) cacheSet(cacheKey, data);
   }
 
+  if (type === 'Attendance') data = dedupAttendanceRows(data);
   data = await filterSensitive(data, cu, type);
   res.json(data);
 });
@@ -651,6 +680,7 @@ router.post('/:type/filter', async (req, res) => {
   const rows = await all(sql, baseParams);
 
   let data = rows.map(parseRow).filter(d => matchesFilter(d, query));
+  if (type === 'Attendance') data = dedupAttendanceRows(data);
   if (!isSimpleFilter) {
     if (sort)  data = sortRows(data, sort);
     if (limit) data = data.slice(0, parseInt(limit, 10));
