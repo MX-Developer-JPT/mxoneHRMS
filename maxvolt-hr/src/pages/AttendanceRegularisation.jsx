@@ -153,9 +153,16 @@ export default function AttendanceRegularisation() {
         return;
       }
 
-      // Check for duplicates
+      // Check for duplicates — 'rejected' and 'cancelled' don't block a new
+      // request for the same date (a cancelled request was withdrawn by the
+      // employee themselves specifically so they could raise it again), and
+      // the request currently being edited must never collide with itself.
       for (const date of datesToProcess) {
-        const existing = requests.find(r => r.attendance_date?.split('T')[0] === date && r.status !== 'rejected');
+        const existing = requests.find(r =>
+          r.attendance_date?.split('T')[0] === date &&
+          !['rejected', 'cancelled'].includes(r.status) &&
+          r.id !== editingRequest?.id
+        );
         if (existing) {
           toast.error(`A request already exists for ${date}`);
           setSaving(false);
