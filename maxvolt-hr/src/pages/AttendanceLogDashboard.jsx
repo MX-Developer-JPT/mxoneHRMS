@@ -87,6 +87,7 @@ export default function AttendanceLogDashboard() {
   // correction instead of HR hunting through All Attendance by eye.
   const [findingSuspicious, setFindingSuspicious] = useState(false);
   const [suspiciousRecords, setSuspiciousRecords] = useState(null);
+  const [repairing, setRepairing] = useState(false);
 
   // Manual import state
   const [showImport, setShowImport] = useState(false);
@@ -291,6 +292,41 @@ export default function AttendanceLogDashboard() {
     setFindingSuspicious(false);
   };
 
+  const handleRepairSelfieTimes = async () => {
+    setRepairing(true);
+    try {
+      const dryRes = await base44.functions.invoke('repairSelfieAttendanceTimes', {
+        date_from: processFrom, date_to: processTo, dry_run: true,
+      });
+      const dry = dryRes.data;
+      if (!dry?.success) { toast.error(dry?.error || 'Repair check failed.'); setRepairing(false); return; }
+      const totalFixable = (dry.repaired_from_field_trip || 0) + (dry.repaired_from_file_timestamp || 0);
+      if (totalFixable === 0 && !dry.not_recoverable) {
+        toast.success('No selfie/OD/WFH records with a same-time check-in/check-out found in this range.');
+        setRepairing(false);
+        return;
+      }
+      const confirmMsg = `Found ${totalFixable} recoverable record(s) (${dry.repaired_from_field_trip || 0} from OD field trip data, ${dry.repaired_from_file_timestamp || 0} from selfie upload timestamps)` +
+        (dry.not_recoverable ? `, and ${dry.not_recoverable} with no recoverable source (will be left untouched)` : '') +
+        `.\n\nApply these fixes now?`;
+      if (!window.confirm(confirmMsg)) { setRepairing(false); return; }
+      const res = await base44.functions.invoke('repairSelfieAttendanceTimes', {
+        date_from: processFrom, date_to: processTo, dry_run: false,
+      });
+      const result = res.data;
+      if (result?.success) {
+        toast.success(`Repaired ${(result.repaired_from_field_trip || 0) + (result.repaired_from_file_timestamp || 0)} record(s)${result.not_recoverable ? ` — ${result.not_recoverable} could not be recovered` : ''}.`);
+        setSuspiciousRecords(null);
+        loadLogs(1, filtersRef.current);
+      } else {
+        toast.error(result?.error || 'Repair failed.');
+      }
+    } catch (err) {
+      toast.error(err?.message || 'Repair failed');
+    }
+    setRepairing(false);
+  };
+
   // Parse TSV/CSV into records with normalised keys
   const parseTSV = (text) => {
     const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
@@ -466,6 +502,9 @@ export default function AttendanceLogDashboard() {
             </Button>
             <Button onClick={handleFindSuspicious} disabled={findingSuspicious} variant="outline" className="border-amber-400 text-amber-700 hover:bg-amber-100" title="Find records where check-in and check-out ended up within 2 minutes of each other — a sign the real times were lost to a resync/reprocess or an unclosed session">
               {findingSuspicious ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Searching...</> : <><AlertCircle className="w-4 h-4 mr-2" />Find Same-Time In/Out Records</>}
+            </Button>
+            <Button onClick={handleRepairSelfieTimes} disabled={repairing} variant="outline" className="border-green-400 text-green-700 hover:bg-green-100" title="Recover the real check-in/check-out time for Selfie/OD/WFH days that collapsed to the same instant, using the linked Field Trip (OD) or selfie upload timestamp — neither was ever touched by the resync bug">
+              {repairing ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Repairing...</> : <><CheckCircle className="w-4 h-4 mr-2" />Repair Selfie/OD/WFH Times</>}
             </Button>
           </div>
 

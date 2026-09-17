@@ -8341,6 +8341,117 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, checked: fsaRows.length, suspicious_count: suspicious.length, records: suspicious.slice(0, 1000) });
     }
 
+    /* ── Repair: recover the real check-in/check-out time for a selfie-
+       sourced day the resync/reprocess bug (fixed above) collapsed to the
+       same instant. Two independent sources exist, neither ever touched
+       by the corrupting recompute (which only ever read/wrote Attendance
+       and AttendanceLog):
+         1. An OD day's linked FieldTrip carries its own start_time/
+            end_time, written at the actual moment of check-in/check-out.
+         2. Both WFH and OD (and plain selfie present/late days) store a
+            check_in_selfie_url/check_out_selfie_url — the underlying
+            `files` row's created_at is a close proxy for the real punch
+            time, since the selfie upload happens essentially at the same
+            moment as the check-in/check-out action itself.
+       A record with no FieldTrip and no selfie URLs (or whose selfie URL
+       file rows are gone) has no recoverable source at all — reported as
+       not_recoverable rather than guessed at. ── */
+    case 'repairSelfieAttendanceTimes': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { date_from: rsFrom, date_to: rsTo, dry_run: rsDryRun = false } = p;
+      if (!rsFrom) return res.json({ success: false, error: 'date_from is required (yyyy-MM-dd)' });
+      const rsToDate = rsTo || rsFrom;
+
+      const rsRows = await all(
+        "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
+        [rsFrom, rsToDate]
+      );
+
+      const fileIdFromUrl = (url) => String(url || '').match(/\/api\/upload\/file\/([^./]+)/)?.[1] || null;
+      // files.created_at is a real UTC CURRENT_TIMESTAMP::TEXT — convert to
+      // this app's "IST digits stored as Z" convention (+5.5h then format),
+      // matching how every punch timestamp is stored throughout this file.
+      const toStoredIso = (realUtcTs) => {
+        const s = String(realUtcTs).trim().replace(' ', 'T');
+        const ms = Date.parse(s.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(s) ? s : s + 'Z');
+        if (isNaN(ms)) return null;
+        return new Date(ms + 5.5 * 3600000).toISOString();
+      };
+
+      let repairedFromFieldTrip = 0, repairedFromFileTimestamp = 0, notRecoverable = 0, checked = 0, skipped = 0;
+      const notRecoverableList = [];
+
+      for (const row of rsRows) {
+        let d; try { d = JSON.parse(row.data); } catch { continue; }
+        // Only a selfie-sourced day is in scope — biometric/geofence
+        // records were never affected by this class of corruption, and
+        // have no FieldTrip/selfie-URL source to recover from anyway.
+        if (d.check_in_source !== 'selfie' && d.check_out_source !== 'selfie') continue;
+        if (d.regularised || d.admin_marked) { skipped++; continue; } // already reviewed — leave it alone
+        if (!d.check_in_time || !d.check_out_time) { skipped++; continue; }
+        const gapMs = Math.abs(new Date(d.check_out_time).getTime() - new Date(d.check_in_time).getTime());
+        if (gapMs > 2 * 60 * 1000) { skipped++; continue; } // already a real, non-trivial session
+
+        checked++;
+        let recoveredIn = null, recoveredOut = null, source = null;
+
+        if (d.selfie_reason === 'od') {
+          const ftRow = await one("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'linked_attendance_id'=$2", [d.user_id, row.id]);
+          if (ftRow) {
+            const ft = JSON.parse(ftRow.data);
+            if (ft.start_time && ft.end_time) { recoveredIn = ft.start_time; recoveredOut = ft.end_time; source = 'field_trip'; }
+          }
+        }
+
+        if (!source) {
+          const inFileId = fileIdFromUrl(d.check_in_selfie_url);
+          const outFileId = fileIdFromUrl(d.check_out_selfie_url);
+          if (inFileId && outFileId) {
+            const [inFileRow, outFileRow] = await Promise.all([
+              one("SELECT created_at FROM files WHERE id=$1", [inFileId]),
+              one("SELECT created_at FROM files WHERE id=$1", [outFileId]),
+            ]);
+            if (inFileRow?.created_at && outFileRow?.created_at) {
+              const ci = toStoredIso(inFileRow.created_at), co = toStoredIso(outFileRow.created_at);
+              if (ci && co) { recoveredIn = ci; recoveredOut = co; source = 'file_upload_timestamp'; }
+            }
+          }
+        }
+
+        if (!source || new Date(recoveredOut).getTime() <= new Date(recoveredIn).getTime()) {
+          notRecoverable++;
+          notRecoverableList.push({ user_id: d.user_id, date: d.date, reason: source ? 'recovered checkout not after check-in' : 'no FieldTrip or selfie file timestamps found' });
+          continue;
+        }
+
+        if (rsDryRun) { if (source === 'field_trip') repairedFromFieldTrip++; else repairedFromFileTimestamp++; continue; }
+
+        const rawPunches = [{ time: recoveredIn, device_direction: 'IN' }, { time: recoveredOut, device_direction: 'OUT' }];
+        const sd = buildSessions(rawPunches);
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
+        const emp = empRow ? JSON.parse(empRow.data) : {};
+        let shift = { start_time: '09:00', end_time: '18:00', working_hours: 9, grace_period_minutes: 15 };
+        if (emp.shift_id) {
+          const shiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]);
+          if (shiftRow) shift = JSON.parse(shiftRow.data);
+        }
+        const halfDayHours = await getHalfDayOverrideHours(d.date, shift);
+        const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
+        const finalStatus = d.selfie_reason === 'wfh' ? 'work_from_home' : d.selfie_reason === 'od' ? 'on_duty' : statusResult.status;
+        const updated = { ...d, ...sd, ...statusResult, status: finalStatus, repaired_at: new Date().toISOString(), repaired_from: source };
+        await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [finalStatus, JSON.stringify(updated), row.id]);
+        if (source === 'field_trip') repairedFromFieldTrip++; else repairedFromFileTimestamp++;
+      }
+
+      return res.json({
+        success: true, dry_run: rsDryRun, checked, skipped,
+        repaired_from_field_trip: repairedFromFieldTrip,
+        repaired_from_file_timestamp: repairedFromFileTimestamp,
+        not_recoverable: notRecoverable,
+        not_recoverable_records: notRecoverableList.slice(0, 200),
+      });
+    }
+
     case 'closeOpenSessions': {
       // Was its own separate implementation from the nightly cron's
       // closeUnfinishedSessions — it got the "don't blanket-mark absent"
