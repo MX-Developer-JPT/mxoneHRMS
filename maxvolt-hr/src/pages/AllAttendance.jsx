@@ -313,7 +313,12 @@ export default function AllAttendance() {
 
   const stats = useMemo(() => ({
     total: rows.length,
-    present: rows.filter(r => ['present','late','on_duty','work_from_home','short_attendance'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off','half_day'].includes(r.status))).length,
+    // Present = any employee who has ANY attendance record for the day at
+    // all — late, half day, early out, and on-gate-pass are all sub-
+    // classifications of a present day (shown in their own cards below),
+    // not separate exclusive buckets. Only a genuine absence, leave,
+    // holiday, or week-off is NOT present.
+    present: rows.filter(r => ['present','late','on_duty','work_from_home','short_attendance','half_day'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off'].includes(r.status))).length,
     absent: rows.filter(r => r.status === 'absent' || (!r.check_in_time && !r.status)).length,
     halfDay: rows.filter(r => r.status === 'half_day').length,
     leave: rows.filter(r => r.status === 'leave').length,

@@ -9967,15 +9967,14 @@ router.post('/:name', async (req, res) => {
       const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
       const activeEmployeeCount = employees.length;
 
-      // 'half_day' deliberately excluded from PRESENT_STATUSES (and added to
-      // ABSENT_LIKE_STATUSES) — AllAttendance.jsx treats half-day as its own
-      // separate bucket, distinct from present, and this dashboard's
-      // "Present Today" must agree with that: with half_day counted as
-      // present here, this figure came out to (real present) + (half day)
-      // combined — e.g. 183 present + 71 half day = 254 "Present Today",
-      // while All Attendance correctly showed 183 for the same day.
-      const PRESENT_STATUSES = new Set(['present', 'late', 'on_duty', 'work_from_home', 'short_attendance']);
-      const ABSENT_LIKE_STATUSES = new Set(['absent', 'leave', 'holiday', 'week_off', 'half_day']);
+      // Present = any employee with ANY attendance record for the day —
+      // late, half day, early out, and on-gate-pass are all sub-
+      // classifications of a present day, not separate exclusive buckets;
+      // only a genuine absence/leave/holiday/week-off is NOT present. Must
+      // stay in lockstep with AllAttendance.jsx's own `stats.present`
+      // definition, which uses the identical status list.
+      const PRESENT_STATUSES = new Set(['present', 'late', 'on_duty', 'work_from_home', 'short_attendance', 'half_day']);
+      const ABSENT_LIKE_STATUSES = new Set(['absent', 'leave', 'holiday', 'week_off']);
       const isPresentRecord = (a) => !!a && (PRESENT_STATUSES.has(a.status) || (a.check_in_time && !ABSENT_LIKE_STATUSES.has(a.status)));
       const attByUser = {};
       todayAttendance.forEach(a => { attByUser[a.user_id] = a; });
