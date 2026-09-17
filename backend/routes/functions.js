@@ -8375,8 +8375,20 @@ router.post('/:name', async (req, res) => {
       // this app's "IST digits stored as Z" convention (+5.5h then format),
       // matching how every punch timestamp is stored throughout this file.
       const toStoredIso = (realUtcTs) => {
-        const s = String(realUtcTs).trim().replace(' ', 'T');
-        const ms = Date.parse(s.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(s) ? s : s + 'Z');
+        let s = String(realUtcTs).trim().replace(' ', 'T');
+        // files.created_at is TEXT-cast from a timestamptz column, whose
+        // Postgres text form can end in a SHORT offset like "+00" (2
+        // digits, no colon/minutes) — not just the 4-digit "+05:30"/
+        // "+0530" forms the old regex required. A "+00" that regex missed
+        // fell through to the "no timezone marker" branch and got a `Z`
+        // appended on top of it (producing the invalid combined string
+        // "...678901+00Z"), which Date.parse silently returns NaN for —
+        // the exact "file rows found but their created_at could not be
+        // parsed" case. Now strips ANY trailing Z or offset first and
+        // always re-adds a single, unambiguous Z (safe since this column
+        // is always written by CURRENT_TIMESTAMP on a UTC-configured DB).
+        s = s.replace(/(Z|[+-]\d{1,2}(:?\d{2})?)$/, '');
+        const ms = Date.parse(s + 'Z');
         if (isNaN(ms)) return null;
         return new Date(ms + 5.5 * 3600000).toISOString();
       };
