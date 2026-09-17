@@ -1357,7 +1357,15 @@ async function notify(userId, { title, message, type = 'info', link = '' }) {
     );
     const { sendPushToUser } = await import('../utils/push.js');
     sendPushToUser(userId, { title, message, type, link }); // fire-and-forget
-  } catch {}
+  } catch (e) {
+    // Was a bare `catch {}` — the single most-used notification helper in
+    // this file (50+ call sites) silently dropped every failure with zero
+    // trace, so a DB hiccup, a bad userId, or a future schema drift could
+    // make notifications "stop arriving" with nothing in the logs to show
+    // why. Logging here doesn't change delivery — it just means a real
+    // failure is now visible instead of invisible.
+    console.error(`[notify] failed for user ${userId} ("${title}"):`, e.message);
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -9959,8 +9967,15 @@ router.post('/:name', async (req, res) => {
       const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
       const activeEmployeeCount = employees.length;
 
-      const PRESENT_STATUSES = new Set(['present', 'late', 'on_duty', 'work_from_home', 'short_attendance', 'half_day']);
-      const ABSENT_LIKE_STATUSES = new Set(['absent', 'leave', 'holiday', 'week_off']);
+      // 'half_day' deliberately excluded from PRESENT_STATUSES (and added to
+      // ABSENT_LIKE_STATUSES) — AllAttendance.jsx treats half-day as its own
+      // separate bucket, distinct from present, and this dashboard's
+      // "Present Today" must agree with that: with half_day counted as
+      // present here, this figure came out to (real present) + (half day)
+      // combined — e.g. 183 present + 71 half day = 254 "Present Today",
+      // while All Attendance correctly showed 183 for the same day.
+      const PRESENT_STATUSES = new Set(['present', 'late', 'on_duty', 'work_from_home', 'short_attendance']);
+      const ABSENT_LIKE_STATUSES = new Set(['absent', 'leave', 'holiday', 'week_off', 'half_day']);
       const isPresentRecord = (a) => !!a && (PRESENT_STATUSES.has(a.status) || (a.check_in_time && !ABSENT_LIKE_STATUSES.has(a.status)));
       const attByUser = {};
       todayAttendance.forEach(a => { attByUser[a.user_id] = a; });
