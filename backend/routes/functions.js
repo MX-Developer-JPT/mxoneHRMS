@@ -8366,6 +8366,9 @@ router.post('/:name', async (req, res) => {
         "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
         [rsFrom, rsToDate]
       );
+      const rsEmpRows = await all("SELECT user_id, data FROM entities WHERE type='Employee'");
+      const rsEmpByUser = {};
+      rsEmpRows.forEach(r => { if (r.user_id) rsEmpByUser[r.user_id] = JSON.parse(r.data); });
 
       const fileIdFromUrl = (url) => String(url || '').match(/\/api\/upload\/file\/([^./]+)/)?.[1] || null;
       // files.created_at is a real UTC CURRENT_TIMESTAMP::TEXT — convert to
@@ -8403,10 +8406,15 @@ router.post('/:name', async (req, res) => {
           }
         }
 
+        let diagReason = null;
         if (!source) {
           const inFileId = fileIdFromUrl(d.check_in_selfie_url);
           const outFileId = fileIdFromUrl(d.check_out_selfie_url);
-          if (inFileId && outFileId) {
+          if (!d.check_in_selfie_url || !d.check_out_selfie_url) {
+            diagReason = `missing selfie URL (check_in_selfie_url: ${d.check_in_selfie_url ? 'present' : 'MISSING'}, check_out_selfie_url: ${d.check_out_selfie_url ? 'present' : 'MISSING'}) — likely never explicitly checked out, not a resync overwrite`;
+          } else if (!inFileId || !outFileId) {
+            diagReason = 'selfie URL present but not in the expected /api/upload/file/<id> format — cannot resolve a file id';
+          } else {
             const [inFileRow, outFileRow] = await Promise.all([
               one("SELECT created_at FROM files WHERE id=$1", [inFileId]),
               one("SELECT created_at FROM files WHERE id=$1", [outFileId]),
@@ -8414,13 +8422,23 @@ router.post('/:name', async (req, res) => {
             if (inFileRow?.created_at && outFileRow?.created_at) {
               const ci = toStoredIso(inFileRow.created_at), co = toStoredIso(outFileRow.created_at);
               if (ci && co) { recoveredIn = ci; recoveredOut = co; source = 'file_upload_timestamp'; }
+              else diagReason = 'file rows found but their created_at could not be parsed';
+            } else {
+              diagReason = `selfie file row(s) not found in storage (check-in file ${inFileRow ? 'found' : 'MISSING'}, check-out file ${outFileRow ? 'found' : 'MISSING'})`;
             }
           }
         }
 
         if (!source || new Date(recoveredOut).getTime() <= new Date(recoveredIn).getTime()) {
           notRecoverable++;
-          notRecoverableList.push({ user_id: d.user_id, date: d.date, reason: source ? 'recovered checkout not after check-in' : 'no FieldTrip or selfie file timestamps found' });
+          const rsEmp = rsEmpByUser[d.user_id] || {};
+          notRecoverableList.push({
+            user_id: d.user_id, date: d.date,
+            employee_name: rsEmp.display_name || '(unknown)', employee_code: rsEmp.employee_code || '',
+            selfie_reason: d.selfie_reason || null,
+            check_in_source: d.check_in_source || null, check_out_source: d.check_out_source || null,
+            reason: source ? 'recovered checkout not after check-in' : (diagReason || 'no FieldTrip or selfie file timestamps found'),
+          });
           continue;
         }
 

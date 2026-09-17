@@ -88,6 +88,7 @@ export default function AttendanceLogDashboard() {
   const [findingSuspicious, setFindingSuspicious] = useState(false);
   const [suspiciousRecords, setSuspiciousRecords] = useState(null);
   const [repairing, setRepairing] = useState(false);
+  const [repairNotRecoverable, setRepairNotRecoverable] = useState(null);
 
   // Manual import state
   const [showImport, setShowImport] = useState(false);
@@ -294,20 +295,27 @@ export default function AttendanceLogDashboard() {
 
   const handleRepairSelfieTimes = async () => {
     setRepairing(true);
+    setRepairNotRecoverable(null);
     try {
       const dryRes = await base44.functions.invoke('repairSelfieAttendanceTimes', {
         date_from: processFrom, date_to: processTo, dry_run: true,
       });
       const dry = dryRes.data;
       if (!dry?.success) { toast.error(dry?.error || 'Repair check failed.'); setRepairing(false); return; }
+      setRepairNotRecoverable(dry.not_recoverable_records || []);
       const totalFixable = (dry.repaired_from_field_trip || 0) + (dry.repaired_from_file_timestamp || 0);
       if (totalFixable === 0 && !dry.not_recoverable) {
         toast.success('No selfie/OD/WFH records with a same-time check-in/check-out found in this range.');
         setRepairing(false);
         return;
       }
+      if (totalFixable === 0) {
+        toast.warning(`${dry.not_recoverable} record(s) found, but none had a recoverable source — see the table below for why.`);
+        setRepairing(false);
+        return;
+      }
       const confirmMsg = `Found ${totalFixable} recoverable record(s) (${dry.repaired_from_field_trip || 0} from OD field trip data, ${dry.repaired_from_file_timestamp || 0} from selfie upload timestamps)` +
-        (dry.not_recoverable ? `, and ${dry.not_recoverable} with no recoverable source (will be left untouched)` : '') +
+        (dry.not_recoverable ? `, and ${dry.not_recoverable} with no recoverable source (will be left untouched — see table below)` : '') +
         `.\n\nApply these fixes now?`;
       if (!window.confirm(confirmMsg)) { setRepairing(false); return; }
       const res = await base44.functions.invoke('repairSelfieAttendanceTimes', {
@@ -535,6 +543,38 @@ export default function AttendanceLogDashboard() {
                       <td className="py-1 pr-3">{formatIST(r.check_out_time)}</td>
                       <td className="py-1 pr-3 capitalize">{r.status}</td>
                       <td className="py-1 pr-3 capitalize">{r.check_in_source || r.check_out_source || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {repairNotRecoverable && repairNotRecoverable.length > 0 && (
+            <div className="border border-red-300 bg-red-50 rounded-lg p-3 overflow-x-auto">
+              <p className="text-sm font-semibold text-red-800 mb-2">
+                {repairNotRecoverable.length} record(s) could not be auto-repaired — reason shown per row. These need a regularisation/manual correction with the employee's actual times.
+              </p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-red-700 border-b border-red-200">
+                    <th className="py-1 pr-3">Employee</th>
+                    <th className="py-1 pr-3">Code</th>
+                    <th className="py-1 pr-3">Date</th>
+                    <th className="py-1 pr-3">Reason (Selfie)</th>
+                    <th className="py-1 pr-3">In/Out Source</th>
+                    <th className="py-1 pr-3">Why unrecoverable</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {repairNotRecoverable.map((r, i) => (
+                    <tr key={i} className="border-b border-red-100">
+                      <td className="py-1 pr-3">{r.employee_name}</td>
+                      <td className="py-1 pr-3">{r.employee_code}</td>
+                      <td className="py-1 pr-3">{r.date}</td>
+                      <td className="py-1 pr-3 uppercase">{r.selfie_reason || '-'}</td>
+                      <td className="py-1 pr-3">{r.check_in_source || '-'} / {r.check_out_source || '-'}</td>
+                      <td className="py-1 pr-3">{r.reason}</td>
                     </tr>
                   ))}
                 </tbody>
