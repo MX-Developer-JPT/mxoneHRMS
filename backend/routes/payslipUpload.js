@@ -114,7 +114,12 @@ router.post('/', memUpload.array('files', 500), async (req, res) => {
         if (isBucketConfigured()) {
           const key = buildKey(`payslips/_unmapped/${batchId}/${fileResult.id}`, '.pdf');
           await putToBucket(key, file.buffer, 'application/pdf');
-          fileResult.file_url = await presignGet(key, { expiresIn: 31536000, filename: file.originalname });
+          // 604800s (7 days) is the hard maximum SigV4 allows for a
+          // presigned URL — 31536000 (1 year) silently failed every single
+          // call (AWS rejects it as "must have an expiration date less
+          // than one week in the future"), so this unmapped-file storage
+          // was ALWAYS falling through to the file_base64 catch below.
+          fileResult.file_url = await presignGet(key, { expiresIn: 604800, filename: file.originalname });
         } else {
           fileResult.file_base64 = file.buffer.toString('base64');
         }
@@ -232,7 +237,9 @@ router.post('/', memUpload.array('files', 500), async (req, res) => {
       if (isBucketConfigured()) {
         const key = buildKey(`payslips/${emp.user_id}/${year}-${String(month).padStart(2, '0')}`, '.pdf');
         await putToBucket(key, file.buffer, 'application/pdf');
-        fileUrl = await presignGet(key, { expiresIn: 31536000, filename: `Payslip_${codeGuess}_${year}-${month}.pdf` });
+        // 604800s (7 days) — the hard SigV4 maximum; see the identical fix
+        // a few lines up for why 31536000 (1 year) always failed.
+        fileUrl = await presignGet(key, { expiresIn: 604800, filename: `Payslip_${codeGuess}_${year}-${month}.pdf` });
       } else {
         base64 = file.buffer.toString('base64');
       }

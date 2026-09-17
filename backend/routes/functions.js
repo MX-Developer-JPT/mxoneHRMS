@@ -5206,7 +5206,16 @@ router.post('/:name', async (req, res) => {
           const buffer = Buffer.from(d.payslip_file_base64, 'base64');
           const key = gpfuBuildKey(`payslips/${d.user_id}/${d.year}-${String(d.month).padStart(2, '0')}`, '.pdf');
           await gpfuPutToBucket(key, buffer, 'application/pdf');
-          const freshUrl = await gpfuPresignGet(key, { expiresIn: 31536000, filename: `Payslip_${d.employee_code || d.user_id}_${d.year}-${d.month}.pdf` });
+          // 604800s (7 days) — the hard SigV4 maximum for a presigned URL;
+          // 31536000 (1 year) unconditionally failed every migration
+          // attempt with "must have an expiration date less than one week
+          // in the future", which is the exact error seen in production
+          // logs here. This endpoint is always called fresh by the
+          // frontend on each view/download (Payslips.jsx), so a 7-day URL
+          // being stored is just a cache — nothing depends on it outliving
+          // that window, and this same self-heal will simply refresh it
+          // again on the next call after it expires.
+          const freshUrl = await gpfuPresignGet(key, { expiresIn: 604800, filename: `Payslip_${d.employee_code || d.user_id}_${d.year}-${d.month}.pdf` });
           const migrated = { ...d, payslip_file_url: freshUrl, payslip_file_base64: undefined };
           await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(migrated), row.id]);
           return res.json({ success: true, url: freshUrl, base64: null });
