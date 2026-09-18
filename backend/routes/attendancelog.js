@@ -80,21 +80,47 @@ export function shiftEndDateTime(dateStr, shift) {
   return end;
 }
 
-// Which Attendance record does this punch actually belong to? For a normal
-// day shift it's always "today" (punchDate). For an overnight shift, a punch
-// that lands in the early-morning hours with no record yet for today is very
-// likely last night's closing punch (check-in filed under yesterday's date,
-// physically punched after midnight) rather than the start of a brand-new
-// session — reroute it to yesterday's record, but ONLY while that record is
-// still open (is_in_progress); a fresh check-in should always start today's
-// own record even on an overnight shift, never get silently appended to an
-// already-closed previous day.
-async function resolveAttendanceRow(userId, punchDate, shift) {
+// A punch before this IST hour, with no record yet for its own calendar
+// date, is treated as potentially belonging to the PREVIOUS day's session
+// rather than starting a new one — see resolveAttendanceRow below. Matches
+// this app's existing "no check-out by 5:30 AM next day" convention
+// (the Auto-Absent safety net).
+export const EARLY_MORNING_CUTOFF_HOUR = 5.5; // 5:30 AM IST
+
+// Which Attendance record does this punch actually belong to?
+//
+// Previously this only rerouted an early-morning punch to the PREVIOUS
+// day's record when the employee's configured shift was classified
+// overnight (isOvernightShift) — but that conflates two different things:
+// "this employee's REGULAR shift crosses midnight" (a genuine night-shift
+// worker) and "this particular session happened to run past midnight" (any
+// day-shift employee who simply worked very late one day). A normal 9-to-6
+// employee who stays until 12:22 AM deserves the exact same session-
+// continuity handling — otherwise that late checkout gets filed as a
+// brand-new "check-in" for the next calendar day, and whatever they punch
+// next (a genuine fresh check-in hours later) gets wrongly paired with it
+// as if it were that same session's checkout — producing a nonsensical
+// "checked in at 12:22 AM, checked out at 10:59 AM" record instead of
+// correctly closing out the previous day's real ~14-hour session and
+// starting a clean new one.
+//
+// Now keyed purely on TIME (is this punch itself before the early-morning
+// cutoff?) and on whether yesterday's record is still genuinely open
+// (is_in_progress) — not on shift configuration at all. A fresh check-in
+// after the cutoff always starts today's own record regardless of shift,
+// and a stale-but-closed previous day is never touched.
+async function resolveAttendanceRow(userId, punchIso, punchDate, shift) {
   const sameDay = await one(
     "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1",
     [userId, punchDate]
   );
-  if (sameDay || !isOvernightShift(shift)) return { date: punchDate, row: sameDay };
+  if (sameDay) return { date: punchDate, row: sameDay };
+
+  // Stored timestamps use the "IST digits as UTC" convention throughout
+  // this app — the UTC fields on this Date ARE the IST clock time.
+  const punchDateObj = new Date(punchIso);
+  const punchHourIST = punchDateObj.getUTCHours() + punchDateObj.getUTCMinutes() / 60;
+  if (punchHourIST >= EARLY_MORNING_CUTOFF_HOUR) return { date: punchDate, row: null };
 
   const y = new Date(punchDate + 'T00:00:00Z');
   y.setUTCDate(y.getUTCDate() - 1);
@@ -550,7 +576,7 @@ async function processRecord(record) {
   // 3. Find or create the Attendance record this punch belongs to — for an
   // overnight shift that's not always punchDate itself (see resolveAttendanceRow).
   const shift = await getShift(empData);
-  const { date: attDate, row } = await resolveAttendanceRow(userId, punchDate, shift);
+  const { date: attDate, row } = await resolveAttendanceRow(userId, punchIso, punchDate, shift);
   const halfDayHours = await getHalfDayOverrideHours(attDate, shift);
   const newPunch = { time: punchIso, device_direction: direction };
 

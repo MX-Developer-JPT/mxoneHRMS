@@ -6,7 +6,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
-import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime } from './attendancelog.js';
+import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
@@ -4131,20 +4131,27 @@ router.post('/:name', async (req, res) => {
         if (dist > allowed) return res.json({ success: false, error: `Reported position is ${Math.round(dist)}m from ${ngFence.name} (allowed ${Math.round(allowed)}m)`, code: 'OUTSIDE_FENCE' });
       }
 
-      // Resolve shift up front — an overnight shift (e.g. 20:00 -> 08:00)
-      // needs it to know whether an 'exit' event with nothing open for
-      // today is actually the closing punch of a still-open session dated
-      // YESTERDAY (checked in last night, walking out past midnight),
-      // rather than a plain "not checked in". An 'enter' event still
-      // always starts a fresh record dated today, even on an overnight shift.
       let ngShiftForDate = { start_time: '09:00', end_time: '18:00' };
       if (ngEmp.shift_id) {
         const ngShiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [ngEmp.shift_id]);
         if (ngShiftRow) ngShiftForDate = JSON.parse(ngShiftRow.data);
       }
+
+      // An 'exit' event with nothing open for today might be the closing
+      // punch of a still-open session dated YESTERDAY (checked in, then
+      // walked out past midnight) — not "not checked in". Previously only
+      // considered this for an employee whose configured shift is
+      // overnight, but that misses a normal day-shift employee who simply
+      // worked very late one particular day (checked in 10:31 AM, didn't
+      // leave until after midnight): their late exit got treated as "no
+      // active session" instead of closing out the real one. An 'exit'
+      // event is inherently just "close whatever's open" — checking
+      // yesterday's still-open record is correct here regardless of shift
+      // configuration or what hour it happens at. An 'enter' event still
+      // always starts a fresh record dated today, unconditionally.
       let ngAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, evDate]);
       let ngAttDate = evDate;
-      if (!ngAttRow && event === 'exit' && isOvernightShift(ngShiftForDate)) {
+      if (!ngAttRow && event === 'exit') {
         const ngYest = new Date(new Date(evDate + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
         const ngPrevRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, ngYest]);
         if (ngPrevRow && JSON.parse(ngPrevRow.data).is_in_progress) { ngAttRow = ngPrevRow; ngAttDate = ngYest; }
@@ -4275,7 +4282,14 @@ router.post('/:name', async (req, res) => {
 
       let saAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, saToday]);
       let saAttDate = saToday;
-      if (!saAttRow && isOvernightShift(saShift)) {
+      // Was gated on the employee's shift being classified overnight — now
+      // on the current time being before the early-morning cutoff instead,
+      // so a normal day-shift employee who's still at work past midnight
+      // gets the same "this is still closing out last night" handling a
+      // genuine night-shift worker already got. See EARLY_MORNING_CUTOFF_HOUR
+      // in attendancelog.js / resolveAttendanceRow for the full reasoning.
+      const saHourIST = saNowIST.getUTCHours() + saNowIST.getUTCMinutes() / 60;
+      if (!saAttRow && saHourIST < EARLY_MORNING_CUTOFF_HOUR) {
         const saYest = new Date(new Date(saToday + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
         const saPrevRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, saYest]);
         if (saPrevRow && JSON.parse(saPrevRow.data).is_in_progress) { saAttRow = saPrevRow; saAttDate = saYest; }
@@ -8206,33 +8220,53 @@ router.post('/:name', async (req, res) => {
         return (empShiftCache[userId] = { empData, shift });
       }
 
-      // Overnight-shift reassignment — mirrors resolveAttendanceRow's own
+      // Early-morning reassignment — mirrors resolveAttendanceRow's own
       // routing rule (attendancelog.js), ported here since reprocessing
       // works in whole-day batches rather than one live punch at a time.
-      // A punch group whose calendar date is the START of a fresh day but
-      // whose employee is on an overnight shift with YESTERDAY's record
-      // still open (is_in_progress) is almost certainly that shift's
-      // post-midnight closing punch, not a new session — without this, a
-      // night-shift employee's post-midnight punches got bucketed onto
-      // today's date on every reprocess, splitting one continuous overnight
-      // shift into two broken partial days.
+      // Previously gated on the employee's shift being classified overnight
+      // (isOvernightShift) — but that only covers a genuine night-shift
+      // worker's EVERY-day rollover, not a normal day-shift employee who
+      // simply worked very late one particular day (e.g. checked in 10:31
+      // AM, didn't check out until 12:22 AM the next day). That employee's
+      // late checkout used to get filed as a brand-new "check-in" for the
+      // next calendar day, and whatever they punched next (a genuine fresh
+      // check-in hours later) got wrongly paired with it as that session's
+      // checkout — producing a nonsensical short "session" instead of
+      // correctly closing out the real, long previous-day session and
+      // starting a clean new one. Now applies to every employee: only the
+      // portion of a day's punches that fall before EARLY_MORNING_CUTOFF_HOUR
+      // (5:30 AM IST) are even candidates for rerouting, and only when
+      // yesterday's record is still genuinely open — a fresh check-in after
+      // the cutoff always starts its own day's group untouched, and a day
+      // whose punches are ALL after the cutoff is never touched at all.
       for (const key of Object.keys(groups)) {
         const g = groups[key];
         if (!g || !g.rawPunches.length) continue;
-        const { shift } = await getEmpAndShift(g.userId);
-        if (!isOvernightShift(shift)) continue;
+
+        const earlyPunches = [], regularPunches = [];
+        for (const rp of g.rawPunches) {
+          const pd = new Date(rp.time);
+          const hourIST = pd.getUTCHours() + pd.getUTCMinutes() / 60;
+          (hourIST < EARLY_MORNING_CUTOFF_HOUR ? earlyPunches : regularPunches).push(rp);
+        }
+        if (!earlyPunches.length) continue; // nothing ambiguous in this group
+
         const prevDateObj = new Date(g.date + 'T00:00:00Z');
         prevDateObj.setUTCDate(prevDateObj.getUTCDate() - 1);
         const prevDate = prevDateObj.toISOString().slice(0, 10);
         const prevAttRow = await one("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1", [g.userId, prevDate]);
         const prevAtt = prevAttRow ? JSON.parse(prevAttRow.data) : null;
-        if (!prevAtt?.is_in_progress) continue; // a fresh check-in always starts its own new day
+        if (!prevAtt?.is_in_progress) continue; // yesterday isn't open — these early punches really do start today
+
         const prevKey = `${g.userId}_${prevDate}`;
         if (!groups[prevKey]) groups[prevKey] = { userId: g.userId, date: prevDate, rawPunches: [], empCode: g.empCode };
-        for (const rp of g.rawPunches) {
+        for (const rp of earlyPunches) {
           if (!nearDup(groups[prevKey].rawPunches, rp.time)) groups[prevKey].rawPunches.push(rp);
         }
-        groups[key] = null; // merged into yesterday's group — this key no longer processed on its own
+        // Only the early punches move — today's own later activity (if any)
+        // stays right here as today's group, never discarded wholesale.
+        g.rawPunches = regularPunches;
+        if (!regularPunches.length) groups[key] = null;
       }
 
       let updated = 0, created = 0, skipped = 0, skippedNonBiometric = 0, skippedSuspicious = 0;
