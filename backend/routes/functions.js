@@ -1050,7 +1050,19 @@ function mapAttendanceByUserDate(rows, { truncateDate = false } = {}) {
     const dateKey = truncateDate ? String(a.date).slice(0, 10) : a.date;
     if (!map[a.user_id]) map[a.user_id] = {};
     const prev = map[a.user_id][dateKey];
-    if (!prev || score(a) >= score(prev)) map[a.user_id][dateKey] = a;
+    if (!prev) { map[a.user_id][dateKey] = a; continue; }
+    const aScore = score(a), prevScore = score(prev);
+    if (aScore > prevScore) {
+      map[a.user_id][dateKey] = a;
+    } else if (aScore === prevScore) {
+      // Same tie-break as getAllAttendance/dedupAttendanceRows — `>=`
+      // used to always take whichever duplicate was iterated last, an
+      // arbitrary DB-order artifact. Always prefer the earlier check-in
+      // between two equally-scored duplicate rows.
+      const t1 = a.check_in_time    ? new Date(a.check_in_time).getTime()    : Infinity;
+      const t2 = prev.check_in_time ? new Date(prev.check_in_time).getTime() : Infinity;
+      if (t1 < t2) map[a.user_id][dateKey] = a;
+    }
   }
   return map;
 }
@@ -7609,7 +7621,23 @@ router.post('/:name', async (req, res) => {
           (r.check_in_time    ? 4 : 0) +
           (r.status !== 'absent' && r.status !== 'auto_marked' ? 2 : 0) +
           (r.status === 'regularised' || r.regularised ? 1 : 0);
-        if (score(rec) > score(prev)) best[key] = rec;
+        const recScore = score(rec), prevScore = score(prev);
+        if (recScore > prevScore) {
+          best[key] = rec;
+        } else if (recScore === prevScore) {
+          // Two equally-"good" duplicate rows (both real biometric records,
+          // both present) used to keep whichever the DB happened to return
+          // first — an unspecified, arbitrary order with no ORDER BY on
+          // this query. That could show a LATER punch as "First In" while
+          // hiding the day's genuine earliest check-in sitting in the
+          // other duplicate (exactly the classic user_id column/JSON
+          // mismatch cause noted above: one biometric sync pass creates a
+          // fresh row because an earlier lookup missed the original one).
+          // Always prefer whichever record's own check_in_time is earlier.
+          const t1 = rec.check_in_time  ? new Date(rec.check_in_time).getTime()  : Infinity;
+          const t2 = prev.check_in_time ? new Date(prev.check_in_time).getTime() : Infinity;
+          if (t1 < t2) best[key] = rec;
+        }
       }
 
       // Gate pass overlay — keyed by user_id, not folded into the Attendance

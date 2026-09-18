@@ -31,7 +31,22 @@ function dedupAttendanceRows(rows) {
     const key = `${r.user_id}|${String(r.date).slice(0, 10)}`;
     if (!best.has(key)) keyOrder.push({ key });
     const prev = best.get(key);
-    if (!prev || score(r) >= score(prev)) best.set(key, r);
+    if (!prev) { best.set(key, r); continue; }
+    const rScore = score(r), prevScore = score(prev);
+    if (rScore > prevScore) {
+      best.set(key, r);
+    } else if (rScore === prevScore) {
+      // Two equally-"good" duplicate rows (both real biometric records) —
+      // `>=` used to always take whichever was iterated LAST, an
+      // arbitrary DB-order artifact that could show a later punch as
+      // "First In" while the day's genuine earliest check-in sat in the
+      // other duplicate (the classic user_id column/JSON mismatch: a
+      // later sync pass creates a fresh row because an earlier lookup
+      // missed the original one). Always prefer the earlier check-in.
+      const t1 = r.check_in_time    ? new Date(r.check_in_time).getTime()    : Infinity;
+      const t2 = prev.check_in_time ? new Date(prev.check_in_time).getTime() : Infinity;
+      if (t1 < t2) best.set(key, r);
+    }
   }
   return keyOrder.map(({ row, key }) => row || best.get(key));
 }
