@@ -49,8 +49,20 @@ async function authMiddleware(req, res, next) {
 // time is numerically <= its start time on the clock — the end genuinely
 // falls on the calendar day AFTER the day the shift started.
 export function isOvernightShift(shift) {
-  const toMins = (t) => { const [h, m] = String(t || '00:00').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
-  return toMins(shift?.end_time) <= toMins(shift?.start_time);
+  // A shift with no configured start_time/end_time at all (a bare/default
+  // placeholder, or a malformed Shift row) must never be treated as
+  // overnight — the old `t || '00:00'` fallback silently defaulted BOTH
+  // missing times to '00:00', and 0 <= 0 evaluated true, misclassifying
+  // any unconfigured shift as overnight. That then fed into every caller
+  // of this function (resolveAttendanceRow, the reprocessAttendanceLogs
+  // batch grouping, shiftEndDateTime) rerouting that employee's punches to
+  // the PREVIOUS day's record whenever one happened to still be open —
+  // silently diverting a normal day-shift employee's attendance away from
+  // today's date and leaving today's real record untouched by any
+  // recompute/reprocess.
+  if (!shift?.start_time || !shift?.end_time) return false;
+  const toMins = (t) => { const [h, m] = String(t).split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+  return toMins(shift.end_time) <= toMins(shift.start_time);
 }
 
 // Real Date the shift for `dateStr` is expected to END — correctly landing

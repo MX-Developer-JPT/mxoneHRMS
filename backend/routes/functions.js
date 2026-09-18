@@ -8386,6 +8386,160 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, checked: fsaRows.length, suspicious_count: suspicious.length, records: suspicious.slice(0, 1000) });
     }
 
+    /* ── Diagnostic: find (user_id, date) pairs with MORE THAN ONE
+       Attendance row — the root cause behind several fixes this
+       session (a biometric sync pass creating a fresh row because an
+       earlier lookup missed the original via the user_id DB-column/JSON
+       mismatch). Every dedup helper (getAllAttendance, dedupAttendanceRows,
+       mapAttendanceByUserDate) can only ever pick ONE winner to display
+       at read time — it can't recover data that's sitting in the OTHER,
+       hidden duplicate, and reprocessAttendanceLogs's own `LIMIT 1`
+       lookup can only ever update one of them too. This is purely a
+       finder; mergeDuplicateAttendanceRecords below does the actual
+       repair. ── */
+    case 'findDuplicateAttendanceRecords': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { date_from: fdaFrom, date_to: fdaTo } = p;
+      if (!fdaFrom) return res.json({ success: false, error: 'date_from is required (yyyy-MM-dd)' });
+      const fdaToDate = fdaTo || fdaFrom;
+
+      const fdaRows = await all(
+        "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
+        [fdaFrom, fdaToDate]
+      );
+      const fdaEmpRows = await all("SELECT user_id, data FROM entities WHERE type='Employee'");
+      const fdaEmpByUser = {};
+      fdaEmpRows.forEach(r => { if (r.user_id) fdaEmpByUser[r.user_id] = JSON.parse(r.data); });
+
+      const fdaGroups = {};
+      for (const row of fdaRows) {
+        let d; try { d = JSON.parse(row.data); } catch { continue; }
+        if (!d.user_id || !d.date) continue;
+        const key = `${d.user_id}|${d.date}`;
+        if (!fdaGroups[key]) fdaGroups[key] = [];
+        fdaGroups[key].push({ id: row.id, data: d });
+      }
+      const duplicates = Object.entries(fdaGroups)
+        .filter(([, rows]) => rows.length > 1)
+        .map(([key, rows]) => {
+          const [user_id, date] = key.split('|');
+          const emp = fdaEmpByUser[user_id] || {};
+          return {
+            user_id, date,
+            employee_name: emp.display_name || '(unknown)', employee_code: emp.employee_code || '',
+            count: rows.length,
+            records: rows.map(r => ({
+              id: r.id, check_in_time: r.data.check_in_time, check_out_time: r.data.check_out_time,
+              status: r.data.status, biometric_synced: !!r.data.biometric_synced,
+              regularised: !!r.data.regularised, admin_marked: !!r.data.admin_marked,
+              check_in_source: r.data.check_in_source || null, check_out_source: r.data.check_out_source || null,
+            })),
+          };
+        });
+      duplicates.sort((a, b) => (a.date === b.date ? (a.employee_name || '').localeCompare(b.employee_name || '') : a.date.localeCompare(b.date)));
+      return res.json({ success: true, checked: fdaRows.length, duplicate_count: duplicates.length, duplicates: duplicates.slice(0, 500) });
+    }
+
+    /* ── Repair: merge every duplicate (user_id, date) Attendance group
+       into ONE record, rebuilt from the UNION of every duplicate's
+       raw_punches — not just picking a winner (that can only ever show
+       what one row captured), but reconstructing the day from whichever
+       real punches exist across ALL of them. Never touches a group
+       containing a regularised/admin-corrected/leave-driven/selfie/
+       geofence record — those are deliberate, protected records that
+       need a human to review rather than being silently folded into a
+       biometric recompute. ── */
+    case 'mergeDuplicateAttendanceRecords': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { date_from: mdaFrom, date_to: mdaTo, dry_run: mdaDryRun = false } = p;
+      if (!mdaFrom) return res.json({ success: false, error: 'date_from is required (yyyy-MM-dd)' });
+      const mdaToDate = mdaTo || mdaFrom;
+
+      const mdaRows = await all(
+        "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2",
+        [mdaFrom, mdaToDate]
+      );
+      const mdaGroups = {};
+      for (const row of mdaRows) {
+        let d; try { d = JSON.parse(row.data); } catch { continue; }
+        if (!d.user_id || !d.date) continue;
+        const key = `${d.user_id}|${d.date}`;
+        if (!mdaGroups[key]) mdaGroups[key] = [];
+        mdaGroups[key].push({ id: row.id, data: d });
+      }
+      const dupGroups = Object.values(mdaGroups).filter(rows => rows.length > 1);
+
+      const MERGE_DEDUP_MS = 1000;
+      const mdaNearDup = (list, timeStr) => {
+        const ms = new Date(timeStr).getTime();
+        return list.some(rp => Math.abs(new Date(rp.time).getTime() - ms) < MERGE_DEDUP_MS);
+      };
+
+      let mergedCount = 0, skippedProtected = 0;
+      const skippedList = [];
+      for (const group of dupGroups) {
+        const protectedRow = group.find(g =>
+          g.data.regularised || g.data.admin_marked || g.data.leave_id || g.data.status === 'leave' ||
+          ['selfie', 'geofence'].includes(g.data.check_in_source) || ['selfie', 'geofence'].includes(g.data.check_out_source)
+        );
+        if (protectedRow) {
+          skippedProtected++;
+          skippedList.push({ user_id: group[0].data.user_id, date: group[0].data.date, reason: 'contains a regularised/manual/leave/selfie/geofence record — needs manual review' });
+          continue;
+        }
+
+        let allPunches = [];
+        for (const g of group) {
+          const rp = Array.isArray(g.data.raw_punches) ? g.data.raw_punches : [];
+          for (const punch of rp) {
+            if (!mdaNearDup(allPunches, punch.time)) allPunches.push(punch);
+          }
+        }
+        if (!allPunches.length) {
+          skippedProtected++;
+          skippedList.push({ user_id: group[0].data.user_id, date: group[0].data.date, reason: 'no raw_punches on any duplicate — nothing to rebuild from' });
+          continue;
+        }
+        allPunches.sort((a, b) => a.time.localeCompare(b.time));
+
+        const userId = group[0].data.user_id, date = group[0].data.date;
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
+        const emp = empRow ? JSON.parse(empRow.data) : {};
+        let shift = { start_time: '09:00', end_time: '18:00', working_hours: 9, grace_period_minutes: 15 };
+        if (emp.shift_id) {
+          const shiftRow = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [emp.shift_id]);
+          if (shiftRow) shift = JSON.parse(shiftRow.data);
+        }
+        const halfDayHours = await getHalfDayOverrideHours(date, shift);
+        const sd = buildSessions(allPunches);
+        const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
+
+        // Keep whichever duplicate already carries the most data as the
+        // survivor row (preserves any extra fields none of buildSessions'
+        // output touches), overlay the freshly-rebuilt session/status data
+        // on top, then delete every other duplicate outright.
+        const survivor = group.reduce((best, g) => Object.keys(g.data).length > Object.keys(best.data).length ? g : best, group[0]);
+        const mergedData = {
+          ...survivor.data, ...sd, ...statusResult,
+          biometric_synced: group.some(g => g.data.biometric_synced),
+          duplicate_merge_note: `Merged ${group.length} duplicate records on ${new Date().toISOString()}`,
+        };
+
+        if (!mdaDryRun) {
+          await run("UPDATE entities SET status=$1, data=$2, user_id=$3, updated_at=NOW()::TEXT WHERE id=$4", [statusResult.status, JSON.stringify(mergedData), userId, survivor.id]);
+          for (const g of group) {
+            if (g.id !== survivor.id) await run("DELETE FROM entities WHERE id=$1", [g.id]);
+          }
+        }
+        mergedCount++;
+      }
+
+      return res.json({
+        success: true, dry_run: mdaDryRun, duplicate_groups_found: dupGroups.length,
+        merged: mergedCount, skipped_protected: skippedProtected, skipped_records: skippedList.slice(0, 200),
+      });
+    }
+
     /* ── Repair: recover the real check-in/check-out time for a selfie-
        sourced day the resync/reprocess bug (fixed above) collapsed to the
        same instant. Two independent sources exist, neither ever touched

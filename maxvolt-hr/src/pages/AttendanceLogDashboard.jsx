@@ -90,6 +90,16 @@ export default function AttendanceLogDashboard() {
   const [repairing, setRepairing] = useState(false);
   const [repairNotRecoverable, setRepairNotRecoverable] = useState(null);
 
+  // Duplicate-record finder/merger — a biometric sync pass can create a
+  // SECOND Attendance row for the same (user, date) because an earlier
+  // lookup missed the original one (the user_id DB-column/JSON mismatch
+  // behind several fixes this session). Every dedup helper elsewhere can
+  // only pick one duplicate to DISPLAY; this actually merges the raw
+  // punch data from all of them into one record and deletes the rest.
+  const [findingDupes, setFindingDupes] = useState(false);
+  const [mergingDupes, setMergingDupes] = useState(false);
+  const [dupGroups, setDupGroups] = useState(null);
+
   // Manual import state
   const [showImport, setShowImport] = useState(false);
   const [importJson, setImportJson] = useState('');
@@ -335,6 +345,56 @@ export default function AttendanceLogDashboard() {
     setRepairing(false);
   };
 
+  const handleFindDuplicates = async () => {
+    setFindingDupes(true);
+    setDupGroups(null);
+    try {
+      const res = await base44.functions.invoke('findDuplicateAttendanceRecords', {
+        date_from: processFrom, date_to: processTo,
+      });
+      const result = res.data;
+      if (!result?.success) { toast.error(result?.error || 'Search failed.'); setFindingDupes(false); return; }
+      setDupGroups(result.duplicates || []);
+      if (!result.duplicate_count) toast.success('No duplicate Attendance records found in this range.');
+      else toast.warning(`${result.duplicate_count} employee-day(s) with duplicate Attendance records found.`);
+    } catch (err) {
+      toast.error(err?.message || 'Search failed');
+    }
+    setFindingDupes(false);
+  };
+
+  const handleMergeDuplicates = async () => {
+    setMergingDupes(true);
+    try {
+      const dryRes = await base44.functions.invoke('mergeDuplicateAttendanceRecords', {
+        date_from: processFrom, date_to: processTo, dry_run: true,
+      });
+      const dry = dryRes.data;
+      if (!dry?.success) { toast.error(dry?.error || 'Merge check failed.'); setMergingDupes(false); return; }
+      if (!dry.duplicate_groups_found) {
+        toast.success('No duplicate Attendance records found in this range.');
+        setMergingDupes(false);
+        return;
+      }
+      const confirmMsg = `Found ${dry.duplicate_groups_found} employee-day(s) with duplicate records — ${dry.merged} can be safely merged (rebuilt from the combined punch history of all duplicates), ${dry.skipped_protected} skipped (contain a regularised/manual/leave/selfie/geofence record and need manual review).\n\nMerge now? This permanently deletes the extra duplicate rows.`;
+      if (!window.confirm(confirmMsg)) { setMergingDupes(false); return; }
+      const res = await base44.functions.invoke('mergeDuplicateAttendanceRecords', {
+        date_from: processFrom, date_to: processTo, dry_run: false,
+      });
+      const result = res.data;
+      if (result?.success) {
+        toast.success(`Merged ${result.merged} duplicate group(s)${result.skipped_protected ? ` — ${result.skipped_protected} left for manual review` : ''}.`);
+        setDupGroups(null);
+        loadLogs(1, filtersRef.current);
+      } else {
+        toast.error(result?.error || 'Merge failed.');
+      }
+    } catch (err) {
+      toast.error(err?.message || 'Merge failed');
+    }
+    setMergingDupes(false);
+  };
+
   // Parse TSV/CSV into records with normalised keys
   const parseTSV = (text) => {
     const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
@@ -514,7 +574,45 @@ export default function AttendanceLogDashboard() {
             <Button onClick={handleRepairSelfieTimes} disabled={repairing} variant="outline" className="border-green-400 text-green-700 hover:bg-green-100" title="Recover the real check-in/check-out time for Selfie/OD/WFH days that collapsed to the same instant, using the linked Field Trip (OD) or selfie upload timestamp — neither was ever touched by the resync bug">
               {repairing ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Repairing...</> : <><CheckCircle className="w-4 h-4 mr-2" />Repair Selfie/OD/WFH Times</>}
             </Button>
+            <Button onClick={handleFindDuplicates} disabled={findingDupes} variant="outline" className="border-purple-400 text-purple-700 hover:bg-purple-100" title="Find employee-days with more than one Attendance record — a sign a biometric sync created a second row instead of updating the original">
+              {findingDupes ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Searching...</> : <><AlertCircle className="w-4 h-4 mr-2" />Find Duplicate Records</>}
+            </Button>
+            <Button onClick={handleMergeDuplicates} disabled={mergingDupes} variant="outline" className="border-purple-500 text-purple-800 hover:bg-purple-100" title="Merge every duplicate employee-day into one record, rebuilt from the combined punch history of all its duplicates, and delete the extras">
+              {mergingDupes ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Merging...</> : <><CheckCircle className="w-4 h-4 mr-2" />Merge Duplicate Records</>}
+            </Button>
           </div>
+
+          {dupGroups && dupGroups.length > 0 && (
+            <div className="border border-purple-300 bg-purple-50 rounded-lg p-3 overflow-x-auto">
+              <p className="text-sm font-semibold text-purple-800 mb-2">
+                {dupGroups.length} employee-day(s) with duplicate Attendance records — use "Merge Duplicate Records" above to combine them, or review manually below.
+              </p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-purple-700 border-b border-purple-200">
+                    <th className="py-1 pr-3">Employee</th>
+                    <th className="py-1 pr-3">Code</th>
+                    <th className="py-1 pr-3">Date</th>
+                    <th className="py-1 pr-3"># Records</th>
+                    <th className="py-1 pr-3">Check-in Times</th>
+                    <th className="py-1 pr-3">Statuses</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dupGroups.map((g, i) => (
+                    <tr key={i} className="border-b border-purple-100">
+                      <td className="py-1 pr-3">{g.employee_name}</td>
+                      <td className="py-1 pr-3">{g.employee_code}</td>
+                      <td className="py-1 pr-3">{g.date}</td>
+                      <td className="py-1 pr-3">{g.count}</td>
+                      <td className="py-1 pr-3">{g.records.map(r => formatIST(r.check_in_time)).join(' | ')}</td>
+                      <td className="py-1 pr-3">{g.records.map(r => r.status).join(' | ')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {suspiciousRecords && suspiciousRecords.length > 0 && (
             <div className="border border-amber-300 bg-amber-50 rounded-lg p-3 overflow-x-auto">
