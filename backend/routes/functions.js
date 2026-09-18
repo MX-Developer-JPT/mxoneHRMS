@@ -8397,6 +8397,37 @@ router.post('/:name', async (req, res) => {
        lookup can only ever update one of them too. This is purely a
        finder; mergeDuplicateAttendanceRecords below does the actual
        repair. ── */
+    /* ── Diagnostic: dump every raw field of an employee's Attendance
+       record(s) for one date — for cases where the displayed value is
+       wrong but findDuplicateAttendanceRecords finds no duplicate,
+       meaning the single existing row itself carries a value that
+       doesn't match reality, and resync/reprocess isn't correcting it.
+       The most likely explanation is one of the protective flags every
+       resync path deliberately skips (regularised/admin_marked/leave_id/
+       selfie or geofence source) — this surfaces every field so that's
+       confirmable at a glance instead of guessing blind. ── */
+    case 'inspectAttendanceRecord': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { employee_code: iarCode, date: iarDate } = p;
+      if (!iarCode || !iarDate) return res.json({ success: false, error: 'employee_code and date are required' });
+
+      const iarEmpRows = await all("SELECT user_id, data FROM entities WHERE type='Employee'");
+      const iarEmp = iarEmpRows.map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }))
+        .find(e => String(e.employee_code || '').trim().toUpperCase() === String(iarCode).trim().toUpperCase());
+      if (!iarEmp) return res.json({ success: false, error: `No employee found with code "${iarCode}"` });
+
+      const iarRows = await all(
+        "SELECT id, user_id, data FROM entities WHERE type='Attendance' AND (user_id=$1 OR data::jsonb->>'user_id'=$1) AND data::jsonb->>'date'=$2",
+        [iarEmp.user_id, iarDate]
+      );
+      return res.json({
+        success: true,
+        employee: { user_id: iarEmp.user_id, name: iarEmp.display_name, code: iarEmp.employee_code, shift_id: iarEmp.shift_id || null },
+        record_count: iarRows.length,
+        records: iarRows.map(r => ({ id: r.id, db_user_id_column: r.user_id, ...JSON.parse(r.data) })),
+      });
+    }
+
     case 'findDuplicateAttendanceRecords': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       const { date_from: fdaFrom, date_to: fdaTo } = p;

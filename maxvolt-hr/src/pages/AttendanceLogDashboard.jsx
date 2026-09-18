@@ -100,6 +100,16 @@ export default function AttendanceLogDashboard() {
   const [mergingDupes, setMergingDupes] = useState(false);
   const [dupGroups, setDupGroups] = useState(null);
 
+  // Single-record raw inspector — for the case where none of the above
+  // finders explain a wrong value (no duplicates, not same-time-in/out):
+  // dumps every field of one employee's Attendance record for one date,
+  // so a protective flag (regularised/admin_marked/etc.) blocking every
+  // resync from correcting it is visible directly instead of guessed at.
+  const [inspectCode, setInspectCode] = useState('');
+  const [inspectDate, setInspectDate] = useState(todayIST);
+  const [inspecting, setInspecting] = useState(false);
+  const [inspectResult, setInspectResult] = useState(null);
+
   // Manual import state
   const [showImport, setShowImport] = useState(false);
   const [importJson, setImportJson] = useState('');
@@ -395,6 +405,23 @@ export default function AttendanceLogDashboard() {
     setMergingDupes(false);
   };
 
+  const handleInspect = async () => {
+    if (!inspectCode.trim()) { toast.error('Enter an employee code'); return; }
+    setInspecting(true);
+    setInspectResult(null);
+    try {
+      const res = await base44.functions.invoke('inspectAttendanceRecord', {
+        employee_code: inspectCode.trim(), date: inspectDate,
+      });
+      const result = res.data;
+      if (!result?.success) { toast.error(result?.error || 'Lookup failed.'); setInspecting(false); return; }
+      setInspectResult(result);
+    } catch (err) {
+      toast.error(err?.message || 'Lookup failed');
+    }
+    setInspecting(false);
+  };
+
   // Parse TSV/CSV into records with normalised keys
   const parseTSV = (text) => {
     const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
@@ -613,6 +640,31 @@ export default function AttendanceLogDashboard() {
               </table>
             </div>
           )}
+
+          <div className="border-t border-blue-200 pt-3">
+            <p className="text-sm font-medium text-blue-700 mb-2">Inspect one employee's raw Attendance record</p>
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="text-xs font-medium text-gray-600 block mb-1">Employee Code</label>
+                <Input placeholder="e.g. MVE00338" value={inspectCode} onChange={e => setInspectCode(e.target.value)} className="w-40 bg-white" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600 block mb-1">Date</label>
+                <Input type="date" value={inspectDate} onChange={e => setInspectDate(e.target.value)} className="w-40 bg-white" />
+              </div>
+              <Button onClick={handleInspect} disabled={inspecting} variant="outline" className="border-gray-400 text-gray-700 hover:bg-gray-100">
+                {inspecting ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Looking up...</> : 'Inspect Record'}
+              </Button>
+            </div>
+            {inspectResult && (
+              <div className="mt-3 border border-gray-300 bg-gray-50 rounded-lg p-3 overflow-x-auto">
+                <p className="text-xs text-gray-600 mb-2">
+                  {inspectResult.employee.name} ({inspectResult.employee.code}) — {inspectResult.record_count} record(s) found for {inspectDate}
+                </p>
+                <pre className="text-[11px] whitespace-pre-wrap break-all">{JSON.stringify(inspectResult.records, null, 2)}</pre>
+              </div>
+            )}
+          </div>
 
           {suspiciousRecords && suspiciousRecords.length > 0 && (
             <div className="border border-amber-300 bg-amber-50 rounded-lg p-3 overflow-x-auto">
