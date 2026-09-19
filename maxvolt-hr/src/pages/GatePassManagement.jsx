@@ -4,11 +4,13 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
-import { safeDate } from '@/lib/dateUtils';
-import { Search, LogOut, LogIn, User, Clock, History } from 'lucide-react';
+import { safeDate, nowIST } from '@/lib/dateUtils';
+import { Search, LogOut, LogIn, User, Clock, History, CheckCircle2, XCircle, FileClock } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
+import { toast } from 'sonner';
 
 const STATUS_COLORS = {
   pending_approval: 'bg-yellow-100 text-yellow-800',
@@ -29,6 +31,7 @@ const STATUS_LABELS = {
 };
 
 export default function GatePassManagement() {
+  const [currentUser, setCurrentUser] = useState(null);
   const [passes, setPasses] = useState([]);
   const [users, setUsers] = useState({});
   const [employees, setEmployees] = useState({});
@@ -36,6 +39,8 @@ export default function GatePassManagement() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [selected, setSelected] = useState(null);
+  const [comment, setComment] = useState('');
+  const [actionLoading, setActionLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('live');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -46,11 +51,13 @@ export default function GatePassManagement() {
 
   const loadData = async () => {
     setLoading(true);
-    const [allPasses, allUsers, allEmployees] = await Promise.all([
+    const [me, allPasses, allUsers, allEmployees] = await Promise.all([
+      base44.auth.me(),
       base44.entities.GatePass.list('-created_date', 500),
       base44.entities.User.list(),
       base44.entities.Employee.list(),
     ]);
+    setCurrentUser(me);
     const userMap = {};
     allUsers.forEach(u => { userMap[u.id] = u; });
     const empMap = {};
@@ -59,6 +66,37 @@ export default function GatePassManagement() {
     setEmployees(empMap);
     setPasses(allPasses);
     setLoading(false);
+  };
+
+  // This page lives only in the HR/admin menu (Layout.jsx hrMenuGroups) —
+  // reporting managers and 'management' approve gate passes on the separate
+  // GatePassApproval page (scoped to their own downstream hierarchy there).
+  // So here, HR/admin can approve/reject any employee's pending pass —
+  // GatePass approval never requires the reporting manager to act first
+  // (see checkApprovalAuthorization in entities.js), so HR can cover for an
+  // unavailable manager.
+  const isHR = !!currentUser && ['hr', 'admin'].includes(currentUser.custom_role || currentUser.role);
+
+  const handleAction = async (action) => {
+    setActionLoading(true);
+    const now = nowIST();
+    const isApproved = action === 'approved';
+    try {
+      await base44.entities.GatePass.update(selected.id, {
+        manager_approval_status: action,
+        manager_user_id: currentUser.id,
+        manager_approval_date: now,
+        manager_comment: comment,
+        status: isApproved ? 'approved' : 'rejected',
+      });
+      setSelected(null);
+      setComment('');
+      await loadData();
+    } catch (err) {
+      toast.error(err.message || `Failed to ${isApproved ? 'approve' : 'reject'} this request`);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const filtered = passes.filter(p => {
@@ -219,65 +257,96 @@ export default function GatePassManagement() {
       )}
 
       {/* Detail Dialog */}
-      <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
+      <Dialog open={!!selected} onOpenChange={() => { setSelected(null); setComment(''); }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Gate Pass Details</DialogTitle>
           </DialogHeader>
-          {selected && (
-            <div className="space-y-3 text-sm">
-              <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-                <p><span className="font-medium">Employee:</span> {employees[selected.employee_user_id]?.display_name || users[selected.employee_user_id]?.full_name}</p>
-                <p><span className="font-medium">Department:</span> {employees[selected.employee_user_id]?.department}</p>
-                <p><span className="font-medium">Designation:</span> {employees[selected.employee_user_id]?.designation}</p>
-                <p><span className="font-medium">Reason:</span> {selected.reason}</p>
-                <p><span className="font-medium">Requested On:</span> {safeDate(selected.created_date, 'dd MMM yyyy, hh:mm a')}</p>
-                {selected.expected_return_time && (
-                  <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
-                )}
-                <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
-              </div>
+          {selected && (() => {
+            const approver = employees[selected.manager_user_id]?.display_name || users[selected.manager_user_id]?.full_name;
+            // One row per lifecycle step, in order, each with its own
+            // timestamp — only steps that have actually happened are shown.
+            const steps = [
+              { label: 'Requested', time: selected.created_date, icon: FileClock, color: 'text-gray-600' },
+              selected.manager_approval_date && {
+                label: selected.manager_approval_status === 'rejected' ? 'Rejected' : 'Approved',
+                time: selected.manager_approval_date,
+                by: approver,
+                note: selected.manager_comment,
+                icon: selected.manager_approval_status === 'rejected' ? XCircle : CheckCircle2,
+                color: selected.manager_approval_status === 'rejected' ? 'text-red-600' : 'text-blue-600',
+              },
+              selected.departure_time && { label: 'Departed', time: selected.departure_time, icon: LogOut, color: 'text-orange-600' },
+              selected.return_time && { label: 'Returned', time: selected.return_time, icon: LogIn, color: 'text-green-600' },
+            ].filter(Boolean);
 
-              <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-                <p className="font-semibold text-gray-700">Manager Action</p>
-                <p><span className="font-medium">Approval:</span> <span className="capitalize">{selected.manager_approval_status}</span></p>
-                {selected.manager_approval_date && (
-                  <p><span className="font-medium">Approved At:</span> {safeDate(selected.manager_approval_date, 'dd MMM yyyy, hh:mm a')}</p>
-                )}
-                {selected.manager_comment && (
-                  <p><span className="font-medium">Comment:</span> {selected.manager_comment}</p>
-                )}
-              </div>
-
-              {(selected.departure_time || selected.return_time) && (
+            return (
+              <div className="space-y-3 text-sm">
                 <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-                  <p className="font-semibold text-gray-700">Gate Record</p>
-                  {selected.departure_time && (
-                    <p className="text-orange-700 flex items-center gap-1">
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span className="font-medium">Departed:</span> {safeDate(selected.departure_time, 'dd MMM yyyy, hh:mm a')}
-                    </p>
+                  <p><span className="font-medium">Employee:</span> {employees[selected.employee_user_id]?.display_name || users[selected.employee_user_id]?.full_name}</p>
+                  <p><span className="font-medium">Department:</span> {employees[selected.employee_user_id]?.department}</p>
+                  <p><span className="font-medium">Designation:</span> {employees[selected.employee_user_id]?.designation}</p>
+                  <p><span className="font-medium">Reason:</span> {selected.reason}</p>
+                  {selected.expected_return_time && (
+                    <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
                   )}
-                  {selected.return_time && (
-                    <p className="text-green-700 flex items-center gap-1">
-                      <LogIn className="w-3.5 h-3.5" />
-                      <span className="font-medium">Returned:</span> {safeDate(selected.return_time, 'dd MMM yyyy, hh:mm a')}
-                    </p>
-                  )}
+                  <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
+                </div>
+
+                <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+                  <p className="font-semibold text-gray-700">Timeline</p>
+                  {steps.map((step, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <step.icon className={`w-4 h-4 mt-0.5 flex-shrink-0 ${step.color}`} />
+                      <div>
+                        <p className={`font-medium ${step.color}`}>
+                          {step.label}
+                          {step.by && <span className="font-normal text-gray-500"> by {step.by}</span>}
+                        </p>
+                        <p className="text-xs text-gray-500">{safeDate(step.time, 'dd MMM yyyy, hh:mm a')}</p>
+                        {step.note && <p className="text-xs italic text-gray-500 mt-0.5">"{step.note}"</p>}
+                      </div>
+                    </div>
+                  ))}
                   {selected.departure_time && selected.return_time && (
-                    <p className="text-gray-600 flex items-center gap-1">
+                    <p className="text-xs text-gray-500 flex items-center gap-1 pl-6">
                       <Clock className="w-3.5 h-3.5" />
-                      <span className="font-medium">Duration:</span>{' '}
-                      {Math.round((new Date(selected.return_time) - new Date(selected.departure_time)) / 60000)} minutes
+                      Duration: {Math.round((new Date(selected.return_time) - new Date(selected.departure_time)) / 60000)} minutes
                     </p>
                   )}
                   {selected.gate_admin_notes && (
-                    <p><span className="font-medium">Gate Notes:</span> {selected.gate_admin_notes}</p>
+                    <p className="text-xs text-gray-500 pl-6"><span className="font-medium">Gate Notes:</span> {selected.gate_admin_notes}</p>
                   )}
                 </div>
-              )}
-            </div>
-          )}
+
+                {isHR && selected.status === 'pending_approval' && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Comment (optional)</label>
+                      <Textarea value={comment} onChange={e => setComment(e.target.value)} placeholder="Add a comment..." rows={2} />
+                    </div>
+                    <div className="flex gap-3">
+                      <Button
+                        className="flex-1 bg-green-600 hover:bg-green-700"
+                        onClick={() => handleAction('approved')}
+                        disabled={actionLoading}
+                      >
+                        <CheckCircle2 className="w-4 h-4 mr-2" /> Approve
+                      </Button>
+                      <Button
+                        className="flex-1"
+                        variant="destructive"
+                        onClick={() => handleAction('rejected')}
+                        disabled={actionLoading}
+                      >
+                        <XCircle className="w-4 h-4 mr-2" /> Reject
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
     </div>
