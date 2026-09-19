@@ -59,7 +59,12 @@ export default function RegularisationApproval() {
       const role = currentUser.custom_role || currentUser.role;
       setUserRole(role);
 
-      const isHR = role === 'hr' || role === 'admin' || role === 'management';
+      // 'management' deliberately excluded here (was previously lumped in
+      // with hr/admin, seeing every employee's requests org-wide) — it now
+      // falls into the same downstream-hierarchy visibility branch below as
+      // 'manager', matching the scoping entities.js/processRegularisation
+      // now enforce server-side (isInManagementDownstream).
+      const isHR = role === 'hr' || role === 'admin';
       const [allReqs, empRecords, deptRecords] = await Promise.all([
         base44.entities.AttendanceRegularisation.list('-created_date', 500),
         base44.entities.Employee.list(),
@@ -68,12 +73,14 @@ export default function RegularisationApproval() {
 
       let filtered = allReqs;
       if (!isHR) {
-        // Visibility is hierarchical — a manager sees regularisation
-        // requests from their whole downstream team (direct + indirect
-        // reports), all statuses. This is VISIBILITY only: the per-request
-        // canManagerAct check below independently requires the request's
-        // employee to be a DIRECT report before showing Approve/Reject/Send
-        // Back, so an indirect report's request is visible but read-only.
+        // Visibility is hierarchical — sees regularisation requests from
+        // their whole downstream team (direct + indirect reports), all
+        // statuses. This is VISIBILITY only: for a plain 'manager' the
+        // per-request canManagerAct check below independently requires the
+        // request's employee to be a DIRECT report before showing Approve/
+        // Reject/Send Back, so an indirect report's request is visible but
+        // read-only — 'management' gets full action authority anywhere in
+        // this same downstream set instead (see canFullyAct below).
         const { downstreamIds } = resolveHierarchy(currentUser.id, empRecords);
         filtered = allReqs.filter(r => downstreamIds.has(r.user_id));
       }
@@ -99,11 +106,21 @@ export default function RegularisationApproval() {
     setLoading(false);
   };
 
-  const isHR = ['hr', 'admin', 'management'].includes(userRole);
+  const isHR = ['hr', 'admin'].includes(userRole);
+  const isManagementRole = userRole === 'management';
   const isManager = userRole === 'manager';
+  // 'management' gets full-approver authority (same as HR) but only for
+  // employees within their own downstream hierarchy — computed once here
+  // and checked per-employee-group/per-request below via canFullyAct(uid),
+  // mirroring processRegularisation's isManagementInHierarchy on the backend.
+  const managementDownstreamIds = isManagementRole ? resolveHierarchy(user?.id, employees).downstreamIds : null;
+  const canFullyAct = (uid) => isHR || (isManagementRole && !!managementDownstreamIds?.has(uid));
 
   // Role sent to backend: admin/hr/management → 'hr' (full approve), manager → 'manager' (step-1)
-  const approvalRole = isHR ? 'hr' : 'manager';
+  // Note: processRegularisation ignores this client-supplied value for
+  // actual authorization (derives role server-side) — kept only for
+  // display/logging purposes.
+  const approvalRole = (isHR || isManagementRole) ? 'hr' : 'manager';
 
   const handleAction = async () => {
     if (!actionDialog) return;
@@ -168,7 +185,11 @@ export default function RegularisationApproval() {
       || (r.reason || '').toLowerCase().includes(searchQ);
   });
 
-  const pending = filtered.filter(r => r.status === 'pending' || (isHR && r.status === 'manager_approved'));
+  // `filtered` is already scoped to the viewer's visible set (org-wide for
+  // HR/admin, downstream hierarchy for management/manager) — so treating a
+  // management viewer the same as HR here (once something IS in `filtered`,
+  // it's already confirmed in-hierarchy) is safe.
+  const pending = filtered.filter(r => r.status === 'pending' || ((isHR || isManagementRole) && r.status === 'manager_approved'));
 
   if (loading) return <div className="flex items-center justify-center h-screen"><div className="w-8 h-8 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" /></div>;
 
@@ -188,7 +209,7 @@ export default function RegularisationApproval() {
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold">Regularisation Approvals</h1>
-            <p className="text-gray-600 mt-1">{isHR ? 'HR Dashboard — all employee requests' : 'Approve or reject team regularisation requests'}</p>
+            <p className="text-gray-600 mt-1">{isHR ? 'HR Dashboard — all employee requests' : isManagementRole ? 'Requests for your direct and indirect team' : 'Approve or reject team regularisation requests'}</p>
           </div>
           <div className="flex items-center gap-2">
             {bulkSelected.length > 0 && (
@@ -309,10 +330,14 @@ export default function RegularisationApproval() {
               {employeeGroups.map(([uid, empReqs]) => {
                 const empName = getEmployeeName(uid);
                 const empDept = getEmployeeDept(uid);
-                // Only a DIRECT report's requests are actionable by a
+                // Full-approver authority for THIS employee specifically —
+                // true for hr/admin unconditionally, or for 'management'
+                // only when uid is within their own downstream hierarchy.
+                const fullyActOnThisEmp = canFullyAct(uid);
+                // Only a DIRECT report's requests are actionable by a plain
                 // manager — an indirect report (visible via the downstream
                 // hierarchy filter above) never gets bulk actions either.
-                const empIsDirectReport = isHR || isDirectReport(uid, user?.id, employees);
+                const empIsDirectReport = fullyActOnThisEmp || isDirectReport(uid, user?.id, employees);
                 // HR/management may only act once the reporting manager has
                 // approved — mirrors the same rule now enforced server-side
                 // in processRegularisation — unless this employee has no
@@ -320,7 +345,7 @@ export default function RegularisationApproval() {
                 // still lets HR act directly so the request never gets stuck.
                 const empHasManager = !!employees.find(e => e.user_id === uid)?.reporting_manager_id;
                 const actionableIds = empReqs
-                  .filter(r => isHR
+                  .filter(r => fullyActOnThisEmp
                     ? (r.status === 'manager_approved' || (r.status === 'pending' && !empHasManager))
                     : (empIsDirectReport && (r.status === 'pending' || r.status === 'sent_back')))
                   .map(r => r.id);
@@ -359,10 +384,10 @@ export default function RegularisationApproval() {
                     <div className="divide-y">
                       {empReqs.map(req => {
                         const cfg = statusConfig[req.status] || statusConfig.pending;
-                        const canManagerAct = !isHR && empIsDirectReport && (req.status === 'pending' || req.status === 'sent_back');
-                        const canHRAct = isHR && (req.status === 'manager_approved' || (req.status === 'pending' && !empHasManager));
+                        const canManagerAct = !fullyActOnThisEmp && empIsDirectReport && (req.status === 'pending' || req.status === 'sent_back');
+                        const canHRAct = fullyActOnThisEmp && (req.status === 'manager_approved' || (req.status === 'pending' && !empHasManager));
                         const canAct = canManagerAct || canHRAct;
-                        const awaitingManager = isHR && !canHRAct && req.status === 'pending';
+                        const awaitingManager = fullyActOnThisEmp && !canHRAct && req.status === 'pending';
                         const isSelected = bulkSelected.includes(req.id);
                         return (
                           <div key={req.id} className={`p-4 transition-colors ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
@@ -398,7 +423,7 @@ export default function RegularisationApproval() {
                                       onClick={() => { setActionDialog({ request: req, action: 'approve' }); setComment(''); }}>
                                       <CheckCircle2 className="w-3 h-3 mr-1" /> Approve
                                     </Button>
-                                    {!isHR && (
+                                    {!fullyActOnThisEmp && (
                                       <Button size="sm" variant="outline" className="h-7 text-xs"
                                         onClick={() => { setActionDialog({ request: req, action: 'send_back' }); setComment(''); }}>
                                         <RotateCcw className="w-3 h-3 mr-1" /> Send Back
@@ -448,7 +473,7 @@ export default function RegularisationApproval() {
                   placeholder={actionDialog.action === 'approve' ? 'Optional comment...' : 'Provide a reason...'}
                   required={actionDialog.action !== 'approve'} />
               </div>
-              {actionDialog.action === 'approve' && isHR && (
+              {actionDialog.action === 'approve' && canFullyAct(actionDialog.request.user_id) && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800 flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                   <p>Approval will automatically update the attendance record and recalculate working hours.</p>

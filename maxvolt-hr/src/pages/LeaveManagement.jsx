@@ -112,22 +112,26 @@ export default function LeaveManagement() {
       let requests = await base44.entities.Leave.list('-created_date', 500);
 
       const isHR = ['hr', 'admin'].includes(currentUser.role) || ['hr', 'admin'].includes(currentUser.custom_role);
-      // Only 'manager' (scoped middle management) is restricted to direct
-      // reports here — 'management' (top-level) sees the full org, same as
-      // HR/admin. Previously conflated with 'manager', which wrongly hid
-      // org-wide pending requests from top-level management users.
-      const isTeamManagerOnly = currentUser.role === 'manager' || currentUser.custom_role === 'manager';
+      // Both 'manager' and 'management' are scoped to their own downstream
+      // team (direct + indirect reports) here — only hr/admin see the whole
+      // org. Previously 'management' was treated as unrestricted/org-wide,
+      // same as HR, letting a management user see every employee's leave
+      // requests regardless of hierarchy — this is the fix.
+      const isTeamScoped = ['manager', 'management'].includes(currentUser.role) || ['manager', 'management'].includes(currentUser.custom_role);
 
-      if (isTeamManagerOnly && !isHR) {
-        // Visibility is hierarchical — a manager sees leave requests from
-        // their whole downstream team (direct + indirect reports), not just
-        // direct reports. This is VISIBILITY only: canApproveLevel() below
-        // independently checks direct-report-ness (leaveEmp.reporting_
-        // manager_id === user.id) before ever showing an Approve/Reject
-        // control, so an indirect report's request is visible here but
-        // stays read-only — exactly the "monitor, don't override" split
-        // the hierarchy model requires. Never widen canApproveLevel to use
-        // this same downstream set.
+      if (isTeamScoped && !isHR) {
+        // Visibility is hierarchical — sees leave requests from their whole
+        // downstream team (direct + indirect reports). For 'manager' this is
+        // VISIBILITY only: canApproveLevel() below independently checks
+        // direct-report-ness (leaveEmp.reporting_manager_id === user.id)
+        // before ever showing an Approve/Reject control, so an indirect
+        // report's request is visible here but stays read-only — the
+        // "monitor, don't override" split the hierarchy model requires for
+        // a plain manager. 'management' is different: canApproveLevel DOES
+        // grant them action authority anywhere in this same downstream set
+        // (matching runLeaveAction's isManagementInHierarchy on the
+        // backend), since 'management' is meant to actually approve within
+        // their whole team, not just watch it.
         const { downstreamIds } = resolveHierarchy(currentUser.id, empRecords);
         requests = requests.filter(r => downstreamIds.has(r.user_id));
       }
@@ -157,18 +161,27 @@ export default function LeaveManagement() {
   const isHR = user && (['hr', 'admin'].includes(user.role) || ['hr', 'admin'].includes(user.custom_role));
   const isAdmin = user && (user.role === 'admin' || user.custom_role === 'admin');
   const isManagement = user && (['management', 'manager'].includes(user.role) || ['management', 'manager'].includes(user.custom_role));
+  // 'management' specifically (not 'manager') gets the same final-approval
+  // authority HR has — level 2 / a workflow 'hr'-type step — but only within
+  // their own downstream hierarchy, mirroring runLeaveAction's
+  // isManagementInHierarchy on the backend. Computed once here and reused
+  // per-leave below rather than resolving hierarchy on every call.
+  const isManagementRole = user && (user.role === 'management' || user.custom_role === 'management');
+  const managementDownstreamIds = isManagementRole ? resolveHierarchy(user.id, employees).downstreamIds : null;
+  const isMgmtScopedTo = (targetUserId) => !!managementDownstreamIds && managementDownstreamIds.has(targetUserId);
 
   const canApproveLevel = (leave) => {
     if (!leave || leave.status !== 'pending') return false;
     // Admin can approve/reject any pending leave at any level
     if (isAdmin) return true;
+    const isMgmtScoped = isMgmtScopedTo(leave.user_id);
     // Configurable chain (Workflow Builder): match the step at the current level
     if (leaveWorkflow) {
       const step = leaveWorkflow.steps[(leave.current_approval_level || 1) - 1];
-      if (!step) return isHR;
+      if (!step) return isHR || isMgmtScoped;
       const leaveEmp = employees.find(e => e.user_id === leave.user_id);
       if (step.approver_type === 'reporting_manager') return leaveEmp?.reporting_manager_id === user?.id || isHR;
-      if (step.approver_type === 'hr') return isHR;
+      if (step.approver_type === 'hr') return isHR || isMgmtScoped;
       if (step.approver_type === 'admin') return false; // isAdmin already returned true above
       if (step.approver_type === 'specific_user') return step.specific_user_id === user?.id;
       return false;
@@ -178,9 +191,9 @@ export default function LeaveManagement() {
       const leaveEmp = employees.find(e => e.user_id === leave.user_id);
       return leaveEmp?.reporting_manager_id === user?.id || isHR;
     }
-    // Level 2: HR/HOD approves
+    // Level 2: HR/HOD approves (or 'management', within their own hierarchy)
     if (leave.current_approval_level === 2) {
-      return isHR;
+      return isHR || isMgmtScoped;
     }
     return false;
   };

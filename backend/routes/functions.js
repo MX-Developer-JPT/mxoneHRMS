@@ -1154,6 +1154,34 @@ const MGR_ROLES = ['hr', 'admin', 'management'];
 // those pages needs 'recruiter' alongside the usual HR/admin/management set.
 const RECRUIT_ROLES = ['hr', 'admin', 'management', 'recruiter'];
 
+// Is `targetUserId` a direct or indirect report of `managementUserId`? Walks
+// UP the reporting chain from the target until it either reaches
+// managementUserId (true), runs out of chain (false), or hits a cycle
+// (hop-capped, false). Used to scope the 'management' role to its own
+// downstream hierarchy specifically for Leave/GatePass/AttendanceRegularisation
+// approval (processRegularisation below) — deliberately NOT reusing
+// canAccessEmployee/getVisibleUserIds just below, since those two are used
+// broadly across many other features with 'management' intentionally
+// unrestricted (org-wide) there; this is a narrowly-scoped exception for
+// just the three approval flows this was requested for. Duplicated in
+// entities.js's isInManagementDownstream (that route file doesn't import
+// from this one — see its own comment for why).
+async function isInManagementDownstream(managementUserId, targetUserId) {
+  if (!targetUserId) return false;
+  let currentId = targetUserId;
+  const visited = new Set();
+  for (let hop = 0; hop < 50; hop++) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const row = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [currentId]);
+    const mgr = row?.mgr;
+    if (!mgr) return false;
+    if (mgr === managementUserId) return true;
+    currentId = mgr;
+  }
+  return false;
+}
+
 // Single-target authorization: may `cu` view/act on data belonging to
 // `targetUserId`? HR/admin/management: unrestricted. manager: only their own
 // direct reports (Employee.reporting_manager_id === cu.id). Everyone else:
@@ -2070,6 +2098,18 @@ async function runLeaveAction(cu, leaveId, action, note) {
 
   const isAdmin = await hasRole(cu, ['admin']);
   const isHR = await hasRole(cu, HR_ROLES);
+  // 'management' gets the same final-approval authority HR has here (level
+  // 2 / a workflow 'hr'-type step) but ONLY when this leave's owner is
+  // within their own downstream hierarchy (direct + indirect reports) —
+  // previously 'management' had NO special authority anywhere in this
+  // function at all (isHR = HR_ROLES excludes it), so a management user
+  // could only ever act via being the exact reporting_manager_id; this adds
+  // the hierarchy-scoped path the org-wide MGR_ROLES bucket used to grant
+  // via the generic entities.js route, without reopening that to the whole
+  // org. Deliberately NOT added to level 1 / 'reporting_manager' steps —
+  // that stays reserved for the actual direct manager (or HR, only when no
+  // manager is configured at all), unchanged from existing behavior.
+  const isManagementInHierarchy = !isHR && await hasRole(cu, ['management']) && await isInManagementDownstream(cu.id, lv.user_id);
   const wfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='leave'");
   const wf = wfRow ? JSON.parse(wfRow.data) : null;
   const useWf = wf?.is_active !== false && Array.isArray(wf?.steps) && wf.steps.length > 0;
@@ -2084,9 +2124,9 @@ async function runLeaveAction(cu, leaveId, action, note) {
     if (useWf) {
       if (curStep) {
         if (curStep.approver_type === 'reporting_manager') authorized = emp.reporting_manager_id === actorId || isHR;
-        else if (curStep.approver_type === 'hr') authorized = isHR;
+        else if (curStep.approver_type === 'hr') authorized = isHR || isManagementInHierarchy;
         else if (curStep.approver_type === 'specific_user') authorized = curStep.specific_user_id === actorId;
-      } else authorized = isHR;
+      } else authorized = isHR || isManagementInHierarchy;
     } else if (curLevel === 1) {
       // Level 1 is the reporting manager's own approval — HR/management may
       // no longer stand in for them here (only admin, via the baseline
@@ -2095,7 +2135,7 @@ async function runLeaveAction(cu, leaveId, action, note) {
       // ever act on level 1, so HR is allowed to step in for that case only.
       authorized = emp.reporting_manager_id ? emp.reporting_manager_id === actorId : isHR;
     }
-    else if (curLevel === 2) authorized = isHR;
+    else if (curLevel === 2) authorized = isHR || isManagementInHierarchy;
   }
   if (!authorized) return { httpStatus: 403, body: { success: false, error: `This request is at approval level ${curLevel} — you are not the approver for this step` } };
 
@@ -9613,22 +9653,27 @@ router.post('/:name', async (req, res) => {
       let newStatus = reg.status;
       const update  = { updated_at: new Date().toISOString() };
 
-      // admin / hr / management can fully approve (→ completed); manager does
-      // step-1 only, and only for their own direct report. Previously this
-      // trusted a client-supplied `role` param outright — any authenticated
-      // caller could pass role:'management' and fully approve/complete
-      // anyone's request. Now derived entirely from the server's own
-      // knowledge of the caller's actual role and team.
-      const isFullApprover = await hasRole(cu, MGR_ROLES);
-      const isTeamManager  = !isFullApprover && await hasRole(cu, ['manager']) && await canAccessEmployee(cu, reg.user_id);
-      if (!isFullApprover && !isTeamManager) return res.status(403).json({ error: 'Access denied — not authorized to act on this request' });
+      // admin / hr can fully approve (→ completed) any request; manager does
+      // step-1 only, and only for their own direct report; 'management' is
+      // scoped like a manager but over their FULL downstream hierarchy
+      // (direct + indirect reports) rather than direct reports only —
+      // previously 'management' was lumped into MGR_ROLES here and could
+      // fully approve/complete ANY employee's request org-wide. Previously
+      // this also trusted a client-supplied `role` param outright — any
+      // authenticated caller could pass role:'management' and fully
+      // approve/complete anyone's request. Now derived entirely from the
+      // server's own knowledge of the caller's actual role and team.
+      const isFullApprover = await hasRole(cu, HR_ROLES);
+      const isManagementInHierarchy = !isFullApprover && await hasRole(cu, ['management']) && await isInManagementDownstream(cu.id, reg.user_id);
+      const isTeamManager  = !isFullApprover && !isManagementInHierarchy && await hasRole(cu, ['manager']) && await canAccessEmployee(cu, reg.user_id);
+      if (!isFullApprover && !isManagementInHierarchy && !isTeamManager) return res.status(403).json({ error: 'Access denied — not authorized to act on this request' });
 
       // HR/management may only act once the reporting manager has approved
       // (status 'manager_approved') — admin keeps override power, and an
       // employee with no reporting manager configured falls straight
       // through to HR since there'd otherwise be no one who could ever
       // clear that first step.
-      if (isFullApprover && reg.status !== 'manager_approved') {
+      if ((isFullApprover || isManagementInHierarchy) && reg.status !== 'manager_approved') {
         const isAdmin = await hasRole(cu, ['admin']);
         if (!isAdmin) {
           const prRegEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [reg.user_id]);
@@ -9726,7 +9771,7 @@ router.post('/:name', async (req, res) => {
           newStatus = 'sent_back';
           update.manager_comment = comment;
         }
-      } else if (isFullApprover) {
+      } else if (isFullApprover || isManagementInHierarchy) {
         if (action === 'approve') {
           newStatus = 'completed';
           update.hr_approved_at = new Date().toISOString();

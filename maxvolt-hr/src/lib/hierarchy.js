@@ -5,15 +5,20 @@
 // Employee records right now. If reporting lines change, this recomputes
 // correctly on the next load with zero extra work.
 //
-// IMPORTANT: a manager may VIEW their whole downstream hierarchy, but must
-// only ever APPROVE their own direct reports' requests. Visibility and
-// approval authority are deliberately separate — use downstreamIds (or
-// isDirectReport()) to decide what to show, but NEVER use downstreamIds to
-// decide whether to show an Approve/Reject control. The backend already
-// enforces direct-only approval independently (checkApprovalAuthorization /
-// runLeaveAction compare the target's reporting_manager_id straight against
-// the acting user), so this is belt-and-suspenders on the UI side, not the
-// only line of defense.
+// IMPORTANT — this rule differs by role:
+//   - 'manager' may VIEW their whole downstream hierarchy, but must only
+//     ever APPROVE their own direct reports' requests. Use downstreamIds
+//     (or isDirectReport()) to decide what to show, but NEVER downstreamIds
+//     to decide whether to show an Approve/Reject control for a manager.
+//   - 'management' is scoped wider: they both VIEW and MAY APPROVE anywhere
+//     in their own downstream hierarchy (direct + indirect reports) — this
+//     is intentional, matching the backend's isManagementInHierarchy checks
+//     (runLeaveAction / entities.js checkApprovalAuthorization / functions.js
+//     processRegularisation). downstreamIds IS the correct gate for a
+//     management user's Approve/Reject control.
+// Either way, the backend independently enforces the same rule
+// (checkApprovalAuthorization / runLeaveAction / processRegularisation), so
+// this is belt-and-suspenders on the UI side, not the only line of defense.
 
 // Builds a manager_user_id -> [direct report user_ids] adjacency map once,
 // so resolving the downstream set for one manager is proportional to the

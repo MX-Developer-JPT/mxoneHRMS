@@ -10,6 +10,7 @@ import { safeDate, nowIST } from '@/lib/dateUtils';
 import { CheckCircle2, XCircle, Clock, User, History, LogOut, LogIn } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 import { toast } from 'sonner';
+import { resolveHierarchy } from '@/lib/hierarchy';
 
 const STATUS_COLORS = {
   pending_approval: 'bg-yellow-100 text-yellow-800',
@@ -35,6 +36,7 @@ export default function GatePassApproval() {
   const [user, setUser] = useState(null);
   const [passes, setPasses] = useState([]);
   const [isHR, setIsHR] = useState(false);
+  const [isManagementRole, setIsManagementRole] = useState(false);
   const [employees, setEmployees] = useState({});
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
@@ -53,8 +55,10 @@ export default function GatePassApproval() {
     setUser(currentUser);
 
     const role = currentUser.custom_role || currentUser.role;
-    const hrUser = ['hr', 'admin', 'management'].includes(role);
+    const hrUser = ['hr', 'admin'].includes(role);
+    const mgmtUser = role === 'management';
     setIsHR(hrUser);
+    setIsManagementRole(mgmtUser);
 
     const [allPasses, allEmployees] = await Promise.all([
       base44.entities.GatePass.list('-created_date', 500),
@@ -67,12 +71,20 @@ export default function GatePassApproval() {
 
     let visiblePasses;
     if (hrUser) {
-      // HR/admin/management can approve any employee's gate pass directly —
-      // unlike Leave/Reimbursement/Regularisation, GatePass approval never
+      // HR/admin can approve any employee's gate pass directly — unlike
+      // Leave/Reimbursement/Regularisation, GatePass approval never
       // requires the reporting manager to act first (see checkApprovalAuthorization
       // in entities.js), specifically so HR can cover for an unavailable
       // manager. So HR sees every pass, pending or otherwise.
       visiblePasses = allPasses;
+    } else if (mgmtUser) {
+      // 'management' is scoped to their own downstream hierarchy (direct +
+      // indirect reports) — previously lumped in with hrUser above and saw
+      // every employee's gate pass org-wide; this matches the same
+      // hierarchy scoping checkApprovalAuthorization now enforces
+      // server-side (isInManagementDownstream).
+      const { downstreamIds } = resolveHierarchy(currentUser.id, allEmployees);
+      visiblePasses = allPasses.filter(p => downstreamIds.has(p.employee_user_id));
     } else {
       // Manager sees only their direct reports' pending passes
       const myEmpIds = allEmployees
@@ -116,7 +128,7 @@ export default function GatePassApproval() {
     <div className="p-4 sm:p-6 max-w-4xl mx-auto">
       <h1 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">Gate Pass Approvals</h1>
       <p className="text-gray-500 text-sm mb-5">
-        {isHR ? 'Viewing all employee gate passes (HR view)' : 'Review and approve gate pass requests from your team'}
+        {isHR ? 'Viewing all employee gate passes (HR view)' : isManagementRole ? 'Viewing gate passes for your direct and indirect team' : 'Review and approve gate pass requests from your team'}
       </p>
 
       {/* Tabs */}

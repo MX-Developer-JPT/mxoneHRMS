@@ -304,6 +304,35 @@ async function getGateAdminUserIdsForLocation(locationName) {
   return out;
 }
 
+// Is `targetUserId` a direct or indirect report of `managementUserId`? Walks
+// UP the reporting chain from the target (not down from the manager — this
+// is a single-target authorization check, not a visibility listing, so
+// there's no need to materialize the whole downstream tree) until it either
+// reaches managementUserId (true), runs out of chain (false), or hits a
+// cycle (guarded by a hop cap, false). Used to scope the 'management' role
+// to its own downstream hierarchy for Leave/GatePass/AttendanceRegularisation
+// approval — previously 'management' was unconditionally unrestricted
+// (org-wide) here, same as hr/admin, which is the behavior this closes.
+// Deliberately re-implemented here rather than imported from functions.js's
+// getVisibleUserIds (a different shape — that one is a downstream BFS for
+// LISTING, explicitly documented as not for approval authority, and the two
+// route files are kept self-contained with no cross-import between them).
+async function isInManagementDownstream(managementUserId, targetUserId) {
+  if (!targetUserId) return false;
+  let currentId = targetUserId;
+  const visited = new Set();
+  for (let hop = 0; hop < 50; hop++) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const row = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [currentId]);
+    const mgr = row?.mgr;
+    if (!mgr) return false;
+    if (mgr === managementUserId) return true;
+    currentId = mgr;
+  }
+  return false;
+}
+
 async function hasManagerCleared(type, current) {
   if (!current.user_id) return true; // no owner to resolve a manager for — nothing to gate on
   const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [current.user_id]);
@@ -359,7 +388,12 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
       return false;
     }
     if (current.user_id === cu.id) return true;
-    if (['hr', 'admin', 'management'].includes(role)) return true;
+    if (['hr', 'admin'].includes(role)) return true;
+    // 'management' may cancel on an employee's behalf only within their own
+    // downstream hierarchy — same scoping as the approve/reject grant below,
+    // so a management user can't act on a request outside their own team
+    // via cancel when they couldn't via approve/reject either.
+    if (role === 'management' && await isInManagementDownstream(cu.id, current.user_id)) return true;
     res.status(403).json({ error: 'Access denied — you can only cancel your own request' });
     return false;
   }
@@ -395,13 +429,34 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
     return false;
   }
 
-  if (['hr', 'admin', 'management'].includes(role)) {
+  if (['hr', 'admin'].includes(role)) {
     if (role !== 'admin' && type !== 'GatePass' && !(await hasManagerCleared(type, current))) {
       res.status(403).json({ error: 'This request requires reporting manager approval first.' });
       return false;
     }
     return true;
   }
+
+  // 'management' is scoped to their own downstream hierarchy (direct +
+  // indirect reports) for Leave/GatePass/AttendanceRegularisation —
+  // previously unconditionally unrestricted here, same as hr/admin, letting
+  // a management user approve/reject any employee's request org-wide.
+  // Reimbursement is deliberately left out of this scoping (unrestricted,
+  // matching prior behavior) — it wasn't part of this change's scope and
+  // has its own configurable ApprovalWorkflow with a 'specific_user' step
+  // type below that a hierarchy restriction could conflict with.
+  if (role === 'management' && ['Leave', 'GatePass', 'AttendanceRegularisation'].includes(type)) {
+    if (!(await isInManagementDownstream(cu.id, current.user_id))) {
+      res.status(403).json({ error: 'Access denied — this request is outside your reporting hierarchy' });
+      return false;
+    }
+    if (type !== 'GatePass' && !(await hasManagerCleared(type, current))) {
+      res.status(403).json({ error: 'This request requires reporting manager approval first.' });
+      return false;
+    }
+    return true;
+  }
+  if (role === 'management') return true; // Reimbursement — unchanged, unrestricted
 
   if (role === 'manager') {
     const targetUserId = current.user_id;

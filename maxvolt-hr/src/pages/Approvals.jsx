@@ -10,10 +10,15 @@ import { toast } from 'sonner';
 import { format, isSameMonth } from 'date-fns';
 import { safeDate, safeTime } from '@/lib/dateUtils';
 import MonthRequestFilter from '@/components/requests/MonthRequestFilter';
+import { resolveHierarchy } from '@/lib/hierarchy';
 
 export default function Approvals() {
   const [user, setUser] = useState(null);
   const [isHR, setIsHR] = useState(false);
+  // Tracks the 'management' role specifically, for the Regularisation
+  // section only (see loadData) — Reimbursement keeps using bare `isHR`
+  // (hrRole, unrestricted for management) unchanged.
+  const [isManagementScoped, setIsManagementScoped] = useState(false);
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [reimbursements, setReimbursements] = useState([]);
   const [reimbursementHistory, setReimbursementHistory] = useState([]);
@@ -45,11 +50,25 @@ export default function Approvals() {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
       const userRole = currentUser.custom_role || currentUser.role;
+      // hrRole/isHR stays as-is (hr/admin/management, unrestricted) — used
+      // by Reimbursement and matchesStep's 'hr' workflow-step type below,
+      // which are NOT part of this scoping change.
       const hrRole = ['hr', 'admin', 'management'].includes(userRole);
       setIsHR(hrRole);
 
       const empRecords = await base44.entities.Employee.list();
       setEmployees(empRecords);
+
+      // Leave/GatePass/AttendanceRegularisation are scoped narrower than
+      // Reimbursement: 'management' sees/acts on these only within their
+      // own downstream hierarchy (direct + indirect reports), not org-wide
+      // — matching the same scoping now enforced server-side
+      // (checkApprovalAuthorization's isInManagementDownstream /
+      // processRegularisation's isManagementInHierarchy / runLeaveAction).
+      const isHrAdminOnly = ['hr', 'admin'].includes(userRole);
+      const isManagementRole = userRole === 'management';
+      setIsManagementScoped(isManagementRole);
+      const managementDownstreamIds = isManagementRole ? resolveHierarchy(currentUser.id, empRecords).downstreamIds : null;
 
       // Configurable approval chains (Workflow Builder)
       let wfMap = {};
@@ -67,9 +86,13 @@ export default function Approvals() {
         .filter(e => e.reporting_manager_id === currentUser.id ||
           (e.reporting_manager_email && e.reporting_manager_email.toLowerCase() === (currentUser.email || '').toLowerCase()))
         .map(e => e.user_id);
+      // The actual visible-user set for Leave/GatePass/AttendanceRegularisation:
+      // null (unrestricted) for hr/admin, full downstream hierarchy for
+      // 'management', direct reports only for a plain 'manager'.
+      const visibleTeamUserIds = isHrAdminOnly ? null : (isManagementRole ? managementDownstreamIds : new Set(directReportUserIds));
 
       let leaves = await base44.entities.Leave.filter({ status: 'pending' }, '-created_date');
-      if (!hrRole) leaves = leaves.filter(l => directReportUserIds.includes(l.user_id));
+      if (!isHrAdminOnly) leaves = leaves.filter(l => visibleTeamUserIds.has(l.user_id));
 
       let reimburse;
       let reimbHistory = [];
@@ -105,15 +128,21 @@ export default function Approvals() {
 
       // Gate passes pending manager approval
       const allGatePasses = await base44.entities.GatePass.filter({ status: 'pending_approval' }, '-created_date');
-      const pendingGatePasses = hrRole
+      const pendingGatePasses = isHrAdminOnly
         ? allGatePasses
-        : allGatePasses.filter(gp => directReportUserIds.includes(gp.employee_user_id));
+        : allGatePasses.filter(gp => visibleTeamUserIds.has(gp.employee_user_id));
 
-      // Regularisation requests
+      // Regularisation requests — hr/admin AND 'management' (within their
+      // hierarchy) both act as full approvers, so both also see the
+      // 'manager_approved' stage awaiting their final sign-off, not just
+      // 'pending'; a plain manager only ever sees their own direct reports'
+      // still-'pending' step-1 requests.
       const allRegs = await base44.entities.AttendanceRegularisation.list('-created_date', 300);
-      const pendingRegs = hrRole
-        ? allRegs.filter(r => r.status === 'pending' || r.status === 'manager_approved')
-        : allRegs.filter(r => r.status === 'pending' && directReportUserIds.includes(r.user_id));
+      const regFullApprover = isHrAdminOnly || isManagementRole;
+      const pendingRegs = allRegs.filter(r => {
+        if (!(r.status === 'pending' || (regFullApprover && r.status === 'manager_approved'))) return false;
+        return isHrAdminOnly || visibleTeamUserIds.has(r.user_id);
+      });
 
       setLeaveRequests(leaves);
       setReimbursements(reimburse);
@@ -315,7 +344,7 @@ export default function Approvals() {
                 <p>{leaveRequests.length} Leave Requests</p>
                 <p>{reimbursements.length} Reimbursements</p>
                 <p>{gatePasses.length} Gate Passes</p>
-                <p>{regularisations.length} Regularisations {isHR ? '(awaiting HR)' : ''}</p>
+                <p>{regularisations.length} Regularisations {(isHR || isManagementScoped) ? '(awaiting HR)' : ''}</p>
               </div>
             </div>
           </CardContent>
@@ -388,7 +417,7 @@ export default function Approvals() {
           <TabsContent value="regularisations">
             <Card>
               <CardHeader>
-                <CardTitle>{isHR ? 'Regularisations Awaiting HR Approval' : 'Regularisation Requests from Your Team'}</CardTitle>
+                <CardTitle>{(isHR || isManagementScoped) ? 'Regularisations Awaiting HR Approval' : 'Regularisation Requests from Your Team'}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
@@ -401,7 +430,7 @@ export default function Approvals() {
                     // reporting manager configured at all, the one fallback
                     // that still lets HR act directly so the request never
                     // gets stuck with no possible approver.
-                    const awaitingManager = isHR && reg.status !== 'manager_approved' && !!emp?.reporting_manager_id;
+                    const awaitingManager = (isHR || isManagementScoped) && reg.status !== 'manager_approved' && !!emp?.reporting_manager_id;
                     return (
                       <div key={reg.id} className="border rounded-lg p-4">
                         <div className="flex justify-between items-start gap-4 flex-wrap">
@@ -418,7 +447,7 @@ export default function Approvals() {
                               </p>
                             )}
                             {reg.remarks && <p className="text-sm mt-1 italic text-muted-foreground">"{reg.remarks}"</p>}
-                            {isHR && reg.status === 'manager_approved' && (
+                            {(isHR || isManagementScoped) && reg.status === 'manager_approved' && (
                               <Badge className="mt-1 bg-blue-100 text-blue-800">Manager Approved</Badge>
                             )}
                           </div>
@@ -427,7 +456,7 @@ export default function Approvals() {
                           ) : (
                             <div className="flex gap-2">
                               <Button onClick={() => handleRegAction(reg.id, 'approve')} size="sm" className="bg-green-600 hover:bg-green-700" disabled={processing[reg.id]}>
-                                <Check className="w-4 h-4 mr-1" /> {isHR ? 'HR Approve' : 'Approve'}
+                                <Check className="w-4 h-4 mr-1" /> {(isHR || isManagementScoped) ? 'HR Approve' : 'Approve'}
                               </Button>
                               <Button onClick={() => handleRegAction(reg.id, 'reject')} size="sm" variant="destructive" disabled={processing[reg.id]}>
                                 <X className="w-4 h-4 mr-1" /> Reject
