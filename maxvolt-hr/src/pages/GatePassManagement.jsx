@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
 import { safeDate, nowIST } from '@/lib/dateUtils';
-import { Search, LogOut, LogIn, User, Clock, History, CheckCircle2, XCircle, FileClock } from 'lucide-react';
+import { Search, LogOut, LogIn, User, Clock, History, CheckCircle2, XCircle, FileClock, MapPin, Download, Loader2 } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 import { toast } from 'sonner';
 
@@ -30,6 +30,15 @@ const STATUS_LABELS = {
   cancelled: 'Cancelled',
 };
 
+const OUTING_TYPE_LABELS = {
+  unofficial_outing: 'Unofficial Outing',
+  official_outing: 'Official Outing',
+  short_break: 'Short Break',
+  early_leave: 'Early Leave',
+  half_day: 'Half Day',
+  travelling_to_another_office: 'Travelling to Another Office',
+};
+
 export default function GatePassManagement() {
   const [currentUser, setCurrentUser] = useState(null);
   const [passes, setPasses] = useState([]);
@@ -44,6 +53,7 @@ export default function GatePassManagement() {
   const [activeTab, setActiveTab] = useState('live');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -118,11 +128,100 @@ export default function GatePassManagement() {
     returned: passes.filter(p => p.status === 'returned').length,
   };
 
+  // HR/admin only (isHR, checked at the call site) — exports exactly the
+  // passes currently visible under the Live View filters/search/date range,
+  // so what's on screen is what lands in the file. Every field on the
+  // GatePass record is included, not just what's shown in the UI cards.
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const ExcelJSModule = await import('exceljs');
+      const ExcelJS = ExcelJSModule.default || ExcelJSModule;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('Gate Passes');
+      ws.columns = [
+        { header: 'Employee Name', key: 'name', width: 24 },
+        { header: 'Employee Code', key: 'code', width: 14 },
+        { header: 'Department', key: 'dept', width: 18 },
+        { header: 'Designation', key: 'desig', width: 20 },
+        { header: 'Outing Type', key: 'outingType', width: 22 },
+        { header: 'Reason', key: 'reason', width: 28 },
+        { header: 'Departed From (Office)', key: 'currentLocation', width: 20 },
+        { header: 'Destination', key: 'destination', width: 20 },
+        { header: 'Vehicle Type', key: 'vehicle', width: 14 },
+        { header: 'Requested On', key: 'requestedOn', width: 20 },
+        { header: 'Expected Return', key: 'expectedReturn', width: 20 },
+        { header: 'Status', key: 'status', width: 16 },
+        { header: 'Manager/HR Decision', key: 'decision', width: 18 },
+        { header: 'Decided By', key: 'decidedBy', width: 20 },
+        { header: 'Decision Date', key: 'decisionDate', width: 20 },
+        { header: 'Decision Comment', key: 'decisionComment', width: 26 },
+        { header: 'Departure Time', key: 'departureTime', width: 20 },
+        { header: 'Return Time', key: 'returnTime', width: 20 },
+        { header: 'Duration (min)', key: 'duration', width: 14 },
+        { header: 'Gate Admin Notes', key: 'gateNotes', width: 26 },
+        { header: 'Auto-Closed Reason', key: 'autoClosedReason', width: 26 },
+      ];
+      ws.getRow(1).font = { bold: true };
+      ws.views = [{ state: 'frozen', ySplit: 1 }];
+
+      const fmt = d => d ? format(new Date(d), 'dd MMM yyyy, hh:mm a') : '';
+      for (const p of filtered) {
+        const u = users[p.employee_user_id];
+        const emp = employees[p.employee_user_id];
+        const decidedBy = employees[p.manager_user_id]?.display_name || users[p.manager_user_id]?.full_name || '';
+        ws.addRow({
+          name: emp?.display_name || u?.full_name || '',
+          code: emp?.employee_code || '',
+          dept: emp?.department || '',
+          desig: emp?.designation || '',
+          outingType: OUTING_TYPE_LABELS[p.outing_type] || p.outing_type || '',
+          reason: p.reason || '',
+          currentLocation: p.current_location || '',
+          destination: p.destination_location || '',
+          vehicle: p.vehicle_type ? p.vehicle_type.replace(/_/g, ' ') : '',
+          requestedOn: fmt(p.created_date),
+          expectedReturn: fmt(p.expected_return_time),
+          status: STATUS_LABELS[p.status] || p.status || '',
+          decision: p.manager_approval_status || '',
+          decidedBy,
+          decisionDate: fmt(p.manager_approval_date),
+          decisionComment: p.manager_comment || '',
+          departureTime: fmt(p.departure_time),
+          returnTime: fmt(p.return_time),
+          duration: (p.departure_time && p.return_time) ? Math.round((new Date(p.return_time) - new Date(p.departure_time)) / 60000) : '',
+          gateNotes: p.gate_admin_notes || '',
+          autoClosedReason: p.auto_closed_reason || '',
+        });
+      }
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Gate_Passes_${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      toast.error(err.message || 'Failed to export gate passes');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (loading) return <div className="p-8 text-center text-gray-500">Loading...</div>;
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900 mb-1">Gate Pass Management</h1>
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-1">
+        <h1 className="text-2xl font-bold text-gray-900">Gate Pass Management</h1>
+        {isHR && activeTab === 'live' && (
+          <Button variant="outline" onClick={handleExport} disabled={exporting || !filtered.length}>
+            {exporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+            Export to Excel
+          </Button>
+        )}
+      </div>
       <p className="text-gray-500 text-sm mb-5">Track all employee gate passes</p>
 
       {/* Stats */}
@@ -222,6 +321,14 @@ export default function GatePassManagement() {
                       </div>
                       <div className="flex-1 px-4 hidden md:block">
                         <p className="text-sm text-gray-700 truncate max-w-xs">{pass.reason}</p>
+                        {pass.current_location && (
+                          <p className="text-xs text-blue-600 flex items-center gap-1 mt-0.5">
+                            <MapPin className="w-3 h-3" />
+                            {pass.outing_type === 'travelling_to_another_office' && pass.destination_location
+                              ? `${pass.current_location} → ${pass.destination_location}`
+                              : `Departed from ${pass.current_location}`}
+                          </p>
+                        )}
                         <p className="text-xs text-gray-400">{safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}</p>
                       </div>
                       <div className="flex items-center gap-4 flex-wrap">
@@ -286,7 +393,18 @@ export default function GatePassManagement() {
                   <p><span className="font-medium">Employee:</span> {employees[selected.employee_user_id]?.display_name || users[selected.employee_user_id]?.full_name}</p>
                   <p><span className="font-medium">Department:</span> {employees[selected.employee_user_id]?.department}</p>
                   <p><span className="font-medium">Designation:</span> {employees[selected.employee_user_id]?.designation}</p>
+                  <p><span className="font-medium">Outing Type:</span> {OUTING_TYPE_LABELS[selected.outing_type] || selected.outing_type || '—'}</p>
                   <p><span className="font-medium">Reason:</span> {selected.reason}</p>
+                  {selected.current_location && (
+                    selected.outing_type === 'travelling_to_another_office' && selected.destination_location ? (
+                      <p><span className="font-medium">Route:</span> {selected.current_location} → {selected.destination_location}</p>
+                    ) : (
+                      <p><span className="font-medium">Departed From:</span> {selected.current_location}</p>
+                    )
+                  )}
+                  {selected.vehicle_type && (
+                    <p><span className="font-medium">Vehicle:</span> {selected.vehicle_type.replace(/_/g, ' ')}</p>
+                  )}
                   {selected.expected_return_time && (
                     <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
                   )}
