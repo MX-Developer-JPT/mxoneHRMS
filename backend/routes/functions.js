@@ -4906,7 +4906,15 @@ router.post('/:name', async (req, res) => {
             absentDays++;                                      // no record on any weekday = absent
           } else {
             const s = rec.status;
-            if (s === 'half_day')                                              { presentDays += 0.5; halfDays++; }
+            // A half-day driven by an APPROVED LEAVE (leave_id set — see the
+            // leave-approval Attendance sync above) already had 0.5 day
+            // deducted from the employee's leave balance for the half they
+            // didn't work; charging 0.5 LOP day here too would deduct it
+            // twice. Only a half-day with no leave behind it (a genuine
+            // partial-attendance day — checked in/out for less than a full
+            // shift, no leave applied) is LOP for the missing half.
+            if (s === 'half_day' && !rec.leave_id)                             { presentDays += 0.5; halfDays++; }
+            else if (s === 'half_day')                                         { presentDays++; }
             else if (['present','late','on_duty','work_from_home'].includes(s)){ presentDays++; }
             // short_attendance = worked LESS than half the shift (below even
             // the half_day bar) — previously not handled here at all, so it
@@ -7217,8 +7225,14 @@ router.post('/:name', async (req, res) => {
               daysAbsent++;                                   // no record on any weekday = absent
             } else {
               const s = rec.status;
-              if (s === 'half_day') {
+              // Same leave-vs-attendance distinction as processPayroll above
+              // — a half-day already covered by an approved leave (leave_id
+              // set) must not also be charged 0.5 LOP day here; that half
+              // was already deducted from the leave balance.
+              if (s === 'half_day' && !rec.leave_id) {
                 daysPresent += 0.5; daysHalfDay++;
+              } else if (s === 'half_day') {
+                daysPresent++;
               } else if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home') {
                 daysPresent++;
               } else if (s === 'absent' || s === 'lop' || s === 'short_attendance') {
@@ -15960,9 +15974,12 @@ Return ONLY valid JSON (no markdown):
       const latestSS = {};
       for (const s of ssAll) { if (!latestSS[s.user_id] || (s.created_at || '') > (latestSS[s.user_id]._c || '')) latestSS[s.user_id] = { ...JSON.parse(s.data), _c: s.created_at }; }
 
-      // Non-contributory (LOP/absent) days per user this month
+      // Non-contributory (LOP/absent) days per user this month — a half-day
+      // already covered by an approved leave (leave_id set) is a paid day,
+      // not non-contributory; only a leave-less (genuine partial-attendance)
+      // half-day counts here, matching processPayroll/the SS payroll engine.
       const attMonth = (await all("SELECT user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd])).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
-      const ncpByUser = attMonth.reduce((m, a) => { if (a.status === 'absent') m[a.user_id] = (m[a.user_id] || 0) + 1; else if (a.status === 'half_day') m[a.user_id] = (m[a.user_id] || 0) + 0.5; return m; }, {});
+      const ncpByUser = attMonth.reduce((m, a) => { if (a.status === 'absent') m[a.user_id] = (m[a.user_id] || 0) + 1; else if (a.status === 'half_day' && !a.leave_id) m[a.user_id] = (m[a.user_id] || 0) + 0.5; return m; }, {});
 
       const pfRows = [], esiRows = [];
       let pfTot = { gross: 0, epfWages: 0, ee: 0, erEPS: 0, erEPF: 0, total: 0 };
