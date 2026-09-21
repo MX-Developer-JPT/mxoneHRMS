@@ -581,7 +581,11 @@ async function processRecord(record) {
   const newPunch = { time: punchIso, device_direction: direction };
 
   if (!row) {
-    // First punch of the day — create new Attendance record
+    // First punch of the day — create new Attendance record. The alternating-
+    // position model (buildSessions) always makes the day's first punch the
+    // check-in, so this side is always 'biometric'; check_out_source is left
+    // unset until a closing punch (biometric OR selfie — see the mixed-method
+    // note below) actually arrives.
     const sd = buildSessions([newPunch]);
     const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
     const { status } = statusResult;
@@ -590,6 +594,8 @@ async function processRecord(record) {
       id, user_id: userId, date: attDate,
       source: 'biometric', biometric_synced: true, device_id: deviceName,
       employee_code: empData?.employee_code || codeStr,
+      check_in_source: sd.check_in_time ? 'biometric' : null,
+      check_out_source: sd.check_out_time ? 'biometric' : null,
       ...sd, ...statusResult,
     };
     await run(
@@ -611,13 +617,6 @@ async function processRecord(record) {
   const data = JSON.parse(row.data);
   if (data.regularised || data.admin_marked || data.leave_id || data.status === 'leave') {
     return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
-  }
-  // A biometric punch must never touch a day captured by selfie or
-  // geofence — those are their own independent, deliberate attendance
-  // sources; a stray or late-arriving biometric punch (a badge scan
-  // passing the gate) is not evidence that day was wrong.
-  if (['selfie', 'geofence'].includes(data.check_in_source) || ['selfie', 'geofence'].includes(data.check_out_source)) {
-    return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_non_biometric' };
   }
 
   // Merge new punch into the existing raw_punches list and rebuild sessions
@@ -651,6 +650,21 @@ async function processRecord(record) {
   const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
   const { status } = statusResult;
 
+  // Mixed methods are allowed (checked in by selfie, checked out by
+  // biometric, or vice versa) — only the SIDE this punch would actually
+  // change is protected, and only if that side was already deliberately
+  // captured by selfie/geofence. A biometric punch that merely fills in the
+  // still-open other side (e.g. a biometric checkout on a day that was
+  // selfie-checked-in) is exactly the case this must allow, not block; it's
+  // only a stray/late punch trying to overwrite an already-recorded side
+  // that must be rejected.
+  const inChanged  = data.check_in_time  !== sd.check_in_time;
+  const outChanged = data.check_out_time !== sd.check_out_time;
+  if ((inChanged && ['selfie', 'geofence'].includes(data.check_in_source)) ||
+      (outChanged && ['selfie', 'geofence'].includes(data.check_out_source))) {
+    return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_non_biometric' };
+  }
+
   // Never let merging this punch make an already-complete day WORSE — a
   // day that was already closed out correctly (real checkout, not still
   // open) must not flip back to "still working" or lose a meaningful
@@ -667,6 +681,14 @@ async function processRecord(record) {
     biometric_synced: true,
     device_id: deviceName || data.device_id,
     employee_code: empData?.employee_code || data.employee_code || codeStr,
+    // Per-side attribution: only flip a side's recorded source to
+    // 'biometric' when that side's timestamp actually changed as a result
+    // of this punch (or never had a source before) — an unchanged side
+    // keeps whatever method (selfie/geofence) it already had, so "checked
+    // in by selfie, checked out by biometric" is recorded and displayed
+    // correctly instead of biometric silently claiming both sides.
+    check_in_source: (inChanged || !data.check_in_source) ? 'biometric' : data.check_in_source,
+    check_out_source: (outChanged || !data.check_out_source) ? 'biometric' : data.check_out_source,
     ...sd, ...statusResult,
   };
 

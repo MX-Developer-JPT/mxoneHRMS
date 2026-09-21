@@ -6268,14 +6268,35 @@ router.post('/:name', async (req, res) => {
         swAttMap[a.user_id][String(a.date).slice(0,10)] = a;
       }
 
-      // Same precedence as maxvolt-hr/src/lib/attendanceSource.js:
-      // biometric > geofence > selfie > manual.
-      const swMethod = (rec) => {
+      // Per-side method — a day can legitimately be checked in by one method
+      // (e.g. selfie) and checked out by another (e.g. biometric), so a
+      // single collapsed "Method" column would hide that split. Mirrors
+      // maxvolt-hr/src/lib/attendanceSource.js's getCheckInMethod/
+      // getCheckOutMethod exactly (this export runs server-side and can't
+      // import frontend code): prefer the explicit check_in_source/
+      // check_out_source field set at the moment each side was actually
+      // punched, falling back to the older signal-based inference for
+      // records that predate that field.
+      const swCheckInMethod = (rec) => {
         if (!rec) return '';
+        if (rec.check_in_source === 'biometric') return 'Biometric';
+        if (rec.check_in_source === 'geofence') return 'Geofence';
+        if (rec.check_in_source === 'selfie') return 'Selfie';
+        if (rec.check_in_selfie_url) return 'Selfie';
+        if (rec.auto_geofence) return 'Geofence';
         if (rec.biometric_synced) return 'Biometric';
-        if (rec.auto_geofence || rec.auto_geofence_checkout) return 'Geofence';
-        if (rec.check_in_selfie_url || rec.check_out_selfie_url) return 'Selfie';
-        if (rec.check_in_time || rec.check_out_time) return 'Manual';
+        if (rec.check_in_time) return 'Manual';
+        return '';
+      };
+      const swCheckOutMethod = (rec) => {
+        if (!rec) return '';
+        if (rec.check_out_source === 'biometric') return 'Biometric';
+        if (rec.check_out_source === 'geofence') return 'Geofence';
+        if (rec.check_out_source === 'selfie') return 'Selfie';
+        if (rec.check_out_selfie_url) return 'Selfie';
+        if (rec.auto_geofence_checkout) return 'Geofence';
+        if (rec.biometric_synced) return 'Biometric';
+        if (rec.check_out_time) return 'Manual';
         return '';
       };
       const swLocation = (loc) => {
@@ -6363,7 +6384,7 @@ router.post('/:name', async (req, res) => {
         { header:'Department', width:16 }, { header:'Designation', width:18 },
         { header:'Date', width:12 }, { header:'Day', width:10 },
         { header:'First Check-in', width:14 }, { header:'Last Check-out', width:14 },
-        { header:'Total Hours', width:11 }, { header:'Method', width:12 },
+        { header:'Total Hours', width:11 }, { header:'Check-in Method', width:14 }, { header:'Check-out Method', width:14 },
         { header:'Check-in Location', width:32 }, { header:'Check-out Location', width:32 },
         { header:'Status', width:12 }, { header:'Gate Pass', width:32 },
       ];
@@ -6381,7 +6402,7 @@ router.post('/:name', async (req, res) => {
 
       // Row 3 — legend
       wsSw.mergeCells(3,1,3,cols.length);
-      Object.assign(wsSw.getCell(3,1), { value:'Method reflects how the day was punched — Biometric device sync, Geofence auto check-in/out, Selfie check-in/out, or Manual/regularised entry. Location shown for Selfie and Geofence days only. Gate Pass column shows any outing logged that day, with "OUT NOW" for a pass still open.', font:swF(false,'1E40AF',8), fill:swFl('EFF6FF'), alignment:swLft, border:swBd() });
+      Object.assign(wsSw.getCell(3,1), { value:'Check-in/Check-out Method reflects how each side was actually punched — a day can legitimately be checked in by one method (e.g. Selfie) and checked out by another (e.g. Biometric). Location shown for a side punched by Selfie or Geofence only. Gate Pass column shows any outing logged that day, with "OUT NOW" for a pass still open.', font:swF(false,'1E40AF',8), fill:swFl('EFF6FF'), alignment:swLft, border:swBd() });
       wsSw.getRow(3).height = 15;
 
       // Row 4 — column headers
@@ -6402,7 +6423,8 @@ router.post('/:name', async (req, res) => {
           const ds = `${swY}-${String(swM).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
           const rec = empRecs[ds];
           const weekday = swWeekdayNames[new Date(swY, swM-1, d).getDay()];
-          const method = swMethod(rec);
+          const inMethod = swCheckInMethod(rec);
+          const outMethod = swCheckOutMethod(rec);
           const status = rec?.status || (rec ? '' : swInferredStatus(ds, workingDays, emp.date_of_joining));
           const gatePass = swGatePassMap[`${emp.user_id}|${ds}`] || null;
           const gatePassText = gatePass
@@ -6413,9 +6435,9 @@ router.post('/:name', async (req, res) => {
           const vals = [
             swRowNum - 5, emp.employee_code||'', emp.display_name||'', emp.department||'', emp.designation||'',
             ds, weekday, swFmtTime(rec?.check_in_time), swFmtTime(rec?.check_out_time),
-            rec?.working_hours || '', method,
-            (method==='Selfie'||method==='Geofence') ? swLocation(rec?.check_in_location) : '',
-            (method==='Selfie'||method==='Geofence') ? swLocation(rec?.check_out_location) : '',
+            rec?.working_hours || '', inMethod, outMethod,
+            (inMethod==='Selfie'||inMethod==='Geofence') ? swLocation(rec?.check_in_location) : '',
+            (outMethod==='Selfie'||outMethod==='Geofence') ? swLocation(rec?.check_out_location) : '',
             status ? status.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) : '',
             gatePassText,
           ];
@@ -6428,17 +6450,22 @@ router.post('/:name', async (req, res) => {
             if (ci <= 5) cell.alignment = swLft;
             else cell.alignment = swCtr;
           });
-          if (method) {
+          if (inMethod) {
             const mc = row.getCell(11);
-            mc.font = swF(true, METHOD_TEXT[method], 8);
-            mc.fill = swFl(METHOD_COLOR[method]);
+            mc.font = swF(true, METHOD_TEXT[inMethod], 8);
+            mc.fill = swFl(METHOD_COLOR[inMethod]);
+          }
+          if (outMethod) {
+            const mc2 = row.getCell(12);
+            mc2.font = swF(true, METHOD_TEXT[outMethod], 8);
+            mc2.fill = swFl(METHOD_COLOR[outMethod]);
           }
           if (status && STATUS_COLOR[status]) {
-            const sc = row.getCell(14);
+            const sc = row.getCell(15);
             sc.fill = swFl(STATUS_COLOR[status]);
           }
           if (gatePass) {
-            const gc = row.getCell(15);
+            const gc = row.getCell(16);
             gc.font = swF(true, '9A3412', 8);
             gc.fill = swFl('FDBA74');
             gc.alignment = swLft;
@@ -8336,14 +8363,19 @@ router.post('/:name', async (req, res) => {
           // raw punch recompute would produce.
           if (d.status === 'regularised' || d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') { skipped++; continue; }
 
-          // A biometric resync must never touch a day whose check-in or
-          // check-out was captured by selfie or geofence — those are their
-          // own independent, deliberate attendance sources; a stray or
-          // late-arriving biometric punch on the same day (a badge scan
-          // passing the gate, a backlogged device entry) is not evidence
-          // the selfie/geofence-recorded day was wrong. Resetting the sync
-          // app's watermark and re-syncing its full punch history must not
-          // be able to silently overwrite a selfie or geofence day at all.
+          // This reprocess's `sd` is a full recompute from ONLY this range's
+          // stored AttendanceLog rows (see the comment below) — it has no
+          // way to see a selfie/geofence punch at all, since those never
+          // create an AttendanceLog row. So unlike the live/incremental
+          // paths (attendancelog.js processRecord, the eBio live sync
+          // above — which merge into the day's actual existing raw_punches
+          // and can safely tell "filling in a missing side" apart from
+          // "overwriting a captured one"), this blanket skip must stay: a
+          // day with any selfie/geofence side is left untouched entirely
+          // rather than risk silently dropping that punch when this
+          // recompute's `sd` replaces raw_punches wholesale below. Resetting
+          // the sync app's watermark and re-syncing its full punch history
+          // must not be able to overwrite a selfie/geofence day this way.
           if (['selfie', 'geofence'].includes(d.check_in_source) || ['selfie', 'geofence'].includes(d.check_out_source)) {
             skippedNonBiometric++; continue;
           }
@@ -9341,12 +9373,6 @@ router.post('/:name', async (req, res) => {
           // regularised, or leave-driven day must never silently overwrite
           // it (e.g. a half-day leave's worked half genuinely punching in).
           if (d.status === 'regularised' || d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') continue;
-          // A biometric punch must never touch a day captured by selfie or
-          // geofence — see the identical guard/reasoning in
-          // reprocessAttendanceLogs. Matters here most of all: this is the
-          // LIVE ingestion path a full historical resend from the sync app
-          // actually flows through.
-          if (['selfie', 'geofence'].includes(d.check_in_source) || ['selfie', 'geofence'].includes(d.check_out_source)) continue;
 
           // Merge raw_punches: combine existing + new, then rebuild
           const prevPunches = d.raw_punches || [];
@@ -9357,6 +9383,18 @@ router.post('/:name', async (req, res) => {
           const sdMerged = buildSessions(mergedPunches);
           const mergedResult = computeStatusFromSessions(sdMerged, shiftS, halfDayHoursS);
           const { status: mergedStatus } = mergedResult;
+
+          // Mixed methods are allowed — only the SIDE this sync would
+          // actually change is protected, and only if that side was already
+          // deliberately captured by selfie/geofence. Filling in a still-open
+          // other side (e.g. biometric checkout on a selfie-checked-in day)
+          // must go through; only a punch trying to overwrite an
+          // already-recorded side is rejected. See the identical guard in
+          // attendancelog.js's processRecord.
+          const inChanged  = d.check_in_time  !== sdMerged.check_in_time;
+          const outChanged = d.check_out_time !== sdMerged.check_out_time;
+          if ((inChanged && ['selfie', 'geofence'].includes(d.check_in_source)) ||
+              (outChanged && ['selfie', 'geofence'].includes(d.check_out_source))) continue;
 
           // Never let this merge make an already-complete day WORSE — see
           // the identical guard/reasoning in reprocessAttendanceLogs. A
@@ -9378,6 +9416,12 @@ router.post('/:name', async (req, res) => {
             is_in_progress: sdMerged.is_in_progress,
             ...mergedResult,
             biometric_synced: true,
+            // Per-side attribution — see attendancelog.js's processRecord for
+            // the full reasoning: only flip a side to 'biometric' when it
+            // actually changed (or never had a source), so a selfie-recorded
+            // side survives a biometric punch on the other side.
+            check_in_source: (inChanged || !d.check_in_source) ? 'biometric' : d.check_in_source,
+            check_out_source: (outChanged || !d.check_out_source) ? 'biometric' : d.check_out_source,
           };
           await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [mergedStatus, JSON.stringify(updated), existing.id]);
         } else {
@@ -9392,6 +9436,8 @@ router.post('/:name', async (req, res) => {
             is_in_progress: sd.is_in_progress,
             ...statusResult,
             source: 'biometric', biometric_synced: true,
+            check_in_source: sd.check_in_time ? 'biometric' : null,
+            check_out_source: sd.check_out_time ? 'biometric' : null,
           };
           await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [attId, userId, status, JSON.stringify(attData)]);
         }
@@ -9585,10 +9631,6 @@ router.post('/:name', async (req, res) => {
               // — a manually-corrected, regularised, or leave-driven day must
               // never be silently overwritten by a resync of stored logs.
               if (existAtt.data.status === 'regularised' || existAtt.data.regularised || existAtt.data.admin_marked || existAtt.data.leave_id || existAtt.data.status === 'leave') continue;
-              // A biometric resync must never touch a day captured by selfie
-              // or geofence — see the identical guard/reasoning in
-              // reprocessAttendanceLogs.
-              if (['selfie', 'geofence'].includes(existAtt.data.check_in_source) || ['selfie', 'geofence'].includes(existAtt.data.check_out_source)) continue;
               const prevPunches = existAtt.data.raw_punches || [];
               const merged = [];
               for (const pch of [...prevPunches, ...uniquePunches].sort((a, b) => a.time.localeCompare(b.time))) {
@@ -9597,6 +9639,16 @@ router.post('/:name', async (req, res) => {
               const sdM = buildSessions(merged);
               const mergedResult = computeStatusFromSessions(sdM, shift);
               const { status: mStatus } = mergedResult;
+
+              // Mixed methods are allowed — only the SIDE this resync would
+              // actually change is protected, and only if that side was
+              // already deliberately captured by selfie/geofence. See the
+              // identical guard in attendancelog.js's processRecord.
+              const inChanged  = existAtt.data.check_in_time  !== sdM.check_in_time;
+              const outChanged = existAtt.data.check_out_time !== sdM.check_out_time;
+              if ((inChanged && ['selfie', 'geofence'].includes(existAtt.data.check_in_source)) ||
+                  (outChanged && ['selfie', 'geofence'].includes(existAtt.data.check_out_source))) continue;
+
               // Never let a resync make an already-complete day WORSE — see
               // the identical guard/reasoning in reprocessAttendanceLogs.
               const wasComplete = !!existAtt.data.check_out_time && !existAtt.data.is_in_progress;
@@ -9607,13 +9659,22 @@ router.post('/:name', async (req, res) => {
                   raw_punches: merged, sessions: sdM.sessions,
                   check_in_time: sdM.check_in_time, check_out_time: sdM.check_out_time,
                   working_hours: sdM.working_hours, is_in_progress: sdM.is_in_progress,
+                  // Per-side attribution — see attendancelog.js's
+                  // processRecord for the full reasoning.
+                  check_in_source: (inChanged || !existAtt.data.check_in_source) ? 'biometric' : existAtt.data.check_in_source,
+                  check_out_source: (outChanged || !existAtt.data.check_out_source) ? 'biometric' : existAtt.data.check_out_source,
                   ...mergedResult, id: existAtt.id }), existAtt.id]);
               records_synced++;
             } else {
               const attId = uuidv4();
+              const newAttData = {
+                ...attData,
+                check_in_source: sd.check_in_time ? 'biometric' : null,
+                check_out_source: sd.check_out_time ? 'biometric' : null,
+              };
               await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)",
-                [attId, userId, status, JSON.stringify({ ...attData, id: attId, created_at: new Date().toISOString() })]);
-              existingAttMap[attKey] = { id: attId, data: { ...attData, id: attId } };
+                [attId, userId, status, JSON.stringify({ ...newAttData, id: attId, created_at: new Date().toISOString() })]);
+              existingAttMap[attKey] = { id: attId, data: { ...newAttData, id: attId } };
               records_synced++;
             }
           }
