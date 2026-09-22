@@ -25,7 +25,16 @@ export const AuthProvider = ({ children }) => {
     await checkUserAuth();
   };
 
-  const checkUserAuth = async (isRetry = false) => {
+  // Non-auth failures (network drop, Railway cold-start/502, a brief DB
+  // blip surfaced as 503 — see the matching comment on the backend's /auth/me)
+  // get several retries with backoff before this ever becomes something the
+  // user sees, since a single 2s wait isn't long enough for a real cold
+  // start. Only a genuine 401/403 (the token itself is invalid/expired)
+  // skips retrying and ends the session — everything else must eventually
+  // resolve to either success or "can't reach the server", NEVER a logout.
+  const AUTH_RETRY_DELAYS_MS = [2000, 4000, 6000];
+
+  const checkUserAuth = async (attempt = 0) => {
     setIsLoadingAuth(true);
     try {
       const currentUser = await base44.auth.me();
@@ -38,22 +47,22 @@ export const AuthProvider = ({ children }) => {
         localStorage.removeItem(TOKEN_KEY);
         setIsAuthenticated(false);
         setAuthError({ type: 'auth_required', message: 'Session expired, please log in again.' });
-      } else if (!isRetry) {
+      } else if (attempt < AUTH_RETRY_DELAYS_MS.length) {
         // Anything else (network drop, Railway cold-start/502, timeout) is
         // NOT proof the session is invalid — the token in localStorage is
         // still fine. A Capacitor WebView reload (backgrounding, brief
         // connectivity blip on resume) hits this path routinely; without
         // this retry, every one of those blips used to flip isAuthenticated
         // to false and bounce a still-logged-in user to the login screen.
-        // Give it one retry before treating it as anything user-facing.
         setIsLoadingAuth(false);
-        await new Promise((r) => setTimeout(r, 2000));
-        return checkUserAuth(true);
+        await new Promise((r) => setTimeout(r, AUTH_RETRY_DELAYS_MS[attempt]));
+        return checkUserAuth(attempt + 1);
       } else {
-        // Still failing after the retry — genuinely can't reach the server.
-        // Don't touch the token or claim the session expired; show a
-        // retry prompt instead of silently logging the user out.
-        setAuthError({ type: 'network_error', message: 'Could not reach the server. Check your connection and try again.' });
+        // Still failing after every retry — genuinely can't reach the
+        // server. Don't touch the token or claim the session expired; show
+        // a "check your connection" prompt instead of silently logging the
+        // user out.
+        setAuthError({ type: 'network_error', message: 'Could not reach the server. Check your internet connection and try again.' });
       }
     } finally {
       setIsLoadingAuth(false);

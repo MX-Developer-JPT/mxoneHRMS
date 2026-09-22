@@ -18,6 +18,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { spawn, execSync } from 'child_process';
 import cron from 'node-cron';
 import helmet from 'helmet';
+import compression from 'compression';
 import { wafGuard, globalLimiter, authLimiter } from './middleware/waf.js';
 import authRouter           from './routes/auth.js';
 import entitiesRouter       from './routes/entities.js';
@@ -220,6 +221,14 @@ app.use(cors({ origin: true, credentials: true }));
 // headers (X-Content-Type-Options, X-Frame-Options, HSTS, etc.) are safe
 // defaults with no such risk.
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+// Gzip every text response (JS/CSS bundle chunks, HTML, JSON API responses)
+// — nothing upstream of this app (no CDN/reverse-proxy) was compressing
+// responses at all, so every page load and every API call (several of
+// which return hundreds of Attendance/Employee records as raw JSON) was
+// going out over the wire completely uncompressed. Express does not do
+// this by default; this one middleware typically cuts transfer size by
+// 60-80% for text content, which is most of what this app serves.
+app.use(compression());
 app.use(wafGuard);
 app.use(globalLimiter);
 

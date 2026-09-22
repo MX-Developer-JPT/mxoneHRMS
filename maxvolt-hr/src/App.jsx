@@ -25,7 +25,12 @@ const AttendanceExemption = lazy(() => import('./pages/AttendanceExemption'));
 const RegularisationApproval = lazy(() => import('./pages/RegularisationApproval'));
 const ConfirmationManagement = lazy(() => import('./pages/ConfirmationManagement'));
 const EmployeeDocuments = lazy(() => import('./pages/EmployeeDocuments'));
-import OnboardingForm from './pages/OnboardingForm';
+// Lazy — these are public/rarely-visited pages (careers site, onboarding
+// wizard, legal pages, gate-admin dashboards) that most users never open in
+// a session; bundling them eagerly here put ~4,200 lines of unrelated page
+// code into the main entry chunk that loads before ANY page renders,
+// including the login screen, for every single user.
+const OnboardingForm = lazy(() => import('./pages/OnboardingForm'));
 const HelpdeskCategoryManagement = lazy(() => import('./pages/HelpdeskCategoryManagement'));
 const ShiftManagement = lazy(() => import('./pages/ShiftManagement'));
 const VisitorManagement = lazy(() => import('./pages/VisitorManagement'));
@@ -38,16 +43,16 @@ const MISDashboard = lazy(() => import('./pages/MISDashboard'));
 const InsuranceManagement = lazy(() => import('./pages/InsuranceManagement'));
 const MyInsurance = lazy(() => import('./pages/MyInsurance'));
 const OnboardingApproval = lazy(() => import('./pages/OnboardingApproval'));
-import PublicJobBoard from './pages/PublicJobBoard';
-import ApplyForJob from './pages/ApplyForJob';
-import PrivacyPolicy from './pages/PrivacyPolicy';
-import TermsOfService from './pages/TermsOfService';
-import DeleteAccountRequest from './pages/DeleteAccountRequest';
-import Support from './pages/Support';
-import CareersPage from './pages/CareersPage';
-import OfferAcceptPage from './pages/OfferAcceptPage';
-import CandidateDocumentPortal from './pages/CandidateDocumentPortal';
-import ApplicationStatusPage from './pages/ApplicationStatusPage';
+const PublicJobBoard = lazy(() => import('./pages/PublicJobBoard'));
+const ApplyForJob = lazy(() => import('./pages/ApplyForJob'));
+const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
+const TermsOfService = lazy(() => import('./pages/TermsOfService'));
+const DeleteAccountRequest = lazy(() => import('./pages/DeleteAccountRequest'));
+const Support = lazy(() => import('./pages/Support'));
+const CareersPage = lazy(() => import('./pages/CareersPage'));
+const OfferAcceptPage = lazy(() => import('./pages/OfferAcceptPage'));
+const CandidateDocumentPortal = lazy(() => import('./pages/CandidateDocumentPortal'));
+const ApplicationStatusPage = lazy(() => import('./pages/ApplicationStatusPage'));
 const LOPConfiguration = lazy(() => import('./pages/LOPConfiguration'));
 const MyExit = lazy(() => import('./pages/MyExit'));
 const ExitManagement = lazy(() => import('./pages/ExitManagement'));
@@ -61,9 +66,9 @@ const MyTraining = lazy(() => import('./pages/MyTraining'));
 const EmployeeEngagementPortal = lazy(() => import('./pages/EmployeeEngagementPortal'));
 const GatePassRequest = lazy(() => import('./pages/GatePassRequest'));
 const GatePassApproval = lazy(() => import('./pages/GatePassApproval'));
-import GateAdminDashboard from './pages/GateAdminDashboard';
+const GateAdminDashboard = lazy(() => import('./pages/GateAdminDashboard'));
 const GatePassManagement = lazy(() => import('./pages/GatePassManagement'));
-import GateAdminProfile from './pages/GateAdminProfile';
+const GateAdminProfile = lazy(() => import('./pages/GateAdminProfile'));
 import RoleBasedRedirect from './components/RoleBasedRedirect';
 const AskMax = lazy(() => import('./pages/AskMax'));
 import { pushSupported, getPushState, enablePush } from '@/utils/pwa';
@@ -73,7 +78,7 @@ const ImportEmployees = lazy(() => import('./pages/ImportEmployees'));
 const PIPManagement = lazy(() => import('./pages/PIPManagement'));
 const PMSConfiguration = lazy(() => import('./pages/PMSConfiguration'));
 const BusinessCardAdmin = lazy(() => import('./pages/BusinessCardAdmin'));
-import PublicBusinessCard from './pages/PublicBusinessCard';
+const PublicBusinessCard = lazy(() => import('./pages/PublicBusinessCard'));
 const AttendanceLogDashboard = lazy(() => import('./pages/AttendanceLogDashboard'));
 const CompanyPolicies = lazy(() => import('./pages/CompanyPolicies'));
 const AppSettings = lazy(() => import('./pages/AppSettings'));
@@ -331,7 +336,7 @@ const AuthenticatedApp = () => {
           <AnnouncementManagement />
         </LayoutWrapper>
       } />
-      <Route path="/OnboardingForm" element={<OnboardingForm />} />
+      <Route path="/OnboardingForm" element={<Suspense fallback={<PageLoader />}><OnboardingForm /></Suspense>} />
       <Route path="/OnboardingApproval" element={
         <LayoutWrapper currentPageName="OnboardingApproval">
           <OnboardingApproval />
@@ -567,21 +572,23 @@ function App() {
     <QueryClientProvider client={queryClientInstance}>
       <Router>
         <Routes>
-          {/* Public routes - no login required */}
-          <Route path="/PrivacyPolicy" element={<PrivacyPolicy />} />
-          <Route path="/TermsOfService" element={<TermsOfService />} />
-          <Route path="/DeleteAccountRequest" element={<DeleteAccountRequest />} />
-          <Route path="/Support" element={<Support />} />
-          <Route path="/PublicJobBoard" element={<PublicJobBoard />} />
-          <Route path="/ApplyForJob" element={<ApplyForJob />} />
-          <Route path="/PublicBusinessCard" element={<PublicBusinessCard />} />
-          <Route path="/careers" element={<CareersPage />} />
-          <Route path="/careers/:jobId" element={<CareersPage />} />
-          <Route path="/career" element={<CareersPage />} />
-          <Route path="/career/:jobId" element={<CareersPage />} />
-          <Route path="/offer-accept/:token" element={<OfferAcceptPage />} />
-          <Route path="/candidate-documents/:token" element={<CandidateDocumentPortal />} />
-          <Route path="/application-status/:token" element={<ApplicationStatusPage />} />
+          {/* Public routes - no login required. Shared Suspense boundary —
+              these are lazy-loaded (see the imports above) since most users
+              never visit any of them in a session. */}
+          <Route path="/PrivacyPolicy" element={<Suspense fallback={<PageLoader />}><PrivacyPolicy /></Suspense>} />
+          <Route path="/TermsOfService" element={<Suspense fallback={<PageLoader />}><TermsOfService /></Suspense>} />
+          <Route path="/DeleteAccountRequest" element={<Suspense fallback={<PageLoader />}><DeleteAccountRequest /></Suspense>} />
+          <Route path="/Support" element={<Suspense fallback={<PageLoader />}><Support /></Suspense>} />
+          <Route path="/PublicJobBoard" element={<Suspense fallback={<PageLoader />}><PublicJobBoard /></Suspense>} />
+          <Route path="/ApplyForJob" element={<Suspense fallback={<PageLoader />}><ApplyForJob /></Suspense>} />
+          <Route path="/PublicBusinessCard" element={<Suspense fallback={<PageLoader />}><PublicBusinessCard /></Suspense>} />
+          <Route path="/careers" element={<Suspense fallback={<PageLoader />}><CareersPage /></Suspense>} />
+          <Route path="/careers/:jobId" element={<Suspense fallback={<PageLoader />}><CareersPage /></Suspense>} />
+          <Route path="/career" element={<Suspense fallback={<PageLoader />}><CareersPage /></Suspense>} />
+          <Route path="/career/:jobId" element={<Suspense fallback={<PageLoader />}><CareersPage /></Suspense>} />
+          <Route path="/offer-accept/:token" element={<Suspense fallback={<PageLoader />}><OfferAcceptPage /></Suspense>} />
+          <Route path="/candidate-documents/:token" element={<Suspense fallback={<PageLoader />}><CandidateDocumentPortal /></Suspense>} />
+          <Route path="/application-status/:token" element={<Suspense fallback={<PageLoader />}><ApplicationStatusPage /></Suspense>} />
           {/* All other routes go through auth */}
           <Route path="*" element={
             <AuthProvider>

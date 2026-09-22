@@ -58,6 +58,14 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_entities_created      ON entities(created_at);
     CREATE INDEX IF NOT EXISTS idx_entities_type_created ON entities(type, created_at);
     CREATE INDEX IF NOT EXISTS idx_entities_updated      ON entities(updated_at);
+    -- The data column is TEXT, not JSONB (see column above), so every one
+    -- of this app's ~85 queries filtering by date (Attendance/GatePass/
+    -- Leave range queries -- the single most common WHERE clause in this
+    -- codebase, used by nearly every dashboard/report/payroll/muster page)
+    -- does data::jsonb->>'date' >= $1 AND ... <= $2 with no index at all,
+    -- forcing a full scan-and-JSON-parse of every row of that type. This
+    -- expression index matches that exact cast so the planner can use it.
+    CREATE INDEX IF NOT EXISTS idx_entities_type_data_date ON entities(type, (data::jsonb->>'date'));
 
     CREATE TABLE IF NOT EXISTS otps (
       email      TEXT NOT NULL,
