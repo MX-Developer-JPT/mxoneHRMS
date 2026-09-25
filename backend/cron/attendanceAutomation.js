@@ -3,7 +3,7 @@
 // 2. Employees who checked in but never checked out before 2 AM the next day → marked absent.
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
-import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, isOvernightShift, shiftEndDateTime } from '../routes/attendancelog.js';
+import { buildSessions, applyDeclaredStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, isOvernightShift, shiftEndDateTime } from '../routes/attendancelog.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -389,7 +389,7 @@ export async function closeStaleGeofenceSessions() {
 
     const rawPunches = [...(d.raw_punches || []), { time: nowIso, device_direction: 'OUT' }];
     const sessionData = buildSessions(rawPunches);
-    const statusResult = computeStatusFromSessions(sessionData, shift, halfDayHours);
+    const statusResult = applyDeclaredStatus(d, computeStatusFromSessions(sessionData, shift, halfDayHours));
     const updated = {
       ...d, ...sessionData, ...statusResult,
       auto_closed_at: nowIso,

@@ -261,6 +261,18 @@ export default function AttendanceLogDashboard() {
     setProcessing(false);
   };
 
+  const handleRestoreSelfieStatus = async () => {
+    setProcessing(true);
+    try {
+      const res = await base44.functions.invoke('restoreSelfieDeclaredStatus', { date_from: processFrom, date_to: processTo });
+      const r = res.data || res;
+      if (r?.success) {
+        toast.success(`WFH/OD restored on ${r.updated} selfie day(s)${r.inferred_without_stored_reason ? ` (${r.inferred_without_stored_reason} inferred — no stored reason, OD if a field trip exists else WFH)` : ''}; ${r.already_correct} already correct`);
+      } else toast.error(r?.error || 'Failed');
+    } catch (err) { toast.error(err?.message || 'Failed'); }
+    setProcessing(false);
+  };
+
   const handleReprocessLogs = async () => {
     setProcessing(true);
     setProcessResult(null);
@@ -591,6 +603,9 @@ export default function AttendanceLogDashboard() {
             </Button>
             <Button onClick={handleReprocessLogs} disabled={processing} variant="outline" className="border-blue-400 text-blue-700 hover:bg-blue-100">
               {processing ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Reprocessing...</> : <><CheckCircle className="w-4 h-4 mr-2" />Re-sync from Stored Logs</>}
+            </Button>
+            <Button onClick={handleRestoreSelfieStatus} disabled={processing} variant="outline" className="border-teal-400 text-teal-700 hover:bg-teal-50" title="Set selfie-method days in the selected range to Work From Home / On Duty per the employee's declared reason">
+              <CheckCircle className="w-4 h-4 mr-2" />Restore WFH/OD (Selfie days)
             </Button>
             <Button onClick={handleCloseOpenSessions} disabled={processing} variant="outline" className="border-red-300 text-red-600 hover:bg-red-50" title="Mark employees who checked in yesterday but never checked out as Absent">
               {processing ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Processing...</> : <><AlarmClock className="w-4 h-4 mr-2" />Auto-Absent (5:30AM Rule)</>}

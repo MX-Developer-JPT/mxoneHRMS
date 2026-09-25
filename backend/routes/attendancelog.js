@@ -647,7 +647,7 @@ async function processRecord(record) {
   const mergedPunches  = alreadyPresent ? existingPunches : [...existingPunches, newPunch];
 
   const sd = buildSessions(mergedPunches);
-  const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
+  const statusResult = applyDeclaredStatus(data, computeStatusFromSessions(sd, shift, halfDayHours));
   const { status } = statusResult;
 
   // Mixed methods are allowed (checked in by selfie, checked out by
@@ -816,4 +816,21 @@ export function punchesOnlyAdded(existing, merged, requireAfterLast = true) {
   if (!requireAfterLast) return true;
   const lastEx = ex.length ? Math.max(...ex) : -Infinity;
   return mg.every(t => has(ex, t) || t > lastEx);
+}
+
+// A day the employee declared as Work From Home / On Duty via the Selfie
+// Method's mandatory reason (selfie_reason) must keep reading WFH / OD
+// whatever later recomputes its status from punches — a biometric punch
+// landing the same day, a geofence event, a re-sync/re-process, the nightly
+// auto-close. Returns `result` (a computeStatusFromSessions result)
+// untouched for any other day. WFH/OD never count as late / early departure.
+export function applyDeclaredStatus(existing, result) {
+  const r = existing?.selfie_reason;
+  if (r !== 'wfh' && r !== 'od') return result;
+  return {
+    ...result,
+    status: r === 'wfh' ? 'work_from_home' : 'on_duty',
+    late_minutes: 0, late_arrival: false, late_arrival_minutes: 0,
+    early_departure_minutes: 0, early_departure: false,
+  };
 }

@@ -6,7 +6,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
-import { buildSessions, punchesOnlyAdded, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
+import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
@@ -4243,7 +4243,7 @@ router.post('/:name', async (req, res) => {
       const sessionData = buildSessions(rawPunches);
       const shift = { working_hours: 8, grace_period_minutes: 15, ...ngShiftForDate };
       const ngHalfDayHours = await getHalfDayOverrideHours(ngAttDate, shift);
-      const statusResult = computeStatusFromSessions(sessionData, shift, ngHalfDayHours);
+      const statusResult = applyDeclaredStatus(ngAtt, computeStatusFromSessions(sessionData, shift, ngHalfDayHours));
       const { status } = statusResult;
 
       const locPayload = { latitude: Number(latitude) || null, longitude: Number(longitude) || null, accuracy: Number(accuracy) || null, location_address: ngFence?.name || location_name || 'Geofence' };
@@ -8427,9 +8427,9 @@ router.post('/:name', async (req, res) => {
           // via the Selfie Method's mandatory reason — a biometric punch
           // landing on the same day (e.g. an OD employee briefly stopping by
           // the office) must not silently revert it back to present/late.
-          const bsFinalStatus = d.selfie_reason === 'wfh' ? 'work_from_home' : d.selfie_reason === 'od' ? 'on_duty' : statusResult.status;
+          const bsFinalStatus = applyDeclaredStatus(d, statusResult).status;
           const upd = {
-            ...d, biometric_synced: true, employee_code: empData.employee_code || empCode || d.employee_code, ...sd, ...statusResult, status: bsFinalStatus,
+            ...d, biometric_synced: true, employee_code: empData.employee_code || empCode || d.employee_code, ...sd, ...applyDeclaredStatus(d, statusResult), status: bsFinalStatus,
             check_in_source: (inChanged || !d.check_in_source) ? 'biometric' : d.check_in_source,
             check_out_source: (outChanged || !d.check_out_source) ? 'biometric' : d.check_out_source,
           };
@@ -8860,6 +8860,49 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, ...result });
     }
 
+    // Restores the WFH / On Duty label on selfie-method days. The Selfie
+    // Method stores the employee's declared reason (selfie_reason) and sets
+    // status accordingly, but days recorded before that reason was captured —
+    // or whose status was later recomputed from punches — read plain
+    // "present". A day with selfie_reason gets exactly that status; a legacy
+    // selfie-only day with no reason is inferred: OD if the employee has a
+    // Field Trip that date, otherwise WFH (flagged selfie_reason_inferred so
+    // HR can spot and correct it). Days that also carry biometric punches
+    // without a stored reason are left alone (ambiguous). Never touches
+    // regularised / admin-corrected / leave / holiday / week-off days.
+    case 'restoreSelfieDeclaredStatus': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { date_from: rsFrom, date_to: rsTo, dry_run: rsDry = false } = p;
+      if (!rsFrom) return res.json({ success: false, error: 'date_from is required (yyyy-MM-dd)' });
+      const rsToDate = rsTo || rsFrom;
+      const rsRows = await all("SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [rsFrom, rsToDate]);
+      const rsTrips = await all("SELECT user_id, data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [rsFrom, rsToDate]);
+      const rsTripSet = new Set(rsTrips.map(r => `${r.user_id}|${JSON.parse(r.data).date}`));
+      let rsUpdated = 0, rsAlready = 0, rsInferred = 0, rsSkipped = 0;
+      const rsSample = [];
+      for (const row of rsRows) {
+        const d = JSON.parse(row.data);
+        const isSelfie = d.check_in_source === 'selfie' || d.check_out_source === 'selfie' || d.check_in_selfie_url || d.check_out_selfie_url;
+        if (!isSelfie) continue;
+        if (d.regularised || d.admin_marked || d.leave_id || ['leave', 'holiday', 'week_off', 'absent'].includes(d.status)) { rsSkipped++; continue; }
+        let reason = d.selfie_reason, inferred = false;
+        if (reason !== 'wfh' && reason !== 'od') {
+          if (d.biometric_synced || d.check_in_source === 'biometric') { rsSkipped++; continue; }
+          reason = rsTripSet.has(`${d.user_id}|${d.date}`) ? 'od' : 'wfh';
+          inferred = true;
+        }
+        const target = reason === 'wfh' ? 'work_from_home' : 'on_duty';
+        if (d.status === target && d.selfie_reason === reason) { rsAlready++; continue; }
+        if (rsSample.length < 10) rsSample.push({ date: d.date, employee_code: d.employee_code || '', old_status: d.status, new_status: target, inferred });
+        if (!rsDry) {
+          const upd = { ...d, ...applyDeclaredStatus({ selfie_reason: reason }, { status: d.status, late_minutes: d.late_minutes, early_departure_minutes: d.early_departure_minutes }), selfie_reason: reason, ...(inferred ? { selfie_reason_inferred: true } : {}) };
+          await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [target, JSON.stringify(upd), row.id]);
+        }
+        rsUpdated++; if (inferred) rsInferred++;
+      }
+      return res.json({ success: true, dry_run: rsDry, scanned: rsRows.length, updated: rsUpdated, inferred_without_stored_reason: rsInferred, already_correct: rsAlready, skipped: rsSkipped, sample: rsSample });
+    }
+
     case 'markExemptEmployeesPresent': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       // Backfill: accepts a date range, a single date, or a month/year. Never
@@ -9112,7 +9155,7 @@ router.post('/:name', async (req, res) => {
         const shift = (shiftId && shiftMap[shiftId]) || defaultShift;
         const sd = buildSessions(punches);
         const halfDayHours = resolveHalfDayHours(halfDayMap, d.date, shift);
-        const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
+        const statusResult = applyDeclaredStatus(d, computeStatusFromSessions(sd, shift, halfDayHours));
         const { status } = statusResult;
 
         if (dry_run) {
@@ -9395,7 +9438,7 @@ router.post('/:name', async (req, res) => {
             if (!rmasNearDup(mergedPunches, pch.time)) mergedPunches.push(pch);
           }
           const sdMerged = buildSessions(mergedPunches);
-          const mergedResult = computeStatusFromSessions(sdMerged, shiftS, halfDayHoursS);
+          const mergedResult = applyDeclaredStatus(d, computeStatusFromSessions(sdMerged, shiftS, halfDayHoursS));
           const { status: mergedStatus } = mergedResult;
 
           // Mixed methods are allowed — only the SIDE this sync would
@@ -9651,7 +9694,7 @@ router.post('/:name', async (req, res) => {
                 if (!pebNearDup(merged, pch.time)) merged.push(pch);
               }
               const sdM = buildSessions(merged);
-              const mergedResult = computeStatusFromSessions(sdM, shift);
+              const mergedResult = applyDeclaredStatus(existAtt.data, computeStatusFromSessions(sdM, shift));
               const { status: mStatus } = mergedResult;
 
               // Mixed methods are allowed — only the SIDE this resync would
