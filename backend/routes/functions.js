@@ -8862,9 +8862,21 @@ router.post('/:name', async (req, res) => {
 
     case 'markExemptEmployeesPresent': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
-      const { date, date_from, date_to } = p;
-      const r = await markExemptEmployeesPresent(date_from || date, date_to || date);
-      return res.json({ success: true, marked: r.marked });
+      // Backfill: accepts a date range, a single date, or a month/year. Never
+      // runs into the future, never touches a day that already has a record.
+      // Optional user_id limits it to one employee.
+      const { date, date_from, date_to, month, year, user_id: onlyUser } = p;
+      const todayIST = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      let from = date_from || date, to = date_to || date;
+      if (!from && month && year) {
+        from = `${year}-${String(month).padStart(2, '0')}-01`;
+        to = new Date(Date.UTC(Number(year), Number(month), 0)).toISOString().slice(0, 10);
+      }
+      if (!from) return res.json({ success: false, error: 'date, date_from/date_to, or month/year required' });
+      if (!to || to > todayIST) to = todayIST;
+      if (from > to) return res.json({ success: true, marked: 0, message: 'Nothing to mark for a future range' });
+      const r = await markExemptEmployeesPresent(from, to, onlyUser);
+      return res.json({ success: true, marked: r.marked, checked: r.checked, from, to, message: `${r.marked} attendance day(s) marked present for ${r.checked} exempt employee(s) (${from} to ${to})` });
     }
 
     // Night Shift Management's live dashboard — one row per employee

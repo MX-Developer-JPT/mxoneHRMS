@@ -60,15 +60,18 @@ export default function AttendanceExemption() {
     setBulkSaturdayLoading(false);
   };
 
+  const monthStart = format(new Date(), 'yyyy-MM') + '-01';
+  const [backfillFrom, setBackfillFrom] = useState(monthStart);
+  const [backfillTo, setBackfillTo] = useState(format(new Date(), 'yyyy-MM-dd'));
+
+  // Backfill: marks every exempt employee present for each day in the range
+  // that has no record yet (weekends/holidays included). The same thing also
+  // runs automatically every night for the current month.
   const markExemptPresent = async () => {
     setMarkingPresent(true);
     try {
-      const now = new Date();
-      const res = await base44.functions.invoke('markExemptEmployeesPresent', {
-        month: now.getMonth() + 1,
-        year: now.getFullYear()
-      });
-      toast.success(res.data?.message || 'Exempt employees marked present');
+      const res = await base44.functions.invoke('markExemptEmployeesPresent', { date_from: backfillFrom, date_to: backfillTo });
+      toast.success(res.data?.message || res.message || 'Exempt employees marked present');
     } catch (e) {
       toast.error('Failed: ' + e.message);
     }
@@ -82,6 +85,10 @@ export default function AttendanceExemption() {
     setEmployees(prev =>
       prev.map(e => e.id === emp.id ? { ...e, is_attendance_exempt: newVal } : e)
     );
+    if (newVal) {
+      // Mark this month's days present right away instead of waiting for the nightly run.
+      base44.functions.invoke('markExemptEmployeesPresent', { date_from: monthStart, date_to: format(new Date(), 'yyyy-MM-dd'), user_id: emp.user_id }).catch(() => {});
+    }
     toast.success(`${emp.display_name || emp.employee_code} is now ${newVal ? 'exempt from' : 'required for'} attendance`);
     setUpdating(prev => ({ ...prev, [emp.id]: false }));
   };
@@ -114,9 +121,11 @@ export default function AttendanceExemption() {
               <Calendar className="w-4 h-4 mr-2" />
               {bulkSaturdayLoading ? 'Processing...' : 'Saturdays → Working'}
             </Button>
-            <Button onClick={markExemptPresent} disabled={markingPresent} className="bg-green-600 hover:bg-green-700">
+            <Input type="date" value={backfillFrom} onChange={e => setBackfillFrom(e.target.value)} className="w-36 bg-white" />
+            <Input type="date" value={backfillTo} onChange={e => setBackfillTo(e.target.value)} className="w-36 bg-white" />
+            <Button onClick={markExemptPresent} disabled={markingPresent || !backfillFrom || !backfillTo} className="bg-green-600 hover:bg-green-700">
               <CalendarCheck className="w-4 h-4 mr-2" />
-              {markingPresent ? 'Marking...' : `Mark Present (${format(new Date(), 'MMM yyyy')})`}
+              {markingPresent ? 'Marking...' : 'Backfill Present'}
             </Button>
           </div>
         </div>

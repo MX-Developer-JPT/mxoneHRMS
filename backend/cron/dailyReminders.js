@@ -9,6 +9,7 @@
 // 4. Upcoming holiday reminder — once, a few days before each holiday.
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
+import { sendEmail, celebrationEmail } from '../utils/email.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 function istDateString(dayOffset = 0) {
@@ -212,7 +213,51 @@ export async function sendCelebrationNotifications() {
       sent++;
     }
   }
-  return { checked: empRows.length, sent };
+  const emailed = await sendCelebrationEmails(empRows);
+  return { checked: empRows.length, sent, emailed };
+}
+
+
+// Emails the HR-configured recipient list (Admin Panel → Email) twice per
+// event: a heads-up N days ahead, and a reminder on the day itself. Each is
+// deduped per (employee, event date, kind) via ReminderLog so a re-run of
+// the cron never double-sends.
+async function sendCelebrationEmails(empRows) {
+  const row = await one("SELECT value FROM settings WHERE key='celebration_email_config'");
+  let cfg = {}; try { cfg = row?.value ? JSON.parse(row.value) : {}; } catch {}
+  const recipients = cfg.emails || [];
+  if (!recipients.length) return 0;
+  const advance = cfg.advance_days ?? 3;
+  const todayStr = istDateString(0);
+  const aheadStr = istDateString(advance);
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const label = (d) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}`;
+  let sent = 0;
+  for (const r of empRows) {
+    const emp = JSON.parse(r.data);
+    if (!emp.user_id) continue;
+    const uRow = await one('SELECT full_name FROM users WHERE id=$1', [emp.user_id]);
+    const name = uRow?.full_name || emp.display_name || 'Employee';
+    const events = [];
+    if (cfg.birthdays !== false && emp.date_of_birth) events.push(['birthday', emp.date_of_birth, null]);
+    if (cfg.anniversaries !== false && emp.date_of_joining) events.push(['anniversary', emp.date_of_joining, emp.date_of_joining]);
+    for (const [kind, dateStr, joined] of events) {
+      const md = dateStr.slice(5, 10);
+      for (const [when, target] of [['advance', aheadStr], ['today', todayStr]]) {
+        if (md !== target.slice(5, 10)) continue;
+        const years = joined ? Number(target.slice(0, 4)) - Number(joined.slice(0, 4)) : null;
+        if (kind === 'anniversary' && years < 1) continue;
+        const logKind = `${kind}_email_${when}`;
+        if (await alreadySentEver(emp.user_id, target, logKind)) continue;
+        try {
+          await sendEmail({ to: recipients, ...celebrationEmail({ kind, name, department: emp.department, designation: emp.designation, dateLabel: label(target), years, isToday: when === 'today' }), meta: { source: 'celebration' } });
+          await markSentEver(emp.user_id, target, logKind);
+          sent++;
+        } catch (e) { console.error('[celebration-email] failed:', e.message); }
+      }
+    }
+  }
+  return sent;
 }
 
 // ── Upcoming holiday reminder — once, a few days ahead ───────────────────

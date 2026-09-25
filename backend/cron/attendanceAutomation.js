@@ -115,12 +115,12 @@ export async function markMissingAttendanceAsAbsent(targetDate) {
 // fromDate through toDate (weekends/holidays included — "all days"), never
 // touching a day that already has a record (approved leave, regularisation,
 // a manual correction). Idempotent, so safe to re-run over the same range.
-export async function markExemptEmployeesPresent(fromDate, toDate) {
+export async function markExemptEmployeesPresent(fromDate, toDate, onlyUserId) {
   const to = toDate || istDateString(0);
   const from = fromDate || to;
   const exempts = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
     .map(r => JSON.parse(r.data))
-    .filter(e => e.user_id && e.is_attendance_exempt);
+    .filter(e => e.user_id && e.is_attendance_exempt && (!onlyUserId || e.user_id === onlyUserId));
   if (!exempts.length) return { from, to, checked: 0, marked: 0 };
 
   const defaultShift = await getDefaultShift();

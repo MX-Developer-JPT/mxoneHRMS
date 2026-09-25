@@ -288,6 +288,28 @@ router.post('/smtp-settings', async (req, res) => {
   res.json({ success: true });
 });
 
+// ── Celebration alert recipients (birthday / work-anniversary emails) ─────
+const CELEBRATION_KEY = 'celebration_email_config';
+router.get('/celebration-settings', async (_req, res) => {
+  const row = await one("SELECT value FROM settings WHERE key=$1", [CELEBRATION_KEY]);
+  let cfg = {};
+  try { cfg = row?.value ? JSON.parse(row.value) : {}; } catch {}
+  res.json({ emails: cfg.emails || [], advance_days: cfg.advance_days ?? 3, birthdays: cfg.birthdays !== false, anniversaries: cfg.anniversaries !== false });
+});
+router.post('/celebration-settings', async (req, res) => {
+  const emails = [...new Set((req.body.emails || []).map(e => String(e).trim().toLowerCase()).filter(Boolean))];
+  const bad = emails.filter(e => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+  if (bad.length) return res.status(400).json({ error: `Invalid email address: ${bad.join(', ')}` });
+  const advance = Math.min(30, Math.max(1, parseInt(req.body.advance_days, 10) || 3));
+  const value = JSON.stringify({ emails, advance_days: advance, birthdays: req.body.birthdays !== false, anniversaries: req.body.anniversaries !== false });
+  await run(
+    `INSERT INTO settings(key,value,updated_at) VALUES($1,$2,NOW()::TEXT)
+     ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT`,
+    [CELEBRATION_KEY, value]
+  );
+  res.json({ success: true });
+});
+
 // ── Email: verify Brevo connection ────────────────────────
 router.get('/email-status', async (_req, res) => {
   res.json(await verifyEmail());

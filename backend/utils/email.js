@@ -367,3 +367,33 @@ export const emailTemplates = {
     ),
   }),
 };
+
+// Birthday / work-anniversary heads-up + same-day reminder for the HR-
+// configured recipient list (Admin Panel → Email → Celebration Alerts).
+export function celebrationEmail({ kind, name, department, designation, dateLabel, years, isToday }) {
+  const isBday = kind === 'birthday';
+  const what = isBday ? 'birthday' : `${years}-year work anniversary`;
+  const subject = isToday
+    ? `${isBday ? '🎂' : '🎉'} Today: ${name}'s ${what}`
+    : `${isBday ? '🎂' : '🎉'} Upcoming: ${name}'s ${what} on ${dateLabel}`;
+  const intro = isToday
+    ? `Today is <strong>${name}</strong>'s ${what}.`
+    : `<strong>${name}</strong>'s ${what} is coming up on <strong>${dateLabel}</strong>.`;
+  return {
+    subject,
+    html: wrap(
+      emailHeader(isBday ? 'Birthday Reminder' : 'Work Anniversary Reminder', isBday ? '#be185d' : '#1e40af'),
+      emailBody(`
+        <p>${intro}</p>
+        ${infoTable([
+          ['Employee', name],
+          ...(department ? [['Department', department]] : []),
+          ...(designation ? [['Designation', designation]] : []),
+          ['Date', dateLabel],
+          ...(!isBday && years ? [['Years with company', String(years)]] : []),
+        ])}
+      `),
+      emailFooter()
+    ),
+  };
+}

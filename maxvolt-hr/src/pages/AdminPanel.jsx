@@ -693,10 +693,23 @@ function EmailTab() {
   const [checking, setChecking] = useState(false);
   const [testTo, setTestTo] = useState('');
   const [status, setStatus] = useState(null);
+  const [celeb, setCeleb] = useState({ emails: '', advance_days: 3, birthdays: true, anniversaries: true });
+  const [celebSaving, setCelebSaving] = useState(false);
 
   useEffect(() => {
     adminFetch('/smtp-settings').then(r => setFrom(r.from || '')).catch(() => {});
+    adminFetch('/celebration-settings').then(r => setCeleb({ emails: (r.emails || []).join(', '), advance_days: r.advance_days ?? 3, birthdays: r.birthdays !== false, anniversaries: r.anniversaries !== false })).catch(() => {});
   }, []);
+
+  const saveCeleb = async () => {
+    setCelebSaving(true);
+    try {
+      const emails = celeb.emails.split(/[\s,;]+/).map(e => e.trim()).filter(Boolean);
+      await adminFetch('/celebration-settings', { method: 'POST', body: JSON.stringify({ ...celeb, emails }) });
+      toast.success('Celebration alert settings saved');
+    } catch (e) { toast.error(e.message); }
+    finally { setCelebSaving(false); }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -752,6 +765,30 @@ function EmailTab() {
 
         <Button size="sm" onClick={save} disabled={saving}>
           {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
+          Save
+        </Button>
+      </div>
+
+      <div className="border rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Bell className="w-5 h-5 text-primary" />
+          <h3 className="font-semibold">Birthday &amp; Work Anniversary Alerts</h3>
+        </div>
+        <p className="text-xs text-muted-foreground">These addresses get one email a few days before each employee's birthday / work anniversary, and another on the day itself.</p>
+        <div className="space-y-1">
+          <Label className="text-xs">Recipient emails (comma or space separated)</Label>
+          <Input value={celeb.emails} onChange={e => setCeleb(c => ({ ...c, emails: e.target.value }))} placeholder="hr@company.com, ceo@company.com" className="h-9 text-sm" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Send the heads-up email this many days before</Label>
+          <Input type="number" min={1} max={30} value={celeb.advance_days} onChange={e => setCeleb(c => ({ ...c, advance_days: e.target.value }))} className="h-9 text-sm w-24" />
+        </div>
+        <div className="flex gap-5 text-sm">
+          <label className="flex items-center gap-2"><input type="checkbox" checked={celeb.birthdays} onChange={e => setCeleb(c => ({ ...c, birthdays: e.target.checked }))} /> Birthdays</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={celeb.anniversaries} onChange={e => setCeleb(c => ({ ...c, anniversaries: e.target.checked }))} /> Work anniversaries</label>
+        </div>
+        <Button size="sm" onClick={saveCeleb} disabled={celebSaving}>
+          {celebSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
           Save
         </Button>
       </div>
