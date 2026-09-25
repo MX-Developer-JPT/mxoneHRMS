@@ -8,7 +8,7 @@ import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
-import { runNightlyAttendanceAutomation, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
+import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -8862,21 +8862,9 @@ router.post('/:name', async (req, res) => {
 
     case 'markExemptEmployeesPresent': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
-      const { date } = p;
-      const exempts = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
-        .filter(e=>e.is_attendance_exempt);
-      let marked = 0;
-      for (const emp of exempts) {
-        const ex = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1", [emp.user_id]))
-          .find(a=>a.date===date);
-        if (!ex) {
-          const id = uuidv4();
-          const d  = { id, user_id:emp.user_id, date, status:'present', auto_marked:true, working_hours:9 };
-          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [id,emp.user_id,JSON.stringify(d)]);
-          marked++;
-        }
-      }
-      return res.json({ success:true, marked });
+      const { date, date_from, date_to } = p;
+      const r = await markExemptEmployeesPresent(date_from || date, date_to || date);
+      return res.json({ success: true, marked: r.marked });
     }
 
     // Night Shift Management's live dashboard — one row per employee

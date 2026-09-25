@@ -108,6 +108,50 @@ export async function markMissingAttendanceAsAbsent(targetDate) {
   return { date, checked: employees.length, marked };
 }
 
+// Employees flagged is_attendance_exempt never punch, and every other
+// automation here deliberately skips them — so they previously ended up with
+// NO Attendance row at all, which payroll/muster/reports read as absent.
+// Marks every exempt employee 'present' for every calendar day from
+// fromDate through toDate (weekends/holidays included — "all days"), never
+// touching a day that already has a record (approved leave, regularisation,
+// a manual correction). Idempotent, so safe to re-run over the same range.
+export async function markExemptEmployeesPresent(fromDate, toDate) {
+  const to = toDate || istDateString(0);
+  const from = fromDate || to;
+  const exempts = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
+    .map(r => JSON.parse(r.data))
+    .filter(e => e.user_id && e.is_attendance_exempt);
+  if (!exempts.length) return { from, to, checked: 0, marked: 0 };
+
+  const defaultShift = await getDefaultShift();
+  let marked = 0;
+  for (const emp of exempts) {
+    const shift = await getShiftForEmployee(emp, defaultShift);
+    const hours = Number(shift.working_hours) || 9;
+    const existingDates = new Set((await all(
+      "SELECT data::jsonb->>'date' AS d FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' >= $2 AND data::jsonb->>'date' <= $3",
+      [emp.user_id, from, to]
+    )).map(r => r.d));
+    for (let t = new Date(from + 'T00:00:00Z').getTime(); t <= new Date(to + 'T00:00:00Z').getTime(); t += 86400000) {
+      const date = new Date(t).toISOString().slice(0, 10);
+      if (existingDates.has(date)) continue;
+      if (emp.date_of_joining && date < emp.date_of_joining) continue;
+      const id = uuidv4();
+      const attData = {
+        id, user_id: emp.user_id, date, status: 'present',
+        employee_code: emp.employee_code || '',
+        working_hours: hours, total_working_minutes: hours * 60,
+        attendance_exempt: true, auto_marked: true,
+        auto_marked_reason: 'Exempted from attendance — auto-marked present',
+        source: 'auto_cron',
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [id, emp.user_id, JSON.stringify(attData)]);
+      marked++;
+    }
+  }
+  return { from, to, checked: exempts.length, marked };
+}
+
 // Force-close any Attendance row that's still "in progress" (a session
 // checked in but never checked out) once the 2 AM cutoff has passed.
 //
@@ -676,6 +720,11 @@ export async function runNightlyAttendanceAutomation(targetDate) {
   const date = targetDate || istDateString(-1);
   const noRecord = await markMissingAttendanceAsAbsent(date);
   const unclosed = await closeUnfinishedSessions(date);
-  console.log(`[attendance-cron] ${date} — no-record absent: ${noRecord.marked}/${noRecord.checked}, unclosed sessions closed: ${unclosed.marked}/${unclosed.checked}`);
-  return { date, noRecord, unclosed };
+  // Exempt employees: backfill from the 1st of the month through today (so
+  // newly-exempted employees and any missed runs self-heal) — today is
+  // included so their present shows up immediately, not a day later.
+  const today = istDateString(0);
+  const exempt = await markExemptEmployeesPresent(today.slice(0, 8) + '01', today);
+  console.log(`[attendance-cron] ${date} — no-record absent: ${noRecord.marked}/${noRecord.checked}, unclosed sessions closed: ${unclosed.marked}/${unclosed.checked}, exempt marked present: ${exempt.marked}`);
+  return { date, noRecord, unclosed, exempt };
 }
