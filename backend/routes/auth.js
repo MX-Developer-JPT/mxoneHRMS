@@ -231,6 +231,72 @@ router.post('/reset-password-request', async (req, res) => {
   }
 });
 
+// ── Forgot-password via emailed OTP ──────────────────────────────────────
+// Reuses the otps table under a 'pwreset:' key prefix so it can never collide
+// with a registration / password-change code for the same address. Always
+// answers success to /forgot-password-otp (never reveals whether an account
+// exists), enforces a 60s resend cooldown, and burns the code after 5 wrong
+// guesses. Counters live in memory — fine for a single instance, and worst
+// case a restart just resets them.
+const PW_RESET_PREFIX = 'pwreset:';
+const pwResetLastSent = new Map();
+const pwResetAttempts = new Map();
+
+router.post('/forgot-password-otp', async (req, res) => {
+  const email = String(req.body?.email || '').toLowerCase().trim();
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  const last = pwResetLastSent.get(email) || 0;
+  if (Date.now() - last < 60 * 1000) {
+    return res.status(429).json({ error: 'A code was just sent. Please wait a minute before requesting another.' });
+  }
+  pwResetLastSent.set(email, Date.now());
+  res.json({ success: true });
+  try {
+    const user = await one('SELECT * FROM users WHERE LOWER(email) = $1', [email]);
+    if (!user) return;
+    const key = PW_RESET_PREFIX + email;
+    const code = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await run('DELETE FROM otps WHERE email = $1', [key]);
+    await run('INSERT INTO otps (email, code, expires_at) VALUES ($1, $2, $3)', [key, code, expiresAt]);
+    pwResetAttempts.delete(email);
+    const tpl = emailTemplates.otpEmail({ name: user.full_name, code, expiresMinutes: 10 });
+    await sendEmail({ to: user.email, ...tpl });
+  } catch (e) {
+    console.error('[auth] Password reset OTP email failed:', e.message);
+  }
+});
+
+router.post('/reset-password-otp', async (req, res) => {
+  const email = String(req.body?.email || '').toLowerCase().trim();
+  const otp = String(req.body?.otp_code || '').trim();
+  const pwd = req.body?.new_password;
+  if (!email || !otp || !pwd) return res.status(400).json({ error: 'Email, verification code and new password are required' });
+  if (pwd.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  const key = PW_RESET_PREFIX + email;
+  const record = await one('SELECT * FROM otps WHERE email = $1', [key]);
+  if (!record) return res.status(400).json({ error: 'Invalid or expired code. Please request a new one.' });
+  if (new Date(record.expires_at) < new Date()) {
+    await run('DELETE FROM otps WHERE email = $1', [key]);
+    return res.status(400).json({ error: 'Code expired. Please request a new one.' });
+  }
+  if (record.code !== otp) {
+    const n = (pwResetAttempts.get(email) || 0) + 1;
+    pwResetAttempts.set(email, n);
+    if (n >= 5) {
+      await run('DELETE FROM otps WHERE email = $1', [key]);
+      pwResetAttempts.delete(email);
+      return res.status(400).json({ error: 'Too many incorrect attempts. Please request a new code.' });
+    }
+    return res.status(400).json({ error: 'Incorrect code' });
+  }
+  await run('DELETE FROM otps WHERE email = $1', [key]);
+  pwResetAttempts.delete(email);
+  const upd = await run('UPDATE users SET password=$1, must_change_password=FALSE, updated_at=NOW()::TEXT WHERE LOWER(email)=$2', [bcrypt.hashSync(pwd, 10), email]);
+  if (!upd.rowCount) return res.status(400).json({ error: 'Could not find that account.' });
+  res.json({ success: true });
+});
+
 // POST /api/auth/reset-password
 router.post('/reset-password', async (req, res) => {
   const { token: resetToken, new_password, newPassword } = req.body;

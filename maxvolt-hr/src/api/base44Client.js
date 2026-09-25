@@ -113,6 +113,12 @@ const auth = {
     window.location.href = '/login';
   },
 
+  forgotPasswordOtp: (email) =>
+    apiFetch('/auth/forgot-password-otp', { method: 'POST', body: JSON.stringify({ email }) }),
+
+  resetPasswordWithOtp: ({ email, otp_code, new_password }) =>
+    apiFetch('/auth/reset-password-otp', { method: 'POST', body: JSON.stringify({ email, otp_code, new_password }) }),
+
   resetPasswordRequest: (email) =>
     apiFetch('/auth/reset-password-request', { method: 'POST', body: JSON.stringify({ email }) }),
 
