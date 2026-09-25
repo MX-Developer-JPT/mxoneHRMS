@@ -179,7 +179,9 @@ export default function Approvals() {
       toast.success(`Leave ${status}`);
       loadData();
     } catch (error) {
-      toast.error('Failed to update leave');
+      // Surface the server's actual reason (e.g. "not authorized for this
+      // approval level") instead of a generic message that hides it.
+      toast.error(error?.data?.error || error?.message || 'Failed to update leave');
     } finally {
       setProcessing(p => ({ ...p, [leaveId]: false }));
     }
