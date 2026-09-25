@@ -6,7 +6,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
-import { buildSessions, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
+import { buildSessions, punchesOnlyAdded, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
@@ -8406,7 +8406,7 @@ router.post('/:name', async (req, res) => {
           // already incomplete (still open, or missing a checkout) is
           // still allowed to improve.
           const wasComplete = !!d.check_out_time && !d.is_in_progress;
-          const wouldGetWorse = wasComplete && (sd.is_in_progress || !sd.check_out_time || (sd.working_hours || 0) < (d.working_hours || 0) - 0.5);
+          const wouldGetWorse = wasComplete && !punchesOnlyAdded(d.raw_punches, sd.raw_punches, false) && (sd.is_in_progress || !sd.check_out_time || (sd.working_hours || 0) < (d.working_hours || 0) - 0.5);
           if (wouldGetWorse) { skippedSuspicious++; continue; }
 
           // Per-side method attribution: this sync's own raw device punches
@@ -9417,7 +9417,7 @@ router.post('/:name', async (req, res) => {
           // a day that was already closed out correctly must not flip
           // back to "still working" because of it.
           const wasComplete = !!d.check_out_time && !d.is_in_progress;
-          const wouldGetWorse = wasComplete && (sdMerged.is_in_progress || !sdMerged.check_out_time || (sdMerged.working_hours || 0) < (d.working_hours || 0) - 0.5);
+          const wouldGetWorse = wasComplete && !punchesOnlyAdded(d.raw_punches, mergedPunches) && (sdMerged.is_in_progress || !sdMerged.check_out_time || (sdMerged.working_hours || 0) < (d.working_hours || 0) - 0.5);
           if (wouldGetWorse) continue;
 
           const updated = {
@@ -9666,7 +9666,7 @@ router.post('/:name', async (req, res) => {
               // Never let a resync make an already-complete day WORSE — see
               // the identical guard/reasoning in reprocessAttendanceLogs.
               const wasComplete = !!existAtt.data.check_out_time && !existAtt.data.is_in_progress;
-              const wouldGetWorse = wasComplete && (sdM.is_in_progress || !sdM.check_out_time || (sdM.working_hours || 0) < (existAtt.data.working_hours || 0) - 0.5);
+              const wouldGetWorse = wasComplete && !punchesOnlyAdded(existAtt.data.raw_punches, merged) && (sdM.is_in_progress || !sdM.check_out_time || (sdM.working_hours || 0) < (existAtt.data.working_hours || 0) - 0.5);
               if (wouldGetWorse) continue;
               await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
                 [mStatus, JSON.stringify({ ...existAtt.data, ...attData,

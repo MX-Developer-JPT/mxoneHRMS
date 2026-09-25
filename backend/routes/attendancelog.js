@@ -671,7 +671,7 @@ async function processRecord(record) {
   // chunk of its recorded hours just because a single new punch shifted
   // buildSessions' alternating pairing.
   const wasComplete = !!data.check_out_time && !data.is_in_progress;
-  const wouldGetWorse = wasComplete && (sd.is_in_progress || !sd.check_out_time || (sd.working_hours || 0) < (data.working_hours || 0) - 0.5);
+  const wouldGetWorse = wasComplete && !punchesOnlyAdded(data.raw_punches, mergedPunches) && (sd.is_in_progress || !sd.check_out_time || (sd.working_hours || 0) < (data.working_hours || 0) - 0.5);
   if (wouldGetWorse) {
     return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_would_regress' };
   }
@@ -797,3 +797,23 @@ router.get('/', (_req, res) => {
 });
 
 export default router;
+
+// True when `merged` only ADDS punches to `existing` (nothing already recorded
+// was lost) and — if requireAfterLast — every added punch is later than the
+// latest existing one. That's a genuine new punch (a later session on the same
+// day), NOT a late/out-of-order arrival that could re-pair the day's history,
+// so the "never make a complete day worse" regress guards must let it through.
+// Without this, any punch after a first IN/OUT pair (a second/third session
+// the same day, all sent as direction IN by the device) looked like "the day
+// flipped back to in-progress" and was silently dropped — the attendance
+// showed only the first session while the biometric log had every punch.
+export function punchesOnlyAdded(existing, merged, requireAfterLast = true) {
+  const ms = (p) => new Date(String(p?.time ?? '').trim().replace(' ', 'T')).getTime();
+  const ex = (existing || []).map(ms).filter(n => !isNaN(n));
+  const mg = (merged || []).map(ms).filter(n => !isNaN(n));
+  const has = (list, t) => list.some(x => Math.abs(x - t) < DEDUP_THRESHOLD_MS);
+  if (!ex.every(t => has(mg, t))) return false;
+  if (!requireAfterLast) return true;
+  const lastEx = ex.length ? Math.max(...ex) : -Infinity;
+  return mg.every(t => has(ex, t) || t > lastEx);
+}
