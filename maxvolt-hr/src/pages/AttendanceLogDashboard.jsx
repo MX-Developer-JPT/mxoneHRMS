@@ -267,7 +267,7 @@ export default function AttendanceLogDashboard() {
       const res = await base44.functions.invoke('restoreSelfieDeclaredStatus', { date_from: processFrom, date_to: processTo });
       const r = res.data || res;
       if (r?.success) {
-        toast.success(`WFH/OD restored on ${r.updated} selfie day(s)${r.inferred_without_stored_reason ? ` (${r.inferred_without_stored_reason} inferred — no stored reason, OD if a field trip exists else WFH)` : ''}; ${r.already_correct} already correct`);
+        toast.success(`${r.date_from} to ${r.date_to}: scanned ${r.scanned} records, ${r.selfie_days} selfie days — ${r.updated} set to WFH/OD${r.inferred_without_stored_reason ? ` (${r.inferred_without_stored_reason} inferred: OD if a field trip exists, else WFH)` : ''}, ${r.already_correct} already correct, ${(r.skipped?.regularised_admin_or_leave || 0) + (r.skipped?.off_or_absent_status || 0)} skipped (regularised/leave/off)`, { duration: 12000 });
       } else toast.error(r?.error || 'Failed');
     } catch (err) { toast.error(err?.message || 'Failed'); }
     setProcessing(false);

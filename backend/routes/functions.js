@@ -8878,16 +8878,20 @@ router.post('/:name', async (req, res) => {
       const rsRows = await all("SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [rsFrom, rsToDate]);
       const rsTrips = await all("SELECT user_id, data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [rsFrom, rsToDate]);
       const rsTripSet = new Set(rsTrips.map(r => `${r.user_id}|${JSON.parse(r.data).date}`));
-      let rsUpdated = 0, rsAlready = 0, rsInferred = 0, rsSkipped = 0;
+      let rsUpdated = 0, rsAlready = 0, rsInferred = 0, rsSelfieDays = 0;
+      const rsSkipped = { regularised_admin_or_leave: 0, off_or_absent_status: 0 };
       const rsSample = [];
       for (const row of rsRows) {
         const d = JSON.parse(row.data);
-        const isSelfie = d.check_in_source === 'selfie' || d.check_out_source === 'selfie' || d.check_in_selfie_url || d.check_out_selfie_url;
+        // A selfie CHECK-IN always required a WFH/OD reason, so any day with
+        // one is a declared WFH/OD day (a selfie checkout alone doesn't count).
+        const isSelfie = d.check_in_source === 'selfie' || d.check_in_selfie_url || d.selfie_reason;
         if (!isSelfie) continue;
-        if (d.regularised || d.admin_marked || d.leave_id || ['leave', 'holiday', 'week_off', 'absent'].includes(d.status)) { rsSkipped++; continue; }
+        rsSelfieDays++;
+        if (d.regularised || d.admin_marked || d.leave_id) { rsSkipped.regularised_admin_or_leave++; continue; }
+        if (['leave', 'holiday', 'week_off', 'absent'].includes(d.status)) { rsSkipped.off_or_absent_status++; continue; }
         let reason = d.selfie_reason, inferred = false;
         if (reason !== 'wfh' && reason !== 'od') {
-          if (d.biometric_synced || d.check_in_source === 'biometric') { rsSkipped++; continue; }
           reason = rsTripSet.has(`${d.user_id}|${d.date}`) ? 'od' : 'wfh';
           inferred = true;
         }
@@ -8900,7 +8904,7 @@ router.post('/:name', async (req, res) => {
         }
         rsUpdated++; if (inferred) rsInferred++;
       }
-      return res.json({ success: true, dry_run: rsDry, scanned: rsRows.length, updated: rsUpdated, inferred_without_stored_reason: rsInferred, already_correct: rsAlready, skipped: rsSkipped, sample: rsSample });
+      return res.json({ success: true, dry_run: rsDry, date_from: rsFrom, date_to: rsToDate, scanned: rsRows.length, selfie_days: rsSelfieDays, updated: rsUpdated, inferred_without_stored_reason: rsInferred, already_correct: rsAlready, skipped: rsSkipped, sample: rsSample });
     }
 
     case 'markExemptEmployeesPresent': {
