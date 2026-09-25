@@ -8921,7 +8921,7 @@ router.post('/:name', async (req, res) => {
       }
       if (!from) return res.json({ success: false, error: 'date, date_from/date_to, or month/year required' });
       if (!to || to > todayIST) to = todayIST;
-      if (from > to) return res.json({ success: true, marked: 0, message: 'Nothing to mark for a future range' });
+      if (from !== 'joining' && from > to) return res.json({ success: true, marked: 0, message: 'Nothing to mark for a future range' });
       const r = await markExemptEmployeesPresent(from, to, onlyUser);
       return res.json({ success: true, marked: r.marked, checked: r.checked, from, to, message: `${r.marked} attendance day(s) marked present for ${r.checked} exempt employee(s) (${from} to ${to})` });
     }

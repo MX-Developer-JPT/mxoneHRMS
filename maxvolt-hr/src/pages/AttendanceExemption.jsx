@@ -86,8 +86,8 @@ export default function AttendanceExemption() {
       prev.map(e => e.id === emp.id ? { ...e, is_attendance_exempt: newVal } : e)
     );
     if (newVal) {
-      // Mark this month's days present right away instead of waiting for the nightly run.
-      base44.functions.invoke('markExemptEmployeesPresent', { date_from: monthStart, date_to: format(new Date(), 'yyyy-MM-dd'), user_id: emp.user_id }).catch(() => {});
+      // Mark every day since joining present right away instead of waiting for the nightly run.
+      base44.functions.invoke('markExemptEmployeesPresent', { date_from: 'joining', date_to: format(new Date(), 'yyyy-MM-dd'), user_id: emp.user_id }).catch(() => {});
     }
     toast.success(`${emp.display_name || emp.employee_code} is now ${newVal ? 'exempt from' : 'required for'} attendance`);
     setUpdating(prev => ({ ...prev, [emp.id]: false }));

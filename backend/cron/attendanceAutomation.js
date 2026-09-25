@@ -128,11 +128,27 @@ export async function markExemptEmployeesPresent(fromDate, toDate, onlyUserId) {
   for (const emp of exempts) {
     const shift = await getShiftForEmployee(emp, defaultShift);
     const hours = Number(shift.working_hours) || 9;
-    const existingDates = new Set((await all(
-      "SELECT data::jsonb->>'date' AS d FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' >= $2 AND data::jsonb->>'date' <= $3",
-      [emp.user_id, from, to]
-    )).map(r => r.d));
-    for (let t = new Date(from + 'T00:00:00Z').getTime(); t <= new Date(to + 'T00:00:00Z').getTime(); t += 86400000) {
+    // from === 'joining' → this employee's own joining date (their whole
+    // history), else 1 Jan 2024 if none is recorded.
+    const empFrom = from === 'joining' ? (emp.date_of_joining || '2024-01-01') : from;
+    if (empFrom > to) continue;
+    const existingRows = await all(
+      "SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' >= $2 AND data::jsonb->>'date' <= $3",
+      [emp.user_id, empFrom, to]
+    );
+    const existingDates = new Set();
+    for (const r of existingRows) {
+      const d = JSON.parse(r.data);
+      existingDates.add(d.date);
+      // An auto-marked absent left over from before this person was exempted
+      // (nobody punched, no leave/regularisation) becomes present too.
+      if (d.status === 'absent' && d.auto_marked && !d.regularised && !d.admin_marked && !d.leave_id && !d.check_in_time) {
+        const fixed = { ...d, status: 'present', working_hours: hours, total_working_minutes: hours * 60, attendance_exempt: true, auto_marked_reason: 'Exempted from attendance — auto-marked present' };
+        await run("UPDATE entities SET status='present', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(fixed), r.id]);
+        marked++;
+      }
+    }
+    for (let t = new Date(empFrom + 'T00:00:00Z').getTime(); t <= new Date(to + 'T00:00:00Z').getTime(); t += 86400000) {
       const date = new Date(t).toISOString().slice(0, 10);
       if (existingDates.has(date)) continue;
       if (emp.date_of_joining && date < emp.date_of_joining) continue;
@@ -720,11 +736,11 @@ export async function runNightlyAttendanceAutomation(targetDate) {
   const date = targetDate || istDateString(-1);
   const noRecord = await markMissingAttendanceAsAbsent(date);
   const unclosed = await closeUnfinishedSessions(date);
-  // Exempt employees: backfill from the 1st of the month through today (so
+  // Exempt employees: backfill from each one's joining date through today (so
   // newly-exempted employees and any missed runs self-heal) — today is
   // included so their present shows up immediately, not a day later.
   const today = istDateString(0);
-  const exempt = await markExemptEmployeesPresent(today.slice(0, 8) + '01', today);
+  const exempt = await markExemptEmployeesPresent('joining', today);
   console.log(`[attendance-cron] ${date} — no-record absent: ${noRecord.marked}/${noRecord.checked}, unclosed sessions closed: ${unclosed.marked}/${unclosed.checked}, exempt marked present: ${exempt.marked}`);
   return { date, noRecord, unclosed, exempt };
 }
