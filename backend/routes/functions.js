@@ -6,7 +6,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
-import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
+import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createRequire } from 'module';
@@ -2243,8 +2243,12 @@ async function runLeaveAction(cu, leaveId, action, note) {
             // skip-if-checked-in behavior — real attendance still wins
             // there, since there's no "other half" to reconcile with.
             if (existing.check_in_time && !lv.half_day) continue;
-            const att = { ...existing, status: attStatus, leave_id: leaveId, leave_half_day: !!lv.half_day, leave_policy_name: leavePolicyName, leave_policy_code: leavePolicyCode };
-            await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [attStatus, JSON.stringify(att), attRow.id]);
+            // Half-day leave on a day already worked for MORE than 2 hours →
+            // the day reads as a full present day, not half_day.
+            const workedOver2h = !!lv.half_day && (existing.total_working_minutes || Math.round((existing.working_hours || 0) * 60)) > 120;
+            const dayStatus = workedOver2h ? 'present' : attStatus;
+            const att = { ...existing, status: dayStatus, leave_id: leaveId, leave_half_day: !!lv.half_day, leave_policy_name: leavePolicyName, leave_policy_code: leavePolicyCode };
+            await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [dayStatus, JSON.stringify(att), attRow.id]);
           } else {
             const attId = uuidv4();
             const att = { id: attId, user_id: lv.user_id, date, status: attStatus, leave_id: leaveId, leave_half_day: !!lv.half_day, leave_policy_name: leavePolicyName, leave_policy_code: leavePolicyCode, created_at: now };
@@ -4370,7 +4374,7 @@ router.post('/:name', async (req, res) => {
 
       const saSessionData = buildSessions(saRawPunches);
       const saHalfDayHours = await getHalfDayOverrideHours(saAttDate, saShift);
-      const saStatusResult = computeStatusFromSessions(saSessionData, saShift, saHalfDayHours);
+      const saStatusResult = applyHalfDayLeaveStatus(saAtt, saSessionData, computeStatusFromSessions(saSessionData, saShift, saHalfDayHours));
       // WFH/OD are proper attendance statuses (filterable/reportable), not a
       // note bolted onto 'present' — override whatever the normal
       // present/late/half-day engine computed. Only applies while the
@@ -9448,7 +9452,7 @@ router.post('/:name', async (req, res) => {
           // above — a live device punch landing on a manually-corrected,
           // regularised, or leave-driven day must never silently overwrite
           // it (e.g. a half-day leave's worked half genuinely punching in).
-          if (d.status === 'regularised' || d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') continue;
+          if (d.status === 'regularised' || d.regularised || d.admin_marked || (d.leave_id && !d.leave_half_day) || d.status === 'leave') continue;
 
           // Merge raw_punches: combine existing + new, then rebuild
           const prevPunches = d.raw_punches || [];
@@ -9457,7 +9461,7 @@ router.post('/:name', async (req, res) => {
             if (!rmasNearDup(mergedPunches, pch.time)) mergedPunches.push(pch);
           }
           const sdMerged = buildSessions(mergedPunches);
-          const mergedResult = applyDeclaredStatus(d, computeStatusFromSessions(sdMerged, shiftS, halfDayHoursS));
+          const mergedResult = applyDeclaredStatus(d, applyHalfDayLeaveStatus(d, sdMerged, computeStatusFromSessions(sdMerged, shiftS, halfDayHoursS)));
           const { status: mergedStatus } = mergedResult;
 
           // Mixed methods are allowed — only the SIDE this sync would
@@ -9706,14 +9710,14 @@ router.post('/:name', async (req, res) => {
               // Same protections as reprocessAttendanceLogs/processMonthAttendance
               // — a manually-corrected, regularised, or leave-driven day must
               // never be silently overwritten by a resync of stored logs.
-              if (existAtt.data.status === 'regularised' || existAtt.data.regularised || existAtt.data.admin_marked || existAtt.data.leave_id || existAtt.data.status === 'leave') continue;
+              if (existAtt.data.status === 'regularised' || existAtt.data.regularised || existAtt.data.admin_marked || (existAtt.data.leave_id && !existAtt.data.leave_half_day) || existAtt.data.status === 'leave') continue;
               const prevPunches = existAtt.data.raw_punches || [];
               const merged = [];
               for (const pch of [...prevPunches, ...uniquePunches].sort((a, b) => a.time.localeCompare(b.time))) {
                 if (!pebNearDup(merged, pch.time)) merged.push(pch);
               }
               const sdM = buildSessions(merged);
-              const mergedResult = applyDeclaredStatus(existAtt.data, computeStatusFromSessions(sdM, shift));
+              const mergedResult = applyDeclaredStatus(existAtt.data, applyHalfDayLeaveStatus(existAtt.data, sdM, computeStatusFromSessions(sdM, shift)));
               const { status: mStatus } = mergedResult;
 
               // Mixed methods are allowed — only the SIDE this resync would

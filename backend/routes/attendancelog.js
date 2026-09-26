@@ -615,7 +615,9 @@ async function processRecord(record) {
   // badging in again) would merge straight into it and overwrite the
   // regularisation.
   const data = JSON.parse(row.data);
-  if (data.regularised || data.admin_marked || data.leave_id || data.status === 'leave') {
+  // A HALF-day leave day still takes real punches (the employee works the other
+  // half) — only a full-day leave / regularised / admin-marked day is frozen.
+  if (data.regularised || data.admin_marked || (data.leave_id && !data.leave_half_day) || data.status === 'leave') {
     return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
   }
 
@@ -647,7 +649,7 @@ async function processRecord(record) {
   const mergedPunches  = alreadyPresent ? existingPunches : [...existingPunches, newPunch];
 
   const sd = buildSessions(mergedPunches);
-  const statusResult = applyDeclaredStatus(data, computeStatusFromSessions(sd, shift, halfDayHours));
+  const statusResult = applyDeclaredStatus(data, applyHalfDayLeaveStatus(data, sd, computeStatusFromSessions(sd, shift, halfDayHours)));
   const { status } = statusResult;
 
   // Mixed methods are allowed (checked in by selfie, checked out by
@@ -830,6 +832,22 @@ export function applyDeclaredStatus(existing, result) {
   return {
     ...result,
     status: r === 'wfh' ? 'work_from_home' : 'on_duty',
+    late_minutes: 0, late_arrival: false, late_arrival_minutes: 0,
+    early_departure_minutes: 0, early_departure: false,
+  };
+}
+
+// A HALF-day leave day (leave_id + leave_half_day, written when the leave is
+// approved) counts as a FULL present day once the employee has worked more
+// than 2 hours that same day — half covered by leave, the rest actually
+// worked. With 2 hours or less it stays a plain half_day. WFH/OD declared
+// status (applyDeclaredStatus) is applied on top by callers and still wins.
+export function applyHalfDayLeaveStatus(existing, sd, result) {
+  if (!(existing?.leave_id && existing.leave_half_day)) return result;
+  const workedOver2h = (sd?.total_working_minutes || 0) > 120;
+  return {
+    ...result,
+    status: workedOver2h ? 'present' : 'half_day',
     late_minutes: 0, late_arrival: false, late_arrival_minutes: 0,
     early_departure_minutes: 0, early_departure: false,
   };

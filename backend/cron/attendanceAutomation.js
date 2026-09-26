@@ -732,6 +732,29 @@ export async function checkRepeatedLateArrivals() {
   return { weekStart, checked: countByUser.size, flagged };
 }
 
+// Half-day leave day where the employee then worked more than 2 hours reads
+// as a full present day. Live punch paths apply this as they merge; this
+// sweep also fixes days approved/worked before that rule existed and any
+// that drifted, over the last `days` days. Idempotent.
+export async function fixHalfDayLeaveDays(days = 45) {
+  const from = istDateString(-days);
+  const rows = await all(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND status='half_day' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'leave_half_day'='true'",
+    [from]
+  );
+  let fixed = 0;
+  for (const r of rows) {
+    const d = JSON.parse(r.data);
+    if (!d.leave_id || d.selfie_reason === 'wfh' || d.selfie_reason === 'od') continue;
+    const mins = d.total_working_minutes || Math.round((d.working_hours || 0) * 60);
+    if (mins <= 120) continue;
+    const upd = { ...d, status: 'present', late_minutes: 0, late_arrival: false, late_arrival_minutes: 0, early_departure_minutes: 0, early_departure: false };
+    await run("UPDATE entities SET status='present', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), r.id]);
+    fixed++;
+  }
+  return { checked: rows.length, fixed };
+}
+
 export async function runNightlyAttendanceAutomation(targetDate) {
   const date = targetDate || istDateString(-1);
   const noRecord = await markMissingAttendanceAsAbsent(date);
@@ -741,6 +764,7 @@ export async function runNightlyAttendanceAutomation(targetDate) {
   // included so their present shows up immediately, not a day later.
   const today = istDateString(0);
   const exempt = await markExemptEmployeesPresent('joining', today);
-  console.log(`[attendance-cron] ${date} — no-record absent: ${noRecord.marked}/${noRecord.checked}, unclosed sessions closed: ${unclosed.marked}/${unclosed.checked}, exempt marked present: ${exempt.marked}`);
-  return { date, noRecord, unclosed, exempt };
+  const halfLeave = await fixHalfDayLeaveDays();
+  console.log(`[attendance-cron] ${date} — no-record absent: ${noRecord.marked}/${noRecord.checked}, unclosed sessions closed: ${unclosed.marked}/${unclosed.checked}, exempt marked present: ${exempt.marked}, half-day-leave days made present: ${halfLeave.fixed}`);
+  return { date, noRecord, unclosed, exempt, halfLeave };
 }
