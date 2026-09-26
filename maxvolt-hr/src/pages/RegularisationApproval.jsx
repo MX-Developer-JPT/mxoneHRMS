@@ -114,6 +114,8 @@ export default function RegularisationApproval() {
   // and checked per-employee-group/per-request below via canFullyAct(uid),
   // mirroring processRegularisation's isManagementInHierarchy on the backend.
   const managementDownstreamIds = isManagementRole ? resolveHierarchy(user?.id, employees).downstreamIds : null;
+  // Direct OR indirect reporting manager — anyone up the employee's chain.
+  const myDownstreamIds = user?.id ? resolveHierarchy(user.id, employees).downstreamIds : new Set();
   const canFullyAct = (uid) => isHR || (isManagementRole && !!managementDownstreamIds?.has(uid));
 
   // Role sent to backend: admin/hr/management → 'hr' (full approve), manager → 'manager' (step-1)
@@ -337,7 +339,10 @@ export default function RegularisationApproval() {
                 // Only a DIRECT report's requests are actionable by a plain
                 // manager — an indirect report (visible via the downstream
                 // hierarchy filter above) never gets bulk actions either.
-                const empIsDirectReport = fullyActOnThisEmp || isDirectReport(uid, user?.id, employees);
+                const empIsDirectReport = fullyActOnThisEmp || myDownstreamIds.has(uid);
+                // A management user in the chain acts as the employee's manager
+                // for the first (pending) step, then gives final sign-off.
+                const mgmtActsAsMgr = !isHR && fullyActOnThisEmp;
                 // HR/management may only act once the reporting manager has
                 // approved — mirrors the same rule now enforced server-side
                 // in processRegularisation — unless this employee has no
@@ -346,7 +351,7 @@ export default function RegularisationApproval() {
                 const empHasManager = !!employees.find(e => e.user_id === uid)?.reporting_manager_id;
                 const actionableIds = empReqs
                   .filter(r => fullyActOnThisEmp
-                    ? (r.status === 'manager_approved' || (r.status === 'pending' && !empHasManager))
+                    ? (r.status === 'manager_approved' || (r.status === 'pending' && (!empHasManager || mgmtActsAsMgr)) || (mgmtActsAsMgr && r.status === 'sent_back'))
                     : (empIsDirectReport && (r.status === 'pending' || r.status === 'sent_back')))
                   .map(r => r.id);
                 return (
@@ -384,10 +389,10 @@ export default function RegularisationApproval() {
                     <div className="divide-y">
                       {empReqs.map(req => {
                         const cfg = statusConfig[req.status] || statusConfig.pending;
-                        const canManagerAct = !fullyActOnThisEmp && empIsDirectReport && (req.status === 'pending' || req.status === 'sent_back');
+                        const canManagerAct = (!fullyActOnThisEmp || mgmtActsAsMgr) && empIsDirectReport && (req.status === 'pending' || req.status === 'sent_back');
                         const canHRAct = fullyActOnThisEmp && (req.status === 'manager_approved' || (req.status === 'pending' && !empHasManager));
                         const canAct = canManagerAct || canHRAct;
-                        const awaitingManager = fullyActOnThisEmp && !canHRAct && req.status === 'pending';
+                        const awaitingManager = fullyActOnThisEmp && !canHRAct && !canManagerAct && req.status === 'pending';
                         const isSelected = bulkSelected.includes(req.id);
                         return (
                           <div key={req.id} className={`p-4 transition-colors ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>

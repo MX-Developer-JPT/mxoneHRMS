@@ -169,6 +169,8 @@ export default function LeaveManagement() {
   const isManagementRole = user && (user.role === 'management' || user.custom_role === 'management');
   const managementDownstreamIds = isManagementRole ? resolveHierarchy(user.id, employees).downstreamIds : null;
   const isMgmtScopedTo = (targetUserId) => !!managementDownstreamIds && managementDownstreamIds.has(targetUserId);
+  // Direct OR indirect reporting manager of the leave's owner.
+  const myDownstreamIds = user ? resolveHierarchy(user.id, employees).downstreamIds : new Set();
 
   const canApproveLevel = (leave) => {
     if (!leave || leave.status !== 'pending') return false;
@@ -180,7 +182,7 @@ export default function LeaveManagement() {
       const step = leaveWorkflow.steps[(leave.current_approval_level || 1) - 1];
       if (!step) return isHR || isMgmtScoped;
       const leaveEmp = employees.find(e => e.user_id === leave.user_id);
-      if (step.approver_type === 'reporting_manager') return leaveEmp?.reporting_manager_id === user?.id || isHR;
+      if (step.approver_type === 'reporting_manager') return leaveEmp?.reporting_manager_id === user?.id || myDownstreamIds.has(leave.user_id) || isHR;
       if (step.approver_type === 'hr') return isHR || isMgmtScoped;
       if (step.approver_type === 'admin') return false; // isAdmin already returned true above
       if (step.approver_type === 'specific_user') return step.specific_user_id === user?.id;
@@ -189,7 +191,7 @@ export default function LeaveManagement() {
     // Built-in flow — Level 1: Reporting Manager approves first
     if (leave.current_approval_level === 1) {
       const leaveEmp = employees.find(e => e.user_id === leave.user_id);
-      return leaveEmp?.reporting_manager_id === user?.id || isHR;
+      return leaveEmp?.reporting_manager_id === user?.id || myDownstreamIds.has(leave.user_id) || isHR;
     }
     // Level 2: HR/HOD approves (or 'management', within their own hierarchy)
     if (leave.current_approval_level === 2) {

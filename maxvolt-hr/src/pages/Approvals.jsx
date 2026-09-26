@@ -89,7 +89,8 @@ export default function Approvals() {
       // The actual visible-user set for Leave/GatePass/AttendanceRegularisation:
       // null (unrestricted) for hr/admin, full downstream hierarchy for
       // 'management', direct reports only for a plain 'manager'.
-      const visibleTeamUserIds = isHrAdminOnly ? null : (isManagementRole ? managementDownstreamIds : new Set(directReportUserIds));
+      // Any reporting manager (direct OR indirect) sees their whole downstream team.
+      const visibleTeamUserIds = isHrAdminOnly ? null : new Set([...(managementDownstreamIds || resolveHierarchy(currentUser.id, empRecords).downstreamIds), ...directReportUserIds]);
 
       let leaves = await base44.entities.Leave.filter({ status: 'pending' }, '-created_date');
       if (!isHrAdminOnly) leaves = leaves.filter(l => visibleTeamUserIds.has(l.user_id));

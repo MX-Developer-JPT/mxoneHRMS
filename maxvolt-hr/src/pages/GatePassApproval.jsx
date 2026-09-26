@@ -86,11 +86,10 @@ export default function GatePassApproval() {
       const { downstreamIds } = resolveHierarchy(currentUser.id, allEmployees);
       visiblePasses = allPasses.filter(p => downstreamIds.has(p.employee_user_id));
     } else {
-      // Manager sees only their direct reports' pending passes
-      const myEmpIds = allEmployees
-        .filter(e => e.reporting_manager_id === currentUser.id)
-        .map(e => e.user_id);
-      visiblePasses = allPasses.filter(p => myEmpIds.includes(p.employee_user_id));
+      // A reporting manager sees — and may act on — passes from their
+      // whole downstream team (direct AND indirect reports).
+      const { downstreamIds } = resolveHierarchy(currentUser.id, allEmployees);
+      visiblePasses = allPasses.filter(p => downstreamIds.has(p.employee_user_id));
     }
 
     setPasses(visiblePasses);

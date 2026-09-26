@@ -2110,6 +2110,9 @@ async function runLeaveAction(cu, leaveId, action, note) {
   // that stays reserved for the actual direct manager (or HR, only when no
   // manager is configured at all), unchanged from existing behavior.
   const isManagementInHierarchy = !isHR && await hasRole(cu, ['management']) && await isInManagementDownstream(cu.id, lv.user_id);
+    // Any direct OR indirect reporting manager (anyone up the chain) acts
+    // as the employee's manager for level-1 / 'reporting_manager' steps.
+    const isChainManager = !isHR && await isInManagementDownstream(cu.id, lv.user_id);
   const wfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='leave'");
   const wf = wfRow ? JSON.parse(wfRow.data) : null;
   const useWf = wf?.is_active !== false && Array.isArray(wf?.steps) && wf.steps.length > 0;
@@ -2123,7 +2126,7 @@ async function runLeaveAction(cu, leaveId, action, note) {
   if (!authorized) {
     if (useWf) {
       if (curStep) {
-        if (curStep.approver_type === 'reporting_manager') authorized = emp.reporting_manager_id === actorId || isHR;
+        if (curStep.approver_type === 'reporting_manager') authorized = emp.reporting_manager_id === actorId || isChainManager || isHR;
         else if (curStep.approver_type === 'hr') authorized = isHR || isManagementInHierarchy;
         else if (curStep.approver_type === 'specific_user') authorized = curStep.specific_user_id === actorId;
       } else authorized = isHR || isManagementInHierarchy;
@@ -2133,7 +2136,7 @@ async function runLeaveAction(cu, leaveId, action, note) {
       // above, can). The one exception is an employee with no reporting
       // manager configured at all: there'd otherwise be no one who could
       // ever act on level 1, so HR is allowed to step in for that case only.
-      authorized = emp.reporting_manager_id ? emp.reporting_manager_id === actorId : isHR;
+      authorized = emp.reporting_manager_id ? (emp.reporting_manager_id === actorId || isChainManager) : isHR;
     }
     else if (curLevel === 2) authorized = isHR || isManagementInHierarchy;
   }
@@ -3287,8 +3290,9 @@ router.post('/:name', async (req, res) => {
       // Configurable approval chain (Workflow Builder) — falls back to manager-or-HR
       const wfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='comp_off'");
       const wf = wfRow ? JSON.parse(wfRow.data) : null;
+      const inChain = await isInManagementDownstream(cu.id, coRow.user_id); // direct or indirect manager
       const matchesStep = (step) => !!step && (
-        (step.approver_type === 'reporting_manager' && emp.reporting_manager_id === cu.id) ||
+        (step.approver_type === 'reporting_manager' && (emp.reporting_manager_id === cu.id || inChain)) ||
         (step.approver_type === 'hr' && isHRUser) ||
         (step.approver_type === 'admin' && isAdminUser) ||
         (step.approver_type === 'specific_user' && step.specific_user_id === cu.id));
@@ -3308,7 +3312,7 @@ router.post('/:name', async (req, res) => {
           return res.status(403).json({ error: `This request is at approval level ${level + 1} (${step.approver_type.replace(/_/g, ' ')}) — you are not the approver for this step` });
         }
         isFinalStep = level >= wf.steps.length - 1;
-      } else if (!isHRUser && emp.reporting_manager_id !== cu.id) {
+      } else if (!isHRUser && emp.reporting_manager_id !== cu.id && !inChain) {
         return res.status(403).json({ error: 'Only HR or the reporting manager can decide this request' });
       }
 
@@ -3406,6 +3410,17 @@ router.post('/:name', async (req, res) => {
       if (pendRows.length) {
         const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee'")).map(r => ({ user_id: r.user_id, ...JSON.parse(r.data) }));
         const empBy = Object.fromEntries(emps.map(e => [e.user_id, e]));
+        // Direct or indirect reporting manager: walk up the chain in memory.
+        const inChainMem = (uid) => {
+          const seen = new Set();
+          let cur = empBy[uid];
+          while (cur?.reporting_manager_id && !seen.has(cur.reporting_manager_id)) {
+            if (cur.reporting_manager_id === cu.id) return true;
+            seen.add(cur.reporting_manager_id);
+            cur = empBy[cur.reporting_manager_id];
+          }
+          return false;
+        };
         for (const r of pendRows) {
           if (r.user_id === cu.id) continue;
           const emp = empBy[r.user_id] || {};
@@ -3414,12 +3429,12 @@ router.post('/:name', async (req, res) => {
           if (coWf?.is_active && Array.isArray(coWf.steps) && coWf.steps.length > 0) {
             const step = coWf.steps[rec.approval_level || 0] || {};
             canSee = isAdminUser ||
-              (step.approver_type === 'reporting_manager' && emp.reporting_manager_id === cu.id) ||
+              (step.approver_type === 'reporting_manager' && (emp.reporting_manager_id === cu.id || inChainMem(r.user_id))) ||
               (step.approver_type === 'hr' && isHRUser) ||
               (step.approver_type === 'admin' && isAdminUser) ||
               (step.approver_type === 'specific_user' && step.specific_user_id === cu.id);
           } else {
-            canSee = isHRUser || emp.reporting_manager_id === cu.id;
+            canSee = isHRUser || emp.reporting_manager_id === cu.id || inChainMem(r.user_id);
           }
           if (canSee) {
             approvals.push({ ...rec, current_level: (rec.approval_level || 0) + 1, total_levels: coWf?.is_active ? (coWf.steps?.length || 1) : 1, employee_name: emp.display_name || 'Employee', employee_code: emp.employee_code || '', department: emp.department || '' });
@@ -9786,8 +9801,12 @@ router.post('/:name', async (req, res) => {
       // approve/complete anyone's request. Now derived entirely from the
       // server's own knowledge of the caller's actual role and team.
       const isFullApprover = await hasRole(cu, HR_ROLES);
-      const isManagementInHierarchy = !isFullApprover && await hasRole(cu, ['management']) && await isInManagementDownstream(cu.id, reg.user_id);
-      const isTeamManager  = !isFullApprover && !isManagementInHierarchy && await hasRole(cu, ['manager']) && await canAccessEmployee(cu, reg.user_id);
+      const inRegChain = !isFullApprover && await isInManagementDownstream(cu.id, reg.user_id);
+      // A 'management' user in the employee's chain gives the final sign-off
+      // only once the request is manager_approved; before that they act as
+      // the employee's (indirect) reporting manager like anyone else in the chain.
+      const isManagementInHierarchy = inRegChain && reg.status === 'manager_approved' && await hasRole(cu, ['management']);
+      const isTeamManager  = inRegChain && !isManagementInHierarchy; // direct or indirect reporting manager
       if (!isFullApprover && !isManagementInHierarchy && !isTeamManager) return res.status(403).json({ error: 'Access denied — not authorized to act on this request' });
 
       // HR/management may only act once the reporting manager has approved

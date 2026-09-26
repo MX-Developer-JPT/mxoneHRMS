@@ -393,7 +393,7 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
     // downstream hierarchy — same scoping as the approve/reject grant below,
     // so a management user can't act on a request outside their own team
     // via cancel when they couldn't via approve/reject either.
-    if (role === 'management' && await isInManagementDownstream(cu.id, current.user_id)) return true;
+    if (await isInManagementDownstream(cu.id, current.user_id)) return true;
     res.status(403).json({ error: 'Access denied — you can only cancel your own request' });
     return false;
   }
@@ -458,11 +458,11 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   }
   if (role === 'management') return true; // Reimbursement — unchanged, unrestricted
 
-  if (role === 'manager') {
-    const targetUserId = current.user_id;
-    const empRow = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [targetUserId]);
-    if (empRow?.mgr === cu.id) return true;
-  }
+  // A reporting manager — direct OR indirect (anyone further up the
+  // employee's reporting chain) — may approve/reject that employee's
+  // request. Judged purely by the reporting chain, not the user's role
+  // label, since being someone's reporting manager is what confers this.
+  if (await isInManagementDownstream(cu.id, current.user_id)) return true;
 
   // Reimbursement's configurable ApprovalWorkflow (module 'expense') can
   // assign a step to a 'specific_user' who isn't the claimant's manager —
