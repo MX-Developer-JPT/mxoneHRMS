@@ -8,7 +8,7 @@ const isStandalonePWA = () =>
   window.navigator?.standalone === true ||
   (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
 
-export default function AttendanceCameraCapture({ open, onClose, onCapture }) {
+export default function AttendanceCameraCapture({ open, onClose, onCapture, mode = 'in' }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [stream, setStream] = useState(null);
@@ -109,7 +109,7 @@ export default function AttendanceCameraCapture({ open, onClose, onCapture }) {
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-[600px]">
         <DialogHeader>
-          <DialogTitle>Take Attendance Selfie</DialogTitle>
+          <DialogTitle>{mode === 'out' ? 'Checking Out — Take a Selfie' : 'Checking In — Take a Selfie'}</DialogTitle>
         </DialogHeader>
         
         <div className="space-y-4">

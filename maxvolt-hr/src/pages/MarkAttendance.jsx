@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar, Fingerprint, Home, Route } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getAttendanceMethod, getGeofenceDetail } from '@/lib/attendanceSource';
+import { getCheckInMethod, getCheckOutMethod, getGeofenceDetail } from '@/lib/attendanceSource';
 import { isBackgroundGeofenceAvailable, startBackgroundGeofence } from '@/lib/geofenceBackground';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -793,12 +793,25 @@ export default function MarkAttendance() {
                           {safeDate(todayAttendance.check_in_time, 'h:mm a')}
                         </p>
                         {(() => {
-                          const m = getAttendanceMethod(todayAttendance);
-                          if (m.key === 'biometric') return <p className="text-xs text-green-600 flex items-center gap-1 mt-0.5"><Fingerprint className="w-3 h-3" /> Source: Biometric</p>;
-                          if (m.key === 'geofence') return <p className="text-xs text-indigo-600 flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3" /> Source: {getGeofenceDetail(todayAttendance)}</p>;
-                          if (m.key === 'selfie') return <p className="text-xs text-blue-600 flex items-center gap-1 mt-0.5"><Camera className="w-3 h-3" /> Source: Selfie</p>;
+                          // Per-side — check-in and check-out can genuinely be
+                          // different methods (selfie in, biometric out, or vice
+                          // versa), so this must never use the collapsed
+                          // getAttendanceMethod (which picks one method for the
+                          // whole day and would misreport this side).
+                          const m = getCheckInMethod(todayAttendance);
+                          if (m.key === 'biometric') return <p className="text-xs text-green-600 flex items-center gap-1 mt-0.5"><Fingerprint className="w-3 h-3" /> Method: Biometric</p>;
+                          if (m.key === 'geofence') return <p className="text-xs text-indigo-600 flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3" /> Method: {getGeofenceDetail(todayAttendance)}</p>;
+                          if (m.key === 'selfie') return <p className="text-xs text-blue-600 flex items-center gap-1 mt-0.5"><Camera className="w-3 h-3" /> Method: Selfie</p>;
                           return null;
                         })()}
+                        {/* Attendance Type — set only by a Selfie check-in, never asked
+                            again at check-out; shown for the rest of the day/record. */}
+                        {(todayAttendance.selfie_reason === 'wfh' || todayAttendance.selfie_reason === 'od') && (
+                          <p className="text-xs text-purple-700 flex items-center gap-1 mt-0.5">
+                            {todayAttendance.selfie_reason === 'wfh' ? <Home className="w-3 h-3" /> : <Route className="w-3 h-3" />}
+                            Attendance Type: {todayAttendance.selfie_reason === 'wfh' ? 'Work From Home' : 'On Duty'}
+                          </p>
+                        )}
                         </div>
                         </div>
                         {todayAttendance.check_in_selfie_url && (
@@ -834,6 +847,13 @@ export default function MarkAttendance() {
                           <p className="font-semibold text-sm md:text-base">
                             {safeDate(todayAttendance.check_out_time, 'h:mm a')}
                           </p>
+                          {(() => {
+                            const m = getCheckOutMethod(todayAttendance);
+                            if (m.key === 'biometric') return <p className="text-xs text-green-600 flex items-center gap-1 mt-0.5"><Fingerprint className="w-3 h-3" /> Method: Biometric</p>;
+                            if (m.key === 'geofence') return <p className="text-xs text-indigo-600 flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3" /> Method: {getGeofenceDetail(todayAttendance)}</p>;
+                            if (m.key === 'selfie') return <p className="text-xs text-blue-600 flex items-center gap-1 mt-0.5"><Camera className="w-3 h-3" /> Method: Selfie</p>;
+                            return null;
+                          })()}
                         </div>
                       </div>
                       {todayAttendance.check_out_selfie_url && (
@@ -973,6 +993,7 @@ export default function MarkAttendance() {
         open={showCamera}
         onClose={() => setShowCamera(false)}
         onCapture={handleCameraCapture}
+        mode={isCheckingOut ? 'out' : 'in'}
       />
     </div>
   );

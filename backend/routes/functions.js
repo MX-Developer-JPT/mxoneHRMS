@@ -4320,6 +4320,14 @@ router.post('/:name', async (req, res) => {
       if (saEvent === 'in' && !['wfh', 'od'].includes(saReasonIn)) {
         return res.json({ success: false, error: "reason must be 'wfh' or 'od'" });
       }
+      // A Selfie Method punch with no actual photo defeats the point of the
+      // method (there'd be nothing distinguishing it from a bare manual
+      // entry) — the app always captures one before calling this, but that's
+      // only enforced client-side; require it here too so a direct API call
+      // can't skip it.
+      if (!saSelfieUrl) {
+        return res.json({ success: false, error: 'A selfie photo is required for the Selfie Method.' });
+      }
 
       const saNowIST = new Date(Date.now() + 5.5 * 3600000);
       const saToday = saNowIST.toISOString().slice(0, 10);
