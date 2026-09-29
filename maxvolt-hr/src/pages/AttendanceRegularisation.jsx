@@ -262,13 +262,18 @@ export default function AttendanceRegularisation() {
   };
 
   // Mirrors the server-side monthly cap (backend/routes/entities.js
-  // checkRegularisationLimit) — rejected requests don't count against the
-  // quota. This is a UX nicety only; the backend is the real enforcement.
+  // checkRegularisationLimit) — rejected AND cancelled requests don't count
+  // against the quota (declined, or withdrawn before anyone acted — either
+  // way not a wasted submission slot). This is a UX nicety only; the
+  // backend is the real enforcement. Previously only excluded 'rejected'
+  // here, so cancelling a request still showed it as using a slot and could
+  // wrongly disable the Submit button even though the backend would have
+  // allowed a new request.
   const MONTHLY_LIMIT = 5;
   const nowIST = new Date(Date.now() + 5.5 * 3600000);
   const curYM = `${nowIST.getUTCFullYear()}-${String(nowIST.getUTCMonth() + 1).padStart(2, '0')}`;
   const usedThisMonth = requests.filter(r => {
-    if (r.status === 'rejected') return false;
+    if (r.status === 'rejected' || r.status === 'cancelled') return false;
     if (!r.created_date) return false;
     const createdIST = new Date(new Date(r.created_date).getTime() + 5.5 * 3600000);
     return `${createdIST.getUTCFullYear()}-${String(createdIST.getUTCMonth() + 1).padStart(2, '0')}` === curYM;
