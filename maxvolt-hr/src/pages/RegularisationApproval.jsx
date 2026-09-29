@@ -150,21 +150,45 @@ export default function RegularisationApproval() {
     setProcessing(false);
   };
 
-  const handleBulkAction = async (action, ids = bulkSelected) => {
+  const handleBulkAction = async (action, ids = bulkSelected, bulkCommentText = '') => {
     if (!ids.length) { toast.error('Select requests first'); return; }
     setProcessing(true);
     let successCount = 0;
     const role = approvalRole;
+    const commentToSend = bulkCommentText.trim() || 'Bulk action';
     for (const id of ids) {
       try {
-        const res = await base44.functions.invoke('processRegularisation', { regularisation_id: id, action, comment: 'Bulk action', role });
+        const res = await base44.functions.invoke('processRegularisation', { regularisation_id: id, action, comment: commentToSend, role });
         if (res.data?.success) successCount++;
       } catch (e) { console.error(e); }
     }
-    toast.success(`${successCount}/${bulkSelected.length} requests ${action}d`);
+    toast.success(`${successCount}/${ids.length} requests ${action}d`);
     setBulkSelected([]);
     setProcessing(false);
     loadData();
+  };
+
+  const [bulkCommentDialog, setBulkCommentDialog] = useState(null); // { ids }
+  const [bulkComment, setBulkComment] = useState('');
+
+  // Bulk approve skipped the mandatory-comment dialog entirely (it always
+  // sent a hardcoded 'Bulk action' comment) — a manager could bulk-approve
+  // without ever being asked to justify it, defeating the whole point of
+  // the single-approval requirement above. Any id in this batch that a
+  // reporting manager (not a full HR/management approver) is deciding now
+  // requires a real comment before the batch proceeds; that one comment is
+  // applied to every request in the batch.
+  const openBulkApprove = (ids) => {
+    const needsComment = ids.some(id => {
+      const req = requests.find(r => r.id === id);
+      return req && !canFullyAct(req.user_id);
+    });
+    if (needsComment) {
+      setBulkComment('');
+      setBulkCommentDialog({ ids });
+    } else {
+      handleBulkAction('approve', ids);
+    }
   };
 
   const getEmployeeName = (userId) => employees.find(e => e.user_id === userId)?.display_name || 'Unknown';
@@ -217,7 +241,7 @@ export default function RegularisationApproval() {
             {bulkSelected.length > 0 && (
               <>
                 <span className="text-sm text-gray-600">{bulkSelected.length} selected</span>
-                <Button size="sm" className="bg-green-600 hover:bg-green-700 h-8" onClick={() => handleBulkAction('approve')} disabled={processing}>
+                <Button size="sm" className="bg-green-600 hover:bg-green-700 h-8" onClick={() => openBulkApprove(bulkSelected)} disabled={processing}>
                   <CheckCircle2 className="w-3 h-3 mr-1" /> Bulk Approve
                 </Button>
                 <Button size="sm" variant="destructive" className="h-8" onClick={() => handleBulkAction('reject')} disabled={processing}>
@@ -374,7 +398,7 @@ export default function RegularisationApproval() {
                         <div className="flex gap-1.5 flex-wrap">
                           <Button size="sm" className="h-6 text-xs bg-green-600 hover:bg-green-700 px-2"
                             disabled={processing}
-                            onClick={() => handleBulkAction('approve', actionableIds)}>
+                            onClick={() => openBulkApprove(actionableIds)}>
                             <CheckCircle2 className="w-3 h-3 mr-1" /> Approve All ({actionableIds.length})
                           </Button>
                           <Button size="sm" variant="destructive" className="h-6 text-xs px-2"
@@ -506,6 +530,34 @@ export default function RegularisationApproval() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Approve — Mandatory Comment Dialog */}
+      <Dialog open={!!bulkCommentDialog} onOpenChange={open => { if (!open) { setBulkCommentDialog(null); setBulkComment(''); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-green-600" /> Approve {bulkCommentDialog?.ids.length} Request{bulkCommentDialog?.ids.length > 1 ? 's' : ''}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Comment *</Label>
+              <Textarea value={bulkComment} onChange={e => setBulkComment(e.target.value)} rows={3}
+                placeholder="Provide a reason — applied to every request in this batch..." required />
+            </div>
+            <div className="flex gap-3 justify-end">
+              <Button variant="outline" onClick={() => { setBulkCommentDialog(null); setBulkComment(''); }}>Cancel</Button>
+              <Button
+                onClick={() => { handleBulkAction('approve', bulkCommentDialog.ids, bulkComment); setBulkCommentDialog(null); setBulkComment(''); }}
+                disabled={processing || !bulkComment.trim()}
+                className="bg-green-600 hover:bg-green-700"
+              >
+                {processing ? 'Processing...' : 'Confirm Approval'}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 
