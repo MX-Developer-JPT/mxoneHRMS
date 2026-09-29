@@ -65,6 +65,7 @@ export default function LeaveManagement() {
   const [filterStatus, setFilterStatus] = useState('pending');
   const [filterPolicy, setFilterPolicy] = useState('all');
   const [search, setSearch] = useState('');
+  const [balanceSearch, setBalanceSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [leaveBalances, setLeaveBalances] = useState({}); // { userId_policyId: LeaveBalance }
@@ -463,6 +464,20 @@ export default function LeaveManagement() {
                 </CardHeader>
                 <CardContent>
                   <p className="text-xs text-gray-500 mb-3">Download the template to get every active employee with their current balances pre-filled, edit the leave-type columns (e.g. CL/SL/EL), then re-upload to update balances in bulk. Existing used/pending days are preserved — only the total allocation changes. <strong>Have the full multi-sheet Leave Book ledger instead</strong> (e.g. "LEAVE DETAILS JAN-DEC.xlsx")? Use <strong>Import Leave History</strong> on the Leave History tab — this simple importer only reads one sheet and won't accept it.</p>
+                  <div className="relative mb-3 max-w-sm">
+                    <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <Input
+                      value={balanceSearch}
+                      onChange={e => setBalanceSearch(e.target.value)}
+                      placeholder="Search name, code, department..."
+                      className="pl-9"
+                    />
+                    {balanceSearch && (
+                      <button type="button" onClick={() => setBalanceSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -478,7 +493,14 @@ export default function LeaveManagement() {
                         </tr>
                       </thead>
                       <tbody>
-                        {employees.filter(e => !['resigned', 'terminated', 'retired'].includes(e.status)).map(emp => (
+                        {employees.filter(e => {
+                          if (['resigned', 'terminated', 'retired'].includes(e.status)) return false;
+                          const q = balanceSearch.trim().toLowerCase();
+                          if (!q) return true;
+                          return (e.display_name || '').toLowerCase().includes(q)
+                            || (e.employee_code || '').toLowerCase().includes(q)
+                            || (e.department || '').toLowerCase().includes(q);
+                        }).map(emp => (
                           <tr key={emp.id} className="border-b hover:bg-gray-50 transition-colors">
                             <td className="py-2 pr-4">
                               <div className="font-medium text-gray-900">{emp.display_name}</div>

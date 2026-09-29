@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import AttendanceCalendar from '../components/attendance/AttendanceCalendar';
+import EmployeeAttendanceCalendar from '../components/attendance/EmployeeAttendanceCalendar';
 import AttendanceDetailsDialog from '../components/attendance/AttendanceDetailsDialog';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter, getDay } from 'date-fns';
 import { safeDate, safeTime } from '@/lib/dateUtils';
@@ -15,7 +15,10 @@ import { Link } from 'react-router-dom';
 
 export default function AttendanceHistory() {
   const [user, setUser] = useState(null);
+  const [emp, setEmp] = useState(null);
   const [dateOfJoining, setDateOfJoining] = useState(null);
+  const [shiftMap, setShiftMap] = useState({});
+  const [defaultShift, setDefaultShift] = useState(null);
   const [attendanceData, setAttendanceData] = useState([]);
   const [holidays, setHolidays] = useState([]);
   const [gatePasses, setGatePasses] = useState({}); // 'yyyy-MM-dd' -> gate pass, only for days the employee actually departed
@@ -32,15 +35,22 @@ export default function AttendanceHistory() {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
 
-      const [records, holidayRecords, empRecords, gatePassRecords] = await Promise.all([
+      const [records, holidayRecords, empRecords, gatePassRecords, shiftRecords] = await Promise.all([
         base44.entities.Attendance.filter({ user_id: currentUser.id }, '-date', 500),
         base44.entities.Holiday.list(),
         base44.entities.Employee.filter({ user_id: currentUser.id }),
         base44.entities.GatePass.filter({ employee_user_id: currentUser.id }, '-created_date', 500),
+        base44.entities.Shift.list(),
       ]);
       setAttendanceData(records);
       setHolidays(holidayRecords);
+      setEmp(empRecords?.[0] || null);
       setDateOfJoining(empRecords?.[0]?.date_of_joining || null);
+      const sMap = {};
+      let sDefault = { days: ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'] };
+      shiftRecords.forEach(s => { sMap[s.id] = s; if (s.is_default) sDefault = s; });
+      setShiftMap(sMap);
+      setDefaultShift(sDefault);
 
       // Only mark a day when the employee actually departed on that gate
       // pass — 'approved' (awaiting departure) or 'pending_approval'/
@@ -58,12 +68,6 @@ export default function AttendanceHistory() {
     } catch (error) {
       console.error('Error loading attendance:', error);
       setLoading(false);
-    }
-  };
-
-  const handleDayClick = (day, attendance) => {
-    if (attendance) {
-      setSelectedDay({ day, attendance });
     }
   };
 
@@ -147,15 +151,26 @@ export default function AttendanceHistory() {
             </div>
           </CardHeader>
           <CardContent>
-            <AttendanceCalendar
-              attendanceData={attendanceData}
-              holidays={holidays}
-              currentMonth={currentMonth}
-              onMonthChange={setCurrentMonth}
-              onDayClick={handleDayClick}
-              dateOfJoining={dateOfJoining}
-              gatePasses={gatePasses}
-            />
+            {(() => {
+              const calYear = currentMonth.getFullYear();
+              const calMonth = currentMonth.getMonth() + 1;
+              const monthRecs = attendanceData.filter(r => String(r.date).slice(0, 7) === `${calYear}-${String(calMonth).padStart(2, '0')}`);
+              const holidaySet = new Set(holidays.map(h => h.date));
+              return (
+                <EmployeeAttendanceCalendar
+                  emp={emp}
+                  year={calYear}
+                  month={calMonth}
+                  records={monthRecs}
+                  loading={false}
+                  onNavigate={(delta) => setCurrentMonth(new Date(calYear, calMonth - 1 + delta, 1))}
+                  onDayClick={(rec) => setSelectedDay({ day: new Date(rec.date), attendance: rec })}
+                  holidaySet={holidaySet}
+                  shiftMap={shiftMap}
+                  defaultShift={defaultShift}
+                />
+              );
+            })()}
           </CardContent>
         </Card>
 

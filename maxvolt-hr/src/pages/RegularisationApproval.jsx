@@ -425,7 +425,7 @@ export default function RegularisationApproval() {
                                 {canAct && (
                                   <React.Fragment>
                                     <Button size="sm" className="bg-green-600 hover:bg-green-700 h-7 text-xs"
-                                      onClick={() => { setActionDialog({ request: req, action: 'approve' }); setComment(''); }}>
+                                      onClick={() => { setActionDialog({ request: req, action: 'approve', isManagerAction: !fullyActOnThisEmp }); setComment(''); }}>
                                       <CheckCircle2 className="w-3 h-3 mr-1" /> Approve
                                     </Button>
                                     {!fullyActOnThisEmp && (
@@ -472,12 +472,22 @@ export default function RegularisationApproval() {
                 <p><strong>Date:</strong> {safeDate(actionDialog.request.attendance_date, 'MMM d, yyyy')}</p>
                 <p><strong>Reason:</strong> {actionDialog.request.reason}</p>
               </div>
-              <div>
-                <Label>Comment {actionDialog.action !== 'approve' ? '*' : '(optional)'}</Label>
-                <Textarea value={comment} onChange={e => setComment(e.target.value)} rows={3}
-                  placeholder={actionDialog.action === 'approve' ? 'Optional comment...' : 'Provide a reason...'}
-                  required={actionDialog.action !== 'approve'} />
-              </div>
+              {(() => {
+                // Reporting managers must justify a regularisation approval
+                // with a comment — only the manager's OWN first-level
+                // approve is mandatory; HR/management's final sign-off
+                // stays optional, matching reject/send-back which were
+                // already mandatory for everyone.
+                const commentRequired = actionDialog.action !== 'approve' || actionDialog.isManagerAction;
+                return (
+                  <div>
+                    <Label>Comment {commentRequired ? '*' : '(optional)'}</Label>
+                    <Textarea value={comment} onChange={e => setComment(e.target.value)} rows={3}
+                      placeholder={commentRequired ? 'Provide a reason...' : 'Optional comment...'}
+                      required={commentRequired} />
+                  </div>
+                );
+              })()}
               {actionDialog.action === 'approve' && canFullyAct(actionDialog.request.user_id) && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800 flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
@@ -488,7 +498,7 @@ export default function RegularisationApproval() {
                 <Button variant="outline" onClick={() => { setActionDialog(null); setComment(''); }}>Cancel</Button>
                 <Button
                   onClick={handleAction}
-                  disabled={processing || (actionDialog.action !== 'approve' && !comment.trim())}
+                  disabled={processing || ((actionDialog.action !== 'approve' || actionDialog.isManagerAction) && !comment.trim())}
                   className={actionDialog.action === 'approve' ? 'bg-green-600 hover:bg-green-700' : actionDialog.action === 'reject' ? 'bg-red-600 hover:bg-red-700' : 'bg-orange-600 hover:bg-orange-700'}
                 >
                   {processing ? 'Processing...' : `Confirm ${actionDialog.action === 'approve' ? 'Approval' : actionDialog.action === 'reject' ? 'Rejection' : 'Send Back'}`}
