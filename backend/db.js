@@ -218,7 +218,23 @@ async function initSchema() {
   }
 }
 
-await initSchema().catch(err => {
+const TRANSIENT_NET_CODES = new Set(['EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET']);
+
+async function initSchemaWithRetry(maxAttempts = 15, delayMs = 3000) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await initSchema();
+      return;
+    } catch (err) {
+      const transient = TRANSIENT_NET_CODES.has(err?.code) || /EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNRESET|timeout/i.test(err?.message || '');
+      if (!transient || attempt >= maxAttempts) throw err;
+      console.error(`[pg] Database not reachable yet (attempt ${attempt}/${maxAttempts}): ${err.message} — retrying in ${delayMs}ms`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+}
+
+await initSchemaWithRetry().catch(err => {
   console.error('[pg] Schema initialization failed:', err.message);
   process.exit(1);
 });
