@@ -46,8 +46,8 @@ const managerApprovalStatus = (status) => {
 
 const OUTING_TYPES = [
   { value: 'official_outing', label: 'Official Outing', desc: 'No LOP deduction — full day present' },
-  { value: 'unofficial_outing', label: 'Unofficial Outing', desc: 'Half day LOP deducted' },
-  { value: 'half_day', label: 'Half Day', desc: 'Half day LOP deducted' },
+  { value: 'unofficial_outing', label: 'Unofficial Outing', desc: 'No deduction if returned within 3 hours, else half day LOP' },
+  { value: 'half_day', label: 'Half Day', desc: 'No deduction if returned within 3 hours, else half day LOP' },
   { value: 'short_break', label: 'Short Break', desc: 'No deduction if returned within 3 hours, else half day LOP' },
   // 'early_leave' removed as a selectable option per explicit request — the
   // getOutingLabel()/OUTING_LABELS-style maps elsewhere (GateAdminDashboard,

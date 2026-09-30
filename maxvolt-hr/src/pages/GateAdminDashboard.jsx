@@ -50,16 +50,16 @@ function calculateLOP(outingType, departureTime, returnTime) {
   // work, not personal time off.
   if (outingType === 'official_outing' || outingType === 'travelling_to_another_office') return { lopDays: 0, status: 'present' };
 
-  // short_break: within 3 hours = no deduction, else half day
-  if (outingType === 'short_break') {
-    if (!returnTime || !departureTime) return { lopDays: 0.5, status: 'half_day' };
-    const durationMs = new Date(returnTime) - new Date(departureTime);
-    const durationHrs = durationMs / (1000 * 60 * 60);
-    if (durationHrs <= 3) return { lopDays: 0, status: 'present' };
-    return { lopDays: 0.5, status: 'half_day' };
-  }
-
-  // unofficial_outing, half_day, early_leave: half day LOP
+  // unofficial_outing, half_day, short_break, early_leave: duration-based —
+  // back within 3 hours = no deduction, longer = half day LOP. Previously
+  // only short_break got this treatment; every other non-official type
+  // deducted a flat half day regardless of how long the employee was
+  // actually out, which meant even a 20-minute unofficial outing cost half
+  // a day's pay. Same 3-hour threshold applied uniformly to all of them now.
+  if (!returnTime || !departureTime) return { lopDays: 0.5, status: 'half_day' };
+  const durationMs = new Date(returnTime) - new Date(departureTime);
+  const durationHrs = durationMs / (1000 * 60 * 60);
+  if (durationHrs <= 3) return { lopDays: 0, status: 'present' };
   return { lopDays: 0.5, status: 'half_day' };
 }
 

@@ -14,10 +14,18 @@
 // calculateLOP exactly, fed the employee's shift-end time as the return
 // time — i.e. this produces the same result a gate admin manually clicking
 // "Mark Returned" at that exact moment would have gotten):
-//   - official_outing:                 status -> returned, present, 0 LOP
-//   - unofficial_outing / early_leave: status -> returned, half_day, 0.5 LOP
-//   - short_break:                     status -> returned, half_day, 0.5 LOP
-//                                       (duration by shift-end is always >3h)
+//   - official_outing / travelling_to_another_office: status -> returned,
+//                                       present, 0 LOP always
+//   - unofficial_outing / early_leave / short_break: duration-based — back
+//                                       within 3h of departure -> returned,
+//                                       present, 0 LOP; longer -> returned,
+//                                       half_day, 0.5 LOP (auto-closing at
+//                                       shift end is always >3h after
+//                                       departure, so this path always lands
+//                                       on the half_day/0.5 LOP outcome —
+//                                       the 3h no-LOP case only happens via
+//                                       a gate admin manually marking the
+//                                       employee back in sooner)
 //   - half_day: never expected to return that day — status -> auto_closed
 //               (NOT 'returned'), attendance still closed out as half_day
 import { v4 as uuidv4 } from 'uuid';
@@ -50,12 +58,13 @@ async function getShiftForEmployee(emp, defaultShift) {
 // and the other here; if the frontend rule changes, update both.
 function calculateLOP(outingType, departureTime, returnTime) {
   if (outingType === 'official_outing' || outingType === 'travelling_to_another_office') return { lopDays: 0, status: 'present' };
-  if (outingType === 'short_break') {
-    if (!returnTime || !departureTime) return { lopDays: 0.5, status: 'half_day' };
-    const durationHrs = (new Date(returnTime) - new Date(departureTime)) / 3600000;
-    if (durationHrs <= 3) return { lopDays: 0, status: 'present' };
-    return { lopDays: 0.5, status: 'half_day' };
-  }
+  // unofficial_outing, half_day, short_break, early_leave: duration-based —
+  // back within 3 hours = no deduction, longer = half day LOP. Previously
+  // only short_break got this treatment; every other non-official type
+  // deducted a flat half day regardless of actual duration.
+  if (!returnTime || !departureTime) return { lopDays: 0.5, status: 'half_day' };
+  const durationHrs = (new Date(returnTime) - new Date(departureTime)) / 3600000;
+  if (durationHrs <= 3) return { lopDays: 0, status: 'present' };
   return { lopDays: 0.5, status: 'half_day' };
 }
 
