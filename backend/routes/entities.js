@@ -195,16 +195,28 @@ async function canAccessSensitive(cu, type, ownerUserId) {
 
 // Location Master (AppLocation) is admin-only to manage — everyone else can
 // still read it (employees need the list client-side for geofence matching),
-// but only an admin may create/update/delete a configured location. Takes
-// the already-authenticated `cu` and re-checks the CURRENT role via
+// but only an admin may create/update/delete a configured location. Leave
+// Policy (LeavePolicy) is HR/admin-only to manage — a 'manager' role could
+// previously create/update/delete any leave policy via this generic route
+// (nothing here gated it at all; the frontend's Leave Policies tab was
+// unguarded too — see LeaveManagement.jsx), letting a manager change
+// company-wide leave rules everyone else's balance/accrual math depends on.
+// Both take the already-authenticated `cu` and re-check the CURRENT role via
 // getEffectiveRole (live DB lookup), not the JWT's embedded role directly —
-// that raw-JWT-role version of this check let a demoted admin keep managing
-// locations for up to 30 days, the same staleness bug fixed everywhere else
-// in this file's authorization pass.
+// that raw-JWT-role version of this check let a demoted admin/HR keep
+// managing these for up to 30 days, the same staleness bug fixed everywhere
+// else in this file's authorization pass.
 async function requireAdminForType(cu, res, type) {
-  if (type !== 'AppLocation') return true;
-  const role = await getEffectiveRole(cu);
-  if (role !== 'admin') { res.status(403).json({ error: 'Admin role required to manage locations' }); return false; }
+  if (type === 'AppLocation') {
+    const role = await getEffectiveRole(cu);
+    if (role !== 'admin') { res.status(403).json({ error: 'Admin role required to manage locations' }); return false; }
+    return true;
+  }
+  if (type === 'LeavePolicy') {
+    const role = await getEffectiveRole(cu);
+    if (!['hr', 'admin'].includes(role)) { res.status(403).json({ error: 'HR or admin access required to manage leave policies' }); return false; }
+    return true;
+  }
   return true;
 }
 

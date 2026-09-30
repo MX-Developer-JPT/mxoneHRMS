@@ -439,7 +439,7 @@ export default function LeaveManagement() {
             {isHR && <TabsTrigger value="balances">Employee Balances</TabsTrigger>}
             {isHR && <TabsTrigger value="history">Leave History</TabsTrigger>}
             {isHR && <TabsTrigger value="allocate">Allocate Leaves</TabsTrigger>}
-            <TabsTrigger value="policies">Leave Policies</TabsTrigger>
+            {isHR && <TabsTrigger value="policies">Leave Policies</TabsTrigger>}
             {isHR && <TabsTrigger value="onBehalf">Apply on Behalf</TabsTrigger>}
           </TabsList>
 
@@ -666,9 +666,11 @@ export default function LeaveManagement() {
             </TabsContent>
           )}
 
-          <TabsContent value="policies">
-            <LeavePolicyManager onUpdate={loadData} />
-          </TabsContent>
+          {isHR && (
+            <TabsContent value="policies">
+              <LeavePolicyManager onUpdate={loadData} />
+            </TabsContent>
+          )}
 
           {isHR && (
             <TabsContent value="onBehalf">
