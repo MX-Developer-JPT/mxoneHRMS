@@ -15,11 +15,9 @@ FROM node:22-slim AS production
 
 WORKDIR /app
 
-# Install system deps. Ollama used to be installed here and run alongside
-# Node in this same container — moved to its own Railway service
-# (ollama-service/) so a crash or memory spike in the LLM runtime can't take
-# the whole container (and every in-flight HTTP request on it) down with it.
+# Install system deps + Ollama
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates zstd && \
+    curl -fsSL https://ollama.ai/install.sh | sh && \
     rm -rf /var/lib/apt/lists/*
 
 # Install backend dependencies (production only)

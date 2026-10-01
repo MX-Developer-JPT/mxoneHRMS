@@ -1,11 +1,5 @@
-// AI provider: Groq (free cloud) when GROQ_API_KEY env var is set, Ollama otherwise.
+// AI provider: Groq (free cloud) when GROQ_API_KEY env var is set, Ollama (local) otherwise.
 // Set GROQ_API_KEY in Railway environment variables.
-//
-// Ollama runs as its own Railway service (see ollama-service/), not in this
-// container — set OLLAMA_URL to its private network address, e.g.
-// http://ollama.railway.internal:11434 (Railway private networking,
-// substitute the actual service name). The localhost default below only
-// applies to local development, where `ollama serve` runs on your machine.
 
 const GROQ_KEY     = process.env.GROQ_API_KEY || '';
 // llama-3.1-8b-instant is deprecated by Groq, shutting down 2026-08-16.

@@ -15,5 +15,5 @@ mountPath = "/app/uploads"
 [[volumes]]
 mountPath = "/app/data"
 
-# The /root/.ollama volume moved to ollama-service/railway.toml along with
-# Ollama itself — it no longer runs in this container.
+[[volumes]]
+mountPath = "/root/.ollama"
