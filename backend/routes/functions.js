@@ -5805,6 +5805,7 @@ router.post('/:name', async (req, res) => {
             if (s === 'week_off') { cell = 'OFF'; totalOff++; }
             else if (s === 'holiday') { cell = 'H'; totalHoliday++; }
             else if (s === 'leave') { cell = 'L'; totalLeave++; }
+            else if (s === 'half_day' && rec.leave_id && rec.leave_half_day) { cell = 'PHL'; totalPresent++; }
             else if (s === 'half_day') { cell = 'HD'; totalPresent += 0.5; }
             else if (s === 'present' || s === 'late' || s === 'on_duty' || s === 'work_from_home') {
               cell = s === 'late' ? 'L*' : (s === 'on_duty' ? 'OD' : s === 'work_from_home' ? 'WFH' : 'P');
@@ -5865,6 +5866,7 @@ router.post('/:name', async (req, res) => {
         if (cell === 'L') return 'B3E5FC';
         if (cell === 'H') return 'E1BEE7';
         if (cell === 'HD') return 'FFE0B2';
+        if (cell === 'PHL') return 'C7D2FE';
         if (cell === 'OFF') return 'ECEFF1';
         if (cell === 'OD' || cell === 'WFH') return 'DCEDC8';
         return 'FFFFFF';
@@ -5887,7 +5889,7 @@ router.post('/:name', async (req, res) => {
       wsAR.getCell('A2').fill = arFill('2D6A9F');
       wsAR.getCell('A2').alignment = { vertical:'middle' };
       wsAR.mergeCells(2, 7, 2, totalInfoCols);
-      wsAR.getCell(2, 7).value = 'P=Present  PR=Present (Regularised)  L*=Late  A=Absent  L=Leave  H=Holiday  HD=Half Day  OD=On Duty  WFH=Work from Home  OFF=Week Off  ⛩=Gate Pass issued (hover cell for outing details)';
+      wsAR.getCell(2, 7).value = 'P=Present  PR=Present (Regularised)  L*=Late  A=Absent  L=Leave  H=Holiday  HD=Half Day (insufficient hours)  PHL=Present (Half Day Leave)  OD=On Duty  WFH=Work from Home  OFF=Week Off  ⛩=Gate Pass issued (hover cell for outing details)';
       wsAR.getCell(2, 7).font = arFont(false, 'FFFFFF', 8);
       wsAR.getCell(2, 7).fill = arFill('2D6A9F');
       wsAR.getCell(2, 7).alignment = { vertical:'middle' };
@@ -6109,6 +6111,11 @@ router.post('/:name', async (req, res) => {
         if (s === 'leave')     return 'L';
         if (s === 'on_duty')   return 'OD';
         if (s === 'work_from_home') return 'WFH';
+        // A half-day LEAVE (leave_id + leave_half_day, written by the
+        // Leave-approval sync) is a planned leave, not a worked-hours
+        // shortfall — shows as Present (half day leave), distinct from a
+        // genuine insufficient-hours half day ('HD').
+        if (s === 'half_day' && rec.leave_id && rec.leave_half_day) return 'PHL';
         if (s === 'half_day')  return 'HD';
         if (s === 'short_attendance') return 'SA';
         if (s === 'late' || rec.late_arrival) return 'P*';
@@ -6122,7 +6129,7 @@ router.post('/:name', async (req, res) => {
       };
 
       const mStatusFill = (code) => {
-        const map = { 'P':'22C55E','P*':'F97316','PR':'8B5CF6','A':'EF4444','WO':'D1D5DB','PH':'A78BFA','L':'60A5FA','OD':'14B8A6','WFH':'6366F1','HD':'FBBF24','SA':'FB923C' };
+        const map = { 'P':'22C55E','P*':'F97316','PR':'8B5CF6','A':'EF4444','WO':'D1D5DB','PH':'A78BFA','L':'60A5FA','OD':'14B8A6','WFH':'6366F1','HD':'FBBF24','PHL':'4F46E5','SA':'FB923C' };
         return map[code] || 'F3F4F6';
       };
       const mTextDark = (code) => ['WO','HD','SA'].includes(code) ? '1F2937' : 'FFFFFF';
@@ -6132,7 +6139,7 @@ router.post('/:name', async (req, res) => {
       const wsM = wbM.addWorksheet('Muster Roll', { views: [{ state:'frozen', xSplit:5, ySplit:4 }] });
 
       const INFO = 5; // Code,Name,Dept,Desig,Location
-      const SUMM = 9; // P,A,L,HD,WO,PH,OD,WFH,Total
+      const SUMM = 10; // P,A,L,HD,PHL,WO,PH,OD,WFH,Total
       const totCols = INFO + daysInMonth + SUMM;
 
       const mF  = (bold=false, col='1A1A1A', sz=9) => ({ name:'Calibri', bold, color:{ argb:'FF'+col }, size:sz });
@@ -6157,7 +6164,7 @@ router.post('/:name', async (req, res) => {
       Object.assign(r2.getCell(1), { font:mF(false,'475569',8), fill:mFl('F8FAFC'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
       // Row 3 — legend
-      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   PR = Present (Regularised)   A = Absent   HD = Half Day   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   WFH = Work From Home   SA = Short Attendance   ⛩ = Gate Pass issued that day (hover cell for outing details)   (OD and WFH count toward the Present total)']);
+      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   PR = Present (Regularised)   A = Absent   HD = Half Day (insufficient hours)   PHL = Present (Half Day Leave)   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   WFH = Work From Home   SA = Short Attendance   ⛩ = Gate Pass issued that day (hover cell for outing details)   (OD, WFH and PHL count toward the Present total)']);
       r3.height = 15; wsM.mergeCells(3,1,3,totCols);
       Object.assign(r3.getCell(1), { font:mF(false,'1E40AF',8), fill:mFl('EFF6FF'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
@@ -6166,7 +6173,7 @@ router.post('/:name', async (req, res) => {
         const dow = ['Su','Mo','Tu','We','Th','Fr','Sa'][new Date(y,m-1,i+1).getDay()];
         return `${i+1}\n${dow}`;
       });
-      const hRow = wsM.addRow(['Code','Employee Name','Department','Designation','Location',...dayHdrs,'P','A','L','HD','WO','PH','OD','WFH','Total']);
+      const hRow = wsM.addRow(['Code','Employee Name','Department','Designation','Location',...dayHdrs,'P','A','L','HD','PHL','WO','PH','OD','WFH','Total']);
       hRow.height = 34;
       hRow.eachCell(cell => Object.assign(cell, { font:mF(true,'FFFFFF',8), fill:mFl('1E40AF'), alignment:{ horizontal:'center', vertical:'middle', wrapText:true }, border:mBd() }));
       for (let d=1; d<=daysInMonth; d++) {
@@ -6186,7 +6193,7 @@ router.post('/:name', async (req, res) => {
         const bg = deptBgMap[dept];
         const empRecs = mAttMap[emp.user_id] || {};
         const workingDays = mWorkingDaysFor(emp);
-        let pC=0, aC=0, lC=0, hdC=0, woC=0, phC=0, odC=0, wfhC=0;
+        let pC=0, aC=0, lC=0, hdC=0, phlC=0, woC=0, phC=0, odC=0, wfhC=0;
         const codes = [];        // category codes — drive counting AND coloring, unchanged semantics
         const displayCodes = []; // what's actually printed in the cell
 
@@ -6214,6 +6221,10 @@ router.post('/:name', async (req, res) => {
           else if (code==='A') aC++;
           else if (code==='L') lC++;
           else if (code==='HD') { hdC++; pC+=0.5; aC+=0.5; }
+          // A half-day LEAVE is a full present day, same treatment as OD/WFH
+          // below — it's counted in its own column for visibility but is
+          // NOT a worked-hours shortfall like plain 'HD' above.
+          else if (code==='PHL') { phlC++; pC++; }
           else if (code==='WO') woC++;
           else if (code==='PH') phC++;
           // OD and WFH are worked, full days — counted in their own column
@@ -6224,7 +6235,7 @@ router.post('/:name', async (req, res) => {
         }
 
         const totalWorked = pC + lC + woC; // present (incl. half-days, OD, WFH) + paid leaves + week-off
-        const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...displayCodes, pC, aC, lC, hdC, woC, phC, odC, wfhC, totalWorked];
+        const rowVals = [emp.employee_code||'', emp.display_name||'', dept, emp.designation||'', emp.work_location||'', ...displayCodes, pC, aC, lC, hdC, phlC, woC, phC, odC, wfhC, totalWorked];
         const dr = wsM.addRow(rowVals);
         dr.height = 15;
 
@@ -6249,7 +6260,7 @@ router.post('/:name', async (req, res) => {
           }
         });
 
-        [pC,aC,lC,hdC,woC,phC,odC,wfhC,totalWorked].forEach((v,i) => {
+        [pC,aC,lC,hdC,phlC,woC,phC,odC,wfhC,totalWorked].forEach((v,i) => {
           const cell = dr.getCell(INFO+daysInMonth+1+i);
           const isTotal = i===SUMM-1;
           Object.assign(cell, {
@@ -6461,6 +6472,11 @@ router.post('/:name', async (req, res) => {
           const inMethod = swCheckInMethod(rec);
           const outMethod = swCheckOutMethod(rec);
           const status = rec?.status || (rec ? '' : swInferredStatus(ds, workingDays, emp.date_of_joining));
+          // A half-day LEAVE (leave_id + leave_half_day) is a planned leave,
+          // not a worked-hours shortfall — label it distinctly from a plain
+          // half_day so it doesn't read as an attendance shortfall here.
+          const isPHL = status === 'half_day' && rec?.leave_id && rec?.leave_half_day;
+          const statusLabel = isPHL ? 'Present (Half Day Leave)' : (status ? status.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) : '');
           const gatePass = swGatePassMap[`${emp.user_id}|${ds}`] || null;
           const gatePassText = gatePass
             ? `${gatePass.status === 'departed' ? 'OUT NOW — ' : ''}${swOutingLabels[gatePass.outing_type] || gatePass.outing_type || 'Gate Pass'}${gatePass.reason ? ` — ${gatePass.reason}` : ''}`
@@ -6473,7 +6489,7 @@ router.post('/:name', async (req, res) => {
             rec?.working_hours || '', inMethod, outMethod,
             (inMethod==='Selfie'||inMethod==='Geofence') ? swLocation(rec?.check_in_location) : '',
             (outMethod==='Selfie'||outMethod==='Geofence') ? swLocation(rec?.check_out_location) : '',
-            status ? status.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) : '',
+            statusLabel,
             gatePassText,
           ];
           vals.forEach((v, ci) => { row.getCell(ci+1).value = v; });
@@ -6495,7 +6511,10 @@ router.post('/:name', async (req, res) => {
             mc2.font = swF(true, METHOD_TEXT[outMethod], 8);
             mc2.fill = swFl(METHOD_COLOR[outMethod]);
           }
-          if (status && STATUS_COLOR[status]) {
+          if (isPHL) {
+            const sc = row.getCell(15);
+            sc.fill = swFl('E0E7FF');
+          } else if (status && STATUS_COLOR[status]) {
             const sc = row.getCell(15);
             sc.fill = swFl(STATUS_COLOR[status]);
           }

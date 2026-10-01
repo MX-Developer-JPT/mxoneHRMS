@@ -1,6 +1,6 @@
 import React from 'react';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
-import { scheduledOffStatus } from '@/lib/attendanceSource';
+import { scheduledOffStatus, isHalfDayLeave } from '@/lib/attendanceSource';
 import { safeTime } from '@/lib/dateUtils';
 
 // Single source of truth for "what status does this record actually
@@ -8,7 +8,14 @@ import { safeTime } from '@/lib/dateUtils';
 // 'absent' auto-close) over the check_in_time fallback, which only kicks in
 // for a stale/missing status. Shared so every calendar (HR's org-wide view,
 // an employee's own, a manager's own) agrees on the same day's status.
+//
+// A 'half_day' record caused by an approved half-day LEAVE (not by working
+// fewer hours than required) displays as Present — see isHalfDayLeave in
+// attendanceSource.js. Callers that need to flag it distinctly (a badge, a
+// dot) should check isHalfDayLeave(record) themselves; this function only
+// answers "what's the headline status".
 export function getDisplayStatus(record) {
+  if (isHalfDayLeave(record)) return 'present';
   const s = record.status;
   if (s && s !== 'in_progress') return s;
   if (record.check_in_time) return 'present';
@@ -65,11 +72,12 @@ export default function EmployeeAttendanceCalendar({ emp, year, month, records, 
     }
     const isLate = !!rec && (rec.status === 'late' || rec.late_arrival || (rec.late_minutes > 0) || (rec.late_arrival_minutes > 0));
     const isEarlyOut = !!rec && (rec.early_departure || (rec.early_departure_minutes > 0));
-    dayInfo[ds] = { rec, status, inferred, isFuture, isLate, isEarlyOut };
+    const isHDLeave = isHalfDayLeave(rec);
+    dayInfo[ds] = { rec, status, inferred, isFuture, isLate, isEarlyOut, isHDLeave };
   }
 
-  const summary = { present: 0, absent: 0, leave: 0, halfDay: 0, wfh: 0, ot: 0, late: 0, earlyOut: 0, holiday: 0, weekOff: 0 };
-  Object.values(dayInfo).forEach(({ rec, status: s, isFuture, isLate, isEarlyOut }) => {
+  const summary = { present: 0, absent: 0, leave: 0, halfDay: 0, halfDayLeave: 0, wfh: 0, ot: 0, late: 0, earlyOut: 0, holiday: 0, weekOff: 0 };
+  Object.values(dayInfo).forEach(({ rec, status: s, isFuture, isLate, isEarlyOut, isHDLeave }) => {
     if (isFuture) return;
     if (s === 'absent') summary.absent++;
     else if (s === 'leave') summary.leave++;
@@ -77,6 +85,7 @@ export default function EmployeeAttendanceCalendar({ emp, year, month, records, 
     else if (s === 'holiday') summary.holiday++;
     else if (s === 'week_off') summary.weekOff++;
     else if (['present', 'late', 'on_duty', 'short_attendance', 'work_from_home'].includes(s) || rec?.check_in_time) summary.present++;
+    if (isHDLeave) summary.halfDayLeave++;
     if (s === 'work_from_home') summary.wfh++;
     if (rec && (rec.overtime_minutes || 0) > 0) summary.ot++;
     if (isLate) summary.late++;
@@ -112,22 +121,24 @@ export default function EmployeeAttendanceCalendar({ emp, year, month, records, 
                 {wk.map((d, di) => {
                   if (!d) return <div key={di} />;
                   const ds = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-                  const { rec, status, inferred, isFuture, isLate, isEarlyOut } = dayInfo[ds];
+                  const { rec, status, inferred, isFuture, isLate, isEarlyOut, isHDLeave } = dayInfo[ds];
                   const colorClass = status ? (EMP_STATUS_CAL_COLORS[status] || 'bg-gray-50 border-gray-200 text-gray-500') : 'bg-white border-gray-100 text-gray-400';
                   const isToday = ds === today;
                   const checkIn = rec?.check_in_time;
                   const checkOut = rec?.check_out_time;
                   const hours = rec?.working_hours;
+                  const statusLabel = isHDLeave ? 'Present (Half Day Leave)' : status?.replace(/_/g, ' ');
                   return (
                     <div
                       key={di}
                       className={`relative border rounded text-center py-1 px-0.5 text-[10px] font-medium leading-tight ${isFuture ? 'bg-gray-50 border-gray-100 text-gray-300' : colorClass} ${isToday ? 'ring-1 ring-blue-500' : ''} ${(isLate || isEarlyOut) ? 'ring-1 ring-amber-400' : ''} ${rec && onDayClick ? 'cursor-pointer hover:ring-1 hover:ring-blue-400' : ''}`}
-                      title={rec ? `${status?.replace(/_/g, ' ')}${rec.regularised ? ' (Regularised)' : ''}${isLate ? ' · Late arrival' : ''}${isEarlyOut ? ' · Early departure' : ''}${checkIn ? ` · In: ${safeTime(checkIn)}` : ''}${checkOut ? ` · Out: ${safeTime(checkOut)}` : ''}${hours ? ` · ${hours.toFixed(1)}h` : ''}${onDayClick ? ' — click for full details' : ''}` : (isFuture ? '' : `${status?.replace(/_/g, ' ') || 'Absent'}${inferred && status === 'absent' ? ' — no attendance record' : ''}`)}
+                      title={rec ? `${statusLabel}${rec.regularised ? ' (Regularised)' : ''}${isLate ? ' · Late arrival' : ''}${isEarlyOut ? ' · Early departure' : ''}${checkIn ? ` · In: ${safeTime(checkIn)}` : ''}${checkOut ? ` · Out: ${safeTime(checkOut)}` : ''}${hours ? ` · ${hours.toFixed(1)}h` : ''}${onDayClick ? ' — click for full details' : ''}` : (isFuture ? '' : `${status?.replace(/_/g, ' ') || 'Absent'}${inferred && status === 'absent' ? ' — no attendance record' : ''}`)}
                       onClick={() => rec && onDayClick?.(rec)}
                     >
                       {rec?.regularised && <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-violet-500" />}
                       {isLate && <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-amber-500" title="Late arrival" />}
                       {isEarlyOut && <span className="absolute bottom-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-orange-500" title="Early departure" />}
+                      {isHDLeave && <span className="absolute bottom-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-indigo-500" title="Half Day Leave" />}
                       <div className={`font-bold text-[11px] ${isToday ? 'text-blue-600' : di === 0 ? 'text-red-400' : ''}`}>{d}</div>
                       <div>{status ? (STATUS_LABEL[status] || status.slice(0, 2).toUpperCase()) : (isFuture ? '' : '—')}</div>
                       {hours > 0 && <div className="text-[9px] opacity-70">{hours.toFixed(1)}h</div>}
@@ -152,6 +163,9 @@ export default function EmployeeAttendanceCalendar({ emp, year, month, records, 
             <span className="px-1.5 py-0.5 rounded border bg-orange-50 text-orange-700 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-orange-500" /> Early Departure
             </span>
+            <span className="px-1.5 py-0.5 rounded border bg-indigo-50 text-indigo-700 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" /> Half Day Leave
+            </span>
           </div>
 
           {/* Summary */}
@@ -161,6 +175,7 @@ export default function EmployeeAttendanceCalendar({ emp, year, month, records, 
               { label: 'Absent', value: summary.absent, cls: 'text-red-700 bg-red-50' },
               { label: 'Leave', value: summary.leave, cls: 'text-blue-700 bg-blue-50' },
               { label: 'Half Day', value: summary.halfDay, cls: 'text-yellow-700 bg-yellow-50' },
+              { label: 'Half Day Leave', value: summary.halfDayLeave, cls: 'text-indigo-700 bg-indigo-50' },
               { label: 'WFH', value: summary.wfh, cls: 'text-cyan-700 bg-cyan-50' },
               { label: 'Late Arrival', value: summary.late, cls: 'text-amber-700 bg-amber-50' },
               { label: 'Early Departure', value: summary.earlyOut, cls: 'text-orange-700 bg-orange-50' },

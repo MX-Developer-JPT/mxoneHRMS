@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertTriangle, Clock, TrendingDown, BarChart3, Users, RefreshCw, Fingerprint, Camera, MapPin, Activity } from 'lucide-react';
-import { getAttendanceMethod, scheduledOffStatus, PRESENT_LIKE_STATUSES } from '@/lib/attendanceSource';
+import { getAttendanceMethod, scheduledOffStatus, PRESENT_LIKE_STATUSES, isHalfDayLeave } from '@/lib/attendanceSource';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell
@@ -98,8 +98,9 @@ export default function AttendanceReports() {
   // --- Derived stats ---
   const stats = useMemo(() => {
     const total = attendance.length;
-    const present = attendance.filter(a => PRESENT_LIKE_STATUSES.includes(a.status)).length;
-    const halfDay = attendance.filter(a => a.status === 'half_day').length;
+    const present = attendance.filter(a => PRESENT_LIKE_STATUSES.includes(a.status) || isHalfDayLeave(a)).length;
+    const halfDay = attendance.filter(a => a.status === 'half_day' && !isHalfDayLeave(a)).length;
+    const halfDayLeave = attendance.filter(a => isHalfDayLeave(a)).length;
     const absent = attendance.filter(a => a.status === 'absent').length;
     const holiday = attendance.filter(a => a.status === 'holiday').length;
     const weekOff = attendance.filter(a => a.status === 'week_off').length;
@@ -121,7 +122,7 @@ export default function AttendanceReports() {
     // "was this employee expected to work" day — holidays and week-offs
     // aren't, so they're excluded from the attendance-rate denominator.
     const workingTotal = present + absent + halfDay;
-    return { total, present, halfDay, absent, holiday, weekOff, late, earlyOut, biometric, geofence, selfie, manual, avgHours, totalOvertime, workingTotal };
+    return { total, present, halfDay, halfDayLeave, absent, holiday, weekOff, late, earlyOut, biometric, geofence, selfie, manual, avgHours, totalOvertime, workingTotal };
   }, [attendance]);
 
   // --- Daily trend ---
@@ -131,7 +132,7 @@ export default function AttendanceReports() {
       const d = toDateStr(a.date);
       if (!d) return;
       if (!map[d]) map[d] = { date: d, present: 0, absent: 0, halfDay: 0, late: 0, earlyOut: 0 };
-      if (PRESENT_LIKE_STATUSES.includes(a.status)) map[d].present++;
+      if (PRESENT_LIKE_STATUSES.includes(a.status) || isHalfDayLeave(a)) map[d].present++;
       else if (a.status === 'half_day') map[d].halfDay++;
       else if (a.status === 'absent') map[d].absent++;
       if (a.late_arrival) map[d].late++;
@@ -159,7 +160,7 @@ export default function AttendanceReports() {
       // — matches stats.workingTotal's rationale above.
       if (a.status === 'holiday' || a.status === 'week_off') return;
       map[dept].records++;
-      if (PRESENT_LIKE_STATUSES.includes(a.status)) map[dept].present++;
+      if (PRESENT_LIKE_STATUSES.includes(a.status) || isHalfDayLeave(a)) map[dept].present++;
       if (a.status === 'absent') map[dept].absent++;
       if (a.late_arrival) map[dept].late++;
       if (a.early_departure) map[dept].earlyOut++;
@@ -232,7 +233,7 @@ export default function AttendanceReports() {
       if (!map[loc]) return;
       if (a.status === 'holiday' || a.status === 'week_off') return;
       map[loc].records++;
-      if (PRESENT_LIKE_STATUSES.includes(a.status)) map[loc].present++;
+      if (PRESENT_LIKE_STATUSES.includes(a.status) || isHalfDayLeave(a)) map[loc].present++;
       if (a.status === 'absent') map[loc].absent++;
       if (a.late_arrival) map[loc].late++;
       if (a.early_departure) map[loc].earlyOut++;

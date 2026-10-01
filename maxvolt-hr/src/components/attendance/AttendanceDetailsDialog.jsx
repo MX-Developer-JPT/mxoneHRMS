@@ -8,7 +8,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { MapPin, Camera, Clock, Coffee, ArrowDownCircle, ArrowUpCircle, Timer, Fingerprint, Activity } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
-import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, getGeofenceDetail, isCurrentlyInProgress, effectiveStatus } from '@/lib/attendanceSource';
+import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, getGeofenceDetail, isCurrentlyInProgress, effectiveStatus, isHalfDayLeave } from '@/lib/attendanceSource';
 
 const METHOD_ICON = { biometric: Fingerprint, geofence: MapPin, selfie: Camera, manual: Clock };
 const METHOD_BADGE_CLASS = {
@@ -119,6 +119,11 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                 {record.regularised && (
                   <Badge className="bg-violet-100 text-violet-800 border border-violet-200" title="Marked present after regularisation approval">
                     Regularised
+                  </Badge>
+                )}
+                {isHalfDayLeave(record) && (
+                  <Badge className="bg-indigo-100 text-indigo-800 border border-indigo-200" title={`Half day leave applied${record.leave_policy_code ? ` (${record.leave_policy_code})` : ''}`}>
+                    Half Day Leave{record.leave_policy_code ? ` · ${record.leave_policy_code}` : ''}
                   </Badge>
                 )}
                 {isWorking && (

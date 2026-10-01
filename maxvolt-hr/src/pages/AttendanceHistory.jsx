@@ -7,7 +7,7 @@ import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter
 import { safeDate, safeTime } from '@/lib/dateUtils';
 import { ClipboardList, Coffee, Activity, Fingerprint, MapPin, Camera, DoorOpen } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
-import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, effectiveStatus, isCurrentlyInProgress } from '@/lib/attendanceSource';
+import { getAttendanceMethod, getCheckInMethod, getCheckOutMethod, effectiveStatus, isCurrentlyInProgress, isHalfDayLeave } from '@/lib/attendanceSource';
 
 const METHOD_SHORT_LABEL = { biometric: 'Biometric', geofence: 'Geofence', selfie: 'Selfie', manual: 'Manual' };
 import { Button } from "@/components/ui/button";
@@ -332,6 +332,11 @@ export default function AttendanceHistory() {
                             {a.regularised && (
                               <Badge className="ml-1 bg-violet-100 text-violet-800 border-violet-200" title="Marked present after regularisation approval">
                                 Regularised
+                              </Badge>
+                            )}
+                            {isHalfDayLeave(a) && (
+                              <Badge className="ml-1 bg-indigo-100 text-indigo-800 border-indigo-200" title={`Half day leave applied${a.leave_policy_code ? ` (${a.leave_policy_code})` : ''}`}>
+                                Half Day Leave
                               </Badge>
                             )}
                           </div>

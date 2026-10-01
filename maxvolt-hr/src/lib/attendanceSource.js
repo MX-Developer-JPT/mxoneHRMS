@@ -104,8 +104,24 @@ export function isCurrentlyInProgress(record) {
 // server-side — good enough for display without needing the employee's
 // shift on the client, and prevents a stale flag from ever appearing to
 // still be "in progress" once the calendar page has moved on to a new day.
+// A 'half_day' record can mean one of two very different things: the
+// employee physically worked fewer hours than required (a real partial
+// attendance shortfall), OR they applied for and got approved a half-day
+// LEAVE for that date (backend/routes/functions.js's Leave-approval sync
+// writes leave_id + leave_half_day onto the Attendance row either way —
+// see fixHalfDayLeaveDays/applyHalfDayLeaveStatus in
+// backend/cron/attendanceAutomation.js and backend/routes/attendancelog.js,
+// which already flip status to 'present' once the employee also works
+// >2h that day). Every display surface needs to tell these apart: a
+// half-day LEAVE should read as Present (tagged "Half Day Leave"), not as
+// a shortfall — the employee did exactly what they planned to do.
+export function isHalfDayLeave(record) {
+  return !!record && record.status === 'half_day' && !!record.leave_id && !!record.leave_half_day;
+}
+
 export function effectiveStatus(record) {
   if (!record) return null;
+  if (isHalfDayLeave(record)) return 'present';
   if (record.status !== 'in_progress' || isCurrentlyInProgress(record)) return record.status;
   return (record.working_hours > 0 || record.total_working_minutes > 0) ? 'present' : 'absent';
 }
