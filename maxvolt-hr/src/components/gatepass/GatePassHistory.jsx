@@ -200,7 +200,19 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                         {showEmployeeName && (
                           <p className="font-semibold text-gray-900 text-sm">{u?.full_name || 'Unknown'}</p>
                         )}
-                        <p className="text-xs text-gray-500 truncate">{pass.reason}</p>
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                          {pass.outing_type && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                              {pass.outing_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                            </Badge>
+                          )}
+                          <p className="text-xs text-gray-500 truncate">{pass.reason}</p>
+                        </div>
+                        {pass.outing_type === 'travelling_to_another_office' ? (
+                          <p className="text-xs text-indigo-600 mt-0.5 truncate">{pass.current_location} → {pass.destination_location}</p>
+                        ) : pass.current_location && (
+                          <p className="text-xs text-blue-600 mt-0.5 truncate">From {pass.current_location}</p>
+                        )}
                         <p className="text-xs text-gray-400 mt-0.5">
                           {safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}
                           {emp && showEmployeeName && ` · ${emp.department}`}
@@ -249,7 +261,14 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                 {employees[selected.employee_user_id]?.department && (
                   <p><span className="font-medium">Department:</span> {employees[selected.employee_user_id].department}</p>
                 )}
-                <p><span className="font-medium">Reason:</span> {selected.reason}</p>
+                <p><span className="font-medium">Outing Type:</span> <Badge variant="outline">{selected.outing_type?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'N/A'}</Badge></p>
+                {selected.outing_type === 'travelling_to_another_office' ? (
+                  <p><span className="font-medium">Route:</span> {selected.current_location} → {selected.destination_location}</p>
+                ) : selected.current_location && (
+                  <p><span className="font-medium">Departing From:</span> {selected.current_location}</p>
+                )}
+                <p><span className="font-medium">Reason:</span> {selected.reason || '—'}</p>
+                <p><span className="font-medium">Date:</span> {safeDate(selected.request_date || selected.created_date, 'dd MMM yyyy')}</p>
                 <p><span className="font-medium">Requested On:</span> {safeDate(selected.created_date, 'dd MMM yyyy, hh:mm a')}</p>
                 {selected.expected_return_time && (
                   <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
@@ -260,12 +279,14 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
               <div className="bg-gray-50 rounded-lg p-4 space-y-2">
                 <p className="font-semibold text-gray-700">Manager Action</p>
                 <p><span className="font-medium">Decision:</span> <span className="capitalize">{selected.manager_approval_status || 'pending'}</span></p>
+                <p>
+                  <span className="font-medium">{selected.manager_approval_status === 'pending' ? 'Pending With' : 'Approver'}:</span>{' '}
+                  {employees[selected.manager_user_id]?.display_name || users[selected.manager_user_id]?.full_name || 'Reporting Manager'}
+                </p>
                 {selected.manager_approval_date && (
                   <p><span className="font-medium">At:</span> {safeDate(selected.manager_approval_date, 'dd MMM yyyy, hh:mm a')}</p>
                 )}
-                {selected.manager_comment && (
-                  <p><span className="font-medium">Comment:</span> {selected.manager_comment}</p>
-                )}
+                <p><span className="font-medium">Comment:</span> {selected.manager_comment || '—'}</p>
               </div>
 
               {(selected.departure_time || selected.return_time) && (

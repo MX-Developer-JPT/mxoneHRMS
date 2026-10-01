@@ -65,6 +65,7 @@ export default function GatePassRequest() {
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler', current_location: '', destination_location: '' });
   const [activeTab, setActiveTab] = useState('active');
+  const [employees, setEmployees] = useState({});
 
   useEffect(() => {
     loadData();
@@ -74,14 +75,18 @@ export default function GatePassRequest() {
     setLoading(true);
     const currentUser = await base44.auth.me();
     setUser(currentUser);
-    const [passes, locs, empRecords] = await Promise.all([
+    const [passes, locs, empRecords, allEmployees] = await Promise.all([
       base44.entities.GatePass.filter({ employee_user_id: currentUser.id }),
       base44.entities.AppLocation.filter({ is_active: true }),
       base44.entities.Employee.filter({ user_id: currentUser.id }),
+      base44.entities.Employee.list(),
     ]);
     passes.sort((a, b) => new Date(b.created_date) - new Date(a.created_date));
     setMyPasses(passes);
     setLocations(locs);
+    const empMap = {};
+    allEmployees.forEach(e => { empMap[e.user_id] = e; });
+    setEmployees(empMap);
     // Pre-fill the departure-location dropdown with the employee's own
     // assigned office (Location Master) — still editable, just saves the
     // common case (departing from your usual office) a click.
@@ -366,8 +371,14 @@ export default function GatePassRequest() {
                         Expected return: {safeDate(pass.expected_return_time, 'dd MMM yyyy, hh:mm a')}
                       </p>
                     )}
+                    {pass.status !== 'pending_approval' && pass.status !== 'cancelled' && pass.manager_user_id && (
+                      <p className="text-sm text-gray-500 mt-1">
+                        Approver: {employees[pass.manager_user_id]?.display_name || 'Reporting Manager'}
+                        {pass.manager_approval_date && ` · ${safeDate(pass.manager_approval_date, 'dd MMM, hh:mm a')}`}
+                      </p>
+                    )}
                     {pass.manager_comment && (
-                      <p className="text-sm text-orange-600 mt-1">Manager: {pass.manager_comment}</p>
+                      <p className="text-sm text-orange-600 mt-1">Comment: {pass.manager_comment}</p>
                     )}
                     {pass.departure_time && (
                       <p className="text-sm text-orange-600 mt-1 flex items-center gap-1">

@@ -245,10 +245,25 @@ export default function GatePassApproval() {
                 )}
                 <p><span className="font-medium">Reason:</span> {selected.reason || '—'}</p>
                 <p><span className="font-medium">Requested:</span> {safeDate(selected.created_date, 'dd MMM yyyy, hh:mm a')}</p>
+                <p><span className="font-medium">Date:</span> {safeDate(selected.request_date || selected.created_date, 'dd MMM yyyy')}</p>
                 {selected.expected_return_time && (
                   <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
                 )}
                 <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+                {selected.status === 'pending_approval' ? (
+                  <p><span className="font-medium">Pending with:</span> {employees[selected.manager_user_id]?.display_name || 'Reporting Manager'}</p>
+                ) : (
+                  <>
+                    <p><span className="font-medium">Approver:</span> {employees[selected.manager_user_id]?.display_name || 'Unknown'}</p>
+                    {selected.manager_approval_date && (
+                      <p><span className="font-medium">Decided On:</span> {safeDate(selected.manager_approval_date, 'dd MMM yyyy, hh:mm a')}</p>
+                    )}
+                    <p><span className="font-medium">Comment:</span> {selected.manager_comment || '—'}</p>
+                  </>
+                )}
               </div>
 
               {selected.status === 'pending_approval' && (

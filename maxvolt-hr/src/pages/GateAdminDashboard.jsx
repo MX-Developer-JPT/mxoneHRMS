@@ -356,6 +356,9 @@ export default function GateAdminDashboard() {
                           <p className="text-gray-500 flex items-center gap-1"><Clock className="w-3 h-3" /> Duration: {Math.round((new Date(pass.return_time) - new Date(pass.departure_time)) / 60000)} min</p>
                         )}
                         {pass.lop_deduction_days > 0 && <p className="text-red-600 font-medium">LOP: {pass.lop_deduction_days} day(s)</p>}
+                        {pass.manager_user_id && (pass.status === 'approved' || pass.status === 'rejected' || pass.status === 'departed' || pass.status === 'returned') && (
+                          <p className="text-gray-500">By: {employees[pass.manager_user_id]?.display_name || 'Manager'}</p>
+                        )}
                       </div>
                       <Badge className={STATUS_COLORS[pass.status]}>{STATUS_LABELS[pass.status]}</Badge>
                     </div>
@@ -390,12 +393,23 @@ export default function GateAdminDashboard() {
                 ) : selected.current_location && (
                   <p><span className="font-medium text-gray-600">Departing from:</span> {selected.current_location}</p>
                 )}
+                {selected.vehicle_type && <p><span className="font-medium text-gray-600">Vehicle:</span> {selected.vehicle_type.replace('_', ' ')}</p>}
                 <p><span className="font-medium text-gray-600">Reason:</span> {selected.reason || '—'}</p>
+                <p><span className="font-medium text-gray-600">Date:</span> {safeDate(selected.request_date || selected.created_date, 'dd MMM yyyy')}</p>
                 <p><span className="font-medium text-gray-600">Requested:</span> {safeDate(selected.created_date, 'dd MMM yyyy, h:mm a')}</p>
                 {selected.expected_return_time && <p><span className="font-medium text-gray-600">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, h:mm a')}</p>}
                 {selected.departure_time && <p className="text-orange-700 font-medium"><LogOut className="w-3.5 h-3.5 inline mr-1" /> Departed At: {safeTime(selected.departure_time)}</p>}
                 {selected.return_time && <p className="text-green-700 font-medium"><LogIn className="w-3.5 h-3.5 inline mr-1" /> Returned At: {safeTime(selected.return_time)}</p>}
                 {selected.lop_deduction_days > 0 && <p className="text-red-700 font-medium">LOP Deduction: {selected.lop_deduction_days} day(s)</p>}
+              </div>
+
+              <div className="bg-gray-50 rounded-xl p-4 space-y-1.5 text-sm">
+                <p className="font-semibold text-gray-700">Approval</p>
+                <p><span className="font-medium text-gray-600">Approver:</span> {employees[selected.manager_user_id]?.display_name || 'Reporting Manager'}</p>
+                {selected.manager_approval_date && (
+                  <p><span className="font-medium text-gray-600">Decided On:</span> {safeDate(selected.manager_approval_date, 'dd MMM yyyy, h:mm a')}</p>
+                )}
+                <p><span className="font-medium text-gray-600">Comment:</span> {selected.manager_comment || '—'}</p>
               </div>
 
               {(selected.status === 'approved' || selected.status === 'departed') && (
