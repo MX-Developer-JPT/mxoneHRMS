@@ -6,7 +6,19 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL?.includes('localhost') || process.env.DATABASE_URL?.includes('127.0.0.1')
     ? false
     : { rejectUnauthorized: false },
-  max: 10,
+  // A pool this small (10) serves the whole app — ~300 employees, every
+  // route handler borrowing-and-releasing a connection per query (not held
+  // across a request) via one()/all()/run() below. node-postgres queues a
+  // query when every connection is busy rather than erroring, so under a
+  // concurrent burst (shift start, everyone opening the app and marking
+  // attendance in the same few minutes) requests across the ENTIRE app —
+  // not just the busy ones — start queueing behind each other, reading as
+  // "the app is slow to load" for everyone simultaneously, then clearing up
+  // once the burst passes. Raised to give real headroom; Supabase's free/
+  // starter tiers typically allow 60+ direct connections, so this still
+  // leaves comfortable margin — re-check against the actual plan's
+  // connection cap if it's ever raised further.
+  max: 30,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
 });
