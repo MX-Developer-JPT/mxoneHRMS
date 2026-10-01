@@ -302,6 +302,18 @@ if (process.env.NODE_ENV === 'production') {
 // hanging or, as happened before this, letting the error escape as an
 // unhandled rejection and take the whole process down.
 app.use((err, req, res, _next) => {
+  // The client closed the connection (navigated away, backgrounded the app,
+  // a flaky mobile network) before the request body finished uploading —
+  // raw-body/body-parser surfaces this as a 400 'request aborted' with
+  // type 'request.aborted' / code ECONNABORTED. It's routine, not a bug on
+  // this end, and there's no client left to send a response to (res.json
+  // below would just silently no-op on the dead socket) — a single quiet
+  // line beats a full stack trace flooding the logs on every occurrence,
+  // which was previously drowning out genuine errors.
+  if (err?.type === 'request.aborted' || err?.code === 'ECONNABORTED') {
+    console.warn(`[express] Client aborted ${req.method} ${req.originalUrl} mid-request`);
+    return;
+  }
   console.error(`[express] Unhandled error on ${req.method} ${req.originalUrl}:`, err?.stack || err?.message || err);
   if (res.headersSent) return; // response already started streaming — nothing more we can send
   res.status(err?.status || err?.statusCode || 500).json({
