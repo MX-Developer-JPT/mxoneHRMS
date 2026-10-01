@@ -64,11 +64,15 @@ process.on('uncaughtException', (err) => {
   console.error('[process] Uncaught exception (server stays up):', err?.stack || err?.message || err);
 });
 
-// ── Auto-start Ollama + pull model ───────────────────────────
+// ── Ensure Ollama's model is pulled ──────────────────────────
+// Ollama itself runs as a separate Railway service (ollama-service/), not
+// in this container — this only checks/pulls the model over HTTP against
+// OLLAMA_URL. In local dev (no OLLAMA_URL set), it falls back to spawning
+// `ollama serve` on localhost if the binary is installed.
 async function ensureOllama() {
   if (process.env.GROQ_API_KEY) return;
 
-  const OLLAMA_URL = 'http://localhost:11434';
+  const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
   const MODEL      = process.env.OLLAMA_MODEL || 'tinyllama';
   const isProd     = process.env.NODE_ENV === 'production';
 
