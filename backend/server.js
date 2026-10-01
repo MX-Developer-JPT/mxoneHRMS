@@ -309,9 +309,14 @@ app.use((err, req, res, _next) => {
   // this end, and there's no client left to send a response to (res.json
   // below would just silently no-op on the dead socket) — a single quiet
   // line beats a full stack trace flooding the logs on every occurrence,
-  // which was previously drowning out genuine errors.
+  // which was previously drowning out genuine errors. console.log (not
+  // .warn/.error) deliberately — Railway classifies a log line's severity
+  // by which stream it's written to (stdout vs stderr), not by which
+  // console method was called or what the text says, and .warn still
+  // writes to stderr same as .error — so this stayed tagged [err] in the
+  // dashboard despite not being one until switched to stdout here.
   if (err?.type === 'request.aborted' || err?.code === 'ECONNABORTED') {
-    console.warn(`[express] Client aborted ${req.method} ${req.originalUrl} mid-request`);
+    console.log(`[express] Client aborted ${req.method} ${req.originalUrl} mid-request`);
     return;
   }
   console.error(`[express] Unhandled error on ${req.method} ${req.originalUrl}:`, err?.stack || err?.message || err);
