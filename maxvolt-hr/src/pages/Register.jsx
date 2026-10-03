@@ -88,7 +88,7 @@ export default function Register() {
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
             <div className="inline-block bg-white rounded-2xl px-6 py-3 shadow-sm mb-5">
-              <img src="/maxvolt-logo.jpg?v=6" alt="MaxVolt Energy" className="h-14 w-auto object-contain" />
+              <img src="/maxvolt-logo.jpg?v=8" alt="Maxvolt One" className="h-24 w-auto object-contain" />
             </div>
             <h1 className="text-2xl font-bold">Verify your email</h1>
             <p className="text-muted-foreground mt-1 text-sm">
@@ -140,7 +140,7 @@ export default function Register() {
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <div className="inline-block bg-white rounded-2xl px-6 py-3 shadow-sm mb-5">
-            <img src="/maxvolt-logo.jpg?v=6" alt="MaxVolt Energy" className="h-14 w-auto object-contain" />
+            <img src="/maxvolt-logo.jpg?v=8" alt="Maxvolt One" className="h-24 w-auto object-contain" />
           </div>
           <h1 className="text-2xl font-bold">Create your account</h1>
           <p className="text-muted-foreground mt-1 text-sm">Join Maxvolt One</p>
