@@ -5301,34 +5301,26 @@ router.post('/:name', async (req, res) => {
       // opened — this record was never producing a real URL to open in
       // the first place. Upload it to the bucket now and switch the
       // record over to a real URL going forward if we can.
-      const { isBucketConfigured: gpfuBucketConfigured, buildKey: gpfuBuildKey, putToBucket: gpfuPutToBucket, presignGet: gpfuPresignGet } = await import('../utils/bucket.js');
-      if (!d.payslip_file_url && d.payslip_file_base64 && gpfuBucketConfigured()) {
-        try {
-          const buffer = Buffer.from(d.payslip_file_base64, 'base64');
-          const key = gpfuBuildKey(`payslips/${d.user_id}/${d.year}-${String(d.month).padStart(2, '0')}`, '.pdf');
-          await gpfuPutToBucket(key, buffer, 'application/pdf');
-          // 604800s (7 days) — the hard SigV4 maximum for a presigned URL;
-          // 31536000 (1 year) unconditionally failed every migration
-          // attempt with "must have an expiration date less than one week
-          // in the future", which is the exact error seen in production
-          // logs here. This endpoint is always called fresh by the
-          // frontend on each view/download (Payslips.jsx), so a 7-day URL
-          // being stored is just a cache — nothing depends on it outliving
-          // that window, and this same self-heal will simply refresh it
-          // again on the next call after it expires.
-          const freshUrl = await gpfuPresignGet(key, { expiresIn: 604800, filename: `Payslip_${d.employee_code || d.user_id}_${d.year}-${d.month}.pdf` });
-          const migrated = { ...d, payslip_file_url: freshUrl, payslip_file_base64: undefined };
-          await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(migrated), row.id]);
-          return res.json({ success: true, url: freshUrl, base64: null });
-        } catch (e) {
-          console.error('[getPayslipFileUrl] base64->bucket migration failed:', e.message);
-          // Fall through to the base64 response below — still viewable on
-          // desktop even though this attempt to fix it for mobile didn't
-          // take; next call will just retry the migration.
-        }
-      }
+      const f = await resolvePayslipFile(row, d);
+      return res.json({ success: true, url: f.url, base64: f.base64 });
+    }
 
-      return res.json({ success: true, url: d.payslip_file_url || null, base64: d.payslip_file_url ? null : d.payslip_file_base64 });
+    // Short-lived signed link so the app can hand a payslip to the device's
+    // real browser (which has working PDF viewing/downloading, unlike the
+    // embedded native WebView) without that browser needing the app's login.
+    // The link itself is the credential: a 15-minute JWT scoped to this one
+    // payroll record, checked by the public /api/payslip-download routes.
+    case 'getPayslipDownloadLink': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { payroll_id: gpdlId } = p;
+      const gpdlRow = await one("SELECT data FROM entities WHERE type='Payroll' AND id=$1", [gpdlId]);
+      if (!gpdlRow) return res.json({ success: false, error: 'Payroll record not found' });
+      const gpdlData = JSON.parse(gpdlRow.data);
+      if (gpdlData.user_id !== cu.id && !(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'Not authorized' });
+      const token = jwt.sign({ typ: 'payslip-dl', pid: gpdlId }, JWT_SECRET, { expiresIn: '15m' });
+      const base = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '');
+      const isFile = !!(gpdlData.payslip_file_url || gpdlData.payslip_file_base64);
+      return res.json({ success: true, url: isFile ? `${base}/api/payslip-download/${token}/file` : `${base}/payslip-view/${token}` });
     }
 
     case 'importSalaryStructures': {
@@ -5619,33 +5611,7 @@ router.post('/:name', async (req, res) => {
       // payroll_id, not just their own.
       if (payroll.user_id !== cu.id && !(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'Not authorized to view this payslip' });
 
-      const eRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [payroll.user_id]);
-      const employee = eRow ? JSON.parse(eRow.data) : {};
-
-      const uRow = await one("SELECT id,email,full_name,display_name FROM users WHERE id=$1", [payroll.user_id]);
-      const empUser = uRow || { full_name: employee.display_name || '' };
-
-      const ssRows = await all("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1", [payroll.user_id]);
-      const salaryStructure = ssRows.length ? JSON.parse(ssRows[0].data) : {};
-
-      const bonusRows = await all(
-        "SELECT data FROM entities WHERE type='Bonus' AND user_id=$1 AND data::jsonb->>'month'=$2 AND data::jsonb->>'year'=$3",
-        [payroll.user_id, String(payroll.month), String(payroll.year)]
-      );
-      const bonuses = bonusRows.map(r => JSON.parse(r.data));
-
-      // Resolve department code → full name
-      let deptName = employee.department || 'N/A';
-      if (employee.department) {
-        const deptRow = await one(
-          "SELECT data FROM entities WHERE type='Department' AND (data::jsonb->>'code'=$1 OR data::jsonb->>'name'=$1) LIMIT 1",
-          [employee.department]
-        );
-        if (deptRow) deptName = JSON.parse(deptRow.data).name || deptName;
-      }
-
-      const html = buildPayslipHtml(payroll, employee, deptName);
-      return res.json({ success:true, html, payroll, employee, empUser, salaryStructure, bonuses, data:payroll });
+      return res.json(await loadPayslipPayload(payroll));
     }
 
     case 'generateBankTransferFile': {
@@ -18876,6 +18842,71 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
   }
 });
 
+/* Resolves a Payroll's uploaded payslip PDF to a fresh URL (or base64 fallback), self-healing
+   records stuck on inline base64 by migrating them to the bucket. Shared by getPayslipFileUrl and
+   the token-based public download route. */
+async function resolvePayslipFile(row, d) {
+  const { isBucketConfigured: gpfuBucketConfigured, buildKey: gpfuBuildKey, putToBucket: gpfuPutToBucket, presignGet: gpfuPresignGet } = await import('../utils/bucket.js');
+  if (!d.payslip_file_url && d.payslip_file_base64 && gpfuBucketConfigured()) {
+    try {
+      const buffer = Buffer.from(d.payslip_file_base64, 'base64');
+      const key = gpfuBuildKey(`payslips/${d.user_id}/${d.year}-${String(d.month).padStart(2, '0')}`, '.pdf');
+      await gpfuPutToBucket(key, buffer, 'application/pdf');
+      // 604800s (7 days) — the hard SigV4 maximum for a presigned URL;
+      // 31536000 (1 year) unconditionally failed every migration
+      // attempt with "must have an expiration date less than one week
+      // in the future", which is the exact error seen in production
+      // logs here. This endpoint is always called fresh by the
+      // frontend on each view/download (Payslips.jsx), so a 7-day URL
+      // being stored is just a cache — nothing depends on it outliving
+      // that window, and this same self-heal will simply refresh it
+      // again on the next call after it expires.
+      const freshUrl = await gpfuPresignGet(key, { expiresIn: 604800, filename: `Payslip_${d.employee_code || d.user_id}_${d.year}-${d.month}.pdf` });
+      const migrated = { ...d, payslip_file_url: freshUrl, payslip_file_base64: undefined };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(migrated), row.id]);
+      return { url: freshUrl, base64: null };
+    } catch (e) {
+      console.error('[getPayslipFileUrl] base64->bucket migration failed:', e.message);
+      // Fall through to the base64 response below — still viewable on
+      // desktop even though this attempt to fix it for mobile didn't
+      // take; next call will just retry the migration.
+    }
+  }
+
+  return { url: d.payslip_file_url || null, base64: d.payslip_file_url ? null : d.payslip_file_base64 };
+}
+
+/* Loads everything a payslip render needs for one Payroll record (caller has already authorised access). */
+async function loadPayslipPayload(payroll) {
+  const eRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [payroll.user_id]);
+  const employee = eRow ? JSON.parse(eRow.data) : {};
+
+  const uRow = await one("SELECT id,email,full_name,display_name FROM users WHERE id=$1", [payroll.user_id]);
+  const empUser = uRow || { full_name: employee.display_name || '' };
+
+  const ssRows = await all("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1", [payroll.user_id]);
+  const salaryStructure = ssRows.length ? JSON.parse(ssRows[0].data) : {};
+
+  const bonusRows = await all(
+    "SELECT data FROM entities WHERE type='Bonus' AND user_id=$1 AND data::jsonb->>'month'=$2 AND data::jsonb->>'year'=$3",
+    [payroll.user_id, String(payroll.month), String(payroll.year)]
+  );
+  const bonuses = bonusRows.map(r => JSON.parse(r.data));
+
+  // Resolve department code → full name
+  let deptName = employee.department || 'N/A';
+  if (employee.department) {
+    const deptRow = await one(
+      "SELECT data FROM entities WHERE type='Department' AND (data::jsonb->>'code'=$1 OR data::jsonb->>'name'=$1) LIMIT 1",
+      [employee.department]
+    );
+    if (deptRow) deptName = JSON.parse(deptRow.data).name || deptName;
+  }
+
+  const html = buildPayslipHtml(payroll, employee, deptName);
+  return { success:true, html, payroll, employee, empUser, salaryStructure, bonuses, data:payroll };
+}
+
 /* ── payslip HTML ──────────────────────────────────────── */
 function buildPayslipHtml(payroll, emp, deptName) {
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -19161,6 +19192,42 @@ function renderFieldReimbursementHtml({ emp, empName, period, rows, totals, meal
   </div>
   <p style="color:#aaa;font-size:10px;margin-top:18px;text-align:center">Generated by Maxvolt One from GPS-tracked Field Duty trips${claimId ? ` · Claim ID: ${claimId}` : ''} · As per Maxvolt Energy Travel Policy Annexure 1–6.</p>
 </div>`;
+}
+
+/* ── Public (token-authenticated) payslip download routes ─────────────────
+   Mounted in server.js OUTSIDE the normal auth flow: the external browser a
+   payslip is opened in has no app session, so the signed link from
+   getPayslipDownloadLink is the only credential. */
+function readPayslipToken(req) {
+  try {
+    const d = jwt.verify(req.params.token, JWT_SECRET);
+    return d?.typ === 'payslip-dl' && d.pid ? d : null;
+  } catch { return null; }
+}
+
+export async function payslipDownloadFile(req, res) {
+  const tk = readPayslipToken(req);
+  if (!tk) return res.status(401).send('This payslip link has expired. Please go back to the app and tap the payslip again.');
+  const row = await one("SELECT id, data FROM entities WHERE type='Payroll' AND id=$1", [tk.pid]);
+  if (!row) return res.status(404).send('Payslip not found');
+  const d = JSON.parse(row.data);
+  const f = await resolvePayslipFile(row, d);
+  const filename = `Payslip_${d.employee_code || d.user_id}_${d.year}-${String(d.month).padStart(2, '0')}.pdf`;
+  if (f.url) return res.redirect(302, f.url);
+  if (f.base64) {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    return res.send(Buffer.from(f.base64, 'base64'));
+  }
+  return res.status(404).send('No payslip file available');
+}
+
+export async function payslipDownloadData(req, res) {
+  const tk = readPayslipToken(req);
+  if (!tk) return res.status(401).json({ error: 'expired' });
+  const row = await one("SELECT data FROM entities WHERE type='Payroll' AND id=$1", [tk.pid]);
+  if (!row) return res.status(404).json({ error: 'Payslip not found' });
+  return res.json(await loadPayslipPayload(JSON.parse(row.data)));
 }
 
 export default router;

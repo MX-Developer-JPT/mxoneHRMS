@@ -2,9 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { FileText, DollarSign, Printer, TrendingUp, TrendingDown, Download, Loader2, KeyRound } from 'lucide-react';
-import { buildPayslipPageHtml } from '../utils/payslipPrint';
-import DocViewerModal from '../components/DocViewerModal';
+import { FileText, DollarSign, TrendingUp, Download, Loader2, KeyRound } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 
@@ -20,23 +18,7 @@ export default function Payslips() {
   const [user, setUser] = useState(null);
   const [payrolls, setPayrolls] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [printing, setPrinting] = useState(null);
-  const [downloading, setDownloading] = useState(null);
-  // Every other document type in this app (Aadhar card, offer letters,
-  // announcements, reimbursement receipts...) already opens reliably on
-  // desktop AND inside the native Android/iOS app via THIS SAME component
-  // — an in-app modal that renders the file with a plain <iframe>/<img>
-  // inside a Dialog already open on the current page, instead of trying to
-  // open a NEW window/tab/browser for it. That's the actual difference
-  // from every previous payslip-specific attempt here (window.open(),
-  // target="_blank", even the native Browser plugin): none of those ever
-  // needed to exist in the first place, because opening a second
-  // window/tab/external app was never required to VIEW a document — only
-  // DocViewerModal's own Download button (a real <a href download>, a
-  // secondary action) still opens externally, and that's fine even if it
-  // doesn't on some platform, since viewing already succeeded via the
-  // iframe by then.
-  const [viewerDoc, setViewerDoc] = useState(null); // { url, title } | null
+  const [opening, setOpening] = useState(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -52,46 +34,39 @@ export default function Payslips() {
     setLoading(false);
   };
 
-  const handlePrint = async (payroll) => {
-    setPrinting(payroll.id);
+  // The embedded app WebView can't reliably render or save PDFs/HTML
+  // downloads (every in-app attempt — iframe, blob, share sheet — failed on
+  // device), so a payslip is handed to the device's real browser through a
+  // short-lived signed link instead: the browser shows the PDF (asking for
+  // the password if it is locked) and handles the download itself.
+  const openPayslipInBrowser = async (payroll) => {
+    setOpening(payroll.id);
+    // Opened synchronously, before the async fetch, so a desktop browser
+    // doesn't treat the later navigation as a blocked popup.
+    let pendingWin = null;
     try {
-      const response = await base44.functions.invoke('generatePayslip', { payroll_id: payroll.id });
+      const { Capacitor } = await import('@capacitor/core');
+      if (!Capacitor.isNativePlatform()) pendingWin = window.open('', '_blank');
+    } catch { pendingWin = window.open('', '_blank'); }
+    try {
+      const response = await base44.functions.invoke('getPayslipDownloadLink', { payroll_id: payroll.id });
       const rd = response?.data || response;
-      if (rd?.success) {
-        // Blob URL — an iframe rendering it is same-document content, not a
-        // new browsing context, so this works exactly like passing a real
-        // URL would (see DocViewerModal's own isPdf/iframe branch).
-        const url = URL.createObjectURL(new Blob([buildPayslipPageHtml(rd)], { type: 'text/html' }));
-        setViewerDoc({ url, title: `Payslip — ${monthNames[(payroll.month || 1) - 1]} ${payroll.year}` });
+      if (!rd?.success || !rd.url) throw new Error(rd?.error || 'This payslip is not available to download.');
+      const { Capacitor } = await import('@capacitor/core');
+      if (Capacitor.isNativePlatform()) {
+        const { Browser } = await import('@capacitor/browser');
+        await Browser.open({ url: rd.url });
+      } else if (pendingWin) {
+        pendingWin.location.href = rd.url;
       } else {
-        toast.error(rd?.error || 'Failed to generate payslip.');
+        window.location.href = rd.url;
       }
     } catch (error) {
-      console.error('Error printing payslip:', error);
-      toast.error('Failed to generate payslip: ' + error.message);
-    }
-    setPrinting(null);
-  };
-
-  const handleDownloadOriginal = async (payroll) => {
-    setDownloading(payroll.id);
-    try {
-      const response = await base44.functions.invoke('getPayslipFileUrl', { payroll_id: payroll.id });
-      const rd = response?.data || response;
-      if (rd?.success && rd.url) {
-        setViewerDoc({ url: rd.url, title: `Payslip — ${monthNames[(payroll.month || 1) - 1]} ${payroll.year}` });
-      } else if (rd?.success && rd.base64) {
-        const bytes = Uint8Array.from(atob(rd.base64), c => c.charCodeAt(0));
-        const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-        setViewerDoc({ url, title: `Payslip — ${monthNames[(payroll.month || 1) - 1]} ${payroll.year}` });
-      } else {
-        toast.error(rd?.error || 'This payslip is not available to download.');
-      }
-    } catch (error) {
-      console.error('Error downloading original payslip:', error);
+      if (pendingWin) pendingWin.close();
+      console.error('Error opening payslip:', error);
       toast.error('Failed to open payslip: ' + error.message);
     }
-    setDownloading(null);
+    setOpening(null);
   };
 
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
@@ -110,7 +85,7 @@ export default function Payslips() {
       <div className="max-w-6xl mx-auto space-y-6">
         <div>
           <h1 className="text-3xl font-bold">My Payslips</h1>
-          <p className="text-gray-600 mt-1">View and print your salary slips</p>
+          <p className="text-gray-600 mt-1">Download your salary slips</p>
         </div>
 
         {/* Uploaded (HR bulk-upload) payslip PDFs are the original file HR
@@ -190,12 +165,12 @@ export default function Payslips() {
                       // payslip — nothing else is shown alongside it.
                       <>
                         <Button
-                          onClick={() => handleDownloadOriginal(payroll)}
+                          onClick={() => openPayslipInBrowser(payroll)}
                           className="w-full"
-                          disabled={downloading === payroll.id}
+                          disabled={opening === payroll.id}
                         >
-                          {downloading === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
-                          {downloading === payroll.id ? 'Opening...' : 'View Payslip'}
+                          {opening === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                          {opening === payroll.id ? 'Opening browser...' : 'Download Payslip'}
                         </Button>
                         <p className="text-xs text-gray-400 flex items-center gap-1 justify-center">
                           <KeyRound className="w-3 h-3" /> Locked with your Employee Code{payroll.employee_code ? ` (${payroll.employee_code})` : ''}
@@ -222,13 +197,13 @@ export default function Payslips() {
                           </div>
                         </div>
                         <Button
-                          onClick={() => handlePrint(payroll)}
+                          onClick={() => openPayslipInBrowser(payroll)}
                           className="w-full"
                           variant="outline"
-                          disabled={printing === payroll.id}
+                          disabled={opening === payroll.id}
                         >
-                          <Printer className="w-4 h-4 mr-2" />
-                          {printing === payroll.id ? 'Generating...' : 'View / Print Payslip'}
+                          {opening === payroll.id ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
+                          {opening === payroll.id ? 'Opening browser...' : 'Download Payslip'}
                         </Button>
                       </>
                     )}
@@ -247,12 +222,6 @@ export default function Payslips() {
           </Card>
         )}
 
-        <DocViewerModal
-          open={!!viewerDoc}
-          url={viewerDoc?.url}
-          title={viewerDoc?.title}
-          onClose={() => setViewerDoc(null)}
-        />
       </div>
     </div>
   );

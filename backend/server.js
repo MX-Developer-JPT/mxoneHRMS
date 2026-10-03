@@ -22,7 +22,7 @@ import compression from 'compression';
 import { wafGuard, globalLimiter, authLimiter } from './middleware/waf.js';
 import authRouter           from './routes/auth.js';
 import entitiesRouter       from './routes/entities.js';
-import functionsRouter      from './routes/functions.js';
+import functionsRouter, { payslipDownloadFile, payslipDownloadData } from './routes/functions.js';
 import uploadRouter         from './routes/upload.js';
 import aiRouter             from './routes/ai.js';
 import adminRouter          from './routes/admin.js';
@@ -250,6 +250,10 @@ app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
 
 app.use('/api/auth',            authLimiter, authRouter);
 app.use('/api/entities',        entitiesRouter);
+// Token-authenticated (no login session) — opened from the device's real
+// browser via a short-lived signed link; see getPayslipDownloadLink.
+app.get('/api/payslip-download/:token/file', payslipDownloadFile);
+app.get('/api/payslip-download/:token/data', payslipDownloadData);
 app.use('/api/functions',       functionsRouter);
 app.use('/api/upload',          uploadRouter);
 app.use('/api/ai',              aiRouter);

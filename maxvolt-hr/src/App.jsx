@@ -53,6 +53,7 @@ const CareersPage = lazy(() => import('./pages/CareersPage'));
 const OfferAcceptPage = lazy(() => import('./pages/OfferAcceptPage'));
 const CandidateDocumentPortal = lazy(() => import('./pages/CandidateDocumentPortal'));
 const ApplicationStatusPage = lazy(() => import('./pages/ApplicationStatusPage'));
+const PayslipView = lazy(() => import('./pages/PayslipView'));
 const LOPConfiguration = lazy(() => import('./pages/LOPConfiguration'));
 const MyExit = lazy(() => import('./pages/MyExit'));
 const ExitManagement = lazy(() => import('./pages/ExitManagement'));
@@ -212,7 +213,7 @@ const ForceChangePassword = ({ onDone }) => {
   );
 };
 
-const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept', '/candidate-documents', '/application-status'];
+const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept', '/candidate-documents', '/application-status', '/payslip-view'];
 
 // Guards the login/register/forgot-password/reset-password routes against an
 // already-authenticated session. Without this, pressing the browser/hardware
@@ -589,6 +590,7 @@ function App() {
           <Route path="/offer-accept/:token" element={<Suspense fallback={<PageLoader />}><OfferAcceptPage /></Suspense>} />
           <Route path="/candidate-documents/:token" element={<Suspense fallback={<PageLoader />}><CandidateDocumentPortal /></Suspense>} />
           <Route path="/application-status/:token" element={<Suspense fallback={<PageLoader />}><ApplicationStatusPage /></Suspense>} />
+          <Route path="/payslip-view/:token" element={<Suspense fallback={<PageLoader />}><PayslipView /></Suspense>} />
           {/* All other routes go through auth */}
           <Route path="*" element={
             <AuthProvider>
