@@ -559,8 +559,11 @@ async function processRecord(record) {
         SerialNumber: serial,
         VerificationType: verType,
         user_id: userId || null,
+        // No employee/mapping owns this code (yet): surfaces on the HR "Off role
+        // attendance" page, and drops off it by itself once the code is mapped.
+        off_role: !userId,
         ProcessedAt: new Date().toISOString(),
-        source: 'webhook',
+        source: record.__source || 'webhook',
       })]
     );
     logStored = true;
@@ -568,7 +571,7 @@ async function processRecord(record) {
 
   if (!userId) {
     return {
-      ok: true, log_stored: logStored, attendance_updated: false,
+      ok: true, log_stored: logStored, attendance_updated: false, off_role: true,
       note: `employee_code=${codeStr} not yet mapped — set the Biometric ID on the employee record`,
     };
   }
@@ -726,6 +729,31 @@ router.post('/', authMiddleware, async (req, res) => {
     const result = await processRecord(body);
     if (!result.ok) return res.status(400).json({ error: result.reason });
     return res.json({ success: true, ...result });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// Dedicated receiver for OFF-ROLE punches (biometric codes with no employee):
+// same record formats and API key as POST /, but the response is about the
+// off-role outcome so the sync tool / device bridge can report it clearly.
+// A code that DOES belong to an employee is still processed normally (it just
+// is not counted as off-role), so pointing a device at this endpoint is safe.
+//   POST /api/attendance-log/off-role   { records: [...] }  or a single record
+router.post('/off-role', authMiddleware, async (req, res) => {
+  try {
+    const records = Array.isArray(req.body?.records) ? req.body.records : [req.body];
+    const results = await Promise.all(records.map(r => processRecord({ ...r, __source: 'off_role_receiver' }).catch(e => ({ ok: false, reason: e.message }))));
+    return res.json({
+      success: true,
+      received: results.length,
+      off_role_logged: results.filter(r => r.ok && r.off_role && r.log_stored).length,
+      off_role_duplicates: results.filter(r => r.ok && r.off_role && !r.log_stored).length,
+      mapped_and_processed: results.filter(r => r.ok && !r.off_role && r.attendance_updated).length,
+      skipped: results.filter(r => r.ok && !r.off_role && !r.attendance_updated).length,
+      failed: results.filter(r => !r.ok).length,
+      errors: results.filter(r => !r.ok).map(r => r.reason),
+    });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }

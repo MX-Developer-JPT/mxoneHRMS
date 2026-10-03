@@ -14,6 +14,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { extractPayslipFields, monthMismatch } from '../utils/payslipExtract.js';
 import { buildVisitingCardsPdf } from '../utils/visitingCard.js';
+import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js';
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -14341,6 +14342,26 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
       const bufT = await wbT.xlsx.writeBuffer();
       return res.json({ success: true, base64: Buffer.from(bufT).toString('base64'), filename: 'Business_Cards_Import_Template.xlsx', existing: ebtCards.length });
+    }
+
+    /* ── Off-role attendance: biometric punches from codes not mapped to any
+       employee. getOffRoleAttendance feeds the page; exportOffRoleAttendance
+       builds the muster-style Excel. See utils/offRoleAttendance.js. ── */
+    case 'getOffRoleAttendance': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { from, to, device, search } = p;
+      if (!from || !to) return res.json({ success: false, error: 'from and to dates are required' });
+      const data = await loadOffRole({ from, to, device, search });
+      return res.json({ success: true, ...data });
+    }
+
+    case 'exportOffRoleAttendance': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const eoYear = parseInt(p.year), eoMonth = parseInt(p.month);
+      if (!eoYear || !eoMonth || eoMonth < 1 || eoMonth > 12) return res.json({ success: false, error: 'month and year are required' });
+      const ExcelJSo = await import('exceljs');
+      const eo = await buildOffRoleWorkbook({ year: eoYear, month: eoMonth, device: p.device, search: p.search }, ExcelJSo.default);
+      return res.json({ success: true, base64: Buffer.from(eo.buffer).toString('base64'), filename: `Off_Role_Attendance_${eo.monthLabel.replace(' ', '_')}.xlsx`, ...eo.counts });
     }
 
     case 'generatePrintableCards':

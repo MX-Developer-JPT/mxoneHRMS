@@ -14,7 +14,7 @@ import {
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
   Network, Grid3x3, CalendarPlus, GitBranch, Route, Radar, Camera, Loader2, LayoutGrid, Archive,
-  UploadCloud,
+  UploadCloud, Fingerprint,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -104,6 +104,7 @@ const managementMenuGroups = [
   { label: 'My Team', items: [
     { name: 'My Team',                  icon: Users,           page: 'Employees' },
     { name: 'Team Attendance',          icon: BarChart3,       page: 'AllAttendance' },
+    { name: 'Off role attendance',      icon: Fingerprint,     page: 'OffRoleAttendance' },
     { name: 'Visitor Records',          icon: Users,           page: 'VisitorRecords' },
     { name: 'Leave Approvals',          icon: FileText,        page: 'LeaveManagement' },
     { name: 'Leave Dashboard',          icon: PieChart,        page: 'LeaveDashboard' },
@@ -264,6 +265,7 @@ const hrMenuGroups = [
     { name: 'WFH Tracking',           icon: Home,             page: 'WFHTracking' },
     { name: 'Overtime Management',    icon: Timer,            page: 'OvertimeManagement' },
     { name: 'Biometric Logs',          icon: Clock,           page: 'AttendanceLogDashboard' },
+    { name: 'Off role attendance',      icon: Fingerprint,     page: 'OffRoleAttendance' },
     { name: 'Field Duty Tracking',     icon: Route,           page: 'FieldDuty' },
     { name: 'Shift Management',        icon: UserCog,         page: 'ShiftManagement' },
     { name: 'Night Shift Management',  icon: Moon,            page: 'NightShiftManagement' },
