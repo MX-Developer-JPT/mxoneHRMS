@@ -5320,7 +5320,15 @@ router.post('/:name', async (req, res) => {
       const token = jwt.sign({ typ: 'payslip-dl', pid: gpdlId }, JWT_SECRET, { expiresIn: '15m' });
       const base = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '');
       const isFile = !!(gpdlData.payslip_file_url || gpdlData.payslip_file_base64);
-      return res.json({ success: true, url: isFile ? `${base}/api/payslip-download/${token}/file` : `${base}/payslip-view/${token}` });
+      const pathFor = (b) => (isFile ? `${b}/api/payslip-download/${token}/file` : `${b}/payslip-view/${token}`);
+      // The native app's WebView is pinned to APP_URL's host, so a link on
+      // that host would load INSIDE the app. Capacitor hands any other host
+      // to the system browser — external_url (the service's Railway domain,
+      // same server) is what makes that happen on app builds that lack the
+      // Browser plugin.
+      const rail = process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null;
+      const externalBase = (process.env.PAYSLIP_EXTERNAL_URL || rail || '').replace(/\/+$/, '');
+      return res.json({ success: true, url: pathFor(base), external_url: externalBase && externalBase !== base ? pathFor(externalBase) : null });
     }
 
     case 'importSalaryStructures': {

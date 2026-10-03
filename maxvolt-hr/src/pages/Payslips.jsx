@@ -54,8 +54,16 @@ export default function Payslips() {
       if (!rd?.success || !rd.url) throw new Error(rd?.error || 'This payslip is not available to download.');
       const { Capacitor } = await import('@capacitor/core');
       if (Capacitor.isNativePlatform()) {
-        const { Browser } = await import('@capacitor/browser');
-        await Browser.open({ url: rd.url });
+        try {
+          const { Browser } = await import('@capacitor/browser');
+          await Browser.open({ url: rd.url });
+        } catch (pluginErr) {
+          // App builds installed before the Browser plugin was added throw
+          // "not implemented". Navigating to a different host than the app's
+          // own makes Capacitor hand the URL to the system browser instead.
+          if (!rd.external_url) throw pluginErr;
+          window.location.href = rd.external_url;
+        }
       } else if (pendingWin) {
         pendingWin.location.href = rd.url;
       } else {
