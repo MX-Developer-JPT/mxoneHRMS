@@ -1,29 +1,91 @@
-// True background geofencing inside the Capacitor shell — attendance is marked
-// even while the app is closed/backgrounded, unlike the foreground-only JS
-// watcher in MarkAttendance.jsx (which only runs while that page is open and
-// the app is in the foreground; it remains the fallback for plain browser/PWA
-// use, where no native background plugin is available at all).
+// Geofence attendance engine.
 //
-// Implementation note: this uses @capacitor-community/background-geolocation,
-// which runs a genuine Android foreground service (visible notification,
-// required by Android policy — this is intentional, not a bug, and is the
-// same trade-off delivery/ride-share apps make) / iOS "Always" background
-// location, rather than OS-level geofence regions. The enter/exit distance
-// check runs here in JS on every location update and calls the same
-// idempotent nativeGeofenceEvent endpoint the native Android spec describes
-// (docs/NATIVE_GEOFENCING_SPEC.md) — the endpoint doesn't care which native
-// mechanism triggered it.
+// One engine, two location sources:
+//   • Native app (Capacitor): @capacitor-community/background-geolocation — an
+//     OS foreground service on Android / "Always" location on iOS, so fixes
+//     keep arriving with the app minimized or the screen locked.
+//   • Browser / PWA: navigator.geolocation.watchPosition — foreground only
+//     (the web platform offers nothing better).
+//
+// Design rules (see also backend `nativeGeofenceEvent`, the source of truth):
+//   • EDGE-triggered, not level-triggered. A transition is only emitted after
+//     it is CONFIRMED (several fixes and/or a dwell time), using separate
+//     enter/exit thresholds (hysteresis) that account for GPS accuracy.
+//   • Weak fixes (accuracy above the cap), missing fixes, GPS errors and
+//     network failures are NEVER evidence of leaving or arriving — they are
+//     ignored. Only a confirmed exit produces a check-out.
+//   • Events go through a persisted outbox with an idempotency id and the
+//     ORIGINAL crossing time, so offline / killed-app / retried deliveries
+//     can't create duplicate or mis-timed sessions.
+//   • Permission/authorisation and engine state persist in localStorage, so
+//     the employee is not asked to "enable location" again once set up.
+import { useSyncExternalStore } from 'react';
+import { toast } from 'sonner';
 import { base44 } from '@/api/base44Client';
 
-let watcherId = null;
-let fences = []; // ALL active configured locations — attendance triggers at any of them, not just the employee's assigned one
-let currentFenceId = null; // which fence we're currently checked into, if any
-let lastKnownInProgress = null; // null = unknown yet; avoids resending 'enter' every location tick once we know we're in
-let refreshIntervalId = null;
-let lastLocation = null; // { location, platformTag } from the most recent native fix — replayed against freshly-refreshed fence data below
-let refreshInFlight = false;
+const PERSIST_KEY = 'geo_engine_v2';
+const DEFAULT_CFG = {
+  max_accuracy_m: 100,         // fixes less accurate than this never drive a transition
+  enter_confirmations: 2,      // consecutive "inside" fixes needed...
+  enter_min_seconds: 15,       // ...spread over at least this long (or the timer path below)
+  enter_timer_seconds: 30,     // stationary user: one clean inside fix + this long with no contrary fix
+  exit_confirmations: 2,       // consecutive "outside" fixes needed...
+  exit_dwell_seconds: 90,      // ...and sustained for at least this long
+  exit_buffer_m: 40,           // exit threshold = radius + buffer (hysteresis vs. enter at radius)
+  strong_exit_m: 250,          // clearly gone (radius + this): no dwell needed, still 2 fixes
+  stale_fix_seconds: 180,      // no fix this long => display "Location Unavailable"
+};
+const OUTBOX_MAX_AGE_MS = 48 * 3600 * 1000;
+const OUTBOX_MAX_ATTEMPTS = 25;
 
-const distMetres = (lat1, lng1, lat2, lng2) => {
+// ── tiny external store so any component can render live state ──
+let snapshot = {
+  status: 'idle',            // idle | starting | active | permission_required | location_disabled | unavailable | not_eligible
+  mode: null,                // 'background' (native) | 'foreground' (browser)
+  fences: [],
+  liveState: 'idle',         // inside | outside | unavailable | permission_required | location_disabled | idle
+  distance: null,            // metres to nearest fence centre
+  radius: null,              // that fence's radius (m)
+  fenceName: null,
+  accuracy: null,
+  lastFixAt: null,
+  believedIn: null,          // engine's view of "checked in via geofence"
+  pending: 0,                // events waiting to sync
+  lastSyncAt: null,
+};
+const listeners = new Set();
+const emit = (patch) => { snapshot = { ...snapshot, ...patch }; listeners.forEach(l => l()); };
+const subscribe = (l) => { listeners.add(l); return () => listeners.delete(l); };
+const getSnapshot = () => snapshot;
+export function useGeofenceState() { return useSyncExternalStore(subscribe, getSnapshot, getSnapshot); }
+export const getGeofenceState = () => snapshot;
+
+// ── persisted state ──
+function loadP() { try { return JSON.parse(localStorage.getItem(PERSIST_KEY) || 'null') || {}; } catch { return {}; } }
+function saveP(patch) {
+  try { localStorage.setItem(PERSIST_KEY, JSON.stringify({ ...loadP(), ...patch })); } catch { /* storage unavailable */ }
+}
+
+// ── engine internals ──
+let userId = null;
+let cfg = { ...DEFAULT_CFG };
+let fences = [];
+let believedIn = null;        // true/false once known; engine only auto-exits sessions IT (or the server's geofence) started
+let geofenceOwned = false;    // open session started by a geofence enter
+let currentFenceId = null;
+let watcher = null;           // { kind:'native', id } | { kind:'web', id }
+let lastFix = null;
+let enterTrack = null;        // { n, firstAt, fenceId }
+let exitTrack = null;         // { n, firstAt, strongN }
+let confirmTimer = null;
+let intervals = [];
+let starting = null;
+let flushing = false;
+let flushRetry = null;
+let retryDelay = 15000;
+let listenersBound = false;
+
+const dist = (lat1, lng1, lat2, lng2) => {
   const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
   const s = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
@@ -32,23 +94,48 @@ const distMetres = (lat1, lng1, lat2, lng2) => {
 async function getCapacitor() {
   try { return (await import('@capacitor/core')).Capacitor; } catch { return null; }
 }
+async function nativePlugin() {
+  const { registerPlugin } = await import('@capacitor/core');
+  return registerPlugin('BackgroundGeolocation');
+}
 
 export async function isBackgroundGeofenceAvailable() {
   const Capacitor = await getCapacitor();
   return !!Capacitor?.isNativePlatform();
 }
 
-// Cheap pre-check so the caller can show a prominent in-app disclosure
-// BEFORE the OS background-location permission dialog appears — required by
-// Google Play's background location policy, separate from the Privacy Policy
-// text. Safe to call even when not eligible/not native; just returns false.
+// ── server sync of config + state ──
+async function fetchServerState() {
+  const res = await base44.functions.invoke('getMyGeofence', {});
+  const d = res?.data || res;
+  if (!d?.success) throw new Error('getMyGeofence failed');
+  return d;
+}
+
+function applyServerConfig(d) {
+  fences = Array.isArray(d.all_fences) ? d.all_fences : [];
+  cfg = { ...DEFAULT_CFG, ...(d.config || {}) };
+  emit({ fences });
+}
+
+// Server is the source of truth: unless local events are still waiting to
+// sync (they're newer than the server's view), adopt its in-progress state.
+function reconcile(d) {
+  const p = loadP();
+  if ((p.outbox || []).length) return;
+  const at = d.attendance_today || {};
+  believedIn = !!at.is_in_progress;
+  geofenceOwned = believedIn && !!at.open_session_by_geofence;
+  const named = at.geofence_location && fences.find(f => (f.name || '').toLowerCase() === String(at.geofence_location).toLowerCase());
+  currentFenceId = believedIn && named ? named.id : (believedIn ? currentFenceId : null);
+  saveP({ believedIn, geofenceOwned, currentFenceId });
+  emit({ believedIn });
+}
+
+// ── public: eligibility pre-check (used before showing the disclosure) ──
 export async function checkGeofenceEligibility() {
-  const Capacitor = await getCapacitor();
-  if (!Capacitor?.isNativePlatform()) return { eligible: false, reason: 'not_native' };
   try {
-    const fenceRes = await base44.functions.invoke('getMyGeofence', {});
-    const d = fenceRes.data || fenceRes;
-    if (!d?.success) return { eligible: false, reason: 'fetch_failed' };
+    const d = await fetchServerState();
     if (!d.geofence_eligible) return { eligible: false, reason: 'not_eligible' };
     if (!Array.isArray(d.all_fences) || d.all_fences.length === 0) return { eligible: false, reason: 'no_fence_assigned' };
     return { eligible: true };
@@ -57,265 +144,411 @@ export async function checkGeofenceEligibility() {
   }
 }
 
-// Android-only. OEM battery managers (Xiaomi/Oppo/Vivo/Samsung) and stock
-// Android's own Doze/App Standby kill the background location service even
-// with every runtime permission correctly granted, unless the app is
-// exempted from battery optimization — this is the single most common
-// real-world reason "always on" tracking silently stops. Best-effort: safe
-// to call repeatedly, no-ops on iOS/web, and never throws.
+// Android-only helpers (best-effort, no-ops elsewhere).
 export async function requestBatteryOptimizationExemption() {
   const Capacitor = await getCapacitor();
   if (!Capacitor?.isNativePlatform() || Capacitor.getPlatform() !== 'android') return;
   try {
-    const { registerPlugin } = await import('@capacitor/core');
-    const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
-    const { ignoring } = await BackgroundGeolocation.isIgnoringBatteryOptimizations();
-    if (!ignoring) await BackgroundGeolocation.requestIgnoreBatteryOptimizations();
-  } catch { /* best-effort — plugin method availability depends on the patched native build */ }
+    const BG = await nativePlugin();
+    const { ignoring } = await BG.isIgnoringBatteryOptimizations();
+    if (!ignoring) await BG.requestIgnoreBatteryOptimizations();
+  } catch { /* depends on patched native build */ }
 }
-
-// Android-only, "Allow all the time" escalation — deliberately its own call
-// rather than something addWatcher() triggers internally, so it can't ever
-// collide with addWatcher()'s own foreground-permission request or with
-// Android's single outstanding requestPermissions() slot per Activity. Call
-// this AFTER startBackgroundGeofence() has resolved, once foreground
-// permission is confirmed, not concurrently with it.
 export async function requestBackgroundLocationIfNeeded() {
   const Capacitor = await getCapacitor();
   if (!Capacitor?.isNativePlatform() || Capacitor.getPlatform() !== 'android') return;
-  try {
-    const { registerPlugin } = await import('@capacitor/core');
-    const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
-    await BackgroundGeolocation.requestBackgroundLocationIfNeeded();
-  } catch { /* best-effort — plugin method availability depends on the patched native build */ }
+  try { await (await nativePlugin()).requestBackgroundLocationIfNeeded(); } catch { /* depends on patched native build */ }
+}
+// Deep-link to the app's OS settings page (where "Allow all the time" lives).
+export async function openLocationSettings() {
+  const Capacitor = await getCapacitor();
+  if (!Capacitor?.isNativePlatform()) return false;
+  try { await (await nativePlugin()).openSettings(); return true; } catch { return false; }
 }
 
-export async function startBackgroundGeofence() {
-  const Capacitor = await getCapacitor();
-  if (!Capacitor?.isNativePlatform()) return { started: false, reason: 'not_native' };
-  if (watcherId) return { started: true, reason: 'already_running' };
+// ── start / stop ──
+export async function startBackgroundGeofence({ interactive = false, userId: uid } = {}) {
+  if (starting) return starting;
+  starting = (async () => {
+    try { return await doStart({ interactive, uid }); }
+    finally { starting = null; }
+  })();
+  return starting;
+}
 
-  let fenceRes;
+async function doStart({ interactive, uid }) {
+  const Capacitor = await getCapacitor();
+  const native = !!Capacitor?.isNativePlatform();
+
+  if (!uid) { try { uid = (await base44.auth.me())?.id; } catch { /* offline — fall through */ } }
+  const persisted = loadP();
+  if (uid && persisted.userId && persisted.userId !== uid) {
+    // Different employee on this device — never carry over another user's queue.
+    try { localStorage.removeItem(PERSIST_KEY); } catch { /* */ }
+  }
+  userId = uid || persisted.userId || null;
+  if (userId) saveP({ userId });
+
+  let d;
   try {
-    fenceRes = await base44.functions.invoke('getMyGeofence', {});
+    d = await fetchServerState();
   } catch (e) {
+    // Offline at launch: if we already know the config from last time we could
+    // still track, but fences come from the server — retry shortly instead.
+    emit({ status: 'unavailable' });
+    scheduleStartRetry();
     return { started: false, reason: 'fetch_failed', error: e.message };
   }
-  const d = fenceRes.data || fenceRes;
-  if (!d?.success) return { started: false, reason: 'fetch_failed' };
-  // HR decides eligibility (Employee.geofence_eligible) — there is no
-  // employee-facing on/off control, but tracking still only ever runs for
-  // employees HR has actually marked eligible. Checked here too (not just by
-  // the caller) so this can't be started via a stale/cached client path.
-  if (!d.geofence_eligible) return { started: false, reason: 'not_eligible' };
-  if (!Array.isArray(d.all_fences) || d.all_fences.length === 0) return { started: false, reason: 'no_fence_assigned' };
-  fences = d.all_fences;
-  // Seed from server-known state instead of blanking to null — if the
-  // employee is already checked in when this watcher (re)starts (app
-  // reopened, native headless mode handing back to JS, etc.) and we don't
-  // know which fence that was, a later exit could never be detected once
-  // they're no longer inside ANY fence (see handleLocation's nearestFence
-  // fallback for the case this still can't resolve, e.g. a non-geofence
-  // check-in).
-  lastKnownInProgress = d.attendance_today?.is_in_progress ? true : (d.attendance_today?.checked_out ? false : null);
-  currentFenceId = null;
-  if (lastKnownInProgress && d.attendance_today?.geofence_location) {
-    const seeded = fences.find(f => (f.name || '').toLowerCase() === d.attendance_today.geofence_location.toLowerCase());
-    if (seeded) currentFenceId = seeded.id;
+  if (!d.geofence_eligible) { await stopEngineInternals(); emit({ status: 'not_eligible', liveState: 'idle' }); return { started: false, reason: 'not_eligible' }; }
+  if (!d.all_fences?.length) { emit({ status: 'not_eligible', liveState: 'idle' }); return { started: false, reason: 'no_fence_assigned' }; }
+  applyServerConfig(d);
+  reconcile(d);
+
+  if (watcher) { // already running — config refreshed above
+    flushOutbox();
+    return { started: true, reason: 'already_running', fences };
   }
 
-  // This plugin ships no JS wrapper (native source + type defs only) — the
-  // documented usage is to register it directly via Capacitor's registerPlugin.
-  const { registerPlugin } = await import('@capacitor/core');
-  const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
-  const platformTag = Capacitor.getPlatform() === 'ios' ? 'native_ios' : 'native_android';
+  emit({ status: 'starting', mode: native ? 'background' : 'foreground', pending: (loadP().outbox || []).length });
+  bindGlobalListeners();
+  const ok = native ? await startNativeWatcher(Capacitor, interactive) : await startWebWatcher(interactive);
+  if (!ok.started) return ok;
 
+  intervals.forEach(clearInterval);
+  intervals = [
+    setInterval(() => { refreshConfig().catch(() => {}); }, 5 * 60 * 1000),
+    setInterval(tick, 15 * 1000),
+  ];
+  flushOutbox();
+  return { started: true, fences };
+}
+
+let startRetryTimer = null;
+function scheduleStartRetry() {
+  if (startRetryTimer) return;
+  startRetryTimer = setTimeout(() => { startRetryTimer = null; startBackgroundGeofence().catch(() => {}); }, 30000);
+}
+
+async function startNativeWatcher(Capacitor, interactive) {
+  const p = loadP();
+  const BG = await nativePlugin();
+  // Silent after first-time setup: only ask the OS for permission when this is
+  // an explicit, user-initiated setup (interactive) — otherwise just probe.
+  const requestPermissions = !!interactive;
+  let permissionDenied = false;
   try {
-    watcherId = await BackgroundGeolocation.addWatcher(
+    const id = await BG.addWatcher(
       {
         backgroundTitle: 'Maxvolt One — Attendance tracking active',
         backgroundMessage: fences.length === 1
           ? `Watching your location to mark attendance at ${fences[0].name}`
           : `Watching your location to mark attendance at ${fences.length} configured locations`,
-        requestPermissions: true,
+        requestPermissions,
         stale: false,
-        distanceFilter: 15, // matches the GPS noise-floor threshold used elsewhere in the app
+        distanceFilter: 10,
       },
       (location, error) => {
         if (error) {
-          console.warn('[geofenceBackground] watcher error:', error.code, error.message);
+          if (error.code === 'NOT_AUTHORIZED') {
+            permissionDenied = true;
+            onPermissionLost('permission_required');
+          } else {
+            emit({ liveState: 'unavailable' });
+          }
           return;
         }
-        if (location) {
-          lastLocation = { location, platformTag };
-          handleLocation(location, platformTag).catch(() => {});
-        }
+        if (location) onFix({ latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy, time: location.time || Date.now(), simulated: !!location.simulated });
       }
     );
-
-    // Android only (no-op elsewhere) — lets the native service resume
-    // tracking with zero JS involvement after a reboot or if the app is
-    // swiped from recents while tracking was active. Best-effort: if this
-    // fails, JS-driven tracking above still works fine on its own, this
-    // only affects the reboot/task-removed fallback path.
-    if (Capacitor.getPlatform() === 'android') {
-      BackgroundGeolocation.persistHeadlessState({
-        token: localStorage.getItem('base44_access_token') || '',
-        fencesJson: JSON.stringify(fences),
-        apiBase: window.location.origin,
-      }).catch(() => {});
+    watcher = { kind: 'native', id };
+    // Android: let the native service resume after reboot / swipe-away with
+    // zero JS involvement. Re-persist on every start AND config refresh.
+    persistHeadless(Capacitor).catch(() => {});
+    // Give a probe-only start a moment to report NOT_AUTHORIZED.
+    await new Promise(r => setTimeout(r, 800));
+    if (permissionDenied) return { started: false, reason: 'permission_required' };
+    emit({ status: 'active', liveState: snapshot.lastFixAt ? snapshot.liveState : 'unavailable' });
+    saveP({ authorized: true });
+    if (Capacitor.getPlatform() === 'android' && !p.bgAsked && interactive) {
+      saveP({ bgAsked: true });
+      requestBackgroundLocationIfNeeded();
     }
-
-    // `fences` was only ever fetched once, at watcher-start — an HR/admin
-    // edit to a location's coordinates (Location Master) while this watcher
-    // was already running would never be picked up until the employee
-    // restarted tracking (toggle off/on, or relaunch), even though they
-    // hadn't moved anywhere. Periodically re-fetch and, since a config edit
-    // alone doesn't generate a new native location fix (the device hasn't
-    // moved), re-evaluate the last known position against the refreshed
-    // fences immediately rather than waiting for the next real GPS update.
-    if (refreshIntervalId) clearInterval(refreshIntervalId);
-    refreshIntervalId = setInterval(() => { refreshFences(platformTag).catch(() => {}); }, 2 * 60 * 1000);
-
-    return { started: true, fences };
+    return { started: true };
   } catch (e) {
-    console.warn('[geofenceBackground] failed to start:', e.message);
-    watcherId = null;
+    watcher = null;
+    onPermissionLost('permission_required');
     return { started: false, reason: 'start_failed', error: e.message };
   }
 }
 
-// Only ever called on logout (and internally on a failed start) — there is no
-// employee-facing control that calls this while still logged in. Eligible
-// employees are re-started automatically on next login via startBackgroundGeofence().
+async function persistHeadless(Capacitor) {
+  if (Capacitor.getPlatform() !== 'android') return;
+  const BG = await nativePlugin();
+  await BG.persistHeadlessState({
+    token: localStorage.getItem('base44_access_token') || '',
+    fencesJson: JSON.stringify(fences),
+    apiBase: window.location.origin,
+  });
+}
+
+async function startWebWatcher(interactive) {
+  if (!navigator.geolocation) { emit({ status: 'unavailable', liveState: 'unavailable' }); return { started: false, reason: 'unsupported' }; }
+  const p = loadP();
+  // Skip the permission re-prompt flow when it was granted before; a browser
+  // that remembers the grant just starts delivering fixes. Without a prior
+  // grant, only start from an explicit user gesture (iOS standalone PWAs
+  // silently swallow unprompted requests).
+  let state = 'prompt';
+  try { state = (await navigator.permissions?.query({ name: 'geolocation' }))?.state || 'prompt'; } catch { /* unsupported */ }
+  if (state === 'denied') { onPermissionLost('permission_required'); return { started: false, reason: 'permission_required' }; }
+  if (state !== 'granted' && !p.authorized && !interactive) { emit({ status: 'permission_required', liveState: 'permission_required' }); return { started: false, reason: 'permission_required' }; }
+
+  const id = navigator.geolocation.watchPosition(
+    (pos) => {
+      saveP({ authorized: true });
+      if (snapshot.status !== 'active') emit({ status: 'active' });
+      onFix({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy, time: pos.timestamp || Date.now(), simulated: false });
+    },
+    (err) => {
+      if (err.code === err.PERMISSION_DENIED) onPermissionLost('permission_required');
+      else emit({ liveState: 'unavailable' }); // POSITION_UNAVAILABLE / TIMEOUT: transient, never an exit
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 }
+  );
+  watcher = { kind: 'web', id };
+  emit({ status: 'active', liveState: 'unavailable' });
+  return { started: true };
+}
+
+function onPermissionLost(status) {
+  saveP({ authorized: false });
+  stopWatcher().catch(() => {});
+  emit({ status, liveState: status });
+}
+
+async function stopWatcher() {
+  const w = watcher; watcher = null;
+  if (!w) return;
+  if (w.kind === 'web') { try { navigator.geolocation.clearWatch(w.id); } catch { /* */ } return; }
+  try { await (await nativePlugin()).removeWatcher({ id: w.id }); } catch { /* */ }
+}
+
+async function stopEngineInternals() {
+  intervals.forEach(clearInterval); intervals = [];
+  if (confirmTimer) { clearTimeout(confirmTimer); confirmTimer = null; }
+  await stopWatcher();
+  enterTrack = exitTrack = null;
+}
+
+// Logout: stop tracking and drop everything stored for this employee.
 export async function stopBackgroundGeofence() {
   const Capacitor = await getCapacitor();
-
-  // Clear the persisted headless state unconditionally (even if `watcherId`
-  // is already null in this JS instance's memory, e.g. after headless mode
-  // took over post-task-removal) so a later reboot never resumes tracking
-  // for a session that has since logged out.
   if (Capacitor?.getPlatform() === 'android') {
-    try {
-      const { registerPlugin } = await import('@capacitor/core');
-      const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
-      await BackgroundGeolocation.clearHeadlessState();
-    } catch { /* best-effort */ }
+    try { await (await nativePlugin()).clearHeadlessState(); } catch { /* best-effort */ }
   }
-
-  if (refreshIntervalId) { clearInterval(refreshIntervalId); refreshIntervalId = null; }
-  lastLocation = null;
-
-  if (!watcherId) return;
-  try {
-    const { registerPlugin } = await import('@capacitor/core');
-    const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
-    await BackgroundGeolocation.removeWatcher({ id: watcherId });
-  } catch { /* best-effort */ }
-  watcherId = null;
-  fences = [];
-  currentFenceId = null;
-  lastKnownInProgress = null;
+  await stopEngineInternals();
+  if (flushRetry) { clearTimeout(flushRetry); flushRetry = null; }
+  try { localStorage.removeItem(PERSIST_KEY); } catch { /* */ }
+  fences = []; believedIn = null; geofenceOwned = false; currentFenceId = null; lastFix = null; userId = null;
+  emit({ status: 'idle', liveState: 'idle', distance: null, radius: null, fenceName: null, accuracy: null, lastFixAt: null, believedIn: null, pending: 0, fences: [] });
 }
 
-// Re-fetches configured fences and, if they actually changed, re-evaluates
-// the most recent known location against them right away — this is what
-// lets an HR/admin coordinate edit in Location Master take effect for an
-// employee already mid-session, without them needing to physically move (the
-// thing that would otherwise be needed to generate a fresh native location
-// fix) or restart tracking.
-async function refreshFences(platformTag) {
-  if (refreshInFlight || !watcherId) return;
-  refreshInFlight = true;
-  try {
-    const fenceRes = await base44.functions.invoke('getMyGeofence', {});
-    const d = fenceRes.data || fenceRes;
-    if (!d?.success || !d.geofence_eligible || !Array.isArray(d.all_fences) || !d.all_fences.length) return;
-    const changed = JSON.stringify(d.all_fences) !== JSON.stringify(fences);
-    fences = d.all_fences;
-    if (changed && lastLocation) {
-      await handleLocation(lastLocation.location, lastLocation.platformTag ?? platformTag);
-    }
-  } catch { /* next refresh tick will retry */ }
-  finally { refreshInFlight = false; }
+// App came back to the foreground / network returned: re-verify against the
+// server, make sure the watcher is alive, and push any queued events.
+export async function resumeGeofence() {
+  if (snapshot.status === 'idle' || snapshot.status === 'not_eligible') return;
+  if (!watcher && ['active', 'starting', 'unavailable'].includes(snapshot.status)) { await startBackgroundGeofence().catch(() => {}); return; }
+  await refreshConfig().catch(() => {});
+  flushOutbox();
 }
 
-// Nearest configured location the current position falls inside, if any —
-// this is what makes attendance trigger at ANY configured location, not just
-// the one tied to the employee's assigned shift/work_location.
-function findFence(location) {
-  let best = null, bestDist = Infinity;
+async function refreshConfig() {
+  const d = await fetchServerState();
+  if (!d.geofence_eligible) { await stopEngineInternals(); emit({ status: 'not_eligible', liveState: 'idle' }); return; }
+  applyServerConfig(d);
+  reconcile(d);
+  const Capacitor = await getCapacitor();
+  if (Capacitor?.isNativePlatform()) persistHeadless(Capacitor).catch(() => {});
+  if (lastFix) onFix(lastFix, { replay: true });
+}
+
+function bindGlobalListeners() {
+  if (listenersBound) return;
+  listenersBound = true;
+  window.addEventListener('online', () => { retryDelay = 15000; flushOutbox(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resumeGeofence().catch(() => {}); });
+}
+
+// Periodic housekeeping: mark a stale position as "unavailable" (display
+// only — never a check-out), retry the outbox, and finalise dwell timers.
+function tick() {
+  if (lastFix && Date.now() - snapshot.lastFixAt > cfg.stale_fix_seconds * 1000 && snapshot.liveState !== 'permission_required') {
+    emit({ liveState: 'unavailable' });
+  }
+  if ((loadP().outbox || []).length) flushOutbox();
+}
+
+// ── fix handling ──
+function nearestFence(fix) {
+  let best = null, bd = Infinity;
   for (const f of fences) {
-    const d = distMetres(location.latitude, location.longitude, Number(f.latitude), Number(f.longitude));
-    if (d <= Number(f.radius_m) && d < bestDist) { best = f; bestDist = d; }
+    const d = dist(fix.latitude, fix.longitude, Number(f.latitude), Number(f.longitude));
+    if (d < bd) { best = f; bd = d; }
   }
-  return best;
+  return best ? { fence: best, d: bd } : null;
 }
 
-// Nearest configured fence regardless of whether the position is inside its
-// radius — used as a fallback for exit distance/hysteresis checks when
-// currentFenceId is unknown (e.g. checked in via biometric/selfie rather
-// than geofence, or the server-state seed on start didn't resolve one).
-function nearestFence(location) {
-  let best = null, bestDist = Infinity;
-  for (const f of fences) {
-    const d = distMetres(location.latitude, location.longitude, Number(f.latitude), Number(f.longitude));
-    if (d < bestDist) { best = f; bestDist = d; }
-  }
-  return best;
-}
-
-async function handleLocation(location, platformTag) {
+function onFix(fix, { replay = false } = {}) {
   if (!fences.length) return;
-  if (location.accuracy > 100) return; // background fixes are noisier than foreground; still bounded
+  if (!replay) lastFix = fix;
+  const near = nearestFence(fix);
+  if (!near) return;
+  const weak = !(fix.accuracy <= cfg.max_accuracy_m);
+  const inside = near.d <= Number(near.fence.radius_m);
+  emit({
+    distance: Math.round(near.d), radius: Number(near.fence.radius_m), fenceName: near.fence.name,
+    accuracy: Math.round(fix.accuracy || 0), lastFixAt: replay ? snapshot.lastFixAt : Date.now(),
+    liveState: inside ? 'inside' : 'outside',
+  });
+  if (fix.simulated || weak) return; // shown, but never drives a transition
+  evaluate(fix);
+}
 
-  const insideFence = findFence(location);
+function evaluate(fix, { fromTimer = false } = {}) {
+  const acc = Number(fix.accuracy) || 0;
 
-  if (insideFence) {
-    if (currentFenceId !== insideFence.id || lastKnownInProgress !== true) {
-      currentFenceId = insideFence.id;
-      await sendEvent('enter', location, platformTag, insideFence);
+  if (believedIn !== true) {
+    exitTrack = null;
+    // Best fence the fix is confidently inside (half the accuracy margin as guard).
+    let enterFence = null, ed = Infinity;
+    for (const f of fences) {
+      const d = dist(fix.latitude, fix.longitude, Number(f.latitude), Number(f.longitude));
+      if (d + acc * 0.5 <= Number(f.radius_m) && d < ed) { enterFence = f; ed = d; }
+    }
+    if (!enterFence) { enterTrack = null; clearConfirm(); return; }
+    if (!enterTrack || enterTrack.fenceId !== enterFence.id) enterTrack = { n: 0, firstAt: fix.time, fenceId: enterFence.id, fix };
+    if (!fromTimer) enterTrack.n++;
+    enterTrack.last = fix;
+    const elapsed = (fromTimer ? Date.now() : fix.time) - enterTrack.firstAt;
+    const byFixes = enterTrack.n >= cfg.enter_confirmations && elapsed >= cfg.enter_min_seconds * 1000;
+    const byTimer = fromTimer && enterTrack.n >= 1 && elapsed >= cfg.enter_timer_seconds * 1000;
+    if (byFixes || byTimer) {
+      const crossing = enterTrack.fix; // first confirmed-inside fix = the real crossing time
+      enterTrack = null; clearConfirm();
+      emitEvent('enter', crossing, enterFence);
+    } else {
+      armConfirm(cfg.enter_timer_seconds * 1000);
     }
     return;
   }
 
-  // Not inside any fence. Only relevant if we actually know we're checked
-  // in — otherwise there's nothing to exit from (or we simply don't know
-  // yet, e.g. the server-state fetch on start hasn't resolved).
-  if (lastKnownInProgress !== true) return;
-  const cur = (currentFenceId && fences.find(f => f.id === currentFenceId)) || nearestFence(location);
+  // believedIn === true
+  enterTrack = null;
+  if (!geofenceOwned) { exitTrack = null; clearConfirm(); return; } // never auto-close a manual/biometric/WFH session
+  const cur = (currentFenceId && fences.find(f => f.id === currentFenceId)) || (nearestFence(fix)?.fence);
   if (!cur) return;
-  const d = distMetres(location.latitude, location.longitude, Number(cur.latitude), Number(cur.longitude));
-  const wellOutside = d > Number(cur.radius_m) + 100; // spatial hysteresis against boundary jitter, not a time delay
-  if (wellOutside) {
-    await sendEvent('exit', location, platformTag, cur);
-    currentFenceId = null;
+  const d = dist(fix.latitude, fix.longitude, Number(cur.latitude), Number(cur.longitude));
+  const radius = Number(cur.radius_m);
+  const outside = d - acc * 0.5 > radius + cfg.exit_buffer_m;
+  if (!outside) { exitTrack = null; clearConfirm(); return; }
+  const strong = d - acc > radius + cfg.strong_exit_m;
+  if (!exitTrack) exitTrack = { n: 0, strongN: 0, firstAt: fix.time, fix };
+  if (!fromTimer) { exitTrack.n++; if (strong) exitTrack.strongN++; }
+  exitTrack.last = fix;
+  const elapsed = (fromTimer ? Date.now() : fix.time) - exitTrack.firstAt;
+  const confirmed = (exitTrack.strongN >= 2) || (exitTrack.n >= cfg.exit_confirmations && elapsed >= cfg.exit_dwell_seconds * 1000);
+  if (confirmed) {
+    const crossing = exitTrack.fix; // first confirmed-outside fix = the real crossing time
+    exitTrack = null; clearConfirm();
+    emitEvent('exit', crossing, cur);
+  } else {
+    armConfirm(cfg.exit_dwell_seconds * 1000);
   }
 }
 
-async function sendEvent(event, location, platformTag, targetFence) {
+// A stationary phone emits no fixes, so dwell must also be able to complete on
+// a timer — re-evaluating against the latest fix (which must still agree).
+function armConfirm(ms) {
+  if (confirmTimer) return;
+  confirmTimer = setTimeout(() => {
+    confirmTimer = null;
+    if (lastFix && !(lastFix.simulated) && lastFix.accuracy <= cfg.max_accuracy_m) evaluate(lastFix, { fromTimer: true });
+  }, ms + 500);
+}
+function clearConfirm() { if (confirmTimer) { clearTimeout(confirmTimer); confirmTimer = null; } }
+
+// ── outbox ──
+const newId = () => `${(userId || 'u').slice(0, 8)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+function emitEvent(event, fix, fence) {
+  const p = loadP();
+  const outbox = p.outbox || [];
+  // Never queue two identical consecutive transitions.
+  const lastQueued = outbox[outbox.length - 1];
+  if (lastQueued && lastQueued.event === event) return;
+  const platformTag = snapshot.mode === 'background' ? 'native_android' : 'in_app';
+  outbox.push({
+    event_id: newId(), event,
+    latitude: fix.latitude, longitude: fix.longitude, accuracy: fix.accuracy,
+    occurred_at: new Date(fix.time).toISOString(), // ORIGINAL crossing time, preserved through any retry delay
+    location_name: fence.name, is_mock: false,
+    device_id: snapshot.mode === 'background' ? 'capacitor-background-geolocation' : 'web',
+    source: platformTag, attempts: 0, queued_at: Date.now(),
+  });
+  // Optimistic local belief so the same transition isn't re-emitted while the
+  // network round-trip (or an offline wait) is in progress.
+  believedIn = event === 'enter';
+  geofenceOwned = believedIn;
+  currentFenceId = believedIn ? fence.id : null;
+  saveP({ outbox, believedIn, geofenceOwned, currentFenceId });
+  emit({ believedIn, pending: outbox.length });
+  flushOutbox();
+}
+
+async function flushOutbox() {
+  if (flushing) return;
+  flushing = true;
   try {
-    const res = await base44.functions.invoke('nativeGeofenceEvent', {
-      event,
-      latitude: location.latitude,
-      longitude: location.longitude,
-      accuracy: location.accuracy,
-      occurred_at: new Date(location.time || Date.now()).toISOString(),
-      location_name: targetFence.name,
-      is_mock: !!location.simulated,
-      device_id: 'capacitor-background-geolocation',
-      source: platformTag,
-    });
-    const d = res.data || res;
-    if (d?.success) {
-      // 'location_transfer' fires when the server detects an enter at a
-      // configured location while still checked in at a DIFFERENT one — it
-      // auto-closes the old session and opens a new one, so this is also
-      // an "in progress" outcome, same as a plain checked_in.
-      if (d.action === 'checked_in' || d.action === 'location_transfer') lastKnownInProgress = true;
-      else if (d.action === 'checked_out') lastKnownInProgress = false;
-      else if (d.reason === 'already_checked_in') lastKnownInProgress = true;
-      else if (d.reason === 'already_checked_out' || d.reason === 'not_checked_in') lastKnownInProgress = false;
+    for (;;) {
+      const p = loadP();
+      const outbox = p.outbox || [];
+      if (!outbox.length) break;
+      const ev = outbox[0];
+      if (Date.now() - ev.queued_at > OUTBOX_MAX_AGE_MS || ev.attempts >= OUTBOX_MAX_ATTEMPTS) {
+        saveP({ outbox: outbox.slice(1) }); emit({ pending: outbox.length - 1 }); continue;
+      }
+      let d;
+      try {
+        const { attempts, queued_at, ...payload } = ev;
+        const res = await base44.functions.invoke('nativeGeofenceEvent', payload);
+        d = res?.data || res;
+      } catch (e) {
+        // Network / server unavailable: keep the event, retry with backoff.
+        outbox[0] = { ...ev, attempts: ev.attempts + 1 };
+        saveP({ outbox });
+        scheduleFlushRetry();
+        break;
+      }
+      retryDelay = 15000;
+      const rest = (loadP().outbox || []).slice(1);
+      saveP({ outbox: rest });
+      emit({ pending: rest.length, lastSyncAt: Date.now() });
+      if (d?.success) {
+        if (d.action === 'checked_in' || d.action === 'location_transfer') {
+          toast.success(d.session_number > 1 ? `Auto checked-in at ${d.location} — session ${d.session_number} 📍` : `Auto checked-in at ${d.location} 📍`);
+        } else if (d.action === 'checked_out') {
+          toast.success(`Auto checked-out — ${Number(d.working_hours || 0).toFixed(1)}h so far`);
+        }
+        window.dispatchEvent(new CustomEvent('geofence:synced', { detail: d }));
+      }
+      // Anything the server declined or found already-applied: re-adopt its state.
+      if (!d?.success || d.action === 'none') { refreshConfig().catch(() => {}); }
     }
-  } catch { /* next location update will retry */ }
+  } finally { flushing = false; }
+}
+
+function scheduleFlushRetry() {
+  if (flushRetry) return;
+  flushRetry = setTimeout(() => { flushRetry = null; flushOutbox(); }, retryDelay);
+  retryDelay = Math.min(retryDelay * 2, 5 * 60 * 1000);
 }

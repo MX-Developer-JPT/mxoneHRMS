@@ -34,7 +34,7 @@ const LeavePage = lazy(() => import('./pages/Leave'));
 const ProfilePage = lazy(() => import('./pages/Profile'));
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
-import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption, requestBackgroundLocationIfNeeded } from '@/lib/geofenceBackground';
+import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption, isBackgroundGeofenceAvailable, resumeGeofence } from '@/lib/geofenceBackground';
 import { syncStatusBarTheme, initKeyboardAvoidance } from '@/lib/nativeChrome';
 import { startHeartbeat, logPageView } from '@/lib/adoptionTracking';
 
@@ -540,38 +540,32 @@ export default function Layout({ children, currentPageName }) {
   useEffect(() => { initKeyboardAvoidance(); }, []);
   useEffect(() => { syncStatusBarTheme(resolvedTheme); }, [resolvedTheme]);
 
-  // Shared by the initial login-time attempt and the app-resume retry below.
-  // startBackgroundGeofence() itself already no-ops if a watcher is already
-  // running, so calling this liberally (every resume) is safe and cheap —
-  // it only does real work when tracking genuinely isn't active yet.
+  // Starts the geofence engine for an eligible employee. First-time setup on
+  // the native app shows the disclosure and lets the OS ask for location
+  // permission ONCE; every later start (cold launch, resume) is silent — the
+  // engine just probes the existing grant, so the employee is never asked to
+  // "enable location" again unless the permission was actually revoked (in
+  // which case Mark Attendance shows an Enable Location button).
+  // startBackgroundGeofence() is idempotent, so calling this liberally is safe.
   const ensureBackgroundGeofence = useCallback(async (userId) => {
     try {
       const geo = await checkGeofenceEligibility();
       if (!geo.eligible) return;
+      const native = await isBackgroundGeofenceAvailable();
       const disclosedKey = `bg_geo_disclosed_${userId}`;
-      if (!localStorage.getItem(disclosedKey)) {
+      const firstTime = native && !localStorage.getItem(disclosedKey);
+      if (firstTime) {
         localStorage.setItem(disclosedKey, '1');
         setShowGeoDisclosure(true);
+        requestBatteryOptimizationExemption().catch(() => {});
       }
-      requestBatteryOptimizationExemption().catch(() => {});
-      const res = await startBackgroundGeofence();
-      if (!res.started) {
-        console.warn('[geofence] start attempt did not succeed, will retry on next app resume:', res.reason);
-        // checkGeofenceEligibility() above already filters out the expected
-        // no-op reasons (not eligible / no location configured) — anything
-        // reaching here (fetch_failed, start_failed) is a genuine failure
-        // that was previously invisible: it only ever hit a console log on
-        // the phone itself, which nobody debugging remotely can see. Surface
-        // it once per app session (not on every resume retry) so the actual
-        // failure reason can be read and reported instead of guessed at.
+      const res = await startBackgroundGeofence({ interactive: firstTime, userId });
+      if (!res.started && res.reason !== 'permission_required' && res.reason !== 'fetch_failed') {
+        console.warn('[geofence] start attempt did not succeed:', res.reason);
         if (!sessionStorage.getItem('bg_geo_fail_shown')) {
           sessionStorage.setItem('bg_geo_fail_shown', '1');
-          toast.error(`Background attendance tracking failed to start (${res.reason}${res.error ? ': ' + res.error : ''})`, { duration: 10000 });
+          toast.error(`Automatic attendance tracking failed to start (${res.reason}${res.error ? ': ' + res.error : ''})`, { duration: 10000 });
         }
-      } else {
-        // Runs after the watcher call settles, never concurrently with it —
-        // its own isolated permission escalation, see geofenceBackground.js.
-        requestBackgroundLocationIfNeeded().catch(() => {});
       }
     } catch (e) {
       console.warn('ensureBackgroundGeofence:', e.message);
@@ -591,6 +585,7 @@ export default function Layout({ children, currentPageName }) {
         const { App } = await import('@capacitor/app');
         handle = await App.addListener('resume', () => {
           ensureBackgroundGeofence(user.id);
+          resumeGeofence().catch(() => {});
         });
       } catch { /* not running inside the native shell */ }
     })();

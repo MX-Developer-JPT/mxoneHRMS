@@ -2,11 +2,11 @@
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar, Fingerprint, Home, Route } from 'lucide-react';
+import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar, Fingerprint, Home, Route, Loader2 } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getCheckInMethod, getCheckOutMethod, getGeofenceDetail } from '@/lib/attendanceSource';
-import { isBackgroundGeofenceAvailable, startBackgroundGeofence } from '@/lib/geofenceBackground';
+import { startBackgroundGeofence, useGeofenceState, openLocationSettings } from '@/lib/geofenceBackground';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -47,58 +47,41 @@ export default function MarkAttendance() {
   // waiting for an explicit tap — see the mount effect below for why.
   const [locationNeedsTap, setLocationNeedsTap] = useState(false);
 
-  // ── Geofence auto attendance — HR decides who is tracked (Employee.geofence_eligible),
-  // employees get no on/off control at all. Eligible employees are tracked in the
-  // background automatically (native app) or via the in-app foreground watcher
-  // (browser/PWA, or if background location permission isn't available), with no
-  // toggle to disable either path. ──
+  // ── Geofence auto attendance — HR decides who is tracked (Employee.geofence_eligible).
+  // The engine (lib/geofenceBackground.js) is started globally from Layout and
+  // keeps running in the background; this page only DISPLAYS its live state and
+  // offers an Enable Location button when the OS permission is actually missing. ──
   const geofenceEligible = !!employee?.geofence_eligible;
-  const [officeFence, setOfficeFence] = useState(null);   // fence currently relevant for display (nearest / currently checked into)
+  const [officeFence, setOfficeFence] = useState(null);   // placeholder display fence until a live fix arrives
   const [allFences, setAllFences] = useState([]);         // ALL active configured locations — attendance triggers at any of them
-  const [activeFenceId, setActiveFenceId] = useState(null); // which fence we're currently checked into (foreground mode)
-  const [fenceDistance, setFenceDistance] = useState(null); // metres from office centre
-  const autoBusyRef = useRef(false);
+  const geo = useGeofenceState();
+  const [enablingGeo, setEnablingGeo] = useState(false);
 
-  // ── Background geofence (native app only — works with the app closed) ──
-  const [nativeAvailable, setNativeAvailable] = useState(false);
-  const [nativeChecked, setNativeChecked] = useState(false);
-  const [bgGeofenceStatus, setBgGeofenceStatus] = useState('idle'); // idle | starting | active | permission_needed | unavailable
-
+  // Idempotent: a no-op if Layout already started it. Silent — never prompts.
   useEffect(() => {
-    isBackgroundGeofenceAvailable().then(v => { setNativeAvailable(v); setNativeChecked(true); });
+    if (!geofenceEligible) return;
+    startBackgroundGeofence({ userId: user?.id }).catch(() => {});
+  }, [geofenceEligible, user?.id]);
+
+  // An auto check-in/out (possibly delivered from the offline queue) changed
+  // today's record — reload it.
+  useEffect(() => {
+    const onSynced = () => loadData();
+    window.addEventListener('geofence:synced', onSynced);
+    return () => window.removeEventListener('geofence:synced', onSynced);
   }, []);
 
-  // Auto-start — no employee-facing switch. Runs once eligibility, native
-  // availability, and the fence list are all known.
-  useEffect(() => {
-    if (!geofenceEligible || !nativeAvailable || !allFences.length) return;
-    let cancelled = false;
-    setBgGeofenceStatus('starting');
-    startBackgroundGeofence().then(res => {
-      if (cancelled) return;
-      if (res.started) {
-        setBgGeofenceStatus('active');
-      } else if (res.reason === 'start_failed') {
-        setBgGeofenceStatus('permission_needed');
-      } else {
-        setBgGeofenceStatus('unavailable'); // falls back to the foreground watcher below
+  const handleEnableGeofence = async () => {
+    setEnablingGeo(true);
+    try {
+      const res = await startBackgroundGeofence({ interactive: true, userId: user?.id });
+      if (!res.started && res.reason === 'permission_required') {
+        const opened = await openLocationSettings();
+        toast.error(opened
+          ? 'Set Location to "Allow all the time" in the app settings that just opened, then come back.'
+          : 'Location is blocked for this app. Enable it in your device settings.');
       }
-    });
-    return () => { cancelled = true; };
-  }, [geofenceEligible, nativeAvailable, allFences.length]);
-
-  // In-app foreground watcher is the automatic fallback whenever background
-  // tracking isn't actually running (browser/PWA with no native background
-  // capability, or it failed to start) — still fully automatic, no toggle.
-  // Gated on nativeChecked so it doesn't briefly double-run alongside a
-  // background-start attempt that just hasn't resolved yet.
-  const autoMode = geofenceEligible && nativeChecked
-    && (!nativeAvailable || (bgGeofenceStatus !== 'active' && bgGeofenceStatus !== 'starting'));
-
-  const distMetres = (lat1, lng1, lat2, lng2) => {
-    const R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
-    const s = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(s));
+    } finally { setEnablingGeo(false); }
   };
 
   useEffect(() => {
@@ -113,7 +96,15 @@ export default function MarkAttendance() {
     // auto-fetch when permission is ALREADY granted (the common repeat-visit
     // case — no extra tap needed) while leaving the very first request to an
     // explicit button tap, which iOS reliably honors as a user gesture.
-    if (navigator.permissions?.query) {
+    // Once a location fix has ever succeeded on this device we remember it
+    // and fetch straight away on every later visit — the Enable Location
+    // button only comes back if the OS/browser actually revokes the
+    // permission (see the PERMISSION_DENIED handler, which clears this flag).
+    let knownGranted = false;
+    try { knownGranted = localStorage.getItem('geo_loc_authorized') === '1'; } catch { /* storage unavailable */ }
+    if (knownGranted) {
+      getCurrentLocationWithDetails();
+    } else if (navigator.permissions?.query) {
       navigator.permissions.query({ name: 'geolocation' }).then(status => {
         if (status.state === 'granted') getCurrentLocationWithDetails();
         else setLocationNeedsTap(true);
@@ -266,6 +257,7 @@ export default function MarkAttendance() {
       best = coords;
       setLocation(coords);
       setLocationError('');
+      try { localStorage.setItem('geo_loc_authorized', '1'); } catch { /* storage unavailable */ }
       // Re-geocode when accuracy improves by 25m+ (or first fix)
       if (!geocodedFor || geocodedFor - coords.accuracy > 25) {
         geocodedFor = coords.accuracy;
@@ -285,6 +277,8 @@ export default function MarkAttendance() {
         finish();
         console.error('Error getting location:', error);
         if (error.code === error.PERMISSION_DENIED) {
+          try { localStorage.removeItem('geo_loc_authorized'); } catch { /* storage unavailable */ }
+          setLocationNeedsTap(true);
           setLocationError('Please enable location access in your device Settings to mark attendance.');
           toast.error('Location access denied. Enable it in Settings to mark attendance.');
         } else if (error.code === error.POSITION_UNAVAILABLE) {
@@ -410,96 +404,6 @@ export default function MarkAttendance() {
     }
   };
 
-  // ── Geofence auto attendance: watch position while the app is open ──
-  // Both directions are immediate — the very first trustworthy fix that crosses
-  // the boundary fires the event, no confirmation delay either way. Re-entering
-  // after a checkout starts a new session (session 2, 3, …) on the same day,
-  // via the same multi-session engine biometric punches already use.
-  // autoMode is fully derived above (eligibility + background status) — no
-  // employee-facing toggle exists to turn this on or off.
-  useEffect(() => {
-    if (!autoMode || !allFences.length || !navigator.geolocation) return;
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        if (pos.coords.accuracy > 150) return; // ignore poor fixes — not accurate enough to trust either way
-
-        // Nearest configured location the current position falls inside, if any —
-        // attendance triggers at ANY configured location, not just the one tied
-        // to the employee's assigned Work Location.
-        let nearestInside = null, nearestInsideDist = Infinity;
-        for (const f of allFences) {
-          const fd = distMetres(pos.coords.latitude, pos.coords.longitude, Number(f.latitude), Number(f.longitude));
-          if (fd <= Number(f.geofence_radius) && fd < nearestInsideDist) { nearestInside = f; nearestInsideDist = fd; }
-        }
-
-        const inProgress = !!todayAttendance?.is_in_progress;
-
-        if (nearestInside) {
-          setOfficeFence(nearestInside);
-          setFenceDistance(Math.round(nearestInsideDist));
-          if (!inProgress || activeFenceId !== nearestInside.id) {
-            setActiveFenceId(nearestInside.id);
-            sendGeofenceEvent('enter', pos.coords, nearestInside);
-          }
-          return;
-        }
-
-        // Not inside any fence — report distance to whichever one we're currently
-        // checked into (if any), and check the exit hysteresis against that one.
-        const cur = allFences.find(f => f.id === activeFenceId) || officeFence || allFences[0];
-        if (cur) {
-          const d = distMetres(pos.coords.latitude, pos.coords.longitude, Number(cur.latitude), Number(cur.longitude));
-          setOfficeFence(cur);
-          setFenceDistance(Math.round(d));
-          // A small spatial buffer beyond the radius prevents boundary jitter from flapping
-          // in/out repeatedly — this is distance-based hysteresis, not a time delay.
-          const wellOutside = d > Number(cur.geofence_radius) + 100;
-          if (inProgress && activeFenceId && wellOutside) {
-            sendGeofenceEvent('exit', pos.coords, cur);
-            setActiveFenceId(null);
-          }
-        }
-      },
-      () => { /* keep silent — manual flow still works */ },
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
-    );
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, [autoMode, allFences, todayAttendance, activeFenceId]);
-
-  const sendGeofenceEvent = async (eventType, coords, targetFence) => {
-    if (autoBusyRef.current) return;
-    autoBusyRef.current = true;
-    try {
-      const res = await base44.functions.invoke('nativeGeofenceEvent', {
-        event: eventType,
-        latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy,
-        occurred_at: new Date().toISOString(),
-        location_name: targetFence.name,
-        is_mock: false, device_id: 'web', source: 'in_app',
-      });
-      const d = res.data || res;
-      if (d?.success && d.action === 'checked_in') {
-        toast.success(d.session_number > 1 ? `Auto checked-in at ${targetFence.name} — session ${d.session_number} 📍` : `Auto checked-in at ${targetFence.name} 📍`);
-        loadData();
-      } else if (d?.success && d.action === 'checked_out') {
-        toast.success(`Auto checked-out at ${targetFence.name} — ${d.working_hours?.toFixed(1)}h so far`);
-        loadData();
-      } else if (d?.success && d.action === 'none') {
-        // Sync the local in-progress flag so we stop re-sending the same event on every
-        // subsequent fix (e.g. a manual check-in earlier today that the client didn't know
-        // was "in progress" until the server told us).
-        if (d.reason === 'already_checked_in') { setActiveFenceId(targetFence.id); setTodayAttendance(prev => prev ? { ...prev, is_in_progress: true } : prev); }
-        else if (d.reason === 'already_checked_out' || d.reason === 'not_checked_in') setTodayAttendance(prev => prev ? { ...prev, is_in_progress: false } : prev);
-      } else if (d?.success === false && d.code) {
-        console.warn('Geofence event rejected:', d.error);
-      }
-    } catch (e) {
-      console.error('Geofence event failed:', e);
-    } finally {
-      autoBusyRef.current = false;
-    }
-  };
-
   const processCheckOut = async () => {
     if (!todayAttendance?.check_in_time) {
       toast.error('Check-in time missing — please refresh and try again');
@@ -618,66 +522,86 @@ export default function MarkAttendance() {
           <p className="text-gray-600 mt-1 text-sm md:text-base">Check in and check out for the day</p>
         </div>
 
-        {/* Automatic attendance tracking — HR determines eligibility
-            (Employee.geofence_eligible); there is no employee-facing control to
-            turn this on or off. Background geofence (native app) is preferred and
-            starts automatically; the in-app foreground watcher is the automatic
-            fallback whenever background tracking isn't actually running. */}
-        {geofenceEligible && officeFence && bgGeofenceStatus === 'active' && (
-          <Card className="border-orange-300 bg-orange-50/50">
-            <CardContent className="py-3 px-4 flex items-center gap-3">
-              <div className="p-2 rounded-full bg-orange-100 text-orange-600">
-                <Radar className="w-5 h-5 animate-pulse" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-gray-800">Automatic Attendance — Active</p>
-                <p className="text-xs text-gray-500">
-                  Tracking runs in the background and marks you present/checked-out automatically at {officeFence.name}, even with the app closed.
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+        {/* Automatic attendance (geofence) — HR determines eligibility
+            (Employee.geofence_eligible). Live distance/status come from the
+            tracking engine and update on their own as position fixes arrive. */}
+        {geofenceEligible && geo.status !== 'not_eligible' && (() => {
+          const needsEnable = geo.status === 'permission_required' || geo.status === 'location_disabled';
+          const starting = !needsEnable && (geo.status === 'idle' || geo.status === 'starting');
+          let label, tone;
+          if (needsEnable) { label = 'Location Permission Required'; tone = 'red'; }
+          else if (starting) { label = 'Starting…'; tone = 'slate'; }
+          else if (geo.liveState === 'inside') { label = 'Inside Office Radius'; tone = 'green'; }
+          else if (geo.liveState === 'outside') { label = 'Outside Office Radius'; tone = 'slate'; }
+          else { label = 'Location Unavailable'; tone = 'amber'; }
+          const toneCls = {
+            red:   { card: 'border-red-300 bg-red-50/50',     chip: 'bg-red-100 text-red-700',     icon: 'bg-red-100 text-red-600' },
+            green: { card: 'border-green-300 bg-green-50/50', chip: 'bg-green-100 text-green-700', icon: 'bg-green-100 text-green-600' },
+            slate: { card: 'border-slate-300 bg-slate-50/50', chip: 'bg-slate-100 text-slate-700', icon: 'bg-slate-100 text-slate-600' },
+            amber: { card: 'border-amber-300 bg-amber-50/50', chip: 'bg-amber-100 text-amber-700', icon: 'bg-amber-100 text-amber-600' },
+          }[tone];
+          const fmtDist = (m) => (m == null ? '—' : m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m} m`);
+          const ageSec = geo.lastFixAt ? Math.max(0, Math.round((currentTime.getTime() - geo.lastFixAt) / 1000)) : null;
+          const fallbackRadius = officeFence?.geofence_radius ?? null;
+          return (
+            <Card className={toneCls.card}>
+              <CardContent className="py-3 px-4 space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-full ${toneCls.icon}`}>
+                    <Radar className={`w-5 h-5 ${geo.liveState === 'inside' ? 'animate-pulse' : ''}`} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-gray-800">Automatic Attendance</p>
+                    <p className="text-xs text-gray-500">
+                      {geo.mode === 'background'
+                        ? 'Runs in the background — checks you in when you enter the office radius and out when you leave, even with the app closed.'
+                        : 'Checks you in when you enter the office radius and out when you leave. Keep this app open in your browser for it to work.'}
+                    </p>
+                  </div>
+                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${toneCls.chip}`}>{label}</span>
+                </div>
 
-        {geofenceEligible && officeFence && bgGeofenceStatus === 'permission_needed' && (
-          <Card className="border-amber-300 bg-amber-50/50">
-            <CardContent className="py-3 px-4 flex items-center gap-3">
-              <div className="p-2 rounded-full bg-amber-100 text-amber-600">
-                <Radar className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-gray-800">Location Permission Needed</p>
-                <p className="text-xs text-gray-500">
-                  Your account is set up for automatic attendance tracking. Please allow location access ("Always"/background) in your device Settings so it can run.
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+                {!needsEnable && (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="rounded-lg bg-white/70 border p-2">
+                      <p className="text-[11px] text-gray-500">Distance from office</p>
+                      <p className="text-base font-bold text-gray-800">{fmtDist(geo.distance)}</p>
+                    </div>
+                    <div className="rounded-lg bg-white/70 border p-2">
+                      <p className="text-[11px] text-gray-500">Geofence radius</p>
+                      <p className="text-base font-bold text-gray-800">{fmtDist(geo.radius ?? fallbackRadius)}</p>
+                    </div>
+                    <div className="rounded-lg bg-white/70 border p-2">
+                      <p className="text-[11px] text-gray-500">GPS accuracy</p>
+                      <p className="text-base font-bold text-gray-800">{geo.accuracy != null ? `±${geo.accuracy} m` : '—'}</p>
+                    </div>
+                  </div>
+                )}
 
-        {autoMode && officeFence && (
-          <Card className="border-blue-300 bg-blue-50/50">
-            <CardContent className="py-3 px-4 flex items-center gap-3">
-              <div className="p-2 rounded-full bg-blue-100 text-blue-600">
-                <Radar className="w-5 h-5 animate-pulse" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-gray-800">Automatic Attendance — Active</p>
-                <p className="text-xs text-gray-500">
-                  {fenceDistance != null
-                    ? fenceDistance <= officeFence.geofence_radius
-                      ? todayAttendance?.is_in_progress
-                        ? `Inside the office zone (${fenceDistance}m from centre) — attendance confirmed`
-                        : `Inside the office zone (${fenceDistance}m from centre) — marking you present…`
-                      : todayAttendance?.is_in_progress
-                        ? `${fenceDistance}m from office — will check you out the instant you clear the ${officeFence.geofence_radius + 100}m buffer`
-                        : `${fenceDistance}m from office — zone radius ${officeFence.geofence_radius}m`
-                    : `Present the instant you enter the ${officeFence.geofence_radius}m zone at ${officeFence.name}, checked out the instant you leave. Keep the app open for this to work.`}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+                {!needsEnable && (
+                  <p className="text-[11px] text-gray-500">
+                    {geo.fenceName ? `Nearest location: ${geo.fenceName}. ` : ''}
+                    {ageSec != null ? `Updated ${ageSec < 5 ? 'just now' : `${ageSec}s ago`}. ` : 'Waiting for the first GPS fix… '}
+                    {geo.liveState === 'unavailable' && ageSec != null ? 'Position is temporarily unavailable — this will not check you out. ' : ''}
+                    {geo.pending > 0 ? `${geo.pending} event(s) waiting to sync (offline) — your original times are kept.` : ''}
+                  </p>
+                )}
+
+                {needsEnable && (
+                  <div className="flex items-center gap-3">
+                    <p className="text-xs text-gray-600 flex-1">
+                      Location access is off or was revoked, so automatic attendance can't run. {geo.mode === 'background' ? 'Choose "Allow all the time".' : 'Allow location for this site.'}
+                    </p>
+                    <Button size="sm" onClick={handleEnableGeofence} disabled={enablingGeo}>
+                      {enablingGeo ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />}
+                      Enable Location
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })()}
 
         <Card>
           <CardHeader>

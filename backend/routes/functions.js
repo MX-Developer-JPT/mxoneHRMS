@@ -992,6 +992,21 @@ function buildConsentFormPdf(data) {
   });
 }
 
+// Serialises geofence events per employee. Reads-then-writes of the day's
+// Attendance row aren't atomic, so two near-simultaneous events (a retried
+// request overlapping the original, or an in-app and a headless-native event)
+// could both pass the "not already in progress" check and double-punch.
+const _geoLocks = new Map();
+async function acquireGeoLock(key) {
+  const prev = _geoLocks.get(key) || Promise.resolve();
+  let release;
+  const next = new Promise(r => { release = r; });
+  const chain = prev.then(() => next);
+  _geoLocks.set(key, chain);
+  await prev;
+  return () => { release(); if (_geoLocks.get(key) === chain) _geoLocks.delete(key); };
+}
+
 const router = Router();
 
 // In-memory store for long-running background jobs (biometric processing, bulk imports).
@@ -4006,8 +4021,22 @@ router.post('/:name', async (req, res) => {
               // while already checked in could never detect the eventual
               // exit, since it wouldn't know which fence to measure against.
               is_in_progress: !!gfAtt.is_in_progress, geofence_location: gfAtt.geofence_location || null,
+              // True only when the CURRENTLY OPEN session was started by a
+              // geofence enter — the client auto-closes only those, never a
+              // manual / biometric / WFH / Outduty session.
+              open_session_by_geofence: (() => {
+                if (!gfAtt.is_in_progress || !gfAtt.geofence_open_in) return false;
+                const pp = Array.isArray(gfAtt.raw_punches) ? gfAtt.raw_punches : [];
+                const last = pp[pp.length - 1];
+                return !!last && last.device_direction === 'IN' && Date.parse(last.time) === Date.parse(gfAtt.geofence_open_in);
+              })(),
             }
-          : { checked_in: false, checked_out: false, is_in_progress: false, geofence_location: null },
+          : { checked_in: false, checked_out: false, is_in_progress: false, geofence_location: null, open_session_by_geofence: false },
+        // Tunable hysteresis/debounce thresholds the client engine applies.
+        config: {
+          max_accuracy_m: 100, enter_confirmations: 2, enter_min_seconds: 15, enter_timer_seconds: 30,
+          exit_confirmations: 2, exit_dwell_seconds: 90, exit_buffer_m: 40, strong_exit_m: 250, stale_fix_seconds: 180,
+        },
         server_time: new Date().toISOString(),
       });
     }
@@ -4132,15 +4161,17 @@ router.post('/:name', async (req, res) => {
 
     case 'nativeGeofenceEvent': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { event, latitude, longitude, accuracy, occurred_at, location_name, is_mock, device_id, source } = p;
+      const ngRelease = await acquireGeoLock(cu.id);
+      try {
+      const { event, latitude, longitude, accuracy, occurred_at, location_name, is_mock, device_id, source, event_id } = p;
       if (!['enter', 'exit'].includes(event)) return res.json({ success: false, error: "event must be 'enter' or 'exit'" });
       if (is_mock === true) return res.json({ success: false, error: 'Mock locations are not accepted', code: 'MOCK_LOCATION' });
 
-      // Effective event time: client occurred_at if plausible (≤12h old, not future), else server now.
+      // Effective event time: client occurred_at if plausible (≤48h old — an offline-queued event keeps its REAL time — and not future), else server now.
       let evUtc = Date.now();
       if (occurred_at) {
         const t = Date.parse(occurred_at);
-        if (isFinite(t) && t <= Date.now() + 120000 && t >= Date.now() - 12 * 3600000) evUtc = t;
+        if (isFinite(t) && t <= Date.now() + 120000 && t >= Date.now() - 48 * 3600000) evUtc = t;
       }
       const evIST = new Date(evUtc + 5.5 * 3600000); // store-IST-digits convention
       const evDate = evIST.toISOString().slice(0, 10);
@@ -4183,6 +4214,7 @@ router.post('/:name', async (req, res) => {
           || (ngLocs.length === 1 ? ngLocs[0] : null);
       }
 
+      if (event === 'enter' && Number(accuracy) > 150) return res.json({ success: false, error: 'GPS accuracy too low to confirm entry', code: 'LOW_ACCURACY' });
       // Defense-in-depth: an 'enter' with coordinates must plausibly be inside the resolved fence
       if (event === 'enter' && ngFence && isFinite(Number(latitude)) && isFinite(Number(longitude))) {
         const dist = haversineM(Number(latitude), Number(longitude), Number(ngFence.latitude), Number(ngFence.longitude));
@@ -4218,6 +4250,12 @@ router.post('/:name', async (req, res) => {
       const ngAtt = ngAttRow ? JSON.parse(ngAttRow.data) : null;
       if (ngAtt?.status === 'regularised' || ngAtt?.regularised) return res.json({ success: false, error: 'This day has been manually regularised by HR — geofence events are ignored' });
 
+      // Idempotency: a retried / replayed delivery of an event we've already
+      // applied (offline queue flush, network retry after a lost response) is
+      // acknowledged without touching the timeline again.
+      const seenIds = Array.isArray(ngAtt?.geofence_event_ids) ? ngAtt.geofence_event_ids : [];
+      if (event_id && seenIds.includes(event_id)) return res.json({ success: true, action: 'none', reason: 'duplicate_event' });
+
       // Multi-session model: geofence punches share the same raw_punches timeline used by
       // biometric sync, so a day can have session 1 (walked in, walked out for lunch),
       // session 2 (walked back in), etc. — "step out" and "step back in" behave symmetrically.
@@ -4231,6 +4269,27 @@ router.post('/:name', async (req, res) => {
 
       const priorSessionData = buildSessions(rawPunches);
       let locationTransfer = false;
+      let resumedSession = false;
+
+      // Ordering: an event older than the newest punch already on the
+      // timeline (late offline delivery, clock skew, a biometric punch synced
+      // meanwhile) can't be inserted without corrupting IN/OUT parity.
+      const lastPunchMs = rawPunches.reduce((m, pp) => Math.max(m, Date.parse(pp.time) || 0), 0);
+      if (lastPunchMs && evIST.getTime() < lastPunchMs - 1000) return res.json({ success: true, action: 'none', reason: 'stale_event' });
+      const GEO_FLAP_MS = 120000;     // re-entry this soon after a geofence exit = GPS flapping, not a new session
+      const GEO_MIN_DWELL_MS = 30000; // exit this soon after the geofence enter that opened the session = noise
+      if (event === 'exit' && priorSessionData.is_in_progress && ngAtt?.geofence_open_in
+          && evIST.getTime() - Date.parse(ngAtt.geofence_open_in) < GEO_MIN_DWELL_MS) {
+        return res.json({ success: true, action: 'none', reason: 'too_soon_after_enter' });
+      }
+      if (event === 'enter' && !priorSessionData.is_in_progress && ngAtt?.check_out_source === 'geofence' && rawPunches.length) {
+        const lastIdx = rawPunches.reduce((bi, pp, i) => (Date.parse(pp.time) >= Date.parse(rawPunches[bi].time) ? i : bi), 0);
+        const lp = rawPunches[lastIdx];
+        if (lp.device_direction === 'OUT' && evIST.getTime() - Date.parse(lp.time) <= GEO_FLAP_MS) {
+          rawPunches.splice(lastIdx, 1); // cancel the flapped exit: the same session simply continues
+          resumedSession = true;
+        }
+      }
       if (event === 'enter') {
         if (priorSessionData.is_in_progress) {
           // Already checked in — but is it at THIS location, or one they've
@@ -4251,7 +4310,7 @@ router.post('/:name', async (req, res) => {
           } else {
             return res.json({ success: true, action: 'none', reason: 'already_checked_in' });
           }
-        } else {
+        } else if (!resumedSession) {
           rawPunches.push({ time: evIST.toISOString(), device_direction: 'IN' });
         }
       } else {
@@ -4283,6 +4342,10 @@ router.post('/:name', async (req, res) => {
         // entirely — selfie/biometric) is left untouched.
         ...(event === 'enter' ? { auto_geofence: true, check_in_source: 'geofence' } : { auto_geofence_checkout: true, check_out_source: 'geofence' }),
         geofence_location: ngFence?.name || location_name || '',
+        // Marks which session the geofence opened, so only that one is ever
+        // auto-closed by a later exit (never a manual / WFH / OD session).
+        geofence_open_in: event === 'enter' ? (resumedSession ? (ngAtt?.geofence_open_in || evIST.toISOString()) : evIST.toISOString()) : null,
+        geofence_event_ids: event_id ? [...seenIds, event_id].slice(-200) : seenIds,
         geofence_source: ['in_app', 'native_android', 'native_ios'].includes(source) ? source : 'native_android', geofence_device: device_id || '',
         ...(event === 'enter' ? { check_in_location: locPayload } : { check_out_location: locPayload }),
       };
@@ -4291,9 +4354,11 @@ router.post('/:name', async (req, res) => {
 
       return res.json({
         success: true, action: locationTransfer ? 'location_transfer' : (event === 'enter' ? 'checked_in' : 'checked_out'),
+        ...(resumedSession ? { reason: 'session_resumed' } : {}),
         session_number: sessionData.session_count, is_in_progress: sessionData.is_in_progress,
         working_hours: sessionData.working_hours, location: attData.geofence_location,
       });
+      } finally { ngRelease(); }
     }
 
     // Selfie check-in/out — previously written directly via the generic
