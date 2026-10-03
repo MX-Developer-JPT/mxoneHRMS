@@ -14348,7 +14348,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
        employee. getOffRoleAttendance feeds the page; exportOffRoleAttendance
        builds the muster-style Excel. See utils/offRoleAttendance.js. ── */
     case 'getOffRoleAttendance': {
-      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR or admin access required' });
       const { from, to, device, search } = p;
       if (!from || !to) return res.json({ success: false, error: 'from and to dates are required' });
       const data = await loadOffRole({ from, to, device, search });
@@ -14356,7 +14356,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'exportOffRoleAttendance': {
-      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR or admin access required' });
       const eoYear = parseInt(p.year), eoMonth = parseInt(p.month);
       if (!eoYear || !eoMonth || eoMonth < 1 || eoMonth > 12) return res.json({ success: false, error: 'month and year are required' });
       const ExcelJSo = await import('exceljs');

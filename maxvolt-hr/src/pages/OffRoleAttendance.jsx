@@ -4,7 +4,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Fingerprint, Search, Download, Loader2, ChevronLeft, ChevronRight, Clock, Users, AlarmClock, AlertTriangle, Cpu, Info } from 'lucide-react';
+import { Fingerprint, Search, Download, Loader2, ChevronLeft, ChevronRight, Clock, Users, AlarmClock, AlertTriangle, Cpu, Info, Moon, ShieldAlert } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
 import { toast } from 'sonner';
 
@@ -43,6 +43,12 @@ export default function OffRoleAttendance() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [role, setRole] = useState(undefined); // undefined = still checking
+
+  useEffect(() => {
+    base44.auth.me().then(u => setRole(u?.custom_role || u?.role || '')).catch(() => setRole(''));
+  }, []);
+  const allowed = role === 'hr' || role === 'admin';
 
   const range = useMemo(() => {
     const dim = new Date(year, month, 0).getDate();
@@ -64,7 +70,7 @@ export default function OffRoleAttendance() {
   }, [range, device, search]);
 
   // search is debounced so typing doesn't fire a request per keystroke
-  useEffect(() => { const t = setTimeout(load, search ? 350 : 0); return () => clearTimeout(t); }, [load, search]);
+  useEffect(() => { if (!allowed) return; const t = setTimeout(load, search ? 350 : 0); return () => clearTimeout(t); }, [load, search, allowed]);
 
   const shift = (delta) => {
     let m = month + delta, y = year;
@@ -89,6 +95,19 @@ export default function OffRoleAttendance() {
   const s = data?.summary;
   const devices = data?.devices || [];
 
+  if (role === undefined) return <div className="flex items-center justify-center h-screen"><Loader2 className="w-6 h-6 animate-spin text-gray-400" /></div>;
+  if (!allowed) {
+    return (
+      <div className="flex items-center justify-center h-screen p-6">
+        <div className="text-center max-w-sm">
+          <ShieldAlert className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+          <p className="font-semibold text-gray-700">HR or admin access required</p>
+          <p className="text-sm text-gray-500 mt-1">Off role attendance is available to HR and admin only.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4">
@@ -96,8 +115,8 @@ export default function OffRoleAttendance() {
           <div>
             <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2"><Fingerprint className="w-7 h-7 text-amber-500" /> Off role attendance</h1>
             <p className="text-gray-600 mt-1 text-sm max-w-2xl">
-              Biometric punches received from codes that are <strong>not mapped to any employee</strong>. Shows each person's first and last punch of the day
-              and the machine it came from. Overtime is calculated automatically after {OT_AFTER} hours a day.
+              Biometric punches received from codes that are <strong>not mapped to any employee</strong>. Shows each person's first and last punch of the shift
+              and the machine it came from; night shifts that cross midnight are handled as one shift. Overtime is calculated automatically after {OT_AFTER} hours a day.
             </p>
           </div>
           <Button onClick={handleExport} disabled={exporting || !data?.days?.length} className="bg-neutral-900 text-amber-400 hover:bg-neutral-800">
@@ -131,12 +150,13 @@ export default function OffRoleAttendance() {
         {error && <Card className="border-red-200 bg-red-50"><CardContent className="p-4 text-sm text-red-700">{error}</CardContent></Card>}
 
         {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <Stat icon={Users} label="Unmapped codes" value={s?.people ?? '—'} cls="text-gray-800" />
           <Stat icon={Clock} label="Person-days" value={s?.person_days ?? '—'} cls="text-blue-600" />
           <Stat icon={Clock} label="Total hours" value={s ? hrs(s.total_minutes) : '—'} sub="first → last punch" cls="text-green-600" />
           <Stat icon={AlarmClock} label={`Overtime (>${OT_AFTER}h)`} value={s ? hrs(s.ot_minutes) : '—'} sub="auto-calculated" cls="text-orange-600" />
           <Stat icon={AlertTriangle} label="Single-punch days" value={s?.single_punch_days ?? '—'} sub="no out punch" cls="text-amber-600" />
+          <Stat icon={Moon} label="Night shifts" value={s?.overnight_shifts ?? '—'} sub="cross midnight" cls="text-indigo-600" />
         </div>
 
         {/* Machines */}
@@ -173,12 +193,12 @@ export default function OffRoleAttendance() {
                 <tbody>
                   {data.days.map(d => (
                     <tr key={`${d.code}-${d.date}`} className={`border-t hover:bg-amber-50/40 ${d.single_punch ? 'bg-yellow-50/50' : ''}`}>
-                      <td className="px-3 py-2.5 whitespace-nowrap"><span className="font-medium">{safeDate(d.date, 'dd MMM yyyy')}</span> <span className="text-xs text-gray-400">{d.dow}</span></td>
+                      <td className="px-3 py-2.5 whitespace-nowrap"><span className="font-medium">{safeDate(d.date, 'dd MMM yyyy')}</span> <span className="text-xs text-gray-400">{d.dow}</span>{d.overnight && <Badge className="ml-1.5 bg-indigo-100 text-indigo-700 gap-1"><Moon className="w-3 h-3" />Night</Badge>}</td>
                       <td className="px-3 py-2.5 font-semibold">{d.code}</td>
                       <td className="px-3 py-2.5 whitespace-nowrap"><p className="font-medium text-green-700">{safeDate(d.first_punch, 'hh:mm a')}</p><p className="text-[11px] text-gray-500 flex items-center gap-1"><Cpu className="w-3 h-3" />{d.first_device}</p></td>
                       <td className="px-3 py-2.5 whitespace-nowrap">
                         {d.last_punch
-                          ? <><p className="font-medium text-orange-700">{safeDate(d.last_punch, 'hh:mm a')}</p><p className="text-[11px] text-gray-500 flex items-center gap-1"><Cpu className="w-3 h-3" />{d.last_device}</p></>
+                          ? <><p className="font-medium text-orange-700">{safeDate(d.last_punch, 'hh:mm a')}{d.overnight && <span className="ml-1 text-[10px] font-semibold text-indigo-600">+1 day</span>}</p><p className="text-[11px] text-gray-500 flex items-center gap-1"><Cpu className="w-3 h-3" />{d.last_device}</p></>
                           : <Badge className="bg-yellow-100 text-yellow-800">Single punch</Badge>}
                       </td>
                       <td className="px-3 py-2.5 text-center">{d.punch_count}</td>
@@ -201,7 +221,7 @@ export default function OffRoleAttendance() {
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div><p className="text-gray-400">First punch</p><p className="font-medium text-green-700">{safeDate(d.first_punch, 'hh:mm a')}</p><p className="text-gray-500">{d.first_device}</p></div>
-                    <div><p className="text-gray-400">Last punch</p>{d.last_punch ? <><p className="font-medium text-orange-700">{safeDate(d.last_punch, 'hh:mm a')}</p><p className="text-gray-500">{d.last_device}</p></> : <p className="text-yellow-700 font-medium">Single punch</p>}</div>
+                    <div><p className="text-gray-400">Last punch</p>{d.last_punch ? <><p className="font-medium text-orange-700">{safeDate(d.last_punch, 'hh:mm a')}{d.overnight && <span className="ml-1 text-[10px] font-semibold text-indigo-600">+1 day</span>}</p><p className="text-gray-500">{d.last_device}</p></> : <p className="text-yellow-700 font-medium">Single punch</p>}</div>
                   </div>
                   <div className="flex items-center gap-2 text-xs">
                     {!d.single_punch && <Badge variant="outline">{hm(d.total_minutes)} h</Badge>}
@@ -238,7 +258,7 @@ export default function OffRoleAttendance() {
           <Info className="w-4 h-4 shrink-0 mt-0.5 text-gray-400" />
           <p>
             Punches arrive through the normal biometric sync, or can be sent to the dedicated receiver <code className="bg-gray-100 px-1 rounded">POST /api/attendance-log/off-role</code> (same API key and record format).
-            A code disappears from this page automatically once it is mapped to an employee. Working hours are measured from the first to the last punch of the calendar day.
+            A code disappears from this page automatically once it is mapped to an employee. Working hours run from the first to the last punch of a shift (a break of more than 12 hours starts a new shift), so a night shift 10 PM → 6 AM counts once, on the day it starts.
           </p>
         </CardContent></Card>
       </div>

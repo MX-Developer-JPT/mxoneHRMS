@@ -8,6 +8,13 @@ import { all } from '../db.js';
 
 export const OT_AFTER_HOURS = 9;                 // overtime starts after 9 completed hours in a day
 const OT_AFTER_MIN = OT_AFTER_HOURS * 60;
+// A "shift" is a run of one person's punches with no gap longer than this; it is
+// counted on the day its FIRST punch falls, so a night shift 22:00 -> 06:00 is
+// one shift (not a stray punch on each of two days). The span cap stops a
+// worker who never gets a long rest from merging into one endless shift.
+const SHIFT_GAP_MS = 12 * 3600 * 1000;
+const MAX_SHIFT_MS = 20 * 3600 * 1000;
+const DAY_MS = 24 * 3600 * 1000;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -20,6 +27,7 @@ const timeOf = (iso) => {
   const h = d.getUTCHours(), m = d.getUTCMinutes();
   return `${String(h % 12 || 12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
 };
+const timeWithDay = (iso, startDate) => (iso ? `${timeOf(iso)}${String(iso).slice(0, 10) !== startDate ? ' (+1d)' : ''}` : '—');
 const dateLabel = (ds) => { const [y, m, d] = ds.split('-').map(Number); return `${String(d).padStart(2, '0')} ${MON[m - 1]} ${y}`; };
 const dowOf = (ds) => { const [y, m, d] = ds.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); };
 
@@ -36,7 +44,7 @@ export async function loadOffRole({ from, to, device, search } = {}) {
     all("SELECT data FROM entities WHERE type='AppLocation'"),
     all(
       "SELECT data FROM entities WHERE type='AttendanceLog' AND COALESCE(data::jsonb->>'user_id','')='' AND data::jsonb->>'LogDate' >= $1 AND data::jsonb->>'LogDate' <= $2",
-      [`${from}T00:00:00.000Z`, `${to}T23:59:59.999Z`]
+      [new Date(Date.parse(`${from}T00:00:00.000Z`) - DAY_MS).toISOString(), new Date(Date.parse(`${to}T23:59:59.999Z`) + DAY_MS).toISOString()]
     ),
   ]);
   const mapped = new Set();
@@ -49,7 +57,7 @@ export async function loadOffRole({ from, to, device, search } = {}) {
   }
 
   const q = norm(search);
-  const groups = new Map(); // `${code}|${date}` -> punches[]
+  const byCode = new Map(); // normalised code -> { code, punches[] }
   for (const r of logRows) {
     const log = JSON.parse(r.data);
     const code = String(log.EmployeeCode || '').trim();
@@ -57,27 +65,40 @@ export async function loadOffRole({ from, to, device, search } = {}) {
     if (q && !norm(code).includes(q)) continue;
     const dev = String(log.DeviceName || log.SerialNumber || 'Unknown device').trim();
     if (device && device !== 'all' && norm(dev) !== norm(device)) continue;
-    const key = `${norm(code)}|${String(log.LogDate).slice(0, 10)}`;
-    if (!groups.has(key)) groups.set(key, { code, date: String(log.LogDate).slice(0, 10), punches: [] });
-    groups.get(key).punches.push({ t: String(log.LogDate), ms: Date.parse(String(log.LogDate)), dev, serial: log.SerialNumber || '' });
+    if (!byCode.has(norm(code))) byCode.set(norm(code), { code, punches: [] });
+    byCode.get(norm(code)).punches.push({ t: String(log.LogDate), ms: Date.parse(String(log.LogDate)), dev, serial: log.SerialNumber || '' });
   }
 
   const days = [];
-  for (const g of groups.values()) {
-    g.punches.sort((a, b) => a.ms - b.ms);
-    const first = g.punches[0], last = g.punches[g.punches.length - 1];
-    const single = g.punches.length < 2 || last.ms === first.ms;
-    const mins = single ? 0 : Math.max(0, Math.floor((last.ms - first.ms) / 60000));
-    const otMin = Math.max(0, mins - OT_AFTER_MIN);
-    const devices = [...new Set(g.punches.map(p => p.dev))];
-    days.push({
-      code: g.code, date: g.date, dow: DOW[dowOf(g.date)],
-      first_punch: first.t, last_punch: single ? null : last.t,
-      first_device: first.dev, last_device: single ? null : last.dev,
-      devices, location: deviceLocation.get(norm(first.dev)) || deviceLocation.get(norm(first.serial)) || null,
-      punch_count: g.punches.length, single_punch: single,
-      total_minutes: mins, regular_minutes: Math.min(mins, OT_AFTER_MIN), ot_minutes: otMin,
-    });
+  for (const { code, punches } of byCode.values()) {
+    punches.sort((a, b) => a.ms - b.ms);
+    // Split into shifts: a long gap (or an over-long span) starts a new one.
+    const shifts = [];
+    let cur = [];
+    for (const p of punches) {
+      if (cur.length && (p.ms - cur[cur.length - 1].ms > SHIFT_GAP_MS || p.ms - cur[0].ms > MAX_SHIFT_MS)) { shifts.push(cur); cur = []; }
+      cur.push(p);
+    }
+    if (cur.length) shifts.push(cur);
+
+    for (const sh of shifts) {
+      const first = sh[0], last = sh[sh.length - 1];
+      const date = first.t.slice(0, 10);
+      if (date < from || date > to) continue;       // padding days only exist to complete edge shifts
+      const single = sh.length < 2 || last.ms === first.ms;
+      const mins = single ? 0 : Math.max(0, Math.floor((last.ms - first.ms) / 60000));
+      const otMin = Math.max(0, mins - OT_AFTER_MIN);
+      days.push({
+        code, date, dow: DOW[dowOf(date)],
+        first_punch: first.t, last_punch: single ? null : last.t,
+        first_device: first.dev, last_device: single ? null : last.dev,
+        devices: [...new Set(sh.map(p => p.dev))],
+        location: deviceLocation.get(norm(first.dev)) || deviceLocation.get(norm(first.serial)) || null,
+        punch_count: sh.length, single_punch: single,
+        overnight: !single && last.t.slice(0, 10) !== date,
+        total_minutes: mins, regular_minutes: Math.min(mins, OT_AFTER_MIN), ot_minutes: otMin,
+      });
+    }
   }
   days.sort((a, b) => (b.date.localeCompare(a.date)) || a.code.localeCompare(b.code, undefined, { numeric: true }));
 
@@ -96,7 +117,8 @@ export async function loadOffRole({ from, to, device, search } = {}) {
   for (const r of logRows) {
     const log = JSON.parse(r.data);
     const code = String(log.EmployeeCode || '').trim();
-    if (!code || mapped.has(norm(code))) continue;
+    const day = String(log.LogDate || '').slice(0, 10);
+    if (!code || mapped.has(norm(code)) || day < from || day > to) continue;
     const dev = String(log.DeviceName || log.SerialNumber || 'Unknown device').trim();
     devCount.set(dev, (devCount.get(dev) || 0) + 1);
   }
@@ -109,6 +131,7 @@ export async function loadOffRole({ from, to, device, search } = {}) {
       total_minutes: days.reduce((s, d) => s + d.total_minutes, 0),
       ot_minutes: days.reduce((s, d) => s + d.ot_minutes, 0),
       single_punch_days: days.filter(d => d.single_punch).length,
+      overnight_shifts: days.filter(d => d.overnight).length,
       ot_after_hours: OT_AFTER_HOURS,
     },
   };
@@ -147,7 +170,7 @@ export async function buildOffRoleWorkbook({ year, month, device, search }, Exce
     });
     ws.getRow(rowNo).height = 30;
   };
-  const sub = `Off-role (unmapped) biometric punches · ${monthLabel} · First punch → last punch of the day · Overtime = hours beyond ${OT_AFTER_HOURS} h/day · Generated ${new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 16).replace('T', ' ')} IST`;
+  const sub = `Off-role (unmapped) biometric punches · ${monthLabel} · First punch → last punch of the shift (night shifts counted on the day they start) · Overtime = hours beyond ${OT_AFTER_HOURS} h/day · Generated ${new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 16).replace('T', ' ')} IST`;
 
   // Per-person day lookup
   const byPerson = new Map();
@@ -161,7 +184,7 @@ export async function buildOffRoleWorkbook({ year, month, device, search }, Exce
   const INFO = 3, SUMM = 5;
   const ws = wb.addWorksheet('Off Role Muster', { views: [{ state: 'frozen', xSplit: INFO, ySplit: 5 }], properties: { tabColor: { argb: GOLD } } });
   const total1 = INFO + dim + SUMM;
-  banner(ws, total1, `OFF ROLE ATTENDANCE MUSTER — ${monthLabel.toUpperCase()}`, sub + '   |   P = present (in & out punched) · P* = single punch only · blank = no punch');
+  banner(ws, total1, `OFF ROLE ATTENDANCE MUSTER — ${monthLabel.toUpperCase()}`, sub + '   |   P = present (in & out punched) · P (indigo) = night shift crossing midnight, counted on its start date · P* = single punch only · blank = no punch');
   ws.getColumn(1).width = 6; ws.getColumn(2).width = 16; ws.getColumn(3).width = 34;
   for (let d = 1; d <= dim; d++) ws.getColumn(INFO + d).width = 4.6;
   for (let i = 1; i <= SUMM; i++) ws.getColumn(INFO + dim + i).width = 10;
@@ -182,7 +205,7 @@ export async function buildOffRoleWorkbook({ year, month, device, search }, Exce
     row.getCell(1).value = idx + 1; row.getCell(2).value = p.code; row.getCell(3).value = p.devices.join(', ');
     for (let d = 1; d <= dim; d++) {
       const rec = m.get(d); const c = row.getCell(INFO + d);
-      if (rec) { c.value = rec.single_punch ? 'P*' : 'P'; c.fill = fill(rec.ot_minutes > 0 ? 'FFFDBA74' : (rec.single_punch ? 'FFFEF08A' : 'FFBBF7D0')); }
+      if (rec) { c.value = rec.single_punch ? 'P*' : 'P'; c.fill = fill(rec.ot_minutes > 0 ? 'FFFDBA74' : (rec.single_punch ? 'FFFEF08A' : (rec.overnight ? 'FFC7D2FE' : 'FFBBF7D0'))); }
       c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF111111' } }; c.alignment = { horizontal: 'center', vertical: 'middle' }; c.border = box;
     }
     const a = ws.getCell(rowNo, INFO + 1).address, z = ws.getCell(rowNo, INFO + dim).address;
@@ -221,7 +244,7 @@ export async function buildOffRoleWorkbook({ year, month, device, search }, Exce
     row.getCell(1).value = idx + 1; row.getCell(2).value = p.code; row.getCell(3).value = p.devices.join(', ');
     for (let d = 1; d <= dim; d++) {
       const rec = m.get(d); const c = row.getCell(INFO + d);
-      if (rec) { c.value = rec.single_punch ? 'P*' : r2(rec.total_minutes / 60); c.numFmt = '0.0'; c.fill = fill(rec.ot_minutes > 0 ? 'FFFDBA74' : (rec.single_punch ? 'FFFEF08A' : 'FFBBF7D0')); }
+      if (rec) { c.value = rec.single_punch ? 'P*' : r2(rec.total_minutes / 60); c.numFmt = '0.0'; c.fill = fill(rec.ot_minutes > 0 ? 'FFFDBA74' : (rec.single_punch ? 'FFFEF08A' : (rec.overnight ? 'FFC7D2FE' : 'FFBBF7D0'))); }
       c.font = { name: 'Calibri', size: 9 }; c.alignment = { horizontal: 'center' }; c.border = box;
     }
     [p.days, r2(p.total_minutes / 60), r2(p.regular_minutes / 60), r2(p.ot_minutes / 60), p.single_days].forEach((v, i) => { const c = row.getCell(INFO + dim + 1 + i); c.value = v; c.numFmt = i === 0 || i === 4 ? '0' : '0.00'; c.font = { name: 'Calibri', size: 10, bold: true }; c.alignment = { horizontal: 'center' }; c.border = box; c.fill = fill('FFF9FAFB'); });
@@ -237,8 +260,8 @@ export async function buildOffRoleWorkbook({ year, month, device, search }, Exce
   headRow(w3, 4, cols3.map(c => c[0]));
   const chrono = [...data.days].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }) || a.date.localeCompare(b.date));
   chrono.forEach((d, i) => {
-    const remarks = d.single_punch ? 'Single punch — no out punch received' : (d.ot_minutes > 0 ? `Overtime ${hhmm(d.ot_minutes)} after ${OT_AFTER_HOURS}h` : '');
-    const row = w3.addRow([i + 1, d.code, dateLabel(d.date), d.dow, timeOf(d.first_punch), d.first_device, d.last_punch ? timeOf(d.last_punch) : '—', d.last_device || '—', d.location || '', d.punch_count, d.single_punch ? '—' : hhmm(d.total_minutes), d.single_punch ? 0 : r2(d.total_minutes / 60), r2(d.regular_minutes / 60), r2(d.ot_minutes / 60), remarks]);
+    const remarks = d.single_punch ? 'Single punch — no out punch received' : [d.overnight ? 'Night shift (crosses midnight)' : '', d.ot_minutes > 0 ? `Overtime ${hhmm(d.ot_minutes)} after ${OT_AFTER_HOURS}h` : ''].filter(Boolean).join(' · ');
+    const row = w3.addRow([i + 1, d.code, dateLabel(d.date), d.dow, timeOf(d.first_punch), d.first_device, timeWithDay(d.last_punch, d.date), d.last_device || '—', d.location || '', d.punch_count, d.single_punch ? '—' : hhmm(d.total_minutes), d.single_punch ? 0 : r2(d.total_minutes / 60), r2(d.regular_minutes / 60), r2(d.ot_minutes / 60), remarks]);
     row.height = 18;
     row.eachCell({ includeEmpty: true }, (c, ci) => {
       c.font = { name: 'Calibri', size: 10, color: { argb: d.ot_minutes > 0 && ci >= 12 ? 'FFB45309' : 'FF111111' }, bold: ci === 2 || (ci === 14 && d.ot_minutes > 0) };
@@ -259,10 +282,10 @@ export async function buildOffRoleWorkbook({ year, month, device, search }, Exce
   const w4 = wb.addWorksheet('Machines & Summary');
   w4.columns = [{ width: 34 }, { width: 22 }, { width: 16 }, { width: 16 }];
   banner(w4, 4, `OFF ROLE — SUMMARY — ${monthLabel.toUpperCase()}`, sub);
-  const kv = [['Unmapped biometric codes', data.summary.people], ['Person-days with punches', data.summary.person_days], ['Total hours (first→last punch)', r2(data.summary.total_minutes / 60)], [`Overtime hours (beyond ${OT_AFTER_HOURS} h/day)`, r2(data.summary.ot_minutes / 60)], ['Days with a single punch only', data.summary.single_punch_days]];
+  const kv = [['Unmapped biometric codes', data.summary.people], ['Person-days with punches', data.summary.person_days], ['Total hours (first→last punch)', r2(data.summary.total_minutes / 60)], [`Overtime hours (beyond ${OT_AFTER_HOURS} h/day)`, r2(data.summary.ot_minutes / 60)], ['Days with a single punch only', data.summary.single_punch_days], ['Night shifts crossing midnight', data.summary.overnight_shifts]];
   kv.forEach(([k, v], i) => { const r = w4.getRow(4 + i); r.getCell(1).value = k; r.getCell(2).value = v; r.getCell(1).font = { bold: true }; r.getCell(2).alignment = { horizontal: 'left' }; });
-  headRow(w4, 11, ['Biometric Machine', 'Location', 'Punches Received', '']);
-  data.devices.forEach((d, i) => { const r = w4.getRow(12 + i); r.getCell(1).value = d.name; r.getCell(2).value = d.location || '—'; r.getCell(3).value = d.punches; [1, 2, 3].forEach(ci => { r.getCell(ci).border = box; r.getCell(ci).font = { name: 'Calibri', size: 10 }; }); r.getCell(3).alignment = { horizontal: 'center' }; });
+  headRow(w4, 12, ['Biometric Machine', 'Location', 'Punches Received', '']);
+  data.devices.forEach((d, i) => { const r = w4.getRow(13 + i); r.getCell(1).value = d.name; r.getCell(2).value = d.location || '—'; r.getCell(3).value = d.punches; [1, 2, 3].forEach(ci => { r.getCell(ci).border = box; r.getCell(ci).font = { name: 'Calibri', size: 10 }; }); r.getCell(3).alignment = { horizontal: 'center' }; });
 
   return { buffer: await wb.xlsx.writeBuffer(), counts: { people: people.length, days: data.days.length }, monthLabel };
 }

@@ -104,7 +104,6 @@ const managementMenuGroups = [
   { label: 'My Team', items: [
     { name: 'My Team',                  icon: Users,           page: 'Employees' },
     { name: 'Team Attendance',          icon: BarChart3,       page: 'AllAttendance' },
-    { name: 'Off role attendance',      icon: Fingerprint,     page: 'OffRoleAttendance' },
     { name: 'Visitor Records',          icon: Users,           page: 'VisitorRecords' },
     { name: 'Leave Approvals',          icon: FileText,        page: 'LeaveManagement' },
     { name: 'Leave Dashboard',          icon: PieChart,        page: 'LeaveDashboard' },
