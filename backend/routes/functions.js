@@ -14162,8 +14162,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     case 'generateVisitingCards': {
       if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
       const { ids } = p;
-      const gvcRows = await all("SELECT data FROM entities WHERE type='DigitalBusinessCard' ORDER BY created_at DESC");
-      let gvcCards = gvcRows.map(r => JSON.parse(r.data));
+      const gvcRows = await all("SELECT id, data FROM entities WHERE type='DigitalBusinessCard' ORDER BY created_at DESC");
+      // The id column is authoritative (the JSON blob may not carry it), and
+      // it is what the admin page sends to print one specific card.
+      let gvcCards = gvcRows.map(r => ({ ...JSON.parse(r.data), id: r.id }));
       if (Array.isArray(ids) && ids.length) {
         const want = new Set(ids);
         gvcCards = gvcCards.filter(c => want.has(c.id));
