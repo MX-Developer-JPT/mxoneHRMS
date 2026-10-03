@@ -2,7 +2,7 @@
 // Strategy: cache-first for static assets, network-first for API
 // Plus Web Push notification handling.
 
-const CACHE   = 'maxvolt-hr-v10';
+const CACHE   = 'maxvolt-hr-v11';
 const API_PREFIX = '/api/';
 
 const PRECACHE = [
@@ -99,8 +99,8 @@ self.addEventListener('push', event => {
   const title = data.title || 'Maxvolt One';
   const options = {
     body: data.body || '',
-    icon: '/icons/icon-192.png?v=6',
-    badge: '/icons/icon-192.png?v=6',
+    icon: '/icons/icon-192.png?v=7',
+    badge: '/icons/icon-192.png?v=7',
     data: { link: data.link || '/' },
     tag: data.type || 'maxvolt-hr',
     renotify: true,

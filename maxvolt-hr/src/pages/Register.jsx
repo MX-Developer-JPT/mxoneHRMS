@@ -1,3 +1,4 @@
+import { TAGLINE } from '@/lib/brand';
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
@@ -143,6 +144,7 @@ export default function Register() {
           </div>
           <h1 className="text-2xl font-bold">Create your account</h1>
           <p className="text-muted-foreground mt-1 text-sm">Join Maxvolt One</p>
+          <p className="mt-2 text-xs font-semibold tracking-wide text-muted-foreground/80">{TAGLINE}</p>
         </div>
 
         <div className="bg-card rounded-2xl shadow-sm border border-border p-8">

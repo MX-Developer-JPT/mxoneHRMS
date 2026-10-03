@@ -1,3 +1,4 @@
+import { TAGLINE } from '@/lib/brand';
 import React, { useState, useEffect, useRef, useCallback, lazy } from 'react';
 import { useTheme } from 'next-themes';
 import { Link } from 'react-router-dom';
@@ -925,7 +926,7 @@ export default function Layout({ children, currentPageName }) {
             </button>
           ) : (
             <Link to="/Dashboard">
-              <img src="/favicon.svg?v=6" alt="MaxVolt" className="h-6 w-auto object-contain rounded-lg" />
+              <img src="/favicon.svg?v=7" alt="MaxVolt" className="h-6 w-auto object-contain rounded-lg" />
             </Link>
           )}
         </div>
@@ -949,11 +950,11 @@ export default function Layout({ children, currentPageName }) {
         {/* Brand */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-[#E0E0E5] dark:border-[#38383A]">
           <div className="w-8 h-8 rounded-lg overflow-hidden flex-shrink-0 bg-white shadow-apple-sm">
-            <img src="/favicon.svg?v=6" alt="MaxVolt" className="w-full h-full object-contain" />
+            <img src="/favicon.svg?v=7" alt="MaxVolt" className="w-full h-full object-contain" />
           </div>
           <div className="min-w-0">
             <p className="font-semibold text-[13px] text-[#1D1D1F] dark:text-white truncate leading-none">Maxvolt One</p>
-            <p className="text-[11px] text-[#6E6E73] dark:text-[#8E8E93] mt-0.5">Human Resources</p>
+            <p className="text-[10px] text-[#6E6E73] dark:text-[#8E8E93] mt-1 leading-tight">{TAGLINE}</p>
           </div>
         </div>
 

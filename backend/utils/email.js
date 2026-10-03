@@ -103,12 +103,13 @@ export async function getEmailConfig() {
 
 // ── Shared email chrome ────────────────────────────────────
 const APP_URL  = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
-const LOGO_URL = `${APP_URL}/favicon.svg`;
+// PNG, not the SVG favicon — most mail clients (Gmail, Outlook) don't render SVG images.
+const LOGO_URL = `${APP_URL}/apple-touch-icon.png`;
 
 function emailHeader(title, accentColor = '#344055') {
   return `
 <div style="background:${accentColor};padding:20px 28px;border-radius:12px 12px 0 0;display:flex;align-items:center;gap:16px">
-  <img src="${LOGO_URL}" alt="MaxVolt Energy" style="height:40px;width:auto;object-fit:contain;filter:brightness(0) invert(1);border-radius:4px" />
+  <img src="${LOGO_URL}" alt="MaxVolt Energy" style="height:40px;width:40px;object-fit:contain;border-radius:9px" />
   <div style="flex:1">
     <div style="color:#ffffff;font-size:18px;font-weight:700">${title}</div>
     <div style="color:rgba(255,255,255,0.65);font-size:11px;margin-top:2px">Maxvolt Energy Industries Limited</div>
@@ -119,8 +120,9 @@ function emailHeader(title, accentColor = '#344055') {
 function emailFooter() {
   return `
 <div style="border-top:1px solid #e2e8f0;padding:16px 28px;background:#f8fafc;border-radius:0 0 12px 12px;text-align:center">
-  <img src="${LOGO_URL}" alt="MaxVolt Energy" style="height:32px;width:auto;object-fit:contain;margin-bottom:8px" />
+  <img src="${LOGO_URL}" alt="MaxVolt Energy" style="height:32px;width:32px;object-fit:contain;margin-bottom:8px;border-radius:7px" />
   <div style="font-size:12px;color:#94a3b8;margin-top:4px">This is an automated message. Do not reply to this email.</div>
+  <div style="font-size:11px;color:#94a3b8;margin-top:6px;font-weight:600">Simplifying work. Empowering people</div>
   <div style="font-size:11px;color:#cbd5e1;margin-top:2px">© ${new Date().getFullYear()} Maxvolt Energy Industries Limited</div>
 </div>`;
 }

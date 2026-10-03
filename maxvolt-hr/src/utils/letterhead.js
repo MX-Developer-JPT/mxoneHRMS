@@ -1,85 +1,73 @@
 /**
- * Maxvolt Energy letterhead HTML generator.
- * Matches the official letterhead format exactly.
+ * Maxvolt Energy letterhead — the single official letterhead used by EVERY
+ * generated document in the app (letters, offer letters, payslips, Form 16,
+ * salary structures, asset handover, job descriptions, exit documents…).
+ *
+ * The letterhead is the company's own artwork (public/letterhead.jpg, an A4
+ * page: header with logo + tagline, footer with registered office / contact /
+ * CIN). It is laid down as the page background and the document content is
+ * flowed inside the blank area between header and footer. The server-side PDF
+ * generators (backend/routes/functions.js makeLetterheadChrome) use the same
+ * artwork, so every document looks identical however it is produced.
  */
 
-// The orange letterhead logo — used only on generated letters/documents,
-// not the same asset as the app-wide maxvolt-logo.jpg shown elsewhere.
-const LOGO_URL = (typeof window !== 'undefined' ? window.location.origin : '') + '/maxvolt-logo-letterhead.png?v=1';
+const BG_URL = (typeof window !== 'undefined' ? window.location.origin : '') + '/letterhead.jpg?v=1';
+
+// Blank band of the artwork (A4 = 210 x 297mm): header ends ~44mm from the top,
+// footer rule starts ~265mm. Spacers keep content clear of both on EVERY
+// printed page (thead/tfoot repeat per page when printing).
+const HEAD_SPACE_MM = 48;
+const FOOT_SPACE_MM = 38;
+const SIDE_PAD_MM = 15;
 
 export function letterheadStyles() {
   return `
     @page { margin: 0; size: A4; }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: Arial, sans-serif; font-size: 11px; color: #1a1a1a; background: white; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #1a1a1a; background: #e5e7eb; }
 
-    /* ─── Top orange bar ─── */
-    .lh-top-bar { width: 100%; height: 14px; display: flex; }
-    .lh-top-bar .seg1 { flex: 1.6; background: #e87722; }
-    .lh-top-bar .seg2 { flex: 3.6; background: #f4a83a; }
-    .lh-top-bar .seg3 { flex: 0.8; background: #e87722; }
+    /* Full-page artwork, repeated behind every printed page. */
+    .lh-bg { display: none; }
+    .lh-bg img { width: 100%; height: 100%; display: block; }
 
-    /* ─── Logo area ─── */
-    .lh-logo-row { padding: 18px 28px 12px 28px; }
-    .lh-logo-row img { height: 72px; }
-
-    /* ─── Content wrapper (padded) ─── */
-    .lh-content { padding: 0 28px 16px 28px; flex: 1; }
-
-    /* ─── Bottom footer ─── */
-    .lh-footer-title { text-align: center; font-size: 15px; font-weight: bold; color: #e87722; padding: 10px 28px 6px; }
-    .lh-footer-cols { display: flex; border-top: 1px solid #e87722; padding: 8px 28px; gap: 0; }
-    .lh-footer-col { flex: 1; padding: 0 14px; font-size: 9px; color: #333; line-height: 1.55; }
-    .lh-footer-col + .lh-footer-col { border-left: 1px solid #ccc; }
-    .lh-footer-col strong { display: block; font-size: 9.5px; margin-bottom: 2px; color: #1a1a1a; }
-
-    /* ─── Bottom orange bar ─── */
-    .lh-bot-bar { width: 100%; height: 14px; display: flex; }
-    .lh-bot-bar .seg1 { flex: 1.6; background: #e87722; }
-    .lh-bot-bar .seg2 { flex: 3.6; background: #f4a83a; }
-    .lh-bot-bar .seg3 { flex: 0.8; background: #e87722; }
+    /* On screen the sheet is one continuous page: the header artwork at the
+       top, the footer artwork at the very end (a repeated page background
+       would slice through the middle of a long document). Printing switches
+       to the per-page fixed artwork below. */
+    .lh-sheet {
+      position: relative; width: 210mm; margin: 0 auto; background: #fff;
+      box-shadow: 0 2px 12px rgba(0,0,0,.18);
+    }
+    .lh-sheet::before, .lh-sheet::after {
+      content: ''; position: absolute; left: 0; width: 100%; pointer-events: none;
+      background-image: url('${BG_URL}'); background-size: 210mm 297mm; background-repeat: no-repeat;
+    }
+    .lh-sheet::before { top: 0; height: ${HEAD_SPACE_MM}mm; background-position: left top; }
+    .lh-sheet::after { bottom: 0; height: ${FOOT_SPACE_MM}mm; background-position: left bottom; }
+    .lh-page { width: 100%; border-collapse: collapse; min-height: 297mm; }
+    .lh-page td { padding: 0; vertical-align: top; }
+    .lh-head-space { height: ${HEAD_SPACE_MM}mm; }
+    .lh-foot-space { height: ${FOOT_SPACE_MM}mm; }
+    .lh-page td.lh-content { padding: 0 ${SIDE_PAD_MM}mm; }
 
     @media print {
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      html, body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .lh-bg { display: block; position: fixed; top: 0; left: 0; width: 210mm; height: 297mm; z-index: 0; }
+      .lh-sheet { width: 100%; margin: 0; box-shadow: none; background: none; position: relative; z-index: 1; }
+      .lh-sheet::before, .lh-sheet::after { display: none; }
+      .lh-page { min-height: 0; }
       .no-print { display: none !important; }
     }
   `;
 }
 
 export function letterheadHeader() {
-  return `
-    <div class="lh-top-bar"><div class="seg1"></div><div class="seg2"></div><div class="seg3"></div></div>
-    <div class="lh-logo-row">
-      <img src="${LOGO_URL}" alt="Maxvolt Energy" onerror="this.style.display='none'" />
-    </div>
-  `;
+  return `<div class="lh-bg"><img src="${BG_URL}" alt="" /></div>`;
 }
 
 export function letterheadFooter() {
-  return `
-    <div class="lh-footer-title">Maxvolt Energy Industries Limited</div>
-    <div class="lh-footer-cols">
-      <div class="lh-footer-col">
-        <strong>Head Office</strong>
-        E-82 Bulandshahr Road Industrial Area,<br>
-        Ghaziabad, Uttar Pradesh – 201009<br>
-        CIN No. L40106DL2019PLC349854
-      </div>
-      <div class="lh-footer-col">
-        <strong>Registered Office</strong>
-        F-108, Plot No. 1 F/F United Plaza,<br>
-        Community Centre, Karkardooma,<br>
-        New Delhi – 110092
-      </div>
-      <div class="lh-footer-col">
-        <strong>Contact Details</strong>
-        Phone +91 120 4291595<br>
-        Email: info@maxvoltenergy.com<br>
-        Web: www.maxvoltenergy.com
-      </div>
-    </div>
-    <div class="lh-bot-bar"><div class="seg1"></div><div class="seg2"></div><div class="seg3"></div></div>
-  `;
+  return '';
 }
 
 /**
@@ -93,19 +81,20 @@ export function buildLetterheadHtml(title, contentHtml, extraStyles = '') {
   <title>${title}</title>
   <style>
     ${letterheadStyles()}
-    html, body { height: 100%; }
-    .lh-page { display: flex; flex-direction: column; min-height: 100vh; }
     ${extraStyles}
   </style>
 </head>
 <body>
-<div class="lh-page">
-  ${letterheadHeader()}
-  <div class="lh-content">${contentHtml}</div>
-  ${letterheadFooter()}
+${letterheadHeader()}
+<div class="lh-sheet">
+  <table class="lh-page">
+    <thead><tr><td><div class="lh-head-space"></div></td></tr></thead>
+    <tbody><tr><td class="lh-content">${contentHtml}</td></tr></tbody>
+    <tfoot><tr><td><div class="lh-foot-space"></div></td></tr></tfoot>
+  </table>
 </div>
 <div class="no-print" style="text-align:center;padding:14px;background:#f9fafb;border-top:1px solid #e5e7eb;">
-  <button onclick="window.print()" style="background:#e87722;color:white;padding:9px 28px;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-weight:bold;">🖨️ Print / Save as PDF</button>
+  <button onclick="window.print()" style="background:#111;color:#fcd116;padding:9px 28px;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-weight:bold;">🖨️ Print / Save as PDF</button>
 </div>
 </body>
 </html>`;

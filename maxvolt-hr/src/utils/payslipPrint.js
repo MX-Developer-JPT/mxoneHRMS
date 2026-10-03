@@ -127,10 +127,10 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   }
 
   const contentHtml = `
-    <div style="border:1.5px solid #e87722;border-radius:4px;overflow:hidden;margin-bottom:8px;">
+    <div style="border:1.5px solid #1a1a1a;border-radius:4px;overflow:hidden;margin-bottom:8px;">
 
       <!-- Slip title bar -->
-      <div style="background:#e87722;color:white;padding:8px 16px;display:flex;justify-content:space-between;align-items:center;">
+      <div style="background:#1a1a1a;color:white;padding:8px 16px;display:flex;justify-content:space-between;align-items:center;">
         <div style="font-size:15px;font-weight:bold;letter-spacing:1px;">SALARY SLIP</div>
         <div style="font-size:12px;opacity:0.9;">Pay Period: ${payPeriod}</div>
       </div>
@@ -234,7 +234,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
       </div>
 
       <!-- Net Salary -->
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:linear-gradient(135deg,#e87722 0%,#f4a83a 100%);color:white;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:linear-gradient(135deg,#1a1a1a 0%,#3f3f46 100%);color:white;">
         <div>
           <div style="font-size:13px;font-weight:bold;letter-spacing:0.5px;">Net Take-Home Salary</div>
           <div style="font-size:8.5px;opacity:0.9;margin-top:2px;">${numToWords(Math.round(netSalary))}</div>

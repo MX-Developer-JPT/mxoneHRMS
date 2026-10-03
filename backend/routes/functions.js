@@ -255,54 +255,37 @@ function getLogoDataUrl() {
   return _logoDataUrlCache;
 }
 
-/* ── Shared: the branded header (orange bars + logo) and footer (orange
-   bars + company name + 3-column address block) used on EVERY generated
-   PDF — the offer letter, every HR letter, and the standalone salary-
-   structure PDF all call this so the branding can never drift between
-   them. Also draws a light circular "seal placeholder" ring in the
-   signature area of the LAST page only, via `stampFn` — see its call
-   sites for where that's positioned per document. ── */
-function makeLetterheadChrome(logoDataUrl) {
-  const bar = (pageSize) => {
-    const W = pageSize.width;
-    const seg1 = W * (1.6 / 6), seg2 = W * (3.6 / 6), seg3 = W * (0.8 / 6);
-    return { canvas: [
-      { type: 'rect', x: 0,          y: 0, w: seg1, h: 12, color: '#e87722' },
-      { type: 'rect', x: seg1,       y: 0, w: seg2, h: 12, color: '#f4a83a' },
-      { type: 'rect', x: seg1 + seg2, y: 0, w: seg3, h: 12, color: '#e87722' },
-    ]};
-  };
+/* ── Shared: the official Maxvolt letterhead (backend/assets/letterhead.jpg —
+   the company's own A4 artwork: header with logo + tagline, footer with
+   registered office / contact / CIN) drawn as a full-page BACKGROUND under
+   every generated PDF. The offer letter, every HR letter, the salary-structure
+   PDF, the F&F settlement and the rest all call this, so the letterhead can
+   never drift between them. It must be a pdfmake `background` (drawn first):
+   header/footer content is laid out after the body and would paint OVER the
+   text. headerFn/footerFn are kept (empty) so existing docDefs keep working. ── */
+let _letterheadBgCache;
+function getLetterheadBgDataUrl() {
+  if (_letterheadBgCache !== undefined) return _letterheadBgCache;
+  const { readFileSync, existsSync } = _require('fs');
+  const lhPath = join(__dirname, '../assets/letterhead.jpg');
+  _letterheadBgCache = existsSync(lhPath)
+    ? `data:image/jpeg;base64,${readFileSync(lhPath).toString('base64')}`
+    : null;
+  return _letterheadBgCache;
+}
 
-  const headerFn = (currentPage, pageCount, pageSize) => {
-    // The source PNG is a square 834×834 canvas (logo mark + wordmark
-    // stacked, centred) — at the old width:120 it rendered ~120pt TALL too,
-    // blowing past the 100pt top page margin entirely, which is why the
-    // logo was silently invisible/clipped on every generated letter. 62pt
-    // keeps it a normal letterhead-mark size and comfortably inside the
-    // margin (12 bar + 10 gap + 62 logo = 84 < 100).
-    const logoRow = logoDataUrl
-      ? { image: 'logo', width: 62, margin: [36, 10, 0, 6] }
-      : { text: 'Maxvolt Energy Industries Limited', fontSize: 14, bold: true, color: '#1e3a5f', margin: [36, 10, 0, 6] };
-    return { stack: [bar(pageSize), logoRow] };
-  };
+// Blank band of the artwork on an A4 page (pt): header art ends ~126pt from the
+// top, the footer block starts ~750pt. Margins below keep body text inside it.
+const LETTERHEAD_MARGINS = { top: 140, bottom: 105 };
 
-  const footerFn = (currentPage, pageCount, pageSize) => ({
-    stack: [
-      { text: 'Maxvolt Energy Industries Limited', alignment: 'center', fontSize: 10, bold: true, color: '#e87722', margin: [36, 6, 36, 4] },
-      {
-        columns: [
-          { text: [{ text: 'Head Office\n', bold: true, fontSize: 7.5 }, { text: 'E-82 Bulandshahr Road Industrial Area,\nGhaziabad, Uttar Pradesh – 201009\nCIN No. L40106DL2019PLC349854', fontSize: 7 }], margin: [36, 0, 10, 0], color: '#333' },
-          { text: [{ text: 'Registered Office\n', bold: true, fontSize: 7.5 }, { text: 'F-108, Plot No. 1 F/F United Plaza,\nCommunity Centre, Karkardooma,\nNew Delhi – 110092', fontSize: 7 }], margin: [10, 0, 10, 0], color: '#333' },
-          { text: [{ text: 'Contact Details\n', bold: true, fontSize: 7.5 }, { text: 'Phone +91 120 4291595\nEmail: info@maxvoltenergy.com\nWeb: www.maxvoltenergy.com', fontSize: 7 }], margin: [10, 0, 36, 0], color: '#333' },
-        ],
-        columnGap: 0,
-        margin: [0, 2, 0, 5],
-      },
-      bar(pageSize),
-    ],
-  });
-
-  return { headerFn, footerFn };
+function makeLetterheadChrome(/* logoDataUrl — unused, kept for call-site compatibility */) {
+  const bg = getLetterheadBgDataUrl();
+  const backgroundFn = (currentPage, pageSize) => (bg
+    ? { image: bg, absolutePosition: { x: 0, y: 0 }, width: pageSize.width, height: pageSize.height }
+    : { text: 'Maxvolt Energy Industries Limited', fontSize: 14, bold: true, color: '#1a1a1a', margin: [36, 24, 0, 0] });
+  const headerFn = () => ({ text: '' });
+  const footerFn = () => ({ text: '' });
+  return { headerFn, footerFn, backgroundFn };
 }
 
 /* ── Shared: load + cache the company stamp/seal as a data URL ── */
@@ -434,12 +417,13 @@ async function buildLetterPdf(label, ref, htmlContent, extraImages = {}) {
   if (!/class=["']mx-seal["']/i.test(htmlContent)) {
     content.push(letterSealNode());
   }
-  const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+  const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
 
   const docDef = {
     pageSize: 'A4',
-    pageMargins: [50, 100, 50, 110],
+    pageMargins: [50, LETTERHEAD_MARGINS.top, 50, LETTERHEAD_MARGINS.bottom],
     header: headerFn,
+    background: backgroundFn,
     footer: footerFn,
     images: {
       ...(logoDataUrl ? { logo: logoDataUrl } : {}),
@@ -462,7 +446,7 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
       const printer = getPdfPrinter();
       const logoDataUrl = getLogoDataUrl();
       const stampDataUrl = getStampDataUrl();
-      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+      const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
       const L  = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       const GRAY = '#d9d9d9', BLUE = '#1d4ed8';
 
@@ -493,8 +477,9 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
 
       const docDef = {
         pageSize:    'A4',
-        pageMargins: [40, 100, 40, 110],
+        pageMargins: [40, LETTERHEAD_MARGINS.top, 40, LETTERHEAD_MARGINS.bottom],
         header: headerFn,
+        background: backgroundFn,
         images: {
           ...(logoDataUrl ? { logo: logoDataUrl } : {}),
           ...(stampDataUrl ? { stamp: stampDataUrl } : {}),
@@ -560,18 +545,7 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
           },
         ],
 
-        footer: (page, pages) => ({
-          margin: [40, 8, 40, 0],
-          table: {
-            widths: ['*','*','*'],
-            body: [[
-              { stack:[{ text:'Head Office', bold:true, fontSize:8 },{ text:'E-82 Bulandshahr Road Industrial Area,\nGhaziabad, Uttar Pradesh – 201009\nCIN No. L40106DL2019PLC349854', fontSize:7.5 }], border:[false,true,false,false] },
-              { stack:[{ text:'Registered Office', bold:true, fontSize:8 },{ text:'F-108, Plot No. 1 F/F United Plaza,\nCommunity Centre, Karkardooma,\nNew Delhi – 110092', fontSize:7.5 }], border:[false,true,false,false] },
-              { stack:[{ text:'Contact Details', bold:true, fontSize:8 },{ text:'Phone +91 120 4291595\nEmail: info@maxvoltenergy.com\nWeb: www.maxvoltenergy.com', fontSize:7.5 }], border:[false,true,false,false] },
-            ]],
-          },
-          layout:'noBorders',
-        }),
+        // (address/CIN footer now comes from the letterhead background)
       };
 
       const doc     = getPdfPrinter().createPdfKitDocument(docDef);
@@ -736,7 +710,7 @@ function buildOfferLetterPdf(offer) {
     try {
       const logoDataUrl = getLogoDataUrl();
       const stampDataUrl = getStampDataUrl();
-      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+      const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
       const {
         name, position, department, workLocation, jDateStr, docDateStr, todayStr, validTillStr,
         annualCTC, sal, reportingTo, employeeCode,
@@ -782,8 +756,9 @@ function buildOfferLetterPdf(offer) {
 
       const docDef = {
         pageSize: 'A4',
-        pageMargins: [50, 100, 50, 110],
+        pageMargins: [50, LETTERHEAD_MARGINS.top, 50, LETTERHEAD_MARGINS.bottom],
         header: headerFn,
+        background: backgroundFn,
         footer: footerFn,
         images: {
           ...(logoDataUrl ? { logo: logoDataUrl } : {}),
@@ -919,7 +894,7 @@ function buildConsentFormPdf(data) {
   return new Promise((resolve, reject) => {
     try {
       const logoDataUrl = getLogoDataUrl();
-      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+      const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
       const { fullName, fatherName, mobile, dob, address, email, designation, department, joiningDate, submittedAtStr, signatureDataUrl } = data;
       const images = { ...(logoDataUrl ? { logo: logoDataUrl } : {}) };
       if (signatureDataUrl) images.signature = signatureDataUrl;
@@ -931,8 +906,9 @@ function buildConsentFormPdf(data) {
 
       const docDef = {
         pageSize: 'A4',
-        pageMargins: [50, 100, 50, 110],
+        pageMargins: [50, LETTERHEAD_MARGINS.top, 50, LETTERHEAD_MARGINS.bottom],
         header: headerFn,
+        background: backgroundFn,
         footer: footerFn,
         images,
         defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.45 },
@@ -1688,7 +1664,7 @@ function buildFnFSettlementPdf({ empName, employeeCode, designation, department,
       const printer = getPdfPrinter();
       const logoDataUrl = getLogoDataUrl();
       const stampDataUrl = getStampDataUrl();
-      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+      const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
       const L = (n) => Number(n || 0).toLocaleString('en-IN');
       const cell = (text, opts = {}) => ({ text: String(text ?? ''), fontSize: 9.5, margin: [4, 3, 4, 3], ...opts });
       const hCell = (text) => cell(text, { bold: true, fillColor: '#d9d9d9' });
@@ -1706,8 +1682,9 @@ function buildFnFSettlementPdf({ empName, employeeCode, designation, department,
 
       const docDef = {
         pageSize: 'A4',
-        pageMargins: [40, 100, 40, 110],
+        pageMargins: [40, LETTERHEAD_MARGINS.top, 40, LETTERHEAD_MARGINS.bottom],
         header: headerFn,
+        background: backgroundFn,
         images: { ...(logoDataUrl ? { logo: logoDataUrl } : {}), ...(stampDataUrl ? { stamp: stampDataUrl } : {}) },
         defaultStyle: { font: 'Roboto', fontSize: 9.5 },
         content: [
@@ -1794,14 +1771,15 @@ function buildFnFSettlementAgreementPdf({ empName, employeeCode, designation, de
       const printer = getPdfPrinter();
       const logoDataUrl = getLogoDataUrl();
       const stampDataUrl = getStampDataUrl();
-      const { headerFn, footerFn } = makeLetterheadChrome(logoDataUrl);
+      const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
       const L = (n) => Number(n || 0).toLocaleString('en-IN');
       const cell = (text, opts = {}) => ({ text: String(text ?? ''), fontSize: 10, margin: [4, 3, 4, 3], ...opts });
 
       const docDef = {
         pageSize: 'A4',
-        pageMargins: [50, 100, 50, 110],
+        pageMargins: [50, LETTERHEAD_MARGINS.top, 50, LETTERHEAD_MARGINS.bottom],
         header: headerFn,
+        background: backgroundFn,
         images: { ...(logoDataUrl ? { logo: logoDataUrl } : {}), ...(stampDataUrl ? { stamp: stampDataUrl } : {}) },
         defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.6 },
         content: [
