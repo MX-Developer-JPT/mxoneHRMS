@@ -103,6 +103,7 @@ const managementMenuGroups = [
   { label: 'My Team', items: [
     { name: 'My Team',                  icon: Users,           page: 'Employees' },
     { name: 'Team Attendance',          icon: BarChart3,       page: 'AllAttendance' },
+    { name: 'Visitor Records',          icon: Users,           page: 'VisitorRecords' },
     { name: 'Leave Approvals',          icon: FileText,        page: 'LeaveManagement' },
     { name: 'Leave Dashboard',          icon: PieChart,        page: 'LeaveDashboard' },
     { name: 'Regularisation Approvals', icon: Clock,           page: 'RegularisationApproval' },
@@ -335,6 +336,7 @@ const hrMenuGroups = [
     { name: 'Asset Tracking',          icon: Laptop,          page: 'AssetTracking' },
     { name: 'Holiday Calendar',        icon: Calendar,        page: 'HolidayCalendar' },
     { name: 'Gate Pass Management',    icon: ShieldCheck,     page: 'GatePassManagement' },
+    { name: 'Visitor Records',          icon: Users,           page: 'VisitorRecords' },
     { name: 'My Visitors',             icon: UserPlus,        page: 'MyVisitors' },
     { name: 'Team Calendar',           icon: Calendar,        page: 'TeamCalendar' },
   ]},

@@ -18815,6 +18815,104 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       return res.json({ success: true, visitor: upd });
     }
 
+    // Full visitor register export for HR/admin/management — every field the
+    // gate admin captured, for BOTH pre-registered (invited) visitors and
+    // walk-in registrations, filterable by the same criteria as the
+    // VisitorRecords page. Unlike getVisitorsScoped this is org-wide only
+    // (MGR_ROLES): a location-scoped gate admin uses their own page.
+    case 'exportVisitors': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { from: evFrom, to: evTo, location: evLoc, status: evStatus, source: evSource, category: evCat, search: evSearch } = p;
+      const evRows = await all("SELECT data FROM entities WHERE type='Visitor' ORDER BY created_at DESC");
+      const q = String(evSearch || '').trim().toLowerCase();
+      const visitDate = (v) => String(v.expected_arrival || v.check_in_time || '').slice(0, 10);
+      const evList = evRows.map(r => JSON.parse(r.data)).filter(v => {
+        const d = visitDate(v);
+        if (evFrom && d < evFrom) return false;
+        if (evTo && d > evTo) return false;
+        if (evLoc && evLoc !== 'all' && v.location_name !== evLoc) return false;
+        if (evStatus && evStatus !== 'all' && v.status !== evStatus) return false;
+        if (evSource && evSource !== 'all' && (v.source || 'pre_registered') !== evSource) return false;
+        if (evCat && evCat !== 'all' && v.visitor_category !== evCat) return false;
+        if (q && ![v.visitor_name, v.mobile_number, v.company, v.host_name, v.purpose, v.vehicle_number].some(x => String(x || '').toLowerCase().includes(q))) return false;
+        return true;
+      }).sort((a, b) => String(b.expected_arrival || '').localeCompare(String(a.expected_arrival || '')));
+
+      const evStatusLabel = { pending_approval: 'Pending Approval', approved: 'Approved', rejected: 'Rejected', checked_in: 'Currently Inside', checked_out: 'Checked Out', cancelled: 'Cancelled' };
+      const evCatLabel = { guest: 'Guest', vendor: 'Vendor', client: 'Client', interview: 'Interview Candidate', delivery: 'Delivery / Courier', other: 'Other' };
+      // Stored as IST digits with a 'Z' (display convention) — format without any tz shift.
+      const evFmt = (t) => {
+        if (!t) return '';
+        const d = new Date(String(t).replace(/Z$/, ''));
+        if (isNaN(d.getTime())) return String(t);
+        const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+        const h = d.getHours() % 12 || 12;
+        return `${String(d.getDate()).padStart(2, '0')} ${mon} ${d.getFullYear()} ${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() >= 12 ? 'PM' : 'AM'}`;
+      };
+      const evMins = (a, b) => {
+        if (!a || !b) return '';
+        const m = Math.round((new Date(String(b).replace(/Z$/, '')) - new Date(String(a).replace(/Z$/, ''))) / 60000);
+        return isFinite(m) && m >= 0 ? m : '';
+      };
+
+      const ExcelJSv = await import('exceljs');
+      const wbV = new ExcelJSv.default.Workbook();
+      const wsV = wbV.addWorksheet('Visitors', { views: [{ state: 'frozen', ySplit: 1 }] });
+      const cols = [
+        ['S.No', 6], ['Visitor Type', 14], ['Visitor Name', 24], ['Mobile', 15], ['Email', 26], ['Company', 24], ['Category', 18],
+        ['Purpose', 30], ['Host (Employee Met)', 24], ['Location / Gate', 18], ['Registered By', 22],
+        ['Expected Arrival / Registered', 22], ['Expected Departure', 22], ['Status', 18],
+        ['Approved / Rejected By', 22], ['Approval Time', 22], ['Approval Note', 28],
+        ['Check-In Time', 22], ['Checked-In By (Gate Admin)', 26], ['Check-Out Time', 22], ['Checked-Out By (Gate Admin)', 26], ['Duration (min)', 14],
+        ['Vehicle No.', 16], ['ID Proof Reference', 22], ['Meeting Location', 20], ['Special Instructions', 30], ['Photo', 40],
+      ];
+      wsV.columns = cols.map(([header, width]) => ({ header, width }));
+      const hdr = wsV.getRow(1);
+      hdr.height = 28;
+      hdr.eachCell(c => { c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } }; c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }; });
+      evList.forEach((v, i) => {
+        const decided = v.status === 'rejected' ? (v.rejected_by_name || v.approved_by_name) : v.approved_by_name;
+        const row = wsV.addRow([
+          i + 1, (v.source || 'pre_registered') === 'walk_in' ? 'Walk-in' : 'Invited (Pre-registered)',
+          v.visitor_name || '', v.mobile_number || '', v.visitor_email || '', v.company || '', evCatLabel[v.visitor_category] || v.visitor_category || '',
+          v.purpose || '', v.host_name || '', v.location_name || '', v.created_by_name || '',
+          evFmt(v.expected_arrival), evFmt(v.expected_departure), evStatusLabel[v.status] || v.status || '',
+          decided || '', evFmt(v.approved_at || v.rejected_at), v.rejection_reason || '',
+          evFmt(v.check_in_time), v.check_in_by_name || '', evFmt(v.check_out_time), v.check_out_by_name || '', evMins(v.check_in_time, v.check_out_time),
+          v.vehicle_number || '', v.id_proof_reference || '', v.meeting_location || '', v.special_instructions || '', v.photo_url || '',
+        ]);
+        row.eachCell(c => { c.font = { size: 9 }; c.alignment = { vertical: 'top', wrapText: true }; c.border = { bottom: { style: 'hair', color: { argb: 'FFD1D5DB' } } }; });
+        const photoCell = row.getCell(cols.length);
+        if (/^https?:\/\//i.test(String(v.photo_url || ''))) photoCell.value = { text: 'View photo', hyperlink: v.photo_url };
+      });
+      wsV.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
+
+      // Summary sheet: counts by type, status and location for the filtered set.
+      const wsS = wbV.addWorksheet('Summary');
+      wsS.columns = [{ width: 34 }, { width: 14 }];
+      const tally = (fn) => evList.reduce((m, v) => { const k = fn(v) || '—'; m[k] = (m[k] || 0) + 1; return m; }, {});
+      const section = (title, counts) => {
+        const t = wsS.addRow([title]); t.font = { bold: true, size: 11 }; t.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } };
+        Object.entries(counts).sort((a, b) => b[1] - a[1]).forEach(([k, n]) => wsS.addRow([k, n]));
+        wsS.addRow([]);
+      };
+      const fl = [evFrom && `From ${evFrom}`, evTo && `To ${evTo}`, evLoc && evLoc !== 'all' && `Location: ${evLoc}`, evStatus && evStatus !== 'all' && `Status: ${evStatusLabel[evStatus] || evStatus}`, evSource && evSource !== 'all' && `Type: ${evSource === 'walk_in' ? 'Walk-in' : 'Invited'}`, q && `Search: ${evSearch}`].filter(Boolean);
+      const top = wsS.addRow(['Visitor Register — Summary']); top.font = { bold: true, size: 13 };
+      wsS.addRow([`Generated: ${evFmt(new Date(Date.now() + 5.5 * 3600000).toISOString())} IST`]);
+      wsS.addRow([`Filters: ${fl.length ? fl.join(' | ') : 'None (all visitors)'}`]);
+      wsS.addRow([]);
+      wsS.addRow(['Total visitors', evList.length]).font = { bold: true };
+      wsS.addRow([]);
+      section('By visitor type', tally(v => ((v.source || 'pre_registered') === 'walk_in' ? 'Walk-in' : 'Invited (Pre-registered)')));
+      section('By status', tally(v => evStatusLabel[v.status] || v.status));
+      section('By location', tally(v => v.location_name));
+      section('By category', tally(v => evCatLabel[v.visitor_category] || v.visitor_category));
+
+      const buf = await wbV.xlsx.writeBuffer();
+      const stamp = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      return res.json({ success: true, base64: Buffer.from(buf).toString('base64'), filename: `Visitor_Register_${stamp}.xlsx`, total: evList.length });
+    }
+
     // Employee self-service read — replaces the frontend calling the
     // generic Visitor list directly (now access-restricted for a
     // non-privileged caller, see SENSITIVE_TYPES in entities.js). Returns

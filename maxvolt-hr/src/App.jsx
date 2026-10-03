@@ -34,6 +34,7 @@ const OnboardingForm = lazy(() => import('./pages/OnboardingForm'));
 const HelpdeskCategoryManagement = lazy(() => import('./pages/HelpdeskCategoryManagement'));
 const ShiftManagement = lazy(() => import('./pages/ShiftManagement'));
 const VisitorManagement = lazy(() => import('./pages/VisitorManagement'));
+const VisitorRecords = lazy(() => import('./pages/VisitorRecords'));
 const MyVisitors = lazy(() => import('./pages/MyVisitors'));
 const NightShiftManagement = lazy(() => import('./pages/NightShiftManagement'));
 const DepartmentManagement = lazy(() => import('./pages/DepartmentManagement'));
@@ -315,6 +316,11 @@ const AuthenticatedApp = () => {
       <Route path="/VisitorManagement" element={
         <LayoutWrapper currentPageName="VisitorManagement">
           <VisitorManagement />
+        </LayoutWrapper>
+      } />
+      <Route path="/VisitorRecords" element={
+        <LayoutWrapper currentPageName="VisitorRecords">
+          <VisitorRecords />
         </LayoutWrapper>
       } />
       <Route path="/MyVisitors" element={
