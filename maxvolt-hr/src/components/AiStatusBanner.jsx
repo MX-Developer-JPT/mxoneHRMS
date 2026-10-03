@@ -5,15 +5,25 @@ export default function AiStatusBanner() {
   const [status, setStatus]       = useState(null);
   const [dismissed, setDismissed] = useState(false);
 
+  // Only for signed-in users, and never on the public pages (digital business
+  // cards, job board, offer/application links, payslip view…) — a logged-out
+  // visitor has no use for the app's internal AI status, and the call is
+  // unauthenticated there so it always "failed" and showed a scary banner.
+  const isPublicPage = /^\/(PublicBusinessCard|PublicJobBoard|ApplyForJob|careers?|offer-accept|candidate-documents|application-status|payslip-view|login|register|forgot-password|reset-password)/i.test(window.location.pathname);
+  let signedIn = false;
+  try { signedIn = !!localStorage.getItem('base44_access_token'); } catch { /* storage unavailable */ }
+  const enabled = signedIn && !isPublicPage;
+
   useEffect(() => {
+    if (!enabled) return;
     fetch('/api/ai/status')
       .then(r => r.json())
       .then(setStatus)
       .catch(() => setStatus({ ok: false, running: false, provider: 'ollama' }));
-  }, []);
+  }, [enabled]);
 
   // Don't show until checked, or if dismissed, or if AI is fully working
-  if (!status || dismissed || status.ok) return null;
+  if (!enabled || !status || dismissed || status.ok) return null;
 
   const isGroq        = status.provider === 'groq';
   const ollamaDown    = !status.running;

@@ -14132,9 +14132,27 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     /* ── Business Cards ──────────────────────────────── */
+    // PUBLIC (no login): anyone who scans a card's QR code / opens its link
+    // lands on PublicBusinessCard, which looks the card up by its unique slug.
+    // Only the fields meant to be shared are returned — never internal ids
+    // or audit fields. (The old version ignored `slug` entirely, looked up by
+    // the caller's user id — empty for a logged-out visitor — and returned
+    // the bare record, so every shared card showed "Card Not Found".)
     case 'getBusinessCard': {
-      const row = await one("SELECT data FROM entities WHERE type='DigitalBusinessCard' AND user_id=$1", [p.user_id||cu?.id]);
-      return res.json(row ? JSON.parse(row.data) : null);
+      const slug = String(p.slug || '').trim();
+      let row = null;
+      if (slug) {
+        row = await one("SELECT data FROM entities WHERE type='DigitalBusinessCard' AND data::jsonb->>'unique_slug'=$1 LIMIT 1", [slug]);
+      } else if (cu) {
+        row = await one("SELECT data FROM entities WHERE type='DigitalBusinessCard' AND user_id=$1 LIMIT 1", [p.user_id || cu.id]);
+      }
+      if (!row) return res.json({ card: null });
+      const d = JSON.parse(row.data);
+      const card = {};
+      for (const k of ['name', 'job_title', 'company', 'phone_number', 'whatsapp_number', 'email', 'website', 'linkedin_url', 'address', 'profile_picture_url', 'unique_slug']) {
+        if (d[k] != null && d[k] !== '') card[k] = d[k];
+      }
+      return res.json({ card });
     }
 
     case 'generatePrintableCards':

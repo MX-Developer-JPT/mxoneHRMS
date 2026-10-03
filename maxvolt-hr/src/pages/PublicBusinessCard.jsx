@@ -1,210 +1,199 @@
 import React, { useState, useEffect } from 'react';
+import QRCode from 'qrcode';
 import { base44 } from '@/api/base44Client';
-import { Phone, Mail, Globe, MapPin, Linkedin, MessageCircle, Download, Building2, Briefcase } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Phone, Mail, Globe, MapPin, Linkedin, MessageCircle, UserPlus, Share2, QrCode, Check, Navigation } from 'lucide-react';
+import { TAGLINE } from '@/lib/brand';
+import { downloadVCard, cardUrl, initials, webHref, digits } from '@/lib/businessCard';
+
+const Shell = ({ children }) => (
+  <div className="min-h-screen bg-neutral-950 relative overflow-hidden flex items-start sm:items-center justify-center px-4 py-8">
+    {/* brand glow */}
+    <div className="pointer-events-none absolute -top-40 -right-32 w-[28rem] h-[28rem] rounded-full bg-amber-400/20 blur-3xl" />
+    <div className="pointer-events-none absolute -bottom-48 -left-32 w-[26rem] h-[26rem] rounded-full bg-amber-500/10 blur-3xl" />
+    <div className="relative w-full max-w-sm">{children}</div>
+  </div>
+);
+
+function Action({ href, onClick, icon: Icon, label, tone, external }) {
+  const cls = 'flex flex-col items-center gap-1.5 group';
+  const inner = (
+    <>
+      <span className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all group-hover:-translate-y-0.5 group-active:scale-95 ${tone}`}>
+        <Icon className="w-5 h-5" />
+      </span>
+      <span className="text-[11px] font-medium text-neutral-500">{label}</span>
+    </>
+  );
+  return href
+    ? <a href={href} {...(external ? { target: '_blank', rel: 'noreferrer' } : {})} className={cls}>{inner}</a>
+    : <button type="button" onClick={onClick} className={cls}>{inner}</button>;
+}
+
+function Row({ href, icon: Icon, label, value, external, tone }) {
+  const body = (
+    <>
+      <span className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${tone}`}><Icon className="w-4 h-4" /></span>
+      <span className="min-w-0">
+        <span className="block text-[11px] uppercase tracking-wide text-neutral-400">{label}</span>
+        <span className="block text-sm font-medium text-neutral-900 break-words">{value}</span>
+      </span>
+    </>
+  );
+  const cls = 'flex items-center gap-3 py-2 rounded-xl hover:bg-neutral-50 -mx-2 px-2 transition-colors';
+  return href
+    ? <a href={href} {...(external ? { target: '_blank', rel: 'noreferrer' } : {})} className={cls}>{body}</a>
+    : <div className={cls}>{body}</div>;
+}
 
 export default function PublicBusinessCard() {
   const [card, setCard] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
-  const urlParams = new URLSearchParams(window.location.search);
-  const slug = urlParams.get('slug');
+  const [state, setState] = useState('loading'); // loading | ready | notfound | error
+  const [showQr, setShowQr] = useState(false);
+  const [qrSrc, setQrSrc] = useState('');
+  const [copied, setCopied] = useState(false);
+  const slug = new URLSearchParams(window.location.search).get('slug');
 
   useEffect(() => {
-    if (slug) loadCard(slug);
-    else setNotFound(true);
+    if (!slug) { setState('notfound'); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await base44.functions.invoke('getBusinessCard', { slug });
+        const c = res?.data?.card;
+        if (cancelled) return;
+        if (c) { setCard(c); setState('ready'); document.title = `${c.name} — ${c.company || 'Maxvolt Energy'}`; }
+        else setState('notfound');
+      } catch (e) {
+        console.error('Error loading card:', e);
+        if (!cancelled) setState('error');
+      }
+    })();
+    return () => { cancelled = true; };
   }, [slug]);
 
-  const loadCard = async (slug) => {
-    try {
-      const response = await base44.functions.invoke('getBusinessCard', { slug });
-      if (response.data?.card) {
-        setCard(response.data.card);
-      } else {
-        setNotFound(true);
-      }
-    } catch (e) {
-      console.error('Error loading card:', e);
-      setNotFound(true);
+  useEffect(() => {
+    if (!showQr || !card || qrSrc) return;
+    QRCode.toDataURL(cardUrl(card), { width: 480, margin: 1, color: { dark: '#111111', light: '#ffffff' } }).then(setQrSrc).catch(() => {});
+  }, [showQr, card, qrSrc]);
+
+  const handleShare = async () => {
+    const url = cardUrl(card);
+    if (navigator.share) {
+      try { await navigator.share({ title: `${card.name} — ${card.company || ''}`.trim(), text: `${card.name}'s digital business card`, url }); return; }
+      catch (e) { if (e?.name === 'AbortError') return; }
     }
-    setLoading(false);
+    try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* clipboard blocked */ }
   };
 
-  const handleSaveContact = () => {
-    if (!card) return;
-    const lines = [
-      'BEGIN:VCARD',
-      'VERSION:3.0',
-      `FN:${card.name}`,
-      card.job_title ? `TITLE:${card.job_title}` : '',
-      card.company ? `ORG:${card.company}` : '',
-      card.phone_number ? `TEL;TYPE=CELL:${card.phone_number}` : '',
-      card.email ? `EMAIL:${card.email}` : '',
-      card.website ? `URL:${card.website}` : '',
-      card.address ? `ADR:;;${card.address}` : '',
-      'END:VCARD',
-    ].filter(Boolean).join('\n');
-
-    const blob = new Blob([lines], { type: 'text/vcard' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${card.name.replace(/\s+/g, '_')}.vcf`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const whatsappNumber = (card?.whatsapp_number || card?.phone_number || '').replace(/[^0-9]/g, '');
-
-  if (loading) {
+  if (state === 'loading') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-blue-900">
-        <div className="w-8 h-8 border-4 border-white/20 border-t-white rounded-full animate-spin" />
-      </div>
-    );
-  }
-
-  if (notFound || !card) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-blue-900 text-white text-center px-4">
-        <div>
-          <p className="text-5xl mb-4">🃏</p>
-          <h1 className="text-xl font-semibold mb-2">Card Not Found</h1>
-          <p className="text-white/60 text-sm">This business card doesn't exist or has been removed.</p>
+      <Shell>
+        <div className="bg-white rounded-3xl overflow-hidden shadow-2xl animate-pulse">
+          <div className="h-32 bg-neutral-900" />
+          <div className="px-6 pb-8 -mt-12 flex flex-col items-center gap-3">
+            <div className="w-24 h-24 rounded-full bg-neutral-200 border-4 border-white" />
+            <div className="h-5 w-40 bg-neutral-200 rounded" />
+            <div className="h-4 w-28 bg-neutral-100 rounded" />
+            <div className="h-12 w-full bg-neutral-100 rounded-xl mt-4" />
+          </div>
         </div>
-      </div>
+      </Shell>
     );
   }
+
+  if (state !== 'ready') {
+    return (
+      <Shell>
+        <div className="bg-white rounded-3xl shadow-2xl p-8 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-neutral-900 text-amber-400 flex items-center justify-center mx-auto mb-4"><QrCode className="w-7 h-7" /></div>
+          <h1 className="text-lg font-bold text-neutral-900">{state === 'error' ? "Couldn't load this card" : 'Card not found'}</h1>
+          <p className="text-sm text-neutral-500 mt-1.5">
+            {state === 'error' ? 'Please check your connection and try again.' : "This business card doesn't exist or has been removed."}
+          </p>
+          {state === 'error' && <button onClick={() => window.location.reload()} className="mt-5 px-5 py-2.5 rounded-xl bg-neutral-900 text-amber-400 text-sm font-semibold">Retry</button>}
+          <p className="text-[11px] text-neutral-400 mt-6">{TAGLINE}</p>
+        </div>
+      </Shell>
+    );
+  }
+
+  const wa = digits(card.whatsapp_number || card.phone_number);
+  const mapHref = card.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(card.address)}` : null;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center p-4">
-      <div className="w-full max-w-sm">
-        {/* Card */}
-         <div className="bg-white rounded-3xl overflow-hidden shadow-2xl">
-          {/* Avatar */}
-          <div className="flex justify-center pt-6 mb-4">
-            <div className="w-24 h-24 rounded-full border-4 border-white shadow-lg bg-blue-100 flex items-center justify-center overflow-hidden">
-              {card.profile_picture_url
-                ? <img src={card.profile_picture_url} alt={card.name} className="w-full h-full object-cover" />
-                : <span className="text-3xl font-bold text-blue-600">{card.name?.charAt(0)?.toUpperCase()}</span>
-              }
-            </div>
-          </div>
+    <Shell>
+      <div className="bg-white rounded-3xl overflow-hidden shadow-2xl">
+        {/* Hero */}
+        <div className="relative h-36 bg-neutral-900 overflow-hidden">
+          <div className="absolute inset-x-0 bottom-0 h-2 bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500" />
+          <div className="absolute -top-10 right-[-30px] w-48 h-48 rotate-12 bg-amber-400/90 [clip-path:polygon(30%_0,100%_0,100%_100%,0_100%)] opacity-90" />
+          <div className="absolute top-4 left-5 text-[10px] font-bold tracking-[0.2em] uppercase text-amber-300">Maxvolt Energy</div>
+          <div className="absolute top-8 left-5 text-white/70 text-[11px] leading-tight max-w-[10rem]">Cleaner energy.<br />Brighter tomorrow.</div>
+        </div>
 
-          {/* Name & Title */}
-          <div className="text-center px-6 pb-4">
-            <h1 className="text-2xl font-bold text-gray-900">{card.name}</h1>
-            {card.job_title && (
-              <div className="flex items-center justify-center gap-1.5 mt-1">
-                <Briefcase className="w-3.5 h-3.5 text-blue-500" />
-                <p className="text-blue-600 font-medium text-sm">{card.job_title}</p>
-              </div>
-            )}
-            {card.company && (
-              <div className="flex items-center justify-center gap-1.5 mt-1">
-                <Building2 className="w-3.5 h-3.5 text-gray-400" />
-                <p className="text-gray-500 text-sm">{card.company}</p>
-              </div>
-            )}
-          </div>
-
-          {/* Divider */}
-          <div className="mx-6 border-t border-gray-100" />
-
-          {/* Quick Action Buttons */}
-          <div className="px-6 pt-4 grid grid-cols-4 gap-2">
-            {card.phone_number && (
-              <a href={`tel:${card.phone_number}`} className="flex flex-col items-center gap-1">
-                <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center hover:bg-green-200 transition-colors">
-                  <Phone className="w-5 h-5 text-green-600" />
-                </div>
-                <span className="text-xs text-gray-500">Call</span>
-              </a>
-            )}
-            {card.email && (
-              <a href={`mailto:${card.email}`} className="flex flex-col items-center gap-1">
-                <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center hover:bg-blue-200 transition-colors">
-                  <Mail className="w-5 h-5 text-blue-600" />
-                </div>
-                <span className="text-xs text-gray-500">Email</span>
-              </a>
-            )}
-            {whatsappNumber && (
-              <a href={`https://wa.me/${whatsappNumber}`} target="_blank" rel="noreferrer" className="flex flex-col items-center gap-1">
-                <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center hover:bg-green-200 transition-colors">
-                  <MessageCircle className="w-5 h-5 text-green-600" />
-                </div>
-                <span className="text-xs text-gray-500">WhatsApp</span>
-              </a>
-            )}
-            {card.linkedin_url && (
-              <a href={card.linkedin_url} target="_blank" rel="noreferrer" className="flex flex-col items-center gap-1">
-                <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center hover:bg-blue-200 transition-colors">
-                  <Linkedin className="w-5 h-5 text-blue-700" />
-                </div>
-                <span className="text-xs text-gray-500">LinkedIn</span>
-              </a>
-            )}
-          </div>
-
-          {/* Contact Details */}
-          <div className="px-6 py-4 space-y-3">
-            {card.phone_number && (
-              <a href={`tel:${card.phone_number}`} className="flex items-center gap-3 group">
-                <div className="w-9 h-9 rounded-full bg-green-50 flex items-center justify-center group-hover:bg-green-100 transition-colors flex-shrink-0">
-                  <Phone className="w-4 h-4 text-green-600" />
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Phone</p>
-                  <p className="text-sm font-medium text-gray-800">{card.phone_number}</p>
-                </div>
-              </a>
-            )}
-            {card.email && (
-              <a href={`mailto:${card.email}`} className="flex items-center gap-3 group">
-                <div className="w-9 h-9 rounded-full bg-blue-50 flex items-center justify-center group-hover:bg-blue-100 transition-colors flex-shrink-0">
-                  <Mail className="w-4 h-4 text-blue-600" />
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Email</p>
-                  <p className="text-sm font-medium text-gray-800 break-all">{card.email}</p>
-                </div>
-              </a>
-            )}
-            {card.website && (
-              <a href={card.website.startsWith('http') ? card.website : `https://${card.website}`} target="_blank" rel="noreferrer" className="flex items-center gap-3 group">
-                <div className="w-9 h-9 rounded-full bg-purple-50 flex items-center justify-center group-hover:bg-purple-100 transition-colors flex-shrink-0">
-                  <Globe className="w-4 h-4 text-purple-600" />
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Website</p>
-                  <p className="text-sm font-medium text-gray-800 truncate">{card.website}</p>
-                </div>
-              </a>
-            )}
-            {card.address && (
-              <div className="flex items-start gap-3">
-                <div className="w-9 h-9 rounded-full bg-orange-50 flex items-center justify-center flex-shrink-0">
-                  <MapPin className="w-4 h-4 text-orange-500" />
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400">Address</p>
-                  <p className="text-sm font-medium text-gray-800">{card.address}</p>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Save Contact CTA */}
-          <div className="px-6 pb-6">
-            <Button onClick={handleSaveContact} className="w-full bg-blue-600 hover:bg-blue-700 text-white gap-2 h-12 text-base rounded-xl">
-              <Download className="w-5 h-5" /> Save Contact
-            </Button>
+        {/* Avatar */}
+        <div className="flex justify-center -mt-14 relative">
+          <div className="w-28 h-28 rounded-full border-4 border-white shadow-xl bg-gradient-to-br from-neutral-800 to-neutral-950 flex items-center justify-center overflow-hidden">
+            {card.profile_picture_url
+              ? <img src={card.profile_picture_url} alt={card.name} className="w-full h-full object-cover" />
+              : <span className="text-3xl font-bold text-amber-400">{initials(card.name)}</span>}
           </div>
         </div>
 
+        {/* Identity */}
+        <div className="text-center px-6 pt-3 pb-4">
+          <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">{card.name}</h1>
+          {card.job_title && <p className="text-sm font-semibold text-amber-600 mt-0.5">{card.job_title}</p>}
+          {card.company && <p className="text-sm text-neutral-500 mt-0.5">{card.company}</p>}
+        </div>
 
+        {/* Quick actions */}
+        <div className="px-5 pb-4 grid gap-2 grid-cols-4">
+          {card.phone_number && <Action href={`tel:${card.phone_number}`} icon={Phone} label="Call" tone="bg-neutral-900 text-amber-400" />}
+          {wa && <Action href={`https://wa.me/${wa}`} external icon={MessageCircle} label="WhatsApp" tone="bg-green-100 text-green-600" />}
+          {card.email && <Action href={`mailto:${card.email}`} icon={Mail} label="Email" tone="bg-amber-100 text-amber-700" />}
+          {card.linkedin_url && <Action href={webHref(card.linkedin_url)} external icon={Linkedin} label="LinkedIn" tone="bg-sky-100 text-sky-700" />}
+          {card.website && <Action href={webHref(card.website)} external icon={Globe} label="Website" tone="bg-violet-100 text-violet-600" />}
+          {mapHref && <Action href={mapHref} external icon={Navigation} label="Directions" tone="bg-rose-100 text-rose-600" />}
+        </div>
+
+        <div className="mx-6 border-t border-neutral-100" />
+
+        {/* Details */}
+        <div className="px-6 py-3">
+          {card.phone_number && <Row href={`tel:${card.phone_number}`} icon={Phone} label="Phone" value={card.phone_number} tone="bg-neutral-900 text-amber-400" />}
+          {card.email && <Row href={`mailto:${card.email}`} icon={Mail} label="Email" value={card.email} tone="bg-amber-100 text-amber-700" />}
+          {card.website && <Row href={webHref(card.website)} external icon={Globe} label="Website" value={card.website.replace(/^https?:\/\//i, '')} tone="bg-violet-100 text-violet-600" />}
+          {card.address && <Row href={mapHref} external icon={MapPin} label="Address" value={card.address} tone="bg-rose-100 text-rose-600" />}
+        </div>
+
+        {/* CTA */}
+        <div className="px-6 pb-5 space-y-2.5">
+          <button onClick={() => downloadVCard(card)} className="w-full h-12 rounded-2xl bg-neutral-900 text-amber-400 font-semibold text-base flex items-center justify-center gap-2 hover:bg-neutral-800 active:scale-[0.99] transition-all shadow-lg shadow-neutral-900/20">
+            <UserPlus className="w-5 h-5" /> Save to Contacts
+          </button>
+          <div className="grid grid-cols-2 gap-2.5">
+            <button onClick={handleShare} className="h-11 rounded-2xl border border-neutral-200 text-neutral-700 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-neutral-50 transition-colors">
+              {copied ? <><Check className="w-4 h-4 text-green-600" /> Link copied</> : <><Share2 className="w-4 h-4" /> Share card</>}
+            </button>
+            <button onClick={() => setShowQr(v => !v)} className="h-11 rounded-2xl border border-neutral-200 text-neutral-700 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-neutral-50 transition-colors">
+              <QrCode className="w-4 h-4" /> {showQr ? 'Hide QR' : 'Show QR'}
+            </button>
+          </div>
+          {showQr && (
+            <div className="rounded-2xl bg-neutral-50 border border-neutral-100 p-4 flex flex-col items-center">
+              {qrSrc ? <img src={qrSrc} alt="QR code for this card" className="w-44 h-44 rounded-lg" /> : <div className="w-44 h-44 rounded-lg bg-neutral-100 animate-pulse" />}
+              <p className="text-[11px] text-neutral-400 mt-2">Scan to open this card</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="bg-neutral-50 border-t border-neutral-100 px-6 py-3 text-center">
+          <p className="text-[11px] font-semibold text-neutral-500 tracking-wide">{TAGLINE}</p>
+          <p className="text-[10px] text-neutral-400 mt-0.5">Digital card · Maxvolt One</p>
+        </div>
       </div>
-    </div>
+    </Shell>
   );
 }
