@@ -13,6 +13,7 @@ import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { extractPayslipFields, monthMismatch } from '../utils/payslipExtract.js';
+import { buildVisitingCardsPdf } from '../utils/visitingCard.js';
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -14155,8 +14156,30 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ card });
     }
 
+    // Print-ready visiting cards as ONE PDF (front + back per person) built on
+    // the company's visiting-card template — see utils/visitingCard.js.
+    // Admin-only, same as the Business Cards page that calls it.
+    case 'generateVisitingCards': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { ids } = p;
+      const gvcRows = await all("SELECT data FROM entities WHERE type='DigitalBusinessCard' ORDER BY created_at DESC");
+      let gvcCards = gvcRows.map(r => JSON.parse(r.data));
+      if (Array.isArray(ids) && ids.length) {
+        const want = new Set(ids);
+        gvcCards = gvcCards.filter(c => want.has(c.id));
+      }
+      if (!gvcCards.length) return res.json({ success: false, error: 'No business cards to print' });
+      const gvcBase = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com');
+      const gvcBytes = await buildVisitingCardsPdf(gvcCards, gvcBase);
+      const gvcStamp = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      const gvcName = gvcCards.length === 1
+        ? `Visiting_Card_${String(gvcCards[0].name || 'card').replace(/[^\w]+/g, '_')}.pdf`
+        : `Visiting_Cards_${gvcStamp}.pdf`;
+      return res.json({ success: true, base64: Buffer.from(gvcBytes).toString('base64'), filename: gvcName, total: gvcCards.length });
+    }
+
     case 'generatePrintableCards':
-      return res.json({ success:true, pdf_url:null, message:'PDF generation requires additional setup' });
+      return res.json({ success:true, pdf_url:null, message:'Use generateVisitingCards' });
 
     /* ── Lifecycle events ────────────────────────────── */
     case 'onNewEmployeeJoined': {

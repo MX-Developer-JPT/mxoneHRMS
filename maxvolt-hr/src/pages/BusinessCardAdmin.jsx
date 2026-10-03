@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import QRCode from 'qrcode';
 import { toast } from 'sonner';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
@@ -11,8 +10,7 @@ import QRCodeModal from '@/components/businesscard/QRCodeModal';
 import BulkImportModal from '@/components/businesscard/BulkImportModal';
 import { cardUrl as getCardUrl, initials } from '@/lib/businessCard';
 import { TAGLINE } from '@/lib/brand';
-
-const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+import { openPdfBlob } from '@/utils/letterhead';
 
 export default function BusinessCardAdmin() {
   const [user, setUser] = useState(null);
@@ -66,53 +64,18 @@ export default function BusinessCardAdmin() {
     !q || [c.name, c.company, c.job_title, c.email, c.phone_number].some(v => String(v || '').toLowerCase().includes(q))
   );
 
-  const handlePrintCards = async () => {
-    // Opened synchronously (inside the click) so the browser doesn't treat the
-    // later write as a blocked popup; filled once the QR codes are ready.
-    const win = window.open('', '_blank');
-    if (!win) { toast.error('Allow pop-ups to print the cards'); return; }
-    setPrinting(true);
+  // Builds the print-ready PDF (company template + each person's details and
+  // QR) on the server and opens it — `ids` limits it to specific cards.
+  const handlePrintCards = async (ids = null) => {
+    setPrinting(ids ? ids[0] : true);
     try {
-      const items = await Promise.all(filtered.map(async c => ({
-        c, qr: await QRCode.toDataURL(getCardUrl(c), { width: 260, margin: 1, color: { dark: '#111111', light: '#ffffff' } }),
-      })));
-      const cardsHtml = items.map(({ c, qr }) => `
-        <div class="card">
-          <div class="stripe"></div>
-          <div class="left">
-            <div class="brand">MAXVOLT ENERGY</div>
-            <div class="name">${escHtml(c.name)}</div>
-            <div class="title">${escHtml(c.job_title)}</div>
-            <div class="rows">
-              ${c.phone_number ? `<div>☎ ${escHtml(c.phone_number)}</div>` : ''}
-              ${c.email ? `<div>✉ ${escHtml(c.email)}</div>` : ''}
-              ${c.website ? `<div>⌁ ${escHtml(String(c.website).replace(/^https?:\/\//i, ''))}</div>` : ''}
-            </div>
-          </div>
-          <div class="right"><img src="${qr}" /><span>Scan to save</span></div>
-        </div>`).join('');
-      win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Business Cards</title>
-        <style>
-          @page { size: A4; margin: 10mm; }
-          * { box-sizing: border-box; }
-          body { font-family: Arial, sans-serif; margin: 0; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .grid { display: grid; grid-template-columns: repeat(2, 90mm); gap: 6mm 8mm; justify-content: center; }
-          .card { position: relative; width: 90mm; height: 55mm; border-radius: 3mm; background: #111; color: #fff; overflow: hidden; display: flex; page-break-inside: avoid; }
-          .stripe { position: absolute; left: 0; right: 0; bottom: 0; height: 3mm; background: linear-gradient(90deg,#fcd116,#f5b800); }
-          .left { flex: 1; padding: 6mm 4mm 7mm 6mm; display: flex; flex-direction: column; }
-          .brand { font-size: 6.5pt; letter-spacing: .2em; color: #fcd116; font-weight: 700; }
-          .name { font-size: 13pt; font-weight: 700; margin-top: 4mm; line-height: 1.15; }
-          .title { font-size: 8pt; color: #fcd116; margin-top: 1mm; }
-          .rows { margin-top: auto; font-size: 7pt; line-height: 1.55; color: #e5e5e5; word-break: break-all; }
-          .right { width: 26mm; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.5mm; padding-right: 4mm; }
-          .right img { width: 22mm; height: 22mm; background: #fff; padding: 1mm; border-radius: 1.5mm; }
-          .right span { font-size: 5.5pt; color: #bbb; }
-        </style></head><body><div class="grid">${cardsHtml}</div></body></html>`);
-      win.document.close();
-      setTimeout(() => { try { win.print(); } catch { /* user closed it */ } }, 800);
+      const res = await base44.functions.invoke('generateVisitingCards', { ids: ids || filtered.map(c => c.id) });
+      const d = res?.data || res;
+      if (!d?.success || !d.base64) throw new Error(d?.error || 'Could not generate the PDF');
+      openPdfBlob(d.base64, d.filename);
+      toast.success(`Visiting card PDF ready — ${d.total} card${d.total === 1 ? '' : 's'} (front + back)`);
     } catch (e) {
-      win.close();
-      toast.error('Could not generate the print sheet');
+      toast.error(e.message || 'Could not generate the visiting cards');
     }
     setPrinting(false);
   };
@@ -139,9 +102,9 @@ export default function BusinessCardAdmin() {
           <p className="text-gray-500 text-sm mt-1">{cards.length} card{cards.length !== 1 ? 's' : ''} · each has its own shareable link and QR code</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Button variant="outline" size="sm" onClick={handlePrintCards} disabled={filtered.length === 0 || printing}>
-            {printing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Printer className="w-4 h-4 mr-2" />}
-            {printing ? 'Preparing…' : 'Print Cards'}
+          <Button variant="outline" size="sm" onClick={() => handlePrintCards()} disabled={filtered.length === 0 || !!printing}>
+            {printing === true ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Printer className="w-4 h-4 mr-2" />}
+            {printing === true ? 'Preparing PDF…' : `Print Cards (PDF)`}
           </Button>
           <Button variant="outline" size="sm" onClick={() => setShowBulkImport(true)}>
             <Upload className="w-4 h-4 mr-2" /> Bulk Import
@@ -196,6 +159,9 @@ export default function BusinessCardAdmin() {
                 <Button size="sm" variant="outline" className="h-8 text-xs px-2.5" onClick={() => copyLink(card)}><Link2 className="w-3 h-3 mr-1" /> Copy link</Button>
                 <Button size="sm" variant="outline" className="h-8 text-xs px-2.5" asChild>
                   <a href={getCardUrl(card)} target="_blank" rel="noreferrer"><ExternalLink className="w-3 h-3 mr-1" /> View</a>
+                </Button>
+                <Button size="sm" variant="outline" className="h-8 text-xs px-2.5" onClick={() => handlePrintCards([card.id])} disabled={!!printing}>
+                  {printing === card.id ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Printer className="w-3 h-3 mr-1" />} Print
                 </Button>
                 <Button size="sm" variant="outline" className="h-8 text-xs px-2.5" onClick={() => handleEdit(card)}><Edit2 className="w-3 h-3 mr-1" /> Edit</Button>
                 <Button size="sm" variant="outline" className="h-8 text-xs px-2 text-red-500 hover:text-red-600 hover:bg-red-50" onClick={() => setDeleteConfirm(card)} aria-label="Delete card"><Trash2 className="w-3 h-3" /></Button>

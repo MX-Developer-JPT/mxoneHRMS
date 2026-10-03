@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import QRCode from 'qrcode';
 import { base44 } from '@/api/base44Client';
-import { Phone, Mail, Globe, MapPin, Linkedin, MessageCircle, UserPlus, Share2, QrCode, Check, Navigation } from 'lucide-react';
+import { Phone, Mail, Globe, MapPin, Linkedin, MessageCircle, UserPlus, QrCode, Navigation } from 'lucide-react';
 import { TAGLINE } from '@/lib/brand';
-import { downloadVCard, cardUrl, initials, webHref, digits } from '@/lib/businessCard';
+import { downloadVCard, initials, webHref, digits } from '@/lib/businessCard';
 
 const Shell = ({ children }) => (
   <div className="min-h-screen bg-neutral-950 relative overflow-hidden flex items-start sm:items-center justify-center px-4 py-8">
@@ -48,9 +47,6 @@ function Row({ href, icon: Icon, label, value, external, tone }) {
 export default function PublicBusinessCard() {
   const [card, setCard] = useState(null);
   const [state, setState] = useState('loading'); // loading | ready | notfound | error
-  const [showQr, setShowQr] = useState(false);
-  const [qrSrc, setQrSrc] = useState('');
-  const [copied, setCopied] = useState(false);
   const slug = new URLSearchParams(window.location.search).get('slug');
 
   useEffect(() => {
@@ -70,20 +66,6 @@ export default function PublicBusinessCard() {
     })();
     return () => { cancelled = true; };
   }, [slug]);
-
-  useEffect(() => {
-    if (!showQr || !card || qrSrc) return;
-    QRCode.toDataURL(cardUrl(card), { width: 480, margin: 1, color: { dark: '#111111', light: '#ffffff' } }).then(setQrSrc).catch(() => {});
-  }, [showQr, card, qrSrc]);
-
-  const handleShare = async () => {
-    const url = cardUrl(card);
-    if (navigator.share) {
-      try { await navigator.share({ title: `${card.name} — ${card.company || ''}`.trim(), text: `${card.name}'s digital business card`, url }); return; }
-      catch (e) { if (e?.name === 'AbortError') return; }
-    }
-    try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* clipboard blocked */ }
-  };
 
   if (state === 'loading') {
     return (
@@ -172,20 +154,6 @@ export default function PublicBusinessCard() {
           <button onClick={() => downloadVCard(card)} className="w-full h-12 rounded-2xl bg-neutral-900 text-amber-400 font-semibold text-base flex items-center justify-center gap-2 hover:bg-neutral-800 active:scale-[0.99] transition-all shadow-lg shadow-neutral-900/20">
             <UserPlus className="w-5 h-5" /> Save to Contacts
           </button>
-          <div className="grid grid-cols-2 gap-2.5">
-            <button onClick={handleShare} className="h-11 rounded-2xl border border-neutral-200 text-neutral-700 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-neutral-50 transition-colors">
-              {copied ? <><Check className="w-4 h-4 text-green-600" /> Link copied</> : <><Share2 className="w-4 h-4" /> Share card</>}
-            </button>
-            <button onClick={() => setShowQr(v => !v)} className="h-11 rounded-2xl border border-neutral-200 text-neutral-700 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-neutral-50 transition-colors">
-              <QrCode className="w-4 h-4" /> {showQr ? 'Hide QR' : 'Show QR'}
-            </button>
-          </div>
-          {showQr && (
-            <div className="rounded-2xl bg-neutral-50 border border-neutral-100 p-4 flex flex-col items-center">
-              {qrSrc ? <img src={qrSrc} alt="QR code for this card" className="w-44 h-44 rounded-lg" /> : <div className="w-44 h-44 rounded-lg bg-neutral-100 animate-pulse" />}
-              <p className="text-[11px] text-neutral-400 mt-2">Scan to open this card</p>
-            </div>
-          )}
         </div>
 
         {/* Footer */}
