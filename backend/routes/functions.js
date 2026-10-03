@@ -14180,6 +14180,169 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true, base64: Buffer.from(gvcBytes).toString('base64'), filename: gvcName, total: gvcCards.length });
     }
 
+    // Excel template for the Business Cards bulk import. Pre-filled with every
+    // existing card (incl. its Card ID so a re-upload UPDATES that card rather
+    // than creating a duplicate), a guide sheet, and blank rows ready for new
+    // people. Parsed back by components/businesscard/BulkImportModal.jsx.
+    case 'exportBusinessCardTemplate': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const ebtRows = await all("SELECT id, data FROM entities WHERE type='DigitalBusinessCard' ORDER BY created_at ASC");
+      const ebtCards = ebtRows.map(r => ({ ...JSON.parse(r.data), id: r.id }));
+      const ebtBase = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '');
+
+      const ExcelJSt = await import('exceljs');
+      const wbT = new ExcelJSt.default.Workbook();
+      wbT.creator = 'Maxvolt One';
+      const BLACK = 'FF111111', GOLD = 'FFFCD116', GREY = 'FFF3F4F6', LINE = 'FFD1D5DB';
+      const fill = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+      const thin = { style: 'thin', color: { argb: LINE } };
+
+      // ── Sheet 1: data ──
+      const ws = wbT.addWorksheet('Business Cards', { views: [{ state: 'frozen', xSplit: 2, ySplit: 4 }], properties: { tabColor: { argb: GOLD } } });
+      const cols = [
+        // key, header, width, group, required
+        ['id',       'Card ID',                 14, 'SYSTEM',   false],
+        ['name',     'Full Name',               26, 'IDENTITY', true],
+        ['job',      'Job Title / Designation', 28, 'IDENTITY', true],
+        ['company',  'Company',                 30, 'IDENTITY', true],
+        ['phone',    'Phone Number',            18, 'CONTACT',  true],
+        ['email',    'Email',                   32, 'CONTACT',  true],
+        ['whatsapp', 'WhatsApp Number',         18, 'CONTACT',  false],
+        ['website',  'Website',                 28, 'ONLINE',   false],
+        ['linkedin', 'LinkedIn URL',            34, 'ONLINE',   false],
+        ['address',  'Address',                 44, 'ONLINE',   false],
+        ['photo',    'Profile Picture URL',     34, 'ONLINE',   false],
+        ['link',     'Digital Card Link',       40, 'SYSTEM',   false],
+      ];
+      ws.columns = cols.map(([, , width]) => ({ width }));
+      const last = cols.length;
+
+      // Row 1 – title banner
+      ws.mergeCells(1, 1, 1, last);
+      const t = ws.getCell(1, 1);
+      t.value = 'MAXVOLT ONE  ·  DIGITAL BUSINESS CARDS  —  BULK IMPORT';
+      t.font = { name: 'Calibri', size: 16, bold: true, color: { argb: GOLD } };
+      t.fill = fill(BLACK);
+      t.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+      ws.getRow(1).height = 32;
+      // Row 2 – instructions strip
+      ws.mergeCells(2, 1, 2, last);
+      const h = ws.getCell(2, 1);
+      h.value = 'Existing cards are listed below — edit them in place and they will be UPDATED. Add new people in the empty rows at the bottom. Fields marked * are required. Leave "Card ID" and "Digital Card Link" untouched (see the Guide sheet).';
+      h.font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FF374151' } };
+      h.fill = fill('FFFEF9C3');
+      h.alignment = { vertical: 'middle', wrapText: true, indent: 1 };
+      ws.getRow(2).height = 34;
+      // Row 3 – group bands
+      const groups = [];
+      cols.forEach(([, , , g], i) => { const last = groups[groups.length - 1]; if (last && last.g === g) last.to = i + 1; else groups.push({ g, from: i + 1, to: i + 1 }); });
+      const groupColor = { SYSTEM: 'FF6B7280', IDENTITY: 'FF0B1E2F', CONTACT: 'FFB45309', ONLINE: 'FF1D4ED8' };
+      for (const g of groups) {
+        if (g.to > g.from) ws.mergeCells(3, g.from, 3, g.to);
+        const c = ws.getCell(3, g.from);
+        c.value = g.g;
+        c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+        c.fill = fill(groupColor[g.g]);
+        c.alignment = { horizontal: 'center', vertical: 'middle' };
+      }
+      ws.getRow(3).height = 16;
+      // Row 4 – column headers
+      cols.forEach(([, header, , , req], i) => {
+        const c = ws.getCell(4, i + 1);
+        c.value = req ? `${header} *` : header;
+        c.font = { name: 'Calibri', size: 11, bold: true, color: { argb: req ? GOLD : 'FFFFFFFF' } };
+        c.fill = fill(BLACK);
+        c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        c.border = { top: thin, left: thin, bottom: thin, right: thin };
+      });
+      ws.getRow(4).height = 30;
+
+      // Data rows: every existing card, then blank rows up to 200 total
+      const DATA_START = 5;
+      const TOTAL_ROWS = Math.max(200, ebtCards.length + 50);
+      for (let i = 0; i < TOTAL_ROWS; i++) {
+        const r = DATA_START + i;
+        const c = ebtCards[i];
+        const vals = c ? [c.id, c.name, c.job_title, c.company, c.phone_number, c.email, c.whatsapp_number, c.website, c.linkedin_url, c.address, c.profile_picture_url, c.unique_slug ? `${ebtBase}/PublicBusinessCard?slug=${c.unique_slug}` : ''] : new Array(last).fill('');
+        const row = ws.getRow(r);
+        vals.forEach((v, ci) => { row.getCell(ci + 1).value = v ?? ''; });
+        row.height = 20;
+        row.eachCell({ includeEmpty: true }, (cell, ci) => {
+          const sys = cols[ci - 1][3] === 'SYSTEM';
+          cell.font = { name: 'Calibri', size: 10, color: { argb: sys ? 'FF6B7280' : 'FF111111' } };
+          cell.fill = fill(sys ? GREY : (i % 2 ? 'FFFAFAFA' : 'FFFFFFFF'));
+          cell.border = { top: thin, left: thin, bottom: thin, right: thin };
+          cell.alignment = { vertical: 'middle', wrapText: ci === 10 };
+          if (ci === 5 || ci === 7) cell.numFmt = '@'; // phone numbers stay text (keeps +91 and leading digits)
+        });
+      }
+      // Validation: email must contain @ ; website/linkedin must look like a URL
+      ws.dataValidations.add(`F${DATA_START}:F${DATA_START + TOTAL_ROWS - 1}`, { type: 'custom', allowBlank: true, formulae: [`ISNUMBER(FIND("@",F${DATA_START}))`], showErrorMessage: true, errorTitle: 'Invalid email', error: 'Enter a valid email address, e.g. name@maxvoltenergy.com' });
+      ws.dataValidations.add(`I${DATA_START}:I${DATA_START + TOTAL_ROWS - 1}`, { type: 'custom', allowBlank: true, formulae: [`ISNUMBER(FIND("linkedin.com",I${DATA_START}))`], showErrorMessage: true, errorStyle: 'warning', errorTitle: 'LinkedIn URL', error: 'This does not look like a LinkedIn profile link.' });
+      ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: last } };
+
+      // ── Sheet 2: guide ──
+      const wg = wbT.addWorksheet('Guide', { properties: { tabColor: { argb: 'FF0B1E2F' } } });
+      wg.columns = [{ width: 28 }, { width: 12 }, { width: 62 }, { width: 38 }];
+      wg.mergeCells('A1:D1');
+      const gt = wg.getCell('A1');
+      gt.value = 'HOW TO USE THIS TEMPLATE';
+      gt.font = { name: 'Calibri', size: 16, bold: true, color: { argb: GOLD } };
+      gt.fill = fill(BLACK);
+      gt.alignment = { vertical: 'middle', indent: 1 };
+      wg.getRow(1).height = 30;
+      const steps = [
+        '1.  Existing cards are already filled in on the "Business Cards" sheet. Edit any cell to update that card.',
+        '2.  To add people, type into the empty rows at the bottom (do not leave gaps inside a person\'s details).',
+        '3.  Do NOT change "Card ID" or "Digital Card Link" — the Card ID is how an existing card is recognised so it is updated, not duplicated.',
+        '4.  Save as .xlsx (or .csv), then go to Business Cards → Bulk Import and upload the file. A preview shows what will be created / updated before anything is saved.',
+        '5.  A row with a new person gets a unique card link and QR automatically. Rows with the same email as an existing card update that card.',
+      ];
+      steps.forEach((txt, i) => {
+        wg.mergeCells(3 + i, 1, 3 + i, 4);
+        const c = wg.getCell(3 + i, 1);
+        c.value = txt; c.font = { name: 'Calibri', size: 11 }; c.alignment = { wrapText: true, vertical: 'middle', indent: 1 };
+        wg.getRow(3 + i).height = 30;
+      });
+      const gh = wg.getRow(9);
+      ['Column', 'Required', 'What to enter', 'Example'].forEach((v, i) => {
+        const c = gh.getCell(i + 1); c.value = v;
+        c.font = { name: 'Calibri', bold: true, color: { argb: GOLD } }; c.fill = fill(BLACK);
+        c.alignment = { horizontal: 'center', vertical: 'middle' };
+      });
+      gh.height = 22;
+      const guide = [
+        ['Card ID', 'System', 'Filled automatically for existing cards. Leave blank for new people.', '(auto)'],
+        ['Full Name', 'Yes', 'Name exactly as it should appear on the card.', 'Jai Pratap Tyagi'],
+        ['Job Title / Designation', 'Yes', 'Designation printed under the name.', 'Senior Business Analyst'],
+        ['Company', 'Yes', 'Company name shown on the digital card.', 'Maxvolt Energy Industries Limited'],
+        ['Phone Number', 'Yes', 'With country code. Used for Call and printed on the visiting card.', '+91 98118 58033'],
+        ['Email', 'Yes', 'Work email. Also used to match an existing card.', 'name@maxvoltenergy.com'],
+        ['WhatsApp Number', 'No', 'If different from the phone number; blank = use phone.', '+91 98118 58033'],
+        ['Website', 'No', 'Company or personal website.', 'www.maxvoltenergy.com'],
+        ['LinkedIn URL', 'No', 'Full link to the LinkedIn profile.', 'https://linkedin.com/in/your-name'],
+        ['Address', 'No', 'Office address shown with a Directions button.', 'E-82, Bulandshahr Road, Ghaziabad – 201009'],
+        ['Profile Picture URL', 'No', 'Link to a photo (upload via the card form to get a link). Blank = initials avatar.', 'https://…/photo.jpg'],
+        ['Digital Card Link', 'System', 'The public link / QR target of the card. Read-only.', '(auto)'],
+      ];
+      guide.forEach((g, i) => {
+        const row = wg.getRow(10 + i);
+        g.forEach((v, ci) => {
+          const c = row.getCell(ci + 1); c.value = v;
+          c.font = { name: 'Calibri', size: 10, bold: ci === 0, color: { argb: ci === 1 && v === 'Yes' ? 'FFB45309' : 'FF111111' } };
+          c.alignment = { vertical: 'middle', wrapText: true, horizontal: ci === 1 ? 'center' : 'left', indent: ci === 1 ? 0 : 1 };
+          c.fill = fill(i % 2 ? 'FFFAFAFA' : 'FFFFFFFF');
+          c.border = { top: thin, left: thin, bottom: thin, right: thin };
+        });
+        row.height = 24;
+      });
+      wg.getCell(10 + guide.length + 1, 1).value = 'Simplifying work. Empowering people';
+      wg.getCell(10 + guide.length + 1, 1).font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FF6B7280' } };
+
+      const bufT = await wbT.xlsx.writeBuffer();
+      return res.json({ success: true, base64: Buffer.from(bufT).toString('base64'), filename: 'Business_Cards_Import_Template.xlsx', existing: ebtCards.length });
+    }
+
     case 'generatePrintableCards':
       return res.json({ success:true, pdf_url:null, message:'Use generateVisitingCards' });
 
