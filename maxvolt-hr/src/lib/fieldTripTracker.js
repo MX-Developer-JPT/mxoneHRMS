@@ -113,7 +113,14 @@ export async function startTracking(tripId, initialKm = 0) {
       const { registerPlugin } = await import('@capacitor/core');
       const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
       usingNative = true;
-      nativeWatcherId = await BackgroundGeolocation.addWatcher(
+      const addW = async (opts, cb) => {
+        for (let i = 0; i < 12; i++) {
+          try { return await BackgroundGeolocation.addWatcher(opts, cb); }
+          catch (e) { if (!/service not running/i.test(e?.message || '')) throw e; await new Promise(r => setTimeout(r, 600)); }
+        }
+        return BackgroundGeolocation.addWatcher(opts, cb);
+      };
+      nativeWatcherId = await addW(
         {
           backgroundTitle: 'Maxvolt One — Field Duty tracking active',
           backgroundMessage: 'Recording your travel distance for this field trip.',

@@ -229,6 +229,23 @@ function scheduleStartRetry() {
   startRetryTimer = setTimeout(() => { startRetryTimer = null; startBackgroundGeofence().catch(() => {}); }, 30000);
 }
 
+// The native plugin binds its location service asynchronously when it loads, so
+// an addWatcher() call made right at app launch can be rejected with "Service
+// not running." even though nothing is wrong. Retry for a few seconds before
+// treating it as a real failure.
+async function addWatcherWithRetry(BG, options, callback) {
+  let lastErr;
+  for (let i = 0; i < 12; i++) {
+    try { return await BG.addWatcher(options, callback); }
+    catch (e) {
+      lastErr = e;
+      if (!/service not running/i.test(e?.message || '')) throw e;
+      await new Promise(r => setTimeout(r, 600));
+    }
+  }
+  throw lastErr;
+}
+
 async function startNativeWatcher(Capacitor, interactive) {
   const p = loadP();
   const BG = await nativePlugin();
@@ -237,7 +254,8 @@ async function startNativeWatcher(Capacitor, interactive) {
   const requestPermissions = !!interactive;
   let permissionDenied = false;
   try {
-    const id = await BG.addWatcher(
+    const id = await addWatcherWithRetry(
+      BG,
       {
         backgroundTitle: 'Maxvolt One — Attendance tracking active',
         backgroundMessage: fences.length === 1
@@ -276,8 +294,12 @@ async function startNativeWatcher(Capacitor, interactive) {
     return { started: true };
   } catch (e) {
     watcher = null;
-    onPermissionLost('permission_required');
-    return { started: false, reason: 'start_failed', error: e.message };
+    // A plugin/service failure is NOT a permission problem — don't tell the
+    // employee to re-enable location; just retry shortly.
+    console.warn('[geofence] native watcher failed to start:', e?.message);
+    emit({ status: 'unavailable', liveState: 'unavailable' });
+    scheduleStartRetry();
+    return { started: false, reason: 'start_failed', error: e?.message };
   }
 }
 
