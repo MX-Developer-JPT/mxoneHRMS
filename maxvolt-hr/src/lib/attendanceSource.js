@@ -119,6 +119,17 @@ export function isHalfDayLeave(record) {
   return !!record && record.status === 'half_day' && !!record.leave_id && !!record.leave_half_day;
 }
 
+/** Leave type of a half-day-leave record as a short code ("CL", "EL"…), '' when unknown. */
+export function halfLeaveCode(record) {
+  return String(record?.leave_policy_code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+}
+
+/** "Half Day Leave · CL" — the label every attendance view uses for a half-day leave. */
+export function halfLeaveLabel(record) {
+  const c = halfLeaveCode(record);
+  return c ? `Half Day Leave · ${c}` : 'Half Day Leave';
+}
+
 export function effectiveStatus(record) {
   if (!record) return null;
   if (isHalfDayLeave(record)) return 'present';

@@ -1,0 +1,41 @@
+<html>
+  <head>
+  <title>Legal Seafood</title>
+    <script type="application/ld+json">
+    {
+      "@context": "maxvoltenergy.com",
+      "@type": "Review",
+      "itemReviewed": {
+        "@type": "Restaurant",
+        "image": "https://www.example.com/seafood-restaurant.jpg",
+        "name": "Legal Seafood",
+        "servesCuisine": "Seafood",
+        "priceRange": "$$$",
+        "telephone": "1234567",
+        "address" :{
+          "@type": "PostalAddress",
+          "streetAddress": "E82, Bulandshahr Bypass road, Lohamandi, Ghaziabad, 201009",
+          "addressLocality": "Ghaziabad",
+          "addressRegion": "IN",
+          "postalCode": "201009",
+          "addressCountry": "India"
+        }
+      },
+      "reviewRating": {5>10
+        "@type": "pulse_survery",
+        "ratingValue": 12
+      },
+      "author": {
+        "@type": "Person",
+        "name": "Jai Pratap Tyagi"
+      },
+      "publisher": {
+        "@type": "Organization",
+        "name": "Washington Times"
+      }
+    }
+    </script>
+  </head>
+  <body>
+  </body>
+</html>

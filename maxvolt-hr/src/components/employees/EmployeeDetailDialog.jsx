@@ -7,7 +7,7 @@ import { base44 } from '@/api/base44Client';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import { User, Mail, Phone, Briefcase, Calendar, MapPin, Shield, Users, CreditCard, Building2, Heart, ShieldCheck, ChevronLeft, ChevronRight } from 'lucide-react';
-import { effectiveStatus } from '@/lib/attendanceSource';
+import { effectiveStatus, isHalfDayLeave } from '@/lib/attendanceSource';
 
 const Field = ({ label, value, colSpan }) => (
   <div className={`min-w-0 ${colSpan ? 'col-span-2' : ''}`}>
@@ -103,7 +103,7 @@ function AttendanceCalendar({ userId, dateOfJoining }) {
   // this employee's own joining date, must never be counted as Absent just
   // because there's no Attendance row for it (there never will be).
   const todayStr = fmtDate(now.getFullYear(), now.getMonth() + 1, now.getDate());
-  let present = 0, absent = 0, halfDay = 0, lop = 0, leave = 0, other = 0;
+  let present = 0, absent = 0, halfDay = 0, halfDayLeave = 0, lop = 0, leave = 0, other = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     const ds = fmtDate(calYear, calMonth, d);
     const dow = new Date(calYear, calMonth - 1, d).getDay();
@@ -113,6 +113,7 @@ function AttendanceCalendar({ userId, dateOfJoining }) {
     const r = records[ds];
     if (!r) { absent++; continue; }
     const s = effectiveStatus(r);
+    if (isHalfDayLeave(r)) halfDayLeave++;
     // short_attendance (PRESENT_LIKE_STATUSES, lib/attendanceSource.js) was
     // missing here — it matched none of the branches below and silently
     // landed in `other`, which this component never displays, so a short-
@@ -143,6 +144,7 @@ function AttendanceCalendar({ userId, dateOfJoining }) {
       <div className="flex flex-wrap gap-2 text-xs">
         <span className="px-2 py-0.5 rounded bg-green-100 text-green-800 font-medium">Present: {present}</span>
         <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-medium">Half Day: {halfDay}</span>
+        {halfDayLeave > 0 && <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-medium">Half Day Leave: {halfDayLeave} (counted in Present)</span>}
         <span className="px-2 py-0.5 rounded bg-red-100 text-red-800 font-medium">Absent: {absent}</span>
         {lop > 0 && <span className="px-2 py-0.5 rounded bg-red-200 text-red-900 font-medium">LOP: {lop}</span>}
         {leave > 0 && <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-medium">Leave: {leave}</span>}

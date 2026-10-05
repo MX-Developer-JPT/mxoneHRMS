@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, Coffee, Briefca
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isAfter, addMonths, subMonths } from 'date-fns';
-import { effectiveStatus } from '@/lib/attendanceSource';
+import { effectiveStatus, isHalfDayLeave, halfLeaveLabel } from '@/lib/attendanceSource';
 
 const statusConfig = {
   present: { color: 'bg-green-100 text-green-800 border-green-200', icon: CheckCircle },
@@ -22,6 +22,7 @@ const statusConfig = {
   leave: { color: 'bg-blue-100 text-blue-800 border-blue-200', icon: Coffee },
   holiday: { color: 'bg-purple-100 text-purple-800 border-purple-200', icon: Coffee },
   week_off: { color: 'bg-gray-100 text-gray-800 border-gray-200', icon: Coffee },
+  half_day_leave: { color: 'bg-indigo-100 text-indigo-800 border-indigo-300', icon: CheckCircle },
   present_leave: { color: 'bg-teal-100 text-teal-800 border-teal-300', icon: CheckCircle },
   // A record whose session never got a closing punch (still is_in_progress)
   // used to fall through statusConfig[status] as undefined — config stayed
@@ -111,7 +112,7 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
               status = 'holiday';
             }
 
-            const displayStatus = isApprovedLeaveDay ? 'present_leave' : status;
+            const displayStatus = isApprovedLeaveDay ? 'present_leave' : (isHalfDayLeave(attendance) ? 'half_day_leave' : status);
             const config = displayStatus ? statusConfig[displayStatus] : null;
             const Icon = config?.icon;
             // Only a gate pass that actually reached "departed" (i.e. the
@@ -131,7 +132,7 @@ export default function AttendanceCalendar({ attendanceData, holidays = [], curr
                   ${isTodayDay ? 'ring-2 ring-blue-500' : ''}
                 `}
                 title={attendance ? [
-                  displayStatus?.replace(/_/g, ' '),
+                  displayStatus === 'half_day_leave' ? halfLeaveLabel(attendance) : displayStatus?.replace(/_/g, ' '),
                   attendance.regularised && 'Regularised',
                   attendance.working_hours > 0 && `${attendance.working_hours.toFixed(1)}h`,
                   attendance.early_departure && `Early departure${attendance.early_departure_minutes > 0 ? ` — ${attendance.early_departure_minutes}m` : ''}`,

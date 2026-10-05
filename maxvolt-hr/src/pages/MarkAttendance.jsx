@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { MapPin, Camera, Clock, CheckCircle, LogOut, LogIn, Radar, Fingerprint, Home, Route, Loader2 } from 'lucide-react';
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getCheckInMethod, getCheckOutMethod, getGeofenceDetail } from '@/lib/attendanceSource';
+import { getCheckInMethod, getCheckOutMethod, getGeofenceDetail, isHalfDayLeave, halfLeaveLabel } from '@/lib/attendanceSource';
 import { startBackgroundGeofence, useGeofenceState, openLocationSettings } from '@/lib/geofenceBackground';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -796,8 +796,10 @@ export default function MarkAttendance() {
                           <p className="font-semibold text-sm md:text-base">
                             {todayAttendance.working_hours?.toFixed(2)} hours
                           </p>
-                          {todayAttendance.status === 'half_day' && (
-                            <Badge className="bg-yellow-100 text-yellow-800 text-xs">Half Day</Badge>
+                          {isHalfDayLeave(todayAttendance) ? (
+                            <Badge className="bg-indigo-100 text-indigo-800 text-xs">{halfLeaveLabel(todayAttendance)}</Badge>
+                          ) : todayAttendance.status === 'half_day' && (
+                            <Badge className="bg-yellow-100 text-yellow-800 text-xs">Half Day (short hours)</Badge>
                           )}
                         </div>
                       </div>

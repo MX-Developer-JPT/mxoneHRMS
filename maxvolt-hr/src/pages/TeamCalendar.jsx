@@ -17,7 +17,8 @@ const STATUS_CONFIG = {
   work_from_home: { label: 'WFH', color: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300', dot: 'bg-cyan-500' },
   absent: { label: 'Absent', color: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300', dot: 'bg-red-500' },
   leave: { label: 'On Leave', color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300', dot: 'bg-yellow-500' },
-  half_day: { label: 'Half Day', color: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300', dot: 'bg-orange-500' },
+  half_day_leave: { label: 'Half Day Leave', color: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300', dot: 'bg-indigo-500' },
+  half_day: { label: 'Half Day (short hours)', color: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300', dot: 'bg-orange-500' },
   short_attendance: { label: 'Short Attendance', color: 'bg-orange-100 text-orange-900 dark:bg-orange-900/40 dark:text-orange-200', dot: 'bg-orange-600' },
   holiday: { label: 'Holiday', color: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300', dot: 'bg-purple-500' },
   week_off: { label: 'Week Off', color: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400', dot: 'bg-gray-400' },
@@ -102,7 +103,7 @@ export default function TeamCalendar() {
     if (getDay(parseISO(dateStr)) === 0) return 'week_off';
 
     // Leave
-    if (leaveMap[dateStr]) return leaveMap[dateStr] === 'half_day' ? 'half_day' : 'leave';
+    if (leaveMap[dateStr]) return leaveMap[dateStr] === 'half_day' ? 'half_day_leave' : 'leave';
 
     // Attendance record — on_duty and work_from_home stay their own status
     // (STATUS_CONFIG has dedicated entries for both) rather than collapsing
@@ -128,7 +129,7 @@ export default function TeamCalendar() {
     let presentCount = 0, absentCount = 0, leaveCount = 0;
     filteredEmployees.forEach(emp => {
       const status = getStatusForDay(emp.user_id, today);
-      if (['present', 'half_day', 'on_duty', 'work_from_home'].includes(status)) presentCount++;
+      if (['present', 'half_day', 'half_day_leave', 'on_duty', 'work_from_home'].includes(status)) presentCount++;
       else if (status === 'absent') absentCount++;
       else if (status === 'leave') leaveCount++;
     });
