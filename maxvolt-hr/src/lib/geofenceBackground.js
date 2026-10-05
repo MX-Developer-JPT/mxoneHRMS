@@ -21,6 +21,7 @@
 //     the employee is not asked to "enable location" again once set up.
 import { useSyncExternalStore } from 'react';
 import { toast } from 'sonner';
+import { registerPlugin } from '@capacitor/core';
 import { base44 } from '@/api/base44Client';
 
 const PERSIST_KEY = 'geo_engine_v2';
@@ -100,8 +101,11 @@ const dist = (lat1, lng1, lat2, lng2) => {
 async function getCapacitor() {
   try { return (await import('@capacitor/core')).Capacitor; } catch { return null; }
 }
-async function nativePlugin() {
-  const { registerPlugin } = await import('@capacitor/core');
+// NOTE: must stay synchronous. A Capacitor plugin object is a Proxy that answers
+// every property (including `then`), so returning it from an async function or
+// awaiting it makes the promise wait on a fake "then" forever — which is exactly
+// what left the engine stuck on "Starting…".
+function nativePlugin() {
   return registerPlugin('BackgroundGeolocation');
 }
 
@@ -155,7 +159,7 @@ export async function requestBatteryOptimizationExemption() {
   const Capacitor = await getCapacitor();
   if (!Capacitor?.isNativePlatform() || Capacitor.getPlatform() !== 'android') return;
   try {
-    const BG = await nativePlugin();
+    const BG = nativePlugin();
     const { ignoring } = await BG.isIgnoringBatteryOptimizations();
     if (!ignoring) await BG.requestIgnoreBatteryOptimizations();
   } catch { /* depends on patched native build */ }
@@ -163,13 +167,13 @@ export async function requestBatteryOptimizationExemption() {
 export async function requestBackgroundLocationIfNeeded() {
   const Capacitor = await getCapacitor();
   if (!Capacitor?.isNativePlatform() || Capacitor.getPlatform() !== 'android') return;
-  try { await (await nativePlugin()).requestBackgroundLocationIfNeeded(); } catch { /* depends on patched native build */ }
+  try { await nativePlugin().requestBackgroundLocationIfNeeded(); } catch { /* depends on patched native build */ }
 }
 // Deep-link to the app's OS settings page (where "Allow all the time" lives).
 export async function openLocationSettings() {
   const Capacitor = await getCapacitor();
   if (!Capacitor?.isNativePlatform()) return false;
-  try { await (await nativePlugin()).openSettings(); return true; } catch { return false; }
+  try { await nativePlugin().openSettings(); return true; } catch { return false; }
 }
 
 // ── start / stop ──
@@ -289,7 +293,7 @@ let lastRestartAt = 0;
 
 async function startNativeWatcher(Capacitor, interactive) {
   const p = loadP();
-  const BG = await nativePlugin();
+  const BG = nativePlugin();
   // Silent after first-time setup: only ask the OS for permission when this is
   // an explicit, user-initiated setup (interactive) — otherwise just probe.
   const requestPermissions = !!interactive;
@@ -356,7 +360,7 @@ async function startNativeWatcher(Capacitor, interactive) {
 
 async function persistHeadless(Capacitor) {
   if (Capacitor.getPlatform() !== 'android') return;
-  const BG = await nativePlugin();
+  const BG = nativePlugin();
   await BG.persistHeadlessState({
     token: localStorage.getItem('base44_access_token') || '',
     fencesJson: JSON.stringify(fences),
@@ -403,7 +407,7 @@ async function stopWatcher() {
   const w = watcher; watcher = null;
   if (!w) return;
   if (w.kind === 'web') { try { navigator.geolocation.clearWatch(w.id); } catch { /* */ } return; }
-  try { await (await nativePlugin()).removeWatcher({ id: w.id }); } catch { /* */ }
+  try { await nativePlugin().removeWatcher({ id: w.id }); } catch { /* */ }
 }
 
 async function stopEngineInternals() {
@@ -417,7 +421,7 @@ async function stopEngineInternals() {
 export async function stopBackgroundGeofence() {
   const Capacitor = await getCapacitor();
   if (Capacitor?.getPlatform() === 'android') {
-    try { await (await nativePlugin()).clearHeadlessState(); } catch { /* best-effort */ }
+    try { await nativePlugin().clearHeadlessState(); } catch { /* best-effort */ }
   }
   await stopEngineInternals();
   if (flushRetry) { clearTimeout(flushRetry); flushRetry = null; }
