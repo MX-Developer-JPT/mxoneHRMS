@@ -267,11 +267,14 @@ export async function closeUnfinishedSessions(targetDate) {
     // Manual Attendance editor (d.status) — so a day left "in progress"
     // (check-in given, no check-out) doesn't get silently recomputed back
     // to present/late/half-day when this safety net closes it out.
-    const finalStatus = (d.selfie_reason === 'wfh' || d.status === 'work_from_home') ? 'work_from_home'
-      : (d.selfie_reason === 'od' || d.status === 'on_duty') ? 'on_duty'
-      : statusResult.status;
+    // A declared WFH/OD day that was never checked out of is NOT a worked day:
+    // with no real check-out there is no proof of the day's hours, so it is
+    // marked absent (regularisation can still restore it).
+    const declaredWfhOd = isDeclaredWfhOd(d);
+    const finalStatus = declaredWfhOd ? 'absent' : statusResult.status;
     const updated = {
       ...d, ...sessionData, ...statusResult, status: finalStatus,
+      ...(declaredWfhOd ? { auto_closed_no_checkout: true, late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 } : {}),
       auto_closed_at: new Date().toISOString(),
       auto_closed_reason: 'Final session of the day was never checked out before the 2 AM cutoff — closed as a zero-duration session at the last recorded punch; status reflects hours actually worked in completed sessions.',
     };
@@ -295,6 +298,7 @@ export async function closeUnfinishedSessions(targetDate) {
 // Runs on the frequent cron (see server.js) so either case self-heals within
 // the run interval instead of staying stuck indefinitely.
 export async function closeStaleOpenSessions() {
+  await fixAutoClosedWfhOd().catch(e => console.warn('[attendance-cron] fixAutoClosedWfhOd:', e.message));
   const todayIST = istDateString(0);
   const rows = await all(
     "SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'is_in_progress'='true' AND data::jsonb->>'date' < $1",
@@ -341,11 +345,14 @@ export async function closeStaleOpenSessions() {
     // Manual Attendance editor (d.status) — so a day left "in progress"
     // (check-in given, no check-out) doesn't get silently recomputed back
     // to present/late/half-day when this safety net closes it out.
-    const finalStatus = (d.selfie_reason === 'wfh' || d.status === 'work_from_home') ? 'work_from_home'
-      : (d.selfie_reason === 'od' || d.status === 'on_duty') ? 'on_duty'
-      : statusResult.status;
+    // A declared WFH/OD day that was never checked out of is NOT a worked day:
+    // with no real check-out there is no proof of the day's hours, so it is
+    // marked absent (regularisation can still restore it).
+    const declaredWfhOd = isDeclaredWfhOd(d);
+    const finalStatus = declaredWfhOd ? 'absent' : statusResult.status;
     const updated = {
       ...d, ...sessionData, ...statusResult, status: finalStatus,
+      ...(declaredWfhOd ? { auto_closed_no_checkout: true, late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 } : {}),
       auto_closed_at: new Date().toISOString(),
       auto_closed_reason: 'Checked in but never checked out for a past day — the last recorded check-in was treated as the final check-out; status reflects hours actually worked in completed sessions.',
     };
@@ -771,6 +778,26 @@ export async function fixHalfDayLeaveDays(days = 45) {
   return { checked: rows.length, fixed };
 }
 
+// Days auto-closed before the "no check-out = absent" rule existed are still
+// stored as on_duty / work_from_home. Re-mark them absent (idempotent).
+export async function fixAutoClosedWfhOd(days = 90) {
+  const from = istDateString(-days);
+  const rows = await all(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND status IN ('on_duty','work_from_home') AND data::jsonb->>'date' >= $1 AND data::jsonb->>'auto_closed_at' IS NOT NULL",
+    [from]
+  );
+  let fixed = 0;
+  for (const r of rows) {
+    const d = JSON.parse(r.data);
+    if (d.regularised || d.auto_closed_no_checkout) continue;
+    if (!/^(Final session of the day was never checked out|Checked in but never checked out)/.test(d.auto_closed_reason || '')) continue;
+    const upd = { ...d, status: 'absent', auto_closed_no_checkout: true, late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 };
+    await run("UPDATE entities SET status='absent', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), r.id]);
+    fixed++;
+  }
+  return { checked: rows.length, fixed };
+}
+
 export async function runNightlyAttendanceAutomation(targetDate) {
   const date = targetDate || istDateString(-1);
   const noRecord = await markMissingAttendanceAsAbsent(date);
@@ -781,6 +808,7 @@ export async function runNightlyAttendanceAutomation(targetDate) {
   const today = istDateString(0);
   const exempt = await markExemptEmployeesPresent('joining', today);
   const halfLeave = await fixHalfDayLeaveDays();
+  await fixAutoClosedWfhOd().catch(e => console.warn('[attendance-cron] fixAutoClosedWfhOd:', e.message));
   console.log(`[attendance-cron] ${date} — no-record absent: ${noRecord.marked}/${noRecord.checked}, unclosed sessions closed: ${unclosed.marked}/${unclosed.checked}, exempt marked present: ${exempt.marked}, half-day-leave days made present: ${halfLeave.fixed}`);
   return { date, noRecord, unclosed, exempt, halfLeave };
 }
