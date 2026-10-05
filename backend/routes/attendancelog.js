@@ -453,7 +453,22 @@ export function computeStatusFromSessions(sessionData, shift, effectiveShiftHour
   };
 }
 
-async function processRecord(record) {
+// Punches are read-modify-write on one Attendance row per employee/day, so two
+// punches for the same employee arriving together (a batch, or a retry racing
+// the original) would each read the same row and the second write would drop
+// the first punch. Serialise per employee code so every punch is retained.
+const _punchLocks = new Map();
+function processRecord(record) {
+  const key = String(record?.user_id || record?.employee_code || record?.EmployeeCode || '').trim().toUpperCase() || '_';
+  const prev = _punchLocks.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(() => processRecordUnlocked(record));
+  const tail = run.catch(() => {});
+  _punchLocks.set(key, tail);
+  tail.then(() => { if (_punchLocks.get(key) === tail) _punchLocks.delete(key); });
+  return run;
+}
+
+async function processRecordUnlocked(record) {
   // Normalise field names — accept eBio Pascal-case and snake_case formats.
   // Trimmed here (not just lower-cased for the match below) so a stray
   // leading/trailing space from the device doesn't create a distinct
@@ -542,7 +557,15 @@ async function processRecord(record) {
 
   // 2. Store raw punch as AttendanceLog (deduplicate by code + exact timestamp)
   let logStored = false;
-  const existingLog = await one(
+  // Idempotent: a retried punch (same PunchId, or same code + timestamp) is
+  // acknowledged as a success but never stored a second time.
+  const punchId = record.PunchId ? String(record.PunchId).trim() : null;
+  const syncAttempt = Number(record.SyncAttempt) || 1;
+  if (syncAttempt > 1) console.warn(`[attendance-log] retry #${syncAttempt} for punch ${punchId || `${codeStr}@${punchIso}`}`);
+  let existingLog = punchId
+    ? await one("SELECT id FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'PunchId'=$1", [punchId])
+    : null;
+  if (!existingLog) existingLog = await one(
     "SELECT id FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'EmployeeCode'=$1 AND data::jsonb->>'LogDate'=$2",
     [codeStr, punchIso]
   );
@@ -553,6 +576,7 @@ async function processRecord(record) {
       [logId, userId || null, JSON.stringify({
         id: logId,
         EmployeeCode: codeStr,
+        PunchId: punchId,
         LogDate: punchIso,
         Direction: direction,
         DeviceName: deviceName,
@@ -605,7 +629,7 @@ async function processRecord(record) {
       "INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)",
       [id, userId, status, JSON.stringify(attData)]
     );
-    return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: id, action: 'created', status };
+    return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: true, attendance_id: id, action: 'created', status };
   }
 
   // 4. Update existing — never overwrite a regularised/admin-corrected/
@@ -621,7 +645,7 @@ async function processRecord(record) {
   // A HALF-day leave day still takes real punches (the employee works the other
   // half) — only a full-day leave / regularised / admin-marked day is frozen.
   if (data.regularised || data.admin_marked || (data.leave_id && !data.leave_half_day) || data.status === 'leave') {
-    return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
+    return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
   }
 
   // Merge new punch into the existing raw_punches list and rebuild sessions
@@ -667,7 +691,7 @@ async function processRecord(record) {
   const outChanged = data.check_out_time !== sd.check_out_time;
   if ((inChanged && ['selfie', 'geofence'].includes(data.check_in_source)) ||
       (outChanged && ['selfie', 'geofence'].includes(data.check_out_source))) {
-    return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_non_biometric' };
+    return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_non_biometric' };
   }
 
   // Never let merging this punch make an already-complete day WORSE — a
@@ -678,7 +702,7 @@ async function processRecord(record) {
   const wasComplete = !!data.check_out_time && !data.is_in_progress;
   const wouldGetWorse = wasComplete && !punchesOnlyAdded(data.raw_punches, mergedPunches) && (sd.is_in_progress || !sd.check_out_time || (sd.working_hours || 0) < (data.working_hours || 0) - 0.5);
   if (wouldGetWorse) {
-    return { ok: true, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_would_regress' };
+    return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_would_regress' };
   }
 
   const updated = {
@@ -701,7 +725,7 @@ async function processRecord(record) {
     "UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3",
     [status, JSON.stringify(updated), row.id]
   );
-  return { ok: true, log_stored: logStored, attendance_updated: true, attendance_id: row.id, action: 'updated', status };
+  return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: true, attendance_id: row.id, action: 'updated', status };
 }
 
 // Single / batch punch
