@@ -589,7 +589,7 @@ export default function MarkAttendance() {
                 )}
 
                 {geo.diag?.length > 0 && (
-                  <details className="text-[10px] text-gray-500">
+                  <details className="text-[10px] text-gray-500" open={geo.status !== 'active' || !geo.lastFixAt}>
                     <summary className="cursor-pointer">Tracking diagnostics</summary>
                     <pre className="whitespace-pre-wrap mt-1">{[`status=${geo.status} mode=${geo.mode}`, ...geo.diag].join(String.fromCharCode(10))}</pre>
                   </details>

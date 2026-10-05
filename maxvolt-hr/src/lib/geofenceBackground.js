@@ -263,6 +263,30 @@ async function addWatcherWithRetry(BG, options, callback) {
   throw lastErr;
 }
 
+// One-shot position request through the WebView's own geolocation. The native
+// watcher only reports once the device has moved (distance filter) or the OS
+// has a fresh fix, which can leave the screen on "Waiting for the first GPS
+// fix" for a long time — this asks the OS for a position right now and feeds it
+// into the same engine, and is repeated whenever fixes go quiet.
+let instantBusy = false;
+function requestInstantFix(reason) {
+  if (instantBusy || !navigator.geolocation) return;
+  instantBusy = true;
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      instantBusy = false;
+      if (!snapshot.lastFixAt) diag(`instant fix via ${reason} (±${Math.round(pos.coords.accuracy)}m)`);
+      if (snapshot.status !== 'active') emit({ status: 'active' });
+      saveP({ authorized: true });
+      onFix({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy, time: pos.timestamp || Date.now(), simulated: false });
+    },
+    (err) => { instantBusy = false; diag(`instant fix failed (${reason}): ${err.code} ${err.message}`); },
+    { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
+  );
+}
+
+let lastRestartAt = 0;
+
 async function startNativeWatcher(Capacitor, interactive) {
   const p = loadP();
   const BG = await nativePlugin();
@@ -272,6 +296,7 @@ async function startNativeWatcher(Capacitor, interactive) {
   let permissionDenied = false;
   try {
     diag('native addWatcher…');
+    requestInstantFix('start'); // don't wait for the native watcher's first report
     const id = await addWatcherWithRetry(
       BG,
       {
@@ -280,8 +305,8 @@ async function startNativeWatcher(Capacitor, interactive) {
           ? `Watching your location to mark attendance at ${fences[0].name}`
           : `Watching your location to mark attendance at ${fences.length} configured locations`,
         requestPermissions,
-        stale: false,
-        distanceFilter: 10,
+        stale: true,            // deliver the last known position immediately
+        distanceFilter: 5,
       },
       (location, error) => {
         if (error) {
@@ -401,6 +426,7 @@ export async function stopBackgroundGeofence() {
 export async function resumeGeofence() {
   if (snapshot.status === 'idle' || snapshot.status === 'not_eligible') return;
   if (!watcher && ['active', 'starting', 'unavailable'].includes(snapshot.status)) { await startBackgroundGeofence().catch(() => {}); return; }
+  if (watcher) requestInstantFix('resume');
   await refreshConfig().catch(() => {});
   flushOutbox();
 }
@@ -425,6 +451,16 @@ function bindGlobalListeners() {
 // Periodic housekeeping: mark a stale position as "unavailable" (display
 // only — never a check-out), retry the outbox, and finalise dwell timers.
 function tick() {
+  if (watcher && snapshot.status !== 'permission_required') {
+    const age = snapshot.lastFixAt ? Date.now() - snapshot.lastFixAt : Infinity;
+    if (age > 20000) requestInstantFix('watchdog');
+    // Native watcher silent for 2.5 minutes: re-register it (never stay dark).
+    if (watcher.kind === 'native' && age > 150000 && Date.now() - lastRestartAt > 120000) {
+      lastRestartAt = Date.now();
+      diag('no fixes for 150s — restarting native watcher');
+      stopWatcher().then(async () => { const C = await getCapacitor(); if (C) await startNativeWatcher(C, false); }).catch(() => {});
+    }
+  }
   if (lastFix && Date.now() - snapshot.lastFixAt > cfg.stale_fix_seconds * 1000 && snapshot.liveState !== 'permission_required') {
     emit({ liveState: 'unavailable' });
   }
