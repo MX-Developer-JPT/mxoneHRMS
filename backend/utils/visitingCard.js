@@ -19,18 +19,24 @@ const ASSETS = join(__dirname, '../assets');
 
 const NAVY = rgb(0x0b / 255, 0x1e / 255, 0x2f / 255);
 const AMBER = rgb(0xf5 / 255, 0xa0 / 255, 0x01 / 255);
-const INK = rgb(0.07, 0.07, 0.07);
+const INK = rgb(0.102, 0.102, 0.094);
 const GREY = rgb(0.32, 0.32, 0.34);
 const WHITE = rgb(1, 1, 1);
 
-// Geometry on the back page (pt, origin bottom-left; page is 249.45 x 155.91).
-// Matches the template's own address/website block: text right edge at 226,
-// round icons centred at x = 237.2 with radius 4.3.
-const ICON_X = 237.2;
-const ICON_R = 4.3;
-const TEXT_RIGHT = 226;
-const NAME_RIGHT = ICON_X + ICON_R;
+// Geometry on the back page — measured from the approved sample card
+// ("Gourav Dubey Visiting Card.pdf"). Page is 249.45 x 155.91 pt; the values
+// below are distances from the TOP edge (converted with H - value when drawn).
+// Everything is Montserrat SemiBold like the template's own address block:
+// name 15 pt, designation 7 pt, phone / email 7.5 pt (all SemiBold).
+const ICON_X = 237.3;          // round icon centre x
+const ICON_R = 4.5;            // round icon radius (same as template's address / web icons)
+const TEXT_RIGHT = 226.6;      // right edge of phone / email text
+const NAME_RIGHT = 241.8;      // right edge of name + designation (= icon's right edge)
 const TEXT_MAX_W = 150;
+const NAME_TOP = { name: 24.37, role: 36.73 };      // baselines
+const PHONE_BASE = 71.86, MAIL_BASE = 88.64;        // baselines
+const PHONE_ICON_CY = 69.1, MAIL_ICON_CY = 86.65;   // icon centres
+const QR_X = 19.3, QR_TOP = 29.2, QR_SIZE = 33.6;   // QR modules area
 
 const PATH_PHONE = 'M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z';
 const PATH_MAIL = 'M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z';
@@ -40,8 +46,7 @@ async function loadAssets() {
   if (_cache) return _cache;
   _cache = {
     template: readFileSync(join(ASSETS, 'visiting-card-template.pdf')),
-    semibold: readFileSync(join(ASSETS, 'fonts/Poppins-SemiBold.ttf')),
-    medium: readFileSync(join(ASSETS, 'fonts/Poppins-Medium.ttf')),
+    semibold: readFileSync(join(ASSETS, 'fonts/Montserrat-SemiBold.woff')),
   };
   return _cache;
 }
@@ -59,17 +64,17 @@ function drawRightText(page, font, text, size, xRight, y, color, maxW = TEXT_MAX
   page.drawText(text, { x: xRight - font.widthOfTextAtSize(text, s), y, size: s, font, color });
 }
 
-function drawIconCircle(page, cy, fill, svgPath) {
+function drawIconCircle(page, cy, fill, svgPath, glyph = 0.56) {
   page.drawCircle({ x: ICON_X, y: cy, size: ICON_R, color: fill });
-  const scale = (ICON_R * 2 * 0.56) / 24;  // glyph fills ~56% of the circle
+  const scale = (ICON_R * 2 * glyph) / 24;  // glyph size relative to the circle
   page.drawSvgPath(svgPath, { x: ICON_X - 12 * scale, y: cy + 12 * scale, scale, color: WHITE, borderWidth: 0 });
 }
 
 function drawQr(page, text, x, y, size) {
-  const qr = QRCode.create(text, { errorCorrectionLevel: 'M' });
+  const qr = QRCode.create(text, { errorCorrectionLevel: 'L' });
   const n = qr.modules.size;
   const cell = size / n;
-  page.drawRectangle({ x: x - 1.5, y: y - 1.5, width: size + 3, height: size + 3, color: WHITE });
+  page.drawRectangle({ x: x - 2.4, y: y - 2.4, width: size + 4.8, height: size + 4.8, color: WHITE });
   for (let r = 0; r < n; r++) {
     let c = 0;
     while (c < n) {
@@ -97,7 +102,6 @@ export async function buildVisitingCardsPdf(cards, baseUrl) {
   const out = await PDFDocument.create();
   out.registerFontkit(fontkit);
   const fSemi = await out.embedFont(assets.semibold, { subset: true });
-  const fMed = await out.embedFont(assets.medium, { subset: true });
   const [front, back] = await out.embedPages([tplFront, tplBack]);
 
   out.setTitle('Maxvolt Energy — Visiting Cards');
@@ -112,25 +116,24 @@ export async function buildVisitingCardsPdf(cards, baseUrl) {
     bp.drawPage(back);
 
     // Name + designation (top right, right-aligned to the icon column)
-    drawRightText(bp, fSemi, String(card.name || '').trim(), 13, NAME_RIGHT, H - 24, INK, 160);
-    drawRightText(bp, fMed, String(card.job_title || '').trim(), 6.8, NAME_RIGHT, H - 35, GREY, 160);
+    drawRightText(bp, fSemi, String(card.name || '').trim(), 15, NAME_RIGHT, H - NAME_TOP.name, INK, 175);
+    drawRightText(bp, fSemi, String(card.job_title || '').trim(), 7, NAME_RIGHT, H - NAME_TOP.role, INK, 175);
 
     // Phone + email rows (icon + right-aligned text), same rhythm as the
     // template's address / website rows below them.
-    const phoneY = H - 62, mailY = H - 79;
     if (card.phone_number) {
-      drawIconCircle(bp, phoneY + 2.3, AMBER, PATH_PHONE);
-      drawRightText(bp, fMed, String(card.phone_number).trim(), 7.2, TEXT_RIGHT, phoneY, INK);
+      drawIconCircle(bp, H - PHONE_ICON_CY, AMBER, PATH_PHONE, 0.68);
+      drawRightText(bp, fSemi, String(card.phone_number).trim(), 7.5, TEXT_RIGHT, H - PHONE_BASE, INK);
     }
     if (card.email) {
-      drawIconCircle(bp, mailY + 2.3, NAVY, PATH_MAIL);
-      drawRightText(bp, fMed, String(card.email).trim(), 7.2, TEXT_RIGHT, mailY, INK);
+      drawIconCircle(bp, H - MAIL_ICON_CY, INK, PATH_MAIL, 0.58);
+      drawRightText(bp, fSemi, String(card.email).trim(), 7.5, TEXT_RIGHT, H - MAIL_BASE, INK);
     }
 
     // QR (top left): opens the person's digital card
     if (card.unique_slug) {
       const url = `${baseUrl.replace(/\/+$/, '')}/PublicBusinessCard?slug=${encodeURIComponent(card.unique_slug)}`;
-      drawQr(bp, url, 15, H - 15 - 52, 52);
+      drawQr(bp, url, QR_X, H - QR_TOP - QR_SIZE, QR_SIZE);
     }
   }
   return out.save();
