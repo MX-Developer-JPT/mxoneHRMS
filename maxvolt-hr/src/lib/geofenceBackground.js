@@ -297,7 +297,10 @@ async function startNativeWatcher(Capacitor, interactive) {
   try {
     diag('native addWatcher…');
     requestInstantFix('start'); // don't wait for the native watcher's first report
-    const id = await addWatcherWithRetry(
+    // If the plugin never answers (stuck bridge / missing native support) don't
+    // sit on "Starting…" forever — give up after 9s so the foreground fallback runs.
+    const id = await Promise.race([
+      addWatcherWithRetry(
       BG,
       {
         backgroundTitle: 'Maxvolt One — Attendance tracking active',
@@ -322,7 +325,9 @@ async function startNativeWatcher(Capacitor, interactive) {
         if (location && !snapshot.lastFixAt) diag(`first native fix (±${Math.round(location.accuracy || 0)}m)`);
         if (location) onFix({ latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy, time: location.time || Date.now(), simulated: !!location.simulated });
       }
-    );
+    ),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('native addWatcher timed out')), 9000)),
+    ]);
     watcher = { kind: 'native', id };
     // Android: let the native service resume after reboot / swipe-away with
     // zero JS involvement. Re-persist on every start AND config refresh.
