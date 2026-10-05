@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import AttendanceCameraCapture from '@/components/attendance/AttendanceCameraCapture';
-import { startTracking as startFieldTripTracking, stopTracking as stopFieldTripTracking } from '@/lib/fieldTripTracker';
+import { startTracking as startFieldTripTracking, stopTracking as stopFieldTripTracking, flushNow as flushFieldTripPoints } from '@/lib/fieldTripTracker';
 
 // Returns a Date object with its ms representing IST clock digits as if they were UTC.
 // This matches the "Store IST, display IST" convention used throughout the app.
@@ -445,6 +445,7 @@ export default function MarkAttendance() {
       // afterward (which could revert a fresh selfie checkout back to
       // "in_progress, 0 hours" whenever raw_punches didn't yet contain it)
       // is no longer needed.
+      await flushFieldTripPoints().catch(() => {}); // push the trail before the server auto-ends the trip
       const res = await base44.functions.invoke('markSelfieAttendance', {
         event: 'out',
         selfie_url: selfieUrl,

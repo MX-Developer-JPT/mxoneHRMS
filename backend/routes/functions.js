@@ -4657,9 +4657,13 @@ router.post('/:name', async (req, res) => {
       let last = ft.points.length ? ft.points[ft.points.length - 1] : null;
       let addedKm = 0;
       const clean = [];
-      for (const pt of points) {
+      // Oldest first, and never re-apply a point at/before the last stored one —
+      // a retried upload (response lost) must not double-count distance.
+      const sortedPts = [...points].sort((a, b) => new Date(a?.t || 0) - new Date(b?.t || 0));
+      for (const pt of sortedPts) {
         const q = { lat: Number(pt.lat), lng: Number(pt.lng), t: pt.t || new Date().toISOString(), acc: Number(pt.acc || 0) };
         if (!isFinite(q.lat) || !isFinite(q.lng)) continue;
+        if (last && pt.t && new Date(q.t) <= new Date(last.t)) continue;
         if (q.acc > 60) continue;                                    // poor GPS fix — don't let it add distance
         if (last) {
           const dKm = havKm(last, q);

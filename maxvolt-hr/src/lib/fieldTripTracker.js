@@ -37,6 +37,24 @@ let liveKm = 0;
 let liveAccuracy = null;
 let wakeLock = null;
 const listeners = new Set();
+let flushing = false;
+const BUF_KEY = 'mv_fieldtrip_buffer';
+
+// Points not yet confirmed by the server are mirrored to localStorage so a
+// failed upload, an app kill or a reload never loses the trail.
+function persistBuffer() {
+  try {
+    if (!currentTripId || !buffer.length) localStorage.removeItem(BUF_KEY);
+    else localStorage.setItem(BUF_KEY, JSON.stringify({ tripId: currentTripId, points: buffer.slice(-3000) }));
+  } catch { /* storage unavailable */ }
+}
+function restoreBuffer(tripId) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BUF_KEY) || 'null');
+    if (saved?.tripId === tripId && Array.isArray(saved.points)) buffer = saved.points;
+  } catch { /* ignore */ }
+}
+function onWake() { if (currentTripId && document.visibilityState !== 'hidden') flushNow(); }
 
 function notify() {
   listeners.forEach(fn => { try { fn({ tripId: currentTripId, km: liveKm, accuracy: liveAccuracy }); } catch {} });
@@ -74,6 +92,7 @@ function handleFix(lat, lng, accuracy, timeMs) {
     if (dM < Math.max(15, Math.min(50, (prev.acc + q.acc) / 2))) return; // below GPS noise floor
   }
   buffer.push(q);
+  persistBuffer();
 }
 
 export async function startTracking(tripId, initialKm = 0) {
@@ -81,6 +100,10 @@ export async function startTracking(tripId, initialKm = 0) {
   if (currentTripId === tripId && (watchId != null || nativeWatcherId != null)) return; // already tracking this trip
   await stopTracking();
   currentTripId = tripId;
+  buffer = [];
+  restoreBuffer(tripId);
+  window.addEventListener('online', onWake);
+  document.addEventListener('visibilitychange', onWake);
   liveKm = initialKm || 0;
   liveAccuracy = null;
 
@@ -128,13 +151,22 @@ export async function startTracking(tripId, initialKm = 0) {
 }
 
 export async function flushNow() {
-  if (!buffer.length || !currentTripId) return null;
+  if (!buffer.length || !currentTripId || flushing) return null;
+  flushing = true;
+  const tripId = currentTripId;
   const points = buffer.splice(0, buffer.length);
   try {
-    const res = await base44.functions.invoke('logFieldPoints', { trip_id: currentTripId, points });
+    const res = await base44.functions.invoke('logFieldPoints', { trip_id: tripId, points });
     const d = res.data || res;
-    if (d.success) { liveKm = d.distance_km || liveKm; notify(); return liveKm; }
-  } catch { /* points stay lost for this flush; watcher keeps collecting new ones */ }
+    if (d.success) { liveKm = d.distance_km || liveKm; persistBuffer(); notify(); return liveKm; }
+    // The trip itself is gone/ended: nothing can ever accept these points.
+    if (/not found|not active/i.test(d.error || '')) { persistBuffer(); return null; }
+    throw new Error(d.error || 'upload failed');
+  } catch {
+    // Network/server problem — keep the points and retry on the next tick.
+    if (currentTripId === tripId) buffer = [...points, ...buffer];
+    persistBuffer();
+  } finally { flushing = false; }
   return null;
 }
 
@@ -153,6 +185,9 @@ export async function stopTracking() {
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   buffer = [];
   currentTripId = null;
+  persistBuffer();
+  window.removeEventListener('online', onWake);
+  document.removeEventListener('visibilitychange', onWake);
   liveKm = 0;
   liveAccuracy = null;
   notify();
