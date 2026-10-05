@@ -52,9 +52,15 @@ let snapshot = {
   believedIn: null,          // engine's view of "checked in via geofence"
   pending: 0,                // events waiting to sync
   lastSyncAt: null,
+  diag: [],                  // last few engine steps/errors, shown on Mark Attendance for troubleshooting
 };
 const listeners = new Set();
 const emit = (patch) => { snapshot = { ...snapshot, ...patch }; listeners.forEach(l => l()); };
+function diag(msg) {
+  const line = `${new Date().toLocaleTimeString()} ${msg}`;
+  console.log('[geofence]', msg);
+  emit({ diag: [...(snapshot.diag || []), line].slice(-14) });
+}
 const subscribe = (l) => { listeners.add(l); return () => listeners.delete(l); };
 const getSnapshot = () => snapshot;
 export function useGeofenceState() { return useSyncExternalStore(subscribe, getSnapshot, getSnapshot); }
@@ -189,16 +195,19 @@ async function doStart({ interactive, uid }) {
   userId = uid || persisted.userId || null;
   if (userId) saveP({ userId });
 
+  diag(`start (native=${native}, interactive=${!!interactive})`);
   let d;
   try {
     d = await fetchServerState();
   } catch (e) {
     // Offline at launch: if we already know the config from last time we could
     // still track, but fences come from the server — retry shortly instead.
+    diag('server config failed: ' + e.message);
     emit({ status: 'unavailable' });
     scheduleStartRetry();
     return { started: false, reason: 'fetch_failed', error: e.message };
   }
+  diag(`server: eligible=${!!d.geofence_eligible}, fences=${d.all_fences?.length || 0}`);
   if (!d.geofence_eligible) { await stopEngineInternals(); emit({ status: 'not_eligible', liveState: 'idle' }); return { started: false, reason: 'not_eligible' }; }
   if (!d.all_fences?.length) { emit({ status: 'not_eligible', liveState: 'idle' }); return { started: false, reason: 'no_fence_assigned' }; }
   applyServerConfig(d);
@@ -211,7 +220,15 @@ async function doStart({ interactive, uid }) {
 
   emit({ status: 'starting', mode: native ? 'background' : 'foreground', pending: (loadP().outbox || []).length });
   bindGlobalListeners();
-  const ok = native ? await startNativeWatcher(Capacitor, interactive) : await startWebWatcher(interactive);
+  let ok = native ? await startNativeWatcher(Capacitor, interactive) : await startWebWatcher(interactive);
+  if (native && !ok.started && ok.reason === 'start_failed') {
+    // The native background plugin could not start — fall back to the WebView's
+    // own location so tracking at least works while the app is open.
+    diag('native failed (' + (ok.error || '?') + ') — falling back to foreground location');
+    ok = await startWebWatcher(true);
+    if (ok.started) emit({ mode: 'foreground' });
+  }
+  diag(ok.started ? 'watcher started' : `not started: ${ok.reason}`);
   if (!ok.started) return ok;
 
   intervals.forEach(clearInterval);
@@ -254,6 +271,7 @@ async function startNativeWatcher(Capacitor, interactive) {
   const requestPermissions = !!interactive;
   let permissionDenied = false;
   try {
+    diag('native addWatcher…');
     const id = await addWatcherWithRetry(
       BG,
       {
@@ -267,6 +285,7 @@ async function startNativeWatcher(Capacitor, interactive) {
       },
       (location, error) => {
         if (error) {
+          diag(`native error: ${error.code || ''} ${error.message || ''}`);
           if (error.code === 'NOT_AUTHORIZED') {
             permissionDenied = true;
             onPermissionLost('permission_required');
@@ -275,6 +294,7 @@ async function startNativeWatcher(Capacitor, interactive) {
           }
           return;
         }
+        if (location && !snapshot.lastFixAt) diag(`first native fix (±${Math.round(location.accuracy || 0)}m)`);
         if (location) onFix({ latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy, time: location.time || Date.now(), simulated: !!location.simulated });
       }
     );
@@ -296,6 +316,7 @@ async function startNativeWatcher(Capacitor, interactive) {
     watcher = null;
     // A plugin/service failure is NOT a permission problem — don't tell the
     // employee to re-enable location; just retry shortly.
+    diag(`addWatcher threw: ${e?.code || ''} ${e?.message || e}`);
     console.warn('[geofence] native watcher failed to start:', e?.message);
     emit({ status: 'unavailable', liveState: 'unavailable' });
     scheduleStartRetry();

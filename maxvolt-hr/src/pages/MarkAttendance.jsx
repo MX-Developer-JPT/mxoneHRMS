@@ -588,6 +588,13 @@ export default function MarkAttendance() {
                   </p>
                 )}
 
+                {geo.diag?.length > 0 && (
+                  <details className="text-[10px] text-gray-500">
+                    <summary className="cursor-pointer">Tracking diagnostics</summary>
+                    <pre className="whitespace-pre-wrap mt-1">{[`status=${geo.status} mode=${geo.mode}`, ...geo.diag].join(String.fromCharCode(10))}</pre>
+                  </details>
+                )}
+
                 {needsEnable && (
                   <div className="flex items-center gap-3">
                     <p className="text-xs text-gray-600 flex-1">
