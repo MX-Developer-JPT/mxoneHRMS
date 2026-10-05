@@ -780,22 +780,61 @@ export async function fixHalfDayLeaveDays(days = 45) {
 
 // Days auto-closed before the "no check-out = absent" rule existed are still
 // stored as on_duty / work_from_home. Re-mark them absent (idempotent).
+// True when the day ends in a genuine check-out (a closing punch that is after
+// the session's check-in) — as opposed to the zero-duration session the
+// auto-closers synthesise for a forgotten check-out. A biometric check-out that
+// syncs late (after the nightly close) turns an auto-closed day into one of these.
+function hasRealCheckout(d) {
+  const sd = buildSessions(d.raw_punches || []);
+  const last = sd.sessions[sd.sessions.length - 1];
+  return !sd.is_in_progress && !!last && !!last.check_out && new Date(last.check_out) - new Date(last.check_in) > 0;
+}
+
 export async function fixAutoClosedWfhOd(days = 90) {
   const from = istDateString(-days);
+  let fixed = 0, restored = 0;
+
+  // 1) Days auto-closed before the "no check-out = absent" rule existed.
   const rows = await all(
     "SELECT id, data FROM entities WHERE type='Attendance' AND status IN ('on_duty','work_from_home') AND data::jsonb->>'date' >= $1 AND data::jsonb->>'auto_closed_at' IS NOT NULL",
     [from]
   );
-  let fixed = 0;
   for (const r of rows) {
     const d = JSON.parse(r.data);
     if (d.regularised || d.auto_closed_no_checkout) continue;
     if (!/^(Final session of the day was never checked out|Checked in but never checked out)/.test(d.auto_closed_reason || '')) continue;
+    if (hasRealCheckout(d)) continue; // the check-out did arrive (e.g. late biometric sync) — a worked day
     const upd = { ...d, status: 'absent', auto_closed_no_checkout: true, late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 };
     await run("UPDATE entities SET status='absent', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), r.id]);
     fixed++;
   }
-  return { checked: rows.length, fixed };
+
+  // 2) Undo it where a real check-out turned out to exist: re-derive the status
+  //    from the day's actual punches (worked hours decide Present / Half Day).
+  const flagged = await all(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND status='absent' AND data::jsonb->>'auto_closed_no_checkout'='true' AND data::jsonb->>'date' >= $1",
+    [from]
+  );
+  if (flagged.length) {
+    const defaultShift = await getDefaultShift();
+    const empCache = {};
+    for (const r of flagged) {
+      const d = JSON.parse(r.data);
+      if (d.regularised || d.admin_marked || !hasRealCheckout(d)) continue;
+      if (!(d.user_id in empCache)) {
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
+        empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
+      }
+      const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
+      const sd = buildSessions(d.raw_punches);
+      const halfDayHours = await getHalfDayOverrideHours(d.date, shift);
+      const result = applyDeclaredStatus(d, computeStatusFromSessions(sd, shift, halfDayHours));
+      const upd = { ...d, ...sd, ...result, auto_closed_no_checkout: false };
+      await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [result.status, JSON.stringify(upd), r.id]);
+      restored++;
+    }
+  }
+  return { checked: rows.length, fixed, restored };
 }
 
 export async function runNightlyAttendanceAutomation(targetDate) {
