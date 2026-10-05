@@ -987,6 +987,18 @@ async function acquireGeoLock(key) {
 
 const router = Router();
 
+// Short code for the leave type of a half-day-leave attendance record, used to
+// build the "PH<type>" marker (PHCL, PHEL, PHSL...) in the muster / report.
+function halfLeaveCode(rec) {
+  const clean = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const code = clean(rec?.leave_policy_code);
+  if (code) return code.slice(0, 4);
+  const words = String(rec?.leave_policy_name || '').toUpperCase().split(/[^A-Z0-9]+/).filter(w => w && w !== 'LEAVE');
+  if (words.length > 1) return words.map(w => w[0]).join('').slice(0, 4);
+  if (words.length === 1) return words[0].slice(0, 3);
+  return 'L';
+}
+
 // In-memory store for long-running background jobs (biometric processing, bulk imports).
 // Auto-cleaned after 15 minutes so memory doesn't grow unbounded.
 const jobStore = new Map(); // jobId → { status, result?, error?, progress? }
@@ -5849,7 +5861,7 @@ router.post('/:name', async (req, res) => {
           // displayCell shows the specific leave type (e.g. "CL") instead of
           // a generic "L" when available; `cell` (category) still drives
           // coloring via dayStatusColor below, unchanged.
-          const displayCell = cell === 'L' ? (rec?.leave_policy_code || rec?.leave_policy_name || 'L') : cell;
+          const displayCell = cell === 'L' ? (rec?.leave_policy_code || rec?.leave_policy_name || 'L') : (cell === 'PHL' ? 'PH' + halfLeaveCode(rec) : cell);
           const gatePass = reportGatePassMap[`${emp.user_id}|${dateStr}`] || null;
           dayDetails.push({
             cell, displayCell: gatePass ? `${displayCell}⛩` : displayCell,
@@ -5908,7 +5920,7 @@ router.post('/:name', async (req, res) => {
       wsAR.getCell('A2').fill = arFill('2D6A9F');
       wsAR.getCell('A2').alignment = { vertical:'middle' };
       wsAR.mergeCells(2, 7, 2, totalInfoCols);
-      wsAR.getCell(2, 7).value = 'P=Present  PR=Present (Regularised)  L*=Late  A=Absent  L=Leave  H=Holiday  HD=Half Day (insufficient hours)  PHL=Present (Half Day Leave)  OD=On Duty  WFH=Work from Home  OFF=Week Off  ⛩=Gate Pass issued (hover cell for outing details)';
+      wsAR.getCell(2, 7).value = 'P=Present  PR=Present (Regularised)  L*=Late  A=Absent  L=Leave  H=Holiday  HD=Half Day (insufficient hours)  PH+type=Present (Half Day Leave, e.g. PHCL / PHEL / PHSL)  OD=On Duty  WFH=Work from Home  OFF=Week Off  ⛩=Gate Pass issued (hover cell for outing details)';
       wsAR.getCell(2, 7).font = arFont(false, 'FFFFFF', 8);
       wsAR.getCell(2, 7).fill = arFill('2D6A9F');
       wsAR.getCell(2, 7).alignment = { vertical:'middle' };
@@ -6183,7 +6195,7 @@ router.post('/:name', async (req, res) => {
       Object.assign(r2.getCell(1), { font:mF(false,'475569',8), fill:mFl('F8FAFC'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
       // Row 3 — legend
-      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   PR = Present (Regularised)   A = Absent   HD = Half Day (insufficient hours)   PHL = Present (Half Day Leave)   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   WFH = Work From Home   SA = Short Attendance   ⛩ = Gate Pass issued that day (hover cell for outing details)   (OD, WFH and PHL count toward the Present total)']);
+      const r3 = wsM.addRow(['Legend:  P = Present   P* = Late   PR = Present (Regularised)   A = Absent   HD = Half Day (insufficient hours)   PH+type = Present (Half Day Leave: PHCL = half-day Casual, PHEL = half-day Earned, PHSL = half-day Sick)   L = Leave   WO = Week Off   PH = Public Holiday   OD = On Duty   WFH = Work From Home   SA = Short Attendance   ⛩ = Gate Pass issued that day (hover cell for outing details)   (OD, WFH and PHL count toward the Present total)']);
       r3.height = 15; wsM.mergeCells(3,1,3,totCols);
       Object.assign(r3.getCell(1), { font:mF(false,'1E40AF',8), fill:mFl('EFF6FF'), alignment:{ horizontal:'left', vertical:'middle', indent:1 }, border:mBd() });
 
@@ -6192,7 +6204,7 @@ router.post('/:name', async (req, res) => {
         const dow = ['Su','Mo','Tu','We','Th','Fr','Sa'][new Date(y,m-1,i+1).getDay()];
         return `${i+1}\n${dow}`;
       });
-      const hRow = wsM.addRow(['Code','Employee Name','Department','Designation','Location',...dayHdrs,'P','A','L','HD','PHL','WO','PH','OD','WFH','Total']);
+      const hRow = wsM.addRow(['Code','Employee Name','Department','Designation','Location',...dayHdrs,'P','A','L','HD','PH-Leave','WO','PH','OD','WFH','Total']);
       hRow.height = 34;
       hRow.eachCell(cell => Object.assign(cell, { font:mF(true,'FFFFFF',8), fill:mFl('1E40AF'), alignment:{ horizontal:'center', vertical:'middle', wrapText:true }, border:mBd() }));
       for (let d=1; d<=daysInMonth; d++) {
@@ -6229,7 +6241,7 @@ router.post('/:name', async (req, res) => {
           // a "⛩" suffix regardless of underlying status — still counted
           // exactly as its real code (present/half-day/etc.) above, this is
           // purely a visual highlight.
-          const baseDisplay = code === 'L' ? (empRecs[ds]?.leave_policy_code || empRecs[ds]?.leave_policy_name || 'L') : code;
+          const baseDisplay = code === 'L' ? (empRecs[ds]?.leave_policy_code || empRecs[ds]?.leave_policy_name || 'L') : (code === 'PHL' ? 'PH' + halfLeaveCode(empRecs[ds]) : code);
           displayCodes.push(gatePass && baseDisplay ? `${baseDisplay}⛩` : baseDisplay);
           // 'PR' (regularised present, from mStatusCode's rec.regularised
           // check) was missing here — a regularised day displayed correctly
@@ -6495,7 +6507,7 @@ router.post('/:name', async (req, res) => {
           // not a worked-hours shortfall — label it distinctly from a plain
           // half_day so it doesn't read as an attendance shortfall here.
           const isPHL = status === 'half_day' && rec?.leave_id && rec?.leave_half_day;
-          const statusLabel = isPHL ? 'Present (Half Day Leave)' : (status ? status.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) : '');
+          const statusLabel = isPHL ? `Present (Half Day ${halfLeaveCode(rec)})` : (status ? status.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) : '');
           const gatePass = swGatePassMap[`${emp.user_id}|${ds}`] || null;
           const gatePassText = gatePass
             ? `${gatePass.status === 'departed' ? 'OUT NOW — ' : ''}${swOutingLabels[gatePass.outing_type] || gatePass.outing_type || 'Gate Pass'}${gatePass.reason ? ` — ${gatePass.reason}` : ''}`
