@@ -4026,8 +4026,10 @@ router.post('/:name', async (req, res) => {
           : { checked_in: false, checked_out: false, is_in_progress: false, geofence_location: null, open_session_by_geofence: false },
         // Tunable hysteresis/debounce thresholds the client engine applies.
         config: {
-          max_accuracy_m: 100, enter_confirmations: 2, enter_min_seconds: 15, enter_timer_seconds: 30,
-          exit_confirmations: 2, exit_dwell_seconds: 90, exit_buffer_m: 40, strong_exit_m: 250, stale_fix_seconds: 180,
+          // Immediate: the first reliable fix inside the radius checks in, the first one outside
+          // (small 15 m hysteresis) checks out. Multiple in/outs per day, like biometric.
+          max_accuracy_m: 100, enter_confirmations: 1, enter_min_seconds: 0, enter_timer_seconds: 2,
+          exit_confirmations: 1, exit_dwell_seconds: 0, exit_buffer_m: 15, strong_exit_m: 60, stale_fix_seconds: 180,
         },
         server_time: new Date().toISOString(),
       });
@@ -4268,8 +4270,8 @@ router.post('/:name', async (req, res) => {
       // meanwhile) can't be inserted without corrupting IN/OUT parity.
       const lastPunchMs = rawPunches.reduce((m, pp) => Math.max(m, Date.parse(pp.time) || 0), 0);
       if (lastPunchMs && evIST.getTime() < lastPunchMs - 1000) return res.json({ success: true, action: 'none', reason: 'stale_event' });
-      const GEO_FLAP_MS = 120000;     // re-entry this soon after a geofence exit = GPS flapping, not a new session
-      const GEO_MIN_DWELL_MS = 30000; // exit this soon after the geofence enter that opened the session = noise
+      const GEO_FLAP_MS = 30000;      // re-entry this soon after a geofence exit = GPS flapping, not a new session
+      const GEO_MIN_DWELL_MS = 5000; // exit this soon after the geofence enter that opened the session = noise
       if (event === 'exit' && priorSessionData.is_in_progress && ngAtt?.geofence_open_in
           && evIST.getTime() - Date.parse(ngAtt.geofence_open_in) < GEO_MIN_DWELL_MS) {
         return res.json({ success: true, action: 'none', reason: 'too_soon_after_enter' });

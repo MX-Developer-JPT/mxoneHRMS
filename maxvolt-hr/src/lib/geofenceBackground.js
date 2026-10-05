@@ -27,13 +27,13 @@ import { base44 } from '@/api/base44Client';
 const PERSIST_KEY = 'geo_engine_v2';
 const DEFAULT_CFG = {
   max_accuracy_m: 100,         // fixes less accurate than this never drive a transition
-  enter_confirmations: 2,      // consecutive "inside" fixes needed...
-  enter_min_seconds: 15,       // ...spread over at least this long (or the timer path below)
-  enter_timer_seconds: 30,     // stationary user: one clean inside fix + this long with no contrary fix
-  exit_confirmations: 2,       // consecutive "outside" fixes needed...
-  exit_dwell_seconds: 90,      // ...and sustained for at least this long
-  exit_buffer_m: 40,           // exit threshold = radius + buffer (hysteresis vs. enter at radius)
-  strong_exit_m: 250,          // clearly gone (radius + this): no dwell needed, still 2 fixes
+  enter_confirmations: 1,      // immediate: the first reliable inside fix checks in
+  enter_min_seconds: 0,
+  enter_timer_seconds: 2,
+  exit_confirmations: 1,       // immediate: the first reliable outside fix checks out
+  exit_dwell_seconds: 0,
+  exit_buffer_m: 15,           // small hysteresis vs. enter at radius
+  strong_exit_m: 60,          // clearly gone (radius + this): no dwell needed, still 2 fixes
   stale_fix_seconds: 180,      // no fix this long => display "Location Unavailable"
 };
 const OUTBOX_MAX_AGE_MS = 48 * 3600 * 1000;
@@ -511,7 +511,7 @@ function evaluate(fix, { fromTimer = false } = {}) {
     let enterFence = null, ed = Infinity;
     for (const f of fences) {
       const d = dist(fix.latitude, fix.longitude, Number(f.latitude), Number(f.longitude));
-      if (d + acc * 0.5 <= Number(f.radius_m) && d < ed) { enterFence = f; ed = d; }
+      if (d + acc * 0.25 <= Number(f.radius_m) && d < ed) { enterFence = f; ed = d; }
     }
     if (!enterFence) { enterTrack = null; clearConfirm(); return; }
     if (!enterTrack || enterTrack.fenceId !== enterFence.id) enterTrack = { n: 0, firstAt: fix.time, fenceId: enterFence.id, fix };
@@ -537,7 +537,7 @@ function evaluate(fix, { fromTimer = false } = {}) {
   if (!cur) return;
   const d = dist(fix.latitude, fix.longitude, Number(cur.latitude), Number(cur.longitude));
   const radius = Number(cur.radius_m);
-  const outside = d - acc * 0.5 > radius + cfg.exit_buffer_m;
+  const outside = d - acc * 0.25 > radius + cfg.exit_buffer_m;
   if (!outside) { exitTrack = null; clearConfirm(); return; }
   const strong = d - acc > radius + cfg.strong_exit_m;
   if (!exitTrack) exitTrack = { n: 0, strongN: 0, firstAt: fix.time, fix };
