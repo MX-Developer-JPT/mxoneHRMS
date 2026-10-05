@@ -76,6 +76,8 @@ export default function LeaveManagement() {
   const [historyYear, setHistoryYear] = useState(new Date().getFullYear());
   const [historyLoading, setHistoryLoading] = useState(false);
   const [importingHistory, setImportingHistory] = useState(false);
+  const [musterMonth, setMusterMonth] = useState(String(new Date().getMonth() + 1));
+  const [exportingMuster, setExportingMuster] = useState(false);
   const [historyImportResult, setHistoryImportResult] = useState(null);
   const [expandedHistoryUser, setExpandedHistoryUser] = useState(null);
   const historyFileInputRef = useRef(null);
@@ -382,6 +384,24 @@ export default function LeaveManagement() {
     e.target.value = '';
   };
 
+  const downloadLeaveMuster = async () => {
+    setExportingMuster(true);
+    try {
+      toast.info('Generating leave history muster…');
+      const res = await base44.functions.invoke('exportLeaveHistoryMuster', { year: historyYear, month: musterMonth });
+      const d = res.data || res;
+      if (!d.success) { toast.error(d.error || 'Leave muster export failed'); setExportingMuster(false); return; }
+      const bytes = Uint8Array.from(atob(d.base64), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = d.filename; a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Leave muster exported — ${d.total_employees} employees, ${d.total_leave_days} leave days`);
+    } catch (e) { toast.error('Leave muster export error: ' + e.message); }
+    setExportingMuster(false);
+  };
+
   const downloadLeaveHistory = async () => {
     if (!leaveHistory.length) { toast.error('No leave history loaded for this year yet'); return; }
     const XLSX = await import('xlsx');
@@ -558,6 +578,19 @@ export default function LeaveManagement() {
                     </Select>
                     <Button size="sm" variant="outline" onClick={downloadLeaveHistory} disabled={!leaveHistory.length}>
                       <Download className="w-3.5 h-3.5 mr-1" /> Download Leave Details
+                    </Button>
+                    <Select value={musterMonth} onValueChange={setMusterMonth}>
+                      <SelectTrigger className="w-32 h-9"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Full year</SelectItem>
+                        {['January','February','March','April','May','June','July','August','September','October','November','December'].map((mn, i) => (
+                          <SelectItem key={mn} value={String(i + 1)}>{mn}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button size="sm" variant="outline" onClick={downloadLeaveMuster} disabled={exportingMuster}>
+                      {exportingMuster ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-1" />}
+                      Leave History Muster
                     </Button>
                     <input ref={historyFileInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportHistory} />
                     <Button size="sm" onClick={() => historyFileInputRef.current?.click()} disabled={importingHistory}

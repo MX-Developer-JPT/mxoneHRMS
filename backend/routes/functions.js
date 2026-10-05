@@ -6318,6 +6318,160 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`${mNightOnly ? 'Night_Shift_Muster' : 'Attendance_Muster'}_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
     }
 
+    // Leave History Muster: which employee used which leave on which day.
+    // Expands every APPROVED leave request into one row per leave day (week-offs
+    // and holidays inside a range are skipped — they are not charged either).
+    // Sheets: Leave Muster (employee x day grid, month only), Leave Details
+    // (one row per employee per leave day), Summary (days per leave type).
+    case 'exportLeaveHistoryMuster': {
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const lhY = parseInt(p.year);
+      const lhM = p.month && p.month !== 'all' ? parseInt(p.month) : 0; // 0 = whole year
+      if (!lhY) return res.json({ success: false, error: 'year required' });
+      const lhStart = lhM ? `${lhY}-${String(lhM).padStart(2,'0')}-01` : `${lhY}-01-01`;
+      const lhEnd = lhM ? new Date(Date.UTC(lhY, lhM, 0)).toISOString().slice(0,10) : `${lhY}-12-31`;
+      const lhPeriod = lhM ? new Date(lhY, lhM - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' }) : String(lhY);
+
+      const lhEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'"));
+      const lhEmpByUser = {};
+      for (const e of lhEmps) if (e.user_id) lhEmpByUser[e.user_id] = e;
+      const lhPolicies = {};
+      parseEntities(await all("SELECT data FROM entities WHERE type='LeavePolicy'")).forEach(lp => { lhPolicies[lp.id] = lp; });
+      const lhHolidays = new Set(parseEntities(await all("SELECT data FROM entities WHERE type='Holiday'")).map(h => String(h.date || '').slice(0,10)));
+      const lhShifts = {}; let lhDefShift = null;
+      parseEntities(await all("SELECT data FROM entities WHERE type='Shift'")).forEach(sh => { lhShifts[sh.id] = sh; if (sh.is_default) lhDefShift = sh; });
+      const lhFallbackDays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const lhWeekday = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const lhWorkDays = (emp) => {
+        const sh = (emp?.shift_id && lhShifts[emp.shift_id]) || lhDefShift;
+        return Array.isArray(sh?.days) && sh.days.length ? sh.days : lhFallbackDays;
+      };
+
+      const lhLeaves = parseEntities(await all("SELECT data FROM entities WHERE type='Leave' AND status='approved'"))
+        .filter(l => l.start_date && l.end_date && !l.is_wfh && l.leave_type !== 'work_from_home' && String(l.end_date).slice(0,10) >= lhStart && String(l.start_date).slice(0,10) <= lhEnd);
+
+      const lhDays = []; // one entry per employee per leave day
+      for (const l of lhLeaves) {
+        const emp = lhEmpByUser[l.user_id] || {};
+        const pol = lhPolicies[l.leave_policy_id] || {};
+        const code = String(pol.code || l.leave_policy_code || l.leave_type || 'L').toUpperCase();
+        const name = pol.name || l.leave_policy_name || l.leave_type || code;
+        const workDays = lhWorkDays(emp);
+        const from = String(l.start_date).slice(0,10), to = String(l.end_date).slice(0,10);
+        for (let d = new Date(from + 'T00:00:00Z'); d <= new Date(to + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 1)) {
+          const ds = d.toISOString().slice(0,10);
+          if (ds < lhStart || ds > lhEnd) continue;
+          const single = from === to;
+          if (!single && (lhHolidays.has(ds) || !workDays.includes(lhWeekday[d.getUTCDay()]))) continue;
+          lhDays.push({
+            user_id: l.user_id, code: emp.employee_code || '', name: emp.display_name || l.employee_name || '', dept: emp.department || '', desig: emp.designation || '',
+            date: ds, leaveCode: code, leaveName: name, half: !!l.half_day, days: l.half_day ? 0.5 : 1,
+            applied: `${from}${to !== from ? ' to ' + to : ''}`, reason: l.reason || '', approver: l.approved_by_name || '', approvedOn: l.approved_date ? String(l.approved_date).slice(0,10) : '',
+          });
+        }
+      }
+      lhDays.sort((a, b) => (a.dept||'').localeCompare(b.dept||'') || (a.name||'').localeCompare(b.name||'') || a.date.localeCompare(b.date));
+
+      const lhTypes = [...new Set(lhDays.map(r => r.leaveCode))].sort();
+      const lhPalette = ['3B82F6','10B981','F59E0B','EC4899','8B5CF6','14B8A6','EF4444','84CC16','F97316','6366F1'];
+      const lhColor = {}; lhTypes.forEach((t, i) => { lhColor[t] = lhPalette[i % lhPalette.length]; });
+      const lhTypeName = {}; lhDays.forEach(r => { lhTypeName[r.leaveCode] = r.leaveName; });
+
+      const ExcelJSl = await import('exceljs');
+      const wbL = new ExcelJSl.default.Workbook();
+      const F = (bold, color = '1F2937', size = 9) => ({ name: 'Calibri', bold, size, color: { argb: 'FF' + color } });
+      const Fl = (c) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + c } });
+      const Bd = () => ({ top:{style:'thin',color:{argb:'FFD1D5DB'}}, left:{style:'thin',color:{argb:'FFD1D5DB'}}, bottom:{style:'thin',color:{argb:'FFD1D5DB'}}, right:{style:'thin',color:{argb:'FFD1D5DB'}} });
+      const ctr = { horizontal: 'center', vertical: 'middle', wrapText: true }, lft = { horizontal: 'left', vertical: 'middle', wrapText: true };
+      const NAVY = '1A3C5E';
+      const title = (ws, text, sub, cols) => {
+        ws.addRow([text]); ws.mergeCells(1, 1, 1, cols);
+        Object.assign(ws.getCell(1, 1), { font: F(true, 'FFFFFF', 13), fill: Fl(NAVY), alignment: ctr }); ws.getRow(1).height = 26;
+        ws.addRow([sub]); ws.mergeCells(2, 1, 2, cols);
+        Object.assign(ws.getCell(2, 1), { font: F(false, '374151', 9), fill: Fl('EEF2F7'), alignment: lft }); ws.getRow(2).height = 28;
+      };
+      const head = (row) => row.eachCell(c => Object.assign(c, { font: F(true, 'FFFFFF', 9), fill: Fl('2D5986'), alignment: ctr, border: Bd() }));
+      const legend = 'Leave codes — ' + (lhTypes.map(t => `${t} = ${lhTypeName[t]}`).join('   ') || 'none') + '   |   ½CL = half-day of that leave type (counts 0.5 day)   |   Week-offs and holidays inside a leave are not counted';
+
+      // ── Sheet 1: month grid ──
+      if (lhM) {
+        const dim = new Date(lhY, lhM, 0).getDate();
+        const INFO = 4, byEmp = new Map();
+        for (const r of lhDays) { if (!byEmp.has(r.user_id)) byEmp.set(r.user_id, { r, cells: {} }); byEmp.get(r.user_id).cells[parseInt(r.date.slice(8))] = r; }
+        const ws = wbL.addWorksheet('Leave Muster', { views: [{ state: 'frozen', xSplit: INFO, ySplit: 4 }] });
+        const cols = INFO + dim + lhTypes.length + 1;
+        title(ws, `Leave History Muster — ${lhPeriod}`, legend, cols);
+        ws.addRow([]);
+        const hdr = ws.addRow(['Code', 'Employee Name', 'Department', 'Designation', ...Array.from({ length: dim }, (_, i) => i + 1), ...lhTypes, 'Total Days']);
+        ws.getRow(3).height = 4; // spacer
+        head(hdr); hdr.height = 22;
+        // day-of-week sub header colouring for Sundays
+        for (let d = 1; d <= dim; d++) {
+          if (new Date(lhY, lhM - 1, d).getDay() === 0) hdr.getCell(INFO + d).fill = Fl('7F1D1D');
+        }
+        const rowsE = [...byEmp.values()];
+        rowsE.forEach(({ r, cells }, idx) => {
+          const tot = {}; let all = 0;
+          for (const c of Object.values(cells)) { tot[c.leaveCode] = (tot[c.leaveCode] || 0) + c.days; all += c.days; }
+          const dr = ws.addRow([r.code, r.name, r.dept, r.desig, ...Array.from({ length: dim }, (_, i) => { const c = cells[i + 1]; return c ? (c.half ? '½' + c.leaveCode : c.leaveCode) : ''; }), ...lhTypes.map(t => tot[t] || ''), all]);
+          const bg = idx % 2 ? 'F8FAFC' : 'FFFFFF';
+          dr.height = 16;
+          for (let c = 1; c <= cols; c++) Object.assign(dr.getCell(c), { font: F(c === 2, '374151', 9), fill: Fl(bg), alignment: c <= INFO && c !== 2 && c !== 3 && c !== 4 ? ctr : (c <= INFO ? lft : ctr), border: Bd() });
+          for (let d = 1; d <= dim; d++) {
+            const c = cells[d]; if (!c) continue;
+            const cell = dr.getCell(INFO + d);
+            cell.fill = Fl(lhColor[c.leaveCode]); cell.font = F(true, 'FFFFFF', 8);
+            cell.note = `${c.leaveName}${c.half ? ' (Half Day)' : ''}\nApplied: ${c.applied}${c.reason ? '\nReason: ' + c.reason : ''}${c.approver ? '\nApproved by: ' + c.approver : ''}`;
+          }
+          dr.getCell(cols).font = F(true, NAVY, 9);
+        });
+        if (!rowsE.length) { const er = ws.addRow(['No approved leave in this month']); ws.mergeCells(er.number, 1, er.number, cols); er.getCell(1).alignment = ctr; er.getCell(1).font = F(false, '6B7280', 10); }
+        ws.getColumn(1).width = 11; ws.getColumn(2).width = 26; ws.getColumn(3).width = 18; ws.getColumn(4).width = 20;
+        for (let d = 1; d <= dim; d++) ws.getColumn(INFO + d).width = 5;
+        lhTypes.forEach((_, i) => { ws.getColumn(INFO + dim + 1 + i).width = 7; });
+        ws.getColumn(cols).width = 11;
+      }
+
+      // ── Sheet 2: one row per employee per leave day ──
+      const wd = wbL.addWorksheet('Leave Details', { views: [{ state: 'frozen', ySplit: 4 }] });
+      const dHeads = ['#', 'Employee Code', 'Employee Name', 'Department', 'Designation', 'Date', 'Day', 'Leave Type', 'Leave Name', 'Full / Half Day', 'Days Used', 'Applied Range', 'Reason', 'Approved By', 'Approved On'];
+      title(wd, `Leave Details — ${lhPeriod}`, 'One row per employee per leave day. ' + legend, dHeads.length);
+      wd.addRow([]); wd.getRow(3).height = 4;
+      const dh = wd.addRow(dHeads); head(dh); dh.height = 22;
+      lhDays.forEach((r, i) => {
+        const dr = wd.addRow([i + 1, r.code, r.name, r.dept, r.desig, r.date.split('-').reverse().join('-'), lhWeekday[new Date(r.date + 'T00:00:00Z').getUTCDay()], r.leaveCode, r.leaveName, r.half ? 'Half Day' : 'Full Day', r.days, r.applied, r.reason, r.approver, r.approvedOn]);
+        const bg = i % 2 ? 'F8FAFC' : 'FFFFFF';
+        dr.eachCell((c, n) => Object.assign(c, { font: F(n === 3, '374151', 9), fill: Fl(bg), alignment: [3,4,5,9,12,13].includes(n) ? lft : ctr, border: Bd() }));
+        Object.assign(dr.getCell(8), { fill: Fl(lhColor[r.leaveCode]), font: F(true, 'FFFFFF', 9) });
+      });
+      [5, 13, 24, 18, 20, 12, 11, 11, 20, 12, 9, 22, 34, 20, 12].forEach((w, i) => { wd.getColumn(i + 1).width = w; });
+      wd.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: dHeads.length } };
+
+      // ── Sheet 3: summary per employee per leave type ──
+      const wsum = wbL.addWorksheet('Summary', { views: [{ state: 'frozen', ySplit: 4 }] });
+      const sHeads = ['Employee Code', 'Employee Name', 'Department', ...lhTypes.map(t => `${t} (days)`), 'Total Days'];
+      title(wsum, `Leave Summary — ${lhPeriod}`, legend, sHeads.length);
+      wsum.addRow([]); wsum.getRow(3).height = 4;
+      const sh2 = wsum.addRow(sHeads); head(sh2); sh2.height = 22;
+      const sumBy = new Map();
+      for (const r of lhDays) { if (!sumBy.has(r.user_id)) sumBy.set(r.user_id, { r, tot: {}, all: 0 }); const o = sumBy.get(r.user_id); o.tot[r.leaveCode] = (o.tot[r.leaveCode] || 0) + r.days; o.all += r.days; }
+      let sIdx = 0;
+      for (const { r, tot, all } of sumBy.values()) {
+        const dr = wsum.addRow([r.code, r.name, r.dept, ...lhTypes.map(t => tot[t] || ''), all]);
+        const bg = sIdx++ % 2 ? 'F8FAFC' : 'FFFFFF';
+        dr.eachCell((c, n) => Object.assign(c, { font: F(n === 2 || n === sHeads.length, '374151', 9), fill: Fl(bg), alignment: n >= 2 && n <= 3 ? lft : ctr, border: Bd() }));
+      }
+      if (sumBy.size) {
+        const last = wsum.lastRow.number;
+        const tr = wsum.addRow(['TOTAL', '', '', ...lhTypes.map((_, i) => ({ formula: `SUM(${wsum.getColumn(4 + i).letter}5:${wsum.getColumn(4 + i).letter}${last})` })), { formula: `SUM(${wsum.getColumn(sHeads.length).letter}5:${wsum.getColumn(sHeads.length).letter}${last})` }]);
+        tr.eachCell(c => Object.assign(c, { font: F(true, 'FFFFFF', 9), fill: Fl(NAVY), alignment: ctr, border: Bd() }));
+      }
+      [13, 26, 18, ...lhTypes.map(() => 11), 12].forEach((w, i) => { wsum.getColumn(i + 1).width = w; });
+
+      const lhBuf = await wbL.xlsx.writeBuffer();
+      return res.json({ success: true, base64: Buffer.from(lhBuf).toString('base64'), filename: `Leave_History_Muster_${lhPeriod.replace(' ', '_')}.xlsx`, total_employees: sumBy.size, total_leave_days: lhDays.reduce((a, r) => a + r.days, 0), total_records: lhDays.length });
+    }
+
     // Swipe-detail register: one row per employee per calendar day, showing
     // the day's first check-in / last check-out, how it was captured
     // (Biometric / Geofence / Selfie / Manual — same precedence as the
