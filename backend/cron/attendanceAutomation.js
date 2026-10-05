@@ -197,6 +197,22 @@ async function closeLinkedFieldTrip(userId, attendanceId) {
   ]);
 }
 
+// Days the auto-close sweeps must leave alone. A declared Work-From-Home /
+// On-Duty day is NOT one of them even though it usually carries a marker the
+// other kinds of day use as a "hands off" signal: an approved WFH request writes
+// `leave_id` onto the day's record, and an admin-set WFH/OD day carries
+// `admin_marked`. Skipping on those meant such a day, once the employee
+// checked in and never checked out, stayed "in progress" forever (plain selfie
+// WFH/OD days were already closed). Regularised days and full-day leave stay
+// frozen exactly as before.
+function isDeclaredWfhOd(d) {
+  return d.status === 'work_from_home' || d.status === 'on_duty' || d.selfie_reason === 'wfh' || d.selfie_reason === 'od';
+}
+function skipAutoClose(d) {
+  if (d.regularised || d.status === 'leave') return true;
+  return (d.admin_marked || d.leave_id) && !isDeclaredWfhOd(d);
+}
+
 export async function closeUnfinishedSessions(targetDate) {
   const date = targetDate || istDateString(-1);
   const rows = await all("SELECT id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1", [date]);
@@ -218,7 +234,7 @@ export async function closeUnfinishedSessions(targetDate) {
     // record's is_in_progress flag was still true (e.g. the employee's
     // original check-out was still missing and the regularisation only
     // corrected the check-in time).
-    if (d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') continue;
+    if (skipAutoClose(d)) continue;
 
     // Older records may predate the multi-session model and only carry
     // check_in_time/check_out_time — seed raw_punches from those so this
@@ -298,7 +314,7 @@ export async function closeStaleOpenSessions() {
     // is_in_progress:true (e.g. only the check-in was corrected, the
     // original checkout was never captured) got silently recomputed and
     // overwritten by this sweep, undoing the regularisation entirely.
-    if (d.regularised || d.admin_marked || d.leave_id || d.status === 'leave') continue;
+    if (skipAutoClose(d)) continue;
 
     let rawPunches = Array.isArray(d.raw_punches) && d.raw_punches.length ? d.raw_punches : [];
     if (!rawPunches.length && d.check_in_time) {
