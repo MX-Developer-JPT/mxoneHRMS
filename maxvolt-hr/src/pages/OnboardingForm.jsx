@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -194,6 +194,49 @@ export default function OnboardingForm() {
       MANDATORY_DOCS.every(d => mandatoryFiles[d.key] || carriedOverDocs[d.key]);
   };
 
+  // ── Network-resilient submission helpers ─────────────────────────────
+  // Mobile connections drop mid-request ("Failed to fetch"). Every network step
+  // is retried with back-off, a file that already uploaded is never uploaded
+  // again on a retry/resubmit, and a Document row is never created twice — so
+  // pressing Submit again after a blip simply continues where it stopped.
+  const stepRef = useRef('');
+  const uploadCache = useRef(new Map());
+  const existingDocsRef = useRef(null);
+  const isNetworkError = (e) => /failed to fetch|networkerror|load failed|network request failed|timed out|aborted|\(5\d\d\)|\(429\)/i.test(e?.message || '');
+  const withRetry = async (fn, tries = 5) => {
+    let last;
+    for (let i = 0; i < tries; i++) {
+      try { return await fn(); }
+      catch (e) {
+        last = e;
+        if (!isNetworkError(e) || i === tries - 1) throw e;
+        await new Promise(r => setTimeout(r, 1000 * 2 ** i));
+      }
+    }
+    throw last;
+  };
+  const uploadOnce = async (file, label) => {
+    stepRef.current = `uploading ${label || file?.name || 'a file'}`;
+    const key = `${file.name}|${file.size}|${file.lastModified}`;
+    if (uploadCache.current.has(key)) return uploadCache.current.get(key);
+    const { file_url } = await withRetry(() => base44.integrations.Core.UploadFile({ file }));
+    uploadCache.current.set(key, file_url);
+    return file_url;
+  };
+  const createDoc = async (payload) => {
+    stepRef.current = `saving ${payload.document_name || 'a document'}`;
+    if (!existingDocsRef.current) {
+      existingDocsRef.current = new Set(
+        (await withRetry(() => base44.entities.Document.filter({ user_id: user.id })).catch(() => []))
+          .map(d => `${d.document_type}|${d.document_url}`)
+      );
+    }
+    const k = `${payload.document_type}|${payload.document_url}`;
+    if (existingDocsRef.current.has(k)) return; // already saved by an earlier attempt
+    await withRetry(() => base44.entities.Document.create(payload));
+    existingDocsRef.current.add(k);
+  };
+
   // Creates Document entities from a pre-offer-verified carry-over entry —
   // handles both the single-file shape (aadhaar_card) and the multi-file
   // shape (salary_slips/bank_statements), pre-marked 'verified' with a note
@@ -205,7 +248,7 @@ export default function OnboardingForm() {
     const files = Array.isArray(carried.files) ? carried.files : (carried.file_url ? [{ file_url: carried.file_url, filename: carried.filename }] : []);
     for (const f of files) {
       if (!f?.file_url) continue;
-      await base44.entities.Document.create({
+      await createDoc({
         user_id: user.id, document_type: type, document_name: label,
         document_url: f.file_url, uploaded_by: user.id, status: 'verified',
         notes: 'Carried over from offer-stage document verification — not re-verified at onboarding.',
@@ -224,19 +267,20 @@ export default function OnboardingForm() {
     setSubmitting(true);
     try {
 
-    const { file_url: profilePhotoUrl } = await base44.integrations.Core.UploadFile({ file: profilePhotoFile });
+    const profilePhotoUrl = await uploadOnce(profilePhotoFile, 'profile photo');
 
-    await base44.functions.invoke('updateUserName', {
+    stepRef.current = 'saving your name';
+    await withRetry(() => base44.functions.invoke('updateUserName', {
       first_name: personalInfo.first_name,
       middle_name: personalInfo.middle_name,
       last_name: personalInfo.last_name,
-    });
+    }));
 
     let uploadedPolicies = [];
     for (let i = 0; i < insurancePolicies.length; i++) {
       const pol = { ...insurancePolicies[i] };
       if (policyFiles[i]) {
-        const { file_url } = await base44.integrations.Core.UploadFile({ file: policyFiles[i] });
+        const file_url = await uploadOnce(policyFiles[i]);
         pol.card_url = file_url;
       }
       uploadedPolicies.push(pol);
@@ -244,21 +288,22 @@ export default function OnboardingForm() {
 
     let healthReportUrl = null;
     if (healthReportFile) {
-      const { file_url } = await base44.integrations.Core.UploadFile({ file: healthReportFile });
+      const file_url = await uploadOnce(healthReportFile);
       healthReportUrl = file_url;
     }
     let nomineePanUrl = null;
     if (nomineePanFile) {
-      const { file_url } = await base44.integrations.Core.UploadFile({ file: nomineePanFile });
+      const file_url = await uploadOnce(nomineePanFile);
       nomineePanUrl = file_url;
     }
     let nomineeAadharUrl = null;
     if (nomineeAadharFile) {
-      const { file_url } = await base44.integrations.Core.UploadFile({ file: nomineeAadharFile });
+      const file_url = await uploadOnce(nomineeAadharFile);
       nomineeAadharUrl = file_url;
     }
 
-    const empRecords = await base44.entities.Employee.filter({ user_id: user.id });
+    stepRef.current = 'saving your details';
+    const empRecords = await withRetry(() => base44.entities.Employee.filter({ user_id: user.id }));
     const fullName = [personalInfo.first_name, personalInfo.middle_name, personalInfo.last_name].filter(Boolean).join(' ');
 
     const empData = {
@@ -300,18 +345,18 @@ export default function OnboardingForm() {
 
     let empId;
     if (empRecords.length > 0) {
-      await base44.entities.Employee.update(empRecords[0].id, empData);
+      await withRetry(() => base44.entities.Employee.update(empRecords[0].id, empData));
       empId = empRecords[0].id;
     } else {
-      const newEmp = await base44.entities.Employee.create(empData);
+      const newEmp = await withRetry(() => base44.entities.Employee.create(empData));
       empId = newEmp.id;
     }
 
     for (const doc of MANDATORY_DOCS) {
       const file = mandatoryFiles[doc.key];
       if (file) {
-        const { file_url } = await base44.integrations.Core.UploadFile({ file });
-        await base44.entities.Document.create({
+        const file_url = await uploadOnce(file, doc.label);
+        await createDoc({
           user_id: user.id, document_type: doc.type, document_name: doc.label,
           document_url: file_url, uploaded_by: user.id, status: 'pending_verification',
         });
@@ -325,8 +370,8 @@ export default function OnboardingForm() {
     for (const doc of OPTIONAL_DOCS) {
       const file = optionalFiles[doc.key];
       if (file) {
-        const { file_url } = await base44.integrations.Core.UploadFile({ file });
-        await base44.entities.Document.create({
+        const file_url = await uploadOnce(file, doc.label);
+        await createDoc({
           user_id: user.id, document_type: doc.type, document_name: doc.label,
           document_url: file_url, uploaded_by: user.id, status: 'pending_verification',
         });
@@ -349,7 +394,8 @@ export default function OnboardingForm() {
     // Pending Approvals list — it was hidden there the moment it was
     // rejected specifically so a rejected-and-not-yet-fixed submission
     // doesn't sit there looking like it's still awaiting a first decision.
-    await base44.entities.Employee.update(empId, { onboarding_submitted: true, onboarding_rejected: false });
+    stepRef.current = 'final submission';
+    await withRetry(() => base44.entities.Employee.update(empId, { onboarding_submitted: true, onboarding_rejected: false }));
 
     // Mark as submitted BEFORE sending email so confirmation always shows
     setAlreadySubmitted(true);
@@ -364,7 +410,7 @@ export default function OnboardingForm() {
 
     } catch (err) {
       console.error('Onboarding submit error:', err);
-      toast.error(`Submission failed: ${err.message || 'Please try again.'}`);
+      toast.error(`Submission failed while ${stepRef.current || 'submitting'}: ${isNetworkError(err) ? 'connection problem — please check your internet and press Submit again (nothing is lost).' : (err.message || 'Please try again.')}`);
     } finally {
       setSubmitting(false);
     }
