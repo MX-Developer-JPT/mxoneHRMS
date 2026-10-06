@@ -54,6 +54,7 @@ let snapshot = {
   pending: 0,                // events waiting to sync
   lastSyncAt: null,
   diag: [],                  // last few engine steps/errors, shown on Mark Attendance for troubleshooting
+  nativeDiag: [],            // what the native (background, JS-free) tracker did while the app was hidden
 };
 const listeners = new Set();
 const emit = (patch) => { snapshot = { ...snapshot, ...patch }; listeners.forEach(l => l()); };
@@ -233,6 +234,7 @@ async function doStart({ interactive, uid }) {
     if (ok.started) emit({ mode: 'foreground' });
   }
   diag(ok.started ? 'watcher started' : `not started: ${ok.reason}`);
+  pullNativeDiag();
   if (!ok.started) return ok;
 
   intervals.forEach(clearInterval);
@@ -358,6 +360,17 @@ async function startNativeWatcher(Capacitor, interactive) {
   }
 }
 
+// Reads the log the Android service keeps while the app is in the background.
+export async function pullNativeDiag() {
+  try {
+    const C = await getCapacitor();
+    if (!C?.isNativePlatform() || C.getPlatform() !== 'android') return;
+    const r = await nativePlugin().getHeadlessDiag();
+    const lines = String(r?.log || '').split(String.fromCharCode(10)).filter(Boolean);
+    emit({ nativeDiag: lines.slice(-20) });
+  } catch { /* older native build without the diagnostics method */ }
+}
+
 async function persistHeadless(Capacitor) {
   if (Capacitor.getPlatform() !== 'android') return;
   const BG = nativePlugin();
@@ -455,7 +468,7 @@ function bindGlobalListeners() {
   listenersBound = true;
   window.addEventListener('online', () => { retryDelay = 15000; flushOutbox(); });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { resumeGeofence().catch(() => {}); return; }
+    if (document.visibilityState === 'visible') { resumeGeofence().catch(() => {}); pullNativeDiag(); return; }
     // Going to the background: refresh the state native code uses to keep tracking without JS.
     getCapacitor().then(C => { if (C?.isNativePlatform()) persistHeadless(C).catch(() => {}); }).catch(() => {});
   });

@@ -47,7 +47,7 @@ index 9e65984..c72735b 100644
  </manifest>
    
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
-index a92fcf9..04d054a 100644
+index a92fcf9..6d8d831 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 @@ -12,12 +12,14 @@ import android.content.Context;
@@ -99,7 +99,7 @@ index a92fcf9..04d054a 100644
          if (call.getBoolean("stale", false)) {
              fetchLastLocation(call);
          }
-@@ -181,6 +203,70 @@ public class BackgroundGeolocation extends Plugin {
+@@ -181,6 +203,78 @@ public class BackgroundGeolocation extends Plugin {
          }
      }
  
@@ -167,10 +167,18 @@ index a92fcf9..04d054a 100644
 +        }
 +    }
 +
++    // On-device log written by the native service (see BackgroundGeolocationService.diagLog).
++    @PluginMethod()
++    public void getHeadlessDiag(PluginCall call) {
++        JSObject ret = new JSObject();
++        ret.put("log", getContext().getSharedPreferences(BackgroundGeolocationService.HEADLESS_PREFS, Context.MODE_PRIVATE).getString("diag", ""));
++        call.resolve(ret);
++    }
++
      @PluginMethod()
      public void removeWatcher(PluginCall call) {
          String callbackId = call.getString("id");
-@@ -196,6 +282,42 @@ public class BackgroundGeolocation extends Plugin {
+@@ -196,6 +290,42 @@ public class BackgroundGeolocation extends Plugin {
          call.resolve();
      }
  
@@ -213,7 +221,7 @@ index a92fcf9..04d054a 100644
      @PluginMethod()
      public void openSettings(PluginCall call) {
          Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-@@ -324,6 +446,7 @@ public class BackgroundGeolocation extends Plugin {
+@@ -324,6 +454,7 @@ public class BackgroundGeolocation extends Plugin {
      @Override
      protected void handleOnResume() {
          if (service != null) {
@@ -221,7 +229,7 @@ index a92fcf9..04d054a 100644
              if (stoppedWithoutPermissions && getPermissionState("location") == PermissionState.GRANTED) {
                  service.onPermissionsGranted();
              }
-@@ -334,6 +457,7 @@ public class BackgroundGeolocation extends Plugin {
+@@ -334,6 +465,7 @@ public class BackgroundGeolocation extends Plugin {
      @Override
      protected void handleOnPause() {
          stoppedWithoutPermissions = getPermissionState("location") != PermissionState.GRANTED;
@@ -230,7 +238,7 @@ index a92fcf9..04d054a 100644
      }
  
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..3cf88c2 100644
+index fafbb86..98b7f54 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -293,7 +301,7 @@ index fafbb86..3cf88c2 100644
      private final IBinder binder = new LocalBinder();
  
      // Must be unique for this application.
-@@ -42,22 +75,76 @@ public class BackgroundGeolocationService extends Service {
+@@ -42,22 +75,95 @@ public class BackgroundGeolocationService extends Service {
      }
      private HashSet<Watcher> watchers = new HashSet<Watcher>();
  
@@ -310,6 +318,25 @@ index fafbb86..3cf88c2 100644
 +    // The app UI is in the background (WebView not running JS reliably): native code takes over
 +    // geofence decisions even though JS watchers are still registered.
 +    private volatile boolean backgroundHandoff = false;
++    private int headlessFixCount = 0;
++
++    // Rolling on-device log of what native (JS-free) tracking did. The app reads it
++    // via getHeadlessDiag() and shows it in "Tracking diagnostics" so a background
++    // problem can be diagnosed without adb.
++    static synchronized void diagLog(android.content.Context ctx, String line) {
++        try {
++            SharedPreferences prefs = ctx.getSharedPreferences(HEADLESS_PREFS, MODE_PRIVATE);
++            String cur = prefs.getString("diag", "");
++            String entry = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + " " + line;
++            String[] lines = cur.isEmpty() ? new String[0] : cur.split("\n");
++            StringBuilder sb = new StringBuilder();
++            int from = Math.max(0, lines.length - 29);
++            for (int i = from; i < lines.length; i++) sb.append(lines[i]).append('\n');
++            sb.append(entry);
++            prefs.edit().putString("diag", sb.toString()).apply();
++        } catch (Exception ignored) {}
++    }
++    void diag(String line) { diagLog(getApplicationContext(), line); }
 +
      @Override
      public IBinder onBind(Intent intent) {
@@ -372,7 +399,7 @@ index fafbb86..3cf88c2 100644
          return false;
      }
  
-@@ -77,6 +164,10 @@ public class BackgroundGeolocationService extends Service {
+@@ -77,6 +183,10 @@ public class BackgroundGeolocationService extends Service {
                  Notification backgroundNotification,
                  float distanceFilter
          ) {
@@ -383,19 +410,21 @@ index fafbb86..3cf88c2 100644
              FusedLocationProviderClient client = LocationServices.getFusedLocationProviderClient(
                      BackgroundGeolocationService.this
              );
-@@ -168,8 +259,324 @@ public class BackgroundGeolocationService extends Service {
+@@ -168,8 +278,335 @@ public class BackgroundGeolocationService extends Service {
              }
          }
  
 +        // The Activity went to the background / screen locked: the WebView can no longer be
 +        // trusted to run the JS geofence engine, so evaluate geofence entry/exit natively.
 +        void enterBackground() {
++            diag("app paused -> handing geofence to native (watchers=" + watchers.size() + ")");
 +            backgroundHandoff = true;
 +            startHeadlessTrackingIfNeeded();
 +        }
 +
 +        // Back in the foreground: JS drives tracking again.
 +        void leaveBackground() {
++            diag("app resumed -> JS drives geofence again");
 +            backgroundHandoff = false;
 +            if (!watchers.isEmpty()) stopHeadlessTracking();
 +        }
@@ -408,13 +437,16 @@ index fafbb86..3cf88c2 100644
 +    // ── Headless (native-only) tracking ──────────────────────────────────
 +
 +    private void startHeadlessTrackingIfNeeded() {
-+        if (headlessActive || (!watchers.isEmpty() && !backgroundHandoff)) return;
++        if (headlessActive) { diag("headless already active"); return; }
++        if (!watchers.isEmpty() && !backgroundHandoff) return;
 +        SharedPreferences prefs = getSharedPreferences(HEADLESS_PREFS, MODE_PRIVATE);
-+        if (!prefs.getBoolean(PREF_TRACKING_ACTIVE, false)) return;
++        if (!prefs.getBoolean(PREF_TRACKING_ACTIVE, false)) { diag("headless NOT started: tracking_active=false (JS never persisted state)"); return; }
 +        String token = prefs.getString(PREF_AUTH_TOKEN, null);
 +        String fencesJson = prefs.getString(PREF_FENCES_JSON, null);
 +        String apiBase = prefs.getString(PREF_API_BASE, null);
-+        if (token == null || fencesJson == null || apiBase == null) return;
++        if (token == null || token.isEmpty() || fencesJson == null || apiBase == null) { diag("headless NOT started: missing token/fences/apiBase (token=" + (token != null && !token.isEmpty()) + ")"); return; }
++        diag("headless STARTED (api=" + apiBase + ")");
++        headlessFixCount = 0;
 +
 +        headlessActive = true;
 +        headlessCurrentFenceId = null;
@@ -440,8 +472,9 @@ index fafbb86..3cf88c2 100644
 +        };
 +
 +        try {
-+            headlessClient.requestLocationUpdates(request, headlessCallback, null);
-+        } catch (SecurityException e) {
++            headlessClient.requestLocationUpdates(request, headlessCallback, android.os.Looper.getMainLooper());
++        } catch (Exception e) {
++            diag("headless location request FAILED: " + e);
 +            headlessActive = false;
 +            return;
 +        }
@@ -557,6 +590,8 @@ index fafbb86..3cf88c2 100644
 +    }
 +
 +    private void handleHeadlessLocation(Location location, String token, String fencesJson, String apiBase) {
++        headlessFixCount++;
++        if (headlessFixCount <= 2 || headlessFixCount % 20 == 0) diag("headless fix #" + headlessFixCount + " acc=" + (location.hasAccuracy() ? Math.round(location.getAccuracy()) : -1) + "m inProgress=" + headlessLastKnownInProgress + " owned=" + headlessGeofenceOwned);
 +        if (location.hasAccuracy() && location.getAccuracy() > 100) return;
 +        try {
 +            JSONArray fences = new JSONArray(fencesJson);
@@ -679,6 +714,7 @@ index fafbb86..3cf88c2 100644
 +                    os.write(body.toString().getBytes(StandardCharsets.UTF_8));
 +                }
 +                int code = conn.getResponseCode();
++                diag("POST " + event + " -> HTTP " + code);
 +                if (code >= 200 && code < 300) {
 +                    String action = "";
 +                    try {
@@ -689,6 +725,7 @@ index fafbb86..3cf88c2 100644
 +                        while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
 +                        action = new JSONObject(bos.toString("UTF-8")).optString("action", "");
 +                    } catch (Exception ignored) {}
++                    diag("  server action=" + action);
 +                    if ("enter".equals(event)) {
 +                        headlessLastKnownInProgress = true;
 +                        // Only a session this ENTER actually opened may be auto-closed later; an
@@ -702,6 +739,7 @@ index fafbb86..3cf88c2 100644
 +                }
 +            } catch (Exception e) {
 +                Logger.error("Headless geofence POST failed", e);
++                diag("POST " + event + " FAILED: " + e);
 +            } finally {
 +                if (conn != null) conn.disconnect();
 +            }
@@ -710,7 +748,7 @@ index fafbb86..3cf88c2 100644
  }
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
 new file mode 100644
-index 0000000..d64a828
+index 0000000..d64a828 100644
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
 @@ -0,0 +1,38 @@
