@@ -47,7 +47,7 @@ index 9e65984..c72735b 100644
  </manifest>
    
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
-index a92fcf9..51c2055 100644
+index a92fcf9..04d054a 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 @@ -12,12 +12,14 @@ import android.content.Context;
@@ -213,8 +213,24 @@ index a92fcf9..51c2055 100644
      @PluginMethod()
      public void openSettings(PluginCall call) {
          Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+@@ -324,6 +446,7 @@ public class BackgroundGeolocation extends Plugin {
+     @Override
+     protected void handleOnResume() {
+         if (service != null) {
++            service.leaveBackground();
+             if (stoppedWithoutPermissions && getPermissionState("location") == PermissionState.GRANTED) {
+                 service.onPermissionsGranted();
+             }
+@@ -334,6 +457,7 @@ public class BackgroundGeolocation extends Plugin {
+     @Override
+     protected void handleOnPause() {
+         stoppedWithoutPermissions = getPermissionState("location") != PermissionState.GRANTED;
++        if (service != null) service.enterBackground(); // native takes over geofence decisions while the UI is hidden
+         super.handleOnPause();
+     }
+ 
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..17c2a74 100644
+index fafbb86..3cf88c2 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -277,7 +293,7 @@ index fafbb86..17c2a74 100644
      private final IBinder binder = new LocalBinder();
  
      // Must be unique for this application.
-@@ -42,22 +75,70 @@ public class BackgroundGeolocationService extends Service {
+@@ -42,22 +75,76 @@ public class BackgroundGeolocationService extends Service {
      }
      private HashSet<Watcher> watchers = new HashSet<Watcher>();
  
@@ -288,6 +304,12 @@ index fafbb86..17c2a74 100644
 +    private LocationCallback headlessCallback;
 +    private String headlessCurrentFenceId = null;
 +    private Boolean headlessLastKnownInProgress = null; // null=unknown, true=checked-in, false=checked-out
++    // True once a geofence ENTER opened (or the server says geofence opened) the currently open
++    // session — only such a session is ever auto-closed by an exit, never a manual/biometric one.
++    private volatile boolean headlessGeofenceOwned = false;
++    // The app UI is in the background (WebView not running JS reliably): native code takes over
++    // geofence decisions even though JS watchers are still registered.
++    private volatile boolean backgroundHandoff = false;
 +
      @Override
      public IBinder onBind(Intent intent) {
@@ -350,7 +372,7 @@ index fafbb86..17c2a74 100644
          return false;
      }
  
-@@ -77,6 +158,10 @@ public class BackgroundGeolocationService extends Service {
+@@ -77,6 +164,10 @@ public class BackgroundGeolocationService extends Service {
                  Notification backgroundNotification,
                  float distanceFilter
          ) {
@@ -361,7 +383,24 @@ index fafbb86..17c2a74 100644
              FusedLocationProviderClient client = LocationServices.getFusedLocationProviderClient(
                      BackgroundGeolocationService.this
              );
-@@ -172,4 +257,289 @@ public class BackgroundGeolocationService extends Service {
+@@ -168,8 +259,324 @@ public class BackgroundGeolocationService extends Service {
+             }
+         }
+ 
++        // The Activity went to the background / screen locked: the WebView can no longer be
++        // trusted to run the JS geofence engine, so evaluate geofence entry/exit natively.
++        void enterBackground() {
++            backgroundHandoff = true;
++            startHeadlessTrackingIfNeeded();
++        }
++
++        // Back in the foreground: JS drives tracking again.
++        void leaveBackground() {
++            backgroundHandoff = false;
++            if (!watchers.isEmpty()) stopHeadlessTracking();
++        }
++
+         void stopService() {
              BackgroundGeolocationService.this.stopSelf();
          }
      }
@@ -369,7 +408,7 @@ index fafbb86..17c2a74 100644
 +    // ── Headless (native-only) tracking ──────────────────────────────────
 +
 +    private void startHeadlessTrackingIfNeeded() {
-+        if (headlessActive || !watchers.isEmpty()) return;
++        if (headlessActive || (!watchers.isEmpty() && !backgroundHandoff)) return;
 +        SharedPreferences prefs = getSharedPreferences(HEADLESS_PREFS, MODE_PRIVATE);
 +        if (!prefs.getBoolean(PREF_TRACKING_ACTIVE, false)) return;
 +        String token = prefs.getString(PREF_AUTH_TOKEN, null);
@@ -380,14 +419,15 @@ index fafbb86..17c2a74 100644
 +        headlessActive = true;
 +        headlessCurrentFenceId = null;
 +        headlessLastKnownInProgress = null;
++        headlessGeofenceOwned = false;
 +        seedHeadlessAttendanceState(token, apiBase, fencesJson);
 +        headlessClient = LocationServices.getFusedLocationProviderClient(this);
 +
 +        LocationRequest request = new LocationRequest();
-+        request.setInterval(15000);
-+        request.setFastestInterval(10000);
++        request.setInterval(5000);
++        request.setFastestInterval(3000);
 +        request.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
-+        request.setSmallestDisplacement(15f);
++        request.setSmallestDisplacement(5f);
 +
 +        headlessCallback = new LocationCallback() {
 +            @Override
@@ -496,6 +536,7 @@ index fafbb86..17c2a74 100644
 +
 +                boolean inProgress = att.optBoolean("is_in_progress", false);
 +                headlessLastKnownInProgress = inProgress;
++                headlessGeofenceOwned = inProgress && att.optBoolean("open_session_by_geofence", false);
 +                String fenceName = att.isNull("geofence_location") ? null : att.optString("geofence_location", null);
 +                if (inProgress && fenceName != null) {
 +                    JSONArray fences = new JSONArray(fencesJson);
@@ -545,6 +586,7 @@ index fafbb86..17c2a74 100644
 +            // checked in — otherwise there's nothing to exit from, or the
 +            // seed fetch (below) simply hasn't resolved yet.
 +            if (!Boolean.TRUE.equals(headlessLastKnownInProgress)) return;
++            if (!headlessGeofenceOwned) return; // never auto-close a manual / biometric / WFH session
 +            JSONObject cur = null;
 +            if (headlessCurrentFenceId != null) {
 +                for (int i = 0; i < fences.length(); i++) {
@@ -573,7 +615,7 @@ index fafbb86..17c2a74 100644
 +                    location.getLatitude(), location.getLongitude(),
 +                    cur.getDouble("latitude"), cur.getDouble("longitude")
 +            );
-+            boolean wellOutside = d > cur.getDouble("radius_m") + 100;
++            boolean wellOutside = d > cur.getDouble("radius_m") + 15; // immediate exit, small hysteresis
 +            if (wellOutside) {
 +                postGeofenceEvent("exit", location, cur, token, apiBase);
 +                headlessCurrentFenceId = null;
@@ -638,8 +680,23 @@ index fafbb86..17c2a74 100644
 +                }
 +                int code = conn.getResponseCode();
 +                if (code >= 200 && code < 300) {
-+                    if ("enter".equals(event)) headlessLastKnownInProgress = true;
-+                    else if ("exit".equals(event)) headlessLastKnownInProgress = false;
++                    String action = "";
++                    try {
++                        java.io.InputStream is = conn.getInputStream();
++                        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
++                        byte[] buf = new byte[1024];
++                        int n;
++                        while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
++                        action = new JSONObject(bos.toString("UTF-8")).optString("action", "");
++                    } catch (Exception ignored) {}
++                    if ("enter".equals(event)) {
++                        headlessLastKnownInProgress = true;
++                        // Only a session this ENTER actually opened may be auto-closed later; an
++                        // "already checked in" answer means a manual/biometric session owns the day.
++                        if ("checked_in".equals(action) || "location_transfer".equals(action)) headlessGeofenceOwned = true;
++                    } else if ("exit".equals(event)) {
++                        headlessLastKnownInProgress = false; headlessGeofenceOwned = false;
++                    }
 +                } else {
 +                    Logger.debug("Headless geofence event failed, HTTP " + code);
 +                }

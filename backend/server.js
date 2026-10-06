@@ -334,6 +334,14 @@ const server = app.listen(PORT, () => {
   console.log(`\n✓ Maxvolt One Backend  http://localhost:${PORT}  [${process.env.NODE_ENV || 'development'}]`);
 });
 // No hard timeout — long-running ops like bulk biometric processing must complete fully
+// Retries a few times in case the database is still warming up right after boot.
+(async () => {
+  const { syncHolidayList2026 } = await import('./utils/holidaySeed.js');
+  for (let i = 0; i < 6; i++) {
+    try { await syncHolidayList2026(); return; }
+    catch (err) { console.error(`[holiday-sync] attempt ${i + 1} failed:`, err.message); await new Promise(r => setTimeout(r, 30000)); }
+  }
+})();
 server.setTimeout(0);
 server.keepAliveTimeout = 65000;
 

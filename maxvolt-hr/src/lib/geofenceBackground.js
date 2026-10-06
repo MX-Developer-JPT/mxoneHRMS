@@ -454,7 +454,11 @@ function bindGlobalListeners() {
   if (listenersBound) return;
   listenersBound = true;
   window.addEventListener('online', () => { retryDelay = 15000; flushOutbox(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resumeGeofence().catch(() => {}); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') { resumeGeofence().catch(() => {}); return; }
+    // Going to the background: refresh the state native code uses to keep tracking without JS.
+    getCapacitor().then(C => { if (C?.isNativePlatform()) persistHeadless(C).catch(() => {}); }).catch(() => {});
+  });
 }
 
 // Periodic housekeeping: mark a stale position as "unavailable" (display
