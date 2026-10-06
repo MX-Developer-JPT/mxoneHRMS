@@ -588,6 +588,15 @@ export default function MarkAttendance() {
                   </p>
                 )}
 
+                {geo.bgLocation === false && (
+                  <div className="flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 p-2">
+                    <p className="text-xs text-amber-800 flex-1">
+                      For automatic check-in/out while the app is closed, set this app's Location permission to <b>"Allow all the time"</b>.
+                    </p>
+                    <Button size="sm" variant="outline" onClick={() => openLocationSettings()}>Open settings</Button>
+                  </div>
+                )}
+
                 {geo.diag?.length > 0 && (
                   <details className="text-[10px] text-gray-500" open={geo.status !== 'active' || !geo.lastFixAt}>
                     <summary className="cursor-pointer">Tracking diagnostics</summary>

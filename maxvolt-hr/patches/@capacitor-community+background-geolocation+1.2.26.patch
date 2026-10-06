@@ -14,10 +14,10 @@ index d235202..e6f626f 100644
      targets: [
          .target(
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/AndroidManifest.xml b/node_modules/@capacitor-community/background-geolocation/android/src/main/AndroidManifest.xml
-index 9e65984..c72735b 100644
+index 9e65984..fbac81f 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/AndroidManifest.xml
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/AndroidManifest.xml
-@@ -5,6 +5,20 @@
+@@ -5,6 +5,26 @@
              android:enabled="true"
              android:exported="true"
              android:foregroundServiceType="location" />
@@ -35,10 +35,16 @@ index 9e65984..c72735b 100644
 +                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
 +            </intent-filter>
 +        </receiver>
++        <!-- OS-level geofence transitions (see GeofenceReceiver): delivered by Google Play services
++             even when the app is closed. Not exported — only the OS's explicit PendingIntent reaches it. -->
++        <receiver
++            android:name="com.equimaps.capacitor_background_geolocation.GeofenceReceiver"
++            android:enabled="true"
++            android:exported="false" />
      </application>
  
      <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-@@ -16,6 +30,7 @@
+@@ -16,6 +36,7 @@
      <!-- Android SDK 33+ requires the POST_NOTIFICATIONS runtime permission to
      display the foreground service notification. -->
      <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -47,7 +53,7 @@ index 9e65984..c72735b 100644
  </manifest>
    
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
-index a92fcf9..6d8d831 100644
+index a92fcf9..21d94ba 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 @@ -12,12 +12,14 @@ import android.content.Context;
@@ -99,7 +105,7 @@ index a92fcf9..6d8d831 100644
          if (call.getBoolean("stale", false)) {
              fetchLastLocation(call);
          }
-@@ -181,6 +203,78 @@ public class BackgroundGeolocation extends Plugin {
+@@ -181,6 +203,87 @@ public class BackgroundGeolocation extends Plugin {
          }
      }
  
@@ -167,6 +173,15 @@ index a92fcf9..6d8d831 100644
 +        }
 +    }
 +
++    // Whether "Allow all the time" location is granted (needed for events while the app is closed).
++    @PluginMethod()
++    public void hasBackgroundLocation(PluginCall call) {
++        JSObject ret = new JSObject();
++        ret.put("granted", Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
++                || getPermissionState("backgroundLocation") == PermissionState.GRANTED);
++        call.resolve(ret);
++    }
++
 +    // On-device log written by the native service (see BackgroundGeolocationService.diagLog).
 +    @PluginMethod()
 +    public void getHeadlessDiag(PluginCall call) {
@@ -178,7 +193,7 @@ index a92fcf9..6d8d831 100644
      @PluginMethod()
      public void removeWatcher(PluginCall call) {
          String callbackId = call.getString("id");
-@@ -196,6 +290,42 @@ public class BackgroundGeolocation extends Plugin {
+@@ -196,6 +299,45 @@ public class BackgroundGeolocation extends Plugin {
          call.resolve();
      }
  
@@ -204,6 +219,8 @@ index a92fcf9..6d8d831 100644
 +                .putString(BackgroundGeolocationService.PREF_API_BASE, apiBase)
 +                .putBoolean(BackgroundGeolocationService.PREF_TRACKING_ACTIVE, true)
 +                .apply();
++        // Hand the office boundaries to the OS so enter/exit are delivered even with the app closed.
++        GeofenceReceiver.register(getContext());
 +        call.resolve();
 +    }
 +
@@ -215,13 +232,14 @@ index a92fcf9..6d8d831 100644
 +                .edit()
 +                .putBoolean(BackgroundGeolocationService.PREF_TRACKING_ACTIVE, false)
 +                .apply();
++        GeofenceReceiver.unregister(getContext());
 +        call.resolve();
 +    }
 +
      @PluginMethod()
      public void openSettings(PluginCall call) {
          Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-@@ -324,6 +454,7 @@ public class BackgroundGeolocation extends Plugin {
+@@ -324,6 +466,7 @@ public class BackgroundGeolocation extends Plugin {
      @Override
      protected void handleOnResume() {
          if (service != null) {
@@ -229,7 +247,7 @@ index a92fcf9..6d8d831 100644
              if (stoppedWithoutPermissions && getPermissionState("location") == PermissionState.GRANTED) {
                  service.onPermissionsGranted();
              }
-@@ -334,6 +465,7 @@ public class BackgroundGeolocation extends Plugin {
+@@ -334,6 +477,7 @@ public class BackgroundGeolocation extends Plugin {
      @Override
      protected void handleOnPause() {
          stoppedWithoutPermissions = getPermissionState("location") != PermissionState.GRANTED;
@@ -748,10 +766,10 @@ index fafbb86..98b7f54 100644
  }
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
 new file mode 100644
-index 0000000..d64a828 100644
+index 0000000..a94c494 100644
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,47 @@
 +package com.equimaps.capacitor_background_geolocation;
 +
 +import android.content.BroadcastReceiver;
@@ -781,12 +799,232 @@ index 0000000..d64a828 100644
 +        boolean trackingActive = prefs.getBoolean(BackgroundGeolocationService.PREF_TRACKING_ACTIVE, false);
 +        if (!trackingActive) return;
 +
++        // OS geofences are cleared by a reboot — put them back first (works without any service).
++        GeofenceReceiver.register(context);
++
 +        Intent serviceIntent = new Intent(context, BackgroundGeolocationService.class);
 +        serviceIntent.setAction(BackgroundGeolocationService.ACTION_START_HEADLESS);
-+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-+            context.startForegroundService(serviceIntent);
-+        } else {
-+            context.startService(serviceIntent);
++        try {
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++                context.startForegroundService(serviceIntent);
++            } else {
++                context.startService(serviceIntent);
++            }
++        } catch (Exception e) {
++            // Newer Android versions refuse to start a location foreground service straight from
++            // boot — the OS geofences registered above still cover the office boundary.
++            BackgroundGeolocationService.diagLog(context, "boot: could not start tracking service: " + e);
 +        }
++    }
++}
+diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java
+new file mode 100644
+index 0000000..2926c3d 100644
+--- /dev/null
++++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java
+@@ -0,0 +1,205 @@
++package com.equimaps.capacitor_background_geolocation;
++
++import android.Manifest;
++import android.app.PendingIntent;
++import android.content.BroadcastReceiver;
++import android.content.Context;
++import android.content.Intent;
++import android.content.SharedPreferences;
++import android.content.pm.PackageManager;
++import android.location.Location;
++import android.os.Build;
++
++import com.google.android.gms.location.Geofence;
++import com.google.android.gms.location.GeofencingClient;
++import com.google.android.gms.location.GeofencingEvent;
++import com.google.android.gms.location.GeofencingRequest;
++import com.google.android.gms.location.LocationServices;
++
++import org.json.JSONArray;
++import org.json.JSONObject;
++
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.nio.charset.StandardCharsets;
++import java.text.SimpleDateFormat;
++import java.util.ArrayList;
++import java.util.Date;
++import java.util.List;
++import java.util.Locale;
++import java.util.TimeZone;
++
++// Operating-system level geofencing (Google Play services GeofencingClient).
++//
++// Unlike any watcher this app runs itself, these fences are owned by the OS: Android
++// wakes this receiver when the phone crosses a configured office boundary even if the
++// app is closed, the screen is off, the service was killed by the OEM battery manager,
++// or the app was swiped away. The receiver then posts the enter/exit to the same
++// idempotent server endpoint the app uses (nativeGeofenceEvent) — no JS, no Activity.
++//
++// Fences + login are the ones the JS side persisted via persistHeadlessState().
++public class GeofenceReceiver extends BroadcastReceiver {
++    static final String ACTION = "com.equimaps.capacitor_background_geolocation.GEOFENCE_EVENT";
++
++    static PendingIntent pendingIntent(Context ctx) {
++        Intent i = new Intent(ctx, GeofenceReceiver.class).setAction(ACTION);
++        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
++        // Play services fills in the event extras, so the intent must be mutable on Android 12+.
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_MUTABLE;
++        return PendingIntent.getBroadcast(ctx, 4711, i, flags);
++    }
++
++    /** (Re)registers every persisted office fence with the OS. Safe to call repeatedly. */
++    static void register(final Context ctx) {
++        try {
++            SharedPreferences prefs = ctx.getSharedPreferences(BackgroundGeolocationService.HEADLESS_PREFS, Context.MODE_PRIVATE);
++            if (!prefs.getBoolean(BackgroundGeolocationService.PREF_TRACKING_ACTIVE, false)) return;
++            String fencesJson = prefs.getString(BackgroundGeolocationService.PREF_FENCES_JSON, null);
++            if (fencesJson == null) return;
++            if (ctx.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
++                BackgroundGeolocationService.diagLog(ctx, "OS geofence NOT registered: location permission missing");
++                return;
++            }
++            boolean bgOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
++                    || ctx.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED;
++            if (!bgOk) BackgroundGeolocationService.diagLog(ctx, "WARNING: 'Allow all the time' location not granted — OS geofence events may not arrive while the app is closed");
++
++            JSONArray fences = new JSONArray(fencesJson);
++            List<Geofence> list = new ArrayList<>();
++            for (int i = 0; i < fences.length() && i < 90; i++) {
++                JSONObject f = fences.getJSONObject(i);
++                list.add(new Geofence.Builder()
++                        .setRequestId(f.getString("id"))
++                        .setCircularRegion(f.getDouble("latitude"), f.getDouble("longitude"), (float) f.getDouble("radius_m"))
++                        .setExpirationDuration(Geofence.NEVER_EXPIRE)
++                        .setNotificationResponsiveness(5000)
++                        .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER | Geofence.GEOFENCE_TRANSITION_EXIT)
++                        .build());
++            }
++            if (list.isEmpty()) return;
++
++            final GeofencingClient client = LocationServices.getGeofencingClient(ctx);
++            final PendingIntent pi = pendingIntent(ctx);
++            final GeofencingRequest req = new GeofencingRequest.Builder()
++                    .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
++                    .addGeofences(list)
++                    .build();
++            final int count = list.size();
++            client.removeGeofences(pi).addOnCompleteListener(t ->
++                    client.addGeofences(req, pi)
++                            .addOnSuccessListener(v -> BackgroundGeolocationService.diagLog(ctx, "OS geofence registered (" + count + " fence(s))"))
++                            .addOnFailureListener(e -> BackgroundGeolocationService.diagLog(ctx, "OS geofence register FAILED: " + e)));
++        } catch (Exception e) {
++            BackgroundGeolocationService.diagLog(ctx, "OS geofence register error: " + e);
++        }
++    }
++
++    static void unregister(Context ctx) {
++        try { LocationServices.getGeofencingClient(ctx).removeGeofences(pendingIntent(ctx)); } catch (Exception ignored) {}
++    }
++
++    @Override
++    public void onReceive(final Context context, Intent intent) {
++        final GeofencingEvent ev = GeofencingEvent.fromIntent(intent);
++        if (ev == null) return;
++        if (ev.hasError()) {
++            BackgroundGeolocationService.diagLog(context, "OS geofence error code " + ev.getErrorCode());
++            return;
++        }
++        final int transition = ev.getGeofenceTransition();
++        if (transition != Geofence.GEOFENCE_TRANSITION_ENTER && transition != Geofence.GEOFENCE_TRANSITION_EXIT) return;
++        final List<Geofence> triggered = ev.getTriggeringGeofences();
++        if (triggered == null || triggered.isEmpty()) return;
++        final Location loc = ev.getTriggeringLocation();
++        final PendingResult pr = goAsync();
++        new Thread(() -> {
++            try {
++                handle(context, transition, triggered.get(0).getRequestId(), loc);
++            } catch (Exception e) {
++                BackgroundGeolocationService.diagLog(context, "OS geofence handler error: " + e);
++            } finally {
++                pr.finish();
++            }
++        }).start();
++    }
++
++    private static void handle(Context ctx, int transition, String fenceId, Location loc) throws Exception {
++        SharedPreferences prefs = ctx.getSharedPreferences(BackgroundGeolocationService.HEADLESS_PREFS, Context.MODE_PRIVATE);
++        String token = prefs.getString(BackgroundGeolocationService.PREF_AUTH_TOKEN, null);
++        String apiBase = prefs.getString(BackgroundGeolocationService.PREF_API_BASE, null);
++        String fencesJson = prefs.getString(BackgroundGeolocationService.PREF_FENCES_JSON, null);
++        if (token == null || token.isEmpty() || apiBase == null || fencesJson == null) {
++            BackgroundGeolocationService.diagLog(ctx, "OS geofence event ignored: no saved login/fences");
++            return;
++        }
++        JSONObject fence = null;
++        JSONArray fences = new JSONArray(fencesJson);
++        for (int i = 0; i < fences.length(); i++) {
++            if (fences.getJSONObject(i).getString("id").equals(fenceId)) { fence = fences.getJSONObject(i); break; }
++        }
++        if (fence == null) return;
++        boolean enter = transition == Geofence.GEOFENCE_TRANSITION_ENTER;
++        BackgroundGeolocationService.diagLog(ctx, "OS geofence " + (enter ? "ENTER" : "EXIT") + " " + fence.optString("name"));
++
++        if (!enter) {
++            // Only auto-close a session this geofence opened — never a manual / biometric / WFH one.
++            String state = post(apiBase + "/api/functions/getMyGeofence", token, "{}");
++            JSONObject att = state == null ? null : new JSONObject(state).optJSONObject("attendance_today");
++            if (att == null || !att.optBoolean("is_in_progress", false) || !att.optBoolean("open_session_by_geofence", false)) {
++                BackgroundGeolocationService.diagLog(ctx, "  exit skipped (no geofence-opened session is open)");
++                return;
++            }
++        }
++
++        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
++        sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
++        JSONObject body = new JSONObject();
++        body.put("event", enter ? "enter" : "exit");
++        double lat = loc != null ? loc.getLatitude() : fence.getDouble("latitude");
++        double lon = loc != null ? loc.getLongitude() : fence.getDouble("longitude");
++        body.put("latitude", lat);
++        body.put("longitude", lon);
++        body.put("accuracy", loc != null && loc.hasAccuracy() ? (double) loc.getAccuracy() : JSONObject.NULL);
++        body.put("occurred_at", sdf.format(new Date()));
++        body.put("location_name", fence.getString("name"));
++        body.put("is_mock", loc != null && loc.isFromMockProvider());
++        body.put("device_id", "android-os-geofence");
++        body.put("source", "native_android");
++        String resp = post(apiBase + "/api/functions/nativeGeofenceEvent", token, body.toString());
++        String action = "";
++        try { if (resp != null) action = new JSONObject(resp).optString("action", new JSONObject(resp).optString("reason", "")); } catch (Exception ignored) {}
++        BackgroundGeolocationService.diagLog(ctx, "  server: " + (resp == null ? "NO RESPONSE (will retry on next crossing)" : action));
++    }
++
++    /** Minimal blocking POST; returns the response body or null on failure. Retries once. */
++    private static String post(String url, String token, String json) {
++        for (int attempt = 0; attempt < 2; attempt++) {
++            HttpURLConnection conn = null;
++            try {
++                conn = (HttpURLConnection) new URL(url).openConnection();
++                conn.setRequestMethod("POST");
++                conn.setRequestProperty("Content-Type", "application/json");
++                conn.setRequestProperty("Authorization", "Bearer " + token);
++                conn.setConnectTimeout(15000);
++                conn.setReadTimeout(15000);
++                conn.setDoOutput(true);
++                try (OutputStream os = conn.getOutputStream()) { os.write(json.getBytes(StandardCharsets.UTF_8)); }
++                int code = conn.getResponseCode();
++                if (code < 200 || code >= 300) { Thread.sleep(1500); continue; }
++                InputStream is = conn.getInputStream();
++                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
++                byte[] buf = new byte[1024];
++                int n;
++                while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
++                return bos.toString("UTF-8");
++            } catch (Exception e) {
++                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
++            } finally {
++                if (conn != null) conn.disconnect();
++            }
++        }
++        return null;
 +    }
 +}

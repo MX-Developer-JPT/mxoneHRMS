@@ -54,6 +54,7 @@ let snapshot = {
   pending: 0,                // events waiting to sync
   lastSyncAt: null,
   diag: [],                  // last few engine steps/errors, shown on Mark Attendance for troubleshooting
+  bgLocation: null,          // Android: is "Allow all the time" granted (needed while the app is closed)
   nativeDiag: [],            // what the native (background, JS-free) tracker did while the app was hidden
 };
 const listeners = new Set();
@@ -343,9 +344,18 @@ async function startNativeWatcher(Capacitor, interactive) {
     if (permissionDenied) return { started: false, reason: 'permission_required' };
     emit({ status: 'active', liveState: snapshot.lastFixAt ? snapshot.liveState : 'unavailable' });
     saveP({ authorized: true });
-    if (Capacitor.getPlatform() === 'android' && !p.bgAsked && interactive) {
-      saveP({ bgAsked: true });
-      requestBackgroundLocationIfNeeded();
+    if (Capacitor.getPlatform() === 'android') {
+      // Background (app-closed) geofencing only works with "Allow all the time".
+      try {
+        const { granted } = await BG.hasBackgroundLocation();
+        emit({ bgLocation: !!granted });
+        diag(`"Allow all the time" location: ${granted ? 'granted' : 'NOT granted'}`);
+        const last = Number(loadP().bgAskedAt || 0);
+        if (!granted && Date.now() - last > 24 * 3600 * 1000) {
+          saveP({ bgAskedAt: Date.now() });
+          requestBackgroundLocationIfNeeded();
+        }
+      } catch { /* older native build */ }
     }
     return { started: true };
   } catch (e) {
