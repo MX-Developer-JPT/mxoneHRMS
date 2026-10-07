@@ -60,8 +60,24 @@ export default function OnboardingForm() {
   const [profilePhotoFile, setProfilePhotoFile] = useState(null);
   const [profilePhotoPreview, setProfilePhotoPreview] = useState('');
 
-  const handleProfilePhotoSelect = (e) => {
-    const file = e.target.files[0];
+  // Copies a picked file into memory right away. On Android a file chosen from a scanner app or
+  // cloud storage is only a live pointer to something that can change or vanish before Submit
+  // (the browser then fails the upload with a bare "Failed to fetch" even for a 0.1 MB PDF).
+  // An in-memory copy uploads reliably, and an unreadable file is reported at once.
+  const snap = async (file) => {
+    try {
+      const buf = await file.arrayBuffer();
+      return new File([buf], file.name, { type: file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : ''), lastModified: file.lastModified });
+    } catch {
+      toast.error(`Could not read "${file.name}" — please pick the file again (save it to your phone's Downloads first if it came from a scanner or cloud app).`, { duration: 9000 });
+      return null;
+    }
+  };
+
+  const handleProfilePhotoSelect = async (e) => {
+    const picked = e.target.files[0];
+    if (!picked) return;
+    const file = await snap(picked);
     if (!file) return;
     setProfilePhotoFile(file);
     setProfilePhotoPreview(URL.createObjectURL(file));
@@ -219,6 +235,8 @@ export default function OnboardingForm() {
     stepRef.current = `uploading ${label || file?.name || 'a file'} (${file?.name || 'file'}, ${((file?.size || 0) / 1048576).toFixed(1)} MB)`;
     const key = `${file.name}|${file.size}|${file.lastModified}`;
     if (uploadCache.current.has(key)) return uploadCache.current.get(key);
+    try { await file.slice(0, 1).arrayBuffer(); }
+    catch { throw new Error(`UNREADABLE:${file.name}`); }
     const { file_url } = await withRetry(() => base44.integrations.Core.UploadFile({ file }));
     uploadCache.current.set(key, file_url);
     return file_url;
@@ -421,6 +439,7 @@ export default function OnboardingForm() {
 
     } catch (err) {
       console.error('Onboarding submit error:', err);
+      if (/^UNREADABLE:/.test(err?.message || '')) { toast.error(`Could not read "${err.message.slice(11)}" — tap Change and pick it again, then press Submit (files already uploaded are kept).`, { duration: 10000 }); return; }
       toast.error(`Submission failed while ${stepRef.current || 'submitting'}: ${isNetworkError(err) ? 'connection problem — please check your internet and press Submit again (nothing is lost).' : (err.message || 'Please try again.')}`);
     } finally {
       setSubmitting(false);
@@ -877,7 +896,7 @@ export default function OnboardingForm() {
                       </div>
                       <label className="cursor-pointer">
                         <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
-                          onChange={e => { if (e.target.files[0]) updatePolicyFile(i, e.target.files[0]); }} />
+                          onChange={e => { if (e.target.files[0]) snap(e.target.files[0]).then(f => f && updatePolicyFile(i, f)); }} />
                         <Button variant="outline" size="sm" asChild>
                           <span><Upload className="w-4 h-4 mr-1" />{policyFiles[i] || pol.card_url ? 'Change' : 'Upload'}</span>
                         </Button>
@@ -921,7 +940,7 @@ export default function OnboardingForm() {
                       </div>
                       <label className="cursor-pointer">
                         <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
-                          onChange={e => { if (e.target.files[0]) setMandatoryFiles(p => ({ ...p, [doc.key]: e.target.files[0] })); }} />
+                          onChange={e => { if (e.target.files[0]) snap(e.target.files[0]).then(f => f && setMandatoryFiles(p => ({ ...p, [doc.key]: f }))); }} />
                         <Button variant="outline" size="sm" asChild>
                           <span><Upload className="w-4 h-4 mr-1" />{mandatoryFiles[doc.key] ? 'Change' : carriedOverDocs[doc.key] ? 'Replace' : 'Upload'}</span>
                         </Button>
@@ -945,7 +964,7 @@ export default function OnboardingForm() {
                   </div>
                   <label className="cursor-pointer">
                     <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
-                      onChange={e => { if (e.target.files[0]) setHealthReportFile(e.target.files[0]); }} />
+                      onChange={e => { if (e.target.files[0]) snap(e.target.files[0]).then(f => f && setHealthReportFile(f)); }} />
                     <Button variant="outline" size="sm" asChild>
                       <span><Upload className="w-4 h-4 mr-1" />{healthReportFile ? 'Change' : 'Upload'}</span>
                     </Button>
@@ -969,7 +988,7 @@ export default function OnboardingForm() {
                       </div>
                       <label className="cursor-pointer">
                         <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
-                          onChange={e => { if (e.target.files[0]) doc.setFile(e.target.files[0]); }} />
+                          onChange={e => { if (e.target.files[0]) snap(e.target.files[0]).then(f => f && doc.setFile(f)); }} />
                         <Button variant="outline" size="sm" asChild>
                           <span><Upload className="w-4 h-4 mr-1" />{doc.file ? 'Change' : 'Upload'}</span>
                         </Button>
@@ -994,7 +1013,7 @@ export default function OnboardingForm() {
                       </div>
                       <label className="cursor-pointer">
                         <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
-                          onChange={e => { if (e.target.files[0]) setOptionalFiles(p => ({ ...p, [doc.key]: e.target.files[0] })); }} />
+                          onChange={e => { if (e.target.files[0]) snap(e.target.files[0]).then(f => f && setOptionalFiles(p => ({ ...p, [doc.key]: f }))); }} />
                         <Button variant="outline" size="sm" asChild>
                           <span><Upload className="w-4 h-4 mr-1" />{optionalFiles[doc.key] ? 'Change' : carriedOverDocs[doc.key] ? 'Replace' : 'Upload'}</span>
                         </Button>
