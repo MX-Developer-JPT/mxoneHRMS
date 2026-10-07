@@ -3,7 +3,7 @@
 // 2. Employees who checked in but never checked out before 2 AM the next day → marked absent.
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
-import { buildSessions, applyDeclaredStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, isOvernightShift, shiftEndDateTime } from '../routes/attendancelog.js';
+import { buildSessions, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, isOvernightShift, shiftEndDateTime } from '../routes/attendancelog.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -298,6 +298,7 @@ export async function closeUnfinishedSessions(targetDate) {
 // Runs on the frequent cron (see server.js) so either case self-heals within
 // the run interval instead of staying stuck indefinitely.
 export async function closeStaleOpenSessions() {
+  await healAttendanceFromLogs().catch(e => console.warn('[attendance-heal] failed:', e.message));
   await fixAutoClosedWfhOd().catch(e => console.warn('[attendance-cron] fixAutoClosedWfhOd:', e.message));
   const todayIST = istDateString(0);
   const rows = await all(
@@ -780,6 +781,90 @@ export async function fixHalfDayLeaveDays(days = 45) {
 
 // Days auto-closed before the "no check-out = absent" rule existed are still
 // stored as on_duty / work_from_home. Re-mark them absent (idempotent).
+// Self-healing sync: every biometric punch is stored as an AttendanceLog, but a
+// punch can fail to reach the day's Attendance row (arrived while the day was
+// being closed, hit a transient error, row created later, …). This merges any
+// stored punch the day's record is missing — e.g. a check-out that exists in the
+// logs but not on the attendance record — and recomputes sessions/status.
+// Idempotent; never touches regularised / admin-marked / leave days or overnight
+// shifts, and never overwrites a side captured by selfie/geofence.
+export async function healAttendanceFromLogs(days = 5) {
+  const from = istDateString(-days);
+  const today = istDateString(0);
+  const logRows = await all("SELECT data FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'LogDate' >= $1", [from]);
+  if (!logRows.length) return { logs: 0, healed: 0 };
+
+  const emps = (await all("SELECT data FROM entities WHERE type='Employee'")).map(r => JSON.parse(r.data));
+  const codeMap = {}, empByUser = {};
+  for (const e of emps) {
+    if (!e.user_id) continue;
+    empByUser[e.user_id] = e;
+    for (const c of [e.employee_code, e.biometric_id]) if (c) codeMap[String(c).trim().toLowerCase()] = e.user_id;
+  }
+  (await all("SELECT data FROM entities WHERE type='BiometricCodeMapping'")).forEach(r => {
+    const m = JSON.parse(r.data);
+    if (m.biometric_code && m.user_id) codeMap[String(m.biometric_code).trim().toLowerCase()] = m.user_id;
+  });
+
+  const groups = new Map();
+  for (const r of logRows) {
+    const l = JSON.parse(r.data);
+    const uid = l.user_id || codeMap[String(l.EmployeeCode || '').trim().toLowerCase()];
+    const t = String(l.LogDate || '').trim().replace(' ', 'T');
+    if (!uid || !t || /T00:00:00/.test(t)) continue;
+    const dir = ['OUT', 'EXIT'].includes(String(l.Direction || 'IN').toUpperCase()) ? 'OUT' : 'IN';
+    const key = uid + '|' + t.slice(0, 10);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ time: t, device_direction: dir });
+  }
+
+  const defaultShift = await getDefaultShift();
+  let healed = 0;
+  for (const [key, punches] of groups) {
+    const [uid, date] = key.split('|');
+    const row = await one("SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1", [uid, date]);
+    if (!row) continue; // no row yet — the normal punch path creates it
+    const d = JSON.parse(row.data);
+    if (d.regularised || d.admin_marked || d.status === 'leave' || (d.leave_id && !d.leave_half_day)) continue;
+
+    let existing = Array.isArray(d.raw_punches) ? [...d.raw_punches] : [];
+    if (!existing.length && d.check_in_time) {
+      existing.push({ time: d.check_in_time, device_direction: 'IN' });
+      if (d.check_out_time) existing.push({ time: d.check_out_time, device_direction: 'OUT' });
+    }
+    const merged = [];
+    for (const pch of [...existing, ...punches].sort((a, b) => String(a.time).localeCompare(String(b.time)))) {
+      const ms = new Date(String(pch.time).replace(' ', 'T')).getTime();
+      if (!merged.some(m => Math.abs(new Date(String(m.time).replace(' ', 'T')).getTime() - ms) < 1000)) merged.push(pch);
+    }
+    if (merged.length <= existing.length) continue; // nothing the record is missing
+
+    const emp = empByUser[uid] || {};
+    const shift = await getShiftForEmployee(emp, defaultShift);
+    if (isOvernightShift(shift)) continue;
+
+    const open = buildSessions(merged);
+    const sd = (date < today && open.is_in_progress) ? closeTrailingOpenSession(merged) : open;
+    const halfDayHours = await getHalfDayOverrideHours(date, shift);
+    const result = applyDeclaredStatus(d, applyHalfDayLeaveStatus(d, sd, computeStatusFromSessions(sd, shift, halfDayHours)));
+    const inChanged = d.check_in_time !== sd.check_in_time;
+    const outChanged = d.check_out_time !== sd.check_out_time;
+    if ((inChanged && ['selfie', 'geofence'].includes(d.check_in_source)) || (outChanged && ['selfie', 'geofence'].includes(d.check_out_source))) continue;
+
+    const upd = {
+      ...d, ...sd, ...result, biometric_synced: true,
+      check_in_source: (inChanged || !d.check_in_source) ? 'biometric' : d.check_in_source,
+      check_out_source: (outChanged || !d.check_out_source) ? (sd.check_out_time ? 'biometric' : d.check_out_source) : d.check_out_source,
+      healed_from_logs_at: new Date().toISOString(),
+    };
+    if (sd.is_in_progress) upd.check_out_time = null;
+    await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [result.status, JSON.stringify(upd), row.id]);
+    healed++;
+  }
+  if (healed) console.log(`[attendance-heal] merged missing biometric punches into ${healed} attendance day(s)`);
+  return { logs: logRows.length, healed };
+}
+
 // True when the day ends in a genuine check-out (a closing punch that is after
 // the session's check-in) — as opposed to the zero-duration session the
 // auto-closers synthesise for a forgotten check-out. A biometric check-out that
@@ -840,6 +925,7 @@ export async function fixAutoClosedWfhOd(days = 90) {
 export async function runNightlyAttendanceAutomation(targetDate) {
   const date = targetDate || istDateString(-1);
   const noRecord = await markMissingAttendanceAsAbsent(date);
+  await healAttendanceFromLogs().catch(e => console.warn('[attendance-heal] failed:', e.message));
   const unclosed = await closeUnfinishedSessions(date);
   // Exempt employees: backfill from each one's joining date through today (so
   // newly-exempted employees and any missed runs self-heal) — today is

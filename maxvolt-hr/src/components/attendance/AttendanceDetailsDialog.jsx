@@ -270,9 +270,14 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                               )}
                             </>
                           ) : (
-                            <Badge className="text-xs ml-auto bg-green-100 text-green-700 flex items-center gap-1">
-                              <Activity className="w-3 h-3" /> Currently In
-                            </Badge>
+                            isCurrentlyInProgress(record) ? (
+                              <Badge className="text-xs ml-auto bg-green-100 text-green-700 flex items-center gap-1">
+                                <Activity className="w-3 h-3" /> Currently In
+                              </Badge>
+                            ) : (
+                              // A past (closed) day can't still be "in" — no check-out was captured.
+                              <Badge className="text-xs ml-auto bg-gray-100 text-gray-600">No check-out recorded</Badge>
+                            )
                           )}
                         </div>
                       </div>
@@ -385,7 +390,9 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
                       )}
                     </>
                   ) : record.check_in_time && (
-                    <Badge className="text-xs ml-auto bg-green-100 text-green-700">Currently In</Badge>
+                    isCurrentlyInProgress(record)
+                      ? <Badge className="text-xs ml-auto bg-green-100 text-green-700">Currently In</Badge>
+                      : <Badge className="text-xs ml-auto bg-gray-100 text-gray-600">No check-out recorded</Badge>
                   )}
                 </div>
               </div>
