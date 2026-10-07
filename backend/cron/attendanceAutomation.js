@@ -825,19 +825,35 @@ export async function healAttendanceFromLogs(days = 5) {
     const row = await one("SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2 LIMIT 1", [uid, date]);
     if (!row) continue; // no row yet — the normal punch path creates it
     const d = JSON.parse(row.data);
-    if (d.regularised || d.admin_marked || d.status === 'leave' || (d.leave_id && !d.leave_half_day)) continue;
+    // An admin who only corrected the CHECK-IN by hand (Manual Attendance editor) has
+    // not overridden the whole day: biometric punches must still complete it. Anything
+    // else the admin pinned (a status, a manual check-out, leave/WFH/OD) stays frozen.
+    const manualInOnly = !!d.admin_marked && d.check_in_source === 'manual' && d.check_out_source !== 'manual'
+      && !['leave', 'holiday', 'week_off', 'on_duty', 'work_from_home'].includes(d.status);
+    if (d.regularised || (d.admin_marked && !manualInOnly) || d.status === 'leave' || (d.leave_id && !d.leave_half_day)) continue;
 
     let existing = Array.isArray(d.raw_punches) ? [...d.raw_punches] : [];
     if (!existing.length && d.check_in_time) {
       existing.push({ time: d.check_in_time, device_direction: 'IN' });
       if (d.check_out_time) existing.push({ time: d.check_out_time, device_direction: 'OUT' });
     }
-    const merged = [];
-    for (const pch of [...existing, ...punches].sort((a, b) => String(a.time).localeCompare(String(b.time)))) {
-      const ms = new Date(String(pch.time).replace(' ', 'T')).getTime();
-      if (!merged.some(m => Math.abs(new Date(String(m.time).replace(' ', 'T')).getTime() - ms) < 1000)) merged.push(pch);
+    let merged = [];
+    if (manualInOnly && existing.length) {
+      // The admin's manual check-in IS the day's arrival, so it replaces the machine's first
+      // punch of the day (otherwise the arrival tap would pair as a check-out). Later punches
+      // alternate normally after it. Recomputed from the logs each run, so it stays correct.
+      const bio = [...punches].sort((x, y) => String(x.time).localeCompare(String(y.time)));
+      if (!bio.length) continue;
+      merged = [existing[0], ...bio.slice(1)];
+      const same = merged.length === existing.length && merged.every((m, i) => String(m.time) === String(existing[i].time));
+      if (same) continue;
+    } else {
+      for (const pch of [...existing, ...punches].sort((a, b) => String(a.time).localeCompare(String(b.time)))) {
+        const ms = new Date(String(pch.time).replace(' ', 'T')).getTime();
+        if (!merged.some(m => Math.abs(new Date(String(m.time).replace(' ', 'T')).getTime() - ms) < 1000)) merged.push(pch);
+      }
+      if (merged.length <= existing.length) continue; // nothing the record is missing
     }
-    if (merged.length <= existing.length) continue; // nothing the record is missing
 
     const emp = empByUser[uid] || {};
     const shift = await getShiftForEmployee(emp, defaultShift);
