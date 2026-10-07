@@ -1,3 +1,4 @@
+import { syncTime, startTimeSyncLoop } from '@/lib/timeSync' // MUST be first: installs the corrected-clock Date before anything reads the time
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from '@/App.jsx'
@@ -44,9 +45,14 @@ function trackVisualViewportInset() {
 }
 trackVisualViewportInset();
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <App />
-)
+// Get the trusted time BEFORE the first render (bounded: never block the app more than 3 s —
+// offline users still get in, and the clock is corrected as soon as the server is reachable).
+Promise.race([syncTime(), new Promise(r => setTimeout(r, 3000))]).finally(() => {
+  startTimeSyncLoop();
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <App />
+  );
+});
 
 // Register the service worker for PWA install + offline + push (production only)
 if (import.meta.env.PROD) {

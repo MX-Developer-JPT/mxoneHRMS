@@ -4167,6 +4167,9 @@ router.post('/:name', async (req, res) => {
         const t = Date.parse(occurred_at);
         if (isFinite(t) && t <= Date.now() + 120000 && t >= Date.now() - 48 * 3600000) evUtc = t;
       }
+      // The native background paths post the instant it happens, with the PHONE's clock — which
+      // anyone can change. For those, the server's own clock is the only time that counts.
+      if (/^(android-os-geofence|capacitor-background-geolocation-headless)/.test(String(device_id || ''))) evUtc = Date.now();
       const evIST = new Date(evUtc + 5.5 * 3600000); // store-IST-digits convention
       const evDate = evIST.toISOString().slice(0, 10);
 

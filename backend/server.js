@@ -240,7 +240,14 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', db: 'supabase', env: process.env.NODE_ENV || 'development' });
+  res.json({ status: 'ok', db: 'supabase', env: process.env.NODE_ENV || 'development', server_time: Date.now() });
+});
+
+// Trusted clock for the apps (server time is NTP-synced UTC). Clients correct every
+// "now" with it instead of trusting the phone's own date/time.
+app.get('/api/time', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ server_time: Date.now(), iso: new Date().toISOString(), ist: new Date(Date.now() + 5.5 * 3600000).toISOString().replace('Z', '+05:30') });
 });
 
 // Mock base44 public-settings so AuthContext doesn't crash on old code
