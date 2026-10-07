@@ -66,6 +66,12 @@ const TrainingDetail = lazy(() => import('./pages/TrainingDetail'));
 const TrainingCalendar = lazy(() => import('./pages/TrainingCalendar'));
 const TrainingNeeds = lazy(() => import('./pages/TrainingNeeds'));
 const MyTraining = lazy(() => import('./pages/MyTraining'));
+const MyLearning = lazy(() => import('./pages/MyLearning'));
+const LdInductionDetail = lazy(() => import('./pages/LdInductionDetail'));
+const LdAssessment = lazy(() => import('./pages/LdAssessment'));
+const LdCertificate = lazy(() => import('./pages/LdCertificate'));
+const LdControlCentre = lazy(() => import('./pages/LdControlCentre'));
+const LdTeamLearning = lazy(() => import('./pages/LdTeamLearning'));
 const EmployeeEngagementPortal = lazy(() => import('./pages/EmployeeEngagementPortal'));
 const GatePassRequest = lazy(() => import('./pages/GatePassRequest'));
 const GatePassApproval = lazy(() => import('./pages/GatePassApproval'));
@@ -449,6 +455,36 @@ const AuthenticatedApp = () => {
       <Route path="/MyTraining" element={
         <LayoutWrapper currentPageName="MyTraining">
           <MyTraining />
+        </LayoutWrapper>
+      } />
+      <Route path="/MyLearning" element={
+        <LayoutWrapper currentPageName="MyLearning">
+          <MyLearning />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdInductionDetail" element={
+        <LayoutWrapper currentPageName="LdInductionDetail">
+          <LdInductionDetail />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdAssessment" element={
+        <LayoutWrapper currentPageName="LdAssessment">
+          <LdAssessment />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdCertificate" element={
+        <LayoutWrapper currentPageName="LdCertificate">
+          <LdCertificate />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdControlCentre" element={
+        <LayoutWrapper currentPageName="LdControlCentre">
+          <LdControlCentre />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdTeamLearning" element={
+        <LayoutWrapper currentPageName="LdTeamLearning">
+          <LdTeamLearning />
         </LayoutWrapper>
       } />
       <Route path="/EmployeeEngagementPortal" element={

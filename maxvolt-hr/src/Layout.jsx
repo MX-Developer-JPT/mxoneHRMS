@@ -69,6 +69,7 @@ const employeeMenuGroups = [
   { label: 'Career & Learning', items: [
     { name: 'My Performance',  icon: Target,          page: 'PerformanceManagement' },
     { name: 'My Training',     icon: GraduationCap,   page: 'MyTraining' },
+    { name: 'My Learning',   icon: GraduationCap,   page: 'MyLearning' },
     { name: 'My Skills',       icon: Zap,             page: 'SkillMatrix' },
     { name: 'My Feedback',     icon: MessageSquare,   page: 'FeedbackSystem' },
   ]},
@@ -151,6 +152,8 @@ const managementMenuGroups = [
     { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
     { name: 'My Performance',           icon: Target,          page: 'PerformanceManagement' },
     { name: 'My Training',              icon: GraduationCap,   page: 'MyTraining' },
+    { name: 'My Learning',   icon: GraduationCap,   page: 'MyLearning' },
+    { name: 'Team Learning', icon: Users,          page: 'LdTeamLearning' },
     { name: 'My Insurance',             icon: Shield,          page: 'MyInsurance' },
     { name: 'My Assets',                icon: Laptop,          page: 'MyAssets' },
     { name: 'My Exit',                  icon: LogOut,          page: 'MyExit' },
@@ -218,6 +221,8 @@ const managerMenuGroups = [
     { name: 'Expenses',                 icon: DollarSign,      page: 'Reimbursements' },
     { name: 'My Performance',           icon: Target,          page: 'PerformanceManagement' },
     { name: 'My Training',              icon: GraduationCap,   page: 'MyTraining' },
+    { name: 'My Learning',   icon: GraduationCap,   page: 'MyLearning' },
+    { name: 'Team Learning', icon: Users,          page: 'LdTeamLearning' },
     { name: 'My Insurance',             icon: Shield,          page: 'MyInsurance' },
     { name: 'My Assets',                icon: Laptop,          page: 'MyAssets' },
     { name: 'My Exit',                  icon: LogOut,          page: 'MyExit' },
@@ -318,6 +323,9 @@ const hrMenuGroups = [
     { name: 'Training Programs',       icon: GraduationCap,   page: 'TrainingManagement' },
     { name: 'Training Needs',          icon: GraduationCap,   page: 'TrainingNeeds' },
     { name: 'My Training',             icon: GraduationCap,   page: 'MyTraining' },
+    { name: 'My Learning',   icon: GraduationCap,   page: 'MyLearning' },
+    { name: 'Team Learning', icon: Users,          page: 'LdTeamLearning' },
+    { name: 'L&D Control Centre', icon: GraduationCap, page: 'LdControlCentre' },
   ]},
   { label: 'Engagement', items: [
     { name: 'Announcements',           icon: Bell,            page: 'AnnouncementManagement' },
@@ -483,6 +491,7 @@ export default function Layout({ children, currentPageName }) {
   const [employeeDisplayName, setEmployeeDisplayName]= useState('');
   const [employeeDepartment,  setEmployeeDepartment] = useState('');
   const [myClearanceDepts,    setMyClearanceDepts]   = useState([]);
+  const [ldRoles, setLdRoles] = useState(null); // Learning & Development roles (trainer / L&D admin / HOD / buddy)
   const [isShiftManager,      setIsShiftManager]     = useState(false);
   const [moreSheetOpen,       setMoreSheetOpen]      = useState(false);
   const [pullDistance,        setPullDistance]       = useState(0);
@@ -675,6 +684,8 @@ export default function Layout({ children, currentPageName }) {
         if (clrData?.success) setMyClearanceDepts(clrData.dept_keys || []);
       } catch (_) {}
 
+      base44.functions.invoke('ld_getMyRoles', {}).then(r => setLdRoles(r?.data || r)).catch(() => {});
+
       // Resume GPS tracking for an already-active Field Duty trip (e.g. one auto-started
       // from a Gate Pass request, or one left running from before a page reload) — the
       // tracker itself lives outside any single page, so this is what makes it survive
@@ -794,6 +805,16 @@ export default function Layout({ children, currentPageName }) {
   else if (isManager)       menuGroups = managerMenuGroups;
   else if (isRecruiter)     menuGroups = recruiterMenuGroups;
   else if (isGateAdmin)     menuGroups = gateAdminMenuGroups;
+  // Learning & Development — everyone gets My Learning; recruiters / gate admins aren't in the lists above,
+  // and trainers / L&D admins / HODs / buddies get the extra entries their role needs.
+  {
+    const have = new Set(menuGroups.flatMap(g => g.items.map(i => i.page)));
+    const extra = [];
+    if (!have.has('MyLearning')) extra.push({ name: 'My Learning', icon: GraduationCap, page: 'MyLearning' });
+    if (ldRoles?.is_ld_admin && !have.has('LdControlCentre')) extra.push({ name: 'L&D Control Centre', icon: GraduationCap, page: 'LdControlCentre' });
+    if ((ldRoles?.is_manager || ldRoles?.is_hod || ldRoles?.is_trainer) && !have.has('LdTeamLearning')) extra.push({ name: 'Team Learning', icon: Users, page: 'LdTeamLearning' });
+    if (extra.length) menuGroups = [...menuGroups, { label: 'Learning', items: extra }];
+  }
   if ((isITDept || isAdminDept) && !isHR) {
     menuGroups = [...menuGroups, { label: isITDept ? 'IT' : 'Assets', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
   }
