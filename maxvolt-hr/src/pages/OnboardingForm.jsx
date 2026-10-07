@@ -216,7 +216,7 @@ export default function OnboardingForm() {
     throw last;
   };
   const uploadOnce = async (file, label) => {
-    stepRef.current = `uploading ${label || file?.name || 'a file'}`;
+    stepRef.current = `uploading ${label || file?.name || 'a file'} (${file?.name || 'file'}, ${((file?.size || 0) / 1048576).toFixed(1)} MB)`;
     const key = `${file.name}|${file.size}|${file.lastModified}`;
     if (uploadCache.current.has(key)) return uploadCache.current.get(key);
     const { file_url } = await withRetry(() => base44.integrations.Core.UploadFile({ file }));
@@ -261,6 +261,17 @@ export default function OnboardingForm() {
       toast.error(!profilePhotoFile
         ? 'Please upload a profile photo (Personal Information step)'
         : 'Please fill all mandatory fields and upload all required documents');
+      return;
+    }
+
+    // A file over the server's limit makes the server hang up mid-upload, which the browser
+    // can only report as "Failed to fetch" — so check sizes up front and say exactly which file.
+    const MAX_MB = 40;
+    const tooBig = [profilePhotoFile, healthReportFile, nomineePanFile, nomineeAadharFile, ...policyFiles,
+      ...Object.values(mandatoryFiles || {}), ...Object.values(optionalFiles || {})]
+      .filter(f => f && f.size > MAX_MB * 1024 * 1024);
+    if (tooBig.length) {
+      toast.error(`"${tooBig[0].name}" is ${(tooBig[0].size / 1048576).toFixed(1)} MB — files must be under ${MAX_MB} MB. Please compress it or upload a smaller copy.`, { duration: 10000 });
       return;
     }
 

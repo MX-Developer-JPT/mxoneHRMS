@@ -31,7 +31,7 @@ const APP_BASE = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com').rep
 
 const memUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB
+  limits: { fileSize: 40 * 1024 * 1024 }, // 40 MB (the client checks this too, so an oversize file gets a clear message)
 });
 
 // ── Cloudinary upload helper (v2 SDK) ─────────────────────────────────────

@@ -256,7 +256,9 @@ const integrations = {
 
       const attempt = async () => {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000); // generous — mobile uploads can be slow, not stalled
+        // Scales with file size (≈50 KB/s floor): a 15 MB phone scan needs minutes on a weak
+        // mobile connection, and a flat 60 s cut it off every single retry.
+        const timeoutId = setTimeout(() => controller.abort(), 60000 + Math.round((uploadFile.size || 0) / 50));
         try {
           const res = await fetch(`${API_BASE}/upload`, {
             method: 'POST',
