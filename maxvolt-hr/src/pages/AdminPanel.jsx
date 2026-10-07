@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
 import AdoptionDashboardTab from '@/components/admin/AdoptionDashboardTab';
+import NotificationHealthTab from '@/components/admin/NotificationHealthTab';
 import ExitClearanceConfigTab from '@/components/admin/ExitClearanceConfigTab';
 
 const TOKEN_KEY = 'base44_access_token';
@@ -2755,6 +2756,7 @@ export default function AdminPanel() {
     { id: 'att_manual', label: 'Manual Attendance',  icon: CalendarClock },
     { id: 'stats',      label: 'Statistics',         icon: BarChart3 },
     { id: 'notify',     label: 'Send Notification',  icon: Bell },
+    { id: 'notif_health', label: 'Notification Health & MIS Mail', icon: Mail },
     { id: 'walkthrough',label: 'App Walkthrough',    icon: Compass },
     { id: 'email',      label: 'Email Settings',     icon: Mail },
     { id: 'ai',         label: 'AI Settings',        icon: Bot },
@@ -2799,6 +2801,7 @@ export default function AdminPanel() {
       {tab === 'att_import' && <AttendanceImportTab />}
       {tab === 'att_manual' && <ManualAttendanceTab />}
       {tab === 'notify'     && <NotifyTab />}
+      {tab === 'notif_health' && <NotificationHealthTab />}
       {tab === 'walkthrough' && <WalkthroughTab />}
       {tab === 'email'      && <EmailTab />}
       {tab === 'ai'         && <AITab />}
