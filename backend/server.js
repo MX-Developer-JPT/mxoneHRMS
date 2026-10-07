@@ -13,6 +13,8 @@ import express from 'express';
 import 'express-async-errors';
 import cors from 'cors';
 import path from 'path';
+import jwt from 'jsonwebtoken';
+import { JWT_SECRET as LD_JWT_SECRET } from './routes/auth.js';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
 import { spawn, execSync } from 'child_process';
@@ -261,6 +263,17 @@ app.use('/api/entities',        entitiesRouter);
 // browser via a short-lived signed link; see getPayslipDownloadLink.
 app.get('/api/payslip-download/:token/file', payslipDownloadFile);
 app.get('/api/payslip-download/:token/data', payslipDownloadData);
+// L&D learning material (induction deck / guide) — served only to signed-in users.
+app.get('/api/ld-content/:key', (req, res) => {
+  const t = (req.headers.authorization || '').replace('Bearer ', '') || String(req.query.token || '');
+  try { jwt.verify(t, LD_JWT_SECRET); } catch { return res.status(401).json({ error: 'Unauthorized' }); }
+  const files = { 'induction-deck': ['New_Employee_Induction.pdf', 'application/pdf'], 'induction-guide': ['Induction_Training_Guide.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'] };
+  const f = files[req.params.key];
+  if (!f) return res.status(404).json({ error: 'Not found' });
+  res.setHeader('Content-Type', f[1]);
+  res.setHeader('Content-Disposition', `inline; filename="${f[0]}"`);
+  res.sendFile(path.join(__dirname, 'assets', 'ld', f[0]));
+});
 app.use('/api/functions',       functionsRouter);
 app.use('/api/upload',          uploadRouter);
 app.use('/api/ai',              aiRouter);
@@ -371,6 +384,14 @@ const misJob = (period) => async () => {
 cron.schedule('0 0 * * *', misJob('daily'), { timezone: 'Asia/Kolkata' });
 cron.schedule('10 0 * * 1', misJob('weekly'), { timezone: 'Asia/Kolkata' });
 cron.schedule('10 0 1 * *', misJob('monthly'), { timezone: 'Asia/Kolkata' });
+
+// ── L&D daily automation — 7:30 AM IST ──────────────────────
+// Auto-starts inductions for new joiners, unlocks time-gated reviews, marks overdue steps and
+// escalates (Employee → Manager → HOD → HR → L&D), reminds on assignments and expiring certificates.
+cron.schedule('30 7 * * *', async () => {
+  try { const { ldDailyTick } = await import('./cron/ldAutomation.js'); await ldDailyTick(); }
+  catch (err) { console.error('[ld-tick] failed:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
 
 // ── Geofence tracking safety net — every 30 minutes ──────────
 // Catches the case where a phone's background location tracking silently

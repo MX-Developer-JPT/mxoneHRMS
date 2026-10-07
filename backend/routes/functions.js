@@ -2424,6 +2424,11 @@ router.post('/:name', async (req, res) => {
   const cu = getUser(req);
 
   try {
+  // Learning & Development module (routes/ld.js) — every ld_* function
+  if (name.startsWith('ld_')) {
+    const { handleLd } = await import('./ld.js');
+    return await handleLd(name, p, cu, res);
+  }
   switch (name) {
 
     /* ── User management ──────────────────────────────── */
@@ -13308,6 +13313,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const d = { id:empId, user_id:uid, ...employeeData, status:'active' };
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'active',$3)", [empId, uid, JSON.stringify(d)]);
       }
+
+      // L&D: every newly approved employee automatically gets the New Employee Induction workflow.
+      try { const { startForUser } = await import('./ld.js'); await startForUser(uid); }
+      catch (e) { console.error('[approveUserOnboarding] L&D induction start failed:', e.message); }
 
       // Whoever this new joiner reports to must actually be able to reach
       // the Leave/Regularisation/Expense/GatePass approval screens for them
