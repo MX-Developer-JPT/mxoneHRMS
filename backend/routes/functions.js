@@ -6327,6 +6327,48 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`${mNightOnly ? 'Night_Shift_Muster' : 'Attendance_Muster'}_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
     }
 
+    // Admin: one-call health check of every notification channel (in-app, web push, native push, e-mail),
+    // optionally sending a real test through each to the calling admin.
+    case 'notificationHealthCheck': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const nhSend = !!p.send_test;
+      const nhCount = async (sql, params = []) => Number((await one(sql, params))?.c || 0);
+      const out = {
+        email: { provider: 'brevo', api_key_set: !!process.env.BREVO_API_KEY },
+        web_push: { keys_source: (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) ? 'environment' : 'auto-generated and stored (works without setup)' },
+        native_push: { firebase_service_account_set: !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON },
+        devices: {
+          native_tokens_total: await nhCount("SELECT COUNT(*) AS c FROM device_tokens"),
+          native_tokens_for_you: await nhCount("SELECT COUNT(*) AS c FROM device_tokens WHERE user_id=$1", [cu.id]),
+          web_subscriptions_total: await nhCount("SELECT COUNT(*) AS c FROM push_subscriptions"),
+          web_subscriptions_for_you: await nhCount("SELECT COUNT(*) AS c FROM push_subscriptions WHERE user_id=$1", [cu.id]),
+        },
+        notifications_created_last_24h: await nhCount("SELECT COUNT(*) AS c FROM notifications WHERE created_at >= (NOW() - INTERVAL '24 hours')::TEXT"),
+        scheduled_jobs: ['shift reminders (5 min)', 'absent/regularisation reminders (daily)', 'birthdays & anniversaries (daily)', 'exit clearance reminders (daily)', 'recruitment reminders (daily)', 'MIS mails (daily 12:00 AM, weekly Mon 12:10 AM, monthly 1st 12:10 AM)'],
+        problems: [],
+      };
+      if (!out.email.api_key_set) out.problems.push('BREVO_API_KEY is not set — no e-mail can be sent (OTP, payslips, offers, MIS mails).');
+      if (!out.native_push.firebase_service_account_set) out.problems.push('FIREBASE_SERVICE_ACCOUNT_JSON is not set — Android/iOS push notifications cannot be delivered.');
+      if (!out.devices.native_tokens_total) out.problems.push('No device has registered for native push yet.');
+      if (nhSend) {
+        out.test = {};
+        try { await notify(cu.id, { title: 'Notification health check', message: 'In-app + push test from the admin health check.', type: 'info', link: '/' }); out.test.in_app = 'created'; } catch (e) { out.test.in_app = 'FAILED: ' + e.message; }
+        try { const { sendTestPushToUser } = await import('../utils/push.js'); out.test.native_push = await sendTestPushToUser(cu.id); } catch (e) { out.test.native_push = 'FAILED: ' + e.message; }
+        try { const { sendEmail } = await import('../utils/email.js'); if (cu.email) { await sendEmail({ to: cu.email, subject: 'Maxvolt One — notification health check', html: '<p>This is a test e-mail from the Maxvolt One notification health check. If you received it, e-mail delivery is working.</p>' }); out.test.email = 'sent to ' + cu.email; } else out.test.email = 'no e-mail on your account'; } catch (e) { out.test.email = 'FAILED: ' + e.message; }
+      }
+      return res.json({ success: true, ...out });
+    }
+
+    // Admin: send an MIS e-mail right now (to Management, or just to one address to test it).
+    case 'sendMisReportNow': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { period: smPeriod, to: smTo, force: smForce } = p;
+      if (!['daily', 'weekly', 'monthly'].includes(smPeriod)) return res.json({ success: false, error: "period must be 'daily', 'weekly' or 'monthly'" });
+      const { sendMisReport } = await import('../cron/misReports.js');
+      const out = await sendMisReport(smPeriod, { force: !!smForce, toOverride: smTo || undefined });
+      return res.json({ success: true, ...out });
+    }
+
     // MIS export — daily / weekly / monthly; whole company, one department, or department-wise.
     case 'exportMIS': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
@@ -6743,7 +6785,7 @@ router.post('/:name', async (req, res) => {
     /* ── Bulk Document Download (ZIP) ───────────────────── */
     case 'bulkDownloadDocuments': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
-      const { user_ids, document_types } = body;
+      const { user_ids, document_types } = p;
 
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
       const empMap = Object.fromEntries(employees.map(e => [e.user_id, e]));

@@ -359,6 +359,19 @@ cron.schedule('0 2 * * *', () => {
   runNightlyAttendanceAutomation().catch(err => console.error('[attendance-cron] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
+// ── MIS e-mails to the Management department ────────────────
+// Daily 12:00 AM (previous day); weekly Monday 12:10 AM (previous Mon–Sun);
+// monthly on the 1st at 12:10 AM (previous month). Each carries the full MIS plus the
+// department-wise MIS as Excel attachments. Runs are de-duplicated (MisMailLog), so a
+// restart around midnight cannot send twice.
+const misJob = (period) => async () => {
+  try { const { sendMisReport } = await import('./cron/misReports.js'); await sendMisReport(period); }
+  catch (err) { console.error(`[mis-mail] ${period} failed:`, err.message); }
+};
+cron.schedule('0 0 * * *', misJob('daily'), { timezone: 'Asia/Kolkata' });
+cron.schedule('10 0 * * 1', misJob('weekly'), { timezone: 'Asia/Kolkata' });
+cron.schedule('10 0 1 * *', misJob('monthly'), { timezone: 'Asia/Kolkata' });
+
 // ── Geofence tracking safety net — every 30 minutes ──────────
 // Catches the case where a phone's background location tracking silently
 // dies mid-day (see closeStaleGeofenceSessions for why) — without this, a

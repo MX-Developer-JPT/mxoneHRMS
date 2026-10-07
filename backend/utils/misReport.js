@@ -170,7 +170,13 @@ const fill = (c) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: c } }
 const border = () => ({ top: { style: 'thin', color: { argb: 'FFD1D5DB' } }, left: { style: 'thin', color: { argb: 'FFD1D5DB' } }, bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } }, right: { style: 'thin', color: { argb: 'FFD1D5DB' } } });
 
 function sheetWithTitle(wb, name, title, sub, cols) {
-  const ws = wb.addWorksheet(name.slice(0, 31), { views: [{ state: 'frozen', ySplit: 3 }] });
+  // Excel sheet names: ≤31 chars, no \ / ? * [ ] :, and unique ignoring case ("Management" vs "management",
+  // two long names sharing a prefix, or a department literally called "Summary").
+  const base = String(name).replace(/[\\\/?*[\]:]/g, ' ').trim().slice(0, 28) || 'Sheet';
+  const taken = new Set(wb.worksheets.map(w => w.name.toLowerCase()));
+  let sheetName = base.slice(0, 31), n = 2;
+  while (taken.has(sheetName.toLowerCase())) sheetName = `${base.slice(0, 28)} ${n++}`;
+  const ws = wb.addWorksheet(sheetName, { views: [{ state: 'frozen', ySplit: 3 }] });
   ws.addRow([title]); ws.mergeCells(1, 1, 1, Math.max(cols, 2));
   Object.assign(ws.getCell(1, 1), { font: font(true, 'FFFFFFFF', 14), fill: fill(NAVY), alignment: { vertical: 'middle', horizontal: 'left', indent: 1 } });
   ws.getRow(1).height = 28;
@@ -206,9 +212,8 @@ function section(ws, text) {
 const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : 0);
 const sum = (arr, f) => arr.reduce((s, x) => s + (Number(f(x)) || 0), 0);
 
-function writeOverview(wb, D, scopeLabel) {
-  const { attendance: A, joinings, visitors, gatePasses, recruitment, reimbursements, leaves, range } = D;
-  const ws = sheetWithTitle(wb, 'Summary', `Maxvolt Energy Industries Limited — ${range.title}`, `Scope: ${scopeLabel}   |   Generated ${fmtD(D.today)} (IST)   |   Period ${fmtD(range.from)} to ${fmtD(range.to)}`, 4);
+function kpiList(D) {
+  const { attendance: A, joinings, visitors, gatePasses, recruitment, reimbursements, leaves } = D;
   const headcount = D.scopeEmps.length;
   const attendanceRate = pct(A.totals.present + A.totals.half_day * 0.5, A.totals.marked || 1);
   const walk = visitors.filter(v => v.kind === 'Walk-in').length;
@@ -236,6 +241,13 @@ function writeOverview(wb, D, scopeLabel) {
     ['Reimbursement amount (₹)', Math.round(reimbAmt)],
     ['Leave requests in period', leaves.length],
   ];
+  return kpis;
+}
+
+function writeOverview(wb, D, scopeLabel) {
+  const { range } = D;
+  const ws = sheetWithTitle(wb, 'Summary', `Maxvolt Energy Industries Limited — ${range.title}`, `Scope: ${scopeLabel}   |   Generated ${fmtD(D.today)} (IST)   |   Period ${fmtD(range.from)} to ${fmtD(range.to)}`, 4);
+  const kpis = kpiList(D);
   table(ws, ['Metric', 'Value'], kpis, [46, 22]);
   ws.getColumn(2).alignment = { horizontal: 'center' };
 }
@@ -407,5 +419,5 @@ export async function buildMisWorkbook({ period = 'daily', date, department = 'a
   }
   const buffer = await wb.xlsx.writeBuffer();
   const filename = `MIS_${D.range.key}${departmentWise ? '_DepartmentWise' : (D.department ? '_' + D.department.replace(/\W+/g, '_') : '')}.xlsx`;
-  return { buffer, filename, range: D.range, counts: { employees: D.scopeEmps.length, joinings: D.joinings.length, visitors: D.visitors.length, gatePasses: D.gatePasses.length, reimbursements: D.reimbursements.length } };
+  return { buffer, filename, range: D.range, kpis: kpiList(D), deptRows: D.depts.map(dep => ({ dept: dep, ...D.attendance.perDept[dep] })), counts: { employees: D.scopeEmps.length, joinings: D.joinings.length, visitors: D.visitors.length, gatePasses: D.gatePasses.length, reimbursements: D.reimbursements.length } };
 }
