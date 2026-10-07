@@ -6359,6 +6359,20 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, ...out });
     }
 
+    // Who receives the scheduled MIS e-mails (saved in settings; resolved list returned for preview).
+    case 'getMisMailConfig': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { loadMisConfig, resolveRecipients } = await import('../cron/misReports.js');
+      const cfg = await loadMisConfig();
+      return res.json({ success: true, config: cfg, recipients: await resolveRecipients(cfg) });
+    }
+    case 'saveMisMailConfig': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { saveMisConfig, resolveRecipients } = await import('../cron/misReports.js');
+      const saved = await saveMisConfig(p.config || {});
+      return res.json({ success: true, config: saved, recipients: await resolveRecipients(saved) });
+    }
+
     // Admin: send an MIS e-mail right now (to Management, or just to one address to test it).
     case 'sendMisReportNow': {
       if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });

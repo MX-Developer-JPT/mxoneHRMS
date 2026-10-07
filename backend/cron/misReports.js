@@ -11,6 +11,51 @@ import { buildMisWorkbook } from '../utils/misReport.js';
 const IST_MS = 5.5 * 3600000;
 const istDate = (offsetDays = 0) => new Date(Date.now() + IST_MS + offsetDays * 86400000).toISOString().slice(0, 10);
 
+const CONFIG_KEY = 'mis_mail_config';
+export const DEFAULT_MIS_CONFIG = { include_management: true, user_ids: [], extra_emails: [], periods: { daily: true, weekly: true, monthly: true } };
+
+export async function loadMisConfig() {
+  try {
+    const row = await one("SELECT value FROM settings WHERE key=$1", [CONFIG_KEY]);
+    const c = row?.value ? JSON.parse(row.value) : {};
+    return {
+      include_management: c.include_management !== false,
+      user_ids: Array.isArray(c.user_ids) ? c.user_ids : [],
+      extra_emails: Array.isArray(c.extra_emails) ? c.extra_emails : [],
+      periods: { ...DEFAULT_MIS_CONFIG.periods, ...(c.periods || {}) },
+    };
+  } catch { return { ...DEFAULT_MIS_CONFIG }; }
+}
+
+export async function saveMisConfig(input) {
+  const clean = {
+    include_management: input.include_management !== false,
+    user_ids: [...new Set((input.user_ids || []).map(String))],
+    extra_emails: [...new Set((input.extra_emails || []).map(e => String(e).trim().toLowerCase()).filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)))],
+    periods: { daily: input.periods?.daily !== false, weekly: input.periods?.weekly !== false, monthly: input.periods?.monthly !== false },
+  };
+  await run("INSERT INTO settings(key,value,updated_at) VALUES($1,$2,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [CONFIG_KEY, JSON.stringify(clean)]);
+  return clean;
+}
+
+/** Everyone who will get the MIS e-mail under the saved configuration: [{ email, name, source }]. */
+export async function resolveRecipients(config) {
+  const cfg = config || await loadMisConfig();
+  const emps = (await all("SELECT data FROM entities WHERE type='Employee'")).map(r => { try { return JSON.parse(r.data); } catch { return null; } }).filter(Boolean);
+  const out = [];
+  const add = (email, name, source) => { const e = String(email || '').trim(); if (e && !out.some(o => o.email.toLowerCase() === e.toLowerCase())) out.push({ email: e, name: name || '', source }); };
+  const emailOf = async (emp) => { const u = await one("SELECT email FROM users WHERE id=$1", [emp.user_id]); return (u?.email || emp.email || emp.work_email || '').trim(); };
+  if (cfg.include_management) {
+    for (const e of emps.filter(e => /^management$/i.test(String(e.department || '').trim()) && e.status !== 'inactive' && e.is_active !== false && e.user_id)) add(await emailOf(e), e.display_name, 'Management department');
+  }
+  for (const uid of cfg.user_ids) {
+    const e = emps.find(x => x.user_id === uid);
+    if (e && e.status !== 'inactive') add(await emailOf(e), e.display_name, 'Selected');
+  }
+  for (const em of cfg.extra_emails) add(em, '', 'Extra address');
+  return out;
+}
+
 export async function getManagementRecipients() {
   const emps = (await all("SELECT data FROM entities WHERE type='Employee'")).map(r => { try { return JSON.parse(r.data); } catch { return null; } }).filter(Boolean);
   const mgmt = emps.filter(e => /^management$/i.test(String(e.department || '').trim()) && e.status !== 'inactive' && e.is_active !== false && e.user_id);
@@ -49,8 +94,10 @@ export async function sendMisReport(period, { force = false, toOverride } = {}) 
   const key = `mis-mail-${period}-${full.range.from}`;
   if (!force && await one("SELECT id FROM entities WHERE id=$1", [key])) return { skipped: 'already sent', key };
 
-  const recipients = toOverride ? [toOverride] : await getManagementRecipients();
-  if (!recipients.length) { console.warn(`[mis-mail] ${period}: no Management-department recipients with an email`); return { skipped: 'no recipients', key }; }
+  const cfg = await loadMisConfig();
+  if (!toOverride && !force && cfg.periods[period] === false) return { skipped: `${period} report is switched off in the recipient settings`, key };
+  const recipients = toOverride ? [toOverride] : (await resolveRecipients(cfg)).map(r => r.email);
+  if (!recipients.length) { console.warn(`[mis-mail] ${period}: no recipients configured`); return { skipped: 'no recipients', key }; }
 
   const dw = await buildMisWorkbook({ period, date: ref, department: 'all', departmentWise: true }, (await import('exceljs')).default);
   const html = buildHtml(full.range.title, full.kpis, full.deptRows);
@@ -68,6 +115,6 @@ export async function sendMisReport(period, { force = false, toOverride } = {}) 
     await run("INSERT INTO entities(id,type,status,data) VALUES($1,'MisMailLog','sent',$2) ON CONFLICT (id) DO NOTHING",
       [key, JSON.stringify({ id: key, period, from: full.range.from, to: full.range.to, recipients: recipients.length, sent_at: new Date().toISOString() })]);
   }
-  console.log(`[mis-mail] ${period} report (${full.range.from} → ${full.range.to}) sent to ${recipients.length} Management user(s)`);
+  console.log(`[mis-mail] ${period} report (${full.range.from} → ${full.range.to}) sent to ${recipients.length} recipient(s)`);
   return { sent: recipients.length, key, range: full.range };
 }

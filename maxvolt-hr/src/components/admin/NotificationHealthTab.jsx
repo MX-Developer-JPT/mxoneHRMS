@@ -4,6 +4,7 @@ import { useAuth } from '@/lib/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
+import MisRecipientsCard from '@/components/admin/MisRecipientsCard';
 import { Bell, Mail, Loader2, CheckCircle2, AlertTriangle, XCircle, Send } from 'lucide-react';
 
 const Row = ({ ok, label, detail }) => (
@@ -38,14 +39,14 @@ export default function NotificationHealthTab() {
 
   const sendMis = async (toManagement) => {
     if (!toManagement && !to.trim()) { toast.error('Enter an email address'); return; }
-    if (toManagement && !window.confirm(`Send the ${period} MIS report to everyone in the Management department now?`)) return;
+    if (toManagement && !window.confirm(`Send the ${period} MIS report to everyone in the recipient list above now?`)) return;
     setSending(toManagement ? 'mgmt' : 'me');
     try {
       const res = await base44.functions.invoke('sendMisReportNow', { period, to: toManagement ? undefined : to.trim(), force: toManagement });
       const d = res?.data || res;
       if (!d?.success) toast.error(d?.error || 'Could not send');
-      else if (d.skipped) toast.warning(d.skipped === 'no recipients' ? 'No one in the Management department has an email address' : `Not sent: ${d.skipped}`);
-      else toast.success(toManagement ? `Sent to ${d.sent} Management user(s)` : `Test MIS sent to ${to.trim()}`);
+      else if (d.skipped) toast.warning(d.skipped === 'no recipients' ? 'No recipients are configured (or none has an email address)' : `Not sent: ${d.skipped}`);
+      else toast.success(toManagement ? `Sent to ${d.sent} recipient(s)` : `Test MIS sent to ${to.trim()}`);
     } catch (e) { toast.error('Send failed: ' + e.message); }
     setSending('');
   };
@@ -81,6 +82,8 @@ export default function NotificationHealthTab() {
         )}
       </div>
 
+      <MisRecipientsCard />
+
       <div className="border rounded-lg p-5 space-y-4">
         <div className="flex items-center gap-2"><Mail className="w-5 h-5 text-primary" /><h2 className="font-semibold">Send MIS email now</h2></div>
         <p className="text-sm text-muted-foreground">Sends the MIS report for the period that just ended (daily = yesterday, weekly = last Mon–Sun, monthly = last month) with the full and department-wise Excel files. The automatic schedule: daily 12:00 AM, Monday 12:10 AM, 1st of the month 12:10 AM.</p>
@@ -97,7 +100,7 @@ export default function NotificationHealthTab() {
             {sending === 'me' && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Send test to this address
           </Button>
           <Button onClick={() => sendMis(true)} disabled={!!sending}>
-            {sending === 'mgmt' && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Send to Management now
+            {sending === 'mgmt' && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Send to recipient list now
           </Button>
         </div>
       </div>
