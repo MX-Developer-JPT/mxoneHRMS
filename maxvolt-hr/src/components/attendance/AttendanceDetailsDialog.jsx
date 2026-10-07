@@ -295,6 +295,18 @@ export default function AttendanceDetailsDialog({ record, employee, open, onClos
               record now fails (they all populate `sessions` via the unified
               buildSessions engine) — so the photo/location silently never
               rendered for any real selfie check-in. */}
+          {Array.isArray(record.biometric_punches) && record.biometric_punches.length > 0 && (
+            <div className="border rounded-lg p-4">
+              <h3 className="font-semibold text-base mb-1">Biometric punches received</h3>
+              <p className="text-xs text-gray-500 mb-3">This day was set manually (or is locked), so these machine punches are kept for reference and are not counted in the hours above.</p>
+              <div className="flex flex-wrap gap-2">
+                {record.biometric_punches.map((p, i) => (
+                  <Badge key={i} variant="outline" className="text-xs">{formatTime(p.time)}</Badge>
+                ))}
+              </div>
+            </div>
+          )}
+
           {(record.check_in_selfie_url || record.check_out_selfie_url || record.check_in_location?.latitude || record.check_out_location?.latitude) && (
             <div className="border rounded-lg p-4">
               <div className="flex items-center gap-2 mb-4">

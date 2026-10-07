@@ -468,6 +468,20 @@ function processRecord(record) {
   return run;
 }
 
+// A punch the day's summary deliberately does not apply (the day was regularised,
+// set by an admin, is full-day leave, or applying it would regress a closed day)
+// must still be KEPT on the day's record — never silently dropped. They live in
+// `biometric_punches` (chronological, de-duplicated within 1 s) and are shown in the
+// attendance details, while sessions/hours/status stay exactly as set.
+async function stashBiometricPunch(rowId, data, punch) {
+  const list = Array.isArray(data.biometric_punches) ? [...data.biometric_punches] : [];
+  const ms = new Date(punch.time).getTime();
+  if (list.some(p => Math.abs(new Date(p.time).getTime() - ms) < 1000)) return;
+  list.push({ time: punch.time, device_direction: punch.device_direction });
+  list.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+  await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...data, biometric_punches: list }), rowId]);
+}
+
 async function processRecordUnlocked(record) {
   // Normalise field names — accept eBio Pascal-case and snake_case formats.
   // Trimmed here (not just lower-cased for the match below) so a stray
@@ -645,6 +659,7 @@ async function processRecordUnlocked(record) {
   // A HALF-day leave day still takes real punches (the employee works the other
   // half) — only a full-day leave / regularised / admin-marked day is frozen.
   if (data.regularised || data.admin_marked || (data.leave_id && !data.leave_half_day) || data.status === 'leave') {
+    await stashBiometricPunch(row.id, data, newPunch);
     return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
   }
 
@@ -691,6 +706,7 @@ async function processRecordUnlocked(record) {
   const outChanged = data.check_out_time !== sd.check_out_time;
   if ((inChanged && ['selfie', 'geofence'].includes(data.check_in_source)) ||
       (outChanged && ['selfie', 'geofence'].includes(data.check_out_source))) {
+    await stashBiometricPunch(row.id, data, newPunch);
     return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_non_biometric' };
   }
 
@@ -702,6 +718,7 @@ async function processRecordUnlocked(record) {
   const wasComplete = !!data.check_out_time && !data.is_in_progress;
   const wouldGetWorse = wasComplete && !punchesOnlyAdded(data.raw_punches, mergedPunches) && (sd.is_in_progress || !sd.check_out_time || (sd.working_hours || 0) < (data.working_hours || 0) - 0.5);
   if (wouldGetWorse) {
+    await stashBiometricPunch(row.id, data, newPunch);
     return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_would_regress' };
   }
 

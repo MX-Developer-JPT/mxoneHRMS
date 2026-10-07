@@ -830,7 +830,21 @@ export async function healAttendanceFromLogs(days = 5) {
     // else the admin pinned (a status, a manual check-out, leave/WFH/OD) stays frozen.
     const manualInOnly = !!d.admin_marked && d.check_in_source === 'manual' && d.check_out_source !== 'manual'
       && !['leave', 'holiday', 'week_off', 'on_duty', 'work_from_home'].includes(d.status);
-    if (d.regularised || (d.admin_marked && !manualInOnly) || d.status === 'leave' || (d.leave_id && !d.leave_half_day)) continue;
+    if (d.regularised || (d.admin_marked && !manualInOnly) || d.status === 'leave' || (d.leave_id && !d.leave_half_day)) {
+      // Frozen day: the summary stays as set, but every machine punch is still kept on the record.
+      const kept = Array.isArray(d.biometric_punches) ? [...d.biometric_punches] : [];
+      let added = false;
+      for (const pch of punches) {
+        const ms = new Date(pch.time).getTime();
+        if (!kept.some(k => Math.abs(new Date(k.time).getTime() - ms) < 1000)) { kept.push(pch); added = true; }
+      }
+      if (added) {
+        kept.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...d, biometric_punches: kept }), row.id]);
+        healed++;
+      }
+      continue;
+    }
 
     let existing = Array.isArray(d.raw_punches) ? [...d.raw_punches] : [];
     if (!existing.length && d.check_in_time) {
