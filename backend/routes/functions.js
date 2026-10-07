@@ -6327,6 +6327,17 @@ router.post('/:name', async (req, res) => {
       return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`${mNightOnly ? 'Night_Shift_Muster' : 'Attendance_Muster'}_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
     }
 
+    // MIS export — daily / weekly / monthly; whole company, one department, or department-wise.
+    case 'exportMIS': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { period: misPeriod, date: misDate, department: misDept, department_wise: misDeptWise } = p;
+      if (!['daily', 'weekly', 'monthly'].includes(misPeriod)) return res.json({ success: false, error: "period must be 'daily', 'weekly' or 'monthly'" });
+      const { buildMisWorkbook } = await import('../utils/misReport.js');
+      const ExcelJSmis = (await import('exceljs')).default;
+      const mis = await buildMisWorkbook({ period: misPeriod, date: misDate, department: misDept, departmentWise: !!misDeptWise }, ExcelJSmis);
+      return res.json({ success: true, base64: Buffer.from(mis.buffer).toString('base64'), filename: mis.filename, title: mis.range.title, counts: mis.counts });
+    }
+
     // Leave History Muster: which employee used which leave on which day.
     // Expands every APPROVED leave request into one row per leave day (week-offs
     // and holidays inside a range are skipped — they are not charged either).

@@ -3,6 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { Users, UserCheck, UserX, DollarSign, TrendingDown, TrendingUp, FileText, HelpCircle, RefreshCw, Clock, Coffee, Fingerprint, Laptop, LogOut, Shield, IndianRupee, AlertCircle, CheckCircle2, Sparkles, Loader2, TrendingUp as Trend, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import MetricCard from '@/components/mis/MetricCard';
+import MisExportPanel from '@/components/mis/MisExportPanel';
 import InsightCard from '@/components/mis/InsightCard';
 import { Link } from 'react-router-dom';
 import {
@@ -198,6 +199,8 @@ export default function MISDashboard() {
           ))}
         </div>
       </div>
+
+      <MisExportPanel />
 
       <div className="p-6">
         {loading && !data ? (
