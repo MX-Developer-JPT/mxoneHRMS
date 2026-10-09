@@ -15,8 +15,11 @@ export async function ldDailyTick() {
   const today = todayIST();
   const out = { started: 0, overdue_marked: 0, escalations: 0, reminders: 0, assignments_overdue: 0, certs: 0, errors: 0 };
 
+  // While HR has paused induction training: nothing starts, unlocks, goes overdue or escalates.
+  const paused = !!cfg.paused;
+
   // 1) New joiners without an induction (approved, joining within the last 30 days or in the next 14)
-  if (cfg.auto_start_induction) {
+  if (cfg.auto_start_induction && !paused) {
     try {
       const existing = new Set((await list('LdInduction')).filter(i => i.status !== 'CANCELLED').map(i => i.user_id));
       for (const e of await list('Employee')) {
@@ -29,7 +32,7 @@ export async function ldDailyTick() {
   }
 
   // 2) Active inductions
-  for (const row of (await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS')) {
+  for (const row of (paused ? [] : await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS')) {
     try {
       await withLock('ind:' + row.id, async () => {
         const ind = await loadInduction(row.id);

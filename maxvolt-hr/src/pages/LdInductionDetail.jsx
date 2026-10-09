@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 import { Loader2, ChevronDown, ChevronRight, Lock, CheckCircle2, Circle, ClipboardCheck, ExternalLink, UserCog, ShieldAlert, Award, History, ArrowLeft } from 'lucide-react';
 import { ld, ROLE_LABEL, STAGES, fmtDate, fmtDateTime, openContent } from '@/lib/ld';
 import { StatusPill } from '@/pages/MyLearning';
+import { PausedBanner } from '@/components/ld/PauseControl';
 
 const ACTIVE_EDIT = ['READY', 'IN_PROGRESS', 'OVERDUE'];
 
@@ -233,6 +234,7 @@ export default function LdInductionDetail() {
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-5">
       <Link to={v.is_employee ? '/MyLearning' : '/LdControlCentre'} className="text-sm text-gray-500 hover:text-gray-800 inline-flex items-center gap-1"><ArrowLeft className="w-4 h-4" />Back</Link>
+      <PausedBanner paused={data.paused} />
       <Card><CardContent className="p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

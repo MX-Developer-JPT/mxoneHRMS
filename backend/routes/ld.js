@@ -287,7 +287,7 @@ async function runAutoChecks(ind) {
   return changed;
 }
 
-export async function createInduction(userId, { actorId = 'system', buddy_user_id = null, trainer_user_id = null, force = false } = {}) {
+export async function createInduction(userId, { actorId = 'system', buddy_user_id = null, trainer_user_id = null, force = false, anchor_override = null } = {}) {
   await ensureSeed();
   const existing = (await list('LdInduction')).find(i => i.user_id === userId && i.status !== 'CANCELLED');
   if (existing) { if (!force) return existing; }
@@ -299,7 +299,8 @@ export async function createInduction(userId, { actorId = 'system', buddy_user_i
 
   const today = todayIST();
   const doj = String(emp.date_of_joining || '').slice(0, 10) || today;
-  const anchor = daysBetween(doj, today) <= 3 ? doj : today; // an employee enrolled late is not "overdue" on day one
+  let anchor = daysBetween(doj, today) <= 3 ? doj : today; // an employee enrolled late is not "overdue" on day one
+  if (anchor_override && /^\d{4}-\d{2}-\d{2}$/.test(anchor_override)) anchor = anchor_override; // HR chose the date due dates count from
   const mgrId = emp.reporting_manager_id || null;
   const hod = await deptHead(emp.department);
   const ind = {
@@ -333,7 +334,15 @@ export async function createInduction(userId, { actorId = 'system', buddy_user_i
 export async function startForUser(userId) {
   const cfg = await getConfig();
   if (!cfg.auto_start_induction) return null;
+  if (cfg.paused) { await queueForResume(userId); return null; } // held until HR resumes induction training
   return createInduction(userId, { actorId: 'system' });
+}
+
+async function queueForResume(userId) {
+  const cur = await get('LdConfig', 'ld-config');
+  if (!cur) return;
+  if (!(cur.queued_user_ids || []).includes(userId)) { cur.queued_user_ids = [...(cur.queued_user_ids || []), userId]; await save('LdConfig', cur); }
+  await audit('LdConfig', 'ld-config', 'induction_queued_while_paused', 'system', { user_id: userId }, userId);
 }
 
 // ── assessments ───────────────────────────────────────────────────────────
@@ -355,6 +364,8 @@ function publicQuestions(a, order) {
 const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
 // ── main dispatcher ───────────────────────────────────────────────────────
+const PAUSED_MSG = 'Induction training is paused by HR — nothing can be completed, submitted or signed off until it resumes.';
+const pausedInfo = (cfg) => (cfg.paused ? { since: cfg.paused_at, reason: cfg.pause_reason || '', by: cfg.paused_by || null } : null);
 const ok = (res, body = {}) => res.json({ success: true, ...body });
 const fail = (res, error, status = 200) => res.status(status).json({ success: false, error });
 const forbid = (res, msg = 'Not allowed') => res.status(403).json({ success: false, error: msg });
@@ -406,7 +417,7 @@ const HANDLERS = {
   async ld_getMyLearning(p, ctx, res) {
     const inds = (await list('LdInduction')).filter(i => i.status !== 'CANCELLED');
     let mine = inds.find(i => i.user_id === ctx.id);
-    if (mine) {
+    if (mine && !ctx.cfg.paused) {
       await withLock('ind:' + mine.id, async () => {
         const fresh = await loadInduction(mine.id);
         if (await runAutoChecks(fresh)) { await afterChange(fresh, 'system'); await save('LdInduction', fresh); }
@@ -440,6 +451,7 @@ const HANDLERS = {
       for (const g of i.gates) if (['READY', 'IN_PROGRESS', 'OVERDUE', 'SUBMITTED', 'UNDER_REVIEW'].includes(g.status) && canOwn(ctx, i, g)) reviewsToDo.push({ induction_id: i.id, employee: i.employee.name, gate: g.name, status: g.status, due_date: g.due_date });
     }
     return ok(res, {
+      paused: pausedInfo(ctx.cfg),
       induction: mine ? publicInduction(mine, ctx) : null, next,
       assignments: enriched, certificates: certs, buddy_for: buddyFor, actions_for_me: reviewsToDo,
       stats: {
@@ -455,7 +467,7 @@ const HANDLERS = {
     let ind = p.id ? await loadInduction(p.id) : (await list('LdInduction')).filter(i => i.user_id === p.user_id && i.status !== 'CANCELLED')[0];
     if (!ind) return fail(res, 'Induction not found', 404);
     if (!canView(ctx, ind)) return forbid(res);
-    await withLock('ind:' + ind.id, async () => {
+    if (!ctx.cfg.paused) await withLock('ind:' + ind.id, async () => {
       const fresh = await loadInduction(ind.id);
       if (await runAutoChecks(fresh)) { await afterChange(fresh, 'system'); await save('LdInduction', fresh); }
       ind = fresh;
@@ -464,11 +476,12 @@ const HANDLERS = {
     const waivers = (await list('LdWaiver')).filter(w => w.induction_id === ind.id);
     const people = {};
     for (const uid of new Set(trail.map(a => a.actor_id).filter(x => x && x !== 'system'))) people[uid] = await nameOf(uid);
-    return ok(res, { induction: publicInduction(ind, ctx), audit: trail.map(a => ({ ...a, actor_name: a.actor_id === 'system' ? 'System' : (people[a.actor_id] || a.actor_id) })), waivers });
+    return ok(res, { paused: pausedInfo(ctx.cfg), induction: publicInduction(ind, ctx), audit: trail.map(a => ({ ...a, actor_name: a.actor_id === 'system' ? 'System' : (people[a.actor_id] || a.actor_id) })), waivers });
   },
 
   // ── tasks / forms / gate actions ──
   async ld_completeTask(p, ctx, res) {
+    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       const t = g?.tasks.find(x => x.id === p.task_id);
@@ -496,6 +509,7 @@ const HANDLERS = {
   },
 
   async ld_saveGateForm(p, ctx, res) {
+    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       if (!g || !g.form) { fail(res, 'This step has no form', 404); return false; }
@@ -510,6 +524,7 @@ const HANDLERS = {
   },
 
   async ld_advanceCompetency(p, ctx, res) {
+    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       const c = g?.competencies?.find(x => x.id === p.competency_id);
@@ -528,6 +543,7 @@ const HANDLERS = {
   },
 
   async ld_decideGate(p, ctx, res) {
+    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       if (!g) { fail(res, 'Step not found', 404); return false; }
@@ -560,6 +576,7 @@ const HANDLERS = {
 
   // FAILED → GAP IDENTIFIED → REMEDIATION → RETRAINING → REASSESSMENT → PASSED
   async ld_remediate(p, ctx, res) {
+    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       if (!g || g.status !== 'FAILED') { fail(res, 'Only a failed step can be remediated'); return false; }
@@ -637,7 +654,16 @@ const HANDLERS = {
   async ld_startInduction(p, ctx, res) {
     if (!ctx.isLdAdmin) return forbid(res);
     if (!p.user_id) return fail(res, 'user_id required');
-    try { const d = await createInduction(p.user_id, { actorId: ctx.id, buddy_user_id: p.buddy_user_id || null, trainer_user_id: p.trainer_user_id || null }); return ok(res, { induction: publicInduction(d, ctx) }); }
+    try {
+      let anchor_override = null;
+      if (p.anchor === 'today') anchor_override = todayIST();
+      else if (p.anchor === 'date') { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(p.start_date || ''))) return fail(res, 'Pick a start date'); anchor_override = p.start_date; }
+      const d = await createInduction(p.user_id, { actorId: ctx.id, buddy_user_id: p.buddy_user_id || null, trainer_user_id: p.trainer_user_id || null, anchor_override });
+      // A manual start also clears the employee from the held-while-paused queue.
+      const cur = await get('LdConfig', 'ld-config');
+      if (cur && (cur.queued_user_ids || []).includes(p.user_id)) { cur.queued_user_ids = cur.queued_user_ids.filter(x => x !== p.user_id); await save('LdConfig', cur); }
+      return ok(res, { induction: publicInduction(d, ctx), paused: pausedInfo(ctx.cfg) });
+    }
     catch (e) { return fail(res, e.message); }
   },
 
@@ -687,6 +713,7 @@ const HANDLERS = {
   async ld_startAttempt(p, ctx, res) {
     let ind = null, gate = null, assessment = null, assignment = null;
     if (p.induction_id) {
+      if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
       ind = await loadInduction(p.induction_id);
       gate = ind?.gates.find(g => g.gate_id === p.gate_id);
       if (!ind || !gate || gate.completion !== 'assessment') return fail(res, 'Assessment step not found', 404);
@@ -715,6 +742,7 @@ const HANDLERS = {
   async ld_submitAttempt(p, ctx, res) {
     const att = await get('LdAttempt', p.attempt_id);
     if (!att || att.user_id !== ctx.id) return fail(res, 'Attempt not found', 404);
+    if (att.induction_id && ctx.cfg.paused) return fail(res, PAUSED_MSG);
     if (att.status !== 'IN_PROGRESS') return fail(res, 'This attempt was already submitted');
     const assessment = await get('LdAssessment', att.assessment_id);
     if (att.expires_at && Date.now() > Date.parse(att.expires_at)) { att.status = 'EXPIRED'; await save('LdAttempt', att); return fail(res, 'Time limit exceeded — this attempt was not scored'); }
@@ -1003,6 +1031,7 @@ const HANDLERS = {
     }
     const reviews = inds.flatMap(i => i.gates.filter(g => /Review/.test(g.name)));
     return ok(res, {
+      paused: pausedInfo(ctx.cfg), queued_count: (ctx.cfg.queued_user_ids || []).length,
       kpis: {
         total: sums.length, not_started: sums.filter(s => s.status_label === 'Not started').length, in_progress: sums.filter(s => s.status_label === 'In progress').length,
         completed: sums.filter(s => s.status_label === 'Completed').length, overdue: sums.filter(s => s.overdue_gates > 0).length, blocked: sums.filter(s => s.blocked_gates > 0).length,
@@ -1087,6 +1116,63 @@ const HANDLERS = {
     ws.views = [{ state: 'frozen', ySplit: 4 }];
     const buf = await wb.xlsx.writeBuffer();
     return ok(res, { base64: Buffer.from(buf).toString('base64'), filename: `LD_${rep.title.replace(/\W+/g, '_')}_${todayIST()}.xlsx` });
+  },
+
+  // Global pause / resume of all induction training.
+  //   pause  → nothing can be completed / signed off, no steps unlock, no reminders / overdue / escalation;
+  //            new joiners approved meanwhile are held in a queue.
+  //   resume → every open due date (and not-yet-open review date) moves forward by the days paused, escalation
+  //            is reset, queued new joiners are started (due dates counted from today).
+  async ld_setPause(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res, 'Only HR / L&D administrators can pause or resume induction training');
+    const cur = await get('LdConfig', 'ld-config');
+    if (!cur) return fail(res, 'L&D is not initialised yet');
+    const want = !!p.paused;
+    if (want === !!cur.paused) return ok(res, { paused: pausedInfo(await getConfig()), unchanged: true });
+    const today = todayIST();
+    if (want) {
+      cur.paused = true; cur.paused_at = nowIso(); cur.paused_by = ctx.id; cur.pause_reason = clean(p.reason, 500);
+      await save('LdConfig', cur);
+      await audit('LdConfig', 'ld-config', 'induction_paused', ctx.id, { reason: cur.pause_reason });
+      const active = (await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS');
+      await notify([...new Set([...active.map(i => i.user_id), ...active.map(i => i.employee.reporting_manager_id)])], { title: 'Induction training paused', message: `HR has paused induction training${cur.pause_reason ? ': ' + cur.pause_reason : ''}. Due dates will move forward when it resumes.`, type: 'info', link: '/MyLearning' });
+      return ok(res, { paused: pausedInfo(await getConfig()) });
+    }
+    const days = Math.max(0, daysBetween(String(cur.paused_at).slice(0, 10), today));
+    let shifted = 0;
+    const queued = [...(cur.queued_user_ids || [])];
+    cur.paused = false; cur.paused_at = null; cur.paused_by = null; cur.pause_reason = ''; cur.queued_user_ids = [];
+    cur.last_resumed_at = nowIso(); cur.last_pause_days = days;
+    await save('LdConfig', cur);
+    // move the clock for everyone who was mid-induction
+    for (const row of (await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS')) {
+      await withLock('ind:' + row.id, async () => {
+        const ind = await loadInduction(row.id);
+        if (!ind || ind.status !== 'IN_PROGRESS') return;
+        for (const g of ind.gates) {
+          if (TERMINAL.has(g.status)) continue;
+          if (days > 0) {
+            g.due_date = addDays(g.due_date, days);
+            if (g.status === 'LOCKED' && g.available_from > '2000-01-01') g.available_from = addDays(g.available_from, days);
+          }
+          g.escalation_level = 0; g.reminded = {};
+          if (g.status === 'OVERDUE' && g.due_date >= today) setStatus(g, g.status_before_overdue || 'READY', ctx.id, 'resumed — due date moved');
+        }
+        ind.paused_days_total = (ind.paused_days_total || 0) + days;
+        await afterChange(ind, ctx.id);
+        await save('LdInduction', ind);
+        await audit('LdInduction', ind.id, 'induction_resumed_shift', ctx.id, { days }, ind.user_id);
+        await notify(ind.user_id, { title: 'Induction training resumed', message: days > 0 ? `Your induction due dates have moved forward by ${days} day(s).` : 'Your induction can continue.', type: 'info', link: '/MyLearning' });
+        shifted++;
+      });
+    }
+    // start the inductions that were held back
+    let started = 0;
+    for (const uid of queued) {
+      try { await createInduction(uid, { actorId: ctx.id, anchor_override: today }); started++; } catch (e) { console.warn('[ld] queued start failed:', e.message); }
+    }
+    await audit('LdConfig', 'ld-config', 'induction_resumed', ctx.id, { days, shifted, started });
+    return ok(res, { paused: null, days, shifted, started });
   },
 
   async ld_getAudit(p, ctx, res) {

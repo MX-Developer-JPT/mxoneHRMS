@@ -9,6 +9,7 @@ import LdSkillsCertsTab from '@/components/ld/LdSkillsCertsTab';
 import LdTrainersTab from '@/components/ld/LdTrainersTab';
 import LdReportsTab from '@/components/ld/LdReportsTab';
 import LdSettingsTab from '@/components/ld/LdSettingsTab';
+import PauseControl from '@/components/ld/PauseControl';
 
 // HR / L&D control centre — new-joiner induction control, catalogue, assessments, skills,
 // certificates, trainers, reports and configuration.
@@ -20,6 +21,7 @@ export default function LdControlCentre() {
         <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><GraduationCap className="w-6 h-6 text-blue-600" />Learning &amp; Development — Control Centre</h1>
         <p className="text-sm text-gray-500">New-joiner induction, mandatory training, assessments, capability and compliance — in one place.</p>
       </div>
+      <PauseControl />
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="flex-wrap h-auto">
           <TabsTrigger value="overview">Overview</TabsTrigger>

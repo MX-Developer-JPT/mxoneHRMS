@@ -38,8 +38,10 @@ export default function LdJoinersTab() {
 
   const start = async () => {
     if (!dlg.user_id) { toast.error('Select an employee'); return; }
+    const anchor = dlg.anchor || 'joining';
+    if (anchor === 'date' && !dlg.start_date) { toast.error('Choose the start date'); return; }
     setBusy(true);
-    try { await ld('ld_startInduction', { user_id: dlg.user_id, buddy_user_id: dlg.buddy || undefined, trainer_user_id: dlg.trainer || undefined }); toast.success('Induction started'); setDlg(null); await load(); } catch (e) { toast.error(e.message); }
+    try { await ld('ld_startInduction', { user_id: dlg.user_id, buddy_user_id: dlg.buddy || undefined, trainer_user_id: dlg.trainer || undefined, anchor, start_date: anchor === 'date' ? dlg.start_date : undefined }); toast.success('Induction started'); setDlg(null); await load(); } catch (e) { toast.error(e.message); }
     setBusy(false);
   };
 
@@ -79,8 +81,16 @@ export default function LdJoinersTab() {
       <Dialog open={!!dlg} onOpenChange={o => !o && setDlg(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>Start a New Employee Induction</DialogTitle></DialogHeader>
-          <p className="text-xs text-gray-500">Normally this happens automatically when onboarding is approved. Use this for an employee who is missing one. Due dates are counted from the joining date (or today for a late enrolment).</p>
+          <p className="text-xs text-gray-500">Normally this happens automatically when onboarding is approved. Use this for an employee who is missing one. Works for any employee, even while induction training is paused (it then starts frozen until you resume).</p>
           <Field label="Employee"><EmployeeSelect emps={emps} value={dlg?.user_id} onChange={v => setDlg(d => ({ ...d, user_id: v }))} /></Field>
+          <Field label="Count due dates from">
+            <div className="space-y-1 text-sm">
+              {[['joining', 'Joining date (default — recent joiners)'], ['today', 'Today'], ['date', 'A date I choose']].map(([k, l]) => (
+                <label key={k} className="flex items-center gap-2"><input type="radio" name="anchor" checked={(dlg?.anchor || 'joining') === k} onChange={() => setDlg(d => ({ ...d, anchor: k }))} />{l}</label>
+              ))}
+              {dlg?.anchor === 'date' && <Input type="date" value={dlg.start_date || ''} onChange={e => setDlg(d => ({ ...d, start_date: e.target.value }))} />}
+            </div>
+          </Field>
           <Field label="Buddy (a peer — optional now)"><EmployeeSelect emps={emps} value={dlg?.buddy} onChange={v => setDlg(d => ({ ...d, buddy: v }))} placeholder="Assign later" /></Field>
           <Field label="Trainer (optional)"><EmployeeSelect emps={emps} value={dlg?.trainer} onChange={v => setDlg(d => ({ ...d, trainer: v }))} placeholder="Assign later" /></Field>
           <Button onClick={start} disabled={busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Start induction</Button>

@@ -10,6 +10,7 @@ import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { Loader2, GraduationCap, ArrowRight, Award, AlertTriangle, CheckCircle2, Clock, BookOpen, Users, Lock, Star, ExternalLink, ClipboardCheck } from 'lucide-react';
 import { ld, GATE_STATUS, fmtDate, openContent } from '@/lib/ld';
+import { PausedBanner } from '@/components/ld/PauseControl';
 
 const Stat = ({ icon: Icon, label, value, tone = 'text-gray-900' }) => (
   <div className="rounded-xl border bg-white p-4 flex items-center gap-3">
@@ -64,6 +65,8 @@ export default function MyLearning() {
         <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><GraduationCap className="w-6 h-6 text-blue-600" /> My Learning</h1>
         <p className="text-sm text-gray-500">Your induction, assigned training, certificates and what to do next.</p>
       </div>
+
+      <PausedBanner paused={data.paused} />
 
       {/* WHAT DO I NEED TO DO NEXT? */}
       {ind && (

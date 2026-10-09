@@ -11,6 +11,11 @@ export const DEFAULT_CONFIG = {
   expiring_cert_days: 30,
   ld_admin_user_ids: [],
   auto_start_induction: true,
+  paused: false,          // global pause of all induction training (see ld_setPause)
+  paused_at: null,
+  paused_by: null,
+  pause_reason: '',
+  queued_user_ids: [],    // new joiners approved while paused — started on resume
 };
 
 const t = (id, title, o = {}) => ({ id, title, actor: 'employee', required: true, type: 'task', ...o });
