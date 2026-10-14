@@ -124,7 +124,7 @@ export default function LdInductionDetail() {
                     <div key={t.id} className="flex items-start gap-2 text-sm">
                       {t.done ? <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5 shrink-0" /> : <Circle className="w-4 h-4 text-gray-300 mt-0.5 shrink-0" />}
                       <div className="flex-1">
-                        <div className={t.done ? 'text-gray-500' : 'text-gray-900'}>{t.title} <span className="text-[10px] text-gray-400">{t.actor === 'owner' ? '· trainer / manager' : '· employee'}{t.auto_check ? ' · automatic' : ''}</span></div>
+                        <div className={t.done ? 'text-gray-500' : 'text-gray-900'}>{t.title} <span className="text-[10px] text-gray-400">{t.actor === 'owner' ? `· ${(g.owner_roles || []).map(r => ROLE_LABEL[r] || r).join(' / ') || 'owner'}` : '· employee'}{t.auto_check ? ' · automatic' : ''}</span></div>
                         {t.done && <div className="text-[11px] text-gray-400">{t.done_by === 'system' ? 'Verified automatically' : `Done ${fmtDateTime(t.done_at)}`}{t.evidence ? ` — “${t.evidence}”` : ''}</div>}
                         {actionable && t.evidence_required && <Textarea className="mt-1 text-sm" placeholder="Write your answer…" value={evidence[t.id] || ''} onChange={e => setEvidence(x => ({ ...x, [t.id]: e.target.value }))} />}
                       </div>
@@ -235,6 +235,7 @@ export default function LdInductionDetail() {
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-5">
       <Link to={v.is_employee ? '/MyLearning' : '/LdControlCentre'} className="text-sm text-gray-500 hover:text-gray-800 inline-flex items-center gap-1"><ArrowLeft className="w-4 h-4" />Back</Link>
       <PausedBanner paused={data.paused} />
+      {v.is_employee && (v.is_hr || v.is_ld) && <div className="rounded-lg border border-blue-200 bg-blue-50 text-blue-900 p-3 text-sm">This is your own induction. HR / L&amp;D steps on it can only be completed by another HR or L&amp;D admin (you cannot approve your own induction).</div>}
       <Card><CardContent className="p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

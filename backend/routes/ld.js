@@ -132,7 +132,7 @@ function rolesOnInduction(ctx, ind) {
 }
 const canOwn = (ctx, ind, gate) => {
   if (ctx.id === ind.user_id) return false;
-  if (ctx.isAdmin) return true;
+  if (ctx.isAdmin || ctx.isLdAdmin) return true; // HR / L&D admins can manage every step of anyone else's induction
   const mine = rolesOnInduction(ctx, ind);
   return gate.owner_roles.some(r => mine.has(r)) || (ctx.isHR && gate.owner_roles.includes('hr_spoc'));
 };
@@ -317,6 +317,11 @@ export async function createInduction(userId, { actorId = 'system', buddy_user_i
     gates: tpl.gates.map(g => buildGate(g, anchor)),
     buddy_checkins: [],
   };
+  // Long-serving employee: "pre-joining readiness" does not apply, so the induction opens at Corporate Induction.
+  if (daysBetween(doj, today) > 30) {
+    const g0 = ind.gates.find(x => x.gate_id === 'G00');
+    if (g0) setStatus(g0, 'WAIVED', actorId, 'Existing employee — pre-joining readiness not applicable');
+  }
   await runAutoChecks(ind);
   const unlockedPre = recompute(ind);
   for (const g of ind.gates) evaluateGate(ind, g);
