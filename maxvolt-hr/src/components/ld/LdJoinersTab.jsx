@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
@@ -18,6 +19,7 @@ export default function LdJoinersTab() {
   const [dept, setDept] = useState('all');
   const [dlg, setDlg] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [act, setAct] = useState(null); // { kind: 'restart' | 'cancel', row, reason, anchor, start_date }
 
   const load = useCallback(async () => {
     try { setRows((await ld('ld_listInductions', { include_cancelled: false })).inductions); } catch (e) { toast.error(e.message); }
@@ -46,6 +48,20 @@ export default function LdJoinersTab() {
     setBusy(false);
   };
 
+  const doAct = async () => {
+    if (!act) return;
+    if ((act.reason || '').trim().length < 3) { toast.error('Please give a reason'); return; }
+    const anchor = act.anchor || 'today';
+    if (act.kind === 'restart' && anchor === 'date' && !act.start_date) { toast.error('Choose the start date'); return; }
+    setBusy(true);
+    try {
+      if (act.kind === 'cancel') await ld('ld_cancelInduction', { induction_id: act.row.id, reason: act.reason });
+      else await ld('ld_restartInduction', { induction_id: act.row.id, reason: act.reason, anchor, start_date: anchor === 'date' ? act.start_date : undefined });
+      toast.success(act.kind === 'cancel' ? 'Induction cancelled' : 'Induction restarted'); setAct(null); await load();
+    } catch (e) { toast.error(e.message); }
+    setBusy(false);
+  };
+
   if (!rows) return <div className="flex justify-center p-10"><Loader2 className="w-6 h-6 animate-spin text-blue-600" /></div>;
   return (
     <div className="space-y-4">
@@ -63,9 +79,9 @@ export default function LdJoinersTab() {
       </div>
       <Card><CardContent className="p-0 overflow-x-auto">
         <table className="w-full text-sm min-w-[900px]">
-          <thead><tr className="text-left text-xs text-gray-500 border-b bg-gray-50"><th className="p-2">Employee</th><th>Department</th><th>Joined</th><th>Manager</th><th>Buddy</th><th>Progress</th><th>Current step</th><th>Due</th><th>Status</th></tr></thead>
+          <thead><tr className="text-left text-xs text-gray-500 border-b bg-gray-50"><th className="p-2">Employee</th><th>Department</th><th>Joined</th><th>Manager</th><th>Buddy</th><th>Progress</th><th>Current step</th><th>Due</th><th>Status</th><th className="pr-2">Actions</th></tr></thead>
           <tbody>
-            {shown.length === 0 && <tr><td colSpan={9} className="p-6 text-center text-gray-500">No inductions match.</td></tr>}
+            {shown.length === 0 && <tr><td colSpan={10} className="p-6 text-center text-gray-500">No inductions match.</td></tr>}
             {shown.map(r => (
               <tr key={r.id} className="border-b last:border-0 hover:bg-gray-50">
                 <td className="p-2"><Link className="text-blue-700 hover:underline font-medium" to={`/LdInductionDetail?id=${r.id}`}>{r.name}</Link><div className="text-[11px] text-gray-400">{r.code} · {r.designation}</div></td>
@@ -73,11 +89,30 @@ export default function LdJoinersTab() {
                 <td className="w-32"><Progress value={r.progress.percent} className="h-1.5" /><div className="text-[10px] text-gray-500">{r.progress.done}/{r.progress.total}</div></td>
                 <td className="text-xs">{r.current_gate}</td><td className={r.overdue_gates ? 'text-red-600 text-xs' : 'text-xs'}>{fmtDate(r.due_date)}</td>
                 <td className="text-xs">{r.overdue_gates ? <span className="text-red-600 font-semibold">Overdue</span> : r.failed_gates ? <span className="text-red-600">Failed step</span> : r.pending_signoffs ? <span className="text-amber-600">Awaiting approval</span> : r.status_label}</td>
+                <td className="pr-2 whitespace-nowrap">{r.status_label !== 'Completed' && <><Button size="sm" variant="outline" className="h-7 px-2 text-xs mr-1" onClick={() => setAct({ kind: 'restart', row: r })}>Restart</Button><Button size="sm" variant="outline" className="h-7 px-2 text-xs text-red-700 border-red-200" onClick={() => setAct({ kind: 'cancel', row: r })}>Cancel</Button></>}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </CardContent></Card>
+
+      <Dialog open={!!act} onOpenChange={o => !o && setAct(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>{act?.kind === 'cancel' ? 'Cancel induction' : 'Restart induction'} — {act?.row?.name}</DialogTitle></DialogHeader>
+          <p className="text-xs text-gray-500">{act?.kind === 'cancel' ? 'The induction is stopped and all open steps are cancelled. The record and audit trail are kept.' : 'The current induction is cancelled (history kept) and a fresh one starts from step 1. Buddy and trainer carry over.'}</p>
+          <Textarea placeholder="Reason (required)" value={act?.reason || ''} onChange={e => setAct(a => ({ ...a, reason: e.target.value }))} />
+          {act?.kind === 'restart' && (
+            <div className="space-y-1 text-sm">
+              <div className="text-xs text-gray-600">Count due dates from</div>
+              {[['today', 'Today'], ['joining', 'Joining date (if recent)'], ['date', 'A date I choose']].map(([k, l]) => (
+                <label key={k} className="flex items-center gap-2"><input type="radio" name="rowanchor" checked={(act.anchor || 'today') === k} onChange={() => setAct(a => ({ ...a, anchor: k }))} />{l}</label>
+              ))}
+              {act.anchor === 'date' && <Input type="date" value={act.start_date || ''} onChange={e => setAct(a => ({ ...a, start_date: e.target.value }))} />}
+            </div>
+          )}
+          <Button variant={act?.kind === 'cancel' ? 'destructive' : 'default'} onClick={doAct} disabled={busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}{act?.kind === 'cancel' ? 'Cancel induction' : 'Restart induction'}</Button>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!dlg} onOpenChange={o => !o && setDlg(null)}>
         <DialogContent>
