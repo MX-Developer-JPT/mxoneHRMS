@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,7 @@ function Person({ label, name }) {
 
 export default function LdInductionDetail() {
   const [params] = useSearchParams();
+  const nav = useNavigate();
   const id = params.get('id');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -225,11 +226,23 @@ export default function LdInductionDetail() {
     else if (d.kind === 'block') r = await run('blk', 'ld_setGateBlocked', { gate_id: d.gate.gate_id, blocked: true, reason: text }, 'Step blocked');
     else if (d.kind === 'due') r = await run('due', 'ld_changeDueDate', { gate_id: d.gate.gate_id, due_date: text, reason: text2 }, 'Due date updated');
     else if (d.kind === 'waiver') r = await run('wv', 'ld_requestWaiver', { gate_id: d.gate.gate_id, reason: text, evidence: text2, approve_now: canAdmin && !!d.approveNow, comments: text }, d.approveNow ? 'Waiver approved' : 'Waiver requested');
+    else if (d.kind === 'cancel') r = await run('cx', 'ld_cancelInduction', { reason: text }, 'Induction cancelled');
+    else if (d.kind === 'restart') {
+      const anchor = d.anchor || 'today';
+      if (anchor === 'date' && !d.start_date) { toast.error('Choose the start date'); return; }
+      setBusy('rs');
+      try {
+        const rr = await ld('ld_restartInduction', { induction_id: id, reason: text, anchor, start_date: anchor === 'date' ? d.start_date : undefined });
+        toast.success('Induction restarted'); setDlg(null); setOpen({}); nav(`/LdInductionDetail?id=${rr.induction_id}`);
+      } catch (e) { toast.error(e.message); }
+      setBusy('');
+      return;
+    }
     else if (d.kind === 'people') r = await run('ppl', 'ld_assignPeople', people, 'People updated');
     if (r) setDlg(null);
   };
 
-  const dlgTitle = { decide: dlg?.decision === 'pass' ? 'Sign off this step' : 'Return for more work', stage: `Move to ${dlg?.stage}`, remediate: 'Advance remediation', block: 'Block this step', due: 'Change due date', waiver: 'Request a waiver', people: 'Assign people' }[dlg?.kind];
+  const dlgTitle = { decide: dlg?.decision === 'pass' ? 'Sign off this step' : 'Return for more work', stage: `Move to ${dlg?.stage}`, remediate: 'Advance remediation', block: 'Block this step', due: 'Change due date', waiver: 'Request a waiver', people: 'Assign people', cancel: 'Cancel this induction', restart: ind.status === 'CANCELLED' ? 'Start the induction again' : 'Restart this induction' }[dlg?.kind];
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-5">
@@ -254,7 +267,7 @@ export default function LdInductionDetail() {
           <Person label="HOD" name={ind.hod_name} />
           <Person label="Buddy (peer)" name={ind.buddy_name} />
           <Person label="Trainer" name={ind.trainer_name} />
-          <div className="flex items-end">{!v.is_employee && ind.status !== 'COMPLETED' && (canAdmin || Object.values(ind._can).some(c => c.owner)) && <Button size="sm" variant="outline" onClick={openPeopleDialog}><UserCog className="w-4 h-4 mr-1" />Assign</Button>}</div>
+          <div className="flex items-end gap-2 flex-wrap">{canAdmin && !v.is_employee && ind.status !== 'COMPLETED' && <><Button size="sm" variant="outline" onClick={() => { setText(''); setDlg({ kind: 'restart' }); }}>{ind.status === 'CANCELLED' ? 'Start again' : 'Restart'}</Button>{ind.status === 'IN_PROGRESS' && <Button size="sm" variant="outline" className="text-red-700 border-red-200" onClick={() => { setText(''); setDlg({ kind: 'cancel' }); }}>Cancel induction</Button>}</>}{!v.is_employee && ind.status !== 'COMPLETED' && (canAdmin || Object.values(ind._can).some(c => c.owner)) && <Button size="sm" variant="outline" onClick={openPeopleDialog}><UserCog className="w-4 h-4 mr-1" />Assign</Button>}</div>
         </div>
       </CardContent></Card>
 
@@ -300,6 +313,18 @@ export default function LdInductionDetail() {
                   </select>
                 </label>
               ))}
+            </div>
+          ) : dlg?.kind === 'cancel' ? (
+            <div className="space-y-2"><p className="text-xs text-gray-500">The employee's induction is stopped and all open steps are cancelled. The record and audit trail are kept; you can start a new one later.</p><Textarea placeholder="Reason (required)" value={text} onChange={e => setText(e.target.value)} /></div>
+          ) : dlg?.kind === 'restart' ? (
+            <div className="space-y-2">
+              <p className="text-xs text-gray-500">{ind.status === 'CANCELLED' ? 'Starts a fresh induction for this employee.' : 'The current induction is cancelled (history kept) and a fresh one starts from step 1. Buddy and trainer are carried over.'}</p>
+              {ind.status !== 'CANCELLED' && <Textarea placeholder="Reason (required)" value={text} onChange={e => setText(e.target.value)} />}
+              <div className="text-xs text-gray-600">Count due dates from</div>
+              {[['today', 'Today'], ['joining', 'Joining date (if recent)'], ['date', 'A date I choose']].map(([k, l]) => (
+                <label key={k} className="flex items-center gap-2 text-sm"><input type="radio" name="rsanchor" checked={(dlg.anchor || 'today') === k} onChange={() => setDlg(d => ({ ...d, anchor: k }))} />{l}</label>
+              ))}
+              {dlg.anchor === 'date' && <Input type="date" value={dlg.start_date || ''} onChange={e => setDlg(d => ({ ...d, start_date: e.target.value }))} />}
             </div>
           ) : dlg?.kind === 'due' ? (
             <div className="space-y-2"><Input type="date" value={text} onChange={e => setText(e.target.value)} /><Textarea placeholder="Reason for the change" value={text2} onChange={e => setText2(e.target.value)} /></div>

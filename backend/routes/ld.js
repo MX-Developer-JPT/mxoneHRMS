@@ -697,10 +697,38 @@ const HANDLERS = {
   async ld_cancelInduction(p, ctx, res) {
     return mutate(p.induction_id, ctx, res, async (ind) => {
       if (!ctx.isLdAdmin) { forbid(res); return false; }
+      if (ind.status !== 'IN_PROGRESS') { fail(res, 'Only an ongoing induction can be cancelled'); return false; }
+      if (clean(p.reason, 500).length < 3) { fail(res, 'Please give a reason for cancelling'); return false; }
       ind.status = 'CANCELLED'; ind.cancelled_at = nowIso(); ind.cancel_reason = clean(p.reason, 500);
       ind.gates.forEach(g => { if (!TERMINAL.has(g.status)) setStatus(g, 'CANCELLED', ctx.id, 'induction cancelled'); });
       await audit('LdInduction', ind.id, 'induction_cancelled', ctx.id, { reason: p.reason }, ind.user_id);
+      await notify(ind.user_id, { title: 'Induction cancelled', message: `HR cancelled your induction: ${ind.cancel_reason}`, type: 'warning', link: '/MyLearning' });
     });
+  },
+
+  // Cancel the ongoing induction (history is kept) and start a fresh one for the same employee.
+  async ld_restartInduction(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const old = await loadInduction(p.induction_id);
+    if (!old) return fail(res, 'Induction not found', 404);
+    if (old.status === 'COMPLETED') return fail(res, 'This induction is already completed');
+    if (clean(p.reason, 500).length < 3 && old.status === 'IN_PROGRESS') return fail(res, 'Please give a reason for restarting');
+    let anchor_override = null;
+    if (p.anchor === 'today') anchor_override = todayIST();
+    else if (p.anchor === 'date') { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(p.start_date || ''))) return fail(res, 'Pick a start date'); anchor_override = p.start_date; }
+    try {
+      if (old.status === 'IN_PROGRESS') {
+        await withLock('ind:' + old.id, async () => {
+          const ind = await loadInduction(old.id);
+          ind.status = 'CANCELLED'; ind.cancelled_at = nowIso(); ind.cancel_reason = 'Restarted: ' + clean(p.reason, 480);
+          ind.gates.forEach(g => { if (!TERMINAL.has(g.status)) setStatus(g, 'CANCELLED', ctx.id, 'induction restarted'); });
+          await save('LdInduction', ind);
+          await audit('LdInduction', ind.id, 'induction_restarted', ctx.id, { reason: p.reason }, ind.user_id);
+        });
+      }
+      const d = await createInduction(old.user_id, { actorId: ctx.id, buddy_user_id: old.buddy_user_id || null, trainer_user_id: old.trainer_user_id || null, anchor_override, pause_exempt: !!ctx.cfg.paused });
+      return ok(res, { induction_id: d.id, induction: publicInduction(d, ctx) });
+    } catch (e) { return fail(res, e.message); }
   },
 
   // ── waivers ──
