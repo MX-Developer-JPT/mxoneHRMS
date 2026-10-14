@@ -4544,9 +4544,12 @@ router.post('/:name', async (req, res) => {
       const asSelfiePatch = {};
       if (p.check_in_selfie_url) { if (!asSelfieOk(p.check_in_selfie_url)) return res.json({ success: false, error: 'Invalid check-in selfie URL' }); asSelfiePatch.check_in_selfie_url = p.check_in_selfie_url; }
       if (p.check_out_selfie_url) { if (!asSelfieOk(p.check_out_selfie_url)) return res.json({ success: false, error: 'Invalid check-out selfie URL' }); asSelfiePatch.check_out_selfie_url = p.check_out_selfie_url; }
+      // Removal: clears the stored photo (a newly supplied photo for the same slot wins).
+      if (p.remove_check_in_selfie && !asSelfiePatch.check_in_selfie_url) asSelfiePatch.check_in_selfie_url = '';
+      if (p.remove_check_out_selfie && !asSelfiePatch.check_out_selfie_url) asSelfiePatch.check_out_selfie_url = '';
       // Selfie-only edit on an existing day: change the photo(s) without recomputing times/status.
       if (p.selfie_only) {
-        if (!Object.keys(asSelfiePatch).length) return res.json({ success: false, error: 'Choose a selfie image first' });
+        if (!Object.keys(asSelfiePatch).length) return res.json({ success: false, error: 'Choose a selfie image first, or remove one' });
         const soRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [asUserId, asDate]);
         if (!soRow) return res.json({ success: false, error: 'No attendance record for this day yet - mark attendance and attach the selfie in one step instead' });
         const so = { ...JSON.parse(soRow.data), ...asSelfiePatch, admin_marked: true, admin_edited_by: cu.id, admin_edited_at: new Date().toISOString() };

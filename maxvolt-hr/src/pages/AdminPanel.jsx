@@ -1973,6 +1973,7 @@ function ManualAttendanceTab() {
   const [form, setForm] = useState({ check_in_time: '', check_out_time: '', status: 'present', notes: '' });
   const [saving, setSaving] = useState(false);
   const [selfies, setSelfies] = useState({ in: null, out: null }); // newly chosen selfie URLs for the day being edited
+  const [selfieRemoved, setSelfieRemoved] = useState({ in: false, out: false }); // existing photos marked for removal
   const [selfieBusy, setSelfieBusy] = useState('');
 
   useEffect(() => {
@@ -2026,6 +2027,7 @@ function ManualAttendanceTab() {
     const rec = recByDate[dateStr];
     setEditDate(dateStr);
     setSelfies({ in: null, out: null });
+    setSelfieRemoved({ in: false, out: false });
     setForm({
       check_in_time: rec?.check_in_time ? safeDateHM(rec.check_in_time) : '',
       check_out_time: rec?.check_out_time ? safeDateHM(rec.check_out_time) : '',
@@ -2072,6 +2074,7 @@ function ManualAttendanceTab() {
     try {
       const { file_url } = await base44.integrations.Core.UploadFile({ file });
       setSelfies(s => ({ ...s, [which]: file_url }));
+      setSelfieRemoved(r => ({ ...r, [which]: false }));
     } catch (e) { toast.error('Upload failed: ' + e.message); }
     setSelfieBusy('');
   };
@@ -2082,8 +2085,9 @@ function ManualAttendanceTab() {
       const res = await base44.functions.invoke('adminSetAttendance', {
         user_id: selectedEmp.user_id, date: editDate, selfie_only: true,
         check_in_selfie_url: selfies.in || undefined, check_out_selfie_url: selfies.out || undefined,
+        remove_check_in_selfie: selfieRemoved.in || undefined, remove_check_out_selfie: selfieRemoved.out || undefined,
       });
-      if (res.data?.success) { toast.success('Selfie updated'); setSelfies({ in: null, out: null }); loadMonth(); }
+      if (res.data?.success) { toast.success('Selfie updated'); setSelfies({ in: null, out: null }); setSelfieRemoved({ in: false, out: false }); loadMonth(); }
       else toast.error(res.data?.error || 'Failed to update selfie');
     } catch (e) { toast.error('Failed to update selfie: ' + e.message); }
     setSaving(false);
@@ -2116,6 +2120,8 @@ function ManualAttendanceTab() {
         notes: form.notes || undefined,
         check_in_selfie_url: selfies.in || undefined,
         check_out_selfie_url: selfies.out || undefined,
+        remove_check_in_selfie: selfieRemoved.in || undefined,
+        remove_check_out_selfie: selfieRemoved.out || undefined,
       });
       if (res.data?.success) {
         toast.success(`Attendance saved for ${selectedEmp.display_name || selectedEmp.user?.full_name} — ${editDate}`);
@@ -2282,7 +2288,7 @@ function ManualAttendanceTab() {
                     <div key={k} className="space-y-1.5">
                       <Label className="text-xs">{label}</Label>
                       <div className="flex items-start gap-3">
-                        {(selfies[k] || current)
+                        {(selfies[k] || (current && !selfieRemoved[k]))
                           ? <img src={selfies[k] || current} alt={label} className="w-20 h-20 object-cover rounded-md border" />
                           : <div className="w-20 h-20 rounded-md border border-dashed flex items-center justify-center text-[10px] text-muted-foreground text-center p-1">No photo</div>}
                         <div className="space-y-1">
@@ -2291,13 +2297,15 @@ function ManualAttendanceTab() {
                             {current || selfies[k] ? 'Replace photo' : 'Add photo'}
                             <input type="file" accept="image/*" className="hidden" onChange={e => { pickSelfie(k, e.target.files?.[0]); e.target.value = ''; }} />
                           </label>
+                          {(current || selfies[k]) && !selfieRemoved[k] && <button type="button" className="block text-xs px-2.5 py-1.5 rounded-md border border-red-200 text-red-700 hover:bg-red-50" onClick={() => { setSelfies(s => ({ ...s, [k]: null })); setSelfieRemoved(r => ({ ...r, [k]: !!current })); }}>Remove photo</button>}
+                          {selfieRemoved[k] && <p className="text-[10px] text-red-700">Will be removed - save to apply <button type="button" className="underline" onClick={() => setSelfieRemoved(r => ({ ...r, [k]: false }))}>undo</button></p>}
                           {selfies[k] && <p className="text-[10px] text-green-700">New photo ready - save to apply</p>}
                         </div>
                       </div>
                     </div>
                   ))}
                 </div>
-                {recByDate[editDate] && (selfies.in || selfies.out) && (
+                {recByDate[editDate] && (selfies.in || selfies.out || selfieRemoved.in || selfieRemoved.out) && (
                   <Button size="sm" variant="outline" onClick={saveSelfieOnly} disabled={saving}>Save selfie only (keep times and status)</Button>
                 )}
                 {!recByDate[editDate] && (selfies.in || selfies.out) && <p className="text-[10px] text-muted-foreground">This day has no record yet: Save Attendance below will create it with the selfie attached.</p>}
