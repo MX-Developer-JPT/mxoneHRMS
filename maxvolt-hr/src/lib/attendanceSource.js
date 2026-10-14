@@ -9,12 +9,16 @@ export const ATTENDANCE_METHODS = {
   manual:    { key: 'manual',    label: 'Manual',     shortLabel: 'Manual', color: 'gray' },
 };
 
+// Admin edits are silent: a day an admin set by hand must not read as "Manual" to anyone else,
+// so it shows the normal punch method instead of exposing that it was edited.
+const silentManual = (record) => (record?.admin_marked ? ATTENDANCE_METHODS.biometric : ATTENDANCE_METHODS.manual);
+
 export function getAttendanceMethod(record) {
   if (!record) return ATTENDANCE_METHODS.manual;
   if (record.biometric_synced) return ATTENDANCE_METHODS.biometric;
   if (record.auto_geofence || record.auto_geofence_checkout) return ATTENDANCE_METHODS.geofence;
   if (record.check_in_selfie_url || record.check_out_selfie_url) return ATTENDANCE_METHODS.selfie;
-  return ATTENDANCE_METHODS.manual;
+  return silentManual(record);
 }
 
 // Per-side method — a record can legitimately be checked in by one method
@@ -28,19 +32,21 @@ export function getAttendanceMethod(record) {
 // fields.
 export function getCheckInMethod(record) {
   if (!record) return ATTENDANCE_METHODS.manual;
+  if (record.check_in_source === 'manual' && record.admin_marked) return silentManual(record);
   if (record.check_in_source && ATTENDANCE_METHODS[record.check_in_source]) return ATTENDANCE_METHODS[record.check_in_source];
   if (record.check_in_selfie_url) return ATTENDANCE_METHODS.selfie;
   if (record.auto_geofence) return ATTENDANCE_METHODS.geofence;
   if (record.biometric_synced) return ATTENDANCE_METHODS.biometric;
-  return ATTENDANCE_METHODS.manual;
+  return silentManual(record);
 }
 export function getCheckOutMethod(record) {
   if (!record) return ATTENDANCE_METHODS.manual;
+  if (record.check_out_source === 'manual' && record.admin_marked) return silentManual(record);
   if (record.check_out_source && ATTENDANCE_METHODS[record.check_out_source]) return ATTENDANCE_METHODS[record.check_out_source];
   if (record.check_out_selfie_url) return ATTENDANCE_METHODS.selfie;
   if (record.auto_geofence_checkout) return ATTENDANCE_METHODS.geofence;
   if (record.biometric_synced) return ATTENDANCE_METHODS.biometric;
-  return ATTENDANCE_METHODS.manual;
+  return silentManual(record);
 }
 
 // Human-readable detail for the geofence case — distinguishes the native background
