@@ -2832,6 +2832,13 @@ router.post('/:name', async (req, res) => {
       return res.json({ valid:errors.length===0, adjusted_days, available_balance, errors, warnings });
     }
 
+    // HR can trigger the working-day grant job on demand (it is also scheduled nightly at 3 AM IST).
+    case 'runLeaveGrants': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { runLeaveGrants } = await import('../cron/leaveGrantAutomation.js');
+      return res.json({ success: true, ...(await runLeaveGrants()) });
+    }
+
     case 'accrueLeaveBalances': {
       const policies  = parseEntities(await all("SELECT data FROM entities WHERE type='LeavePolicy' AND is_active=1"));
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
@@ -2839,6 +2846,7 @@ router.post('/:name', async (req, res) => {
       let accrued = 0;
       for (const emp of employees) {
         for (const pol of policies) {
+          if (['CL','SL','EL'].includes(pol.code)) continue; // granted by working-day rules (cron/leaveGrantAutomation.js)
           const monthly = (pol.total_days||0) / 12;
           const existing = parseEntities(await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [emp.user_id]))
             .find(b=>b.leave_policy_id===pol.id && b.year===year);

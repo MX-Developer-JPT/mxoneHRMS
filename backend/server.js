@@ -393,6 +393,13 @@ cron.schedule('30 7 * * *', async () => {
   catch (err) { console.error('[ld-tick] failed:', err.message); }
 }, { timezone: 'Asia/Kolkata' });
 
+// ── Working-day leave grants — 3:00 AM IST (after the 2 AM attendance close) ──
+// CL +1 / 40 working days, SL +1 / 40 (manager tier and above), EL +1 / 20 (after probation), counted from 1 Oct 2026.
+cron.schedule('0 3 * * *', async () => {
+  try { const { runLeaveGrants } = await import('./cron/leaveGrantAutomation.js'); await runLeaveGrants(); }
+  catch (err) { console.error('[leave-grant] failed:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
+
 // ── Geofence tracking safety net — every 30 minutes ──────────
 // Catches the case where a phone's background location tracking silently
 // dies mid-day (see closeStaleGeofenceSessions for why) — without this, a
