@@ -62,7 +62,7 @@ export default function PauseControl() {
           <DialogHeader><DialogTitle>{paused ? 'Resume induction training?' : 'Pause induction training for all employees?'}</DialogTitle></DialogHeader>
           {paused
             ? <p className="text-sm text-gray-600">All open due dates move forward by the days paused, overdue flags are cleared where the new date allows, and {queued} queued new joiner(s) are started with due dates counted from today.</p>
-            : <p className="text-sm text-gray-600">Every in-progress induction is frozen: nothing can be completed, submitted or signed off, no reminders or escalations go out, and new joiners approved meanwhile wait until you resume. You can still start an induction manually for any employee.</p>}
+            : <p className="text-sm text-gray-600">Every in-progress induction is frozen: nothing can be completed, submitted or signed off, no reminders or escalations go out, and new joiners approved meanwhile wait until you resume. You can still start an induction for any selected employees (New joiners → Start induction); those keep running while everyone else stays paused.</p>}
           {!paused && <Textarea placeholder="Reason (optional, shown to employees)" value={reason} onChange={e => setReason(e.target.value)} />}
           <Button onClick={submit} disabled={busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}{paused ? 'Resume now' : 'Pause now'}</Button>
         </DialogContent>

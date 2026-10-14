@@ -287,7 +287,7 @@ async function runAutoChecks(ind) {
   return changed;
 }
 
-export async function createInduction(userId, { actorId = 'system', buddy_user_id = null, trainer_user_id = null, force = false, anchor_override = null } = {}) {
+export async function createInduction(userId, { actorId = 'system', buddy_user_id = null, trainer_user_id = null, force = false, anchor_override = null, pause_exempt = false } = {}) {
   await ensureSeed();
   const existing = (await list('LdInduction')).find(i => i.user_id === userId && i.status !== 'CANCELLED');
   if (existing) { if (!force) return existing; }
@@ -304,7 +304,7 @@ export async function createInduction(userId, { actorId = 'system', buddy_user_i
   const mgrId = emp.reporting_manager_id || null;
   const hod = await deptHead(emp.department);
   const ind = {
-    user_id: userId, status: 'IN_PROGRESS', started_at: nowIso(), anchor_date: anchor, doj,
+    user_id: userId, status: 'IN_PROGRESS', started_at: nowIso(), anchor_date: anchor, doj, pause_exempt: !!pause_exempt,
     employee: {
       name: emp.display_name || '', code: emp.employee_code || '', department: emp.department || '', designation: emp.designation || '',
       grade: emp.grade || emp.level || '', location: emp.work_location || '', reporting_manager_id: mgrId, reporting_manager_name: await nameOf(mgrId),
@@ -365,6 +365,8 @@ const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0;
 
 // ── main dispatcher ───────────────────────────────────────────────────────
 const PAUSED_MSG = 'Induction training is paused by HR — nothing can be completed, submitted or signed off until it resumes.';
+// HR can start an induction for selected employees while training is paused; those inductions keep running.
+const frozenFor = async (ctx, indId) => !!ctx.cfg.paused && !(indId && (await get('LdInduction', indId))?.pause_exempt);
 const pausedInfo = (cfg) => (cfg.paused ? { since: cfg.paused_at, reason: cfg.pause_reason || '', by: cfg.paused_by || null } : null);
 const ok = (res, body = {}) => res.json({ success: true, ...body });
 const fail = (res, error, status = 200) => res.status(status).json({ success: false, error });
@@ -417,7 +419,8 @@ const HANDLERS = {
   async ld_getMyLearning(p, ctx, res) {
     const inds = (await list('LdInduction')).filter(i => i.status !== 'CANCELLED');
     let mine = inds.find(i => i.user_id === ctx.id);
-    if (mine && !ctx.cfg.paused) {
+    const mineFrozen = !!(mine && ctx.cfg.paused && !mine.pause_exempt);
+    if (mine && !mineFrozen) {
       await withLock('ind:' + mine.id, async () => {
         const fresh = await loadInduction(mine.id);
         if (await runAutoChecks(fresh)) { await afterChange(fresh, 'system'); await save('LdInduction', fresh); }
@@ -451,7 +454,7 @@ const HANDLERS = {
       for (const g of i.gates) if (['READY', 'IN_PROGRESS', 'OVERDUE', 'SUBMITTED', 'UNDER_REVIEW'].includes(g.status) && canOwn(ctx, i, g)) reviewsToDo.push({ induction_id: i.id, employee: i.employee.name, gate: g.name, status: g.status, due_date: g.due_date });
     }
     return ok(res, {
-      paused: pausedInfo(ctx.cfg),
+      paused: mineFrozen ? pausedInfo(ctx.cfg) : null,
       induction: mine ? publicInduction(mine, ctx) : null, next,
       assignments: enriched, certificates: certs, buddy_for: buddyFor, actions_for_me: reviewsToDo,
       stats: {
@@ -467,7 +470,8 @@ const HANDLERS = {
     let ind = p.id ? await loadInduction(p.id) : (await list('LdInduction')).filter(i => i.user_id === p.user_id && i.status !== 'CANCELLED')[0];
     if (!ind) return fail(res, 'Induction not found', 404);
     if (!canView(ctx, ind)) return forbid(res);
-    if (!ctx.cfg.paused) await withLock('ind:' + ind.id, async () => {
+    const frozen = !!ctx.cfg.paused && !ind.pause_exempt;
+    if (!frozen) await withLock('ind:' + ind.id, async () => {
       const fresh = await loadInduction(ind.id);
       if (await runAutoChecks(fresh)) { await afterChange(fresh, 'system'); await save('LdInduction', fresh); }
       ind = fresh;
@@ -476,12 +480,12 @@ const HANDLERS = {
     const waivers = (await list('LdWaiver')).filter(w => w.induction_id === ind.id);
     const people = {};
     for (const uid of new Set(trail.map(a => a.actor_id).filter(x => x && x !== 'system'))) people[uid] = await nameOf(uid);
-    return ok(res, { paused: pausedInfo(ctx.cfg), induction: publicInduction(ind, ctx), audit: trail.map(a => ({ ...a, actor_name: a.actor_id === 'system' ? 'System' : (people[a.actor_id] || a.actor_id) })), waivers });
+    return ok(res, { paused: frozen ? pausedInfo(ctx.cfg) : null, induction: publicInduction(ind, ctx), audit: trail.map(a => ({ ...a, actor_name: a.actor_id === 'system' ? 'System' : (people[a.actor_id] || a.actor_id) })), waivers });
   },
 
   // ── tasks / forms / gate actions ──
   async ld_completeTask(p, ctx, res) {
-    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       const t = g?.tasks.find(x => x.id === p.task_id);
@@ -509,7 +513,7 @@ const HANDLERS = {
   },
 
   async ld_saveGateForm(p, ctx, res) {
-    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       if (!g || !g.form) { fail(res, 'This step has no form', 404); return false; }
@@ -524,7 +528,7 @@ const HANDLERS = {
   },
 
   async ld_advanceCompetency(p, ctx, res) {
-    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       const c = g?.competencies?.find(x => x.id === p.competency_id);
@@ -543,7 +547,7 @@ const HANDLERS = {
   },
 
   async ld_decideGate(p, ctx, res) {
-    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       if (!g) { fail(res, 'Step not found', 404); return false; }
@@ -576,7 +580,7 @@ const HANDLERS = {
 
   // FAILED → GAP IDENTIFIED → REMEDIATION → RETRAINING → REASSESSMENT → PASSED
   async ld_remediate(p, ctx, res) {
-    if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       if (!g || g.status !== 'FAILED') { fail(res, 'Only a failed step can be remediated'); return false; }
@@ -651,20 +655,38 @@ const HANDLERS = {
     });
   },
 
+  // Start induction for one or many employees (new or long-serving). While induction training is paused the
+  // selected employees still start and keep running; everyone else stays frozen.
   async ld_startInduction(p, ctx, res) {
     if (!ctx.isLdAdmin) return forbid(res);
-    if (!p.user_id) return fail(res, 'user_id required');
-    try {
-      let anchor_override = null;
-      if (p.anchor === 'today') anchor_override = todayIST();
-      else if (p.anchor === 'date') { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(p.start_date || ''))) return fail(res, 'Pick a start date'); anchor_override = p.start_date; }
-      const d = await createInduction(p.user_id, { actorId: ctx.id, buddy_user_id: p.buddy_user_id || null, trainer_user_id: p.trainer_user_id || null, anchor_override });
-      // A manual start also clears the employee from the held-while-paused queue.
-      const cur = await get('LdConfig', 'ld-config');
-      if (cur && (cur.queued_user_ids || []).includes(p.user_id)) { cur.queued_user_ids = cur.queued_user_ids.filter(x => x !== p.user_id); await save('LdConfig', cur); }
-      return ok(res, { induction: publicInduction(d, ctx), paused: pausedInfo(ctx.cfg) });
+    const ids = [...new Set([...(Array.isArray(p.user_ids) ? p.user_ids : []), ...(p.user_id ? [p.user_id] : [])].filter(Boolean))];
+    if (!ids.length) return fail(res, 'Select at least one employee');
+    let anchor_override = null;
+    if (p.anchor === 'today') anchor_override = todayIST();
+    else if (p.anchor === 'date') { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(p.start_date || ''))) return fail(res, 'Pick a start date'); anchor_override = p.start_date; }
+    const pausedNow = !!ctx.cfg.paused;
+    const results = [];
+    for (const uid of ids) {
+      try {
+        const d = await createInduction(uid, { actorId: ctx.id, buddy_user_id: p.buddy_user_id || null, trainer_user_id: p.trainer_user_id || null, anchor_override, pause_exempt: pausedNow });
+        let note = 'started';
+        // already has a running induction that is frozen by the pause → let it run
+        if (pausedNow && d.status === 'IN_PROGRESS' && !d.pause_exempt) {
+          await withLock('ind:' + d.id, async () => {
+            const fresh = await loadInduction(d.id); fresh.pause_exempt = true; await save('LdInduction', fresh);
+            await audit('LdInduction', d.id, 'induction_unfrozen_by_hr', ctx.id, {}, uid);
+          });
+          d.pause_exempt = true; note = 'already had an induction — now running';
+        } else if (d.started_at && Date.now() - new Date(d.started_at).getTime() > 60000) note = 'already had an induction';
+        results.push({ user_id: uid, ok: true, note, induction_id: d.id });
+      } catch (e) { results.push({ user_id: uid, ok: false, error: e.message }); }
     }
-    catch (e) { return fail(res, e.message); }
+    // a manual start also clears the employees from the held-while-paused queue
+    const cur = await get('LdConfig', 'ld-config');
+    if (cur && (cur.queued_user_ids || []).some(x => ids.includes(x))) { cur.queued_user_ids = cur.queued_user_ids.filter(x => !ids.includes(x)); await save('LdConfig', cur); }
+    const okCount = results.filter(r => r.ok).length;
+    if (!okCount) return fail(res, results[0]?.error || 'Could not start induction');
+    return ok(res, { results, started: okCount, failed: results.length - okCount, paused: pausedInfo(ctx.cfg) });
   },
 
   async ld_cancelInduction(p, ctx, res) {
@@ -713,7 +735,7 @@ const HANDLERS = {
   async ld_startAttempt(p, ctx, res) {
     let ind = null, gate = null, assessment = null, assignment = null;
     if (p.induction_id) {
-      if (ctx.cfg.paused) return fail(res, PAUSED_MSG);
+      if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
       ind = await loadInduction(p.induction_id);
       gate = ind?.gates.find(g => g.gate_id === p.gate_id);
       if (!ind || !gate || gate.completion !== 'assessment') return fail(res, 'Assessment step not found', 404);
@@ -742,7 +764,7 @@ const HANDLERS = {
   async ld_submitAttempt(p, ctx, res) {
     const att = await get('LdAttempt', p.attempt_id);
     if (!att || att.user_id !== ctx.id) return fail(res, 'Attempt not found', 404);
-    if (att.induction_id && ctx.cfg.paused) return fail(res, PAUSED_MSG);
+    if (att.induction_id && await frozenFor(ctx, att.induction_id)) return fail(res, PAUSED_MSG);
     if (att.status !== 'IN_PROGRESS') return fail(res, 'This attempt was already submitted');
     const assessment = await get('LdAssessment', att.assessment_id);
     if (att.expires_at && Date.now() > Date.parse(att.expires_at)) { att.status = 'EXPIRED'; await save('LdAttempt', att); return fail(res, 'Time limit exceeded — this attempt was not scored'); }
@@ -1149,6 +1171,7 @@ const HANDLERS = {
       await withLock('ind:' + row.id, async () => {
         const ind = await loadInduction(row.id);
         if (!ind || ind.status !== 'IN_PROGRESS') return;
+        if (ind.pause_exempt) { ind.pause_exempt = false; await save('LdInduction', ind); return; } // kept running during the pause — no shift
         for (const g of ind.gates) {
           if (TERMINAL.has(g.status)) continue;
           if (days > 0) {

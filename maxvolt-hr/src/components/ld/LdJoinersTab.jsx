@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { toast } from 'sonner';
 import { Loader2, Plus } from 'lucide-react';
 import { ld, fmtDate } from '@/lib/ld';
-import { useEmployees, EmployeeSelect, Field } from '@/components/ld/shared';
+import { useEmployees, EmployeeSelect, EmployeeMultiSelect, Field } from '@/components/ld/shared';
 
 export default function LdJoinersTab() {
   const emps = useEmployees();
@@ -37,11 +37,12 @@ export default function LdJoinersTab() {
   });
 
   const start = async () => {
-    if (!dlg.user_id) { toast.error('Select an employee'); return; }
+    const ids = dlg.user_ids || [];
+    if (!ids.length) { toast.error('Select at least one employee'); return; }
     const anchor = dlg.anchor || 'joining';
     if (anchor === 'date' && !dlg.start_date) { toast.error('Choose the start date'); return; }
     setBusy(true);
-    try { await ld('ld_startInduction', { user_id: dlg.user_id, buddy_user_id: dlg.buddy || undefined, trainer_user_id: dlg.trainer || undefined, anchor, start_date: anchor === 'date' ? dlg.start_date : undefined }); toast.success('Induction started'); setDlg(null); await load(); } catch (e) { toast.error(e.message); }
+    try { const r = await ld('ld_startInduction', { user_ids: ids, buddy_user_id: dlg.buddy || undefined, trainer_user_id: dlg.trainer || undefined, anchor, start_date: anchor === 'date' ? dlg.start_date : undefined }); toast.success(`Induction started for ${r.started} employee(s)${r.failed ? `, ${r.failed} failed` : ''}`); setDlg(null); await load(); } catch (e) { toast.error(e.message); }
     setBusy(false);
   };
 
@@ -81,8 +82,8 @@ export default function LdJoinersTab() {
       <Dialog open={!!dlg} onOpenChange={o => !o && setDlg(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>Start a New Employee Induction</DialogTitle></DialogHeader>
-          <p className="text-xs text-gray-500">Normally this happens automatically when onboarding is approved. Use this for an employee who is missing one. Works for any employee, even while induction training is paused (it then starts frozen until you resume).</p>
-          <Field label="Employee"><EmployeeSelect emps={emps} value={dlg?.user_id} onChange={v => setDlg(d => ({ ...d, user_id: v }))} /></Field>
+          <p className="text-xs text-gray-500">Normally this happens automatically when onboarding is approved. Use this for an employee who is missing one. Works for any employee, new or long-serving, one or many. Even while induction training is paused, the employees you select start and keep running; everyone else stays paused.</p>
+          <Field label="Employees (one or many)"><EmployeeMultiSelect emps={emps} value={dlg?.user_ids || []} onChange={v => setDlg(d => ({ ...d, user_ids: v }))} /></Field>
           <Field label="Count due dates from">
             <div className="space-y-1 text-sm">
               {[['joining', 'Joining date (default — recent joiners)'], ['today', 'Today'], ['date', 'A date I choose']].map(([k, l]) => (
@@ -91,9 +92,9 @@ export default function LdJoinersTab() {
               {dlg?.anchor === 'date' && <Input type="date" value={dlg.start_date || ''} onChange={e => setDlg(d => ({ ...d, start_date: e.target.value }))} />}
             </div>
           </Field>
-          <Field label="Buddy (a peer — optional now)"><EmployeeSelect emps={emps} value={dlg?.buddy} onChange={v => setDlg(d => ({ ...d, buddy: v }))} placeholder="Assign later" /></Field>
+          <Field label="Buddy (a peer — optional; applies to all selected)"><EmployeeSelect emps={emps} value={dlg?.buddy} onChange={v => setDlg(d => ({ ...d, buddy: v }))} placeholder="Assign later" /></Field>
           <Field label="Trainer (optional)"><EmployeeSelect emps={emps} value={dlg?.trainer} onChange={v => setDlg(d => ({ ...d, trainer: v }))} placeholder="Assign later" /></Field>
-          <Button onClick={start} disabled={busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Start induction</Button>
+          <Button onClick={start} disabled={busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Start induction{(dlg?.user_ids?.length || 0) > 1 ? ` for ${dlg.user_ids.length} employees` : ''}</Button>
         </DialogContent>
       </Dialog>
     </div>

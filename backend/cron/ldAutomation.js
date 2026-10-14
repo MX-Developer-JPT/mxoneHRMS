@@ -32,7 +32,7 @@ export async function ldDailyTick() {
   }
 
   // 2) Active inductions
-  for (const row of (paused ? [] : await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS')) {
+  for (const row of (await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS' && (!paused || i.pause_exempt))) {
     try {
       await withLock('ind:' + row.id, async () => {
         const ind = await loadInduction(row.id);
