@@ -1972,6 +1972,8 @@ function ManualAttendanceTab() {
   const [editDate, setEditDate] = useState(null); // 'YYYY-MM-DD' currently being edited
   const [form, setForm] = useState({ check_in_time: '', check_out_time: '', status: 'present', notes: '' });
   const [saving, setSaving] = useState(false);
+  const [selfies, setSelfies] = useState({ in: null, out: null }); // newly chosen selfie URLs for the day being edited
+  const [selfieBusy, setSelfieBusy] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -2023,6 +2025,7 @@ function ManualAttendanceTab() {
   const openEditor = (dateStr) => {
     const rec = recByDate[dateStr];
     setEditDate(dateStr);
+    setSelfies({ in: null, out: null });
     setForm({
       check_in_time: rec?.check_in_time ? safeDateHM(rec.check_in_time) : '',
       check_out_time: rec?.check_out_time ? safeDateHM(rec.check_out_time) : '',
@@ -2062,6 +2065,30 @@ function ManualAttendanceTab() {
     return parts;
   }
 
+  const pickSelfie = async (which, file) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error('Please choose an image file'); return; }
+    setSelfieBusy(which);
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      setSelfies(s => ({ ...s, [which]: file_url }));
+    } catch (e) { toast.error('Upload failed: ' + e.message); }
+    setSelfieBusy('');
+  };
+
+  const saveSelfieOnly = async () => {
+    setSaving(true);
+    try {
+      const res = await base44.functions.invoke('adminSetAttendance', {
+        user_id: selectedEmp.user_id, date: editDate, selfie_only: true,
+        check_in_selfie_url: selfies.in || undefined, check_out_selfie_url: selfies.out || undefined,
+      });
+      if (res.data?.success) { toast.success('Selfie updated'); setSelfies({ in: null, out: null }); loadMonth(); }
+      else toast.error(res.data?.error || 'Failed to update selfie');
+    } catch (e) { toast.error('Failed to update selfie: ' + e.message); }
+    setSaving(false);
+  };
+
   const handleSave = async () => {
     if (!selectedEmp || !editDate) return;
     if (!form.check_in_time && form.status === 'present') {
@@ -2087,6 +2114,8 @@ function ManualAttendanceTab() {
         check_out_time: isPunchStatus ? (form.check_out_time || undefined) : undefined,
         status: (isPunchStatus && form.check_in_time && !preserveStatus) ? undefined : form.status, // let punches drive status when both are given, except for WFH/OD
         notes: form.notes || undefined,
+        check_in_selfie_url: selfies.in || undefined,
+        check_out_selfie_url: selfies.out || undefined,
       });
       if (res.data?.success) {
         toast.success(`Attendance saved for ${selectedEmp.display_name || selectedEmp.user?.full_name} — ${editDate}`);
@@ -2244,6 +2273,35 @@ function ManualAttendanceTab() {
                   })()}
                 </div>
               )}
+
+              {/* Selfie photos: replace an existing one or add one where the punch has none */}
+              <div className="rounded-md border p-3 space-y-2">
+                <p className="text-xs font-semibold">Selfie photos</p>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  {[['in', 'Check-in selfie', recByDate[editDate]?.check_in_selfie_url], ['out', 'Check-out selfie', recByDate[editDate]?.check_out_selfie_url]].map(([k, label, current]) => (
+                    <div key={k} className="space-y-1.5">
+                      <Label className="text-xs">{label}</Label>
+                      <div className="flex items-start gap-3">
+                        {(selfies[k] || current)
+                          ? <img src={selfies[k] || current} alt={label} className="w-20 h-20 object-cover rounded-md border" />
+                          : <div className="w-20 h-20 rounded-md border border-dashed flex items-center justify-center text-[10px] text-muted-foreground text-center p-1">No photo</div>}
+                        <div className="space-y-1">
+                          <label className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border cursor-pointer hover:bg-muted/50">
+                            {selfieBusy === k ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                            {current || selfies[k] ? 'Replace photo' : 'Add photo'}
+                            <input type="file" accept="image/*" className="hidden" onChange={e => { pickSelfie(k, e.target.files?.[0]); e.target.value = ''; }} />
+                          </label>
+                          {selfies[k] && <p className="text-[10px] text-green-700">New photo ready - save to apply</p>}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {recByDate[editDate] && (selfies.in || selfies.out) && (
+                  <Button size="sm" variant="outline" onClick={saveSelfieOnly} disabled={saving}>Save selfie only (keep times and status)</Button>
+                )}
+                {!recByDate[editDate] && (selfies.in || selfies.out) && <p className="text-[10px] text-muted-foreground">This day has no record yet: Save Attendance below will create it with the selfie attached.</p>}
+              </div>
 
               <div>
                 <Label className="text-xs">Notes (optional)</Label>

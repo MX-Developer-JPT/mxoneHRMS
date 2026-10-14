@@ -4539,6 +4539,20 @@ router.post('/:name', async (req, res) => {
       const { user_id: asUserId, date: asDate, check_in_time: asCheckIn, check_out_time: asCheckOut, status: asOverrideStatus, notes: asNotes } = p;
       if (!asUserId || !asDate) return res.json({ success: false, error: 'user_id and date required' });
       if (!/^\d{4}-\d{2}-\d{2}$/.test(asDate)) return res.json({ success: false, error: 'date must be YYYY-MM-DD' });
+      // Selfie photos (already uploaded; only the URL is stored). Empty/absent = leave the existing image alone.
+      const asSelfieOk = (u) => typeof u === 'string' && u.length <= 1000 && (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('/api/'));
+      const asSelfiePatch = {};
+      if (p.check_in_selfie_url) { if (!asSelfieOk(p.check_in_selfie_url)) return res.json({ success: false, error: 'Invalid check-in selfie URL' }); asSelfiePatch.check_in_selfie_url = p.check_in_selfie_url; }
+      if (p.check_out_selfie_url) { if (!asSelfieOk(p.check_out_selfie_url)) return res.json({ success: false, error: 'Invalid check-out selfie URL' }); asSelfiePatch.check_out_selfie_url = p.check_out_selfie_url; }
+      // Selfie-only edit on an existing day: change the photo(s) without recomputing times/status.
+      if (p.selfie_only) {
+        if (!Object.keys(asSelfiePatch).length) return res.json({ success: false, error: 'Choose a selfie image first' });
+        const soRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [asUserId, asDate]);
+        if (!soRow) return res.json({ success: false, error: 'No attendance record for this day yet - mark attendance and attach the selfie in one step instead' });
+        const so = { ...JSON.parse(soRow.data), ...asSelfiePatch, admin_marked: true, admin_edited_by: cu.id, admin_edited_at: new Date().toISOString() };
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(so), soRow.id]);
+        return res.json({ success: true, attendance: so });
+      }
       if (!asCheckIn && !asOverrideStatus) return res.json({ success: false, error: 'Provide a check-in time or a status' });
 
       const asEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [asUserId]);
@@ -4604,6 +4618,7 @@ router.post('/:name', async (req, res) => {
         admin_edited_at: new Date().toISOString(),
         ...(asCheckIn ? { check_in_source: 'manual' } : {}),
         ...(asCheckOut ? { check_out_source: 'manual' } : {}),
+        ...asSelfiePatch,
         ...(asNotes ? { notes: asNotes.slice(0, 200) } : {}),
       };
       if (asAttRow) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(asAttData), asFinalStatus, asAttRow.id]);
