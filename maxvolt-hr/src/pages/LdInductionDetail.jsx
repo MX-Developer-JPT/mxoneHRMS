@@ -267,7 +267,7 @@ export default function LdInductionDetail() {
           <Person label="HOD" name={ind.hod_name} />
           <Person label="Buddy (peer)" name={ind.buddy_name} />
           <Person label="Trainer" name={ind.trainer_name} />
-          <div className="flex items-end gap-2 flex-wrap">{canAdmin && !v.is_employee && ind.status !== 'COMPLETED' && <><Button size="sm" variant="outline" onClick={() => { setText(''); setDlg({ kind: 'restart' }); }}>{ind.status === 'CANCELLED' ? 'Start again' : 'Restart'}</Button>{ind.status === 'IN_PROGRESS' && <Button size="sm" variant="outline" className="text-red-700 border-red-200" onClick={() => { setText(''); setDlg({ kind: 'cancel' }); }}>Cancel induction</Button>}</>}{!v.is_employee && ind.status !== 'COMPLETED' && (canAdmin || Object.values(ind._can).some(c => c.owner)) && <Button size="sm" variant="outline" onClick={openPeopleDialog}><UserCog className="w-4 h-4 mr-1" />Assign</Button>}</div>
+          <div className="flex items-end gap-2 flex-wrap">{canAdmin && ind.status !== 'COMPLETED' && <><Button size="sm" variant="outline" onClick={() => { setText(''); setDlg({ kind: 'restart' }); }}>{ind.status === 'CANCELLED' ? 'Start again' : 'Restart'}</Button>{ind.status === 'IN_PROGRESS' && <Button size="sm" variant="outline" className="text-red-700 border-red-200" onClick={() => { setText(''); setDlg({ kind: 'cancel' }); }}>Cancel induction</Button>}</>}{!v.is_employee && ind.status !== 'COMPLETED' && (canAdmin || Object.values(ind._can).some(c => c.owner)) && <Button size="sm" variant="outline" onClick={openPeopleDialog}><UserCog className="w-4 h-4 mr-1" />Assign</Button>}</div>
         </div>
       </CardContent></Card>
 
