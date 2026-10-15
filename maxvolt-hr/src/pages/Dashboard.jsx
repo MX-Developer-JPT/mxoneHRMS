@@ -4,6 +4,7 @@ import EmployeeDashboard from '../components/dashboard/EmployeeDashboard';
 import ManagementDashboard from '../components/dashboard/ManagementDashboard';
 import HRDashboard from '../components/dashboard/HRDashboard';
 import RecruiterDashboard from '../components/dashboard/RecruiterDashboard';
+import FrontDeskDashboard from '../components/dashboard/FrontDeskDashboard';
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
@@ -20,5 +21,6 @@ export default function Dashboard() {
   if (role === 'hr' || role === 'admin') return <HRDashboard user={user} />;
   if (role === 'management' || role === 'manager') return <ManagementDashboard user={user} />;
   if (role === 'recruiter') return <RecruiterDashboard user={user} />;
+  if (role === 'front_desk_admin') return <FrontDeskDashboard user={user} />;
   return <EmployeeDashboard user={user} />;
 }

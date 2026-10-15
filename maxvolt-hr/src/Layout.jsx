@@ -425,10 +425,11 @@ const gateAdminMenuGroups = [
 // Front Desk Admin: gate pass approvals + gate out/in, visitor management and digital business cards — nothing else.
 const frontDeskMenuGroups = [
   { label: '', items: [
+    { name: 'Dashboard',           icon: LayoutDashboard, page: 'Dashboard' },
     { name: 'Gate Pass Approvals', icon: ShieldCheck, page: 'GatePassApproval' },
-    { name: 'Gate Admin',          icon: ShieldCheck, page: 'GateAdminDashboard' },
     { name: 'Visitor Management',  icon: Users,       page: 'VisitorManagement' },
     { name: 'Visitor Records',     icon: Users,       page: 'VisitorRecords' },
+    { name: 'Asset Tracking',      icon: Laptop,      page: 'AssetTracking' },
     { name: 'Business Cards',      icon: QrCode,      page: 'BusinessCardAdmin' },
     { name: 'My Profile',          icon: User2,       page: 'GateAdminProfile' },
   ]},
@@ -906,9 +907,10 @@ export default function Layout({ children, currentPageName }) {
       ]
     : isFrontDesk
     ? [
+        { label: 'Home',       icon: LayoutDashboard, page: 'Dashboard',         path: '/Dashboard' },
         { label: 'Approvals',  icon: ShieldCheck,     page: 'GatePassApproval',  path: '/GatePassApproval' },
         { label: 'Visitors',   icon: Users,            page: 'VisitorManagement', path: '/VisitorManagement' },
-        { label: 'Cards',      icon: QrCode,           page: 'BusinessCardAdmin', path: '/BusinessCardAdmin' },
+        { label: 'Assets',     icon: Laptop,           page: 'AssetTracking',     path: '/AssetTracking' },
         { label: 'Profile',    icon: User2,            page: 'GateAdminProfile',  path: '/GateAdminProfile' },
       ]
     : isGateAdmin

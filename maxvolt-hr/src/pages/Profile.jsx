@@ -20,7 +20,7 @@ const roleLabels = {
   employee: { label: 'Employee', color: 'bg-green-100 text-green-800', access: 'Attendance, Leave, Payslips, Helpdesk' },
   user: { label: 'Employee', color: 'bg-green-100 text-green-800', access: 'Attendance, Leave, Payslips, Helpdesk' },
   gate_admin: { label: 'Gate Administrator', color: 'bg-blue-100 text-blue-800', access: 'Gate pass management — mark employee out/in' },
-  front_desk_admin: { label: 'Front Desk Admin', color: 'bg-amber-100 text-amber-800', access: 'Gate pass approvals, Visitor management, Digital business cards' },
+  front_desk_admin: { label: 'Front Desk Admin', color: 'bg-amber-100 text-amber-800', access: 'Gate pass approvals, Visitor management, Asset letters, Digital business cards' },
 };
 
 const employmentStatusColors = {
