@@ -7,6 +7,8 @@ import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { Loader2, IdCard, Upload, Plus, Trash2, Download, Save } from 'lucide-react';
 import { openPdfBlob } from '@/utils/letterhead';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import BulkDownload from '@/components/idcard/BulkDownload';
 
 const EMPTY = { employee_ref: '', name: '', designation: '', employee_id: '', doj: '', department: '', photo: '' };
 
@@ -46,6 +48,8 @@ export default function IdCardGenerator() {
   const [emergency, setEmergency] = useState('');
   const [canEdit, setCanEdit] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [sides, setSides] = useState('both');
+  const [tab, setTab] = useState('create');
   const [savingNo, setSavingNo] = useState(false);
   const fileRef = useRef(null);
 
@@ -90,7 +94,7 @@ export default function IdCardGenerator() {
   const generate = async (cards) => {
     setBusy(true);
     try {
-      const res = await base44.functions.invoke('generateIdCards', { cards: cards.map(toPayload) });
+      const res = await base44.functions.invoke('generateIdCards', { cards: cards.map(toPayload), sides });
       const d = res?.data || res;
       if (!d?.success || !d.base64) throw new Error(d?.error || 'Could not generate the ID card');
       openPdfBlob(d.base64, d.filename);
@@ -124,6 +128,12 @@ export default function IdCardGenerator() {
         <p className="text-sm text-gray-500">Create an employee ID card on the Maxvolt template (55 x 88 mm, print-ready PDF).</p>
       </div>
 
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList>
+          <TabsTrigger value="create">Create</TabsTrigger>
+          <TabsTrigger value="bulk">Download in bulk</TabsTrigger>
+        </TabsList>
+        <TabsContent value="create" className="space-y-5 mt-4">
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-base">Emergency number (same on every card)</CardTitle></CardHeader>
         <CardContent className="flex flex-wrap items-center gap-2">
@@ -174,6 +184,15 @@ export default function IdCardGenerator() {
             </div>
           </div>
 
+          <div className="flex flex-wrap items-center gap-2">
+            <Label className="text-xs">Print</Label>
+            <select className="h-9 rounded-md border bg-white px-2 text-sm" value={sides} onChange={e => setSides(e.target.value)}>
+              <option value="both">Front + back</option>
+              <option value="front">Front only</option>
+              <option value="back">Back only</option>
+            </select>
+          </div>
+
           <div className="flex flex-wrap gap-2">
             <Button onClick={() => validate(form) && generate([form])} disabled={busy}>{busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Download className="w-4 h-4 mr-2" />}Generate ID card</Button>
             <Button variant="outline" onClick={addToBatch} disabled={busy}><Plus className="w-4 h-4 mr-2" />Add to batch</Button>
@@ -198,6 +217,9 @@ export default function IdCardGenerator() {
           </CardContent>
         </Card>
       )}
+        </TabsContent>
+        <TabsContent value="bulk" className="mt-4">{tab === 'bulk' && <BulkDownload />}</TabsContent>
+      </Tabs>
     </div>
   );
 }

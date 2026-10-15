@@ -14,7 +14,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { extractPayslipFields, monthMismatch } from '../utils/payslipExtract.js';
 import { buildVisitingCardsPdf } from '../utils/visitingCard.js';
-import { buildIdCardsPdf } from '../utils/idCard.js';
+import { buildIdCardsPdf, prepareCard } from '../utils/idCard.js';
 import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js';
 
 const _require  = createRequire(import.meta.url);
@@ -14439,7 +14439,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     // the company's visiting-card template — see utils/visitingCard.js.
     // Admin-only, same as the Business Cards page that calls it.
     case 'generateVisitingCards': {
-      if (!(await hasRole(cu, ['admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Admin access required' });
+      if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Admin access required' });
       const { ids } = p;
       const gvcRows = await all("SELECT id, data FROM entities WHERE type='DigitalBusinessCard' ORDER BY created_at DESC");
       // The id column is authoritative (the JSON blob may not carry it), and
@@ -14490,8 +14490,23 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       }
       const icCfgRow = await one("SELECT data FROM entities WHERE type='IdCardConfig' LIMIT 1");
       const icEmergency = (icCfgRow ? JSON.parse(icCfgRow.data).emergency_no : '') || '9650012359';
+      const icSides = ['front', 'back', 'both'].includes(p.sides) ? p.sides : 'front';
       let icBytes;
-      try { icBytes = await buildIdCardsPdf(icCards, { emergency_no: icEmergency }); }
+      try {
+        // Prepare each photo once, save the card (so it can be downloaded again in bulk later), then print.
+        const prepared = [];
+        for (const c of icCards) {
+          const pc = await prepareCard(c);
+          prepared.push(pc);
+          const code = String(pc.employee_id || '').trim().toUpperCase();
+          if (!code) continue;
+          const rec = { employee_id: code, name: pc.name, designation: pc.designation || '', doj: pc.doj || '', department: pc.department || '', photo_prepared: pc.photo_prepared || null, saved_by: cu.id, saved_at: new Date().toISOString() };
+          const ex = await one("SELECT id FROM entities WHERE type='IdCardRecord' AND data::jsonb->>'employee_id'=$1 LIMIT 1", [code]);
+          if (ex) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...rec, id: ex.id }), ex.id]);
+          else { const rid = uuidv4(); await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'IdCardRecord',$2,'active',$3)", [rid, cu.id, JSON.stringify({ ...rec, id: rid })]); }
+        }
+        icBytes = await buildIdCardsPdf(prepared, { emergency_no: icEmergency, sides: icSides });
+      }
       catch (e) { return res.json({ success: false, error: 'Could not build the ID card: ' + e.message }); }
       // Audit log (no photo stored): who printed whose card, and when.
       try {
@@ -14503,6 +14518,91 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       } catch (e) { console.warn('[idcard] log failed:', e.message); }
       const icName = icCards.length === 1 ? `ID_Card_${String(icCards[0].name).replace(/[^\w]+/g, '_')}.pdf` : `ID_Cards_${new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10)}.pdf`;
       return res.json({ success: true, base64: Buffer.from(icBytes).toString('base64'), filename: icName, total: icCards.length });
+    }
+
+    /* ── Bulk download: which employees already have an ID card / business card, and building the PDFs for a
+       selection. ID cards are the ones saved when they were generated; business cards that do not exist yet are
+       created from the employee record. ── */
+    case 'getBulkCardStatus': {
+      if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Not authorized' });
+      const bsEmps = (await all("SELECT user_id, data FROM entities WHERE type='Employee' AND status='active'")).map(r => ({ ...JSON.parse(r.data), user_id: r.user_id }));
+      const bsUsers = await all("SELECT id, email FROM users");
+      const bsEmail = Object.fromEntries(bsUsers.map(u => [u.id, String(u.email || '').toLowerCase()]));
+      const bsSaved = new Set((await all("SELECT data::jsonb->>'employee_id' AS code FROM entities WHERE type='IdCardRecord'")).map(r => String(r.code || '').toUpperCase()));
+      const bsCards = (await all("SELECT data FROM entities WHERE type='DigitalBusinessCard'")).map(r => JSON.parse(r.data));
+      const bsByEmail = new Set(bsCards.map(c => String(c.email || '').toLowerCase()).filter(Boolean));
+      const bsByName = new Set(bsCards.map(c => String(c.name || '').trim().toLowerCase()).filter(Boolean));
+      const employees = bsEmps.filter(e => e.user_id).map(e => {
+        const em = String(e.official_email || bsEmail[e.user_id] || '').toLowerCase();
+        return {
+          user_id: e.user_id, name: e.display_name || '', code: e.employee_code || '', department: e.department || '', designation: e.designation || '',
+          id_card: bsSaved.has(String(e.employee_code || '').toUpperCase()),
+          business_card: (em && bsByEmail.has(em)) || bsByName.has(String(e.display_name || '').trim().toLowerCase()),
+        };
+      }).sort((a, b) => a.name.localeCompare(b.name));
+      return res.json({ success: true, employees });
+    }
+
+    case 'downloadIdCards': {
+      if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Not authorized' });
+      const dcCodes = (Array.isArray(p.employee_codes) ? p.employee_codes : []).map(c => String(c || '').trim().toUpperCase()).filter(Boolean).slice(0, 300);
+      if (!dcCodes.length) return res.json({ success: false, error: 'Select at least one employee' });
+      const dcSides = ['front', 'back', 'both'].includes(p.sides) ? p.sides : 'both';
+      const dcRows = await all("SELECT data FROM entities WHERE type='IdCardRecord'");
+      const dcMap = {};
+      for (const r of dcRows) { const d = JSON.parse(r.data); dcMap[String(d.employee_id || '').toUpperCase()] = d; }
+      const dcFound = dcCodes.filter(c => dcMap[c]);
+      const dcMissing = dcCodes.filter(c => !dcMap[c]);
+      if (!dcFound.length) return res.json({ success: false, error: 'None of the selected employees has a saved ID card yet - create them first under "Create".', missing: dcMissing });
+      const dcCfg = await one("SELECT data FROM entities WHERE type='IdCardConfig' LIMIT 1");
+      const dcEmergency = (dcCfg ? JSON.parse(dcCfg.data).emergency_no : '') || '9650012359';
+      // Back-side QR opens the person's digital business card when they have one.
+      const dcBizCards = (await all("SELECT data FROM entities WHERE type='DigitalBusinessCard'")).map(r => JSON.parse(r.data));
+      const dcBase = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '');
+      const dcEmpRows = (await all("SELECT user_id, data FROM entities WHERE type='Employee'")).map(r => ({ ...JSON.parse(r.data), user_id: r.user_id }));
+      const dcCards = dcFound.map(code => {
+        const rec = dcMap[code];
+        const emp = dcEmpRows.find(e => String(e.employee_code || '').toUpperCase() === code);
+        const biz = dcBizCards.find(c => (emp?.official_email && String(c.email || '').toLowerCase() === String(emp.official_email).toLowerCase()) || String(c.name || '').trim().toLowerCase() === String(rec.name || '').trim().toLowerCase());
+        return { ...rec, qr_url: biz?.unique_slug ? `${dcBase}/PublicBusinessCard?slug=${encodeURIComponent(biz.unique_slug)}` : undefined };
+      });
+      let dcBytes;
+      try { dcBytes = await buildIdCardsPdf(dcCards, { emergency_no: dcEmergency, sides: dcSides }); }
+      catch (e) { return res.json({ success: false, error: 'Could not build the ID cards: ' + e.message }); }
+      const dcStamp = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      return res.json({ success: true, base64: Buffer.from(dcBytes).toString('base64'), filename: `ID_Cards_${dcStamp}.pdf`, total: dcFound.length, missing: dcMissing });
+    }
+
+    case 'prepareBusinessCards': {
+      if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Not authorized' });
+      const pbIds = (Array.isArray(p.user_ids) ? p.user_ids : []).slice(0, 300);
+      if (!pbIds.length) return res.json({ success: false, error: 'Select at least one employee' });
+      const pbCards = (await all("SELECT id, data FROM entities WHERE type='DigitalBusinessCard'")).map(r => ({ ...JSON.parse(r.data), id: r.id }));
+      const ids = [];
+      let created = 0;
+      for (const uid of pbIds) {
+        const eRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [uid]);
+        if (!eRow) continue;
+        const emp = JSON.parse(eRow.data);
+        const uRow = await one("SELECT email FROM users WHERE id=$1", [uid]);
+        const email = String(emp.official_email || uRow?.email || '').trim();
+        const name = String(emp.display_name || '').trim();
+        const existing = pbCards.find(c => (email && String(c.email || '').toLowerCase() === email.toLowerCase()) || (name && String(c.name || '').trim().toLowerCase() === name.toLowerCase()));
+        if (existing) { ids.push(existing.id); continue; }
+        if (!name) continue;
+        const slug = name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') + '-' + Math.random().toString(36).slice(2, 7);
+        const cid = uuidv4();
+        const data = {
+          id: cid, name, job_title: emp.designation || '', company: 'Maxvolt Energy Industries Limited',
+          phone_number: emp.phone || emp.phone_number || '', whatsapp_number: '', email, website: 'www.maxvoltenergy.com',
+          address: 'E-82, Bulandshahr Road Industrial Area, Ghaziabad 201009', linkedin_url: '', profile_picture_url: '', unique_slug: slug, created_by: cu.id,
+        };
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'DigitalBusinessCard',$2,'active',$3)", [cid, uid, JSON.stringify(data)]);
+        pbCards.push(data);
+        ids.push(cid);
+        created++;
+      }
+      return res.json({ success: true, ids, created });
     }
 
     // Excel template for the Business Cards bulk import. Pre-filled with every
