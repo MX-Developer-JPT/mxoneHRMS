@@ -8,7 +8,7 @@
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { PDFDocument, rgb, degrees } from 'pdf-lib';
+import { PDFDocument, rgb, degrees, pushGraphicsState, popGraphicsState, moveTo, lineTo, closePath, clip, endPath } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import sharp from 'sharp';
 import QRCode from 'qrcode';
@@ -35,6 +35,9 @@ const DETAIL_BASE = [143.7, 152.8, 161.8, 170.8];   // Employee ID, D.O.J., Depa
 const PHOTO_X = 84, PHOTO_W = 71.9;
 const PHOTO_BOX = { top: 38.4, bottom: 134 };
 const PHOTO_BOX_CUTOUT = { top: 38.4, bottom: 171 };
+// A rectangular photo must not run over the orange shape: its lower-left corner is cut along the shape's
+// slanted top edge (measured from the template: (84,111.2) -> (131,155.8), 0.6 pt clear of it).
+const PHOTO_CLIP = [[84, 110.6], [84, 38.4], [PHOTO_X + PHOTO_W, 38.4], [PHOTO_X + PHOTO_W, 134], [108.1, 134]];
 const LOGO_CLIP_H = 46;              // top strip of the template that holds the logo + tagline
 
 let _cache;
@@ -188,7 +191,15 @@ export async function buildIdCardsPdf(cards, { emergency_no = '', sides = 'front
     const photo = fromPrepared(card.photo_prepared);
     if (photo) {
       const img = photo.type === 'png' ? await out.embedPng(photo.bytes) : await out.embedJpg(photo.bytes);
-      page.drawImage(img, { x: PHOTO_X, y: H - photo.box.bottom, width: PHOTO_W, height: photo.box.bottom - photo.box.top });
+      const imgOpts = { x: PHOTO_X, y: H - photo.box.bottom, width: PHOTO_W, height: photo.box.bottom - photo.box.top };
+      if (photo.cutout) {
+        page.drawImage(img, imgOpts); // transparent cut-out: the person may sit over the orange, as in the sample card
+      } else {
+        const pts = PHOTO_CLIP.map(([x, y]) => [x, H - y]);
+        page.pushOperators(pushGraphicsState(), moveTo(pts[0][0], pts[0][1]), ...pts.slice(1).map(([x, y]) => lineTo(x, y)), closePath(), clip(), endPath());
+        page.drawImage(img, imgOpts);
+        page.pushOperators(popGraphicsState());
+      }
     }
 
     // Name (navy, italic look via skew) — one or two lines — then designation.

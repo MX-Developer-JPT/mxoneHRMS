@@ -43,11 +43,12 @@ export default function BulkDownload() {
   });
   const chosen = (rows || []).filter(r => sel.has(r.user_id));
 
-  const downloadId = async () => {
-    if (!chosen.length) { toast.error('Select at least one employee'); return; }
-    setBusy('id');
+  const downloadId = async (only) => {
+    const list = only || chosen;
+    if (!list.length) { toast.error('Select at least one employee'); return; }
+    setBusy(only ? 'row' + only[0].user_id : 'id');
     try {
-      const r = await base44.functions.invoke('downloadIdCards', { employee_codes: chosen.map(c => c.code), sides });
+      const r = await base44.functions.invoke('downloadIdCards', { employee_codes: list.map(c => c.code), sides });
       const d = r?.data || r;
       if (!d?.success || !d.base64) throw new Error(d?.error || 'Could not build the ID cards');
       openPdfBlob(d.base64, d.filename);
@@ -95,13 +96,13 @@ export default function BulkDownload() {
               <option value="front">ID cards: front only</option>
               <option value="back">ID cards: back only</option>
             </select>
-            <Button size="sm" onClick={downloadId} disabled={!!busy || !sel.size}>{busy === 'id' ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Download className="w-4 h-4 mr-1" />}Download ID cards</Button>
+            <Button size="sm" onClick={() => downloadId()} disabled={!!busy || !sel.size}>{busy === 'id' ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Download className="w-4 h-4 mr-1" />}Download ID cards</Button>
           </div>
           <div className="flex items-center gap-2">
             <QrCode className="w-4 h-4 text-blue-600" />
             <Button size="sm" variant="outline" onClick={downloadBiz} disabled={!!busy || !sel.size}>{busy === 'biz' ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Download className="w-4 h-4 mr-1" />}Download business cards</Button>
           </div>
-          <p className="text-[11px] text-gray-500 basis-full">ID cards are available for employees whose card was created on the Create tab. Missing business cards are created automatically from the employee record.</p>
+          <p className="text-[11px] text-gray-500 basis-full">Every ID card you generate on the Create tab is saved automatically (photo included) and stays available here to download again at any time. Missing business cards are created automatically from the employee record.</p>
         </CardContent>
       </Card>
 
@@ -109,10 +110,10 @@ export default function BulkDownload() {
         <table className="w-full text-sm min-w-[640px]">
           <thead><tr className="text-left text-xs text-gray-500 border-b bg-gray-50">
             <th className="p-2 w-8"><input type="checkbox" checked={allShown} onChange={toggleAll} aria-label="Select all shown" /></th>
-            <th>Employee</th><th>Department</th><th>ID card</th><th>Business card</th>
+            <th>Employee</th><th>Department</th><th>ID card</th><th>Business card</th><th></th>
           </tr></thead>
           <tbody>
-            {shown.length === 0 && <tr><td colSpan={5} className="p-6 text-center text-gray-500">No employees match.</td></tr>}
+            {shown.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-gray-500">No employees match.</td></tr>}
             {shown.map(r => (
               <tr key={r.user_id} className="border-b last:border-0 hover:bg-gray-50 cursor-pointer" onClick={() => toggle(r.user_id)}>
                 <td className="p-2"><input type="checkbox" checked={sel.has(r.user_id)} onChange={() => toggle(r.user_id)} onClick={e => e.stopPropagation()} /></td>
@@ -120,6 +121,7 @@ export default function BulkDownload() {
                 <td>{r.department || '—'}</td>
                 <td>{r.id_card ? <Badge variant="outline" className="border-green-300 text-green-700">Saved</Badge> : <Badge variant="outline" className="text-gray-400">Not created</Badge>}</td>
                 <td>{r.business_card ? <Badge variant="outline" className="border-green-300 text-green-700">Exists</Badge> : <Badge variant="outline" className="border-amber-300 text-amber-700">Will be created</Badge>}</td>
+                <td className="pr-2 text-right">{r.id_card && <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={!!busy} onClick={(e) => { e.stopPropagation(); downloadId([r]); }}>{busy === 'row' + r.user_id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3 mr-1" />}ID card</Button>}</td>
               </tr>
             ))}
           </tbody>
