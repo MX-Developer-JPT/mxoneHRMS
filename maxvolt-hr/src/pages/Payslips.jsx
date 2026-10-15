@@ -61,8 +61,13 @@ export default function Payslips() {
           // App builds installed before the Browser plugin was added throw
           // "not implemented". Navigating to a different host than the app's
           // own makes Capacitor hand the URL to the system browser instead.
-          if (!rd.external_url) throw pluginErr;
-          window.location.href = rd.external_url;
+          if (rd.external_url) { window.location.href = rd.external_url; }
+          else {
+            // No separate host configured on the server: Capacitor routes window.open() / target=_blank
+            // links to the system browser, so try that before giving up.
+            const w = window.open(rd.url, '_blank');
+            if (!w) throw new Error('This version of the app cannot open payslips. Please update Maxvolt One from the App Store / TestFlight, or open ' + (window.location.host || 'the website') + ' in Safari and download it there.');
+          }
         }
       } else if (pendingWin) {
         pendingWin.location.href = rd.url;
