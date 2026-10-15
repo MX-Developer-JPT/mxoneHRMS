@@ -77,6 +77,15 @@ export default function GatePassApproval() {
       // in entities.js), specifically so HR can cover for an unavailable
       // manager. So HR sees every pass, pending or otherwise.
       visiblePasses = allPasses;
+      // A Front Desk Admin pinned to specific locations only sees passes departing from them.
+      if (role === 'front_desk_admin') {
+        try {
+          const locRes = await base44.functions.invoke('getGateAdminLocations', {});
+          const locData = locRes.data || locRes;
+          const assigned = locData.success ? locData.locations : null;
+          if (Array.isArray(assigned)) visiblePasses = allPasses.filter(p => !p.current_location || assigned.includes(p.current_location));
+        } catch { /* unrestricted on lookup failure, same as the gate admin dashboard */ }
+      }
     } else if (mgmtUser) {
       // 'management' is scoped to their own downstream hierarchy (direct +
       // indirect reports) — previously lumped in with hrUser above and saw

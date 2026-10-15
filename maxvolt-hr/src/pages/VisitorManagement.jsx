@@ -96,7 +96,7 @@ export default function VisitorManagement() {
 
   const role = user?.custom_role || user?.role;
   const canOperate = ['gate_admin', 'front_desk_admin', 'hr', 'admin', 'management'].includes(role);
-  const isGateAdmin = role === 'gate_admin';
+  const isGateAdmin = role === 'gate_admin' || role === 'front_desk_admin'; // both can be pinned to specific locations
 
   const loadData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -112,7 +112,7 @@ export default function VisitorManagement() {
       const myRole = me.custom_role || me.role;
       const [visRes, locRes] = await Promise.all([
         base44.functions.invoke('getVisitorsScoped', {}),
-        myRole === 'gate_admin' ? base44.functions.invoke('getGateAdminLocations', {}) : Promise.resolve(null),
+        (myRole === 'gate_admin' || myRole === 'front_desk_admin') ? base44.functions.invoke('getGateAdminLocations', {}) : Promise.resolve(null),
       ]);
       const vd = visRes.data || visRes;
       setVisitors(vd.success ? vd.visitors : []);

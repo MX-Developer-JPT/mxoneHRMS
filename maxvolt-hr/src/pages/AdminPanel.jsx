@@ -166,7 +166,7 @@ function UserFormModal({ title, initial, onSave, onClose, isNew, canEditEmail, a
   const emailLocked = !isNew && !canEditEmail;
 
   useEffect(() => {
-    if (!isNew && initial?.role === 'gate_admin') {
+    if (!isNew && ['gate_admin', 'front_desk_admin'].includes(initial?.role)) {
       base44.functions.invoke('getGateAdminLocations', { user_id: initial.id })
         .then(res => {
           const d = res.data || res;
@@ -186,7 +186,7 @@ function UserFormModal({ title, initial, onSave, onClose, isNew, canEditEmail, a
     // Carried alongside the user payload but pulled out by the caller
     // (handleCreate/handleSaveEdit) before hitting the plain /admin/users
     // route — location assignment is a separate call (setGateAdminLocations).
-    if (form.role === 'gate_admin') {
+    if (['gate_admin', 'front_desk_admin'].includes(form.role)) {
       payload._gateAdminLocations = restrictLocations ? gateAdminLocations : null;
     }
     onSave(payload);
@@ -220,7 +220,7 @@ function UserFormModal({ title, initial, onSave, onClose, isNew, canEditEmail, a
               {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
           </div>
-          {form.role === 'gate_admin' && (
+          {['gate_admin', 'front_desk_admin'].includes(form.role) && (
             <div className="space-y-2 border rounded-lg p-3 bg-green-50/50">
               <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
                 <input type="checkbox" checked={restrictLocations} onChange={e => setRestrictLocations(e.target.checked)} />

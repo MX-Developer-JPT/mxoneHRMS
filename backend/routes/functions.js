@@ -19063,8 +19063,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     // (back-compat) or locationName is in their assigned list. Anyone else: no.
     async function canOperateAtLocation(cu, locationName) {
       if (await hasRole(cu, MGR_ROLES)) return true;
-      if (await hasRole(cu, ['front_desk_admin'])) return true; // Front Desk Admin: every location
-      if (!(await hasRole(cu, ['gate_admin']))) return false;
+      if (!(await hasRole(cu, ['gate_admin', 'front_desk_admin']))) return false;
       const assigned = await getGateAdminAssignedLocations(cu.id);
       if (assigned === null) return true; // never configured — unrestricted
       return assigned.includes(locationName);

@@ -367,6 +367,19 @@ const CANCELLABLE_STATUSES = {
   AttendanceRegularisation: ['pending', 'sent_back'],
 };
 
+// Front Desk Admin can be pinned to one or more office locations (same GateAdminLocation setting as Gate Admin):
+// they may only act on gate passes departing from those locations. No setting = every location.
+async function frontDeskLocationOk(res, cu, current) {
+  const gateLocation = current.current_location;
+  if (!gateLocation) return true;
+  const assigned = await getGateAdminAssignedLocations(cu.id);
+  if (assigned !== null && !assigned.includes(gateLocation)) {
+    res.status(403).json({ error: `You are not assigned to ${gateLocation} - this gate pass belongs to another office` });
+    return false;
+  }
+  return true;
+}
+
 async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   if (!APPROVAL_SCOPED_TYPES.has(type)) return true;
   if (!newStatus || newStatus === current.status) return true;
@@ -411,7 +424,8 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   }
 
   if (isGateLogTransition) {
-    if (['hr', 'admin', 'front_desk_admin'].includes(role)) return true;
+    if (['hr', 'admin'].includes(role)) return true;
+    if (role === 'front_desk_admin') return frontDeskLocationOk(res, cu, current);
     if (role === 'gate_admin') {
       // Every gate pass now carries its own departure location
       // (current_location — the employee explicitly picks it from Location
@@ -442,7 +456,7 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   }
 
   // Front Desk Admin approves / rejects gate passes company-wide (their only approval scope).
-  if (role === 'front_desk_admin' && type === 'GatePass') return true;
+  if (role === 'front_desk_admin' && type === 'GatePass') return frontDeskLocationOk(res, cu, current);
 
   if (['hr', 'admin'].includes(role)) {
     if (role !== 'admin' && type !== 'GatePass' && !(await hasManagerCleared(type, current))) {

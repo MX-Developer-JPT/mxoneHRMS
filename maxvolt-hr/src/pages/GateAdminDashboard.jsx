@@ -106,7 +106,7 @@ export default function GateAdminDashboard() {
       // with no current_location of its own stays visible to every gate
       // admin, matching the server-side check in entities.js exactly.
       const role = currentUser.custom_role || currentUser.role;
-      if (role === 'gate_admin') {
+      if (role === 'gate_admin' || role === 'front_desk_admin') {
         try {
           const locRes = await base44.functions.invoke('getGateAdminLocations', {});
           const locData = locRes.data || locRes;

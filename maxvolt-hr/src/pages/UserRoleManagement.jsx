@@ -149,7 +149,7 @@ export default function UserRoleManagement() {
     // OFF (unrestricted) in that case, so simply saving other unrelated
     // field edits can never accidentally lock a never-configured gate
     // admin out of every location (see handleSave below).
-    if ((user.custom_role || user.role) === 'gate_admin') {
+    if (['gate_admin', 'front_desk_admin'].includes(user.custom_role || user.role)) {
       try {
         const res = await base44.functions.invoke('getGateAdminLocations', { user_id: user.id });
         const d = res.data || res;
@@ -179,7 +179,7 @@ export default function UserRoleManagement() {
         employeeUpdates,
       });
 
-      if (editForm.role === 'gate_admin') {
+      if (['gate_admin', 'front_desk_admin'].includes(editForm.role)) {
         try {
           await base44.functions.invoke('setGateAdminLocations', {
             user_id: editUser.id,
@@ -621,7 +621,7 @@ export default function UserRoleManagement() {
               </Select>
             </div>
 
-            {editForm.role === 'gate_admin' && (
+            {['gate_admin', 'front_desk_admin'].includes(editForm.role) && (
               <div className="space-y-2 border rounded-lg p-3 bg-orange-50/50">
                 <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
                   <input
