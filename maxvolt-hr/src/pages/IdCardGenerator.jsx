@@ -9,6 +9,7 @@ import { Loader2, IdCard, Upload, Plus, Trash2, Download, Save } from 'lucide-re
 import { openPdfBlob } from '@/utils/letterhead';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import BulkDownload from '@/components/idcard/BulkDownload';
+import CardHistory from '@/components/idcard/CardHistory';
 
 const EMPTY = { employee_ref: '', name: '', designation: '', employee_id: '', doj: '', department: '', photo: '' };
 
@@ -132,6 +133,7 @@ export default function IdCardGenerator() {
         <TabsList>
           <TabsTrigger value="create">Create</TabsTrigger>
           <TabsTrigger value="bulk">Download in bulk</TabsTrigger>
+          <TabsTrigger value="history">History</TabsTrigger>
         </TabsList>
         <TabsContent value="create" className="space-y-5 mt-4">
       <Card>
@@ -219,6 +221,7 @@ export default function IdCardGenerator() {
       )}
         </TabsContent>
         <TabsContent value="bulk" className="mt-4">{tab === 'bulk' && <BulkDownload />}</TabsContent>
+        <TabsContent value="history" className="mt-4">{tab === 'history' && <CardHistory />}</TabsContent>
       </Tabs>
     </div>
   );

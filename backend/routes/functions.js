@@ -1899,6 +1899,22 @@ async function persistExitDocument({ userId, documentType, documentName, pdfBuff
 // `Document` entity is created (that type is gated by canAccessSensitive on
 // user_id ownership, which a candidate can never satisfy); the caller stores
 // the returned URL directly onto the Candidate row instead.
+// History of generated ID-card / business-card PDFs. The file goes to the document bucket when one is configured
+// (presigned link on download); otherwise it is kept in the database record itself.
+async function saveCardPdfHistory({ kind, filename, bytes, total, names, sides, cu }) {
+  try {
+    const id = uuidv4();
+    const buf = Buffer.from(bytes);
+    const rec = { id, kind, filename, total, names: (names || []).slice(0, 60), sides: sides || null, size: buf.length, created_by: cu.id, created_by_name: cu.full_name || cu.display_name || cu.email || '', at: new Date().toISOString() };
+    try {
+      const { isBucketConfigured, buildKey, putToBucket } = await import('../utils/bucket.js');
+      if (isBucketConfigured()) { rec.storage = 'bucket'; rec.key = buildKey(`card-pdfs/${id}`, '.pdf'); await putToBucket(rec.key, buf, 'application/pdf'); }
+    } catch (e) { console.warn('[card-history] bucket upload failed, storing in database:', e.message); delete rec.key; rec.storage = null; }
+    if (!rec.storage) { rec.storage = 'db'; rec.pdf_base64 = buf.toString('base64'); }
+    await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'CardPdfHistory',$2,'active',$3)", [id, cu.id, JSON.stringify(rec)]);
+  } catch (e) { console.warn('[card-history] could not record generated PDF:', e.message); }
+}
+
 async function persistCandidatePdf({ candidateId, documentName, pdfBuffer }) {
   let docUrl = null;
   try {
@@ -14456,6 +14472,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const gvcName = gvcCards.length === 1
         ? `Visiting_Card_${String(gvcCards[0].name || 'card').replace(/[^\w]+/g, '_')}.pdf`
         : `Visiting_Cards_${gvcStamp}.pdf`;
+      await saveCardPdfHistory({ kind: 'business_card', filename: gvcName, bytes: gvcBytes, total: gvcCards.length, names: gvcCards.map(c => c.name), cu });
       return res.json({ success: true, base64: Buffer.from(gvcBytes).toString('base64'), filename: gvcName, total: gvcCards.length });
     }
 
@@ -14516,6 +14533,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           cards: icCards.map(c => ({ name: c.name, employee_id: c.employee_id || '', designation: c.designation || '', department: c.department || '' })),
         })]);
       } catch (e) { console.warn('[idcard] log failed:', e.message); }
+      await saveCardPdfHistory({ kind: 'id_card', filename: `ID_Cards.pdf`, bytes: icBytes, total: icCards.length, names: icCards.map(c => `${c.name} (${c.employee_id || ''})`), sides: icSides, cu });
       const icName = icCards.length === 1 ? `ID_Card_${String(icCards[0].name).replace(/[^\w]+/g, '_')}.pdf` : `ID_Cards_${new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10)}.pdf`;
       return res.json({ success: true, base64: Buffer.from(icBytes).toString('base64'), filename: icName, total: icCards.length });
     }
@@ -14570,7 +14588,40 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       try { dcBytes = await buildIdCardsPdf(dcCards, { emergency_no: dcEmergency, sides: dcSides }); }
       catch (e) { return res.json({ success: false, error: 'Could not build the ID cards: ' + e.message }); }
       const dcStamp = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      await saveCardPdfHistory({ kind: 'id_card', filename: `ID_Cards_${dcStamp}.pdf`, bytes: dcBytes, total: dcFound.length, names: dcCards.map(c => `${c.name} (${c.employee_id || ''})`), sides: dcSides, cu });
       return res.json({ success: true, base64: Buffer.from(dcBytes).toString('base64'), filename: `ID_Cards_${dcStamp}.pdf`, total: dcFound.length, missing: dcMissing });
+    }
+
+    case 'listCardHistory': {
+      if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Not authorized' });
+      const hKind = ['id_card', 'business_card'].includes(p.kind) ? p.kind : null;
+      const hRows = await all("SELECT (data::jsonb - 'pdf_base64')::text AS data FROM entities WHERE type='CardPdfHistory' ORDER BY created_at DESC LIMIT 300");
+      let history = hRows.map(r => JSON.parse(r.data));
+      if (hKind) history = history.filter(h => h.kind === hKind);
+      return res.json({ success: true, history, can_delete: await hasRole(cu, ['admin', 'hr']) });
+    }
+
+    case 'getCardHistoryPdf': {
+      if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Not authorized' });
+      const gRow = await one("SELECT data FROM entities WHERE type='CardPdfHistory' AND id=$1", [p.id]);
+      if (!gRow) return res.json({ success: false, error: 'This PDF is no longer available' });
+      const g = JSON.parse(gRow.data);
+      if (g.storage === 'bucket' && g.key) {
+        const { presignGet } = await import('../utils/bucket.js');
+        return res.json({ success: true, url: await presignGet(g.key, { expiresIn: 900, filename: g.filename }), filename: g.filename });
+      }
+      return res.json({ success: true, base64: g.pdf_base64, filename: g.filename });
+    }
+
+    case 'deleteCardHistory': {
+      if (!(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const dRow = await one("SELECT data FROM entities WHERE type='CardPdfHistory' AND id=$1", [p.id]);
+      if (dRow) {
+        const d = JSON.parse(dRow.data);
+        if (d.storage === 'bucket' && d.key) { try { const { deleteFromBucket } = await import('../utils/bucket.js'); await deleteFromBucket(d.key); } catch (e) { console.warn('[card-history] bucket delete failed:', e.message); } }
+        await run("DELETE FROM entities WHERE type='CardPdfHistory' AND id=$1", [p.id]);
+      }
+      return res.json({ success: true });
     }
 
     case 'prepareBusinessCards': {
