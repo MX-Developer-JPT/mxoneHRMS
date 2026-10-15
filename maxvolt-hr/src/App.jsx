@@ -87,6 +87,7 @@ const ImportEmployees = lazy(() => import('./pages/ImportEmployees'));
 const PIPManagement = lazy(() => import('./pages/PIPManagement'));
 const PMSConfiguration = lazy(() => import('./pages/PMSConfiguration'));
 const BusinessCardAdmin = lazy(() => import('./pages/BusinessCardAdmin'));
+const IdCardGenerator = lazy(() => import('./pages/IdCardGenerator'));
 const PublicBusinessCard = lazy(() => import('./pages/PublicBusinessCard'));
 const AttendanceLogDashboard = lazy(() => import('./pages/AttendanceLogDashboard'));
 const CompanyPolicies = lazy(() => import('./pages/CompanyPolicies'));
@@ -545,6 +546,11 @@ const AuthenticatedApp = () => {
       <Route path="/ImportEmployees" element={
         <LayoutWrapper currentPageName="ImportEmployees">
           <ImportEmployees />
+        </LayoutWrapper>
+      } />
+      <Route path="/IdCardGenerator" element={
+        <LayoutWrapper currentPageName="IdCardGenerator">
+          <IdCardGenerator />
         </LayoutWrapper>
       } />
       <Route path="/BusinessCardAdmin" element={

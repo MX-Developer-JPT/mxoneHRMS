@@ -14,6 +14,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { extractPayslipFields, monthMismatch } from '../utils/payslipExtract.js';
 import { buildVisitingCardsPdf } from '../utils/visitingCard.js';
+import { buildIdCardsPdf } from '../utils/idCard.js';
 import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js';
 
 const _require  = createRequire(import.meta.url);
@@ -14456,6 +14457,52 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         ? `Visiting_Card_${String(gvcCards[0].name || 'card').replace(/[^\w]+/g, '_')}.pdf`
         : `Visiting_Cards_${gvcStamp}.pdf`;
       return res.json({ success: true, base64: Buffer.from(gvcBytes).toString('base64'), filename: gvcName, total: gvcCards.length });
+    }
+
+    /* ── Employee ID cards (HR / admin / front desk admin). The blank company template is embedded unchanged
+       (utils/idCard.js); name, designation, employee ID, DOJ, department and photo come from the form and the
+       emergency number is one shared setting printed on every card. ── */
+    case 'getIdCardConfig': {
+      if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Not authorized' });
+      const icRow = await one("SELECT data FROM entities WHERE type='IdCardConfig' LIMIT 1");
+      const ic = icRow ? JSON.parse(icRow.data) : {};
+      return res.json({ success: true, emergency_no: ic.emergency_no || '9650012359', can_edit: await hasRole(cu, ['admin', 'hr']) });
+    }
+
+    case 'setIdCardConfig': {
+      if (!(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const icNo = String(p.emergency_no || '').trim().slice(0, 40);
+      if (!icNo) return res.json({ success: false, error: 'Enter the emergency number' });
+      const icExisting = await one("SELECT id FROM entities WHERE type='IdCardConfig' LIMIT 1");
+      const icData = { emergency_no: icNo, updated_by: cu.id, updated_at: new Date().toISOString() };
+      if (icExisting) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(icData), icExisting.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'IdCardConfig',$2,'active',$3)", [uuidv4(), cu.id, JSON.stringify(icData)]);
+      return res.json({ success: true, emergency_no: icNo });
+    }
+
+    case 'generateIdCards': {
+      if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Not authorized' });
+      const icCards = (Array.isArray(p.cards) ? p.cards : []).slice(0, 100);
+      if (!icCards.length) return res.json({ success: false, error: 'Add at least one card' });
+      for (const c of icCards) {
+        if (!String(c.name || '').trim()) return res.json({ success: false, error: 'Name is required on every card' });
+        if (String(c.photo_base64 || '').length > 12 * 1024 * 1024) return res.json({ success: false, error: 'A photo is too large - please use a smaller image' });
+      }
+      const icCfgRow = await one("SELECT data FROM entities WHERE type='IdCardConfig' LIMIT 1");
+      const icEmergency = (icCfgRow ? JSON.parse(icCfgRow.data).emergency_no : '') || '9650012359';
+      let icBytes;
+      try { icBytes = await buildIdCardsPdf(icCards, { emergency_no: icEmergency }); }
+      catch (e) { return res.json({ success: false, error: 'Could not build the ID card: ' + e.message }); }
+      // Audit log (no photo stored): who printed whose card, and when.
+      try {
+        const logId = uuidv4();
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'IdCardLog',$2,'active',$3)", [logId, cu.id, JSON.stringify({
+          id: logId, created_by: cu.id, at: new Date().toISOString(),
+          cards: icCards.map(c => ({ name: c.name, employee_id: c.employee_id || '', designation: c.designation || '', department: c.department || '' })),
+        })]);
+      } catch (e) { console.warn('[idcard] log failed:', e.message); }
+      const icName = icCards.length === 1 ? `ID_Card_${String(icCards[0].name).replace(/[^\w]+/g, '_')}.pdf` : `ID_Cards_${new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10)}.pdf`;
+      return res.json({ success: true, base64: Buffer.from(icBytes).toString('base64'), filename: icName, total: icCards.length });
     }
 
     // Excel template for the Business Cards bulk import. Pre-filled with every
