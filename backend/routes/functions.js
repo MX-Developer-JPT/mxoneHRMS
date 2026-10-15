@@ -3474,7 +3474,7 @@ router.post('/:name', async (req, res) => {
       // HR/admin/recruiter are operators of the app, not employees — exclude
       // them from the org chart, which should reflect the actual workforce.
       const operatorIds = new Set(
-        (await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('admin','hr','recruiter','gate_admin')"))
+        (await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('admin','hr','recruiter','gate_admin','front_desk_admin')"))
           .map(u => u.id)
       );
       const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'"))
@@ -7095,7 +7095,7 @@ router.post('/:name', async (req, res) => {
       const userMap   = Object.fromEntries(users.map(u => [u.id, u]));
       // HR/admin/recruiter/gate_admin are operators of the app, not
       // employees — excluded here to match the Employee Directory page.
-      const OPERATOR_ROLES_DIR = ['admin', 'hr', 'recruiter', 'gate_admin'];
+      const OPERATOR_ROLES_DIR = ['admin', 'hr', 'recruiter', 'gate_admin', 'front_desk_admin'];
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' ORDER BY data::jsonb->>'department', data::jsonb->>'display_name'"))
         .filter(e => !OPERATOR_ROLES_DIR.includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
       const empByUserId = Object.fromEntries(employees.map(e => [e.user_id, e]));
@@ -7343,7 +7343,7 @@ router.post('/:name', async (req, res) => {
       const deptRows  = parseEntities(await all("SELECT data FROM entities WHERE type='Department' ORDER BY data::jsonb->>'name'"));
       const dUsers     = await all("SELECT id, email, display_name, full_name, role, custom_role FROM users");
       const dUserMap   = Object.fromEntries(dUsers.map(u => [u.id, u]));
-      const OPERATOR_ROLES_D = ['admin', 'hr', 'recruiter', 'gate_admin'];
+      const OPERATOR_ROLES_D = ['admin', 'hr', 'recruiter', 'gate_admin', 'front_desk_admin'];
       const dEmployees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' ORDER BY data::jsonb->>'department', data::jsonb->>'display_name'"))
         .filter(e => !OPERATOR_ROLES_D.includes(dUserMap[e.user_id]?.custom_role || dUserMap[e.user_id]?.role));
       const dEmpByUserId = Object.fromEntries(dEmployees.map(e => [e.user_id, e]));
@@ -10729,7 +10729,7 @@ router.post('/:name', async (req, res) => {
 
       const employeesRaw = empRows.map(r => JSON.parse(r.data));
       // HR/admin/recruiter are operators of the app, not employees.
-      const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
+      const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin', 'front_desk_admin'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
       const activeEmployeeCount = employees.length;
 
       // Present = any employee with ANY attendance record for the day —
@@ -14438,7 +14438,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     // the company's visiting-card template — see utils/visitingCard.js.
     // Admin-only, same as the Business Cards page that calls it.
     case 'generateVisitingCards': {
-      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      if (!(await hasRole(cu, ['admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Admin access required' });
       const { ids } = p;
       const gvcRows = await all("SELECT id, data FROM entities WHERE type='DigitalBusinessCard' ORDER BY created_at DESC");
       // The id column is authoritative (the JSON blob may not carry it), and
@@ -14463,7 +14463,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     // than creating a duplicate), a guide sheet, and blank rows ready for new
     // people. Parsed back by components/businesscard/BulkImportModal.jsx.
     case 'exportBusinessCardTemplate': {
-      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      if (!(await hasRole(cu, ['admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Admin access required' });
       const ebtRows = await all("SELECT id, data FROM entities WHERE type='DigitalBusinessCard' ORDER BY created_at ASC");
       const ebtCards = ebtRows.map(r => ({ ...JSON.parse(r.data), id: r.id }));
       const ebtBase = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '');
@@ -19063,6 +19063,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     // (back-compat) or locationName is in their assigned list. Anyone else: no.
     async function canOperateAtLocation(cu, locationName) {
       if (await hasRole(cu, MGR_ROLES)) return true;
+      if (await hasRole(cu, ['front_desk_admin'])) return true; // Front Desk Admin: every location
       if (!(await hasRole(cu, ['gate_admin']))) return false;
       const assigned = await getGateAdminAssignedLocations(cu.id);
       if (assigned === null) return true; // never configured — unrestricted
@@ -19077,7 +19078,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     async function getGateAdminUserIdsForLocation(locationName) {
-      const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role)='gate_admin'");
+      const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('gate_admin','front_desk_admin')");
       const out = [];
       for (const r of rows) {
         const assigned = await getGateAdminAssignedLocations(r.id);
@@ -19144,7 +19145,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'registerWalkInVisitor': {
-      if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
+      if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
       const { visitor_name, mobile_number, visitor_email, company, visitor_category, purpose,
         host_user_id: rwvHostId, location_name: rwvLocation, vehicle_number, photo_url: rwvPhoto } = p;
       if (!visitor_name || !mobile_number || !purpose || !rwvHostId) {
@@ -19252,7 +19253,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'visitorCheckIn': {
-      if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
+      if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
       const { visitor_id: vciId, qr_code: vciQr, photo_url: vciPhoto, id_proof_reference: vciIdProof, vehicle_number: vciVeh } = p;
       if (!vciId && !vciQr) return res.json({ success: false, error: 'visitor_id or qr_code is required' });
       const vciRow = vciQr
@@ -19280,7 +19281,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'visitorCheckOut': {
-      if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
+      if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
       const { visitor_id: vcoId, qr_code: vcoQr } = p;
       if (!vcoId && !vcoQr) return res.json({ success: false, error: 'visitor_id or qr_code is required' });
       const vcoRow = vcoQr
@@ -19413,7 +19414,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     // gets only their assigned location(s), enforced here server-side —
     // not just by what VisitorManagement.jsx chooses to render.
     case 'getVisitorsScoped': {
-      if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
+      if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
       const rows = await all("SELECT data FROM entities WHERE type='Visitor' ORDER BY created_at DESC LIMIT 2000");
       let visitors = rows.map(r => JSON.parse(r.data));
       if (!(await hasRole(cu, MGR_ROLES))) {

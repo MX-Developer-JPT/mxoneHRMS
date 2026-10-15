@@ -307,7 +307,7 @@ async function getGateAdminAssignedLocations(userId) {
 }
 
 async function getGateAdminUserIdsForLocation(locationName) {
-  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role)='gate_admin'");
+  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('gate_admin','front_desk_admin')");
   const out = [];
   for (const r of rows) {
     const assigned = await getGateAdminAssignedLocations(r.id);
@@ -411,7 +411,7 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   }
 
   if (isGateLogTransition) {
-    if (['hr', 'admin'].includes(role)) return true;
+    if (['hr', 'admin', 'front_desk_admin'].includes(role)) return true;
     if (role === 'gate_admin') {
       // Every gate pass now carries its own departure location
       // (current_location — the employee explicitly picks it from Location
@@ -440,6 +440,9 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
     res.status(403).json({ error: 'Access denied — gate admin access required' });
     return false;
   }
+
+  // Front Desk Admin approves / rejects gate passes company-wide (their only approval scope).
+  if (role === 'front_desk_admin' && type === 'GatePass') return true;
 
   if (['hr', 'admin'].includes(role)) {
     if (role !== 'admin' && type !== 'GatePass' && !(await hasManagerCleared(type, current))) {
@@ -809,8 +812,9 @@ router.post('/:type', async (req, res) => {
   // Attendance row existed yet for that day.
   if (data.user_id && data.user_id !== cu.id) {
     const role = await getEffectiveRole(cu);
-    const isGateAdminAttendance = type === 'Attendance' && role === 'gate_admin';
-    if (!PRIVILEGED_ROLES.has(role) && !isGateAdminAttendance) return res.status(403).json({ error: 'Cannot create a record on behalf of another user' });
+    const isGateAdminAttendance = type === 'Attendance' && (role === 'gate_admin' || role === 'front_desk_admin');
+    const isFrontDeskCard = type === 'DigitalBusinessCard' && role === 'front_desk_admin';
+    if (!PRIVILEGED_ROLES.has(role) && !isGateAdminAttendance && !isFrontDeskCard) return res.status(403).json({ error: 'Cannot create a record on behalf of another user' });
   }
 
   // SENSITIVE_TYPES also need a create-time gate — GET/PATCH/DELETE all
@@ -1052,8 +1056,9 @@ router.patch('/:type/:id', async (req, res) => {
   // just as often as it creates a new one, and both paths need to agree.
   if (!isScopedTransition && current.user_id && current.user_id !== cu.id && current.assigned_to !== cu.id && current.assigned_to_user_id !== cu.id) {
     const genRole = await getEffectiveRole(cu);
-    const isGateAdminAttendance = type === 'Attendance' && genRole === 'gate_admin';
-    if (!PRIVILEGED_ROLES.has(genRole) && !isGateAdminAttendance) return res.status(403).json({ error: 'Access denied — not your record' });
+    const isGateAdminAttendance = type === 'Attendance' && (genRole === 'gate_admin' || genRole === 'front_desk_admin');
+    const isFrontDeskCard = type === 'DigitalBusinessCard' && genRole === 'front_desk_admin';
+    if (!PRIVILEGED_ROLES.has(genRole) && !isGateAdminAttendance && !isFrontDeskCard) return res.status(403).json({ error: 'Access denied — not your record' });
   }
 
   const updated = { ...current, ...req.body, id };
@@ -1334,7 +1339,8 @@ router.delete('/:type/:id', async (req, res) => {
     const existing = await one('SELECT user_id FROM entities WHERE type=$1 AND id=$2', [type, id]);
     if (existing?.user_id && existing.user_id !== cu.id) {
       const genRole = await getEffectiveRole(cu);
-      if (!PRIVILEGED_ROLES.has(genRole)) return res.status(403).json({ error: 'Access denied — not your record' });
+      const isFrontDeskCard = type === 'DigitalBusinessCard' && genRole === 'front_desk_admin';
+      if (!PRIVILEGED_ROLES.has(genRole) && !isFrontDeskCard) return res.status(403).json({ error: 'Access denied — not your record' });
     }
   }
 

@@ -82,7 +82,7 @@ const ROLE_ADDON_STEPS = {
 };
 
 export function getTourStepsForRole(role) {
-  if (role === 'gate_admin') {
+  if (role === 'gate_admin' || role === 'front_desk_admin') {
     return [WELCOME_STEP, ...GATE_ADMIN_CORE_STEPS, NOTIF_STEP, THEME_STEP, CLOSING_STEP];
   }
   const addons = ROLE_ADDON_STEPS[role] || [];

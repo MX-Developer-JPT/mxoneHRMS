@@ -95,7 +95,7 @@ export default function VisitorManagement() {
   const [showHeadcount, setShowHeadcount] = useState(false);
 
   const role = user?.custom_role || user?.role;
-  const canOperate = ['gate_admin', 'hr', 'admin', 'management'].includes(role);
+  const canOperate = ['gate_admin', 'front_desk_admin', 'hr', 'admin', 'management'].includes(role);
   const isGateAdmin = role === 'gate_admin';
 
   const loadData = useCallback(async (silent = false) => {

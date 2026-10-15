@@ -422,6 +422,18 @@ const gateAdminMenuGroups = [
   ]},
 ];
 
+// Front Desk Admin: gate pass approvals + gate out/in, visitor management and digital business cards — nothing else.
+const frontDeskMenuGroups = [
+  { label: '', items: [
+    { name: 'Gate Pass Approvals', icon: ShieldCheck, page: 'GatePassApproval' },
+    { name: 'Gate Admin',          icon: ShieldCheck, page: 'GateAdminDashboard' },
+    { name: 'Visitor Management',  icon: Users,       page: 'VisitorManagement' },
+    { name: 'Visitor Records',     icon: Users,       page: 'VisitorRecords' },
+    { name: 'Business Cards',      icon: QrCode,      page: 'BusinessCardAdmin' },
+    { name: 'My Profile',          icon: User2,       page: 'GateAdminProfile' },
+  ]},
+];
+
 /* ── Avatar ────────────────────────────────────────────────── */
 function Avatar({ name, role, size = 'md' }) {
   const initial = (name || '?').charAt(0).toUpperCase();
@@ -431,6 +443,7 @@ function Avatar({ name, role, size = 'md' }) {
     management: 'bg-[#34C759]',   // Apple green
     manager:    'bg-[#34C759]',
     gate_admin: 'bg-[#FF9500]',   // Apple orange
+    front_desk_admin: 'bg-[#FF9500]',
     recruiter:  'bg-[#FF2D55]',   // Apple pink
   };
   const bg   = colors[role] || 'bg-[#8E8E93]';
@@ -787,6 +800,7 @@ export default function Layout({ children, currentPageName }) {
   const isTopManagement = userRole === 'management' || user.role === 'management';
   const isManager     = userRole === 'manager'    || user.role === 'manager';
   const isGateAdmin  = userRole === 'gate_admin'  || user.role === 'gate_admin';
+  const isFrontDesk  = userRole === 'front_desk_admin' || user.role === 'front_desk_admin';
   const isRecruiter  = userRole === 'recruiter'   || user.role === 'recruiter';
   // Matches the "IT" department however HR spelled it out in Department
   // Management — exact 'it', or any variant of "Information Technology"
@@ -805,6 +819,7 @@ export default function Layout({ children, currentPageName }) {
   else if (isManager)       menuGroups = managerMenuGroups;
   else if (isRecruiter)     menuGroups = recruiterMenuGroups;
   else if (isGateAdmin)     menuGroups = gateAdminMenuGroups;
+  else if (isFrontDesk)     menuGroups = frontDeskMenuGroups;
   // Learning & Development — everyone gets My Learning; recruiters / gate admins aren't in the lists above,
   // and trainers / L&D admins / HODs / buddies get the extra entries their role needs.
   {
@@ -888,6 +903,13 @@ export default function Layout({ children, currentPageName }) {
         { label: 'Requisitions', icon: Briefcase,     page: 'JobRequisitions',    path: '/JobRequisitions' },
         { label: 'Candidates', icon: UserPlus,        page: 'Recruitment',        path: '/Recruitment' },
         { label: 'Interviews', icon: Calendar,        page: 'InterviewManagement',path: '/InterviewManagement' },
+      ]
+    : isFrontDesk
+    ? [
+        { label: 'Approvals',  icon: ShieldCheck,     page: 'GatePassApproval',  path: '/GatePassApproval' },
+        { label: 'Visitors',   icon: Users,            page: 'VisitorManagement', path: '/VisitorManagement' },
+        { label: 'Cards',      icon: QrCode,           page: 'BusinessCardAdmin', path: '/BusinessCardAdmin' },
+        { label: 'Profile',    icon: User2,            page: 'GateAdminProfile',  path: '/GateAdminProfile' },
       ]
     : isGateAdmin
     ? [

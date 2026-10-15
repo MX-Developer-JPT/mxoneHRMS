@@ -55,7 +55,7 @@ export default function GatePassApproval() {
     setUser(currentUser);
 
     const role = currentUser.custom_role || currentUser.role;
-    const hrUser = ['hr', 'admin'].includes(role);
+    const hrUser = ['hr', 'admin', 'front_desk_admin'].includes(role);
     const mgmtUser = role === 'management';
     setIsHR(hrUser);
     setIsManagementRole(mgmtUser);

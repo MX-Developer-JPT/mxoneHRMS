@@ -12,6 +12,8 @@ export default function RoleBasedRedirect() {
         navigate('/OnboardingForm', { replace: true });
       } else if (role === 'gate_admin') {
         navigate('/GateAdminDashboard', { replace: true });
+      } else if (role === 'front_desk_admin') {
+        navigate('/GatePassApproval', { replace: true });
       } else {
         navigate('/Dashboard', { replace: true });
       }

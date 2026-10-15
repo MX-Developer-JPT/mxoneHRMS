@@ -83,7 +83,7 @@ export default function BusinessCardAdmin() {
   if (user === null) {
     return <div className="flex items-center justify-center h-screen"><Loader2 className="w-6 h-6 animate-spin text-gray-400" /></div>;
   }
-  if (user === false || user.role !== 'admin') {
+  if (user === false || !(user.role === 'admin' || ['admin', 'front_desk_admin'].includes(user.custom_role || user.role))) {
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="text-center">
