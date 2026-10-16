@@ -52,6 +52,34 @@ export default function LdOverviewTab() {
         <Tile label="30/60/90 review completion" value={`${k.review_completion}%`} />
       </div>
 
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-base">Programme KPIs vs target</CardTitle></CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+            {[
+              ['Induction coverage', k.coverage_pct, '%', 100, `${k.eligible_total} active employees`],
+              ['Completed within 30 days', k.completion_30d_pct, '%', 90, 'of those due'],
+              ['First-attempt pass rate', k.first_attempt_pass_pct, '%', 60, 'content-quality signal'],
+              ['Pass after remediation', k.pass_after_remediation_pct, '%', 98, 'of those who failed once'],
+              ['Average assessment score', k.avg_assessment_score, '%', 90, ''],
+              ['Steps overdue > 7 days', k.overdue_over_7d, '', 0, 'target zero', true],
+              ['Learner satisfaction', d.feedback_avg, ' / 5', 4, 'feedback rating'],
+            ].map(([label, val, unit, target, note, lowerBetter]) => {
+              const has = val != null;
+              const good = has && (lowerBetter ? val <= target : val >= target);
+              return (
+                <div key={label} className="rounded-lg border p-3">
+                  <div className="text-[11px] text-gray-500 leading-tight">{label}</div>
+                  <div className={`text-2xl font-bold mt-1 ${!has ? 'text-gray-400' : good ? 'text-green-600' : 'text-amber-600'}`}>{has ? `${val}${unit}` : '—'}</div>
+                  <div className="text-[10px] text-gray-400">target {lowerBetter ? target : `≥ ${target}${unit.trim() === '/ 5' ? '' : unit}`}{note ? ` · ${note}` : ''}</div>
+                </div>
+              );
+            })}
+          </div>
+          {d.policy && <p className="text-[11px] text-gray-400 mt-2">Gate policy in force: {d.policy.pass_score}% pass mark · {d.policy.max_attempts} attempts · critical-question rule {d.policy.critical_rule ? 'on' : 'off'}.{d.policy.pass_score < 90 && <b className="text-amber-700"> The scope document asks for 90% — apply it in Settings.</b>}</p>}
+        </CardContent>
+      </Card>
+
       {d.missing.length > 0 && (
         <Card className="border-amber-300 bg-amber-50/50">
           <CardHeader className="pb-2"><CardTitle className="text-base">Recent joiners without an induction ({d.missing.length})</CardTitle></CardHeader>

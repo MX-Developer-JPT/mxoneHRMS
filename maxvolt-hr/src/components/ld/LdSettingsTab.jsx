@@ -18,6 +18,7 @@ export default function LdSettingsTab() {
   const [json, setJson] = useState('');
   const [audit, setAudit] = useState([]);
   const [busy, setBusy] = useState('');
+  const [plan, setPlan] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -32,6 +33,18 @@ export default function LdSettingsTab() {
   const saveCfg = async () => {
     setBusy('cfg');
     try { await ld('ld_saveConfig', { config: cfg }); toast.success('Settings saved'); await load(); } catch (e) { toast.error(e.message); }
+    setBusy('');
+  };
+  const policyBody = () => ({ pass_score: Number(cfg.induction_pass_score) || 90, max_attempts: Number(cfg.max_attempts) || 3, critical_rule: cfg.critical_rule !== false, require_relearn: cfg.require_relearn !== false, seconds_per_question: Number(cfg.seconds_per_question) || 60 });
+  const previewPolicy = async () => {
+    setBusy('plan');
+    try { setPlan((await ld('ld_applyPolicy', { ...policyBody(), dry_run: true })).plan); } catch (e) { toast.error(e.message); }
+    setBusy('');
+  };
+  const applyPolicy = async () => {
+    if (!window.confirm(`Apply a ${policyBody().pass_score}% pass mark and ${policyBody().max_attempts} attempts to every induction assessment, the workflow, and all inductions that have not yet passed this step?`)) return;
+    setBusy('apply');
+    try { await ld('ld_applyPolicy', policyBody()); toast.success('Policy applied'); setPlan(null); await load(); } catch (e) { toast.error(e.message); }
     setBusy('');
   };
   const saveTpl = async () => {
@@ -69,6 +82,46 @@ export default function LdSettingsTab() {
             </div>
             <p className="text-[11px] text-gray-400 mt-1">Employee → Reporting Manager → HOD → HR → L&D. Each level is notified once, when the step reaches that many days overdue.</p>
           </div>
+        </CardContent></Card>
+
+        <Card><CardHeader className="pb-2"><CardTitle className="text-base">Knowledge-gate policy (90% rule)</CardTitle></CardHeader><CardContent className="space-y-3">
+          <p className="text-xs text-gray-500">An employee cannot move on until the assessment for the step is passed. These rules apply to every induction assessment. Set the values above (pass mark, attempts), tick the rules, then preview and apply — nothing changes until you apply.</p>
+          <div className="grid md:grid-cols-2 gap-2 text-sm">
+            <label className="flex items-start gap-2"><input type="checkbox" className="mt-1" checked={cfg.critical_rule !== false} onChange={e => setCfg(c => ({ ...c, critical_rule: e.target.checked }))} /><span><b>Critical-question rule</b> — questions tagged critical (safety, POSH, conduct, information security) must all be right as well as the pass mark.</span></label>
+            <label className="flex items-start gap-2"><input type="checkbox" className="mt-1" checked={cfg.require_relearn !== false} onChange={e => setCfg(c => ({ ...c, require_relearn: e.target.checked }))} /><span><b>Re-learn between attempts</b> — after a miss the employee reviews the weak topics before the next attempt unlocks.</span></label>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Field label="Minimum review time (seconds)"><Input type="number" value={cfg.relearn_min_seconds ?? 60} onChange={e => setCfg(c => ({ ...c, relearn_min_seconds: e.target.value }))} /></Field>
+            <Field label="Time per question (seconds)"><Input type="number" value={cfg.seconds_per_question ?? 60} onChange={e => setCfg(c => ({ ...c, seconds_per_question: e.target.value }))} /></Field>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={previewPolicy} disabled={busy === 'plan'}>{busy === 'plan' && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Preview what will change</Button>
+            {plan && <Button size="sm" onClick={applyPolicy} disabled={busy === 'apply'}>{busy === 'apply' && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Apply policy now</Button>}
+          </div>
+          {plan && (
+            <div className="rounded-lg border bg-gray-50 p-3 text-xs space-y-1">
+              {!plan.config && plan.assessments.length === 0 && !plan.template && plan.open_gates === 0 ? <div className="text-green-700 font-medium">Everything already matches — {plan.pass_score}% pass mark, {plan.max_attempts} attempts.</div> : <>
+                <div className="font-semibold">Will be changed:</div>
+                {plan.config && <div>• L&amp;D settings (default pass mark, attempts, rules)</div>}
+                {plan.assessments.map(a => <div key={a.id}>• {a.title}: {a.changes.join('; ')}</div>)}
+                {plan.template && <div>• Induction workflow: a new version with the assessment steps at {plan.pass_score}% / {plan.max_attempts} attempts</div>}
+                {plan.open_gates > 0 && <div>• {plan.open_gates} running induction(s) with an assessment step not yet passed</div>}
+                <div className="text-gray-500 pt-1">Employees who already passed are not affected; past attempts stay on record.</div>
+              </>}
+            </div>
+          )}
+        </CardContent></Card>
+
+        <Card><CardHeader className="pb-2"><CardTitle className="text-base">Question-bank blocks</CardTitle></CardHeader><CardContent className="space-y-2">
+          <p className="text-xs text-gray-500">The topic blocks questions are tagged with, and the minimum number of questions each block should have (used for the coverage bars in Assessments).</p>
+          {(cfg.topics || []).map((t, i) => (
+            <div key={i} className="grid grid-cols-[3rem_1fr_5rem] gap-2">
+              <Input value={t.key} onChange={e => setCfg(c => ({ ...c, topics: c.topics.map((x, n) => n === i ? { ...x, key: e.target.value.toUpperCase().slice(0, 3) } : x) }))} />
+              <Input value={t.label} onChange={e => setCfg(c => ({ ...c, topics: c.topics.map((x, n) => n === i ? { ...x, label: e.target.value } : x) }))} />
+              <Input type="number" value={t.min} onChange={e => setCfg(c => ({ ...c, topics: c.topics.map((x, n) => n === i ? { ...x, min: e.target.value } : x) }))} />
+            </div>
+          ))}
+          <Button size="sm" variant="ghost" onClick={() => setCfg(c => ({ ...c, topics: [...(c.topics || []), { key: 'G', label: '', min: 20 }] }))}>+ Add block</Button>
         </CardContent></Card>
 
         <Card><CardHeader className="pb-2"><CardTitle className="text-base">L&amp;D administrators</CardTitle></CardHeader><CardContent className="space-y-2">

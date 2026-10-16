@@ -8,7 +8,8 @@
 //   LdSkill · LdEmpSkill · LdFeedback · LdAudit
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
-import { DEFAULT_CONFIG, DEFAULT_TEMPLATE, DEFAULT_ASSESSMENT, DEFAULT_COURSES } from '../utils/ldSeed.js';
+import { DEFAULT_CONFIG, DEFAULT_TEMPLATE, DEFAULT_ASSESSMENT, DEFAULT_COURSES, SEED_QUESTION_TAGS } from '../utils/ldSeed.js';
+import { drawQuestions, makeOptionOrders, publicQuestions, unmapAnswers, gradeAttempt } from '../utils/ldAssess.js';
 
 const IST_MS = 5.5 * 3600000;
 export const todayIST = () => new Date(Date.now() + IST_MS).toISOString().slice(0, 10);
@@ -82,6 +83,11 @@ export async function ensureSeed() {
     if (!(await list('LdAssessment')).some(a => a.key === DEFAULT_ASSESSMENT.key)) await create('LdAssessment', clone(DEFAULT_ASSESSMENT));
     if (!(await list('LdCourse')).length) for (const c of DEFAULT_COURSES) await create('LdCourse', { ...c, status: 'active', version: 1, code: 'C-' + uuidv4().slice(0, 6).toUpperCase() });
     if (!(await get('LdConfig', 'ld-config'))) await create('LdConfig', { ...DEFAULT_CONFIG, id: 'ld-config' });
+    // older databases: give the seeded questions their topic block / critical flag (metadata only)
+    for (const a of (await list('LdAssessment')).filter(x => x.key === DEFAULT_ASSESSMENT.key && !x.questions.some(q => q.topic))) {
+      for (const q of a.questions) { q.topic = SEED_QUESTION_TAGS.topic[q.id] || 'A'; if (SEED_QUESTION_TAGS.critical.includes(q.id)) q.critical = true; }
+      await save('LdAssessment', a);
+    }
   } catch (e) { seeded = false; console.error('[ld] seed failed:', e.message); }
 }
 
@@ -351,22 +357,62 @@ async function queueForResume(userId) {
 }
 
 // ── assessments ───────────────────────────────────────────────────────────
+// Scoring, question drawing and option shuffling live in ../utils/ldAssess.js (pure, unit-tested).
 const norm = (s) => String(s ?? '').trim().toLowerCase();
-function scoreQuestion(q, ans) {
-  if (q.type === 'multi') {
-    const a = Array.isArray(ans) ? ans.map(Number).sort() : [];
-    const c = [...q.correct].map(Number).sort();
-    return a.length === c.length && a.every((v, i) => v === c[i]);
+const deviceOf = (res) => String(res?.req?.headers?.['user-agent'] || '').slice(0, 200);
+
+// How often this person has already been served each question of this assessment (so retakes favour new ones).
+async function seenCounts(userId, key) {
+  const out = {};
+  for (const a of await list('LdAttempt', 'AND user_id=$2', [userId])) {
+    if ((a.assessment_key || a.assessment_id) !== key && a.assessment_id !== key) continue;
+    for (const id of a.order || []) out[id] = (out[id] || 0) + 1;
   }
-  if (q.type === 'short') return (q.accepted || []).some(x => norm(ans).includes(norm(x)));
-  const a = Array.isArray(ans) ? Number(ans[0]) : Number(ans);
-  return q.correct.map(Number).includes(a);
+  return out;
 }
-function publicQuestions(a, order) {
-  const byId = Object.fromEntries(a.questions.map(q => [q.id, q]));
-  return order.map(id => byId[id]).filter(Boolean).map(q => ({ id: q.id, type: q.type, text: q.text, options: q.options, points: q.points || 1, scenario: !!q.scenario }));
+
+// Record an attempt on an induction step and move the step: passed → PASSED; failed with attempts left →
+// stays open but the employee must first review the weak topics; last attempt failed → FAILED + remediation.
+async function applyGateResult(ind, g, att, gr, need, cfg, actorId) {
+  const max = g.max_attempts || att.max_attempts || cfg.max_attempts;
+  g.attempts.push({ attempt_id: att.id, at: att.submitted_at, score: gr.score, passed: gr.passed, gaps: gr.gaps, weak_topics: gr.weakTopics, critical_failed: gr.criticalFailed, expired: !!att.forfeited });
+  g.last_score = gr.score;
+  const used = g.attempts.length - (g.attempt_base || 0);
+  const why = gr.passed ? '' : (gr.criticalFailed > 0 && gr.scoreOk ? `${gr.criticalFailed} critical question(s) wrong` : `${gr.score}% (pass ${need}%)`);
+  await audit('LdInduction', ind.id, gr.passed ? 'assessment_passed' : 'assessment_failed', actorId, { gate: g.gate_id, score: gr.score, pass: need, critical_failed: gr.criticalFailed, attempt: used, of: max, expired: !!att.forfeited }, ind.user_id);
+  if (gr.passed) {
+    setStatus(g, 'PASSED', actorId, `assessment ${gr.score}%`); g.completed_at = nowIso(); g.needs_relearn = false;
+    await notify([ind.user_id, ind.employee.reporting_manager_id], { title: 'Assessment passed', message: `${ind.employee.name} scored ${gr.score}% on the induction knowledge check.`, type: 'success', link: '/MyLearning' });
+  } else if (used >= max) {
+    setStatus(g, 'FAILED', actorId, `assessment ${why} — attempts used`);
+    g.needs_relearn = false;
+    g.remediation = { stage: 'GAP_IDENTIFIED', gap: gr.gaps.slice(0, 12).join(' | '), weak_topics: gr.weakTopics.map(t => t.topic), at: nowIso(), history: [{ stage: 'GAP_IDENTIFIED', by: 'system', at: nowIso(), note: `All ${max} attempts used; last result ${why}` }] };
+    await notify([ind.user_id, ...(await ownersOf(ind, g)), ind.employee.reporting_manager_id, ind.trainer_user_id], { title: 'Assessment not passed — retraining needed', message: `${ind.employee.name} used all ${max} attempts on "${g.name}" (${why}). A retraining plan is needed before new attempts are released.`, type: 'warning', link: `/LdInductionDetail?id=${ind.id}` });
+  } else {
+    if (g.status === 'READY') setStatus(g, 'IN_PROGRESS', actorId, `assessment ${why}`);
+    g.needs_relearn = cfg.require_relearn !== false;
+    g.relearn_topics = gr.weakTopics.map(t => t.topic);
+    g.relearn_from = nowIso();
+    await notify(ind.user_id, { title: 'Assessment not passed yet', message: `${why}. ${max - used} attempt(s) left — review the weak topics, then try again.`, type: 'warning', link: '/MyLearning' });
+  }
+  return { attempts_left: Math.max(0, max - used), final_failure: !gr.passed && used >= max, needs_relearn: !!g.needs_relearn, relearn_topics: g.relearn_topics || [] };
 }
-const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+
+// An attempt left open past its time limit is not scored by answers: it is closed as "not passed" and counts as used.
+async function forfeitAttempt(att, actorId) {
+  att.status = 'EXPIRED'; att.forfeited = true; att.score = 0; att.passed = false; att.submitted_at = nowIso(); att.results = []; att.gaps = [];
+  await save('LdAttempt', att);
+  if (!att.induction_id) return;
+  await withLock('ind:' + att.induction_id, async () => {
+    const ind = await loadInduction(att.induction_id);
+    const g = ind?.gates.find(x => x.gate_id === att.gate_id);
+    if (!g || g.attempts.some(a => a.attempt_id === att.id)) return;
+    const cfg = await getConfig();
+    const need = g.pass_score || att.pass_score || cfg.induction_pass_score;
+    await applyGateResult(ind, g, att, { score: 0, passed: false, gaps: [], weakTopics: [], criticalFailed: 0, scoreOk: false }, need, cfg, actorId);
+    await save('LdInduction', ind);
+  });
+}
 
 // ── main dispatcher ───────────────────────────────────────────────────────
 const PAUSED_MSG = 'Induction training is paused by HR — nothing can be completed, submitted or signed off until it resumes.';
@@ -379,7 +425,15 @@ const forbid = (res, msg = 'Not allowed') => res.status(403).json({ success: fal
 
 function publicInduction(ind, ctx) {
   const d = clone(ind);
-  for (const g of d.gates) { g.attempts = (g.attempts || []).map(a => ({ attempt_id: a.attempt_id, at: a.at, score: a.score, passed: a.passed, gaps: a.gaps })); }
+  for (const g of d.gates) {
+    g.attempts = (g.attempts || []).map(a => ({ attempt_id: a.attempt_id, at: a.at, score: a.score, passed: a.passed, gaps: a.gaps, weak_topics: a.weak_topics, critical_failed: a.critical_failed, expired: a.expired }));
+    if (g.completion === 'assessment') {
+      const max = g.max_attempts || ctx.cfg.max_attempts;
+      const used = g.attempts.length - (g.attempt_base || 0);
+      const wait = ctx.cfg.relearn_min_seconds ?? 60;
+      g.attempts_info = { used, max, left: Math.max(0, max - used), needs_relearn: !!g.needs_relearn, relearn_topics: g.relearn_topics || [], relearn_ready_at: g.needs_relearn && g.relearn_from ? new Date(Date.parse(g.relearn_from) + wait * 1000).toISOString() : null, critical_rule: ctx.cfg.critical_rule !== false };
+    }
+  }
   d._can = {};
   for (const g of d.gates) d._can[g.gate_id] = { owner: canOwn(ctx, ind, g), self: ctx.id === ind.user_id };
   d._viewer = { is_employee: ctx.id === ind.user_id, is_buddy: ind.buddy_user_id === ctx.id, is_hr: ctx.isHR, is_ld: ctx.isLdAdmin };
@@ -447,7 +501,7 @@ const HANDLERS = {
         const waiting = g.status === 'SUBMITTED' || g.status === 'UNDER_REVIEW';
         next = {
           gate_id: g.gate_id, gate_name: g.name, status: g.status, due_date: g.due_date, overdue: g.due_date < today && !waiting,
-          required_action: g.status === 'FAILED' ? 'Waiting for retraining / reassessment to be approved' : waiting ? 'Waiting for sign-off' : (g.completion === 'assessment' && !empTasks.length ? 'Take the assessment' : empTasks.length ? `${empTasks.length} action(s) for you` : 'Waiting for your trainer / manager'),
+          required_action: g.status === 'FAILED' ? 'Waiting for retraining / reassessment to be approved' : waiting ? 'Waiting for sign-off' : (g.completion === 'assessment' && !empTasks.length ? (g.needs_relearn ? 'Review the weak topics, then retake the assessment' : 'Take the assessment') : empTasks.length ? `${empTasks.length} action(s) for you` : 'Waiting for your trainer / manager'),
           approver: (await ownersOf(mine, g).then(ids => Promise.all(ids.slice(0, 2).map(nameOf)))).filter(Boolean).join(', ') || (g.owner_roles || []).join(' / ').toUpperCase(),
           next_gate: mine.gates.find(x => x.seq > g.seq)?.name || null,
         };
@@ -592,7 +646,7 @@ const HANDLERS = {
       if (!canOwn(ctx, ind, g) && !ctx.isLdAdmin) { forbid(res); return false; }
       const order = ['GAP_IDENTIFIED', 'REMEDIATION', 'RETRAINING', 'REASSESSMENT'];
       const cur = g.remediation?.stage || 'GAP_IDENTIFIED';
-      const next = order[Math.min(order.length - 1, order.indexOf(cur) + 1)];
+      const next = p.finish ? 'REASSESSMENT' : order[Math.min(order.length - 1, order.indexOf(cur) + 1)];
       g.remediation = g.remediation || { history: [] };
       g.remediation.stage = next; g.remediation.history.push({ stage: next, by: ctx.id, at: nowIso(), note: clean(p.note, 800) });
       if (next === 'REASSESSMENT') {
@@ -601,6 +655,7 @@ const HANDLERS = {
         g.superseded_signoffs = [...(g.superseded_signoffs || []), ...g.signoffs];
         g.signoffs = [];
         g.attempt_base = (g.attempts || []).length;
+        g.needs_relearn = false;
         if (g.completion !== 'assessment') g.tasks.forEach(t => { if (!t.auto_check) { t.done = false; t.done_at = null; t.done_by = null; } });
         if (g.competencies) g.competencies.forEach(c => { if (STAGES.indexOf(c.stage) > STAGES.indexOf('PRACTISE')) { c.history.push({ from: c.stage, to: 'PRACTISE', by: ctx.id, at: nowIso(), note: 'retraining' }); c.stage = 'PRACTISE'; } });
         setStatus(g, 'READY', ctx.id, 'reassessment allowed');
@@ -664,7 +719,8 @@ const HANDLERS = {
   // selected employees still start and keep running; everyone else stays frozen.
   async ld_startInduction(p, ctx, res) {
     if (!ctx.isLdAdmin) return forbid(res);
-    const ids = [...new Set([...(Array.isArray(p.user_ids) ? p.user_ids : []), ...(p.user_id ? [p.user_id] : [])].filter(Boolean))];
+    const waveIds = p.wave ? (await resolveWave(p.wave)).user_ids : [];
+    const ids = [...new Set([...(Array.isArray(p.user_ids) ? p.user_ids : []), ...(p.user_id ? [p.user_id] : []), ...waveIds].filter(Boolean))];
     if (!ids.length) return fail(res, 'Select at least one employee');
     let anchor_override = null;
     if (p.anchor === 'today') anchor_override = todayIST();
@@ -766,32 +822,59 @@ const HANDLERS = {
 
   // ── assessments ──
   async ld_startAttempt(p, ctx, res) {
-    let ind = null, gate = null, assessment = null, assignment = null;
+    let ind = null, gate = null, assessment = null, assignment = null, max = ctx.cfg.max_attempts, passNeed = ctx.cfg.induction_pass_score;
     if (p.induction_id) {
       if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
       ind = await loadInduction(p.induction_id);
       gate = ind?.gates.find(g => g.gate_id === p.gate_id);
       if (!ind || !gate || gate.completion !== 'assessment') return fail(res, 'Assessment step not found', 404);
       if (ind.user_id !== ctx.id) return forbid(res, 'Only the employee can take their own assessment');
+      // one active attempt at a time: resume an open one, or close it (counts as used) if its time ran out
+      const open = (await list('LdAttempt', 'AND user_id=$2', [ctx.id])).find(a => a.status === 'IN_PROGRESS' && a.induction_id === ind.id && a.gate_id === gate.gate_id);
+      if (open) {
+        if (!open.expires_at || Date.now() <= Date.parse(open.expires_at)) {
+          const oa = await get('LdAssessment', open.assessment_id);
+          if (oa) return ok(res, { attempt_id: open.id, resumed: true, title: oa.title, time_limit_min: oa.time_limit_min || null, pass_score: open.pass_score, questions: publicQuestions(oa.questions, open.order, open.opt_order), expires_at: open.expires_at, attempt_no: open.attempt_no, max_attempts: open.max_attempts, critical_rule: ctx.cfg.critical_rule !== false });
+        }
+        await forfeitAttempt(open, ctx.id);
+        ind = await loadInduction(p.induction_id); gate = ind.gates.find(g => g.gate_id === p.gate_id);
+      }
       if (!['READY', 'IN_PROGRESS', 'OVERDUE'].includes(gate.status)) return fail(res, `This assessment is ${gate.status.replace('_', ' ').toLowerCase()}`);
       if (!requiredTasksDone(gate)) return fail(res, 'Complete the preparation items first');
       assessment = (await list('LdAssessment')).filter(a => a.key === gate.assessment_key && a.status !== 'archived').sort((a, b) => b.version - a.version)[0];
-      const max = gate.max_attempts || assessment?.max_attempts || ctx.cfg.max_attempts;
+      max = gate.max_attempts || assessment?.max_attempts || ctx.cfg.max_attempts;
+      passNeed = gate.pass_score || assessment?.pass_score || ctx.cfg.induction_pass_score;
       if ((gate.attempts || []).length - (gate.attempt_base || 0) >= max) return fail(res, 'Maximum attempts used — ask HR / L&D to approve retraining');
+      if (gate.needs_relearn && ctx.cfg.require_relearn !== false) return fail(res, 'Review the topics you missed before the next attempt — open the induction step and confirm you have revisited them.');
     } else if (p.assignment_id) {
       assignment = await get('LdAssignment', p.assignment_id);
       if (!assignment || assignment.user_id !== ctx.id) return fail(res, 'Assignment not found', 404);
       const course = await get('LdCourse', assignment.course_id);
       assessment = await get('LdAssessment', course?.assessment_id);
       if (!assessment) return fail(res, 'This course has no assessment');
-      const used = (await list('LdAttempt')).filter(a => a.user_id === ctx.id && a.assignment_id === assignment.id).length;
-      if (used >= (assessment.max_attempts || ctx.cfg.max_attempts)) return fail(res, 'Maximum attempts used');
+      const mine = (await list('LdAttempt', 'AND user_id=$2', [ctx.id])).filter(a => a.assignment_id === assignment.id);
+      const open = mine.find(a => a.status === 'IN_PROGRESS');
+      if (open) {
+        if (!open.expires_at || Date.now() <= Date.parse(open.expires_at)) return ok(res, { attempt_id: open.id, resumed: true, title: assessment.title, time_limit_min: assessment.time_limit_min || null, pass_score: open.pass_score, questions: publicQuestions(assessment.questions, open.order, open.opt_order), expires_at: open.expires_at, attempt_no: open.attempt_no, max_attempts: open.max_attempts, critical_rule: ctx.cfg.critical_rule !== false });
+        await forfeitAttempt(open, ctx.id);
+      }
+      max = assessment.max_attempts || ctx.cfg.max_attempts;
+      passNeed = assessment.pass_score || ctx.cfg.induction_pass_score;
+      if (mine.length >= max) return fail(res, 'Maximum attempts used');
     } else return fail(res, 'induction_id + gate_id or assignment_id required');
     if (!assessment) return fail(res, 'Assessment not configured', 404);
-    const order = (assessment.randomize ? shuffle : (x) => x)(assessment.questions.map(q => q.id));
-    const attempt = await create('LdAttempt', { user_id: ctx.id, assessment_id: assessment.id, assessment_version: assessment.version, assessment_title: assessment.title, induction_id: ind?.id || null, gate_id: gate?.gate_id || null, assignment_id: assignment?.id || null, order, started_at: nowIso(), expires_at: assessment.time_limit_min ? new Date(Date.now() + (assessment.time_limit_min + 1) * 60000).toISOString() : null, status: 'IN_PROGRESS' }, ctx.id);
+    const prior = ind ? gate.attempts.length : (await list('LdAttempt', 'AND user_id=$2', [ctx.id])).filter(a => a.assignment_id === assignment.id).length;
+    const order = (assessment.randomize === false ? assessment.questions.map(q => q.id) : drawQuestions(assessment.questions, assessment.questions_per_attempt, await seenCounts(ctx.id, assessment.key || assessment.id)));
+    const optOrders = makeOptionOrders(assessment.questions, order, assessment.shuffle_options !== false);
+    const secs = (Number(assessment.time_limit_min) || 0) * 60;
+    const attempt = await create('LdAttempt', {
+      user_id: ctx.id, assessment_id: assessment.id, assessment_key: assessment.key || assessment.id, assessment_version: assessment.version, assessment_title: assessment.title,
+      induction_id: ind?.id || null, gate_id: gate?.gate_id || null, assignment_id: assignment?.id || null, order, opt_order: optOrders,
+      attempt_no: prior - (gate?.attempt_base || 0) + 1, max_attempts: max, pass_score: passNeed, device: deviceOf(res),
+      started_at: nowIso(), expires_at: secs ? new Date(Date.now() + secs * 1000 + 60000).toISOString() : null, status: 'IN_PROGRESS',
+    }, ctx.id);
     if (ind) await withLock('ind:' + ind.id, async () => { const f = await loadInduction(ind.id); const g = f.gates.find(x => x.gate_id === gate.gate_id); if (g.status === 'READY') setStatus(g, 'IN_PROGRESS', ctx.id, 'assessment started'); await save('LdInduction', f); });
-    return ok(res, { attempt_id: attempt.id, title: assessment.title, time_limit_min: assessment.time_limit_min || null, pass_score: assessment.pass_score, questions: publicQuestions(assessment, order), expires_at: attempt.expires_at });
+    return ok(res, { attempt_id: attempt.id, title: assessment.title, time_limit_min: assessment.time_limit_min || null, pass_score: passNeed, questions: publicQuestions(assessment.questions, order, optOrders), expires_at: attempt.expires_at, attempt_no: attempt.attempt_no, max_attempts: max, critical_rule: ctx.cfg.critical_rule !== false });
   },
 
   async ld_submitAttempt(p, ctx, res) {
@@ -800,47 +883,48 @@ const HANDLERS = {
     if (att.induction_id && await frozenFor(ctx, att.induction_id)) return fail(res, PAUSED_MSG);
     if (att.status !== 'IN_PROGRESS') return fail(res, 'This attempt was already submitted');
     const assessment = await get('LdAssessment', att.assessment_id);
-    if (att.expires_at && Date.now() > Date.parse(att.expires_at)) { att.status = 'EXPIRED'; await save('LdAttempt', att); return fail(res, 'Time limit exceeded — this attempt was not scored'); }
-    const answers = p.answers || {};
-    let got = 0, total = 0; const gaps = [], detail = [];
-    for (const q of assessment.questions) {
-      total += q.points || 1;
-      const right = scoreQuestion(q, answers[q.id]);
-      if (right) got += q.points || 1; else gaps.push(q.text);
-      detail.push({ id: q.id, correct: right });
-    }
-    const score = Math.round((got / total) * 1000) / 10;
-    const gateNeed = att.induction_id ? null : null;
-    void gateNeed;
-    att.answers = answers; att.score = score; att.submitted_at = nowIso(); att.status = 'SUBMITTED'; att.results = detail; att.gaps = gaps;
+    if (!assessment) return fail(res, 'Assessment not found', 404);
+    if (att.expires_at && Date.now() > Date.parse(att.expires_at)) { await forfeitAttempt(att, ctx.id); return fail(res, 'Time limit exceeded — this attempt was closed as not passed'); }
+    const answers = unmapAnswers(p.answers || {}, att.opt_order || {});   // back to the original option numbers
+    const criticalRule = ctx.cfg.critical_rule !== false;
+    const finish = (gr, need) => {
+      Object.assign(att, { answers, score: gr.score, passed: gr.passed, pass_score: need, submitted_at: nowIso(), status: 'SUBMITTED', results: gr.results, gaps: gr.gaps, weak_topics: gr.weakTopics, critical_failed: gr.criticalFailed, time_taken_sec: Math.round((Date.now() - Date.parse(att.started_at)) / 1000), device: att.device || deviceOf(res) });
+    };
+    const view = (gr, need, extra = {}) => ({ score: gr.score, passed: gr.passed, pass_score: need, results: gr.results.map(r => ({ id: r.id, correct: r.correct })), gaps: gr.gaps, weak_topics: gr.weakTopics, critical_failed: gr.criticalFailed, critical_rule: criticalRule, ...extra });
     if (att.induction_id) {
       return mutate(att.induction_id, ctx, res, async (ind) => {
         const g = ind.gates.find(x => x.gate_id === att.gate_id);
         const need = g.pass_score || assessment.pass_score || ctx.cfg.induction_pass_score;
-        att.passed = score >= need; att.pass_score = need;
+        const gr = gradeAttempt(assessment.questions, att.order, answers, { passScore: need, criticalRule });
+        finish(gr, need);
         await save('LdAttempt', att);
-        g.attempts.push({ attempt_id: att.id, at: att.submitted_at, score, passed: att.passed, gaps });
-        g.last_score = score;
-        await audit('LdInduction', ind.id, att.passed ? 'assessment_passed' : 'assessment_failed', ctx.id, { gate: g.gate_id, score, pass: need }, ind.user_id);
-        if (att.passed) {
-          setStatus(g, 'PASSED', ctx.id, `assessment ${score}%`); g.completed_at = nowIso();
-          await notify([ind.user_id, ind.employee.reporting_manager_id], { title: 'Assessment passed', message: `${ind.employee.name} scored ${score}% on the induction knowledge check.`, type: 'success', link: '/MyLearning' });
-        } else {
-          setStatus(g, 'FAILED', ctx.id, `assessment ${score}% (pass ${need}%)`);
-          g.remediation = { stage: 'GAP_IDENTIFIED', gap: gaps.slice(0, 12).join(' | '), at: nowIso(), history: [{ stage: 'GAP_IDENTIFIED', by: 'system', at: nowIso(), note: `Scored ${score}%` }] };
-          await notify([ind.user_id, ...(await ownersOf(ind, g)), ind.employee.reporting_manager_id], { title: 'Assessment not passed', message: `${ind.employee.name} scored ${score}% (pass mark ${need}%). Gaps identified — retraining needed.`, type: 'warning', link: `/LdInductionDetail?id=${ind.id}` });
-        }
-        return { result: { score, passed: att.passed, pass_score: need, results: detail, gaps, attempt_no: g.attempts.length } };
+        const st = await applyGateResult(ind, g, att, gr, need, ctx.cfg, ctx.id);
+        return { result: view(gr, need, { attempt_no: g.attempts.length - (g.attempt_base || 0), ...st }) };
       });
     }
     // course assessment
-    const course = att.assignment_id ? await get('LdCourse', (await get('LdAssignment', att.assignment_id))?.course_id) : null;
     const need = assessment.pass_score || ctx.cfg.induction_pass_score;
-    att.passed = score >= need; att.pass_score = need;
+    const gr = gradeAttempt(assessment.questions, att.order, answers, { passScore: need, criticalRule });
+    finish(gr, need);
     await save('LdAttempt', att);
-    if (att.passed && att.assignment_id) await completeAssignment(att.assignment_id, ctx.id, score);
-    void course;
-    return ok(res, { result: { score, passed: att.passed, pass_score: need, results: detail, gaps } });
+    if (gr.passed && att.assignment_id) await completeAssignment(att.assignment_id, ctx.id, gr.score);
+    const used = (await list('LdAttempt', 'AND user_id=$2', [ctx.id])).filter(a => a.assignment_id === att.assignment_id).length;
+    return ok(res, { result: view(gr, need, { attempt_no: used, attempts_left: Math.max(0, (assessment.max_attempts || ctx.cfg.max_attempts) - used) }) });
+  },
+
+  // After a failed attempt the employee confirms they have revisited the weak topics (after a short cooling-off).
+  async ld_ackRelearn(p, ctx, res) {
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
+    return mutate(p.induction_id, ctx, res, async (ind) => {
+      if (ind.user_id !== ctx.id) { forbid(res, 'Only the employee can confirm this'); return false; }
+      const g = ind.gates.find(x => x.gate_id === p.gate_id);
+      if (!g || !g.needs_relearn) { fail(res, 'There is nothing to review right now'); return false; }
+      const wait = ctx.cfg.relearn_min_seconds ?? 60;
+      const since = (Date.now() - Date.parse(g.relearn_from || nowIso())) / 1000;
+      if (since < wait) { fail(res, `Please spend a little more time on the content — ${Math.ceil(wait - since)}s left before the next attempt unlocks`); return false; }
+      g.needs_relearn = false; g.relearn_ack_at = nowIso();
+      await audit('LdInduction', ind.id, 'relearn_confirmed', ctx.id, { gate: g.gate_id, topics: g.relearn_topics }, ind.user_id);
+    });
   },
 
   // ── courses / paths / assignments ──
@@ -939,19 +1023,27 @@ const HANDLERS = {
   // ── assessments admin ──
   async ld_listAssessments(p, ctx, res) {
     if (!ctx.isLdAdmin && !ctx.isTrainer) return forbid(res);
-    return ok(res, { assessments: await list('LdAssessment') });
+    return ok(res, { assessments: await list('LdAssessment'), topics: ctx.cfg.topics });
   },
   async ld_saveAssessment(p, ctx, res) {
     if (!ctx.isLdAdmin) return forbid(res);
     const a = p.assessment || {};
     if (!clean(a.title) || !Array.isArray(a.questions) || !a.questions.length) return fail(res, 'Title and at least one question are required');
-    const qs = a.questions.map((q, i) => ({ id: q.id || `Q${i + 1}`, type: ['mcq', 'multi', 'truefalse', 'short'].includes(q.type) ? q.type : 'mcq', text: clean(q.text, 800), options: (q.options || []).map(o => clean(o, 300)), correct: (q.correct || []).map(Number), accepted: (q.accepted || []).map(x => clean(x, 200)), points: Number(q.points) || 1, scenario: !!q.scenario }));
-    for (const q of qs) { if (!q.text) return fail(res, 'Every question needs text'); if (q.type !== 'short' && (q.options.length < 2 || !q.correct.length)) return fail(res, `Question "${q.text.slice(0, 40)}" needs options and a correct answer`); }
-    const base = { title: clean(a.title, 200), description: clean(a.description, 1000), pass_score: Number(a.pass_score) || 80, max_attempts: Number(a.max_attempts) || 3, time_limit_min: Number(a.time_limit_min) || 0, randomize: a.randomize !== false, status: a.status === 'archived' ? 'archived' : 'active', questions: qs };
+    const taken = new Set(a.questions.map(q => q.id).filter(Boolean));
+    const fresh = () => { let n = 1; while (taken.has('Q' + n)) n++; taken.add('Q' + n); return 'Q' + n; };
+    const seen = new Set();
+    const normQ = (q, id) => ({ id, type: ['mcq', 'multi', 'truefalse', 'short'].includes(q.type) ? q.type : 'mcq', text: clean(q.text, 800), options: (q.options || []).map(o => clean(o, 300)), correct: (q.correct || []).map(Number), accepted: (q.accepted || []).map(x => clean(x, 200)), points: Number(q.points) || 1, scenario: !!q.scenario, critical: !!q.critical, topic: clean(q.topic, 40) });
+    const qs = a.questions.map((q) => {
+      let id = q.id; if (!id || seen.has(id)) id = fresh(); seen.add(id);
+      return normQ(q, id);
+    });
+    for (const q of qs) { if (!q.text) return fail(res, 'Every question needs text'); if (q.type !== 'short' && (q.options.length < 2 || !q.correct.length || q.correct.some(c => !(c >= 0 && c < q.options.length)))) return fail(res, `Question "${q.text.slice(0, 40)}" needs options and a valid correct answer`); if (q.type === 'short' && !q.accepted.length) return fail(res, `Short-answer question "${q.text.slice(0, 40)}" needs at least one accepted keyword`); }
+    const perAttempt = Math.max(0, Math.min(Number(a.questions_per_attempt) || 0, qs.length));
+    const base = { title: clean(a.title, 200), description: clean(a.description, 1000), pass_score: Math.min(100, Number(a.pass_score) || ctx.cfg.induction_pass_score || 90), max_attempts: Number(a.max_attempts) || ctx.cfg.max_attempts || 3, time_limit_min: Number(a.time_limit_min) || 0, questions_per_attempt: perAttempt, randomize: a.randomize !== false, shuffle_options: a.shuffle_options !== false, status: a.status === 'archived' ? 'archived' : 'active', questions: qs };
     if (a.id) {
       const cur = await get('LdAssessment', a.id); if (!cur) return fail(res, 'Assessment not found', 404);
       // keep history intact: editing questions creates a new version (old attempts reference the old content)
-      const changed = JSON.stringify(cur.questions) !== JSON.stringify(qs);
+      const changed = JSON.stringify(cur.questions.map(q => normQ(q, q.id))) !== JSON.stringify(qs);   // compare like with like, so a settings-only save keeps the version
       if (changed) { cur.status = 'archived'; await save('LdAssessment', cur); const nd = await create('LdAssessment', { ...base, key: cur.key || ('A-' + uuidv4().slice(0, 6)), version: (cur.version || 1) + 1 }); await audit('LdAssessment', nd.id, 'assessment_new_version', ctx.id, { version: nd.version }); return ok(res, { assessment: nd }); }
       const d = { ...cur, ...base }; await save('LdAssessment', d); return ok(res, { assessment: d });
     }
@@ -1086,7 +1178,7 @@ const HANDLERS = {
     }
     const reviews = inds.flatMap(i => i.gates.filter(g => /Review/.test(g.name)));
     return ok(res, {
-      paused: pausedInfo(ctx.cfg), queued_count: (ctx.cfg.queued_user_ids || []).length,
+      paused: pausedInfo(ctx.cfg), queued_count: (ctx.cfg.queued_user_ids || []).length, feedback_avg: await feedbackAvg(), policy: { pass_score: ctx.cfg.induction_pass_score, max_attempts: ctx.cfg.max_attempts, critical_rule: ctx.cfg.critical_rule !== false },
       kpis: {
         total: sums.length, not_started: sums.filter(s => s.status_label === 'Not started').length, in_progress: sums.filter(s => s.status_label === 'In progress').length,
         completed: sums.filter(s => s.status_label === 'Completed').length, overdue: sums.filter(s => s.overdue_gates > 0).length, blocked: sums.filter(s => s.blocked_gates > 0).length,
@@ -1096,6 +1188,7 @@ const HANDLERS = {
         practical_signoff_rate: pct(inds.filter(i => OKAY(i.gates.find(g => g.gate_id === 'G08')?.status)).length, inds.length),
         review_completion: pct(reviews.filter(g => OKAY(g.status)).length, reviews.filter(g => g.due_date <= today || OKAY(g.status)).length),
         missing_inductions: eligible.filter(e => !withInd.has(e.user_id)).length,
+        ...policyKpis(inds, emps, today),
       },
       gates: Object.values(gateStats).sort((a, b) => a.seq - b.seq).map(s => ({ ...s, days: undefined, completion_pct: pct(s.passed, s.total), avg_days: s.days.length ? Math.round(s.days.reduce((a, b) => a + b, 0) / s.days.length * 10) / 10 : null })),
       departments: Object.values(dept).map(d => ({ ...d, compliance_pct: pct(d.done, d.total) })).sort((a, b) => a.compliance_pct - b.compliance_pct),
@@ -1128,7 +1221,7 @@ const HANDLERS = {
     if (!ctx.isAdmin && !ctx.isHR) return forbid(res);
     const c = p.config || {};
     const cur = await get('LdConfig', 'ld-config');
-    const doc = { ...(cur || { id: 'ld-config' }), induction_pass_score: Number(c.induction_pass_score) || 80, max_attempts: Number(c.max_attempts) || 3, due_soon_days: Number(c.due_soon_days) || 2, expiring_cert_days: Number(c.expiring_cert_days) || 30, auto_start_induction: c.auto_start_induction !== false, escalation_days: { ...DEFAULT_CONFIG.escalation_days, ...(c.escalation_days || {}) }, ld_admin_user_ids: Array.isArray(c.ld_admin_user_ids) ? c.ld_admin_user_ids : (cur?.ld_admin_user_ids || []) };
+    const doc = { ...(cur || { id: 'ld-config' }), induction_pass_score: Math.min(100, Number(c.induction_pass_score) || 90), max_attempts: Number(c.max_attempts) || 3, critical_rule: c.critical_rule !== false, require_relearn: c.require_relearn !== false, relearn_min_seconds: Math.max(0, Number(c.relearn_min_seconds ?? cur?.relearn_min_seconds ?? 60)), seconds_per_question: Math.max(10, Number(c.seconds_per_question) || cur?.seconds_per_question || 60), topics: Array.isArray(c.topics) && c.topics.length ? c.topics.map(t => ({ key: clean(t.key, 10), label: clean(t.label, 120), min: Math.max(0, Number(t.min) || 0) })).filter(t => t.key) : (cur?.topics || DEFAULT_CONFIG.topics), due_soon_days: Number(c.due_soon_days) || 2, expiring_cert_days: Number(c.expiring_cert_days) || 30, auto_start_induction: c.auto_start_induction !== false, escalation_days: { ...DEFAULT_CONFIG.escalation_days, ...(c.escalation_days || {}) }, ld_admin_user_ids: Array.isArray(c.ld_admin_user_ids) ? c.ld_admin_user_ids : (cur?.ld_admin_user_ids || []) };
     if (cur) await save('LdConfig', doc); else await create('LdConfig', doc);
     await audit('LdConfig', 'ld-config', 'config_changed', ctx.id, { escalation_days: doc.escalation_days, pass: doc.induction_pass_score });
     return ok(res, { config: await getConfig() });
@@ -1241,12 +1334,170 @@ const HANDLERS = {
     return ok(res, { audit: rows.map(r => ({ ...r, actor_name: r.actor_id === 'system' ? 'System' : names[r.actor_id] || r.actor_id })) });
   },
 
+  async ld_previewWave(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const { user_ids, ...rest } = await resolveWave(p.wave || {});
+    void user_ids;
+    return ok(res, rest);
+  },
+
+  // Which questions are too hard / too easy, and which topic blocks are weak in which department.
+  async ld_getQuestionAnalytics(p, ctx, res) {
+    if (!ctx.isLdAdmin && !ctx.isTrainer) return forbid(res);
+    const emps = Object.fromEntries((await list('Employee')).map(e => [e.user_id, e]));
+    const assessments = await list('LdAssessment');
+    const keyOf = (id) => assessments.find(a => a.id === id)?.key || id;
+    const stats = {}, deptTopic = {};
+    let n = 0, sum = 0;
+    for (const att of (await list('LdAttempt')).filter(a => a.status === 'SUBMITTED' && Array.isArray(a.results))) {
+      const key = att.assessment_key || keyOf(att.assessment_id);
+      if (p.key && key !== p.key) continue;
+      n++; sum += att.score || 0;
+      const dept = emps[att.user_id]?.department || 'Unassigned';
+      for (const r of att.results) {
+        const s = (stats[key + '|' + r.id] ||= { key, id: r.id, served: 0, correct: 0 });
+        s.served++; if (r.correct) s.correct++;
+        const t = (deptTopic[dept + '|' + (r.topic || 'General')] ||= { department: dept, topic: r.topic || 'General', served: 0, correct: 0 });
+        t.served++; if (r.correct) t.correct++;
+      }
+    }
+    const latest = (key) => assessments.filter(a => a.key === key).sort((a, b) => b.version - a.version)[0];
+    const questions = Object.values(stats).map(s => {
+      const q = latest(s.key)?.questions.find(x => x.id === s.id);
+      const pctRight = pct(s.correct, s.served);
+      return { ...s, assessment_id: latest(s.key)?.id, title: latest(s.key)?.title || s.key, text: q?.text || '(question removed)', topic: q?.topic || '', critical: !!q?.critical, correct_pct: pctRight, flag: s.served >= 5 && pctRight < 40 ? 'hard' : s.served >= 10 && pctRight > 95 ? 'easy' : '' };
+    }).sort((a, b) => a.correct_pct - b.correct_pct);
+    const weak = Object.values(deptTopic).filter(t => t.served >= 5).map(t => ({ ...t, correct_pct: pct(t.correct, t.served) })).sort((a, b) => a.correct_pct - b.correct_pct);
+    return ok(res, { attempts: n, avg_score: n ? Math.round(sum / n * 10) / 10 : null, questions: questions.slice(0, 300), weak_topics: weak.slice(0, 60) });
+  },
+
+  // Correction workflow for a wrong answer key: fix the key, then re-score every submitted attempt that served it.
+  // People who now pass are promoted; nobody is demoted automatically (those are only counted and logged).
+  async ld_fixAnswerKey(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const a = await get('LdAssessment', p.assessment_id);
+    const q = a?.questions.find(x => x.id === p.question_id);
+    if (!a || !q) return fail(res, 'Question not found', 404);
+    if (clean(p.reason).length < 5) return fail(res, 'Please give the reason for the correction');
+    const before = { correct: q.correct, accepted: q.accepted };
+    if (Array.isArray(p.correct)) q.correct = p.correct.map(Number).filter(n => n >= 0 && n < (q.options || []).length);
+    if (Array.isArray(p.accepted)) q.accepted = p.accepted.map(x => clean(x, 200)).filter(Boolean);
+    if (q.type === 'short' ? !(q.accepted || []).length : !q.correct.length) return fail(res, 'A correct answer is required');
+    await save('LdAssessment', a);
+    await audit('LdAssessment', a.id, 'answer_key_corrected', ctx.id, { question: q.id, before, after: { correct: q.correct, accepted: q.accepted }, reason: clean(p.reason, 500) });
+    let rescored = 0, promoted = 0, demoted = 0;
+    for (const att of (await list('LdAttempt')).filter(x => x.assessment_id === a.id && x.status === 'SUBMITTED' && (x.order || []).includes(q.id))) {
+      const need = att.pass_score ?? a.pass_score;
+      const gr = gradeAttempt(a.questions, att.order, att.answers || {}, { passScore: need, criticalRule: ctx.cfg.critical_rule !== false });
+      if (gr.score === att.score && gr.passed === att.passed) continue;
+      if (att.passed && !gr.passed) { demoted++; continue; }
+      Object.assign(att, { score: gr.score, passed: gr.passed, results: gr.results, gaps: gr.gaps, weak_topics: gr.weakTopics, critical_failed: gr.criticalFailed, rescored_at: nowIso(), rescored_reason: clean(p.reason, 300) });
+      await save('LdAttempt', att); rescored++;
+      if (att.induction_id) {
+        await withLock('ind:' + att.induction_id, async () => {
+          const ind = await loadInduction(att.induction_id); const g = ind?.gates.find(x => x.gate_id === att.gate_id);
+          const e = g?.attempts.find(x => x.attempt_id === att.id);
+          if (e) { e.score = gr.score; e.passed = gr.passed; e.gaps = gr.gaps; }
+          if (g && gr.passed && ['FAILED', 'IN_PROGRESS', 'READY', 'OVERDUE'].includes(g.status)) {
+            setStatus(g, 'PASSED', ctx.id, 're-scored after answer-key correction'); g.completed_at = nowIso(); g.last_score = gr.score; g.needs_relearn = false; promoted++;
+            await notify(ind.user_id, { title: 'Assessment re-scored — passed', message: `"${g.name}" was re-scored after an answer-key correction: ${gr.score}%. You can continue.`, type: 'success', link: '/MyLearning' });
+          }
+          if (ind) { await afterChange(ind, ctx.id); await save('LdInduction', ind); }
+        });
+      } else if (gr.passed && att.assignment_id) { await completeAssignment(att.assignment_id, ctx.id, gr.score); promoted++; }
+    }
+    return ok(res, { rescored, promoted, demoted });
+  },
+
+  // One-click application of the pass-mark policy (default 90%): configuration, every induction assessment,
+  // the workflow template and the not-yet-passed assessment steps of running inductions. `dry_run` only reports.
+  async ld_applyPolicy(p, ctx, res) {
+    if (!ctx.isAdmin && !ctx.isHR) return forbid(res, 'Only HR / admin can apply the pass-mark policy');
+    const target = Math.min(100, Math.max(1, Number(p.pass_score) || 90));
+    const maxA = Math.max(1, Number(p.max_attempts) || 3);
+    const spq = Math.max(10, Number(p.seconds_per_question) || 60);
+    const tpl = (await list('LdTemplate')).filter(t => t.status === 'active').sort((a, b) => b.version - a.version)[0];
+    if (!tpl) return fail(res, 'No active induction template');
+    const keys = new Set(tpl.gates.filter(g => g.completion === 'assessment').map(g => g.assessment_key));
+    const plan = { pass_score: target, max_attempts: maxA, assessments: [], template: false, open_gates: 0, config: false };
+    const assessments = (await list('LdAssessment')).filter(a => a.status !== 'archived' && keys.has(a.key));
+    for (const a of assessments) {
+      const tl = p.apply_time_limit === false ? a.time_limit_min : Math.ceil((a.questions_per_attempt || a.questions.length) * spq / 60);
+      const ch = []; if (a.pass_score !== target) ch.push(`pass ${a.pass_score}% → ${target}%`); if (a.max_attempts !== maxA) ch.push(`attempts ${a.max_attempts} → ${maxA}`); if (a.time_limit_min !== tl) ch.push(`time limit ${a.time_limit_min || 'none'} → ${tl} min`);
+      if (ch.length) plan.assessments.push({ id: a.id, title: a.title, changes: ch, tl });
+    }
+    plan.template = tpl.gates.some(g => g.completion === 'assessment' && (g.pass_score !== target || g.max_attempts !== maxA));
+    const open = (await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS');
+    const openGates = open.filter(i => i.gates.some(g => g.completion === 'assessment' && !TERMINAL.has(g.status) && (g.pass_score !== target || g.max_attempts !== maxA)));
+    plan.open_gates = openGates.length;
+    const curCfg = await get('LdConfig', 'ld-config');
+    plan.config = !curCfg || curCfg.induction_pass_score !== target || curCfg.max_attempts !== maxA || curCfg.critical_rule !== (p.critical_rule !== false) || curCfg.require_relearn !== (p.require_relearn !== false) || (curCfg.seconds_per_question || 60) !== spq;
+    if (p.dry_run) return ok(res, { dry_run: true, plan });
+    if (curCfg) { Object.assign(curCfg, { induction_pass_score: target, max_attempts: maxA, critical_rule: p.critical_rule !== false, require_relearn: p.require_relearn !== false, seconds_per_question: spq }); await save('LdConfig', curCfg); }
+    for (const x of plan.assessments) {
+      const a = await get('LdAssessment', x.id);
+      Object.assign(a, { pass_score: target, max_attempts: maxA, time_limit_min: x.tl, description: String(a.description || '').replace(/Pass mark \d+%/, `Pass mark ${target}%`) });
+      await save('LdAssessment', a);
+      await audit('LdAssessment', a.id, 'policy_applied', ctx.id, { changes: x.changes });
+    }
+    if (plan.template) {
+      const t = clone(tpl); delete t.id; delete t.created_at; delete t.updated_at;
+      for (const g of t.gates) if (g.completion === 'assessment') { g.pass_score = target; g.max_attempts = maxA; g.description = String(g.description || '').replace(/Pass mark \d+%/, `Pass mark ${target}%`); }
+      tpl.status = 'superseded'; await save('LdTemplate', tpl);
+      const nt = await create('LdTemplate', { ...t, version: (tpl.version || 0) + 1, status: 'active', previous_version: tpl.version || null, changed_by: ctx.id });
+      await audit('LdTemplate', nt.id, 'template_new_version', ctx.id, { version: nt.version, reason: `pass mark ${target}%, ${maxA} attempts` });
+    }
+    for (const row of openGates) {
+      await withLock('ind:' + row.id, async () => {
+        const ind = await loadInduction(row.id); if (!ind) return;
+        for (const g of ind.gates) if (g.completion === 'assessment' && !TERMINAL.has(g.status)) { g.pass_score = target; g.max_attempts = maxA; g.description = String(g.description || '').replace(/Pass mark \d+%/, `Pass mark ${target}%`); }
+        await save('LdInduction', ind);
+        await audit('LdInduction', ind.id, 'policy_applied', ctx.id, { pass_score: target, max_attempts: maxA }, ind.user_id);
+      });
+    }
+    await audit('LdConfig', 'ld-config', 'policy_applied', ctx.id, { pass_score: target, max_attempts: maxA, assessments: plan.assessments.length, template: plan.template, open_inductions: plan.open_gates });
+    return ok(res, { plan });
+  },
+
   async ld_runDailyTick(p, ctx, res) {
     if (!ctx.isLdAdmin) return forbid(res);
     const { ldDailyTick } = await import('../cron/ldAutomation.js');
     return ok(res, { result: await ldDailyTick() });
   },
 };
+
+// KPIs from the scope document (section 9.1): coverage, completion in 30 days, first-attempt pass rate,
+// pass after remediation, average score, long-overdue steps, learner satisfaction.
+async function feedbackAvg() { const r = (await list('LdFeedback')).map(f => f.rating).filter(Boolean); return r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length * 10) / 10 : null; }
+function policyKpis(inds, emps, today) {
+  const active = emps.filter(e => e.user_id && e.status === 'active');
+  const covered = new Set(inds.map(i => i.user_id));
+  const gates = inds.flatMap(i => i.gates.filter(g => g.completion === 'assessment'));
+  const firsts = gates.filter(g => (g.attempts || []).length);
+  const everFailed = gates.filter(g => (g.attempts || []).some(a => !a.passed));
+  const scores = gates.flatMap(g => (g.attempts || []).filter(a => !a.expired).map(a => a.score));
+  const due30 = inds.filter(i => i.status === 'COMPLETED' || daysBetween(String(i.started_at).slice(0, 10), today) >= 30);
+  return {
+    coverage_pct: pct(active.filter(e => covered.has(e.user_id)).length, active.length), eligible_total: active.length,
+    completion_30d_pct: due30.length ? pct(due30.filter(i => i.status === 'COMPLETED' && daysBetween(String(i.started_at).slice(0, 10), String(i.completed_at).slice(0, 10)) <= 30).length, due30.length) : null,
+    first_attempt_pass_pct: firsts.length ? pct(firsts.filter(g => g.attempts[0].passed).length, firsts.length) : null,
+    pass_after_remediation_pct: everFailed.length ? pct(everFailed.filter(g => OKAY(g.status)).length, everFailed.length) : null,
+    avg_assessment_score: scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 10) / 10 : null,
+    overdue_over_7d: inds.reduce((n, i) => n + i.gates.filter(g => g.status === 'OVERDUE' && daysBetween(g.due_date, today) > 7).length, 0),
+  };
+}
+
+// A "wave": every active employee without an induction in the chosen departments / locations (batches of ≤ limit).
+async function resolveWave(w = {}) {
+  const have = new Set((await list('LdInduction')).filter(i => i.status !== 'CANCELLED').map(i => i.user_id));
+  const dset = new Set((w.departments || []).map(norm)), lset = new Set((w.locations || []).map(norm));
+  const emps = (await list('Employee')).filter(e => e.user_id && e.status === 'active');
+  const rows = emps.filter(e => !have.has(e.user_id) && (!dset.size || dset.has(norm(e.department))) && (!lset.size || lset.has(norm(e.work_location)))).sort((a, b) => String(a.employee_code).localeCompare(String(b.employee_code)));
+  const limit = Math.min(Math.max(Number(w.limit) || 100, 1), 500);
+  const chosen = rows.slice(0, limit);
+  return { total: rows.length, will_start: chosen.length, user_ids: chosen.map(e => e.user_id), sample: chosen.slice(0, 8).map(e => ({ name: e.display_name, code: e.employee_code, department: e.department || '', location: e.work_location || '' })),
+    departments: [...new Set(emps.map(e => e.department).filter(Boolean))].sort(), locations: [...new Set(emps.map(e => e.work_location).filter(Boolean))].sort() };
+}
 
 // ── helpers used by handlers / reports / cron ─────────────────────────────
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);

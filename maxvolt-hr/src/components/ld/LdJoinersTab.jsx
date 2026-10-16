@@ -38,13 +38,20 @@ export default function LdJoinersTab() {
     return true;
   });
 
+  // "wave" mode: everyone without an induction in the chosen departments / locations, in batches
+  const loadWave = async (wave) => {
+    try { const pv = await ld('ld_previewWave', { wave }); setDlg(d => ({ ...d, wave, preview: pv })); } catch (e) { toast.error(e.message); }
+  };
+  const toggleWave = (k, v) => { const w = dlg.wave || {}; const cur = w[k] || []; loadWave({ ...w, [k]: cur.includes(v) ? cur.filter(x => x !== v) : [...cur, v] }); };
+
   const start = async () => {
     const ids = dlg.user_ids || [];
-    if (!ids.length) { toast.error('Select at least one employee'); return; }
+    if (dlg.mode === 'wave') { if (!dlg.preview?.will_start) { toast.error('No one matches this wave'); return; } }
+    else if (!ids.length) { toast.error('Select at least one employee'); return; }
     const anchor = dlg.anchor || 'joining';
     if (anchor === 'date' && !dlg.start_date) { toast.error('Choose the start date'); return; }
     setBusy(true);
-    try { const r = await ld('ld_startInduction', { user_ids: ids, buddy_user_id: dlg.buddy || undefined, trainer_user_id: dlg.trainer || undefined, anchor, start_date: anchor === 'date' ? dlg.start_date : undefined }); toast.success(`Induction started for ${r.started} employee(s)${r.failed ? `, ${r.failed} failed` : ''}`); setDlg(null); await load(); } catch (e) { toast.error(e.message); }
+    try { const r = await ld('ld_startInduction', { user_ids: dlg.mode === 'wave' ? [] : ids, wave: dlg.mode === 'wave' ? dlg.wave : undefined, buddy_user_id: dlg.buddy || undefined, trainer_user_id: dlg.trainer || undefined, anchor, start_date: anchor === 'date' ? dlg.start_date : undefined }); toast.success(`Induction started for ${r.started} employee(s)${r.failed ? `, ${r.failed} failed` : ''}`); setDlg(null); await load(); } catch (e) { toast.error(e.message); }
     setBusy(false);
   };
 
@@ -118,7 +125,23 @@ export default function LdJoinersTab() {
         <DialogContent>
           <DialogHeader><DialogTitle>Start a New Employee Induction</DialogTitle></DialogHeader>
           <p className="text-xs text-gray-500">Normally this happens automatically when onboarding is approved. Use this for an employee who is missing one. Works for any employee, new or long-serving, one or many. Even while induction training is paused, the employees you select start and keep running; everyone else stays paused.</p>
-          <Field label="Employees (one or many)"><EmployeeMultiSelect emps={emps} value={dlg?.user_ids || []} onChange={v => setDlg(d => ({ ...d, user_ids: v }))} /></Field>
+          <div className="flex gap-4 text-sm">
+            <label className="flex items-center gap-2"><input type="radio" name="smode" checked={dlg?.mode !== 'wave'} onChange={() => setDlg(d => ({ ...d, mode: 'pick' }))} />Pick employees</label>
+            <label className="flex items-center gap-2"><input type="radio" name="smode" checked={dlg?.mode === 'wave'} onChange={() => { setDlg(d => ({ ...d, mode: 'wave' })); loadWave(dlg?.wave || { limit: 100 }); }} />A wave — by department / location</label>
+          </div>
+          {dlg?.mode !== 'wave' ? (
+            <Field label="Employees (one or many)"><EmployeeMultiSelect emps={emps} value={dlg?.user_ids || []} onChange={v => setDlg(d => ({ ...d, user_ids: v }))} /></Field>
+          ) : (
+            <div className="space-y-2 rounded-lg border p-3 bg-gray-50">
+              <p className="text-xs text-gray-500">Starts the induction for every active employee who does not have one yet, in the departments / locations ticked (leave all unticked for everyone). Use a start date of “today” or a chosen date so each wave&apos;s due dates count from the wave start.</p>
+              <div className="text-xs font-semibold">Departments</div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs max-h-24 overflow-y-auto">{(dlg.preview?.departments || []).map(x => <label key={x} className="flex items-center gap-1"><input type="checkbox" checked={(dlg.wave?.departments || []).includes(x)} onChange={() => toggleWave('departments', x)} />{x}</label>)}</div>
+              <div className="text-xs font-semibold">Locations</div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs max-h-24 overflow-y-auto">{(dlg.preview?.locations || []).map(x => <label key={x} className="flex items-center gap-1"><input type="checkbox" checked={(dlg.wave?.locations || []).includes(x)} onChange={() => toggleWave('locations', x)} />{x}</label>)}</div>
+              <div className="flex items-center gap-2 text-xs">Batch size <Input type="number" className="w-24 h-8" value={dlg.wave?.limit || 100} onChange={e => loadWave({ ...(dlg.wave || {}), limit: Number(e.target.value) || 100 })} /> (max 500)</div>
+              {dlg.preview && <div className="text-xs"><b>{dlg.preview.will_start}</b> of {dlg.preview.total} matching employee(s) will start now{dlg.preview.sample?.length ? ` — e.g. ${dlg.preview.sample.slice(0, 4).map(x => x.name).join(', ')}` : ''}.</div>}
+            </div>
+          )}
           <Field label="Count due dates from">
             <div className="space-y-1 text-sm">
               {[['joining', 'Joining date (default — recent joiners)'], ['today', 'Today'], ['date', 'A date I choose']].map(([k, l]) => (
@@ -129,7 +152,7 @@ export default function LdJoinersTab() {
           </Field>
           <Field label="Buddy (a peer — optional; applies to all selected)"><EmployeeSelect emps={emps} value={dlg?.buddy} onChange={v => setDlg(d => ({ ...d, buddy: v }))} placeholder="Assign later" /></Field>
           <Field label="Trainer (optional)"><EmployeeSelect emps={emps} value={dlg?.trainer} onChange={v => setDlg(d => ({ ...d, trainer: v }))} placeholder="Assign later" /></Field>
-          <Button onClick={start} disabled={busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Start induction{(dlg?.user_ids?.length || 0) > 1 ? ` for ${dlg.user_ids.length} employees` : ''}</Button>
+          <Button onClick={start} disabled={busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Start induction{dlg?.mode === 'wave' ? (dlg.preview ? ` for ${dlg.preview.will_start} employees` : '') : (dlg?.user_ids?.length || 0) > 1 ? ` for ${dlg.user_ids.length} employees` : ''}</Button>
         </DialogContent>
       </Dialog>
     </div>

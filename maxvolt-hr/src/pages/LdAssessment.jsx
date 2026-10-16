@@ -24,7 +24,7 @@ export default function LdAssessment() {
 
   const start = async () => {
     setBusy(true);
-    try { setAttempt(await ld('ld_startAttempt', { induction_id, gate_id, assignment_id })); setAnswers({}); setResult(null); submittedRef.current = false; }
+    try { const a = await ld('ld_startAttempt', { induction_id, gate_id, assignment_id }); setAttempt(a); setAnswers({}); setResult(null); submittedRef.current = false; if (a.resumed) toast.info('You had an attempt open — it has been resumed.'); }
     catch (e) { toast.error(e.message); }
     setBusy(false);
   };
@@ -61,14 +61,31 @@ export default function LdAssessment() {
           <h1 className="text-2xl font-bold">{result.passed ? 'Passed 🎉' : 'Not passed this time'}</h1>
           <div className="text-4xl font-extrabold">{result.score}%</div>
           <div className="text-sm text-gray-600">Pass mark {result.pass_score}%{result.attempt_no ? ` · attempt ${result.attempt_no}` : ''}</div>
-          {!result.passed && result.gaps?.length > 0 && (
-            <div className="text-left bg-red-50 border border-red-200 rounded-lg p-3">
-              <div className="text-sm font-semibold text-red-800 mb-1">Topics to revisit</div>
-              <ul className="text-xs text-red-700 list-disc pl-4 space-y-0.5">{result.gaps.slice(0, 12).map((g, i) => <li key={i}>{g}</li>)}</ul>
-              <div className="text-xs text-gray-600 mt-2">Your trainer / HR has been told. They will arrange retraining and then reopen the assessment for you.</div>
+          {!result.passed && result.critical_failed > 0 && (
+            <div className="text-left bg-amber-50 border border-amber-300 rounded-lg p-3 text-xs text-amber-900">
+              {result.critical_failed} critical (safety / compliance) question{result.critical_failed > 1 ? 's were' : ' was'} answered wrongly. Critical questions must all be right{result.score >= result.pass_score ? ' — your score alone would have passed' : ''}.
             </div>
           )}
-          <Link to={back}><Button>Back to my induction</Button></Link>
+          {!result.passed && (result.weak_topics?.length > 0 || result.gaps?.length > 0) && (
+            <div className="text-left bg-red-50 border border-red-200 rounded-lg p-3">
+              {result.weak_topics?.length > 0 && <>
+                <div className="text-sm font-semibold text-red-800 mb-1">Weak topic blocks</div>
+                <ul className="text-xs text-red-700 list-disc pl-4 space-y-0.5 mb-2">{result.weak_topics.map(t => <li key={t.topic}>Block {t.topic}: {t.correct}/{t.total} right ({t.pct}%)</li>)}</ul>
+              </>}
+              {result.gaps?.length > 0 && <>
+                <div className="text-sm font-semibold text-red-800 mb-1">Topics to revisit</div>
+                <ul className="text-xs text-red-700 list-disc pl-4 space-y-0.5">{result.gaps.slice(0, 12).map((g, i) => <li key={i}>{g}</li>)}</ul>
+              </>}
+              <div className="text-xs text-gray-700 mt-2">
+                {result.final_failure
+                  ? 'You have used all your attempts. Your manager, trainer and HR have been told and will arrange retraining before new attempts are released.'
+                  : result.attempts_left != null
+                    ? `You have ${result.attempts_left} attempt${result.attempts_left === 1 ? '' : 's'} left. ${result.needs_relearn ? 'Review the topics above first — the next attempt unlocks once you confirm you have revisited them.' : 'Revise, then try again.'}`
+                    : 'Revise these topics and try again.'}
+              </div>
+            </div>
+          )}
+          <Link to={back}><Button>{!result.passed && result.needs_relearn ? 'Review the topics' : 'Back to my induction'}</Button></Link>
         </CardContent></Card>
       </div>
     );
@@ -82,7 +99,8 @@ export default function LdAssessment() {
           <h1 className="text-xl font-bold">Knowledge assessment</h1>
           <ul className="text-sm text-gray-600 text-left list-disc pl-6 space-y-1">
             <li>Questions cover the company, business, safety, HR policy and Maxvolt One.</li>
-            <li>The pass mark is shown with your result; every attempt is recorded.</li>
+            <li>You need the pass mark (normally 90%) to move on, and any question marked “Critical” must be answered correctly. Multi-answer questions need every right option — a nearly-right answer counts as wrong.</li>
+            <li>You get a limited number of attempts, each with a different selection of questions. After a miss you review the weak topics before the next attempt. Every attempt is recorded.</li>
             <li>Once started, a time limit may apply — your answers are submitted automatically when it ends.</li>
             <li>Do not refresh or leave the page while answering.</li>
           </ul>
@@ -97,12 +115,12 @@ export default function LdAssessment() {
   return (
     <div className="p-4 md:p-6 max-w-3xl mx-auto space-y-4">
       <div className="sticky top-0 z-10 bg-white/95 backdrop-blur border rounded-xl p-3 flex items-center justify-between gap-3">
-        <div className="flex-1"><div className="text-sm font-semibold">{attempt.title}</div><Progress value={(answered / attempt.questions.length) * 100} className="h-1.5 mt-1.5" /><div className="text-[11px] text-gray-500 mt-1">{answered}/{attempt.questions.length} answered · pass mark {attempt.pass_score}%</div></div>
+        <div className="flex-1"><div className="text-sm font-semibold">{attempt.title}{attempt.max_attempts ? <span className="ml-2 text-[11px] font-normal text-gray-500">attempt {attempt.attempt_no} of {attempt.max_attempts} · pass mark {attempt.pass_score}%</span> : null}</div><Progress value={(answered / attempt.questions.length) * 100} className="h-1.5 mt-1.5" /><div className="text-[11px] text-gray-500 mt-1">{answered}/{attempt.questions.length} answered · pass mark {attempt.pass_score}%</div></div>
         {left != null && <div className={`flex items-center gap-1 text-sm font-mono ${left < 120 ? 'text-red-600' : 'text-gray-700'}`}><Timer className="w-4 h-4" />{Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}</div>}
       </div>
       {attempt.questions.map((q, n) => (
         <Card key={q.id}><CardContent className="p-4 space-y-3">
-          <div className="text-sm"><span className="text-gray-400 mr-2">{n + 1}.</span><span className="font-medium text-gray-900">{q.text}</span>{q.scenario && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200">Scenario</span>}</div>
+          <div className="text-sm"><span className="text-gray-400 mr-2">{n + 1}.</span><span className="font-medium text-gray-900">{q.text}</span>{q.critical && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-red-50 text-red-700">Critical</span>}{q.scenario && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200">Scenario</span>}</div>
           <div className="text-[11px] text-gray-400">{TYPE_HINT[q.type]}</div>
           {q.type === 'short' ? <Input value={answers[q.id] || ''} onChange={e => set(q.id, e.target.value)} placeholder="Your answer" />
             : <div className="space-y-1.5">{q.options.map((o, i) => {

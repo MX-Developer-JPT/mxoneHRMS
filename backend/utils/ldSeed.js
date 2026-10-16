@@ -1,12 +1,19 @@
+import { DEFAULT_TOPICS } from './ldAssess.js';
+
 // Default L&D content — built from the approved "New Employee Induction & Training Program"
 // and the L&D Module Scope. Everything here is a STARTING POINT that L&D / HR can edit in the
 // app (a template edit creates a new version; people already enrolled stay on their version).
 
 export const DEFAULT_CONFIG = {
-  induction_pass_score: 80,
+  induction_pass_score: 90,   // the 90% knowledge gate (L&D scope document, section 3)
   max_attempts: 3,
+  critical_rule: true,        // every critical (safety / POSH / conduct / infosec) question must be right as well
+  require_relearn: true,      // after a failed attempt the employee must review the weak topics before the next one
+  relearn_min_seconds: 60,    // minimum review time before the next attempt unlocks
+  seconds_per_question: 60,   // timed attempts: 1 minute per question
+  topics: DEFAULT_TOPICS,     // question-bank blocks and the minimum number of questions per block
   // Escalation ladder, in days overdue: Employee -> Reporting Manager -> HOD -> HR -> L&D
-  escalation_days: { employee: 1, manager: 3, hod: 5, hr: 7, ld: 10 },
+  escalation_days: { employee: 0, manager: 2, hod: 4, hr: 6, ld: 8 },
   due_soon_days: 2,
   expiring_cert_days: 30,
   ld_admin_user_ids: [],
@@ -98,8 +105,8 @@ export const DEFAULT_TEMPLATE = {
     },
     {
       gate_id: 'G05', seq: 5, name: 'Mandatory Knowledge Assessment', owner_roles: ['ld', 'trainer'], required: true, depends_on: ['G01', 'G02', 'G03', 'G04'],
-      due_offset_days: 5, completion: 'assessment', assessment_key: 'induction-knowledge-check', pass_score: 80, max_attempts: 3,
-      description: 'Company, business, safety, HR and Maxvolt One. Pass mark 80%. (Day 5, 30–60 min)',
+      due_offset_days: 5, completion: 'assessment', assessment_key: 'induction-knowledge-check', pass_score: 90, max_attempts: 3,
+      description: 'Company, business, safety, HR and Maxvolt One. Pass mark 90%. (Day 5, 30–60 min)',
       tasks: [],
     },
     {
@@ -210,11 +217,13 @@ const q = (id, type, text, options, correct, extra = {}) => ({ id, type, text, o
 export const DEFAULT_ASSESSMENT = {
   key: 'induction-knowledge-check',
   title: 'New Employee Induction — Knowledge Check',
-  description: 'Company, business, safety, HR and Maxvolt One. Pass mark 80%.',
-  pass_score: 80,
+  description: 'Company, business, safety, HR and Maxvolt One. Pass mark 90%.',
+  pass_score: 90,
   max_attempts: 3,
   time_limit_min: 30,
+  questions_per_attempt: 0, // 0 = serve every question; set 20–25 once the bank has 60+ questions
   randomize: true,
+  shuffle_options: true,
   version: 1,
   status: 'active',
   questions: [
@@ -249,3 +258,13 @@ export const DEFAULT_COURSES = [
   { title: 'Safety First & PPE', category: 'Safety', type: 'document', mandatory: true, duration_min: 45, description: 'STOP → ASK → UNDERSTAND → PROCEED; PPE; restricted areas; incident reporting.' },
   { title: 'Using Maxvolt One', category: 'Digital', type: 'practical_task', mandatory: true, duration_min: 90, description: 'Login, attendance, leave, payslips, expenses, Helpdesk, AskMax, My Training.' },
 ];
+
+// Question-bank block (A–F, see DEFAULT_TOPICS) and critical flag of the seeded questions.
+export const SEED_QUESTION_TAGS = {
+  topic: { Q1: 'A', Q2: 'A', Q3: 'A', Q4: 'D', Q5: 'D', Q6: 'D', Q7: 'C', Q8: 'C', Q9: 'B', Q10: 'B', Q11: 'E', Q12: 'B', Q13: 'B', Q14: 'B', Q15: 'E', Q16: 'A', Q17: 'A', Q18: 'C', Q19: 'D', Q20: 'A', Q21: 'E' },
+  critical: ['Q8', 'Q18'],
+};
+for (const qq of DEFAULT_ASSESSMENT.questions) {
+  qq.topic = SEED_QUESTION_TAGS.topic[qq.id] || 'A';
+  if (SEED_QUESTION_TAGS.critical.includes(qq.id)) qq.critical = true;
+}

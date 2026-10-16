@@ -66,7 +66,7 @@ export async function ldDailyTick() {
               ['manager', cfg.escalation_days.manager, async () => [ind.employee.reporting_manager_id]],
               ['hod', cfg.escalation_days.hod, async () => [ind.hod_user_id]],
               ['hr', cfg.escalation_days.hr, async () => hrUserIds()],
-              ['ld', cfg.escalation_days.ld, async () => cfg.ld_admin_user_ids],
+              ['ld', cfg.escalation_days.ld, async () => (cfg.ld_admin_user_ids.length ? cfg.ld_admin_user_ids : hrUserIds())],   // no named L&D admin yet → HR
             ];
             const level = ladder.filter(l => late >= l[1]).length;
             if (level > (g.escalation_level || 0)) {

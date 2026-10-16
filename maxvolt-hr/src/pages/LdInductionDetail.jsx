@@ -17,6 +17,30 @@ import { PausedBanner } from '@/components/ld/PauseControl';
 
 const ACTIVE_EDIT = ['READY', 'IN_PROGRESS', 'OVERDUE'];
 
+// After a failed attempt the employee must revisit the weak topics (and wait a short cooling-off) before retrying.
+function RelearnPanel({ g, onConfirm, busy }) {
+  const info = g.attempts_info || {};
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const left = info.relearn_ready_at ? Math.max(0, Math.ceil((Date.parse(info.relearn_ready_at) - now) / 1000)) : 0;
+  const last = g.attempts[g.attempts.length - 1];
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
+      <div className="text-sm font-semibold text-amber-900">Review before your next attempt</div>
+      <div className="text-xs text-amber-900">You scored {last?.score}%. Revisit the induction content, then confirm below — the next attempt unlocks after that.</div>
+      {(last?.weak_topics || []).length > 0 && (
+        <ul className="text-xs text-amber-900 list-disc pl-4">{last.weak_topics.map(t => <li key={t.topic}>Block <b>{t.topic}</b> — {t.correct}/{t.total} right ({t.pct}%)</li>)}</ul>
+      )}
+      {last?.gaps?.length > 0 && <details className="text-xs text-amber-900"><summary className="cursor-pointer">Questions you missed</summary><ul className="list-disc pl-4 mt-1 space-y-0.5">{last.gaps.slice(0, 15).map((q, i) => <li key={i}>{q}</li>)}</ul></details>}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" onClick={() => openContent('induction-deck').catch(e => toast.error(e.message))}>Open induction presentation</Button>
+        <Button size="sm" variant="outline" onClick={() => openContent('induction-guide').catch(e => toast.error(e.message))}>Open training guide</Button>
+        <Button size="sm" disabled={left > 0 || busy} onClick={onConfirm}>{left > 0 ? `I have reviewed the topics (${left}s)` : 'I have reviewed the topics'}</Button>
+      </div>
+    </div>
+  );
+}
+
 function Person({ label, name }) {
   return <div className="text-xs"><div className="text-gray-500">{label}</div><div className="font-medium text-gray-900">{name || <span className="text-gray-400">Not assigned</span>}</div></div>;
 }
@@ -172,9 +196,13 @@ export default function LdInductionDetail() {
 
             {g.completion === 'assessment' && (
               <div className="rounded-lg border bg-blue-50/50 p-3 space-y-2">
-                <div className="text-sm font-semibold flex items-center gap-2"><ClipboardCheck className="w-4 h-4 text-blue-600" />Knowledge assessment — pass mark {g.pass_score || 80}%</div>
-                {g.attempts.length > 0 && <div className="text-xs text-gray-600">{g.attempts.map((a, i) => <div key={a.attempt_id}>Attempt {i + 1}: <b className={a.passed ? 'text-green-700' : 'text-red-700'}>{a.score}%</b> {a.passed ? 'passed' : 'not passed'} · {fmtDateTime(a.at)}</div>)}</div>}
-                {can.self && editable && tasksDone && <Link to={`/LdAssessment?induction_id=${ind.id}&gate_id=${g.gate_id}`}><Button size="sm" className="gap-1"><ClipboardCheck className="w-4 h-4" />{g.attempts.length ? 'Retake assessment' : 'Take assessment'}</Button></Link>}
+                <div className="text-sm font-semibold flex items-center gap-2 flex-wrap"><ClipboardCheck className="w-4 h-4 text-blue-600" />Knowledge assessment — pass mark {g.pass_score || 90}%
+                  {g.attempts_info && <span className="text-xs font-normal text-gray-500">· attempt {Math.min(g.attempts_info.used + 1, g.attempts_info.max)} of {g.attempts_info.max}{g.attempts_info.left < g.attempts_info.max ? ` (${g.attempts_info.left} left)` : ''}</span>}
+                </div>
+                {g.attempts_info?.critical_rule && <div className="text-[11px] text-gray-500">Safety / compliance questions marked “critical” must all be answered correctly in addition to the pass mark.</div>}
+                {g.attempts.length > 0 && <div className="text-xs text-gray-600 space-y-0.5">{g.attempts.map((a, i) => <div key={a.attempt_id}>Attempt {i + 1}: <b className={a.passed ? 'text-green-700' : 'text-red-700'}>{a.expired ? 'time expired' : `${a.score}%`}</b> {a.passed ? 'passed' : 'not passed'}{a.critical_failed > 0 ? ` · ${a.critical_failed} critical wrong` : ''} · {fmtDateTime(a.at)}</div>)}</div>}
+                {can.self && g.attempts_info?.needs_relearn && editable && <RelearnPanel g={g} busy={busy === 'rl'} onConfirm={() => run('rl', 'ld_ackRelearn', { gate_id: g.gate_id }, 'Thanks — you can retake the assessment now')} />}
+                {can.self && editable && tasksDone && !g.attempts_info?.needs_relearn && <Link to={`/LdAssessment?induction_id=${ind.id}&gate_id=${g.gate_id}`}><Button size="sm" className="gap-1"><ClipboardCheck className="w-4 h-4" />{g.attempts.length ? 'Retake assessment' : 'Take assessment'}</Button></Link>}
                 {can.self && editable && !tasksDone && <div className="text-xs text-gray-500">Finish the preparation items first.</div>}
               </div>
             )}
@@ -184,8 +212,8 @@ export default function LdInductionDetail() {
                 <div className="text-sm font-semibold text-red-800">Not passed — remediation</div>
                 <div className="text-xs text-red-700 whitespace-pre-wrap">{g.remediation?.gap}</div>
                 <div className="flex flex-wrap items-center gap-1 text-[11px]">{['GAP_IDENTIFIED', 'REMEDIATION', 'RETRAINING', 'REASSESSMENT'].map(s => <span key={s} className={`px-2 py-0.5 rounded border ${g.remediation?.stage === s ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-500'}`}>{s.replace('_', ' ')}</span>)}</div>
-                {(can.owner || canAdmin) && <Button size="sm" onClick={() => { setText(''); setDlg({ kind: 'remediate', gate: g }); }}>Move to next remediation stage</Button>}
-                {can.self && <div className="text-xs text-gray-600">Your trainer / HR will arrange retraining and then reopen this step for another attempt. Previous attempts stay on record.</div>}
+                {(can.owner || canAdmin) && <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => { setText(''); setDlg({ kind: 'remediate', gate: g }); }}>Move to next remediation stage</Button><Button size="sm" onClick={() => { setText(''); setDlg({ kind: 'remediate_finish', gate: g }); }}>Retraining done — release new attempts</Button></div>}
+                {can.self && <div className="text-xs text-gray-600">You used all your attempts. Your manager, trainer and HR have been told; a retraining plan will be recorded and then a fresh set of attempts is released. Previous attempts stay on record.</div>}
               </div>
             )}
 
@@ -223,6 +251,7 @@ export default function LdInductionDetail() {
     if (d.kind === 'decide') r = await run('dec', 'ld_decideGate', { gate_id: d.gate.gate_id, decision: d.decision, comments: text }, d.decision === 'pass' ? 'Signed off' : 'Returned for more work');
     else if (d.kind === 'stage') r = await run('stage', 'ld_advanceCompetency', { gate_id: d.gate.gate_id, competency_id: d.comp.id, stage: d.stage, note: text }, 'Competency updated');
     else if (d.kind === 'remediate') r = await run('rem', 'ld_remediate', { gate_id: d.gate.gate_id, note: text }, 'Remediation updated');
+    else if (d.kind === 'remediate_finish') r = await run('rem', 'ld_remediate', { gate_id: d.gate.gate_id, note: text, finish: true }, 'Retraining recorded — fresh attempts released');
     else if (d.kind === 'block') r = await run('blk', 'ld_setGateBlocked', { gate_id: d.gate.gate_id, blocked: true, reason: text }, 'Step blocked');
     else if (d.kind === 'due') r = await run('due', 'ld_changeDueDate', { gate_id: d.gate.gate_id, due_date: text, reason: text2 }, 'Due date updated');
     else if (d.kind === 'waiver') r = await run('wv', 'ld_requestWaiver', { gate_id: d.gate.gate_id, reason: text, evidence: text2, approve_now: canAdmin && !!d.approveNow, comments: text }, d.approveNow ? 'Waiver approved' : 'Waiver requested');
@@ -242,7 +271,7 @@ export default function LdInductionDetail() {
     if (r) setDlg(null);
   };
 
-  const dlgTitle = { decide: dlg?.decision === 'pass' ? 'Sign off this step' : 'Return for more work', stage: `Move to ${dlg?.stage}`, remediate: 'Advance remediation', block: 'Block this step', due: 'Change due date', waiver: 'Request a waiver', people: 'Assign people', cancel: 'Cancel this induction', restart: ind.status === 'CANCELLED' ? 'Start the induction again' : 'Restart this induction' }[dlg?.kind];
+  const dlgTitle = { decide: dlg?.decision === 'pass' ? 'Sign off this step' : 'Return for more work', stage: `Move to ${dlg?.stage}`, remediate: 'Advance remediation', remediate_finish: 'Record retraining and release new attempts', block: 'Block this step', due: 'Change due date', waiver: 'Request a waiver', people: 'Assign people', cancel: 'Cancel this induction', restart: ind.status === 'CANCELLED' ? 'Start the induction again' : 'Restart this induction' }[dlg?.kind];
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-5">
