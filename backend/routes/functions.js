@@ -1228,29 +1228,30 @@ async function getScopedUserIds(cu) {
 // Employees.jsx/AllAttendance.jsx already do with client-side hierarchy
 // resolution — used to fix cases where the backend independently re-scoped
 // to direct-only and silently dropped indirect reports' data.
+async function getDownstreamUserIds(managerUserId) {
+  const rows = await all("SELECT user_id,data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND status='active'");
+  const index = new Map();
+  for (const r of rows) {
+    if (!r.mgr) continue;
+    if (!index.has(r.mgr)) index.set(r.mgr, []);
+    index.get(r.mgr).push(r.user_id);
+  }
+  const downstream = new Set();
+  const queue = [...(index.get(managerUserId) || [])];
+  const visited = new Set();
+  while (queue.length) {
+    const uid = queue.shift();
+    if (visited.has(uid)) continue;
+    visited.add(uid);
+    downstream.add(uid);
+    for (const r of (index.get(uid) || [])) if (!visited.has(r)) queue.push(r);
+  }
+  return [...downstream];
+}
 async function getVisibleUserIds(cu) {
   if (!cu) return [];
   if (await hasRole(cu, MGR_ROLES)) return null; // HR/admin/management — unrestricted, full org
-  if (await hasRole(cu, ['manager'])) {
-    const rows = await all("SELECT user_id,data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND status='active'");
-    const index = new Map();
-    for (const r of rows) {
-      if (!r.mgr) continue;
-      if (!index.has(r.mgr)) index.set(r.mgr, []);
-      index.get(r.mgr).push(r.user_id);
-    }
-    const downstream = new Set();
-    const queue = [...(index.get(cu.id) || [])];
-    const visited = new Set();
-    while (queue.length) {
-      const uid = queue.shift();
-      if (visited.has(uid)) continue;
-      visited.add(uid);
-      downstream.add(uid);
-      for (const r of (index.get(uid) || [])) if (!visited.has(r)) queue.push(r);
-    }
-    return [...downstream];
-  }
+  if (await hasRole(cu, ['manager'])) return getDownstreamUserIds(cu.id);
   return [cu.id];
 }
 
@@ -6086,7 +6087,12 @@ router.post('/:name', async (req, res) => {
 
     /* ── Attendance Muster Export (styled Excel) ─────────── */
     case 'exportAttendanceMuster': {
-      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      // HR / admin / management: whole organisation. A manager: only their own team (direct + indirect reports).
+      // `team_only` lets a management user export just their team from the "Team Attendance" page.
+      const mIsOrgRole = await hasRole(cu, MGR_ROLES);
+      const mIsManager = !mIsOrgRole && await hasRole(cu, ['manager']);
+      if (!mIsOrgRole && !mIsManager) return res.status(403).json({ error: 'Manager, HR or management access required' });
+      const mTeamIds = (mIsManager || (p.team_only && await hasRole(cu, ['management']))) ? new Set(await getDownstreamUserIds(cu.id)) : null;
       const { month, year, night_shift_only: mNightOnly } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const m = parseInt(month), y = parseInt(year);
@@ -6096,6 +6102,7 @@ router.post('/:name', async (req, res) => {
       const monthLabel  = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
       let mEmps   = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      if (mTeamIds) mEmps = mEmps.filter(e => mTeamIds.has(e.user_id));
       const mAttRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
 
       // Dedups any duplicate rows for the same day, preferring a
@@ -6372,7 +6379,7 @@ router.post('/:name', async (req, res) => {
       tRow.eachCell(cell => Object.assign(cell, { font:mF(true,'FFFFFF',9), fill:mFl('1A3C5E'), alignment:mCtr, border:mBd() }));
 
       const mBuf = await wbM.xlsx.writeBuffer();
-      return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`${mNightOnly ? 'Night_Shift_Muster' : 'Attendance_Muster'}_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
+      return res.json({ success:true, base64:Buffer.from(mBuf).toString('base64'), filename:`${mNightOnly ? 'Night_Shift_Muster' : mTeamIds ? 'Team_Attendance_Muster' : 'Attendance_Muster'}_${monthLabel.replace(' ','_')}.xlsx`, total_employees:sortedEmps.length, format:'xlsx' });
     }
 
     // Admin: one-call health check of every notification channel (in-app, web push, native push, e-mail),

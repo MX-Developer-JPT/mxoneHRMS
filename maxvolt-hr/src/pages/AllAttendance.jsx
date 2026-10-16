@@ -343,7 +343,7 @@ export default function AllAttendance() {
     const [yr, mo] = date.split('-').map(Number);
     try {
       toast.info('Generating muster roll…');
-      const res = await base44.functions.invoke('exportAttendanceMuster', { month: mo, year: yr });
+      const res = await base44.functions.invoke('exportAttendanceMuster', { month: mo, year: yr, team_only: isTeamScoped });
       if (!res.data?.success) { toast.error(res.data?.error || 'Muster export failed'); return; }
       const byteChars = atob(res.data.base64);
       const byteNums = new Array(byteChars.length).fill(0).map((_, i) => byteChars.charCodeAt(i));
@@ -467,7 +467,7 @@ export default function AllAttendance() {
             <Button variant="outline" size="sm" onClick={handleRepairSessions} disabled={repairingSessions} title="Fix records with fake 1-minute sessions/bogus breaks caused by late biometric syncs">
               {repairingSessions ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Wrench className="w-4 h-4 mr-1" />} {repairingSessions ? 'Repairing...' : 'Repair Sessions'}
             </Button>
-            <Button variant="outline" size="sm" onClick={exportToExcel} title="Export Attendance Muster (monthly summary)">
+            <Button variant="outline" size="sm" onClick={exportToExcel} title={isTeamScoped ? 'Export the Attendance Muster of your team (monthly summary)' : 'Export Attendance Muster (monthly summary)'}>
               <Download className="w-4 h-4 mr-1" /> Muster
             </Button>
             <Button variant="outline" size="sm" onClick={exportDetailedReport} title="Export detailed report with session hours and overtime">
