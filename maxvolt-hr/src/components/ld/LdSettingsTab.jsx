@@ -19,6 +19,7 @@ export default function LdSettingsTab() {
   const [audit, setAudit] = useState([]);
   const [busy, setBusy] = useState('');
   const [plan, setPlan] = useState(null);
+  const [target, setTarget] = useState({ pass_score: 90, max_attempts: 3 });
 
   const load = useCallback(async () => {
     try {
@@ -35,7 +36,7 @@ export default function LdSettingsTab() {
     try { await ld('ld_saveConfig', { config: cfg }); toast.success('Settings saved'); await load(); } catch (e) { toast.error(e.message); }
     setBusy('');
   };
-  const policyBody = () => ({ pass_score: Number(cfg.induction_pass_score) || 90, max_attempts: Number(cfg.max_attempts) || 3, critical_rule: cfg.critical_rule !== false, require_relearn: cfg.require_relearn !== false, seconds_per_question: Number(cfg.seconds_per_question) || 60 });
+  const policyBody = () => ({ pass_score: Number(target.pass_score) || 90, max_attempts: Number(target.max_attempts) || 3, critical_rule: cfg.critical_rule !== false, require_relearn: cfg.require_relearn !== false, seconds_per_question: Number(cfg.seconds_per_question) || 60 });
   const previewPolicy = async () => {
     setBusy('plan');
     try { setPlan((await ld('ld_applyPolicy', { ...policyBody(), dry_run: true })).plan); } catch (e) { toast.error(e.message); }
@@ -85,12 +86,14 @@ export default function LdSettingsTab() {
         </CardContent></Card>
 
         <Card><CardHeader className="pb-2"><CardTitle className="text-base">Knowledge-gate policy (90% rule)</CardTitle></CardHeader><CardContent className="space-y-3">
-          <p className="text-xs text-gray-500">An employee cannot move on until the assessment for the step is passed. These rules apply to every induction assessment. Set the values above (pass mark, attempts), tick the rules, then preview and apply — nothing changes until you apply.</p>
+          <p className="text-xs text-gray-500">An employee cannot move on until the assessment for the step is passed. These rules apply to every induction assessment. Choose the target below (the scope document asks for 90% and 3 attempts), tick the rules, then preview and apply — nothing changes until you apply.</p>
           <div className="grid md:grid-cols-2 gap-2 text-sm">
             <label className="flex items-start gap-2"><input type="checkbox" className="mt-1" checked={cfg.critical_rule !== false} onChange={e => setCfg(c => ({ ...c, critical_rule: e.target.checked }))} /><span><b>Critical-question rule</b> — questions tagged critical (safety, POSH, conduct, information security) must all be right as well as the pass mark.</span></label>
             <label className="flex items-start gap-2"><input type="checkbox" className="mt-1" checked={cfg.require_relearn !== false} onChange={e => setCfg(c => ({ ...c, require_relearn: e.target.checked }))} /><span><b>Re-learn between attempts</b> — after a miss the employee reviews the weak topics before the next attempt unlocks.</span></label>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Field label="Target pass mark %"><Input type="number" value={target.pass_score} onChange={e => { setPlan(null); setTarget(t => ({ ...t, pass_score: e.target.value })); }} /></Field>
+            <Field label="Target max attempts"><Input type="number" value={target.max_attempts} onChange={e => { setPlan(null); setTarget(t => ({ ...t, max_attempts: e.target.value })); }} /></Field>
             <Field label="Minimum review time (seconds)"><Input type="number" value={cfg.relearn_min_seconds ?? 60} onChange={e => setCfg(c => ({ ...c, relearn_min_seconds: e.target.value }))} /></Field>
             <Field label="Time per question (seconds)"><Input type="number" value={cfg.seconds_per_question ?? 60} onChange={e => setCfg(c => ({ ...c, seconds_per_question: e.target.value }))} /></Field>
           </div>
