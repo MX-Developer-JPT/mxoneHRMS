@@ -4475,7 +4475,9 @@ router.post('/:name', async (req, res) => {
 
       const saSessionData = buildSessions(saRawPunches);
       const saHalfDayHours = await getHalfDayOverrideHours(saAttDate, saShift);
-      const saStatusResult = applyHalfDayLeaveStatus(saAtt, saSessionData, computeStatusFromSessions(saSessionData, saShift, saHalfDayHours));
+      let saStatusResult = applyHalfDayLeaveStatus(saAtt, saSessionData, computeStatusFromSessions(saSessionData, saShift, saHalfDayHours));
+      // a day that began with a half-day gate pass stays a half day even if the employee later punches again
+      if (saAtt?.gate_pass_half_day) saStatusResult = applyDeclaredStatus(saAtt, saStatusResult);
       // WFH/OD are proper attendance statuses (filterable/reportable), not a
       // note bolted onto 'present' — override whatever the normal
       // present/late/half-day engine computed. Only applies while the

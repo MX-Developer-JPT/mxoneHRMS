@@ -5,6 +5,7 @@ import { one, all, run, withTransaction } from '../db.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { sendPushToUser } from '../utils/push.js';
 import { JWT_SECRET } from './auth.js';
+import { applyGatePassHalfDay, clearGatePassHalfDay } from './attendancelog.js';
 
 const router = Router();
 
@@ -1292,6 +1293,11 @@ router.patch('/:type/:id', async (req, res) => {
         const managerId = emp?.reporting_manager_id;
         const outingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
         const outingLabel = outingLabels[updated.outing_type] || updated.outing_type || 'outing';
+        // Half-day outing: departure = check-out, and the day is a half-day present (see applyGatePassHalfDay).
+        try {
+          if (req.body.status === 'departed') await applyGatePassHalfDay(updated);
+          else await clearGatePassHalfDay(updated);
+        } catch (he) { console.error('[gatepass] half-day attendance update failed:', he.message); }
         if (req.body.status === 'departed') {
           await notifyMany([updated.employee_user_id].filter(Boolean), {
             title: "You're Currently Out",

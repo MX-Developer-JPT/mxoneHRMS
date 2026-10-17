@@ -453,6 +453,68 @@ export function computeStatusFromSessions(sessionData, shift, effectiveShiftHour
   };
 }
 
+// Gate pass with outing type "Half Day": when the gate admin marks the employee OUT, the departure time becomes
+// the check-out time and the day is marked half-day present — no matter whether the employee ever checks out.
+//  • still checked in  → a real OUT punch is added at the departure time (sessions / hours recomputed)
+//  • already checked out, or never checked in → nothing is invented; the day is just marked half day
+// The record is flagged (gate_pass_half_day) so every later recalculation keeps the half-day status.
+export async function applyGatePassHalfDay(pass) {
+  if (!pass || pass.outing_type !== 'half_day' || !pass.employee_user_id || !pass.departure_time) return null;
+  const dep = String(pass.departure_time).trim().replace(' ', 'T');
+  if (isNaN(new Date(dep).getTime())) return null;
+  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pass.employee_user_id]);
+  const emp = empRow ? JSON.parse(empRow.data) : {};
+  const shift = await getShift(emp);
+  const { date: attDate, row } = await resolveAttendanceRow(pass.employee_user_id, dep, pass.request_date || dep.slice(0, 10), shift);
+  const note = 'Gate pass: half day — departure time treated as check-out';
+  const flags = { gate_pass_half_day: true, gate_pass_id: pass.id, gate_pass_departure: dep, lop_applicable: true, lop_deduction_days: 0.5, notes: note };
+
+  if (!row) {
+    const id = uuidv4();
+    const data = { id, user_id: pass.employee_user_id, date: attDate, status: 'half_day', source: 'gate_pass', employee_code: emp?.employee_code, auto_marked: true, ...flags };
+    await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [id, pass.employee_user_id, 'half_day', JSON.stringify(data)]);
+    return { action: 'created', id };
+  }
+  const data = JSON.parse(row.data);
+  if (data.regularised || data.admin_marked || (data.leave_id && !data.leave_half_day) || data.status === 'leave') return { action: 'skipped_frozen' };
+
+  let punches = Array.isArray(data.raw_punches) ? [...data.raw_punches] : [];
+  if (!punches.length && data.check_in_time) {
+    punches.push({ time: data.check_in_time, device_direction: 'IN' });
+    if (data.check_out_time) punches.push({ time: data.check_out_time, device_direction: 'OUT' });
+  }
+  let sd = buildSessions(punches);
+  let injected = false;
+  if (sd.is_in_progress) {
+    const lastMs = Math.max(...sd.raw_punches.map(p => new Date(p.time).getTime()));
+    if (new Date(dep).getTime() > lastMs) {
+      const next = buildSessions([...punches, { time: dep, device_direction: 'OUT' }]);
+      if (!next.is_in_progress) { sd = next; punches = [...punches, { time: dep, device_direction: 'OUT' }]; injected = true; }
+    }
+    if (!injected) sd = closeTrailingOpenSession(punches); // departure within a minute of the check-in — close the day on that punch
+  }
+  const halfDayHours = await getHalfDayOverrideHours(attDate, shift);
+  const result = applyDeclaredStatus({ ...data, gate_pass_half_day: true }, computeStatusFromSessions(sd, shift, halfDayHours));
+  const upd = { ...data, ...sd, ...result, ...flags, check_out_source: injected || !data.check_out_source ? 'gate_pass' : data.check_out_source };
+  await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [upd.status, JSON.stringify(upd), row.id]);
+  return { action: injected ? 'checked_out_at_departure' : 'marked_half_day', id: row.id };
+}
+
+// The employee came back from a half-day pass within 3 hours (no half-day deduction under the gate pass rule):
+// the day is no longer a forced half day. Longer outings keep the half day.
+export async function clearGatePassHalfDay(pass) {
+  if (!pass || pass.outing_type !== 'half_day' || !pass.employee_user_id) return null;
+  const hrs = pass.departure_time && pass.return_time ? (new Date(pass.return_time) - new Date(pass.departure_time)) / 3600000 : null;
+  if (hrs === null || hrs > 3) return { action: 'kept' };
+  const rows = await all("SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'gate_pass_id'=$2", [pass.employee_user_id, pass.id]);
+  for (const r of rows) {
+    const d = JSON.parse(r.data);
+    if (!d.gate_pass_half_day) continue;
+    await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...d, gate_pass_half_day: false, lop_applicable: false, lop_deduction_days: 0 }), r.id]);
+  }
+  return { action: 'cleared' };
+}
+
 // Punches are read-modify-write on one Attendance row per employee/day, so two
 // punches for the same employee arriving together (a batch, or a retry racing
 // the original) would each read the same row and the second write would drop
@@ -661,6 +723,13 @@ async function processRecordUnlocked(record) {
   if (data.regularised || data.admin_marked || (data.leave_id && !data.leave_half_day) || data.status === 'leave') {
     await stashBiometricPunch(row.id, data, newPunch);
     return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_regularised' };
+  }
+
+  // Left on a half-day gate pass: the departure already closed the day, so a later punch (e.g. the gate reader
+  // tapping again) is only kept as a biometric note — it must not reopen the session.
+  if (data.gate_pass_half_day && data.gate_pass_departure && new Date(punchIso).getTime() > new Date(data.gate_pass_departure).getTime() + DEDUP_THRESHOLD_MS) {
+    await stashBiometricPunch(row.id, data, newPunch);
+    return { ok: true, punch_id: punchId, sync_status: 'synced', duplicate: !!existingLog, log_stored: logStored, attendance_updated: false, attendance_id: row.id, action: 'skipped_after_half_day_gate_pass' };
   }
 
   // Merge new punch into the existing raw_punches list and rebuild sessions
@@ -897,6 +966,13 @@ export function punchesOnlyAdded(existing, merged, requireAfterLast = true) {
 // untouched for any other day. WFH/OD never count as late / early departure.
 export function applyDeclaredStatus(existing, result) {
   const r = existing?.selfie_reason;
+  // A HALF-DAY GATE PASS (outing type "Half Day", marked out by the gate admin) makes the day a half-day present
+  // even though the employee never checks out: applyGatePassHalfDay() records the departure as the check-out and
+  // sets this flag, and every recalculation (biometric sync, geofence, nightly close) keeps honouring it here.
+  // Leaving was approved, so there is no early-departure penalty; WFH/OD (declared above) still win.
+  if (existing?.gate_pass_half_day && r !== 'wfh' && r !== 'od') {
+    return { ...result, status: 'half_day', early_departure_minutes: 0, early_departure: false };
+  }
   if (r !== 'wfh' && r !== 'od') return result;
   return {
     ...result,
