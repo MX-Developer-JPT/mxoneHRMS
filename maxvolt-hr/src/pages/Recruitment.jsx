@@ -915,6 +915,12 @@ export default function Recruitment() {
     setInvitingId(candidate.id);
     try {
       const res = await base44.functions.invoke('inviteJoinerToApp', { candidate_id: candidate.id });
+      if (res.data?.use_onboarding) {
+        // joiners are invited by HR now — hand the details to the Onboarding page
+        sessionStorage.setItem('onboarding_prefill', JSON.stringify(res.data.prefill || {}));
+        window.location.assign('/OnboardingHR');
+        return;
+      }
       if (res.data?.success) {
         toast.success('Invitation email sent to ' + candidate.email);
         loadData();

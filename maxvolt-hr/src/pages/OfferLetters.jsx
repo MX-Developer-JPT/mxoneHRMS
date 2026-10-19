@@ -532,6 +532,12 @@ export default function OfferLetters() {
     setInvitingId(c.id);
     try {
       const res = await base44.functions.invoke('inviteJoinerToApp', { candidate_id: c.id });
+      if (res.data?.use_onboarding) {
+        // joiners are invited by HR now — hand the details to the Onboarding page
+        sessionStorage.setItem('onboarding_prefill', JSON.stringify(res.data.prefill || {}));
+        window.location.assign('/OnboardingHR');
+        return;
+      }
       if (res.data?.success) { toast.success('Invitation sent to ' + c.email); loadData(); }
       else toast.error(res.data?.error || 'Failed to send invite');
     } catch (e) { toast.error(e.message); }

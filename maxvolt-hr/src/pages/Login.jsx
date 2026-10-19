@@ -146,10 +146,7 @@ export default function Login() {
 
         {/* Footer */}
         <p className="text-center text-sm text-muted-foreground mt-6 font-medium">
-          Don't have an account?{" "}
-          <Link to="/register" className="text-primary font-semibold hover:underline underline-offset-2">
-            Create one
-          </Link>
+          New joiner? Use the onboarding link HR emailed you — accounts are created by invitation only.
         </p>
 
         <p className="text-center text-xs text-muted-foreground/50 mt-4">

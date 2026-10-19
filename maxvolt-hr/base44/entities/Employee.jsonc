@@ -270,7 +270,8 @@
         "full_time",
         "part_time",
         "contract",
-        "intern"
+        "intern",
+        "trainee"
       ]
     },
     "status": {

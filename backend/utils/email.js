@@ -316,6 +316,31 @@ export const emailTemplates = {
     text: `Reset your Maxvolt HR password: ${resetLink}\nThis link expires in 1 hour.`,
   }),
 
+  onboardingInviteEmail: ({ name, link, loginEmail, hrName, designation, department, dateOfJoining, expiryDays = 7 }) => ({
+    subject: 'Welcome to Maxvolt Energy — complete your onboarding',
+    html: wrap(
+      emailHeader('Welcome to Maxvolt Energy', '#ea580c'),
+      emailBody(`
+        <p>Dear <strong>${name || 'there'}</strong>,</p>
+        <p>${hrName || 'Our HR team'} has set up your profile on <strong>Maxvolt One</strong>, our HR portal. To finish joining, please open the link below, set a password, and submit your details and documents.</p>
+        ${infoTable([
+          ...(designation ? [['Designation', designation]] : []),
+          ...(department ? [['Department', department]] : []),
+          ...(dateOfJoining ? [['Date of joining', dateOfJoining]] : []),
+          ['Your login ID', loginEmail],
+        ])}
+        <div style="text-align:center;margin:28px 0">
+          <a href="${link}" style="background:#ea580c;color:#ffffff;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block">Complete my onboarding</a>
+        </div>
+        <p><strong>Keep these ready:</strong> Aadhaar card (front and back), PAN card, a passport-size photo, a cancelled cheque or bank passbook page, education certificates / marksheets, and — if you have worked before — your experience / relieving letters.</p>
+        <p style="font-size:13px;color:#64748b">This link works once and expires in <strong>${expiryDays} days</strong>. You will get access to the app as soon as you submit everything. If it expires, ask HR to send a new one.</p>
+        <p style="font-size:11px;color:#94a3b8;word-break:break-all">Or copy this link: ${link}</p>
+      `),
+      emailFooter()
+    ),
+    text: `Welcome to Maxvolt Energy! Complete your onboarding here: ${link}\nLogin ID: ${loginEmail}\nThe link works once and expires in ${expiryDays} days.`,
+  }),
+
   onboardingApprovedEmail: ({ name, role, department }) => ({
     subject: 'Welcome to Maxvolt Energy — Onboarding Approved',
     html: wrap(

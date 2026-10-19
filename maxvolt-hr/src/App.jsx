@@ -14,7 +14,7 @@ import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { base44 } from '@/api/base44Client';
 import Login from '@/pages/Login';
-import Register from '@/pages/Register';
+import AcceptInvite from '@/pages/AcceptInvite';
 import ForgotPassword from '@/pages/ForgotPassword';
 import ResetPassword from '@/pages/ResetPassword';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
@@ -222,7 +222,7 @@ const ForceChangePassword = ({ onDone }) => {
   );
 };
 
-const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept', '/candidate-documents', '/application-status', '/payslip-view'];
+const PUBLIC_PATHS = ['/PublicJobBoard', '/ApplyForJob', '/PublicBusinessCard', '/careers', '/career', '/offer-accept', '/candidate-documents', '/application-status', '/payslip-view', '/onboarding-invite'];
 
 // Guards the login/register/forgot-password/reset-password routes against an
 // already-authenticated session. Without this, pressing the browser/hardware
@@ -288,7 +288,9 @@ const AuthenticatedApp = () => {
     <Routes>
       {/* Public auth routes — guarded so an active session never sees the login form again */}
       <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
-      <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
+      {/* Sign-up is closed: accounts are created only by an HR invitation. The invite link opens here. */}
+      <Route path="/register" element={<Navigate to="/login" replace />} />
+      <Route path="/onboarding-invite" element={<AcceptInvite />} />
       <Route path="/forgot-password" element={<PublicOnlyRoute><ForgotPassword /></PublicOnlyRoute>} />
       <Route path="/reset-password" element={<PublicOnlyRoute><ResetPassword /></PublicOnlyRoute>} />
 

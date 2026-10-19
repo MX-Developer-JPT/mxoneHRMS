@@ -2447,6 +2447,11 @@ router.post('/:name', async (req, res) => {
     const { handleLd } = await import('./ld.js');
     return await handleLd(name, p, cu, res);
   }
+  // Invite-only onboarding (routes/onboarding.js) — every ob_* function
+  if (name.startsWith('ob_')) {
+    const { handleOnboarding } = await import('./onboarding.js');
+    return await handleOnboarding(name, p, cu, res);
+  }
   switch (name) {
 
     /* ── User management ──────────────────────────────── */
@@ -11677,40 +11682,14 @@ Return ONLY a valid JSON object (no markdown):
       const cand = JSON.parse(cRow.data);
       if (!cand.email) return res.json({ success: false, error: 'Candidate has no email' });
 
-      const appBase = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
-      const registerLink = `${appBase}/register`;
-
-      await sendEmail({
-        to: cand.email,
-        subject: `Welcome to Maxvolt One – Your Account Awaits!`,
-        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
-          <div style="background:#ea580c;color:#fff;padding:28px;border-radius:12px 12px 0 0;text-align:center;">
-            <h1 style="margin:0;font-size:24px;">Welcome to Maxvolt Energy!</h1>
-            <p style="margin:8px 0 0;opacity:.9;">We're excited to have you join us today.</p>
-          </div>
-          <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;">
-            <p>Dear <strong>${cand.full_name}</strong>,</p>
-            <p>Today is your joining date and we are thrilled to welcome you to the <strong>Maxvolt Energy</strong> family!</p>
-            <p>As part of our digital onboarding, please register on our HR system using the button below. Your onboarding formalities, documents submission, and attendance will all be managed through this portal.</p>
-            <div style="text-align:center;margin:28px 0;">
-              <a href="${registerLink}" style="display:inline-block;background:#ea580c;color:#fff;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;">Register on HR Portal</a>
-            </div>
-            <p style="font-size:13px;color:#555;">Please register using your official email address: <strong>${cand.email}</strong></p>
-            <p style="font-size:13px;color:#555;">If you have any questions, please reach out to HR at <a href="mailto:hr@maxvoltenergy.com">hr@maxvoltenergy.com</a> or call +91 120 4291595.</p>
-            <p style="margin-top:24px;">Once again, welcome aboard! We are glad to have you with us.</p>
-            <p style="margin-top:4px;">Warm regards,<br/><strong>Human Resources Team</strong><br/>Maxvolt Energy Industries Limited</p>
-          </div>
-          <div style="background:#f9fafb;padding:12px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;text-align:center;font-size:11px;color:#999;">
-            E-82 Bulandshahr Road Industrial Area, Ghaziabad, UP – 201009 &nbsp;|&nbsp; CIN: U40106DL2019PLC349854
-          </div>
-        </div>`,
+      // Accounts can no longer be created by the person themselves (the /register page is closed). HR starts the
+      // onboarding (Onboarding → Start onboarding), which creates the login and emails the personal link. This call
+      // therefore no longer emails a sign-up link; it hands the candidate's details over to that form.
+      return res.json({
+        success: false, use_onboarding: true,
+        error: 'Joiners are now invited by HR: open Onboarding and use "Start onboarding" — the candidate\'s name, email and phone are pre-filled.',
+        prefill: { first_name: String(cand.full_name || '').split(' ')[0] || '', last_name: String(cand.full_name || '').split(' ').slice(1).join(' '), personal_email: cand.email || '', phone: cand.phone || '', candidate_id },
       });
-
-      // Mark candidate as joined
-      const updCand = { ...cand, status: 'joined', app_invite_sent_at: new Date().toISOString() };
-      await run("UPDATE entities SET status='joined', data=$1 WHERE id=$2", [JSON.stringify(updCand), candidate_id]);
-
-      return res.json({ success: true });
     }
 
     /* ── AI: HR Letter Generation ────────────────────── */

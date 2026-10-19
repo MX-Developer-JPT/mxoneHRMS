@@ -115,33 +115,10 @@ router.post('/login', async (req, res) => {
   })();
 });
 
-// POST /api/auth/register
-router.post('/register', async (req, res) => {
-  const { email, password, full_name, first_name, last_name } = req.body;
-  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-  const norm = email.toLowerCase().trim();
-  const existing = await one('SELECT id FROM users WHERE email = $1', [norm]);
-  if (existing) return res.status(409).json({ error: 'Email already registered' });
-  const id = uuidv4();
-  const hash = bcrypt.hashSync(password, 10);
-  const name = full_name || [first_name, last_name].filter(Boolean).join(' ') || '';
-  await run(
-    `INSERT INTO users (id, email, password, full_name, first_name, last_name, role, display_name)
-     VALUES ($1, $2, $3, $4, $5, $6, 'onboarding_pending', $7)`,
-    [id, norm, hash, name, first_name || '', last_name || '', name]
-  );
-
-  const code = generateOTP();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  await run('DELETE FROM otps WHERE email = $1', [norm]);
-  await run('INSERT INTO otps (email, code, expires_at) VALUES ($1, $2, $3)', [norm, code, expiresAt]);
-
-  const tpl = emailTemplates.otpEmail({ name, code, expiresMinutes: 10 });
-  sendEmail({ to: norm, ...tpl }).catch(e =>
-    console.error('[auth] OTP email failed:', e.message)
-  );
-
-  res.status(201).json({ pendingVerification: true, email: norm });
+// POST /api/auth/register — CLOSED. Accounts exist only through an HR invitation (HR starts onboarding, the person
+// gets a one-time link: see routes/onboarding.js). Nobody can create their own account any more.
+router.post('/register', (_req, res) => {
+  res.status(403).json({ error: 'Sign-up is closed. Accounts are created by invitation only — please wait for the onboarding email from HR.' });
 });
 
 // POST /api/auth/logout

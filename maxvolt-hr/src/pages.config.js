@@ -73,6 +73,7 @@ const LoanManagement = lazy(() => import('./pages/LoanManagement'));
 const MarkAttendance = lazy(() => import('./pages/MarkAttendance'));
 const OffCyclePayments = lazy(() => import('./pages/OffCyclePayments'));
 const OnboardingApproval = lazy(() => import('./pages/OnboardingApproval'));
+const OnboardingHR = lazy(() => import('./pages/OnboardingHR'));
 const PayrollAnalytics = lazy(() => import('./pages/PayrollAnalytics'));
 const PayrollManagement = lazy(() => import('./pages/PayrollManagement'));
 const PayrollProcessing = lazy(() => import('./pages/PayrollProcessing'));
@@ -157,6 +158,7 @@ export const PAGES = {
     "MarkAttendance": MarkAttendance,
     "OffCyclePayments": OffCyclePayments,
     "OnboardingApproval": OnboardingApproval,
+    "OnboardingHR": OnboardingHR,
     "PayrollAnalytics": PayrollAnalytics,
     "PayrollManagement": PayrollManagement,
     "PayrollProcessing": PayrollProcessing,

@@ -26,6 +26,7 @@ import authRouter           from './routes/auth.js';
 import entitiesRouter       from './routes/entities.js';
 import functionsRouter, { payslipDownloadFile, payslipDownloadData } from './routes/functions.js';
 import uploadRouter         from './routes/upload.js';
+import { inviteRouter as onboardingInviteRouter } from './routes/onboarding.js';
 import aiRouter             from './routes/ai.js';
 import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
@@ -258,6 +259,7 @@ app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
 });
 
 app.use('/api/auth',            authLimiter, authRouter);
+app.use('/api/onboarding-invite', authLimiter, onboardingInviteRouter);   // public: open the emailed invite link, set a password
 app.use('/api/entities',        entitiesRouter);
 // Token-authenticated (no login session) — opened from the device's real
 // browser via a short-lived signed link; see getPayslipDownloadLink.
