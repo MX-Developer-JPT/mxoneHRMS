@@ -75,6 +75,15 @@ export const DOC_SLOTS = [
   { key: 'address_proof',label: 'Current address proof (if different from Aadhaar)', type: 'other', required: false },
 ];
 const EDU_LEVELS = ['10th', '12th', 'Diploma / ITI', 'Graduation', 'Post graduation', 'Other'];
+// Shown on the invite page and on the first screen of the onboarding form: everything the person should have at hand.
+export const DOC_CHECKLIST = [
+  { group: 'Identity', required: true, items: ['Aadhaar card — front and back (clear photo or PDF)', 'PAN card', 'Passport-size photo (plain background, face clearly visible)'] },
+  { group: 'Bank', required: true, items: ['Cancelled cheque or the first page of your bank passbook', 'Bank account number and IFSC code (if HR has not already entered them)'] },
+  { group: 'Education', required: true, items: ['Certificates / marksheets for each qualification you list — 10th, 12th, diploma / ITI, graduation, post-graduation'] },
+  { group: 'Previous employment (if you have worked before)', required: false, items: ['Experience letter and relieving letter from each employer', 'Last 3 payslips from your most recent employer', 'Dates of joining and leaving, designation and last drawn salary for each employer'] },
+  { group: 'Other (optional)', required: false, items: ['Current address proof, if different from Aadhaar', 'UAN / PF account number and ESI number, if you already have them', 'PF nominee details and insurance policy cards'] },
+];
+export const STEP_NAMES = ['Your details', 'About you', 'Education', 'Experience', 'Documents', 'Review & submit'];
 
 // ── invites ──────────────────────────────────────────────────────────────────────────────────
 async function getInvite(userId) {
@@ -271,6 +280,7 @@ const HANDLERS = {
         send_count: inv?.send_count || 0, correction_note: e.onboarding_correction_note || '',
         docs: { total: mine.length, pending: mine.filter(d => d.status === 'pending_verification').length, verified: mine.filter(d => d.status === 'verified').length, rejected: mine.filter(d => d.status === 'rejected').length },
         draft_saved_at: e.onboarding_draft_saved_at || null,
+        checkpoint: e.onboarding_checkpoint ? { step: e.onboarding_checkpoint.step, step_name: STEP_NAMES[e.onboarding_checkpoint.step], completed: (e.onboarding_checkpoint.completed || []).length, total: STEP_NAMES.length, started: !!e.onboarding_checkpoint.started } : null,
       };
     });
     const order = { expired: 0, invited: 1, in_progress: 2, completed: 3, revoked: 4 };
@@ -291,7 +301,7 @@ const HANDLERS = {
     return res.json({
       success: true, hr_initiated: true, role, submitted: !!emp.onboarding_submitted, rejection_reason: emp.onboarding_rejection_reason || null,
       employee: { ...forEmployee(emp), reporting_manager_name: mgr?.full_name || '', shift_name: s ? `${s.name} (${s.start_time} – ${s.end_time})` : '' },
-      draft: emp.onboarding_draft || null, doc_slots: DOC_SLOTS, education_levels: EDU_LEVELS,
+      draft: emp.onboarding_draft || null, checkpoint: emp.onboarding_checkpoint || null, checklist: DOC_CHECKLIST, doc_slots: DOC_SLOTS, education_levels: EDU_LEVELS,
     });
   },
 
@@ -304,8 +314,14 @@ const HANDLERS = {
     const draft = JSON.stringify(p.draft || {});
     if (draft.length > 400000) return res.json({ success: false, error: 'Draft too large' });
     emp.onboarding_draft = p.draft || {}; emp.onboarding_draft_saved_at = nowIso();
+    if (p.checkpoint) {
+      const cp = p.checkpoint;
+      const step = Math.max(0, Math.min(STEP_NAMES.length - 1, Number(cp.step) || 0));
+      const completed = [...new Set((Array.isArray(cp.completed) ? cp.completed : []).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < STEP_NAMES.length))].sort((a, b) => a - b);
+      emp.onboarding_checkpoint = { step, completed, started: !!cp.started, saved_at: emp.onboarding_draft_saved_at };
+    }
     await run('UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2', [JSON.stringify(emp), erow.id]);
-    return res.json({ success: true, saved_at: emp.onboarding_draft_saved_at });
+    return res.json({ success: true, saved_at: emp.onboarding_draft_saved_at, checkpoint: emp.onboarding_checkpoint || null });
   },
 
   // Final submission: validates, stores the person's details + documents, and activates the account.
@@ -430,15 +446,67 @@ const HANDLERS = {
     return res.json({ success: true, access_token: signToken(user) });
   },
 
-  // HR flags a document the employee must replace (the account stays active)
-  async ob_rejectDocument(p, cu, res) {
+  // ── documents after submission: verify / ask for a re-upload / replace ──
+  async ob_getEmployeeDocs(p, cu, res) {
+    if (!(await isHr(cu))) return res.status(403).json({ success: false, error: 'Only HR or admin can see this' });
+    const docs = (await all("SELECT data FROM entities WHERE type='Document' AND user_id=$1", [p.user_id])).map(r => { try { return JSON.parse(r.data); } catch { return null; } }).filter(Boolean)
+      .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+    return res.json({ success: true, documents: docs.map(d => ({ id: d.id, name: d.document_name, type: d.document_type, url: d.document_url, status: d.status, notes: d.notes || '', reupload_count: d.reupload_count || 0, requested_at: d.reupload_requested_at || null, uploaded_at: d.created_at || null })) });
+  },
+
+  async ob_verifyDocument(p, cu, res) {
     if (!(await isHr(cu))) return res.status(403).json({ success: false, error: 'Only HR or admin can do this' });
     const row = await one("SELECT id, data FROM entities WHERE type='Document' AND id=$1", [p.document_id]);
     if (!row) return res.json({ success: false, error: 'Document not found' });
     const d = parseRow(row);
-    d.status = 'rejected'; d.notes = clean(p.reason, 300); d.rejected_by = cu.id;
+    d.status = 'verified'; d.verified_by = cu.id; d.verified_at = nowIso(); d.notes = '';
+    await run("UPDATE entities SET data=$1, status='verified', updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(d), row.id]);
+    return res.json({ success: true });
+  },
+
+  // HR asks the employee to upload a document again (blurry, wrong file, expired …). The account stays active.
+  async ob_requestReupload(p, cu, res) {
+    if (!(await isHr(cu))) return res.status(403).json({ success: false, error: 'Only HR or admin can do this' });
+    const reason = clean(p.reason, 300);
+    if (reason.length < 3) return res.json({ success: false, error: 'Please say what is wrong with the document' });
+    const row = await one("SELECT id, data FROM entities WHERE type='Document' AND id=$1", [p.document_id]);
+    if (!row) return res.json({ success: false, error: 'Document not found' });
+    const d = parseRow(row);
+    d.status = 'rejected'; d.notes = reason; d.rejected_by = cu.id; d.reupload_requested_at = nowIso();
     await run("UPDATE entities SET data=$1, status='rejected', updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(d), row.id]);
-    await notify(d.user_id, { title: 'Document needs to be re-uploaded', message: `${d.document_name}: ${d.notes || 'please upload a clearer copy'}`, type: 'warning', link: '/Documents' });
+    await notify(d.user_id, { title: 'Please re-upload a document', message: `${d.document_name}: ${reason}`, type: 'warning', link: '/Documents' });
+    try {
+      const u = await one('SELECT email, full_name FROM users WHERE id=$1', [d.user_id]);
+      const emp = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
+      const to = [...new Set([u?.email, emp ? JSON.parse(emp.data).personal_email : null].filter(Boolean))];
+      if (to.length) sendEmail({ to, ...emailTemplates.documentReuploadEmail({ name: u?.full_name, documentName: d.document_name, reason, link: `${appUrl()}/Documents` }) }).catch(e => console.warn('[onboarding] re-upload email failed:', e.message));
+    } catch (e) { console.warn('[onboarding] re-upload email failed:', e.message); }
+    return res.json({ success: true });
+  },
+  async ob_rejectDocument(p, cu, res) { return HANDLERS.ob_requestReupload(p, cu, res); },
+
+  // The employee replaces a document HR rejected → it goes back to HR for verification.
+  async ob_replaceDocument(p, cu, res) {
+    const row = await one("SELECT id, data FROM entities WHERE type='Document' AND id=$1", [p.document_id]);
+    const d = row ? parseRow(row) : null;
+    if (!d || d.user_id !== cu.id) return res.json({ success: false, error: 'Document not found' });
+    if (d.status !== 'rejected') return res.json({ success: false, error: 'HR has not asked for this document to be replaced' });
+    if (!safeUrl(p.file_url)) return res.json({ success: false, error: 'Please upload the file again' });
+    const old = d.document_url;
+    d.history = [...(d.history || []), { url: old, status: d.status, reason: d.notes, replaced_at: nowIso() }].slice(-10);
+    d.document_url = p.file_url; d.status = 'pending_verification'; d.notes = ''; d.reupload_count = (d.reupload_count || 0) + 1; d.replaced_at = nowIso();
+    await run("UPDATE entities SET data=$1, status='pending_verification', updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(d), row.id]);
+    // keep the copies of the link on the employee record in sync
+    const erow = await one("SELECT id, data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
+    if (erow && old) {
+      const e = JSON.parse(erow.data); let changed = false;
+      const swap = (o, k) => { if (o && o[k] === old) { o[k] = p.file_url; changed = true; } };
+      swap(e, 'profile_picture_url'); (e.education || []).forEach(r => swap(r, 'certificate_url'));
+      (e.previous_employment || []).forEach(r => ['experience_letter_url', 'relieving_letter_url', 'payslips_url'].forEach(k => swap(r, k)));
+      (e.insurance_policies || []).forEach(r => swap(r, 'card_url'));
+      if (changed) await run('UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2', [JSON.stringify(e), erow.id]);
+    }
+    await notify(await hrUserIds(), { title: 'Document re-uploaded', message: `${d.document_name} was re-uploaded and needs verification.`, link: '/OnboardingHR' });
     return res.json({ success: true });
   },
 };
@@ -470,7 +538,7 @@ inviteRouter.get('/:token', async (req, res) => {
   const u = await one('SELECT full_name, email FROM users WHERE id=$1', [inv.user_id]);
   const emp = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [inv.user_id]);
   const e = emp ? JSON.parse(emp.data) : {};
-  res.json({ name: u?.full_name || '', login_email: u?.email || '', designation: e.designation || '', department: e.department || '', date_of_joining: e.date_of_joining || '', expires_at: inv.expires_at });
+  res.json({ name: u?.full_name || '', login_email: u?.email || '', designation: e.designation || '', department: e.department || '', date_of_joining: e.date_of_joining || '', expires_at: inv.expires_at, checklist: DOC_CHECKLIST });
 });
 
 inviteRouter.post('/:token/accept', async (req, res) => {

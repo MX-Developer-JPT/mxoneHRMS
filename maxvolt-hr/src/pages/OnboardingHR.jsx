@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import MobileSelect from '@/components/MobileSelect';
 import { toast } from 'sonner';
-import { Loader2, Send, Copy, RefreshCw, Trash2, UserPlus, CheckCircle2, Mail, FolderOpen } from 'lucide-react';
+import { Loader2, Send, Copy, RefreshCw, Trash2, UserPlus, CheckCircle2, Mail, FolderOpen, Eye, RotateCcw } from 'lucide-react';
 import { ob, EMPLOYMENT_TYPES, DESIGNATION_TIERS, RELATIONS, employmentLabel, PAN_RE, IFSC_RE, digits } from '@/lib/onboarding';
 
 const blank = () => ({
@@ -33,6 +33,11 @@ const STAGES = {
   expired: { label: 'Link expired', cls: 'bg-red-50 text-red-700 border-red-200' },
   revoked: { label: 'Replaced', cls: 'bg-gray-100 text-gray-500 border-gray-200' },
 };
+const DOC_STATUS = {
+  pending_verification: { label: 'To verify', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  verified: { label: 'Verified', cls: 'bg-green-50 text-green-700 border-green-200' },
+  rejected: { label: 'Re-upload requested', cls: 'bg-red-50 text-red-700 border-red-200' },
+};
 const fmt = (d) => { if (!d) return '—'; const x = new Date(d); return isNaN(x) ? String(d).slice(0, 10) : x.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); };
 
 function F({ label, req, hint, children, className = '' }) {
@@ -49,6 +54,18 @@ function Tracker({ refreshKey, onResent }) {
   const [stage, setStage] = useState('all');
   const [busy, setBusy] = useState('');
   const [cancel, setCancel] = useState(null);
+  const [docs, setDocs] = useState(null);   // { row, list, loading, askFor, reason }
+
+  const openDocs = async (r) => {
+    setDocs({ row: r, list: [], loading: true });
+    try { const d = await ob('ob_getEmployeeDocs', { user_id: r.user_id }); setDocs({ row: r, list: d.documents, loading: false }); } catch (e) { toast.error(e.message); setDocs(null); }
+  };
+  const reloadDocs = async () => { const d = await ob('ob_getEmployeeDocs', { user_id: docs.row.user_id }); setDocs(x => ({ ...x, list: d.documents, askFor: null, reason: '' })); await load(); };
+  const verifyDoc = async (id) => { try { await ob('ob_verifyDocument', { document_id: id }); toast.success('Verified'); await reloadDocs(); } catch (e) { toast.error(e.message); } };
+  const askReupload = async () => {
+    if ((docs.reason || '').trim().length < 3) { toast.error('Say what is wrong with the document'); return; }
+    try { await ob('ob_requestReupload', { document_id: docs.askFor, reason: docs.reason }); toast.success('The employee has been asked to re-upload (in-app notification and email)'); await reloadDocs(); } catch (e) { toast.error(e.message); }
+  };
 
   const load = useCallback(async () => {
     try { setData(await ob('ob_getTracker')); } catch (e) { toast.error(e.message); }
@@ -91,18 +108,50 @@ function Tracker({ refreshKey, onResent }) {
                 <td className="text-xs">{r.designation}<div className="text-gray-500">{r.department} · {employmentLabel(r.employment_type)}</div></td>
                 <td className="text-xs">{fmt(r.date_of_joining)}</td>
                 <td><Badge variant="outline" className={`${STAGES[r.stage]?.cls} text-[11px]`}>{STAGES[r.stage]?.label || r.stage}</Badge>{r.correction_note && <div className="text-[11px] text-amber-700 mt-1 max-w-[220px]" title={r.correction_note}>Reported a correction: “{r.correction_note.slice(0, 60)}{r.correction_note.length > 60 ? '…' : ''}”</div>}</td>
-                <td className="text-[11px] text-gray-500 leading-5">Invited {fmt(r.invited_at)}{r.send_count > 1 ? ` (×${r.send_count})` : ''}<br />{r.accepted_at ? `Opened ${fmt(r.accepted_at)}` : r.expires_at && r.stage !== 'completed' ? `Expires ${fmt(r.expires_at)}` : ''}{r.submitted_at ? <><br />Submitted {fmt(r.submitted_at)}</> : r.draft_saved_at ? <><br />Draft saved {fmt(r.draft_saved_at)}</> : null}</td>
+                <td className="text-[11px] text-gray-500 leading-5">Invited {fmt(r.invited_at)}{r.send_count > 1 ? ` (×${r.send_count})` : ''}<br />{r.stage === 'in_progress' && r.checkpoint?.started ? <b className="text-amber-700">Step {Math.min(r.checkpoint.step + 1, r.checkpoint.total)} of {r.checkpoint.total} · {r.checkpoint.step_name}<br /></b> : r.stage === 'in_progress' ? <span className="text-amber-700">Not started yet<br /></span> : null}{r.accepted_at ? `Opened ${fmt(r.accepted_at)}` : r.expires_at && r.stage !== 'completed' ? `Expires ${fmt(r.expires_at)}` : ''}{r.submitted_at ? <><br />Submitted {fmt(r.submitted_at)}</> : r.draft_saved_at ? <><br />Draft saved {fmt(r.draft_saved_at)}</> : null}</td>
                 <td className="text-xs">{r.docs.total === 0 ? '—' : <>{r.docs.total} uploaded{r.docs.pending > 0 && <div className="text-amber-700">{r.docs.pending} to verify</div>}{r.docs.rejected > 0 && <div className="text-red-600">{r.docs.rejected} rejected</div>}{r.docs.verified > 0 && <div className="text-green-700">{r.docs.verified} verified</div>}</>}</td>
                 <td className="pr-2 whitespace-nowrap text-right">
                   {r.stage !== 'completed' && <Button size="sm" variant="outline" className="h-7 px-2 text-xs mr-1" disabled={busy === r.user_id} onClick={() => resend(r)}><Mail className="w-3.5 h-3.5 mr-1" />Resend link</Button>}
                   {r.stage !== 'completed' && <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-red-600" onClick={() => setCancel({ row: r, reason: '' })}><Trash2 className="w-3.5 h-3.5" /></Button>}
-                  {r.stage === 'completed' && <Link to="/EmployeeDocuments"><Button size="sm" variant="outline" className="h-7 px-2 text-xs"><FolderOpen className="w-3.5 h-3.5 mr-1" />Verify documents</Button></Link>}
+                  {r.docs.total > 0 && <Button size="sm" variant="outline" className="h-7 px-2 text-xs ml-1" onClick={() => openDocs(r)}><FolderOpen className="w-3.5 h-3.5 mr-1" />Documents{r.docs.pending > 0 ? ` (${r.docs.pending})` : ''}</Button>}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </CardContent></Card>
+      <Dialog open={!!docs} onOpenChange={o => !o && setDocs(null)}>
+        <DialogContent className="max-w-2xl max-h-[88vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Documents — {docs?.row?.name}</DialogTitle></DialogHeader>
+          {docs?.loading ? <div className="flex justify-center p-6"><Loader2 className="w-5 h-5 animate-spin" /></div> : (
+            <div className="space-y-2">
+              {docs?.list.length === 0 && <div className="text-sm text-gray-500">Nothing uploaded yet.</div>}
+              {docs?.list.map(d => (
+                <div key={d.id} className="rounded-lg border p-3 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0"><div className="text-sm font-medium truncate">{d.name}</div>
+                      <div className="text-[11px] text-gray-500">{d.reupload_count > 0 ? `Re-uploaded ${d.reupload_count}× · ` : ''}{fmt(d.uploaded_at)}</div></div>
+                    <Badge variant="outline" className={`${DOC_STATUS[d.status]?.cls || ''} text-[11px]`}>{DOC_STATUS[d.status]?.label || d.status}</Badge>
+                  </div>
+                  {d.status === 'rejected' && d.notes && <div className="text-xs text-red-700">Asked to re-upload: {d.notes}</div>}
+                  <div className="flex flex-wrap gap-2">
+                    {d.url && <a href={d.url} target="_blank" rel="noreferrer"><Button size="sm" variant="outline" className="h-7 text-xs"><Eye className="w-3.5 h-3.5 mr-1" />View</Button></a>}
+                    {d.status !== 'verified' && <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700" onClick={() => verifyDoc(d.id)}><CheckCircle2 className="w-3.5 h-3.5 mr-1" />Verify</Button>}
+                    {d.status !== 'rejected' && <Button size="sm" variant="outline" className="h-7 text-xs text-red-700 border-red-200" onClick={() => setDocs(x => ({ ...x, askFor: d.id, reason: '' }))}><RotateCcw className="w-3.5 h-3.5 mr-1" />Request re-upload</Button>}
+                  </div>
+                  {docs.askFor === d.id && (
+                    <div className="space-y-2 bg-red-50 border border-red-200 rounded-md p-2">
+                      <Textarea rows={2} placeholder="What is wrong? e.g. Photo is blurry — please upload a clear scan" value={docs.reason || ''} onChange={e => setDocs(x => ({ ...x, reason: e.target.value }))} />
+                      <div className="flex gap-2"><Button size="sm" variant="destructive" className="h-7 text-xs" onClick={askReupload}>Send request</Button><Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setDocs(x => ({ ...x, askFor: null }))}>Cancel</Button></div>
+                      <div className="text-[11px] text-gray-500">The employee gets an in-app notification and an email, and a “Re-upload” button on their My Documents page.</div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       <Dialog open={!!cancel} onOpenChange={o => !o && setCancel(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>Cancel onboarding — {cancel?.row?.name}</DialogTitle></DialogHeader>

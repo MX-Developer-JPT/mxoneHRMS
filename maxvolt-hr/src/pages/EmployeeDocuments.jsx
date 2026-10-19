@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { FileText, Upload, Eye, Plus, Search, User, ChevronDown, ChevronRight, Download, FolderDown, X, Filter, ChevronsUpDown, Check } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { ob } from '@/lib/onboarding';
 import DocViewerModal from '@/components/DocViewerModal';
 import { toast } from 'sonner';
 import { safeDate } from '@/lib/dateUtils';
@@ -96,6 +97,14 @@ export default function EmployeeDocuments() {
   };
 
   const handleVerifyStatus = async (docId, newStatus) => {
+    if (newStatus === 'rejected') {
+      // asking for a re-upload: the employee is told what is wrong (in-app + email) and gets a Re-upload button
+      const reason = window.prompt('What is wrong with this document? The employee will be asked to upload it again.');
+      if (reason === null) return;
+      if (reason.trim().length < 3) { toast.error('Please say what is wrong'); return; }
+      try { await ob('ob_requestReupload', { document_id: docId, reason: reason.trim() }); toast.success('Re-upload requested — the employee has been notified'); loadData(); } catch (e) { toast.error(e.message); }
+      return;
+    }
     await base44.entities.Document.update(docId, { status: newStatus });
     toast.success(`Document marked as ${newStatus.replace('_', ' ')}`);
     loadData();
@@ -354,7 +363,7 @@ export default function EmployeeDocuments() {
                                 )}
                                 {doc.status !== 'rejected' && (
                                   <Button size="sm" variant="destructive" className="flex-1" onClick={() => handleVerifyStatus(doc.id, 'rejected')}>
-                                    Reject
+                                    Request re-upload
                                   </Button>
                                 )}
                               </div>

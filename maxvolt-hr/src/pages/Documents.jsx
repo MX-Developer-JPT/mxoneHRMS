@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import { ob } from '@/lib/onboarding';
 
 export default function Documents() {
   const [user, setUser] = useState(null);
@@ -31,6 +32,20 @@ export default function Documents() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const [replacingId, setReplacingId] = useState(null);
+  const reupload = async (doc, file) => {
+    if (!file) return;
+    if (file.size > 40 * 1024 * 1024) { toast.error('The file must be under 40 MB'); return; }
+    setReplacingId(doc.id);
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      await ob('ob_replaceDocument', { document_id: doc.id, file_url });
+      toast.success('Uploaded again — HR will verify it');
+      await loadData();
+    } catch (e) { toast.error(e.message || 'Could not upload. Please try again.'); }
+    setReplacingId(null);
+  };
 
   const loadData = async () => {
     try {
@@ -203,7 +218,7 @@ export default function Documents() {
                         {(doc.status || 'unknown').replace('_', ' ').toUpperCase()}
                       </Badge>
                       {doc.notes && doc.status === 'rejected' && (
-                        <p className="text-xs text-red-600 mt-1">Note: {doc.notes}</p>
+                        <p className="text-xs text-red-600 mt-1">HR says: {doc.notes}</p>
                       )}
                     </div>
                   </div>
@@ -232,6 +247,14 @@ export default function Documents() {
                     <Eye className="w-4 h-4 mr-2" />
                     View Document
                   </Button>
+                  {doc.status === 'rejected' && (
+                    <label className="block">
+                      <input type="file" accept="image/*,application/pdf" className="hidden" disabled={replacingId === doc.id} onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; reupload(doc, f); }} />
+                      <span className={`flex items-center justify-center gap-2 w-full rounded-md bg-orange-600 text-white text-sm font-medium h-9 cursor-pointer hover:bg-orange-700 ${replacingId === doc.id ? 'opacity-60 pointer-events-none' : ''}`}>
+                        <Upload className="w-4 h-4" />{replacingId === doc.id ? 'Uploading…' : 'Re-upload this document'}
+                      </span>
+                    </label>
+                  )}
                 </CardContent>
               </Card>
             );

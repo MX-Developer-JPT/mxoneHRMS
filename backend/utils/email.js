@@ -341,6 +341,24 @@ export const emailTemplates = {
     text: `Welcome to Maxvolt Energy! Complete your onboarding here: ${link}\nLogin ID: ${loginEmail}\nThe link works once and expires in ${expiryDays} days.`,
   }),
 
+  documentReuploadEmail: ({ name, documentName, reason, link }) => ({
+    subject: 'Maxvolt HR — please re-upload a document',
+    html: wrap(
+      emailHeader('Document needs to be re-uploaded', '#b45309'),
+      emailBody(`
+        <p>Dear <strong>${name || 'Employee'}</strong>,</p>
+        <p>HR could not accept the document below and needs you to upload it again.</p>
+        ${infoTable([['Document', documentName], ['What is wrong', reason]])}
+        <div style="text-align:center;margin:28px 0">
+          <a href="${link}" style="background:#ea580c;color:#ffffff;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block">Open My Documents</a>
+        </div>
+        <p style="font-size:13px;color:#64748b">Sign in, open <strong>My Documents</strong>, and use the <strong>Re-upload</strong> button on that document. A clear, complete photo or PDF is best.</p>
+      `),
+      emailFooter()
+    ),
+    text: `Please re-upload "${documentName}": ${reason}. Open ${link} and use Re-upload.`,
+  }),
+
   onboardingApprovedEmail: ({ name, role, department }) => ({
     subject: 'Welcome to Maxvolt Energy — Onboarding Approved',
     html: wrap(

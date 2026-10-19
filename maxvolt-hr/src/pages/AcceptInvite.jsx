@@ -73,6 +73,17 @@ export default function AcceptInvite() {
               {info.date_of_joining && <div className="text-gray-600">Joining: {info.date_of_joining}</div>}
               <div className="text-gray-600">Your login ID: <b>{info.login_email}</b></div>
             </div>
+            {info.checklist?.length > 0 && (
+              <details className="rounded-lg border p-3 text-sm">
+                <summary className="cursor-pointer font-semibold text-gray-900">Documents you will need (about 15–20 minutes)</summary>
+                <div className="mt-2 space-y-2">
+                  {info.checklist.map(g => (
+                    <div key={g.group}><div className="text-xs font-semibold text-gray-800">{g.group}{g.required ? '' : ' — if applicable'}</div><ul className="list-disc pl-5 text-xs text-gray-600 space-y-0.5">{g.items.map(i => <li key={i}>{i}</li>)}</ul></div>
+                  ))}
+                  <div className="text-[11px] text-gray-500">Each step is saved as you go, so you can stop and continue later.</div>
+                </div>
+              </details>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="pw">Create a password</Label>
               <div className="relative">
