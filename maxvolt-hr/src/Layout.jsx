@@ -430,7 +430,6 @@ const gateAdminMenuGroups = [
 const frontDeskMenuGroups = [
   { label: '', items: [
     { name: 'Dashboard',           icon: LayoutDashboard, page: 'Dashboard' },
-    { name: 'Gate Pass Approvals', icon: ShieldCheck, page: 'GatePassApproval' },
     { name: 'Visitor Management',  icon: Users,       page: 'VisitorManagement' },
     { name: 'Visitor Records',     icon: Users,       page: 'VisitorRecords' },
     { name: 'Asset Tracking',      icon: Laptop,      page: 'AssetTracking' },
@@ -914,7 +913,6 @@ export default function Layout({ children, currentPageName }) {
     : isFrontDesk
     ? [
         { label: 'Home',       icon: LayoutDashboard, page: 'Dashboard',         path: '/Dashboard' },
-        { label: 'Approvals',  icon: ShieldCheck,     page: 'GatePassApproval',  path: '/GatePassApproval' },
         { label: 'Visitors',   icon: Users,            page: 'VisitorManagement', path: '/VisitorManagement' },
         { label: 'Assets',     icon: Laptop,           page: 'AssetTracking',     path: '/AssetTracking' },
         { label: 'Profile',    icon: User2,            page: 'GateAdminProfile',  path: '/GateAdminProfile' },

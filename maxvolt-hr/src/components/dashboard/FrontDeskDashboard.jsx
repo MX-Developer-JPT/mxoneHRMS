@@ -4,7 +4,7 @@ import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ShieldCheck, Users, Laptop, QrCode, RefreshCw, MapPin, ChevronRight, UserPlus, FileText, LogOut, DoorOpen } from 'lucide-react';
+import { Users, Laptop, QrCode, RefreshCw, MapPin, ChevronRight, UserPlus, FileText } from 'lucide-react';
 
 const istToday = () => new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 const istMonth = () => istToday().slice(0, 7);
@@ -42,7 +42,7 @@ function Panel({ title, to, linkLabel, children }) {
 
 const Empty = ({ text }) => <p className="text-sm text-gray-400 py-4 text-center">{text}</p>;
 
-// Dashboard for the Front Desk Admin role: gate pass approvals, visitors, asset letters, business cards.
+// Dashboard for the Front Desk Admin role: visitors, asset letters, business cards (no gate pass approvals).
 export default function FrontDeskDashboard({ user }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -51,8 +51,7 @@ export default function FrontDeskDashboard({ user }) {
   const load = useCallback(async () => {
     const today = istToday();
     const month = istMonth();
-    const [passes, emps, visRes, locRes, assets, cards] = await Promise.all([
-      base44.entities.GatePass.list('-created_date', 500).catch(() => []),
+    const [emps, visRes, locRes, assets, cards] = await Promise.all([
       base44.entities.Employee.list().catch(() => []),
       base44.functions.invoke('getVisitorsScoped', {}).catch(() => null),
       base44.functions.invoke('getGateAdminLocations', {}).catch(() => null),
@@ -63,12 +62,6 @@ export default function FrontDeskDashboard({ user }) {
     emps.forEach(e => { empName[e.user_id] = e.display_name; });
     const ld = locRes ? (locRes.data || locRes) : null;
     const locations = ld?.success && Array.isArray(ld.locations) ? ld.locations : null; // null = every location
-    const inScope = (loc) => !locations || !loc || locations.includes(loc);
-
-    const myPasses = passes.filter(p => inScope(p.current_location));
-    const pending = myPasses.filter(p => p.status === 'pending_approval');
-    const approved = myPasses.filter(p => p.status === 'approved');
-    const out = myPasses.filter(p => p.status === 'departed');
 
     const vd = visRes ? (visRes.data || visRes) : null;
     const visitors = vd?.success ? vd.visitors : [];
@@ -81,7 +74,7 @@ export default function FrontDeskDashboard({ user }) {
       .sort((a, b) => String(b.assignment_date).localeCompare(String(a.assignment_date)))
       .slice(0, 6);
 
-    setData({ pending, approved, out, visitorsToday, inside, monthAssets, recentAssets, cards: cards.length, locations, empName });
+    setData({ visitorsToday, inside, monthAssets, recentAssets, cards: cards.length, locations, empName });
   }, []);
 
   useEffect(() => { load().catch(e => console.error('FrontDeskDashboard:', e.message)).finally(() => setLoading(false)); }, [load]);
@@ -111,39 +104,19 @@ export default function FrontDeskDashboard({ user }) {
         <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}><RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${refreshing ? 'animate-spin' : ''}`} />Refresh</Button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <Tile icon={ShieldCheck} label="Gate passes awaiting approval" value={d.pending.length} tone={d.pending.length ? 'text-amber-600' : 'text-gray-900'} to="/GatePassApproval" />
-        <Tile icon={DoorOpen} label="Approved, not yet out" value={d.approved.length} to="/GatePassApproval" />
-        <Tile icon={LogOut} label="Employees out of office" value={d.out.length} to="/GatePassApproval" />
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Tile icon={Users} label="Visitors expected today" value={d.visitorsToday.length} to="/VisitorManagement" />
         <Tile icon={UserPlus} label="Visitors inside now" value={d.inside.length} tone="text-green-600" to="/VisitorManagement" />
         <Tile icon={Laptop} label="Assets handed over this month" value={d.monthAssets.length} to="/AssetTracking" />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Button asChild className="h-auto py-3 flex-col gap-1"><Link to="/GatePassApproval"><ShieldCheck className="w-5 h-5" /><span className="text-xs">Approve gate passes</span></Link></Button>
-        <Button asChild variant="outline" className="h-auto py-3 flex-col gap-1"><Link to="/VisitorManagement"><UserPlus className="w-5 h-5" /><span className="text-xs">Register a visitor</span></Link></Button>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <Button asChild className="h-auto py-3 flex-col gap-1"><Link to="/VisitorManagement"><UserPlus className="w-5 h-5" /><span className="text-xs">Register a visitor</span></Link></Button>
         <Button asChild variant="outline" className="h-auto py-3 flex-col gap-1"><Link to="/AssetTracking"><FileText className="w-5 h-5" /><span className="text-xs">Create asset letter</span></Link></Button>
         <Button asChild variant="outline" className="h-auto py-3 flex-col gap-1"><Link to="/BusinessCardAdmin"><QrCode className="w-5 h-5" /><span className="text-xs">Business cards ({d.cards})</span></Link></Button>
       </div>
 
       <div className="grid md:grid-cols-2 gap-4">
-        <Panel title="Gate passes waiting for you" to="/GatePassApproval">
-          {d.pending.length === 0 ? <Empty text="Nothing waiting for approval." /> : (
-            <div className="divide-y">
-              {d.pending.slice(0, 6).map(p => (
-                <div key={p.id} className="py-2 flex items-center justify-between gap-2 text-sm">
-                  <div>
-                    <div className="font-medium">{d.empName[p.employee_user_id] || p.employee_name || 'Employee'}</div>
-                    <div className="text-xs text-gray-500">{p.outing_type ? String(p.outing_type).replace(/_/g, ' ') : 'Gate pass'}{p.current_location ? ` · ${p.current_location}` : ''}</div>
-                  </div>
-                  <Badge variant="outline" className="border-amber-300 text-amber-700">Pending</Badge>
-                </div>
-              ))}
-            </div>
-          )}
-        </Panel>
-
         <Panel title="Today's visitors" to="/VisitorManagement">
           {d.visitorsToday.length === 0 ? <Empty text="No visitors expected today." /> : (
             <div className="divide-y">

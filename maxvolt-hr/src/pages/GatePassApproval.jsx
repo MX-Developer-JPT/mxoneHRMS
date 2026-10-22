@@ -44,6 +44,7 @@ export default function GatePassApproval() {
   const [actionLoading, setActionLoading] = useState(false);
   const [filter, setFilter] = useState('pending_approval');
   const [activeTab, setActiveTab] = useState('approvals');
+  const [noAccess, setNoAccess] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -55,7 +56,9 @@ export default function GatePassApproval() {
     setUser(currentUser);
 
     const role = currentUser.custom_role || currentUser.role;
-    const hrUser = ['hr', 'admin', 'front_desk_admin'].includes(role);
+    // Front Desk Admin no longer approves gate passes — this page is not available to that role
+    if (role === 'front_desk_admin') { setNoAccess(true); setLoading(false); return; }
+    const hrUser = ['hr', 'admin'].includes(role);
     const mgmtUser = role === 'management';
     setIsHR(hrUser);
     setIsManagementRole(mgmtUser);
@@ -77,15 +80,6 @@ export default function GatePassApproval() {
       // in entities.js), specifically so HR can cover for an unavailable
       // manager. So HR sees every pass, pending or otherwise.
       visiblePasses = allPasses;
-      // A Front Desk Admin pinned to specific locations only sees passes departing from them.
-      if (role === 'front_desk_admin') {
-        try {
-          const locRes = await base44.functions.invoke('getGateAdminLocations', {});
-          const locData = locRes.data || locRes;
-          const assigned = locData.success ? locData.locations : null;
-          if (Array.isArray(assigned)) visiblePasses = allPasses.filter(p => !p.current_location || assigned.includes(p.current_location));
-        } catch { /* unrestricted on lookup failure, same as the gate admin dashboard */ }
-      }
     } else if (mgmtUser) {
       // 'management' is scoped to their own downstream hierarchy (direct +
       // indirect reports) — previously lumped in with hrUser above and saw
@@ -131,6 +125,7 @@ export default function GatePassApproval() {
   const pendingCount = passes.filter(p => p.status === 'pending_approval').length;
 
   if (loading) return <div className="p-8 text-center text-gray-500">Loading...</div>;
+  if (noAccess) return <div className="p-8 text-center text-gray-600">Gate pass approval is not available for the Front Desk Admin role.</div>;
 
   return (
     <div className="p-4 sm:p-6 max-w-4xl mx-auto">

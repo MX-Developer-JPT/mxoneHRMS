@@ -368,19 +368,6 @@ const CANCELLABLE_STATUSES = {
   AttendanceRegularisation: ['pending', 'sent_back'],
 };
 
-// Front Desk Admin can be pinned to one or more office locations (same GateAdminLocation setting as Gate Admin):
-// they may only act on gate passes departing from those locations. No setting = every location.
-async function frontDeskLocationOk(res, cu, current) {
-  const gateLocation = current.current_location;
-  if (!gateLocation) return true;
-  const assigned = await getGateAdminAssignedLocations(cu.id);
-  if (assigned !== null && !assigned.includes(gateLocation)) {
-    res.status(403).json({ error: `You are not assigned to ${gateLocation} - this gate pass belongs to another office` });
-    return false;
-  }
-  return true;
-}
-
 async function checkApprovalAuthorization(req, res, type, current, newStatus) {
   if (!APPROVAL_SCOPED_TYPES.has(type)) return true;
   if (!newStatus || newStatus === current.status) return true;
@@ -455,8 +442,12 @@ async function checkApprovalAuthorization(req, res, type, current, newStatus) {
     return false;
   }
 
-  // Front Desk Admin approves / rejects gate passes company-wide (their only approval scope).
-  if (role === 'front_desk_admin' && type === 'GatePass') return frontDeskLocationOk(res, cu, current);
+  // Front Desk Admin has NO approval power over gate passes (it was removed): approving / rejecting is for the
+  // reporting manager, management and HR / admin only.
+  if (role === 'front_desk_admin' && type === 'GatePass') {
+    res.status(403).json({ error: 'Front Desk Admin cannot approve or reject gate passes' });
+    return false;
+  }
 
   if (['hr', 'admin'].includes(role)) {
     if (role !== 'admin' && type !== 'GatePass' && !(await hasManagerCleared(type, current))) {
