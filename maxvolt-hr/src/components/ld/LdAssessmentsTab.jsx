@@ -139,7 +139,18 @@ export default function LdAssessmentsTab() {
   const changeType = (i, type) => setQ(i, type === 'truefalse' ? { type, options: ['True', 'False'], correct: [0] } : type === 'short' ? { type, options: [], correct: [], accepted: [] } : { type, options: ['', '', '', ''], correct: [0] });
 
   const parseImport = (text) => setImp(m => ({ ...m, text, parsed: text.trim() ? rowsToQuestions(text, topicKeys) : null }));
-  const onFile = async (f) => { if (!f) return; parseImport(await f.text()); };
+  // CSV / text as before; an Excel workbook is read here (sheet "Questions", else the first sheet) and turned into the same rows
+  const onFile = async (f) => {
+    if (!f) return;
+    try {
+      if (/\.xlsx?$/i.test(f.name)) {
+        const XLSX = await import('xlsx');
+        const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+        const ws = wb.Sheets['Questions'] || wb.Sheets[wb.SheetNames[0]];
+        parseImport(XLSX.utils.sheet_to_csv(ws, { blankrows: false }));
+      } else parseImport(await f.text());
+    } catch (e) { toast.error('Could not read this file: ' + e.message); }
+  };
   const doImport = async () => {
     if (!imp?.parsed?.questions.length) { toast.error('Nothing to import'); return; }
     if (imp.parsed.errors.length) { toast.error('Fix the highlighted rows first'); return; }
@@ -292,9 +303,9 @@ export default function LdAssessmentsTab() {
           <DialogHeader><DialogTitle>Import questions from CSV</DialogTitle></DialogHeader>
           {imp && (
             <div className="space-y-3">
-              <p className="text-xs text-gray-500">Columns: <code>topic</code> (block A–F), <code>type</code> (mcq / multi / truefalse / short), <code>question</code>, <code>option1…option6</code>, <code>correct</code> (option number, e.g. 2 — or 1;3 for multi — or True/False), <code>critical</code> (yes), <code>points</code>, <code>scenario</code>, <code>accepted</code> (keywords for short answers, separated by ;). Excel data can be pasted straight in.</p>
+              <p className="text-xs text-gray-500">Columns: <code>topic</code> (block A–F), <code>type</code> (mcq / multi / truefalse / short), <code>question</code>, <code>option1…option6</code>, <code>correct</code> (option number, e.g. 2 — or 1;3 for multi — or True/False), <code>critical</code> (yes), <code>points</code>, <code>scenario</code>, <code>accepted</code> (keywords for short answers, separated by ;). An Excel file (.xlsx — the “Questions” sheet) can be uploaded directly, or rows pasted straight in.</p>
               <div className="flex flex-wrap gap-2 items-center"><Button size="sm" variant="outline" onClick={templateCsv}><Download className="w-4 h-4 mr-1" />Download template</Button>
-                <input type="file" accept=".csv,.txt,.tsv" className="text-xs" onChange={e => onFile(e.target.files?.[0])} /></div>
+                <input type="file" accept=".xlsx,.xls,.csv,.txt,.tsv" className="text-xs" onChange={e => onFile(e.target.files?.[0])} /></div>
               <Field label="Add to">
                 <select className="h-9 w-full rounded-md border bg-white px-2 text-sm" value={imp.target} onChange={e => setImp(m => ({ ...m, target: e.target.value }))}>
                   {live.map(a => <option key={a.id} value={a.id}>{a.title} (v{a.version}, {a.questions.length} questions)</option>)}<option value="new">A new assessment…</option>
