@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Loader2, Upload, X } from 'lucide-react';
 import { BRANDS, brandOf } from '@/lib/businessCard';
+import { toast } from 'sonner';
 
 function generateSlug(name) {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
@@ -70,10 +71,16 @@ export default function CardForm({ card, brand: initialBrand = 'energy', onSaved
 
   const handlePhotoUpload = async (e) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+    if (file.size > 40 * 1024 * 1024) { toast.error('The photo must be under 40 MB'); return; }
     setUploadingPhoto(true);
-    const { file_url } = await base44.integrations.Core.UploadFile({ file });
-    set('profile_picture_url', file_url);
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      setForm(f => ({ ...f, profile_picture_url: file_url, _remove_photo: false }));
+      // Save the new photo on the card right away when editing, so it is kept even if the form is closed
+      if (card?.id) { await base44.entities.DigitalBusinessCard.update(card.id, { profile_picture_url: file_url }); toast.success('Photo saved'); }
+    } catch (err) { toast.error(err.message || 'Could not upload the photo — please try again'); }
     setUploadingPhoto(false);
   };
 
@@ -81,6 +88,7 @@ export default function CardForm({ card, brand: initialBrand = 'energy', onSaved
     e.preventDefault();
     setSaving(true);
     const data = { ...form };
+    if (!card) delete data._remove_photo;
     if (!card) {
       data.unique_slug = generateSlug(form.name || 'card');
     }
@@ -153,7 +161,7 @@ export default function CardForm({ card, brand: initialBrand = 'energy', onSaved
             </label>
           </div>
           {form.profile_picture_url && (
-            <button type="button" onClick={() => set('profile_picture_url', '')} className="text-gray-400 hover:text-red-500">
+            <button type="button" title="Remove the photo from this card" onClick={() => setForm(f => ({ ...f, profile_picture_url: '', _remove_photo: true }))} className="text-gray-400 hover:text-red-500">
               <X className="w-4 h-4" />
             </button>
           )}

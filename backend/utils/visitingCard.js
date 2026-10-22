@@ -73,6 +73,7 @@ function loadReearthAssets() {
 const RE_INK = rgb(0.10245, 0.10118, 0.09511);
 export const RE = {
   nameX: 6.95, nameBase: 24.7, nameSize: 15.2,
+  qrSize: 33.6, qrRight: 241.0, qrTop: 8.5, maxLeftWQr: 194,   // QR sits top-right, level with the name; text stops before it
   roleX: 7.87, roleBase: 34.97, roleSize: 8.64, roleTracking: 0.304,
   phoneX: 31.52, phoneBase: 74.0, mailX: 31.83, mailBase: 93.85, textSize: 7.5,
   maxLeftW: 233, maxRowW: 205,
@@ -134,17 +135,22 @@ function drawQr(page, text, x, y, size) {
 export const cardBrand = (card) => (card?.brand === 'reearth' ? 'reearth' : 'energy');
 
 export async function buildVisitingCardsPdf(cards, baseUrl) {
-  const assets = await loadAssets();
-  const tpl = await PDFDocument.load(assets.template);
-  const tplFront = tpl.getPage(0), tplBack = tpl.getPage(1);
-  const { width: W, height: H } = tplFront.getSize();
+  const brands = new Set(cards.map(cardBrand));
+  // Page size is the same for both artworks (88 x 55 mm)
+  const W = 249.4488067626953, H = 155.90550231933594;
 
   const out = await PDFDocument.create();
   out.registerFontkit(fontkit);
-  const fSemi = await out.embedFont(assets.semibold, { subset: true });
-  const [front, back] = await out.embedPages([tplFront, tplBack]);
+  // Only the Maxvolt Energy artwork + font are loaded and embedded when an Energy card is actually being printed
+  // (each template is ~1.4 MB of vector map — embedding an unused one doubled the file and the time).
+  let front = null, back = null, fSemi = null;
+  if (brands.has('energy')) {
+    const assets = await loadAssets();
+    const tpl = await PDFDocument.load(assets.template);
+    fSemi = await out.embedFont(assets.semibold, { subset: true });
+    [front, back] = await out.embedPages([tpl.getPage(0), tpl.getPage(1)]);
+  }
 
-  const brands = new Set(cards.map(cardBrand));
   const onlyRe = brands.size === 1 && brands.has('reearth');
   out.setTitle(onlyRe ? 'Maxvolt ReEarth — Visiting Cards' : brands.has('reearth') ? 'Maxvolt — Visiting Cards' : 'Maxvolt Energy — Visiting Cards');
   out.setAuthor(onlyRe ? 'Maxvolt ReEarth' : 'Maxvolt Energy Industries Limited');
@@ -165,8 +171,14 @@ export async function buildVisitingCardsPdf(cards, baseUrl) {
       const rp = out.addPage([W, H]);
       rp.drawPage(re.back);
       const name = String(card.name || '').trim(), role = String(card.job_title || '').trim();
-      drawFitted(rp, re.bold, name, { x: RE.nameX, y: H - RE.nameBase, size: RE.nameSize, color: RE_INK, maxW: RE.maxLeftW });
-      drawFitted(rp, re.med, role, { x: RE.roleX, y: H - RE.roleBase, size: RE.roleSize, color: RE_INK, tracking: RE.roleTracking, maxW: RE.maxLeftW });
+      const leftW = card.unique_slug ? RE.maxLeftWQr : RE.maxLeftW;
+      drawFitted(rp, re.bold, name, { x: RE.nameX, y: H - RE.nameBase, size: RE.nameSize, color: RE_INK, maxW: leftW });
+      drawFitted(rp, re.med, role, { x: RE.roleX, y: H - RE.roleBase, size: RE.roleSize, color: RE_INK, tracking: RE.roleTracking, maxW: leftW });
+      // QR (top right): opens the person's digital card, same as on the Maxvolt Energy card
+      if (card.unique_slug) {
+        const url = `${baseUrl.replace(/\/+$/, '')}/PublicBusinessCard?slug=${encodeURIComponent(card.unique_slug)}`;
+        drawQr(rp, url, RE.qrRight - RE.qrSize, H - RE.qrTop - RE.qrSize, RE.qrSize);
+      }
       drawFitted(rp, re.semi, String(card.phone_number || '').trim(), { x: RE.phoneX, y: H - RE.phoneBase, size: RE.textSize, color: RE_INK, maxW: RE.maxRowW });
       drawFitted(rp, re.semi, String(card.email || '').trim(), { x: RE.mailX, y: H - RE.mailBase, size: RE.textSize, color: RE_INK, maxW: RE.maxRowW });
       continue;

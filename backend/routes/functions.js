@@ -14468,7 +14468,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const gvcName = gvcCards.length === 1
         ? `${gvcPrefix}Visiting_Card_${String(gvcCards[0].name || 'card').replace(/[^\w]+/g, '_')}.pdf`
         : `${gvcPrefix}Visiting_Cards_${gvcStamp}.pdf`;
-      await saveCardPdfHistory({ kind: 'business_card', filename: gvcName, bytes: gvcBytes, total: gvcCards.length, names: gvcCards.map(c => c.name), cu });
+      // The copy kept in "History" goes to storage in the background — the person should not wait for that upload
+      saveCardPdfHistory({ kind: 'business_card', filename: gvcName, bytes: gvcBytes, total: gvcCards.length, names: gvcCards.map(c => c.name), cu }).catch(() => {});
       return res.json({ success: true, base64: Buffer.from(gvcBytes).toString('base64'), filename: gvcName, total: gvcCards.length });
     }
 

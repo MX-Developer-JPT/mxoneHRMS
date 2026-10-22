@@ -105,8 +105,11 @@ export default function BulkImportModal({ onClose, onImported, brand = 'energy' 
 
         const match = (data.id && byId.get(data.id)) || byEmail.get(email);
         if (match) {
-          const changed = FIELDS.some(f => String(match[f] || '') !== payload[f]);
-          if (changed) out.update.push({ label, id: match.id, payload });
+          // an empty Photo cell means "leave the photo as it is", never "remove it"
+          const upd = { ...payload };
+          if (!upd.profile_picture_url) delete upd.profile_picture_url;
+          const changed = FIELDS.some(f => f in upd && String(match[f] || '') !== upd[f]);
+          if (changed) out.update.push({ label, id: match.id, payload: upd });
           else out.unchanged++;
         } else {
           out.create.push({ label, payload });

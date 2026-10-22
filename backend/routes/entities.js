@@ -1082,6 +1082,14 @@ router.patch('/:type/:id', async (req, res) => {
 
   const updated = { ...current, ...req.body, id };
 
+  // A business-card photo, once uploaded, stays until someone removes it ON PURPOSE (the card form sends
+  // _remove_photo). A blank value from anywhere else — a bulk-import row with an empty photo cell, an older
+  // client — must never wipe it.
+  if (type === 'DigitalBusinessCard') {
+    if (current.profile_picture_url && !String(req.body.profile_picture_url || '').trim() && !req.body._remove_photo) updated.profile_picture_url = current.profile_picture_url;
+    delete updated._remove_photo;
+  }
+
   // Leave's WFH-eligibility and balance-sufficiency rules were previously
   // only enforced at creation (POST) — an owner could PATCH their own
   // already-created Leave to raise total_days past their balance, or flip
