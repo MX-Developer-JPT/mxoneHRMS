@@ -14460,6 +14460,16 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         gvcCards = gvcCards.filter(c => want.has(c.id));
       }
       if (!gvcCards.length) return res.json({ success: false, error: 'No business cards to print' });
+      // Every printed card carries a QR to its digital card, and the QR needs the card's link id (unique_slug).
+      // A card saved without one gets it now (and keeps it), so no printed card is ever missing its QR.
+      for (const c of gvcCards) {
+        if (String(c.unique_slug || '').trim()) continue;
+        c.unique_slug = String(c.name || 'card').toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') + '-' + Math.random().toString(36).slice(2, 7);
+        try {
+          const { id: gvcId, ...gvcRest } = c;
+          await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2 AND type='DigitalBusinessCard'", [JSON.stringify({ ...gvcRest, id: gvcId }), gvcId]);
+        } catch (e) { console.warn('[visiting-cards] could not save the link id for', c.name, e.message); }
+      }
       const gvcBase = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com');
       const gvcBytes = await buildVisitingCardsPdf(gvcCards, gvcBase);
       const gvcStamp = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
