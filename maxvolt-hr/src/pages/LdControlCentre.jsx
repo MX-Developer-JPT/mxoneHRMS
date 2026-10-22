@@ -33,7 +33,7 @@ export default function LdControlCentre() {
           <TabsTrigger value="reports">Reports</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
-        <TabsContent value="overview">{tab === 'overview' && <LdOverviewTab />}</TabsContent>
+        <TabsContent value="overview">{tab === 'overview' && <LdOverviewTab onTab={setTab} />}</TabsContent>
         <TabsContent value="joiners">{tab === 'joiners' && <LdJoinersTab />}</TabsContent>
         <TabsContent value="catalogue">{tab === 'catalogue' && <LdCatalogueTab />}</TabsContent>
         <TabsContent value="assessments">{tab === 'assessments' && <LdAssessmentsTab />}</TabsContent>

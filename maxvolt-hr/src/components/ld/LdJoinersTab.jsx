@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { Loader2, Plus } from 'lucide-react';
 import { ld, fmtDate } from '@/lib/ld';
 import { useEmployees, EmployeeSelect, EmployeeMultiSelect, Field } from '@/components/ld/shared';
+import BulkAssignDialog from '@/components/ld/BulkAssignDialog';
 
 export default function LdJoinersTab() {
   const emps = useEmployees();
@@ -19,6 +20,8 @@ export default function LdJoinersTab() {
   const [dept, setDept] = useState('all');
   const [dlg, setDlg] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [sel, setSel] = useState([]);          // selected induction ids
+  const [assignOpen, setAssignOpen] = useState(false);
   const [act, setAct] = useState(null); // { kind: 'restart' | 'cancel', row, reason, anchor, start_date }
 
   const load = useCallback(async () => {
@@ -82,15 +85,17 @@ export default function LdJoinersTab() {
           <option value="all">All departments</option>{depts.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
         <div className="flex-1" />
+        <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)}>{sel.length ? `Assign people to ${sel.length} selected` : 'Assign people to all running'}</Button>
         <Button size="sm" onClick={() => setDlg({})}><Plus className="w-4 h-4 mr-1" />Start induction</Button>
       </div>
       <Card><CardContent className="p-0 overflow-x-auto">
         <table className="w-full text-sm min-w-[900px]">
-          <thead><tr className="text-left text-xs text-gray-500 border-b bg-gray-50"><th className="p-2">Employee</th><th>Department</th><th>Joined</th><th>Manager</th><th>Buddy</th><th>Progress</th><th>Current step</th><th>Due</th><th>Status</th><th className="pr-2">Actions</th></tr></thead>
+          <thead><tr className="text-left text-xs text-gray-500 border-b bg-gray-50"><th className="p-2 w-8"><input type="checkbox" aria-label="Select all shown" checked={shown.length > 0 && shown.filter(r => r.status === 'IN_PROGRESS').every(r => sel.includes(r.id)) && shown.some(r => r.status === 'IN_PROGRESS')} onChange={e => setSel(e.target.checked ? shown.filter(r => r.status === 'IN_PROGRESS').map(r => r.id) : [])} /></th><th className="p-2">Employee</th><th>Department</th><th>Joined</th><th>Manager</th><th>Buddy</th><th>Progress</th><th>Current step</th><th>Due</th><th>Status</th><th className="pr-2">Actions</th></tr></thead>
           <tbody>
-            {shown.length === 0 && <tr><td colSpan={10} className="p-6 text-center text-gray-500">No inductions match.</td></tr>}
+            {shown.length === 0 && <tr><td colSpan={11} className="p-6 text-center text-gray-500">No inductions match.</td></tr>}
             {shown.map(r => (
               <tr key={r.id} className="border-b last:border-0 hover:bg-gray-50">
+                <td className="p-2 w-8">{r.status === 'IN_PROGRESS' && <input type="checkbox" aria-label={`Select ${r.name}`} checked={sel.includes(r.id)} onChange={() => setSel(x => (x.includes(r.id) ? x.filter(i => i !== r.id) : [...x, r.id]))} />}</td>
                 <td className="p-2"><Link className="text-blue-700 hover:underline font-medium" to={`/LdInductionDetail?id=${r.id}`}>{r.name}</Link><div className="text-[11px] text-gray-400">{r.code} · {r.designation}</div></td>
                 <td>{r.department}</td><td>{fmtDate(r.doj)}</td><td>{r.manager || '—'}</td><td>{r.buddy || <span className="text-amber-600">none</span>}</td>
                 <td className="w-32"><Progress value={r.progress.percent} className="h-1.5" /><div className="text-[10px] text-gray-500">{r.progress.done}/{r.progress.total}</div></td>
@@ -102,6 +107,8 @@ export default function LdJoinersTab() {
           </tbody>
         </table>
       </CardContent></Card>
+
+      <BulkAssignDialog open={assignOpen} onClose={() => setAssignOpen(false)} ids={sel.length ? sel : null} count={sel.length} onDone={() => { setSel([]); load(); }} />
 
       <Dialog open={!!act} onOpenChange={o => !o && setAct(null)}>
         <DialogContent>

@@ -4,11 +4,61 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
-import { Loader2, RefreshCw, Play } from 'lucide-react';
+import { Loader2, RefreshCw, Play, CheckCircle2, AlertTriangle, XCircle, Info } from 'lucide-react';
 import { ld, fmtDate } from '@/lib/ld';
 import { Tile } from '@/components/ld/shared';
+import BulkAssignDialog from '@/components/ld/BulkAssignDialog';
 
-export default function LdOverviewTab() {
+const ICON = { ok: [CheckCircle2, 'text-green-600'], warn: [AlertTriangle, 'text-amber-600'], fail: [XCircle, 'text-red-600'], info: [Info, 'text-blue-500'] };
+
+// "Are we ready to run the induction?" — live checks with a one-click way to fix what can be fixed from here.
+function ReadinessCard({ onTab }) {
+  const [rd, setRd] = useState(null);
+  const [open, setOpen] = useState(true);
+  const [busy, setBusy] = useState('');
+  const [assign, setAssign] = useState(false);
+  const load = useCallback(async () => { try { setRd(await ld('ld_getReadiness')); } catch (e) { toast.error(e.message); } }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!rd) return null;
+
+  const act = async (a) => {
+    if (a.type === 'tab') onTab?.(a.tab);
+    else if (a.type === 'bulk') setAssign(true);
+    else if (a.type === 'auto_hod') {
+      setBusy('hod');
+      try { const r = await ld('ld_bulkAssignPeople', { scope: 'all_open', hod_from_department: true }); toast.success(`${r.updated} HOD(s) filled from the department heads`); await load(); } catch (e) { toast.error(e.message); }
+      setBusy('');
+    }
+  };
+  const tone = rd.blockers ? 'border-red-300 bg-red-50/40' : rd.warnings ? 'border-amber-300 bg-amber-50/40' : 'border-green-300 bg-green-50/40';
+  return (
+    <Card className={tone}>
+      <CardHeader className="pb-2 cursor-pointer" onClick={() => setOpen(o => !o)}>
+        <CardTitle className="text-base flex flex-wrap items-center gap-2">
+          Pilot readiness
+          {rd.blockers > 0 && <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700">{rd.blockers} to fix before the pilot</span>}
+          {rd.warnings > 0 && <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">{rd.warnings} to review</span>}
+          {!rd.blockers && !rd.warnings && <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700">Ready</span>}
+          <span className="ml-auto text-xs font-normal text-gray-400">{open ? 'Hide' : 'Show'}</span>
+        </CardTitle>
+      </CardHeader>
+      {open && (
+        <CardContent className="space-y-2">
+          {rd.checks.map(c => { const [Icon, cls] = ICON[c.status] || ICON.info; return (
+            <div key={c.key} className="flex items-start gap-2.5 bg-white rounded-lg border p-2.5">
+              <Icon className={`w-4 h-4 mt-0.5 shrink-0 ${cls}`} />
+              <div className="flex-1 min-w-0"><div className="text-sm font-medium text-gray-900">{c.title}</div><div className="text-xs text-gray-600 mt-0.5">{c.detail}</div></div>
+              {c.action && <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" disabled={busy === 'hod' && c.action.type === 'auto_hod'} onClick={() => act(c.action)}>{busy === 'hod' && c.action.type === 'auto_hod' && <Loader2 className="w-3 h-3 animate-spin mr-1" />}{c.action.label}</Button>}
+            </div>
+          ); })}
+        </CardContent>
+      )}
+      <BulkAssignDialog open={assign} onClose={() => setAssign(false)} ids={null} onDone={load} />
+    </Card>
+  );
+}
+
+export default function LdOverviewTab({ onTab }) {
   const [d, setD] = useState(null);
   const [busy, setBusy] = useState('');
 
@@ -32,6 +82,7 @@ export default function LdOverviewTab() {
   const k = d.kpis;
   return (
     <div className="space-y-5">
+      <ReadinessCard onTab={onTab} />
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="outline" onClick={load}><RefreshCw className="w-4 h-4 mr-1" />Refresh</Button>
         <Button size="sm" variant="outline" disabled={busy === 'tick'} onClick={tick} title="Starts missing inductions, marks overdue steps and sends reminders now (it also runs every day at 7:30 AM)">{busy === 'tick' ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Play className="w-4 h-4 mr-1" />}Run automation now</Button>

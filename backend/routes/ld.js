@@ -1459,6 +1459,106 @@ const HANDLERS = {
     return ok(res, { plan });
   },
 
+  // Live "are we ready to run the induction?" checklist: what is blocking people, what is missing, what is fine.
+  async ld_getReadiness(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const cfg = ctx.cfg;
+    const today = todayIST();
+    const inds = await list('LdInduction');
+    const open = inds.filter(i => i.status === 'IN_PROGRESS');
+    const emps = await list('Employee');
+    const active = emps.filter(e => e.user_id && e.status === 'active');
+    const trainers = (await list('LdTrainer')).filter(t => t.active !== false);
+    const depts = await list('Department');
+    const tpl = (await list('LdTemplate')).filter(t => t.status === 'active').sort((a, b) => (b.version || 0) - (a.version || 0))[0];
+    const keys = new Set((tpl?.gates || []).filter(g => g.completion === 'assessment').map(g => g.assessment_key));
+    const assessments = (await list('LdAssessment')).filter(a => a.status !== 'archived' && keys.has(a.key));
+    const checks = [];
+    const add = (key, status, title, detail, action = null) => checks.push({ key, status, title, detail, action });
+
+    if (cfg.paused) {
+      const days = Math.max(0, daysBetween(String(cfg.paused_at).slice(0, 10), today));
+      add('paused', 'fail', 'Induction training is paused', `Paused ${days} day(s) ago${cfg.pause_reason ? ` (${cfg.pause_reason})` : ''}. ${open.filter(i => !i.pause_exempt).length} running induction(s) are frozen and ${(cfg.queued_user_ids || []).length} new joiner(s) are waiting. Resume from the bar at the top when you are ready — due dates move forward by the days paused.`);
+    } else add('paused', 'ok', 'Induction training is running', 'Nothing is paused.');
+
+    const policyOk = cfg.induction_pass_score >= 90 && cfg.critical_rule !== false && cfg.require_relearn !== false && assessments.every(a => a.pass_score >= 90) && (tpl?.gates || []).filter(g => g.completion === 'assessment').every(g => g.pass_score >= 90);
+    add('policy', policyOk ? 'ok' : 'warn', 'Knowledge gate policy', policyOk ? `${cfg.induction_pass_score}% pass mark, ${cfg.max_attempts} attempts, critical-question rule and re-learn rule are on, in settings, assessments and the workflow.` : 'The pass mark, critical-question rule or re-learn rule is not at the recommended policy everywhere. Preview and apply it in Settings.', policyOk ? null : { type: 'tab', tab: 'settings', label: 'Open Settings' });
+
+    add('trainers', trainers.length ? 'ok' : 'fail', 'Trainers', trainers.length ? `${trainers.length} active trainer(s) registered.` : 'No trainer is registered. Sign-offs for the learning, policy, practical and capability steps need a trainer (or HR). Register trainers, then assign them to the running inductions.', trainers.length ? null : { type: 'tab', tab: 'trainers', label: 'Add trainers' });
+    add('ld_admins', cfg.ld_admin_user_ids.length ? 'ok' : 'warn', 'L&D administrators', cfg.ld_admin_user_ids.length ? `${cfg.ld_admin_user_ids.length} named L&D administrator(s).` : 'No L&D administrator is named, so the last escalation level goes to HR. Name one or more in Settings if someone besides HR should own this.', cfg.ld_admin_user_ids.length ? null : { type: 'tab', tab: 'settings', label: 'Open Settings' });
+
+    const noHod = open.filter(i => !i.hod_user_id);
+    const deptsNoHead = depts.filter(d => !d.head_user_id).map(d => d.name);
+    const fillableHod = noHod.filter(i => depts.some(d => d.head_user_id && String(d.name).toLowerCase() === String(i.employee.department || '').toLowerCase())).length;
+    add('hods', noHod.length ? 'warn' : 'ok', 'Department heads (HOD)', noHod.length ? `${noHod.length} running induction(s) have no HOD, so the department-induction step (G06) can only be signed by HR / L&D.${fillableHod ? ` ${fillableHod} can be filled from the department heads already set.` : ''}${deptsNoHead.length ? ` Departments without a head: ${deptsNoHead.slice(0, 8).join(', ')}${deptsNoHead.length > 8 ? '…' : ''}.` : ''}` : 'Every running induction has a HOD.', noHod.length && fillableHod ? { type: 'auto_hod', label: `Fill ${fillableHod} HOD(s) from departments` } : null);
+
+    const noBuddy = open.filter(i => !i.buddy_user_id);
+    const g0Blocked = noBuddy.filter(i => !OKAY(i.gates.find(g => g.gate_id === 'G00')?.status)).length;
+    add('buddies', noBuddy.length ? 'fail' : 'ok', 'Buddies', noBuddy.length ? `${noBuddy.length} running induction(s) have no buddy.${g0Blocked ? ` ${g0Blocked} of them are stuck at step G00 “Pre-joining readiness” because “Buddy assigned” cannot complete.` : ''} A buddy is a peer — not the new joiner or the Reporting Manager.` : 'Every running induction has a buddy.', noBuddy.length ? { type: 'bulk', label: 'Assign people' } : null);
+    const noTrainer = open.filter(i => !i.trainer_user_id).length;
+    if (noTrainer) add('trainer_assign', trainers.length ? 'warn' : 'fail', 'Trainer on running inductions', `${noTrainer} running induction(s) have no trainer assigned.`, trainers.length ? { type: 'bulk', label: 'Assign people' } : null);
+
+    const topics = cfg.topics || [];
+    for (const a of assessments) {
+      const counts = Object.fromEntries(topics.map(t => [t.key, a.questions.filter(q => (q.topic || '') === t.key).length]));
+      const short = topics.filter(t => counts[t.key] < t.min);
+      const per = a.questions_per_attempt || a.questions.length;
+      const poolOk = a.questions.length >= per * 3;
+      add('bank_' + a.key, short.length || !poolOk ? 'warn' : 'ok', `Question bank — ${a.title}`, `${a.questions.length} questions (${a.questions.filter(q => q.critical).length} critical), ${per} per attempt.${!poolOk ? ` Aim for a pool of at least ${per * 3} so a retake is a different test.` : ''}${short.length ? ` Below the minimum: ${short.map(t => `${t.key} ${counts[t.key]}/${t.min}`).join(', ')}.` : ' Every block meets its minimum.'}`, short.length || !poolOk ? { type: 'tab', tab: 'assessments', label: 'Open question banks' } : null);
+    }
+    if (!assessments.length) add('bank', 'fail', 'Question bank', 'No assessment is linked to the induction workflow.', { type: 'tab', tab: 'assessments', label: 'Open question banks' });
+
+    const rec = DEFAULT_CONFIG.escalation_days, cur = cfg.escalation_days;
+    const escOk = ['employee', 'manager', 'hod', 'hr', 'ld'].every(k => Number(cur[k]) === Number(rec[k]));
+    add('escalation', escOk ? 'ok' : 'warn', 'Escalation days', escOk ? 'Employee 0 → Manager 2 → HOD 4 → HR 6 → L&D 8 days overdue (as in the plan).' : `Currently employee ${cur.employee}, manager ${cur.manager}, HOD ${cur.hod}, HR ${cur.hr}, L&D ${cur.ld} days; the plan recommends 0 / 2 / 4 / 6 / 8.`, escOk ? null : { type: 'tab', tab: 'settings', label: 'Open Settings' });
+
+    const withInd = new Set(inds.filter(i => i.status !== 'CANCELLED').map(i => i.user_id));
+    const missing = active.filter(e => !withInd.has(e.user_id)).length;
+    add('coverage', 'info', 'Coverage', `${withInd.size} of ${active.length} active employees have an induction; ${missing} do not. Start the rest in waves from New joiners → Start induction → “A wave”.`, { type: 'tab', tab: 'joiners', label: 'Open New joiners' });
+    const overdue = open.filter(i => i.gates.some(g => g.status === 'OVERDUE')).length;
+    if (overdue) add('overdue', 'info', 'Overdue inductions', `${overdue} running induction(s) have overdue steps${cfg.paused ? ' (they are frozen while paused; due dates shift forward on resume)' : ''}.`);
+
+    const blockers = checks.filter(c => c.status === 'fail').length, warnings = checks.filter(c => c.status === 'warn').length;
+    return ok(res, { ready: blockers === 0, blockers, warnings, checks, running: open.length });
+  },
+
+  // Set trainer / HOD / HR SPOC / buddy on many running inductions at once.
+  async ld_bulkAssignPeople(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const all_ = (await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS');
+    const want = p.scope === 'all_open' ? all_ : all_.filter(i => (p.induction_ids || []).includes(i.id));
+    if (!want.length) return fail(res, 'No running inductions selected');
+    if (!['trainer_user_id', 'hr_spoc_user_id', 'buddy_user_id', 'hod_user_id'].some(k => p[k]) && !p.hod_from_department) return fail(res, 'Choose at least one person to assign');
+    const onlyMissing = p.only_missing !== false;
+    const depts = await list('Department');
+    const frozen = !!ctx.cfg.paused;
+    let updated = 0; const skipped = [];
+    for (const row of want) {
+      await withLock('ind:' + row.id, async () => {
+        const ind = await loadInduction(row.id);
+        if (!ind || ind.status !== 'IN_PROGRESS') return;
+        const set = {};
+        if (p.trainer_user_id && (!onlyMissing || !ind.trainer_user_id)) { ind.trainer_user_id = p.trainer_user_id; ind.trainer_name = await nameOf(p.trainer_user_id); set.trainer = ind.trainer_name; }
+        if (p.hr_spoc_user_id && (!onlyMissing || !ind.hr_spoc_user_id)) { ind.hr_spoc_user_id = p.hr_spoc_user_id; set.hr_spoc = await nameOf(p.hr_spoc_user_id); }
+        if (p.hod_user_id && (!onlyMissing || !ind.hod_user_id) && p.hod_user_id !== ind.user_id) { ind.hod_user_id = p.hod_user_id; ind.hod_name = await nameOf(p.hod_user_id); set.hod = ind.hod_name; }
+        if (p.hod_from_department && (!onlyMissing || !ind.hod_user_id)) {
+          const d = depts.find(x => x.head_user_id && String(x.name).toLowerCase() === String(ind.employee.department || '').toLowerCase());
+          if (d && d.head_user_id !== ind.user_id) { ind.hod_user_id = d.head_user_id; ind.hod_name = await nameOf(d.head_user_id); set.hod = ind.hod_name; }
+        }
+        if (p.buddy_user_id && (!onlyMissing || !ind.buddy_user_id)) {
+          if (p.buddy_user_id === ind.user_id || p.buddy_user_id === ind.employee.reporting_manager_id) skipped.push(`${ind.employee.name}: the buddy must be a peer — not the new joiner or the Reporting Manager`);
+          else { ind.buddy_user_id = p.buddy_user_id; ind.buddy_name = await nameOf(p.buddy_user_id); set.buddy = ind.buddy_name; await notify(p.buddy_user_id, { title: "You're a buddy", message: `You are ${ind.employee.name}'s buddy. Help them settle in — check in regularly.`, link: '/MyLearning' }); }
+        }
+        if (!Object.keys(set).length) return;
+        if (!frozen || ind.pause_exempt) { await runAutoChecks(ind); await afterChange(ind, ctx.id); }   // while paused nothing unlocks
+        await save('LdInduction', ind);
+        await audit('LdInduction', ind.id, 'people_assigned', ctx.id, { ...set, bulk: true }, ind.user_id);
+        updated++;
+      });
+    }
+    return ok(res, { updated, selected: want.length, skipped: skipped.slice(0, 20) });
+  },
+
   async ld_runDailyTick(p, ctx, res) {
     if (!ctx.isLdAdmin) return forbid(res);
     const { ldDailyTick } = await import('../cron/ldAutomation.js');
