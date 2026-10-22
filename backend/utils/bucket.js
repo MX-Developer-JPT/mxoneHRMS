@@ -62,6 +62,14 @@ export async function presignGet(key, { expiresIn = 3600, filename } = {}) {
   return getSignedUrl(client(), cmd, { expiresIn });
 }
 
+// Stream an object through the backend using header-signed credentials (the
+// same auth uploads use). Returns the S3 response (Body is a Node Readable).
+// Used instead of redirecting to a presigned URL: the bucket rejects those
+// with SignatureDoesNotMatch, which left every stored photo/document blank.
+export async function getFromBucket(key) {
+  return client().send(new GetObjectCommand({ Bucket: RAILWAY_BUCKET_NAME, Key: key }));
+}
+
 export async function deleteFromBucket(key) {
   try {
     await client().send(new DeleteObjectCommand({ Bucket: RAILWAY_BUCKET_NAME, Key: key }));

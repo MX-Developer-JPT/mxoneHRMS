@@ -6,7 +6,7 @@ import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { one, run } from '../db.js';
 import { JWT_SECRET } from './auth.js';
-import { isBucketConfigured, buildKey, putToBucket, presignGet as presignBucketGet } from '../utils/bucket.js';
+import { isBucketConfigured, buildKey, putToBucket, getFromBucket, presignGet as presignBucketGet } from '../utils/bucket.js';
 import { presignGet as presignR2Get } from '../utils/r2.js';
 
 const router = Router();
@@ -155,9 +155,22 @@ router.get('/file/:id', async (req, res) => {
     // redirect again, instead of the browser reusing what it already has.
     // Capped under the signed URL's own 3600s validity window.
     if (row.storage === 'railway' && row.r2_key) {
-      const url = await presignBucketGet(row.r2_key, { expiresIn: 3600, filename: row.filename });
-      res.setHeader('Cache-Control', 'private, max-age=3000');
-      return res.redirect(302, url);
+      // Stream through the backend. Presigned bucket URLs come back 403
+      // SignatureDoesNotMatch, so redirecting to them showed broken photos;
+      // header-signed reads (same auth as uploads) work. Presign is only a fallback.
+      try {
+        const obj = await getFromBucket(row.r2_key);
+        res.setHeader('Content-Type', row.mime || obj.ContentType || 'application/octet-stream');
+        if (obj.ContentLength != null) res.setHeader('Content-Length', obj.ContentLength);
+        res.setHeader('Content-Disposition', `inline; filename="${(row.filename || 'file').replace(/[^ -~]|"/g, '')}"`);
+        res.setHeader('Cache-Control', 'private, max-age=86400');
+        obj.Body.on('error', () => res.destroy());
+        return obj.Body.pipe(res);
+      } catch (e) {
+        console.warn('[upload] bucket read failed, falling back to presigned URL:', e.message);
+        const url = await presignBucketGet(row.r2_key, { expiresIn: 3600 });
+        return res.redirect(302, url);
+      }
     }
     if (row.storage === 'r2' && row.r2_key) {
       const url = await presignR2Get(row.r2_key, { expiresIn: 3600, filename: row.filename });
