@@ -699,6 +699,11 @@ function buildOrderLimit(sort, limit) {
 }
 
 /* ── LIST  GET /api/entities/:type ───────────────────── */
+// Survey answers and the survey access log are reachable ONLY through the ps_* functions (routes/pulse.js), which
+// enforce HR-only access, anonymity and small-group rules. The generic entity API must never list them.
+const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog']);
+router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
+
 router.get('/:type', async (req, res) => {
   const cu = getCurrentUser(req);
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });

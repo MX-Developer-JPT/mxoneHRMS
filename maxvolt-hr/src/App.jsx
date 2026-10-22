@@ -68,6 +68,7 @@ const TrainingNeeds = lazy(() => import('./pages/TrainingNeeds'));
 const MyTraining = lazy(() => import('./pages/MyTraining'));
 const MyLearning = lazy(() => import('./pages/MyLearning'));
 const LdInductionDetail = lazy(() => import('./pages/LdInductionDetail'));
+const PulseSurveyResults = lazy(() => import('./pages/PulseSurveyResults'));
 const LdAssessment = lazy(() => import('./pages/LdAssessment'));
 const LdCertificate = lazy(() => import('./pages/LdCertificate'));
 const LdControlCentre = lazy(() => import('./pages/LdControlCentre'));
@@ -463,6 +464,11 @@ const AuthenticatedApp = () => {
       <Route path="/MyLearning" element={
         <LayoutWrapper currentPageName="MyLearning">
           <MyLearning />
+        </LayoutWrapper>
+      } />
+      <Route path="/PulseSurveyResults" element={
+        <LayoutWrapper currentPageName="PulseSurveys">
+          <PulseSurveyResults />
         </LayoutWrapper>
       } />
       <Route path="/LdInductionDetail" element={

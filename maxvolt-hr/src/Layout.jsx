@@ -373,6 +373,7 @@ const hrMenuGroups = [
 const recruiterMenuGroups = [
   { label: 'Overview', items: [
     { name: 'Dashboard',                icon: LayoutDashboard, page: 'Dashboard' },
+    { name: 'Pulse Surveys',            icon: ClipboardList,   page: 'PulseSurveys' },
   ]},
   { label: 'Recruitment', items: [
     { name: 'Job Requisitions',         icon: Briefcase,       page: 'JobRequisitions' },
@@ -420,6 +421,7 @@ const gateAdminMenuGroups = [
   { label: '', items: [
     { name: 'Gate Admin', icon: ShieldCheck, page: 'GateAdminDashboard' },
     { name: 'Visitor Management', icon: Users, page: 'VisitorManagement' },
+    { name: 'Pulse Surveys', icon: ClipboardList, page: 'PulseSurveys' },
     { name: 'My Profile', icon: User2,       page: 'GateAdminProfile' },
   ]},
 ];
@@ -434,6 +436,7 @@ const frontDeskMenuGroups = [
     { name: 'Asset Tracking',      icon: Laptop,      page: 'AssetTracking' },
     { name: 'ID Cards',            icon: IdCard,      page: 'IdCardGenerator' },
     { name: 'Business Cards',      icon: QrCode,      page: 'BusinessCardAdmin' },
+    { name: 'Pulse Surveys',       icon: ClipboardList, page: 'PulseSurveys' },
     { name: 'My Profile',          icon: User2,       page: 'GateAdminProfile' },
   ]},
 ];
