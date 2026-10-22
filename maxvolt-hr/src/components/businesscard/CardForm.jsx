@@ -4,16 +4,22 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Loader2, Upload, X } from 'lucide-react';
+import { BRANDS, brandOf } from '@/lib/businessCard';
 
 function generateSlug(name) {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
     + '-' + Math.random().toString(36).slice(2, 7);
 }
 
-export default function CardForm({ card, onSaved, onCancel }) {
+export default function CardForm({ card, brand: initialBrand = 'energy', onSaved, onCancel }) {
+  const startBrand = card ? brandOf(card) : initialBrand;
   const [form, setForm] = useState({
-    name: '', phone_number: '', email: '', company: '', job_title: '',
-    website: '', address: '', linkedin_url: '', whatsapp_number: '', profile_picture_url: ''
+    name: '', phone_number: '', email: '', job_title: '',
+    // Maxvolt Energy cards start blank as before; a ReEarth card starts with ReEarth's company details filled in
+    company: !card && startBrand === 'reearth' ? BRANDS.reearth.company : '',
+    website: !card && startBrand === 'reearth' ? BRANDS.reearth.website : '',
+    address: !card && startBrand === 'reearth' ? BRANDS.reearth.address : '',
+    linkedin_url: '', whatsapp_number: '', profile_picture_url: '', brand: startBrand,
   });
   const [saving, setSaving] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -42,20 +48,25 @@ export default function CardForm({ card, onSaved, onCancel }) {
       ...f,
       name: e.display_name || '',
       job_title: e.designation || '',
-      company: f.company || 'Maxvolt Energy Industries Limited',
+      company: f.company || BRANDS[f.brand || 'energy'].company,
       phone_number: e.phone || e.phone_number || '',
       whatsapp_number: f.whatsapp_number || '',
       email: e.official_email || emailByUser[e.user_id] || '',
-      website: f.website || 'www.maxvoltenergy.com',
-      address: f.address || 'E-82, Bulandshahr Road Industrial Area, Ghaziabad 201009',
+      website: f.website || BRANDS[f.brand || 'energy'].website,
+      address: f.address || BRANDS[f.brand || 'energy'].address,
     }));
   };
 
   useEffect(() => {
-    if (card) setForm({ ...form, ...card });
+    if (card) setForm({ ...form, ...card, brand: brandOf(card) });
   }, [card]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const changeBrand = (b) => setForm(f => {
+    const from = BRANDS[f.brand || 'energy'], to = BRANDS[b];
+    const swap = (cur, a, z) => (!cur || cur === a ? z : cur);   // only replace values that are still the other company's default
+    return { ...f, brand: b, company: swap(f.company, from.company, to.company), website: swap(f.website, from.website, to.website), address: swap(f.address, from.address, to.address) };
+  });
 
   const handlePhotoUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -96,6 +107,15 @@ export default function CardForm({ card, onSaved, onCancel }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
+      <div>
+        <Label className="text-xs text-gray-600 mb-1 block">Card for</Label>
+        <div className="grid grid-cols-2 gap-2">
+          {Object.values(BRANDS).map(b => (
+            <button key={b.key} type="button" onClick={() => changeBrand(b.key)}
+              className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${(form.brand || 'energy') === b.key ? (b.key === 'reearth' ? 'bg-[#26357f] text-white border-transparent' : 'bg-neutral-900 text-amber-400 border-transparent') : 'bg-white text-gray-600 hover:bg-gray-50'}`}>{b.label}</button>
+          ))}
+        </div>
+      </div>
       {!card && (
         <div className="relative rounded-lg border bg-blue-50/50 p-3">
           <Label className="text-xs text-gray-600 mb-1 block">Find an employee to pre-fill the details</Label>

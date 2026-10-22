@@ -14441,6 +14441,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       for (const k of ['name', 'job_title', 'company', 'phone_number', 'whatsapp_number', 'email', 'website', 'linkedin_url', 'address', 'profile_picture_url', 'unique_slug']) {
         if (d[k] != null && d[k] !== '') card[k] = d[k];
       }
+      card.brand = d.brand === 'reearth' ? 'reearth' : 'energy';   // decides the look of the public page
       return res.json({ card });
     }
 
@@ -14462,9 +14463,11 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const gvcBase = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com');
       const gvcBytes = await buildVisitingCardsPdf(gvcCards, gvcBase);
       const gvcStamp = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      const gvcBrands = new Set(gvcCards.map(c => (c.brand === 'reearth' ? 'reearth' : 'energy')));
+      const gvcPrefix = gvcBrands.size === 1 && gvcBrands.has('reearth') ? 'ReEarth_' : '';
       const gvcName = gvcCards.length === 1
-        ? `Visiting_Card_${String(gvcCards[0].name || 'card').replace(/[^\w]+/g, '_')}.pdf`
-        : `Visiting_Cards_${gvcStamp}.pdf`;
+        ? `${gvcPrefix}Visiting_Card_${String(gvcCards[0].name || 'card').replace(/[^\w]+/g, '_')}.pdf`
+        : `${gvcPrefix}Visiting_Cards_${gvcStamp}.pdf`;
       await saveCardPdfHistory({ kind: 'business_card', filename: gvcName, bytes: gvcBytes, total: gvcCards.length, names: gvcCards.map(c => c.name), cu });
       return res.json({ success: true, base64: Buffer.from(gvcBytes).toString('base64'), filename: gvcName, total: gvcCards.length });
     }
@@ -14619,6 +14622,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     case 'prepareBusinessCards': {
       if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Not authorized' });
+      const pbBrand = p.brand === 'reearth' ? 'reearth' : 'energy';
+      const pbDefaults = pbBrand === 'reearth'
+        ? { company: 'Maxvolt ReEarth', website: 'www.maxvoltreearth.com', address: 'E-82, Bulandshahr Road, Industrial Area, Vijay Nagar Ghaziabad - 201009, Uttar Pradesh' }
+        : { company: 'Maxvolt Energy Industries Limited', website: 'www.maxvoltenergy.com', address: 'E-82, Bulandshahr Road Industrial Area, Ghaziabad 201009' };
       const pbIds = (Array.isArray(p.user_ids) ? p.user_ids : []).slice(0, 300);
       if (!pbIds.length) return res.json({ success: false, error: 'Select at least one employee' });
       const pbCards = (await all("SELECT id, data FROM entities WHERE type='DigitalBusinessCard'")).map(r => ({ ...JSON.parse(r.data), id: r.id }));
@@ -14637,9 +14644,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const slug = name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') + '-' + Math.random().toString(36).slice(2, 7);
         const cid = uuidv4();
         const data = {
-          id: cid, name, job_title: emp.designation || '', company: 'Maxvolt Energy Industries Limited',
-          phone_number: emp.phone || emp.phone_number || '', whatsapp_number: '', email, website: 'www.maxvoltenergy.com',
-          address: 'E-82, Bulandshahr Road Industrial Area, Ghaziabad 201009', linkedin_url: '', profile_picture_url: '', unique_slug: slug, created_by: cu.id,
+          id: cid, name, job_title: emp.designation || '', company: pbDefaults.company, brand: pbBrand,
+          phone_number: emp.phone || emp.phone_number || '', whatsapp_number: '', email, website: pbDefaults.website,
+          address: pbDefaults.address, linkedin_url: '', profile_picture_url: '', unique_slug: slug, created_by: cu.id,
         };
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'DigitalBusinessCard',$2,'active',$3)", [cid, uid, JSON.stringify(data)]);
         pbCards.push(data);
@@ -14656,7 +14663,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     case 'exportBusinessCardTemplate': {
       if (!(await hasRole(cu, ['admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Admin access required' });
       const ebtRows = await all("SELECT id, data FROM entities WHERE type='DigitalBusinessCard' ORDER BY created_at ASC");
-      const ebtCards = ebtRows.map(r => ({ ...JSON.parse(r.data), id: r.id }));
+      const ebtBrand = p.brand === 'reearth' ? 'reearth' : 'energy';
+      const ebtCards = ebtRows.map(r => ({ ...JSON.parse(r.data), id: r.id })).filter(c => (c.brand === 'reearth' ? 'reearth' : 'energy') === ebtBrand);
       const ebtBase = (process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '');
 
       const ExcelJSt = await import('exceljs');
@@ -14689,7 +14697,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       // Row 1 – title banner
       ws.mergeCells(1, 1, 1, last);
       const t = ws.getCell(1, 1);
-      t.value = 'MAXVOLT ONE  ·  DIGITAL BUSINESS CARDS  —  BULK IMPORT';
+      t.value = `MAXVOLT ONE  ·  DIGITAL BUSINESS CARDS${ebtBrand === 'reearth' ? ' (MAXVOLT REEARTH)' : ''}  —  BULK IMPORT`;
       t.font = { name: 'Calibri', size: 16, bold: true, color: { argb: GOLD } };
       t.fill = fill(BLACK);
       t.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };

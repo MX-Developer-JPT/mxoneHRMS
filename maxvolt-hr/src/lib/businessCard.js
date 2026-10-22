@@ -50,3 +50,17 @@ export function downloadVCard(card) {
 export const initials = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase() || '').join('') || '?';
 export const webHref = normUrl;
 export const digits = (v) => String(v || '').replace(/[^0-9]/g, '');
+
+// The two companies a card can be made for. `energy` is the original (and the default for every card created before
+// this setting existed); `reearth` uses the Maxvolt ReEarth template.
+export const BRANDS = {
+  energy: {
+    key: 'energy', label: 'Maxvolt Energy', company: 'Maxvolt Energy Industries Limited', website: 'www.maxvoltenergy.com',
+    address: 'E-82, Bulandshahr Road Industrial Area, Ghaziabad 201009',
+  },
+  reearth: {
+    key: 'reearth', label: 'Maxvolt ReEarth', company: 'Maxvolt ReEarth', website: 'www.maxvoltreearth.com',
+    address: 'E-82, Bulandshahr Road, Industrial Area, Vijay Nagar Ghaziabad - 201009, Uttar Pradesh',
+  },
+};
+export const brandOf = (card) => (card?.brand === 'reearth' ? 'reearth' : 'energy');

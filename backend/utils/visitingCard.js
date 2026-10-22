@@ -10,7 +10,7 @@
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { PDFDocument, rgb } from 'pdf-lib';
+import { PDFDocument, rgb, setCharacterSpacing } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import QRCode from 'qrcode';
 
@@ -49,6 +49,44 @@ async function loadAssets() {
     semibold: readFileSync(join(ASSETS, 'fonts/Montserrat-SemiBold.woff')),
   };
   return _cache;
+}
+// Maxvolt ReEarth artwork + fonts, loaded only when a ReEarth card is printed.
+let _reCache;
+function loadReearthAssets() {
+  if (_reCache) return _reCache;
+  _reCache = {
+    template: readFileSync(join(ASSETS, 'reearth-visiting-card-template.pdf')),
+    plexSemi: readFileSync(join(ASSETS, 'fonts/IBMPlexSans-SemiBold.woff')),
+    plexMed: readFileSync(join(ASSETS, 'fonts/IBMPlexSans-Medium.woff')),
+    plexBold: readFileSync(join(ASSETS, 'fonts/IBMPlexSans-Bold.woff')),
+  };
+  return _reCache;
+}
+
+// ── Maxvolt ReEarth card (88 x 55 mm) ─────────────────────────────────────────────────────────────
+// Page 1 (front) is the ReEarth template unchanged. Page 2 (back) is the approved layout — green pill with the
+// phone / e-mail / address / web icons, address and website, faint logo, green base bar — with the personal
+// details left blank. Geometry and type were measured from the approved sample ("Dr. Tushar D. Maske.pdf");
+// values are distances from the TOP edge (drawn as H - value). Everything is IBM Plex Sans (open font, SIL OFL):
+// name SemiBold 15.4 pt, designation Medium 8.64 pt (+0.30 pt letter-spacing), phone / e-mail SemiBold 7.5 pt,
+// all in the template's near-black ink. `x` values are text origins.
+const RE_INK = rgb(0.10245, 0.10118, 0.09511);
+export const RE = {
+  nameX: 6.95, nameBase: 24.7, nameSize: 15.2,
+  roleX: 7.87, roleBase: 34.97, roleSize: 8.64, roleTracking: 0.304,
+  phoneX: 31.52, phoneBase: 74.0, mailX: 31.83, mailBase: 93.85, textSize: 7.5,
+  maxLeftW: 233, maxRowW: 205,
+};
+const reWidth = (font, text, size, tracking = 0) => font.widthOfTextAtSize(text, size) + tracking * Math.max(0, text.length - 1);
+
+// Draws one line of text with optional letter-spacing; shrinks tracking, then size, until it fits maxW.
+function drawFitted(page, font, text, { x, y, size, color, tracking = 0, maxW, minSize = 5.2 }) {
+  if (!text) return;
+  let s = size, t = tracking;
+  while (s > minSize && reWidth(font, text, s, t) > maxW) { s -= 0.1; t = tracking * (s / size); }
+  if (t) page.pushOperators(setCharacterSpacing(t));
+  page.drawText(text, { x, y, size: s, font, color });
+  if (t) page.pushOperators(setCharacterSpacing(0));
 }
 
 // Shrinks the font until the text fits maxW (never below minSize).
@@ -93,6 +131,8 @@ function drawQr(page, text, x, y, size) {
  * @param {string} baseUrl  e.g. https://maxone.maxvoltenergy.com
  * @returns {Promise<Uint8Array>} PDF bytes (2 pages per card: front, back)
  */
+export const cardBrand = (card) => (card?.brand === 'reearth' ? 'reearth' : 'energy');
+
 export async function buildVisitingCardsPdf(cards, baseUrl) {
   const assets = await loadAssets();
   const tpl = await PDFDocument.load(assets.template);
@@ -104,11 +144,34 @@ export async function buildVisitingCardsPdf(cards, baseUrl) {
   const fSemi = await out.embedFont(assets.semibold, { subset: true });
   const [front, back] = await out.embedPages([tplFront, tplBack]);
 
-  out.setTitle('Maxvolt Energy — Visiting Cards');
-  out.setAuthor('Maxvolt Energy Industries Limited');
+  const brands = new Set(cards.map(cardBrand));
+  const onlyRe = brands.size === 1 && brands.has('reearth');
+  out.setTitle(onlyRe ? 'Maxvolt ReEarth — Visiting Cards' : brands.has('reearth') ? 'Maxvolt — Visiting Cards' : 'Maxvolt Energy — Visiting Cards');
+  out.setAuthor(onlyRe ? 'Maxvolt ReEarth' : 'Maxvolt Energy Industries Limited');
   out.setCreator('Maxvolt One');
 
+  // ReEarth artwork + fonts only when needed (same output document, so a mixed selection prints in one PDF)
+  let re = null;
+  if (brands.has('reearth')) {
+    const ra = loadReearthAssets();
+    const rtpl = await PDFDocument.load(ra.template);
+    const [rFront, rBack] = await out.embedPages([rtpl.getPage(0), rtpl.getPage(1)]);
+    re = { front: rFront, back: rBack, semi: await out.embedFont(ra.plexSemi, { subset: true }), med: await out.embedFont(ra.plexMed, { subset: true }), bold: await out.embedFont(ra.plexBold, { subset: true }) };
+  }
+
   for (const card of cards) {
+    if (cardBrand(card) === 'reearth') {
+      out.addPage([W, H]).drawPage(re.front);
+      const rp = out.addPage([W, H]);
+      rp.drawPage(re.back);
+      const name = String(card.name || '').trim(), role = String(card.job_title || '').trim();
+      drawFitted(rp, re.bold, name, { x: RE.nameX, y: H - RE.nameBase, size: RE.nameSize, color: RE_INK, maxW: RE.maxLeftW });
+      drawFitted(rp, re.med, role, { x: RE.roleX, y: H - RE.roleBase, size: RE.roleSize, color: RE_INK, tracking: RE.roleTracking, maxW: RE.maxLeftW });
+      drawFitted(rp, re.semi, String(card.phone_number || '').trim(), { x: RE.phoneX, y: H - RE.phoneBase, size: RE.textSize, color: RE_INK, maxW: RE.maxRowW });
+      drawFitted(rp, re.semi, String(card.email || '').trim(), { x: RE.mailX, y: H - RE.mailBase, size: RE.textSize, color: RE_INK, maxW: RE.maxRowW });
+      continue;
+    }
+
     const fp = out.addPage([W, H]);
     fp.drawPage(front);
 

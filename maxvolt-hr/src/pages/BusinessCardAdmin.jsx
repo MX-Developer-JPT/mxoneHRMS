@@ -8,7 +8,7 @@ import { Plus, Search, Edit2, Trash2, QrCode, Upload, ExternalLink, Printer, Lin
 import CardForm from '@/components/businesscard/CardForm';
 import QRCodeModal from '@/components/businesscard/QRCodeModal';
 import BulkImportModal from '@/components/businesscard/BulkImportModal';
-import { cardUrl as getCardUrl, initials } from '@/lib/businessCard';
+import { cardUrl as getCardUrl, initials, BRANDS, brandOf } from '@/lib/businessCard';
 import { TAGLINE } from '@/lib/brand';
 import { openPdfBlob } from '@/utils/letterhead';
 
@@ -23,6 +23,10 @@ export default function BusinessCardAdmin() {
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [printing, setPrinting] = useState(false);
+  // Which company the page is working on: Maxvolt Energy (the original cards) or Maxvolt ReEarth.
+  const [brand, setBrand] = useState(() => { try { return localStorage.getItem('bc_brand') === 'reearth' ? 'reearth' : 'energy'; } catch { return 'energy'; } });
+  const chooseBrand = (b) => { setBrand(b); try { localStorage.setItem('bc_brand', b); } catch { /* optional */ } };
+  const B = BRANDS[brand];
 
   useEffect(() => {
     base44.auth.me().then(setUser).catch(() => setUser(false));
@@ -60,9 +64,11 @@ export default function BusinessCardAdmin() {
   };
 
   const q = search.trim().toLowerCase();
-  const filtered = cards.filter(c =>
+  const ofBrand = cards.filter(c => brandOf(c) === brand);
+  const filtered = ofBrand.filter(c =>
     !q || [c.name, c.company, c.job_title, c.email, c.phone_number].some(v => String(v || '').toLowerCase().includes(q))
   );
+  const countOf = (b) => cards.filter(c => brandOf(c) === b).length;
 
   // Builds the print-ready PDF (company template + each person's details and
   // QR) on the server and opens it — `ids` limits it to specific cards.
@@ -99,7 +105,7 @@ export default function BusinessCardAdmin() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Digital Business Cards</h1>
-          <p className="text-gray-500 text-sm mt-1">{cards.length} card{cards.length !== 1 ? 's' : ''} · each has its own shareable link and QR code</p>
+          <p className="text-gray-500 text-sm mt-1">{ofBrand.length} {B.label} card{ofBrand.length !== 1 ? 's' : ''} · each has its own shareable link and QR code</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <Button variant="outline" size="sm" onClick={() => handlePrintCards()} disabled={filtered.length === 0 || !!printing}>
@@ -115,6 +121,15 @@ export default function BusinessCardAdmin() {
         </div>
       </div>
 
+      <div className="mb-5 inline-flex rounded-xl border bg-gray-50 p-1 gap-1" role="tablist" aria-label="Company">
+        {Object.values(BRANDS).map(b => (
+          <button key={b.key} role="tab" aria-selected={brand === b.key} onClick={() => chooseBrand(b.key)}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${brand === b.key ? (b.key === 'reearth' ? 'bg-[#26357f] text-white shadow' : 'bg-neutral-900 text-amber-400 shadow') : 'text-gray-600 hover:bg-white'}`}>
+            {b.label}<span className={`text-[11px] px-1.5 rounded-full ${brand === b.key ? 'bg-white/20' : 'bg-gray-200 text-gray-600'}`}>{countOf(b.key)}</span>
+          </button>
+        ))}
+      </div>
+
       <div className="relative mb-6 max-w-md">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
         <Input placeholder="Search by name, company, title, email…" value={search} onChange={e => setSearch(e.target.value)} className="pl-9" />
@@ -127,25 +142,25 @@ export default function BusinessCardAdmin() {
       ) : filtered.length === 0 ? (
         <div className="text-center py-20">
           <QrCode className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-500">{search ? 'No cards match your search.' : 'No cards yet. Add your first one!'}</p>
+          <p className="text-gray-500">{search ? 'No cards match your search.' : `No ${B.label} cards yet. Add your first one!`}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {filtered.map(card => (
             <div key={card.id} className="rounded-2xl overflow-hidden bg-white border border-gray-200 shadow-sm hover:shadow-lg transition-shadow flex flex-col">
               {/* mini card preview, same look as the public card */}
-              <div className="relative bg-neutral-900 text-white p-4 pb-5">
-                <div className="absolute inset-x-0 bottom-0 h-1.5 bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500" />
-                <div className="text-[9px] font-bold tracking-[0.2em] text-amber-300 mb-3">MAXVOLT ENERGY</div>
+              <div className={`relative text-white p-4 pb-5 ${brand === 'reearth' ? 'bg-[#26357f]' : 'bg-neutral-900'}`}>
+                <div className={`absolute inset-x-0 bottom-0 h-1.5 ${brand === 'reearth' ? 'bg-gradient-to-r from-[#7aa82a] via-[#9bc53d] to-[#7aa82a]' : 'bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500'}`} />
+                <div className={`text-[9px] font-bold tracking-[0.2em] mb-3 ${brand === 'reearth' ? 'text-[#b7d86a]' : 'text-amber-300'}`}>{B.label.toUpperCase()}</div>
                 <div className="flex items-center gap-3">
-                  <div className="w-14 h-14 rounded-full bg-neutral-800 border-2 border-amber-400 flex items-center justify-center overflow-hidden shrink-0">
+                  <div className={`w-14 h-14 rounded-full border-2 flex items-center justify-center overflow-hidden shrink-0 ${brand === 'reearth' ? 'bg-[#1c2863] border-[#9bc53d]' : 'bg-neutral-800 border-amber-400'}`}>
                     {card.profile_picture_url
                       ? <img src={card.profile_picture_url} alt="" className="w-full h-full object-cover" />
-                      : <span className="font-bold text-amber-400">{initials(card.name)}</span>}
+                      : <span className={`font-bold ${brand === 'reearth' ? 'text-[#b7d86a]' : 'text-amber-400'}`}>{initials(card.name)}</span>}
                   </div>
                   <div className="min-w-0">
                     <p className="font-bold truncate">{card.name}</p>
-                    <p className="text-xs text-amber-300 truncate">{card.job_title}</p>
+                    <p className={`text-xs truncate ${brand === 'reearth' ? 'text-[#b7d86a]' : 'text-amber-300'}`}>{card.job_title}</p>
                     <p className="text-[11px] text-white/60 truncate">{card.company}</p>
                   </div>
                 </div>
@@ -175,13 +190,13 @@ export default function BusinessCardAdmin() {
 
       <Dialog open={showForm} onOpenChange={v => { setShowForm(v); if (!v) setEditingCard(null); }}>
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>{editingCard ? 'Edit Card' : 'Add New Card'}</DialogTitle></DialogHeader>
-          <CardForm card={editingCard} onSaved={handleSaved} onCancel={() => setShowForm(false)} />
+          <DialogHeader><DialogTitle>{editingCard ? 'Edit Card' : `Add New ${B.label} Card`}</DialogTitle></DialogHeader>
+          <CardForm key={editingCard?.id || `new-${brand}`} card={editingCard} brand={brand} onSaved={handleSaved} onCancel={() => setShowForm(false)} />
         </DialogContent>
       </Dialog>
 
       {qrCard && <QRCodeModal card={qrCard} onClose={() => setQrCard(null)} getCardUrl={getCardUrl} />}
-      {showBulkImport && <BulkImportModal onClose={() => setShowBulkImport(false)} onImported={() => { setShowBulkImport(false); loadCards(); }} />}
+      {showBulkImport && <BulkImportModal brand={brand} onClose={() => setShowBulkImport(false)} onImported={() => { setShowBulkImport(false); loadCards(); }} />}
 
       <Dialog open={!!deleteConfirm} onOpenChange={v => !v && setDeleteConfirm(null)}>
         <DialogContent className="max-w-sm">

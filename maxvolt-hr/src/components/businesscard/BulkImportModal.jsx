@@ -3,8 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Upload, Download, CheckCircle, XCircle, Loader2, FileSpreadsheet, PlusCircle, RefreshCw, MinusCircle } from 'lucide-react';
-
-const DEFAULT_COMPANY = 'Maxvolt Energy Industries Limited';
+import { BRANDS } from '@/lib/businessCard';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function generateSlug(name) {
@@ -57,7 +56,8 @@ async function readRows(file) {
   return rows;
 }
 
-export default function BulkImportModal({ onClose, onImported }) {
+export default function BulkImportModal({ onClose, onImported, brand = 'energy' }) {
+  const DEFAULT_COMPANY = BRANDS[brand]?.company || BRANDS.energy.company;
   const [file, setFile] = useState(null);
   const [plan, setPlan] = useState(null);       // { create:[], update:[], unchanged:n, errors:[] }
   const [results, setResults] = useState(null);
@@ -68,7 +68,7 @@ export default function BulkImportModal({ onClose, onImported }) {
   const handleDownloadTemplate = async () => {
     setDownloading(true);
     try {
-      const res = await base44.functions.invoke('exportBusinessCardTemplate', {});
+      const res = await base44.functions.invoke('exportBusinessCardTemplate', { brand });
       const d = res?.data || res;
       if (!d?.success || !d.base64) throw new Error(d?.error || 'Could not build the template');
       downloadBase64Xlsx(d.base64, d.filename);
@@ -101,6 +101,7 @@ export default function BulkImportModal({ onClose, onImported }) {
         const payload = {};
         FIELDS.forEach(f => { payload[f] = data[f] || ''; });
         if (!payload.company) payload.company = DEFAULT_COMPANY;
+        payload.brand = brand;
 
         const match = (data.id && byId.get(data.id)) || byEmail.get(email);
         if (match) {
