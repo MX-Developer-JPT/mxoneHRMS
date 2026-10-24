@@ -292,6 +292,7 @@ const hrMenuGroups = [
     { name: 'Payslip Upload',          icon: UploadCloud,     page: 'PayslipUpload' },
     { name: 'Payroll Analytics',       icon: PieChart,        page: 'PayrollAnalytics' },
     { name: 'Salary Structure',        icon: DollarSign,      page: 'SalaryStructureManagement' },
+    { name: 'Salary Revision Letters', icon: FileSignature,   page: 'SalaryRevisionLetters' },
     { name: 'Loans',                   icon: DollarSign,      page: 'LoanManagement' },
     { name: 'Off-Cycle Payments',      icon: DollarSign,      page: 'OffCyclePayments' },
     { name: 'Tally Export',           icon: Download,         page: 'TallyExport' },

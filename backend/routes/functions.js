@@ -1009,6 +1009,8 @@ const jobStore = new Map(); // jobId → { status, result?, error?, progress? }
 let _usersCache = null;
 let _usersCacheExp = 0;
 export function clearUsersCache() { _usersCache = null; }
+// Shared letter plumbing reused by routes/salaryRevision.js
+export { renderPdf, getLetterheadBgDataUrl, getStampDataUrl, LETTERHEAD_MARGINS };
 
 const getUser = (req) => {
   const t = req.headers.authorization?.replace('Bearer ', '');

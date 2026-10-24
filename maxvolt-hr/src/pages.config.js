@@ -79,6 +79,7 @@ const PayrollManagement = lazy(() => import('./pages/PayrollManagement'));
 const PayrollProcessing = lazy(() => import('./pages/PayrollProcessing'));
 const PayrollSettings = lazy(() => import('./pages/PayrollSettings'));
 const PayslipUpload = lazy(() => import('./pages/PayslipUpload'));
+const SalaryRevisionLetters = lazy(() => import('./pages/SalaryRevisionLetters'));
 const Payslips = lazy(() => import('./pages/Payslips'));
 const Performance = lazy(() => import('./pages/Performance'));
 const PerformanceManagement = lazy(() => import('./pages/PerformanceManagement'));
@@ -165,6 +166,7 @@ export const PAGES = {
     "PayrollProcessing": PayrollProcessing,
     "PayrollSettings": PayrollSettings,
     "PayslipUpload": PayslipUpload,
+    "SalaryRevisionLetters": SalaryRevisionLetters,
     "Payslips": Payslips,
     "Performance": Performance,
     "PerformanceManagement": PerformanceManagement,

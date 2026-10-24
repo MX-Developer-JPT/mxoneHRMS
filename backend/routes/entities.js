@@ -61,7 +61,7 @@ function dedupAttendanceRows(rows) {
 const SENSITIVE_TYPES = new Set([
   'Payroll', 'PayrollConfiguration', 'SalaryStructure', 'Loan', 'InsuranceClaim',
   'POSHRecord', 'TaxDeclaration', 'Form16', 'BankDetail', 'LeaveBalance', 'Document',
-  'Reimbursement',
+  'Reimbursement', 'SalaryRevisionBatch', 'SalaryRevisionLog',
   // Visitor is location-scoped (a Duhai gate admin must never be able to
   // list an E82 visitor by calling the generic list/filter API directly,
   // per the Visitor Management location-isolation requirement). Every
