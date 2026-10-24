@@ -29,6 +29,11 @@ export function OverviewTab({ d, setTab, onOpenInsight }) {
   const top = d.insights.filter(i => i.status !== 'Dismissed' && i.status !== 'Resolved').slice(0, 5);
   return (
     <div className="space-y-4">
+      <button onClick={() => setTab('abnormalities')} className="w-full text-left rounded-xl border border-orange-200 bg-orange-50 hover:bg-orange-100/70 p-3 flex flex-wrap items-center gap-x-5 gap-y-1">
+        <span className="text-sm font-semibold text-orange-900">{d.abnormalities.total} abnormalities detected</span>
+        {['Critical', 'High', 'Medium', 'Low'].map(s => <span key={s} className="text-xs text-orange-900">{d.abnormalities.bySeverity[s]} {s.toLowerCase()}</span>)}
+        <span className="text-xs text-orange-700 ml-auto">Open the full list →</span>
+      </button>
       <KpiGrid kpis={d.kpis} onOpen={(link) => setTab(link)} />
       <p className="text-[11px] text-gray-500">Attendance cards show people on an average working day (the employee-day total is under each card). Headcount counts people. Hover the <span className="font-medium">ⓘ</span> on a card for its formula; click a card to open its detail.</p>
       <Section title="Management highlights" subtitle="Generated from verified records by explicit rules — open an insight to see the evidence and the rule that raised it." right={<button className="text-xs text-blue-700 hover:underline" onClick={() => setTab('insights')}>All {d.insights.length} insights →</button>}>
@@ -149,6 +154,39 @@ export function AttendanceTab({ d, params }) {
         columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Employee' }, { key: 'dept', label: 'Department' }, { key: 'date', label: 'Date', render: r => fmtD(r.date) }, { key: 'original', label: 'Original' }, { key: 'revised', label: 'Revised / reason type' }, { key: 'reason', label: 'Reason', cls: 'max-w-xs' }, { key: 'status', label: 'Status' }, { key: 'approver', label: 'Approver' }, { key: 'approvedAt', label: 'Approved', render: r => fmtDT(r.approvedAt) }, { key: 'lateBy', label: 'Days late', render: r => (r.lateBy > 0 ? r.lateBy : '') }]} />
       <Register kind="employees_attendance" params={params} title="Employee-wise attendance" subtitle="Employee-days in the selected period."
         columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Employee' }, { key: 'dept', label: 'Department' }, { key: 'scheduled', label: 'Sched.' }, { key: 'present', label: 'Present' }, { key: 'late', label: 'Late' }, { key: 'half', label: 'Half' }, { key: 'wfh', label: 'WFH' }, { key: 'od', label: 'OD' }, { key: 'leave', label: 'Leave' }, { key: 'absent', label: 'Absent' }, { key: 'missing', label: 'Missing' }, { key: 'hours', label: 'Hours' }, { key: 'compliancePct', label: 'Compl. %' }]} />
+    </div>
+  );
+}
+
+// ───────────────────────────── Abnormalities (everything flagged, in one place)
+const SEV_ORDER = ['Critical', 'High', 'Medium', 'Low'];
+const SEV_TILE = { Critical: 'border-red-300 bg-red-50 text-red-800', High: 'border-orange-300 bg-orange-50 text-orange-800', Medium: 'border-amber-300 bg-amber-50 text-amber-800', Low: 'border-gray-300 bg-gray-50 text-gray-700' };
+const slugOf = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+export function AbnormalitiesTab({ d, params, applyFilter }) {
+  const ab = d.abnormalities;
+  const [view, setView] = useState({ kind: 'abnormalities', label: 'All abnormalities' });
+  const pick = (kind, label) => setView({ kind, label });
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-xs p-3">Every abnormality the MIS can detect, across attendance, leave, regularisation, gate pass, visitors, reimbursements, recruitment, workforce and data quality. They are <b>indicators to verify</b> — each row shows what was observed, what it was compared with, why it was raised and who should look. Weekly offs, holidays and approved exemptions are never flagged.</div>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <button onClick={() => pick('abnormalities', 'All abnormalities')} className={`rounded-xl border p-3 text-left bg-white hover:border-blue-300 ${view.kind === 'abnormalities' ? 'ring-2 ring-blue-300' : ''}`}><div className="text-2xl font-bold text-gray-900">{ab.total}</div><div className="text-xs text-gray-500">All abnormalities</div></button>
+        {SEV_ORDER.map(s => (
+          <button key={s} onClick={() => pick(`abn_sev_${s}`, `${s} severity`)} className={`rounded-xl border p-3 text-left hover:shadow-sm ${SEV_TILE[s]} ${view.kind === `abn_sev_${s}` ? 'ring-2 ring-blue-300' : ''}`}><div className="text-2xl font-bold">{ab.bySeverity[s]}</div><div className="text-xs">{s}</div></button>
+        ))}
+      </div>
+      <Grid>
+        <Section title="By area" subtitle="Click an area to list only its abnormalities.">
+          <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left text-xs text-gray-500 border-b bg-gray-50"><th className="p-2">Area</th><th className="p-2 text-right">Total</th>{SEV_ORDER.map(s => <th key={s} className="p-2 text-right">{s}</th>)}</tr></thead>
+            <tbody>{ab.byDomain.map(x => (
+              <tr key={x.domain} className="border-b hover:bg-gray-50/60"><td className="p-2"><button className="text-blue-700 hover:underline" disabled={!x.total} onClick={() => pick(`abn_domain_${slugOf(x.domain)}`, x.domain)}>{x.domain}</button></td><td className="p-2 text-right font-medium">{x.total}</td>{SEV_ORDER.map(s => <td key={s} className={`p-2 text-right ${x[s] ? '' : 'text-gray-300'}`}>{x[s]}</td>)}</tr>))}</tbody></table></div>
+        </Section>
+        <Section title="Departments with the most serious flags" subtitle="High and critical items attached to a department. Click to open its report.">
+          <MiniTable heads={['Department', 'High / critical', 'All flags']} rows={ab.hotDepartments.map(x => [<button key={x.dept} className="text-blue-700 hover:underline" onClick={() => applyFilter({ department: x.dept })}>{x.dept}</button>, x.serious, x.total])} empty="No department-level flags." />
+        </Section>
+      </Grid>
+      <Register key={view.kind} kind={view.kind} params={params} title={view.label} subtitle="Most serious first. Use the search box to find a person, department or type." pageSize={20}
+        columns={[{ key: 'sev', label: 'Severity', render: r => <Pill sev={r.sev} /> }, { key: 'domain', label: 'Area' }, { key: 'type', label: 'Abnormality', cls: 'min-w-[160px]' }, { key: 'subject', label: 'Who / what', render: r => <span>{r.subject} <span className="text-xs text-gray-400">{r.code} {r.dept && r.dept !== r.subject ? r.dept : ''}</span></span> }, { key: 'observed', label: 'Observed' }, { key: 'baseline', label: 'Expected / compared with' }, { key: 'variance', label: 'Variance' }, { key: 'dates', label: 'Dates / examples', cls: 'max-w-[180px]' }, { key: 'why', label: 'Why flagged', cls: 'max-w-xs' }, { key: 'action', label: 'What to do', cls: 'max-w-xs' }, { key: 'owner', label: 'Owner' }]} />
     </div>
   );
 }

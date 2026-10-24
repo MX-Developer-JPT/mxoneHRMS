@@ -31,6 +31,7 @@ export function buildNarrative(res) {
   }
   out.push({ h: 'Gate pass and visitors', t: `${G.total} gate pass(es) were issued${res.gatepass.prev ? ` (previous ${res.gatepass.prev.total})` : ''}: ${G.returned} marked returned, ${G.cancelled + G.rejected} cancelled or rejected, ${G.pending} awaiting approval and ${G.open} open (${G.overdue} overdue). ${G.autoClosed} were closed automatically by the system because no return was recorded or no manager acted, so they carry no real duration.${res.visitors ? ` ${res.visitors.counts.total} visitor(s) came (${res.visitors.counts.walkIn} walk-in); ${res.visitors.counts.missingCheckout} never checked out.` : ''}` });
   if (res.reimbursements) { const B = res.reimbursements.counts; out.push({ h: 'Reimbursements', t: `${B.claims} claim(s) were submitted for ${rs(B.claimedAmt)}: ${rs(B.approvedAmt)} approved, ${rs(B.paidAmt)} confirmed paid and ${rs(B.outstandingAmt)} still outstanding.` }); }
+  { const ab = res.abnormalities; out.push({ h: 'Abnormalities', t: `${ab.total} abnormalit${ab.total === 1 ? 'y was' : 'ies were'} flagged for verification: ${ab.bySeverity.Critical} critical, ${ab.bySeverity.High} high, ${ab.bySeverity.Medium} medium and ${ab.bySeverity.Low} low. Most flagged areas: ${[...ab.byDomain].filter(x => x.total).sort((a, b) => b.total - a.total).slice(0, 4).map(x => `${x.domain} ${x.total}`).join(', ')}.${ab.hotDepartments.length ? ` Departments with the most high-severity flags: ${ab.hotDepartments.slice(0, 3).map(x => `${x.dept} (${x.serious})`).join(', ')}.` : ''} The Abnormalities sheet lists each one with what was observed, what it was compared with, why it was raised and what to do.` }); }
   const bad = res.dataQuality.filter(d => d.count && ['High', 'Critical'].includes(d.sev));
   out.push({ h: 'Data quality', t: `${res.reconciliation.every(r => r.ok) ? 'All reconciliation checks pass' : `${res.reconciliation.filter(r => !r.ok).length} reconciliation check(s) FAILED`}. ${bad.length ? `High-severity data issues: ${bad.slice(0, 4).map(d => `${d.title} (${d.count})`).join('; ')}.` : 'No high-severity data issues.'}` });
   const top = res.insights.filter(i => i.status !== 'Dismissed' && i.severity !== 'Informational').slice(0, 4);
@@ -120,6 +121,21 @@ export async function buildMisIntelligenceWorkbook(res, registers, ExcelJS, opts
   }
   heading(ws, 'Population and calendar used');
   table(ws, ['Item', 'Value'], [['Active employees in scope (period end)', m.employeesInScope], ['Employees included in attendance', m.attendanceEmployees], ['Scheduled employee-days', m.workingCalendar.scheduledEmployeeDays], ['Holidays in period', m.workingCalendar.holidays.map(h => `${fmtD(h.date)} ${h.name}`).join('; ') || 'None'], ['Default shift', m.workingCalendar.defaultShift ? `${m.workingCalendar.defaultShift.name} (${(m.workingCalendar.defaultShift.days || []).join(', ')})` : 'n/a']], [44, 60]);
+
+  // 1b. Abnormalities — everything flagged, colour-coded, most serious first
+  { const ab = res.abnormalities;
+    ws = top('Abnormalities', 'Abnormalities — everything flagged in this period');
+    note(ws, 'Indicators to verify, not findings about conduct. Weekly offs, holidays and approved exemptions are never flagged. Filter the list by area, severity or department.');
+    heading(ws, 'Summary by area and severity');
+    table(ws, ['Area', 'Total', 'Critical', 'High', 'Medium', 'Low'], ab.byDomain.map(x => [x.domain, x.total, x.Critical, x.High, x.Medium, x.Low]), [24, 10, 10, 10, 10, 10], { total: () => ['ALL', ab.total, ab.bySeverity.Critical, ab.bySeverity.High, ab.bySeverity.Medium, ab.bySeverity.Low] });
+    heading(ws, 'Departments with the most serious flags');
+    table(ws, ['Department', 'High / critical', 'All flags'], ab.hotDepartments.map(x => [x.dept, x.serious, x.total]), []);
+    heading(ws, 'Full list (most serious first)');
+    const h0 = ws.rowCount + 1;
+    table(ws, ['Severity', 'Area', 'Abnormality', 'Who / what', 'Code', 'Department', 'Period', 'Observed', 'Expected / compared with', 'Variance', 'Dates / examples', 'Why flagged', 'What to do', 'Owner'],
+      (registers.abnormalities || []).map(x => [x.sev, x.domain, x.type, x.subject, x.code, x.dept, x.period, x.observed, x.baseline, x.variance, x.dates, x.why, x.action, x.owner]), [11, 16, 34, 26, 12, 20, 22, 24, 28, 12, 28, 50, 50, 22], { sevCol: 0 });
+    ws.autoFilter = { from: { row: h0, column: 1 }, to: { row: h0, column: 14 } };
+  }
 
   // 2. KPI comparison (trend table)
   ws = top('KPI Comparison', 'KPI comparison with reasons');
@@ -375,6 +391,9 @@ export function buildMisIntelligencePdf(res, registers, opts = {}) {
     content.push(tbl(['Severity', 'Insight', 'Evidence', 'Suggested action'], hi.map(i => [i.severity, i.title, i.evidence || i.why, i.action]), [48, 180, 150, 140], { sevCol: 0 }));
   }
 
+  { const ab = res.abnormalities; content.push({ text: 'Abnormalities detected', style: 'h' }); content.push({ text: `${ab.total} flagged — ${ab.bySeverity.Critical} critical, ${ab.bySeverity.High} high, ${ab.bySeverity.Medium} medium, ${ab.bySeverity.Low} low. Indicators to verify, not findings about conduct; the Excel report lists all of them.`, fontSize: 8.5, margin: [0, 0, 0, 4] });
+    content.push(tbl(['Area', 'Total', 'Critical', 'High', 'Medium', 'Low'], ab.byDomain.map(x => [x.domain, x.total, x.Critical, x.High, x.Medium, x.Low]), [140, 55, 55, 55, 55, 55]));
+    content.push(tbl(['Severity', 'Area', 'Abnormality', 'Who / what', 'Observed', 'What to do'], ab.top.filter(x => ['Critical', 'High'].includes(x.sev)).slice(0, 25).map(x => [x.sev, x.domain, x.type, `${x.subject} ${x.code}`.trim(), `${x.observed}${x.baseline ? ' vs ' + x.baseline : ''}`, x.action]), [42, 55, 95, 90, 100, 90], { sevCol: 0, max: 25 })); }
   content.push({ text: 'Attendance', style: 'h', pageBreak: 'before' });
   { const pe = A.people, av = pe.avg, pv = pe.prevAvg; content.push({ text: 'On an average working day', style: 'h2' }); content.push(tbl(['Situation', 'People per day', '% of scheduled', 'Previous period'], [['Scheduled to work', av.scheduled], ['Present in office', av.present], ['Absent', av.absent], ['On approved leave', av.leave], ['Work from home', av.wfh], ['On duty (field / client)', av.od], ['Half-day', av.half], ['Late', av.late], ['No record / incomplete', av.missing]].map(([l, v], i) => [l, v, i && av.scheduled ? `${Math.round(v / av.scheduled * 1000) / 10}%` : (i ? 'n/a' : '100%'), pv ? [pv.scheduled, pv.present, pv.absent, pv.leave, pv.wfh, pv.od, pv.half, pv.late, pv.missing][i] : 'n/a']), [150, 90, 90, 90]));
     content.push({ text: `${pe.workingDays} working day(s). ${pe.perfect} of ${pe.employeesTracked} employees had a perfect record (no absence, no late arrival, no missing record). Absent days per person: ${Object.entries(pe.absentBands).map(([k, v]) => `${k}: ${v}`).join(', ')}.`, fontSize: 8, color: C.grey, margin: [0, 0, 0, 6] });

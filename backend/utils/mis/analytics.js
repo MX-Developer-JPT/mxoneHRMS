@@ -913,6 +913,93 @@ function attendanceExceptions(ctx, model, scope, attCur, attPrev, reg, from, to)
   return out;
 }
 
+// ── every kind of abnormality, in one list ───────────────────────────────
+// Pulls together the rule-based flags from every area (attendance, leave, regularisation, gate pass, visitors,
+// reimbursements, recruitment, workforce, data quality) plus period-over-period department spikes. Each item says what was
+// observed, what it was compared with, why it was raised and who should look. These are prompts to verify.
+const OWNER = { Attendance: 'HR / reporting manager', Leave: 'HR / reporting manager', Regularisation: 'HR / approvers', 'Gate pass': 'Security / gate admin', Visitors: 'Security', Reimbursements: 'Finance', Recruitment: 'HR recruitment', Workforce: 'HR / department head', 'Data quality': 'HR operations' };
+export const ABN_DOMAINS = Object.keys(OWNER);
+function collectAbnormalities({ ctx, model, scope, from, to, today, cur, prev, exceptions, patterns, dq }) {
+  const cfg = ctx.cfg, days = diffDays(from, to) + 1, out = [];
+  const period = `${fmtD(from)} – ${fmtD(to)}`;
+  // Critical is reserved for integrity failures; rule-based indicators top out at High, and the ones that are very often a
+  // missed punch or a device problem (hours, incomplete / missing records) at Medium.
+  const SOFT = new Set(['Unusually high working hours', 'Implausibly low working hours', 'Incomplete punch sessions', 'Attendance missing on scheduled days', 'Unusually high working hours']);
+  const norm = (type, sev, allowCritical) => (SOFT.has(type) && SEV_RANK[sev] > SEV_RANK.Medium ? 'Medium' : (sev === 'Critical' && !allowCritical ? 'High' : sev));
+  const A = (domain, type, sev0, o) => out.push({ domain, type, sev: norm(type, sev0, o.allowCritical), subject: o.subject || '', code: o.code || '', dept: o.dept || '', period: o.period || period, observed: o.observed ?? '', baseline: o.baseline ?? '', variance: o.variance ?? '', dates: o.dates || '', why: o.why || '', action: o.action || '', owner: o.owner || OWNER[domain] });
+
+  // attendance + leave patterns (already evidence-based)
+  for (const x of exceptions) A(x.type.startsWith('Conflict') || /dropped|concentrated/.test(x.type) ? 'Attendance' : 'Attendance', x.type, x.sev, { subject: x.name || x.dept, code: x.code, dept: x.dept, period: x.period, observed: x.observed, baseline: x.baseline, variance: x.variance, dates: x.dates, why: x.why, action: x.verify });
+  for (const x of patterns) A('Leave', x.type, x.sev, { subject: x.name || x.dept, code: x.code, dept: x.dept, observed: x.observed, baseline: x.baseline, dates: x.dates, why: x.why, action: x.verify });
+  for (const p of (cur.leaveD?.pendingLong || [])) A('Leave', 'Leave request pending too long', sevFor(p.age / cfg.leavePendingDays), { subject: p.e?.name, code: p.e?.code, dept: p.e?.dept, observed: `${p.age} days waiting`, baseline: `Decision within ${cfg.leavePendingDays} days`, why: 'Approver has not acted, which also leaves attendance and balances unsettled.', action: 'Approver to approve or reject.' });
+
+  // regularisation
+  for (const m of cur.reg.managers) if (m.overSla > 0) A('Regularisation', 'Approver with requests past SLA', sevFor(Math.max(m.overSla / 3, m.oldest / (cfg.regApprovalSlaDays * 3))), { subject: m.name, observed: `${m.pending} pending, ${m.overSla} past SLA, oldest ${m.oldest} days`, baseline: `Approval within ${cfg.regApprovalSlaDays} days`, why: 'Employees are waiting on this approver to correct their attendance.', action: 'Remind the approver; escalate anything older than a week.' });
+  if (cur.reg.counts.total >= 20 && cur.reg.counts.late / cur.reg.counts.total >= 0.4) A('Regularisation', 'Most requests raised long after the day', 'Medium', { subject: 'Company', observed: `${cur.reg.counts.late} of ${cur.reg.counts.total} raised > ${cfg.regLateDays} days late`, baseline: 'Corrections raised within a week', why: 'Late corrections often mean punches are not being checked daily.', action: 'Remind employees to review and regularise within the week.' });
+  if (cur.reg.counts.afterCutoff > 0) A('Regularisation', 'Attendance changed after the month closed', cur.reg.counts.afterCutoff >= 20 ? 'High' : 'Medium', { subject: 'Company', observed: `${cur.reg.counts.afterCutoff} approvals after month end`, baseline: '0 after the reporting cut-off', why: 'Numbers already reported for that month have since changed.', action: 'HR to confirm payroll / MIS for the earlier month were not affected.' });
+  if (prev && prev.reg.counts.total >= 10 && cur.reg.counts.total >= 1.5 * prev.reg.counts.total) A('Regularisation', 'Regularisation requests jumped', sevFor(cur.reg.counts.total / prev.reg.counts.total / 1.5), { subject: 'Company', observed: cur.reg.counts.total, baseline: prev.reg.counts.total, variance: `+${Math.round((cur.reg.counts.total / prev.reg.counts.total - 1) * 100)}%`, why: 'Request volume is at least 50% above the comparison period.', action: 'Check biometric device uptime and any policy or shift change.' });
+
+  // gate pass
+  for (const x of cur.gp.exceptions) A('Gate pass', x.kind, x.sev, { subject: x.name, code: x.code, dept: x.dept, period: x.date ? fmtD(x.date) : period, observed: x.actual, baseline: x.expected, why: x.why, action: x.action });
+  if (prev) for (const [dp, n] of Object.entries(cur.gp.counts.byDept)) { const pv = prev.gp.counts.byDept[dp] || 0; if (n >= 8 && pv >= 3 && n >= 1.5 * pv) A('Gate pass', 'Department gate passes jumped', sevFor(n / pv / 1.5), { subject: dp, dept: dp, observed: n, baseline: pv, variance: `+${Math.round((n / pv - 1) * 100)}%`, why: 'Outings from this department are at least 50% above the comparison period.', action: 'Department head to review the reasons.' }); }
+
+  // visitors
+  for (const i of cur.vs.issues) A('Visitors', i.kind, 'Medium', { subject: i.visitor, dept: i.dept, period: fmtD(i.date), why: i.why, action: i.action });
+  const byMob = {}; for (const r of cur.vs.rows) if (r.mobile) (byMob[r.mobile] ||= []).push(r);
+  for (const rows of Object.values(byMob)) if (rows.length >= 3) A('Visitors', 'Same visitor many times', 'Low', { subject: rows[0].visitor, observed: `${rows.length} visits`, baseline: 'Occasional visits', why: 'A frequent visitor may need a regular pass or vendor registration.', action: 'Security to confirm purpose and approvals.' });
+  for (const r of cur.vs.rows) if (r.status === 'Pending Approval' && r.date && diffDays(r.date, today) >= 2) A('Visitors', 'Visitor request never approved', 'Low', { subject: r.visitor, dept: r.dept, period: fmtD(r.date), observed: `${diffDays(r.date, today)} days pending`, why: 'The host has not approved or rejected the visit.', action: 'Host to action or cancel the request.' });
+
+  // reimbursements
+  for (const i of cur.rb.issues) A('Reimbursements', i.kind, i.kind === 'Possible duplicate claim' ? 'High' : 'Medium', { subject: i.name, code: i.code, dept: i.dept, period: i.date ? fmtD(i.date) : period, observed: i.amount == null ? '' : `Rs. ${Math.round(i.amount).toLocaleString('en-IN')}`, why: i.why, action: i.action });
+  const byType = {}; for (const r of cur.rb.rows) (byType[r.type] ||= []).push(r);
+  for (const [t, rows] of Object.entries(byType)) if (rows.length >= 5) { const vals = rows.map(r => r.amount), lim = Math.max(3 * median(vals), mean(vals) + 3 * sd(vals)); for (const r of rows) if (r.amount > lim && r.amount > 0) A('Reimbursements', 'Unusually high claim', 'Medium', { subject: r.name, code: r.code, dept: r.dept, period: fmtD(r.date), observed: `Rs. ${Math.round(r.amount).toLocaleString('en-IN')}`, baseline: `Typical ${t}: Rs. ${Math.round(median(vals)).toLocaleString('en-IN')}`, why: 'Amount is far above other claims of the same type.', action: 'Finance to check the receipt.' }); }
+
+  // recruitment
+  for (const r of cur.rc.rowsReq) {
+    if (r.remaining > 0 && r.age > cfg.vacancyAgeDays) A('Recruitment', 'Vacancy open too long', sevFor(r.age / cfg.vacancyAgeDays), { subject: r.title, dept: r.dept, observed: `${r.age} days open, ${r.remaining} position(s) left`, baseline: `Filled within ${cfg.vacancyAgeDays} days`, why: 'Hiring is slower than the configured ageing threshold.', action: 'Review sourcing, interview feedback and offer turnaround.' });
+    if (r.remaining > 0 && r.age >= 14 && r.candidates === 0) A('Recruitment', 'Requisition with no applicants', 'Medium', { subject: r.title, dept: r.dept, observed: `${r.age} days, 0 candidates`, baseline: 'Applicants within 2 weeks', why: 'No candidate has applied or been added since publishing.', action: 'Check the job post, careers page and sourcing plan.' });
+    else if (r.remaining > 0 && r.candidates > 0 && r.lastActivity && diffDays(r.lastActivity, today) > cfg.reqStaleDays) A('Recruitment', 'No recent recruitment activity', 'Low', { subject: r.title, dept: r.dept, observed: `last candidate ${fmtD(r.lastActivity)}`, baseline: `Activity within ${cfg.reqStaleDays} days`, why: 'The pipeline has gone quiet.', action: 'Recruiter to refresh sourcing or close the requisition.' });
+  }
+  for (const r of cur.rc.unapproved) A('Recruitment', 'Published without full approval', 'High', { subject: r.position_title, dept: r.department || 'Unassigned', observed: `Manager: ${r.manager_approval_status || 'n/a'}, HR: ${r.hr_approval_status || 'n/a'}`, baseline: 'Both approved before publishing', why: 'A live requisition is missing an approval.', action: 'Complete the approval workflow or unpublish.' });
+
+  // workforce
+  for (const w of cur.wf.list) {
+    const vac = cur.rc.byDept.find(x => x.dept === w.dept);
+    if (vac && vac.open > 0 && w.net < 0) A('Workforce', 'Headcount falling while hiring', 'Medium', { subject: w.dept, dept: w.dept, observed: `${w.net} net, ${vac.open} open position(s)`, baseline: 'Stable or growing', why: 'Exits are outpacing hiring in a department that is trying to recruit.', action: 'Prioritise offers and joining dates.' });
+    const pw = prev?.wf.list.find(x => x.dept === w.dept);
+    if (pw && w.exits >= 3 && w.exits >= 2 * Math.max(pw.exits, 1)) A('Workforce', 'Exits spiked', sevFor(w.exits / Math.max(pw.exits, 1) / 2), { subject: w.dept, dept: w.dept, observed: w.exits, baseline: pw.exits, why: 'Exits are at least double the comparison period (and at least 3).', action: 'HR to review exit reasons for a pattern.' });
+  }
+  if (prev && cur.wf.company.exits >= 4 && cur.wf.company.exits >= 2 * Math.max(prev.wf.company.exits, 1)) A('Workforce', 'Company exits spiked', 'High', { subject: 'Company', observed: cur.wf.company.exits, baseline: prev.wf.company.exits, why: 'Exits are at least double the comparison period.', action: 'Management to review attrition drivers.' });
+  if (!cur.wf.company.reconciles) A('Workforce', 'Headcount does not reconcile', 'Critical', { subject: 'Company', observed: `${cur.wf.company.opening} + ${cur.wf.company.joinings} − ${cur.wf.company.exits} ≠ ${cur.wf.company.closing}`, why: 'Opening + joinings − exits (+/− transfers) should equal closing.', action: 'Fix employee dates (see Data quality) before using headcount figures.', allowCritical: true });
+
+  // department attendance spikes vs the comparison period (enough sample; percentage-point change)
+  if (prev) for (const [dp, v] of Object.entries(cur.att.perDept)) {
+    const pv = prev.att.perDept[dp]; if (!pv || v.sched < cfg.minSample || pv.sched < cfg.minSample) continue;
+    const rate = (x, n) => (n ? (x / n) * 100 : 0);
+    const abs = rate(v.absent, v.sched) - rate(pv.absent, pv.sched), late = rate(v.lateArrivals, v.sched) - rate(pv.lateArrivals, pv.sched), miss = rate(v.missing, v.sched) - rate(pv.missing, pv.sched);
+    if (abs >= 3) A('Attendance', 'Department absence rate rose', sevFor(abs / 3), { subject: dp, dept: dp, observed: `${r1(rate(v.absent, v.sched))}% of scheduled days`, baseline: `${r1(rate(pv.absent, pv.sched))}% previously`, variance: `+${r1(abs)} pts`, why: 'Absent days rose by 3 or more percentage points on a meaningful sample.', action: 'Department head to review.' });
+    if (late >= 3) A('Attendance', 'Department late arrivals rose', sevFor(late / 3), { subject: dp, dept: dp, observed: `${r1(rate(v.lateArrivals, v.sched))}% of scheduled days`, baseline: `${r1(rate(pv.lateArrivals, pv.sched))}% previously`, variance: `+${r1(late)} pts`, why: 'Late arrivals rose by 3 or more percentage points.', action: 'Check shift timing, transport or gate delays.' });
+    if (miss >= 3) A('Attendance', 'Department missing records rose', sevFor(miss / 3), { subject: dp, dept: dp, observed: `${r1(rate(v.missing, v.sched))}% of scheduled days`, baseline: `${r1(rate(pv.missing, pv.sched))}% previously`, variance: `+${r1(miss)} pts`, why: 'Scheduled days without a record rose by 3 or more percentage points.', action: 'Reprocess attendance and check device sync.' });
+  }
+  if (prev && cur.att.total.sched >= cfg.minSample) { const d = (prev.att.total.rates.compliance ?? 0) - (cur.att.total.rates.compliance ?? 0); if (d >= cfg.complianceDropPp) A('Attendance', 'Company compliance dropped', sevFor(d / cfg.complianceDropPp), { subject: 'Company', observed: `${cur.att.total.rates.compliance}%`, baseline: `${prev.att.total.rates.compliance}% previously`, variance: `-${r1(d)} pts`, why: 'Share of scheduled days neither absent nor missing fell.', action: 'Management to review across departments.' }); }
+
+  // data quality
+  const SEVMAP = { Critical: 'Critical', High: 'High', Medium: 'Medium', Low: 'Low' };
+  for (const d of dq) if (d.count > 0) A('Data quality', d.title, SEVMAP[d.sev] || 'Low', { subject: d.source, observed: `${d.count} record(s)`, baseline: '0', why: d.cause, action: d.fix, dates: d.samples.slice(0, 3).join('; '), allowCritical: true });
+
+  out.sort((a, b) => (SEV_RANK[b.sev] || 0) - (SEV_RANK[a.sev] || 0) || a.domain.localeCompare(b.domain));
+  return out;
+}
+const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+function summariseAbnormalities(list) {
+  const sevs = ['Critical', 'High', 'Medium', 'Low'];
+  const byDomain = {}; for (const d of ABN_DOMAINS) byDomain[d] = { domain: d, total: 0, Critical: 0, High: 0, Medium: 0, Low: 0 };
+  const bySeverity = { Critical: 0, High: 0, Medium: 0, Low: 0 };
+  for (const x of list) { const sv = sevs.includes(x.sev) ? x.sev : 'Low'; byDomain[x.domain].total++; byDomain[x.domain][sv]++; bySeverity[sv]++; }
+  const byDept = {}; for (const x of list) if (x.dept && x.dept !== 'Company') { const o = (byDept[x.dept] ||= { dept: x.dept, total: 0, serious: 0 }); o.total++; if (['Critical', 'High'].includes(x.sev)) o.serious++; }
+  return { total: list.length, bySeverity, byDomain: Object.values(byDomain), hotDepartments: Object.values(byDept).sort((a, b) => b.serious - a.serious || b.total - a.total).slice(0, 8), top: list.slice(0, 40) };
+}
+
 // ── main entry ────────────────────────────────────────────────────────────
 const CACHE = new Map();
 const CACHE_TTL = 60 * 1000;
@@ -961,6 +1048,8 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
   const kpis = buildKpis(cur, prev);
   const insights = buildInsights({ ctx, model, scope, period, cmp, cur, prev, noLeave, exceptions, today });
   const dq = computeDataQuality(ctx, model, scope, today, attD, cur.wf);
+  const abnList = collectAbnormalities({ ctx, model, scope, from, to, today, cur, prev, exceptions, patterns, dq });
+  const abnormalities = summariseAbnormalities(abnList);
 
   // department summary
   const deptNames = [...new Set([...ctx.depts.map(d => d.name), ...Object.keys(attD.perDept), ...cur.wf.list.map(x => x.dept), 'Unassigned'])].filter(Boolean);
@@ -995,6 +1084,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
   const registers = {
     regularisation: regD.rows, gatepass: gpD.rows, gatepass_exceptions: gpD.exceptions, leave: leaveD.rows, exceptions, leave_patterns: patterns,
     vacancies: cur.rc.rowsReq, visitors: vsD.rows, reimbursements: cur.rb.rows, reimbursement_issues: cur.rb.issues, visitor_issues: vsD.issues, data_quality: dq.flatMap(d => d.samples.map(s => ({ check: d.title, record: s, source: d.source }))),
+    abnormalities: abnList, ...Object.fromEntries(ABN_DOMAINS.map(d => [`abn_domain_${slug(d)}`, abnList.filter(x => x.domain === d)])), ...Object.fromEntries(['Critical', 'High', 'Medium', 'Low'].map(s => [`abn_sev_${s}`, abnList.filter(x => x.sev === s)])),
     attendance_days: attD.dayRows, new_requisitions: cur.rc.newReqList, new_candidates: cur.rc.newCandList,
     transfers: cur.wf.transferList.map(t => ({ code: t.e.code, name: t.e.name, from: t.from, to: t.to, date: t.at })),
     joiners: cur.wf.joinList.map(e => ({ code: e.code, name: e.name, dept: e.dept, designation: e.designation, date: e.doj, location: e.loc })),
@@ -1034,7 +1124,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
     gatepass: { counts: gpD.counts, prev: prev?.gp.counts || null, exceptions: gpD.exceptions.slice(0, 100), exceptionCount: gpD.exceptions.length },
     visitors: { counts: vsD.counts, prev: prev?.vs.counts || null, issues: vsD.issues.slice(0, 30) },
     reimbursements: { counts: cur.rb.counts, prev: prev?.rb.counts || null, issues: cur.rb.issues.slice(0, 50) },
-    departments, insights, dataQuality: dq, limitations,
+    departments, insights, dataQuality: dq, abnormalities, limitations,
     reconciliation: reconcile(attD, cur, departments),
     _registers: registers, _cfgKeys: Object.keys(cfg),
   };

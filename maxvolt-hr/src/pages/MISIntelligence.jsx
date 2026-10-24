@@ -6,10 +6,10 @@ import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { mis, downloadBase64, fmtD, todayIST, PERIODS, COMPARES } from '@/lib/mis';
-import { OverviewTab, AttendanceTab, ExceptionsTab, LeaveTab, WorkforceTab, DepartmentsTab, GatePassTab, VisitorsTab, ReimbursementsTab, InsightsTab, DataQualityTab } from '@/components/misx/tabs';
+import { OverviewTab, AttendanceTab, AbnormalitiesTab, ExceptionsTab, LeaveTab, WorkforceTab, DepartmentsTab, GatePassTab, VisitorsTab, ReimbursementsTab, InsightsTab, DataQualityTab } from '@/components/misx/tabs';
 
 const TABS = [
-  ['overview', 'Overview'], ['attendance', 'Attendance'], ['exceptions', 'Exceptions'], ['leave', 'Leave'], ['workforce', 'Workforce & recruitment'],
+  ['overview', 'Overview'], ['abnormalities', 'Abnormalities'], ['attendance', 'Attendance'], ['exceptions', 'Exceptions'], ['leave', 'Leave'], ['workforce', 'Workforce & recruitment'],
   ['departments', 'Departments'], ['gatepass', 'Gate pass'], ['visitors', 'Visitors'], ['reimbursements', 'Reimbursements'], ['insights', 'Insights'], ['quality', 'Data quality'],
 ];
 const LINK_TAB = { regularisation: 'attendance', workforce: 'workforce', attendance: 'attendance', leave: 'leave', exceptions: 'exceptions', gatepass: 'gatepass', visitors: 'visitors', reimbursements: 'reimbursements', departments: 'departments' };
@@ -58,6 +58,7 @@ export default function MISIntelligence() {
     if (!data) return null;
     const common = { d: data, params: regParams, setTab, applyFilter, canTransfer: ['hr', 'admin'].includes(role), onRefresh: () => load(true) };
     switch (tab) {
+      case 'abnormalities': return <AbnormalitiesTab {...common} />;
       case 'attendance': return <AttendanceTab {...common} />;
       case 'exceptions': return <ExceptionsTab {...common} />;
       case 'leave': return <LeaveTab {...common} />;
@@ -121,7 +122,7 @@ export default function MISIntelligence() {
         <div className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 flex items-start gap-2"><AlertTriangle className="w-5 h-5 shrink-0" /><div><b>MIS data could not be retrieved.</b> {error}<div className="text-xs mt-1">No figures are shown for this request — a failed retrieval is never displayed as zeros.{data ? ' The figures below are from the previous successful request, not the one you asked for.' : ''}</div><button className="underline mt-1" onClick={() => load(true)}>Try again</button></div></div>
       )}
 
-      <div className="border-b border-gray-200 overflow-x-auto"><div className="flex gap-1 min-w-max">{visibleTabs.map(([id, label]) => <button key={id} onClick={() => setTab(id)} className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 -mb-px ${tab === id ? 'border-blue-600 text-blue-700 font-medium' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>{label}{id === 'insights' && data ? ` (${data.insights.filter(i => !['Resolved', 'Dismissed'].includes(i.status)).length})` : ''}</button>)}</div></div>
+      <div className="border-b border-gray-200 overflow-x-auto"><div className="flex gap-1 min-w-max">{visibleTabs.map(([id, label]) => <button key={id} onClick={() => setTab(id)} className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 -mb-px ${tab === id ? 'border-blue-600 text-blue-700 font-medium' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>{label}{id === 'insights' && data ? ` (${data.insights.filter(i => !['Resolved', 'Dismissed'].includes(i.status)).length})` : ''}{id === 'abnormalities' && data ? ` (${data.abnormalities.total})` : ''}</button>)}</div></div>
 
       <div className={loading && data ? 'opacity-60 pointer-events-none transition-opacity' : ''}>
         {!data && loading ? <div className="flex items-center justify-center py-24 text-gray-400 gap-2"><Loader2 className="w-5 h-5 animate-spin" />Calculating from live records…</div> : body()}
