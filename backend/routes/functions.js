@@ -6561,6 +6561,19 @@ router.post('/:name', async (req, res) => {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { period: misPeriod, date: misDate, department: misDept, department_wise: misDeptWise } = p;
       if (!['daily', 'weekly', 'monthly'].includes(misPeriod)) return res.json({ success: false, error: "period must be 'daily', 'weekly' or 'monthly'" });
+      // The export is the complete Intelligent MIS report (comparison, analytics, exceptions, registers). The previous
+      // layout is still available with classic: true.
+      if (!p.classic) {
+        const misA = await import('../utils/mis/analytics.js');
+        const misE = await import('../utils/mis/export.js');
+        let rr;
+        try {
+          rr = await misA.runAnalytics({ preset: misPeriod, anchor: misDate, compare: 'previous', filters: (!misDeptWise && misDept && misDept !== 'all') ? { department: misDept } : {} }, cu, { fresh: true });
+        } catch (e) { console.error('[mis] export analytics failed:', e); return res.json({ success: false, error: 'MIS data could not be retrieved: ' + e.message }); }
+        const wbI = await misE.buildMisIntelligenceWorkbook(misA.stripPrivate(rr), rr._registers, (await import('exceljs')).default, { departmentWise: !!misDeptWise });
+        console.log(`[audit] MIS export (${misPeriod}${misDeptWise ? ', department-wise' : ''}) by ${cu.id} for ${rr.meta.period.from}..${rr.meta.period.to}`);
+        return res.json({ success: true, base64: Buffer.from(wbI.buffer).toString('base64'), filename: wbI.filename, title: `${misPeriod[0].toUpperCase() + misPeriod.slice(1)} MIS — ${rr.meta.period.label}`, counts: { employees: rr.meta.employeesInScope, insights: rr.insights.length, exceptions: rr.attendance.exceptionCount } });
+      }
       const { buildMisWorkbook } = await import('../utils/misReport.js');
       const ExcelJSmis = (await import('exceljs')).default;
       const mis = await buildMisWorkbook({ period: misPeriod, date: misDate, department: misDept, departmentWise: !!misDeptWise }, ExcelJSmis);

@@ -198,7 +198,7 @@ export function computeAttendance(ctx, model, scope, from, to, today, { detail =
   const cfg = ctx.cfg, cover = ctx._cover || (ctx._cover = approvedLeaveCover(ctx));
   const days = eachDay(from, to);
   const total = newAcc(), perDept = {}, perDay = {};
-  const perEmp = new Map(), conflicts = [], dateMissing = {};
+  const perEmp = new Map(), conflicts = [], dateMissing = {}, dayRows = [];
   for (const d of days) perDay[d] = { date: d, ...newAcc() };
   for (const e of scope.scopeEmps) {
     if (e.exempt) continue;
@@ -210,6 +210,7 @@ export function computeAttendance(ctx, model, scope, from, to, today, { detail =
       const c = classifyDay(model, e, d, rec, today);
       if (c.cat === 'offday' || c.cat === 'future') continue;
       addToAcc(acc, c, rec); addToAcc(total, c, rec); addToAcc(dd, c, rec); addToAcc(perDay[d], c, rec);
+      if (detail && days.length <= 62) dayRows.push({ uid: e.uid, code: e.code, name: e.name, dept: e.dept, designation: e.designation, date: d, cat: c.cat, label: c.cat === 'offday_work' ? 'Worked on off-day' : label(c.cat === 'short' ? 'short_attendance' : c.cat === 'half' ? 'half_day' : c.cat === 'wfh' ? 'work_from_home' : c.cat === 'od' ? 'on_duty' : c.cat), in: rec?.ci || '', out: rec?.co || '', hours: rec && rec.mins ? r1(rec.mins / 60) : '', late: !!c.lateFlag });
       if (c.cat === 'offday_work' || c.cat === 'pending') continue;
       if (c.cat === 'missing') { missingDates.push(d); dateMissing[d] = (dateMissing[d] || 0) + 1; }
       if (c.incomplete) incompleteDates.push(d);
@@ -233,7 +234,7 @@ export function computeAttendance(ctx, model, scope, from, to, today, { detail =
     perEmp.set(e.uid, { e, acc, unexplainedAbsent, lateDates, missingDates, incompleteDates, lowHoursDates, highHoursDates });
   }
   for (const k of Object.keys(perDept)) perDept[k].rates = rates(perDept[k]);
-  return { total: { ...total, rates: rates(total) }, perDept, perDay: days.map(d => ({ ...perDay[d], rates: rates(perDay[d]), holiday: model.isHoliday('', d) })), perEmp, conflicts, dateMissing, days };
+  return { dayRows, total: { ...total, rates: rates(total) }, perDept, perDay: days.map(d => ({ ...perDay[d], rates: rates(perDay[d]), holiday: model.isHoliday('', d) })), perEmp, conflicts, dateMissing, days };
 }
 
 // ── regularisation ────────────────────────────────────────────────────────
@@ -554,7 +555,10 @@ export function computeRecruitment(ctx, model, scope, from, to, today, { detail 
     stageEvents: events,
     cancelledOrClosedUnfilled: reqs.filter(r => r.status === 'closed' && r.closed_reason === 'closed' && dayOf(r.closed_date) >= from && dayOf(r.closed_date) <= to).length,
   };
-  return { timing, counts, openVacancies, openReqs: rowsReq.length, rowsReq, byDept: Object.values(byDept).sort((a, b) => b.open - a.open), stage, funnel, offersReleased: cands.filter(c => OFFER_RELEASED.has(c.status)).length, offersAccepted, offersDeclined: cands.filter(c => ['offer_declined', 'offer_rejected'].includes(c.status)).length, rejected: cands.filter(c => c.status === 'rejected').length, unapproved: live.filter(r => !(r.manager_approval_status === 'approved' && r.hr_approval_status === 'approved')) };
+  const newReqList = reqs.filter(r => reqDay(r) >= from && reqDay(r) <= to).map(r => ({ title: r.position_title || '', dept: r.department || 'Unassigned', positions: num(r.number_of_positions) || 1, status: label(r.status), raised: reqDay(r), location: r.location || '', priority: label(r.priority), approved: r.manager_approval_status === 'approved' && r.hr_approval_status === 'approved' ? 'Yes' : 'No' }));
+  const reqById = {}; for (const r of reqs) reqById[r.id] = r;
+  const newCandList = cands.filter(c => dayOf(c.applied_date || c._created) >= from && dayOf(c.applied_date || c._created) <= to).map(c => ({ name: c.full_name || '', position: c.position_applied || reqById[c.job_id]?.position_title || '', dept: c.department || reqById[c.job_id]?.department || 'Unassigned', stage: label(c.status), source: c.source || '', applied: dayOf(c.applied_date || c._created), experience: c.experience_years ?? '' }));
+  return { newReqList, newCandList, timing, counts, openVacancies, openReqs: rowsReq.length, rowsReq, byDept: Object.values(byDept).sort((a, b) => b.open - a.open), stage, funnel, offersReleased: cands.filter(c => OFFER_RELEASED.has(c.status)).length, offersAccepted, offersDeclined: cands.filter(c => ['offer_declined', 'offer_rejected'].includes(c.status)).length, rejected: cands.filter(c => c.status === 'rejected').length, unapproved: live.filter(r => !(r.manager_approval_status === 'approved' && r.hr_approval_status === 'approved')) };
 }
 
 // ── gate passes ───────────────────────────────────────────────────────────
@@ -933,6 +937,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
   const registers = {
     regularisation: regD.rows, gatepass: gpD.rows, gatepass_exceptions: gpD.exceptions, leave: leaveD.rows, exceptions, leave_patterns: patterns,
     vacancies: cur.rc.rowsReq, visitors: vsD.rows, reimbursements: cur.rb.rows, reimbursement_issues: cur.rb.issues, visitor_issues: vsD.issues, data_quality: dq.flatMap(d => d.samples.map(s => ({ check: d.title, record: s, source: d.source }))),
+    attendance_days: attD.dayRows, new_requisitions: cur.rc.newReqList, new_candidates: cur.rc.newCandList,
     transfers: cur.wf.transferList.map(t => ({ code: t.e.code, name: t.e.name, from: t.from, to: t.to, date: t.at })),
     joiners: cur.wf.joinList.map(e => ({ code: e.code, name: e.name, dept: e.dept, designation: e.designation, date: e.doj, location: e.loc })),
     exits: cur.wf.exitList.map(e => ({ code: e.code, name: e.name, dept: e.dept, designation: e.designation, date: e.lwd })),

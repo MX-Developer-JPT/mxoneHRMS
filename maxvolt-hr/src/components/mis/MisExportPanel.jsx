@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
-import { Download, Loader2, FileSpreadsheet, FileText, BarChart3 } from 'lucide-react';
+import { Download, Loader2, FileSpreadsheet, FileText } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { downloadBase64 } from '@/lib/mis';
@@ -25,11 +25,11 @@ export default function MisExportPanel() {
       .catch(() => {});
   }, []);
 
-  const run = async (departmentWise) => {
+  const run = async (departmentWise, classic = false) => {
     setBusy(departmentWise ? 'dw' : 'main');
     try {
       toast.info('Preparing MIS report…');
-      const res = await base44.functions.invoke('exportMIS', { period, date, department: departmentWise ? 'all' : department, department_wise: departmentWise });
+      const res = await base44.functions.invoke('exportMIS', { period, date, department: departmentWise ? 'all' : department, department_wise: departmentWise, classic });
       const d = res?.data || res;
       if (!d?.success) { toast.error(d?.error || 'MIS export failed'); return; }
       const bytes = Uint8Array.from(atob(d.base64), c => c.charCodeAt(0));
@@ -85,21 +85,18 @@ export default function MisExportPanel() {
           </select>
         </label>
         <Button size="sm" onClick={() => run(false)} disabled={!!busy} className="gap-2 bg-green-600 hover:bg-green-700 text-white">
-          {busy === 'main' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Export MIS
+          {busy === 'main' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Export MIS (complete report)
         </Button>
         <Button size="sm" variant="outline" onClick={() => run(true)} disabled={!!busy} className="gap-2">
           {busy === 'dw' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Department-wise MIS
         </Button>
       </div>
       <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 mr-2"><BarChart3 className="w-4 h-4 text-blue-600" /> Intelligent MIS</div>
-        <Button size="sm" onClick={() => runIntelligent('xlsx')} disabled={!!busy} className="gap-2 bg-blue-600 hover:bg-blue-700 text-white">
-          {busy === 'ixlsx' ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />} Excel
-        </Button>
         <Button size="sm" variant="outline" onClick={() => runIntelligent('pdf')} disabled={!!busy} className="gap-2">
-          {busy === 'ipdf' ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />} PDF
+          {busy === 'ipdf' ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />} Management PDF
         </Button>
-        <span className="text-xs text-gray-500 max-w-xl">Adds comparison with the previous period, attendance exceptions, leave analytics, workforce &amp; recruitment, gate pass, insights and reconciliation. Uses the period and department above. <Link className="text-blue-700 underline" to={createPageUrl('MISIntelligence')}>Open the interactive dashboard →</Link></span>
+        <Button size="sm" variant="ghost" onClick={() => run(false, true)} disabled={!!busy} className="gap-2 text-gray-600">Classic layout (Excel)</Button>
+        <span className="text-xs text-gray-500 max-w-2xl">The Excel export is the complete report: written summary, comparison with the previous period, attendance, leave, workforce &amp; recruitment, gate pass, visitors, reimbursements, exceptions, insights, data quality and day-by-day registers. <Link className="text-blue-700 underline" to={createPageUrl('MISIntelligence')}>Open the interactive dashboard →</Link></span>
       </div>
     </div>
   );

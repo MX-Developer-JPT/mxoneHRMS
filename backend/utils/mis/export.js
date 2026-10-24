@@ -10,6 +10,34 @@ const bd = () => ({ top: { style: 'thin', color: { argb: 'FFD1D5DB' } }, left: {
 const fmtPct = (v) => (v == null ? 'n/a' : `${v}%`);
 const chgText = (k) => (k.pct != null ? `${k.pct > 0 ? '+' : ''}${k.pct}%` : (k.note || '—'));
 
+// Plain-language findings, every sentence built from the report's own numbers (and the comparison period when there is one).
+const rs = (v) => `Rs. ${Math.round(v || 0).toLocaleString('en-IN')}`;
+const delta = (cur, prev, unit = '') => (prev == null ? '' : ` (previous: ${prev}${unit}, ${cur - prev > 0 ? '+' : ''}${Math.round((cur - prev) * 10) / 10}${unit === '%' ? ' pts' : ''})`);
+export function buildNarrative(res) {
+  const m = res.meta, A = res.attendance, T = A.total, P = A.prevTotal, W = res.workforce, co = W.company, pc = W.prevCompany, L = res.leave, R = res.regularisation, G = res.gatepass.counts;
+  const out = [];
+  const cmp = m.compare ? m.compare.label.charAt(0).toLowerCase() + m.compare.label.slice(1) : null;
+  out.push({ h: 'Workforce', t: `Active headcount closed at ${co.closing}${pc ? ` against ${pc.closing} in the ${cmp}` : ''}; over the period there were ${co.joinings} joining(s) and ${co.exits} exit(s)${(W.transfers.available || W.transfers.partial) ? ` and ${co.transfers} department transfer(s)` : ''}, a net change of ${co.net > 0 ? '+' : ''}${co.net} from the opening headcount of ${co.opening}.${W.recruitment ? ` ${W.recruitment.openVacancies} approved position(s) are still open across ${W.recruitment.openReqs} requisition(s).` : ''}` });
+  out.push({ h: 'Attendance', t: `Across ${T.sched} scheduled employee-days, physical presence was ${fmtPct(T.rates.physical)}${delta(T.rates.physical, P?.rates.physical, '%')} and attendance compliance (days neither absent nor missing) ${fmtPct(T.rates.compliance)}${delta(T.rates.compliance, P?.rates.compliance, '%')}. There were ${T.absent} absent day(s)${P ? ` (previous ${P.absent})` : ''}, ${T.lateArrivals} late arrival(s)${P ? ` (previous ${P.lateArrivals})` : ''}, ${T.wfh} WFH, ${T.od} on-duty and ${T.leave} approved-leave day(s); ${T.missing} scheduled day(s) have no attendance record and ${T.incomplete} have an incomplete punch session.` });
+  const ranked = res.departments.filter(d => d.compliance != null && d.sched >= (m.config?.minSample ?? 30)).sort((a, b) => a.compliance - b.compliance);
+  if (ranked.length >= 2) out.push({ h: 'Departments', t: `Lowest attendance compliance: ${ranked.slice(0, 3).map(d => `${d.dept} ${d.compliance}%`).join(', ')}. Highest: ${ranked.slice(-3).reverse().map(d => `${d.dept} ${d.compliance}%`).join(', ')}.${res.insights.filter(i => i.rule === 'compliance_drop' || /compliance fell/.test(i.title)).length ? ` Compliance fell noticeably in ${res.insights.filter(i => /compliance fell/.test(i.title)).slice(0, 3).map(i => i.dept).join(', ')} compared with the ${cmp || 'earlier period'}.` : ''}` });
+  out.push({ h: 'Regularisation', t: `${R.counts.total} regularisation request(s) were submitted (${R.counts.approved} approved, ${R.counts.rejected} rejected, ${R.counts.pending + R.counts.awaitingHr} still pending); ${R.counts.late} were raised more than ${m.config?.regLateDays ?? 7} days after the attendance date${R.counts.avgApprovalHours != null ? ` and approvals took ${R.counts.avgApprovalHours} hours on average` : ''}. Today ${res.regularisation.backlog} request(s) are waiting, ${res.regularisation.backlogOverSla} beyond the ${m.config?.regApprovalSlaDays ?? 3}-day SLA.` });
+  const nl90 = L.noLeave[90] || L.noLeave[Object.keys(L.noLeave)[0]];
+  out.push({ h: 'Leave', t: `${L.counts.requests} leave request(s) were submitted${L.prev ? ` (previous ${L.prev.requests})` : ''}; approved leave came to ${L.counts.approvedDays} day(s)${L.prev ? ` (previous ${L.prev.approvedDays})` : ''}${L.counts.shortNotice ? `, ${L.counts.shortNotice} at short notice` : ''}.${nl90 ? ` ${nl90.total} employee(s) have no leave application in the last ${nl90.window} days — ${nl90.byClass['Consistently present'] || 0} consistently present, ${nl90.byClass['Requires review'] || 0} needing review and the rest explained by WFH/OD, regularised or incomplete attendance, new joining or special arrangements.` : ''} ${L.patternCount} leave-pattern indicator(s) were raised for verification.` });
+  if (W.recruitment) {
+    const rc = W.recruitment, tm = W.timing;
+    out.push({ h: 'Recruitment', t: `${rc.counts.raised} requisition(s) were raised and ${rc.counts.applied} application(s) received in the period; ${rc.offers.released} candidate(s) are at offer stage (${rc.offers.accepted} accepted). ${rc.ageing.filter(r => r.age > (m.config?.vacancyAgeDays ?? 45) && r.remaining > 0).length} requisition(s) have been open beyond ${m.config?.vacancyAgeDays ?? 45} days.${tm.timeToFill ? ` Average time to fill is ${tm.timeToFill.avgDays} days (${tm.timeToFill.n} requisition(s)).` : ' Time to fill is not available yet — closure dates are being recorded from now on.'}` });
+  }
+  out.push({ h: 'Gate pass and visitors', t: `${G.total} gate pass(es) were issued${res.gatepass.prev ? ` (previous ${res.gatepass.prev.total})` : ''}: ${G.returned} marked returned, ${G.cancelled + G.rejected} cancelled or rejected, ${G.pending} awaiting approval and ${G.open} open (${G.overdue} overdue). ${G.autoClosed} were closed automatically by the system because no return was recorded or no manager acted, so they carry no real duration.${res.visitors ? ` ${res.visitors.counts.total} visitor(s) came (${res.visitors.counts.walkIn} walk-in); ${res.visitors.counts.missingCheckout} never checked out.` : ''}` });
+  if (res.reimbursements) { const B = res.reimbursements.counts; out.push({ h: 'Reimbursements', t: `${B.claims} claim(s) were submitted for ${rs(B.claimedAmt)}: ${rs(B.approvedAmt)} approved, ${rs(B.paidAmt)} confirmed paid and ${rs(B.outstandingAmt)} still outstanding.` }); }
+  const bad = res.dataQuality.filter(d => d.count && ['High', 'Critical'].includes(d.sev));
+  out.push({ h: 'Data quality', t: `${res.reconciliation.every(r => r.ok) ? 'All reconciliation checks pass' : `${res.reconciliation.filter(r => !r.ok).length} reconciliation check(s) FAILED`}. ${bad.length ? `High-severity data issues: ${bad.slice(0, 4).map(d => `${d.title} (${d.count})`).join('; ')}.` : 'No high-severity data issues.'}` });
+  const top = res.insights.filter(i => i.status !== 'Dismissed' && i.severity !== 'Informational').slice(0, 4);
+  if (top.length) out.push({ h: 'Needs attention', t: top.map(i => `${i.title} — ${i.action}`).join('  ·  ') });
+  return out;
+}
+
+
 export const METRIC_DEFINITIONS = [
   ['Active headcount', 'Employees with a joining date on/before the last day of the period and not past their last working day. Counts people, not attendance days.'],
   ['Joinings / Exits', 'Joining = date of joining in the period. Exit = last working day in the period; the separation takes effect the next day, so closing headcount = opening + joinings − exits.'],
@@ -68,7 +96,7 @@ function table(ws, heads, rows, widths = [], opts = {}) {
 const sum = (a, f) => a.reduce((s, x) => s + (Number(f(x)) || 0), 0);
 
 export async function buildMisIntelligenceWorkbook(res, registers, ExcelJS, opts = {}) {
-  const { includeInsights = true, includeExceptions = true, includeDetail = true } = opts;
+  const { includeInsights = true, includeExceptions = true, includeDetail = true, departmentWise = false } = opts;
   const wb = new ExcelJS.Workbook(); wb.creator = 'Maxvolt One'; wb.created = new Date();
   const m = res.meta, per = m.period, cmp = m.compare;
   const subtitle = `Period ${fmtD(per.from)} to ${fmtD(per.to)}   |   Comparison: ${cmp ? `${cmp.label} (${fmtD(cmp.from)} to ${fmtD(cmp.to)})` : 'none'}   |   Generated ${m.generatedAt.slice(0, 16).replace('T', ' ')} UTC   |   Scope: ${m.scoped ? 'Team (restricted)' : 'Company'}${Object.entries(m.filters || {}).filter(([, v]) => v && v !== 'all').map(([k, v]) => `   |   ${k}: ${v}`).join('')}`;
@@ -76,6 +104,12 @@ export async function buildMisIntelligenceWorkbook(res, registers, ExcelJS, opts
 
   // 1. Executive summary
   let ws = top('Executive Summary', 'Intelligent MIS · Executive Summary');
+  heading(ws, 'Summary of findings');
+  for (const n of buildNarrative(res)) {
+    const r = ws.addRow([n.h, n.t]); ws.mergeCells(r.number, 2, r.number, 7);
+    r.getCell(1).font = font(true, NAVY); r.getCell(2).font = font(); r.getCell(2).alignment = { wrapText: true, vertical: 'top' }; r.getCell(1).alignment = { vertical: 'top' };
+    r.height = Math.max(32, Math.ceil(n.t.length / 120) * 15);
+  }
   heading(ws, 'Key indicators');
   table(ws, ['Indicator', 'Current', 'Comparison', 'Change', 'Change %', 'Unit'], res.kpis.map(k => [k.label + (k.sub ? ` (${k.sub})` : ''), k.value, k.prev ?? 'n/a', k.abs ?? 'n/a', k.pct ?? chgText(k), k.unit]), [44, 14, 14, 12, 26, 14]);
   note(ws, 'ED = employee-days. Headcount is a count of people; the attendance indicators are counts of employee-days and must not be added to headcount.');
@@ -214,8 +248,58 @@ export async function buildMisIntelligenceWorkbook(res, registers, ExcelJS, opts
     detail('No Leave 90d', 'Employees with no leave application — last 90 days', ['Code', 'Employee', 'Department', 'Classification', 'Why', 'Scheduled days', 'Physical days', 'WFH', 'OD', 'Regularisations', 'Unexplained absences', 'Missing / incomplete'], nl.map(r => [r.code, r.name, r.dept, r.class, r.why, r.scheduled, r.physical, r.wfh, r.od, r.regularisations, r.absentUnexplained, r.missing]), [12, 24, 20, 30, 60, 12, 12, 7, 7, 15, 20, 18]);
     detail('Joiners and Exits', 'Joinings and exits in period', ['Type', 'Code', 'Employee', 'Department', 'Designation', 'Date', 'Location'], [...(registers.joiners || []).map(r => ['Joining', r.code, r.name, r.dept, r.designation, fmtD(r.date), r.location]), ...(registers.exits || []).map(r => ['Last working day', r.code, r.name, r.dept, r.designation, fmtD(r.date), '']), ...(registers.transfers || []).map(r => ['Transfer', r.code, r.name, `${r.from} → ${r.to}`, '', fmtD(r.date), ''])], [16, 12, 24, 22, 24, 14, 20]);
   }
+  if (includeDetail) {
+    const detail2 = (name, title, heads, rows, widths) => { const s = top(name, title); table(s, heads, rows, widths); s.views = [{ state: 'frozen', ySplit: 4, showGridLines: false }]; };
+    // day-by-day attendance: a muster grid (employee × day) and the long list with punch times
+    const dd = registers.attendance_days || [];
+    if (dd.length) {
+      const dates = [...new Set(dd.map(x => x.date))].sort();
+      const CODE = { Present: 'P', Late: 'L', 'Short Attendance': 'SA', 'Half Day': 'HD', 'Work From Home': 'WFH', 'On Duty': 'OD', Leave: 'LV', Absent: 'A', Missing: 'MR', 'Worked on off-day': 'W*' };
+      const byEmp = new Map();
+      for (const x of dd) { const k = x.uid; if (!byEmp.has(k)) byEmp.set(k, { code: x.code, name: x.name, dept: x.dept, days: {} }); byEmp.get(k).days[x.date] = CODE[x.label] || x.label; }
+      const ms = top('Attendance Muster', 'Attendance muster — employee × day');
+      note(ms, 'P present · L late · SA short attendance · HD half-day · WFH work from home · OD on duty · LV approved leave · A absent · MR missing record · W* worked on a weekly off / holiday. Blank = weekly off, holiday, before joining or after exit.');
+      table(ms, ['Code', 'Employee', 'Department', ...dates.map(d => d.slice(8) + '/' + d.slice(5, 7)), 'P+L+SA', 'A', 'MR'], [...byEmp.values()].map(e => { const v = dates.map(d => e.days[d] || ''); return [e.code, e.name, e.dept, ...v, v.filter(c => ['P', 'L', 'SA'].includes(c)).length, v.filter(c => c === 'A').length, v.filter(c => c === 'MR').length]; }), [12, 24, 20, ...dates.map(() => 6), 8, 6, 6]);
+      ms.views = [{ state: 'frozen', xSplit: 3, ySplit: 5, showGridLines: false }];
+      detail2('Daily Attendance', 'Day-wise attendance with punch times', ['Date', 'Code', 'Employee', 'Department', 'Designation', 'Status', 'Late', 'In', 'Out', 'Hours'], dd.map(x => [fmtD(x.date), x.code, x.name, x.dept, x.designation, x.label, x.late ? 'Yes' : '', (x.in || '').slice(11, 16), (x.out || '').slice(11, 16), x.hours]), [12, 12, 24, 20, 22, 20, 8, 8, 8, 8]);
+    }
+    detail2('Visitor Log', 'Visitor log', ['Type', 'Visitor', 'Company', 'Mobile', 'Host', 'Host department', 'Purpose', 'Status', 'Visit date', 'In', 'Out', 'Minutes'], (registers.visitors || []).map(v => [v.type, v.visitor, v.company, v.mobile, v.host, v.dept, v.purpose, v.status, fmtD(v.date), (v.in || '').slice(11, 16), (v.out || '').slice(11, 16), v.durationMin ?? '']), [14, 24, 22, 15, 22, 20, 28, 16, 12, 8, 8, 9]);
+    detail2('Reimbursement Claims', 'Reimbursement claims', ['Code', 'Employee', 'Department', 'Type', 'Expense date', 'Amount (Rs.)', 'Status', 'Approved on', 'Paid on', 'Pending (days)'], (registers.reimbursements || []).map(r => [r.code, r.name, r.dept, r.type, fmtD(r.date), r.amount, r.status, fmtD(r.approvedOn), fmtD(r.paidOn), r.ageDays ?? '']), [12, 24, 20, 20, 12, 14, 14, 12, 12, 12]);
+    detail2('Requisitions', 'Requisitions raised in the period', ['Position', 'Department', 'Positions', 'Status', 'Raised', 'Location', 'Priority', 'Fully approved'], (registers.new_requisitions || []).map(r => [r.title, r.dept, r.positions, r.status, fmtD(r.raised), r.location, r.priority, r.approved]), [34, 22, 11, 14, 12, 20, 12, 14]);
+    detail2('New Candidates', 'Candidates who applied in the period', ['Candidate', 'Position', 'Department', 'Stage', 'Source', 'Applied', 'Experience (yrs)'], (registers.new_candidates || []).map(c => [c.name, c.position, c.dept, c.stage, c.source, fmtD(c.applied), c.experience]), [26, 28, 20, 18, 16, 12, 16]);
+  }
+  if (departmentWise) {
+    const used = new Set(wb.worksheets.map(w => w.name.toLowerCase()));
+    const uniq = (n) => { let base = String(n).replace(/[\\\/?*[\]:]/g, ' ').trim().slice(0, 27) || 'Dept', name = base, i = 2; while (used.has(name.toLowerCase())) name = `${base.slice(0, 24)} ${i++}`; used.add(name.toLowerCase()); return name; };
+    const by = (rows, d) => (rows || []).filter(r => (r.dept || r.hostDept) === d);
+    for (const dp of res.departments.filter(x => x.closing || x.sched || x.openVacancies)) {
+      const ws2 = top(uniq(dp.dept), `${dp.dept} — department report`);
+      heading(ws2, 'At a glance');
+      table(ws2, ['Measure', 'Department', 'Company'], [
+        ['Department head', dp.head || 'n/a', ''], ['Opening → closing headcount', `${dp.opening} → ${dp.closing}`, `${res.workforce.company.opening} → ${res.workforce.company.closing}`], ['Joinings / exits', `${dp.joinings} / ${dp.exits}`, `${res.workforce.company.joinings} / ${res.workforce.company.exits}`],
+        ['Open vacancies', dp.openVacancies, res.workforce.recruitment?.openVacancies ?? 'n/a'], ['Attendance compliance %', dp.compliance ?? 'n/a', res.attendance.total.rates.compliance], ['Physical presence %', dp.physical ?? 'n/a', res.attendance.total.rates.physical],
+        ['Present / absent / leave (employee-days)', `${dp.present} / ${dp.absent} / ${dp.leave}`, `${res.attendance.total.present + res.attendance.total.late + res.attendance.total.short} / ${res.attendance.total.absent} / ${res.attendance.total.leave}`],
+        ['Late arrivals', dp.late, res.attendance.total.lateArrivals], ['Missing / incomplete records', dp.missing, res.attendance.total.missing + res.attendance.total.incomplete], ['Regularisations submitted', dp.regularisations, res.regularisation.counts.total],
+        ['Leave days (approved)', dp.leaveDays, res.leave.counts.approvedDays], ['Gate passes', dp.gatePasses, res.gatepass.counts.total], ['Pending approvals', dp.pendingApprovals, res.regularisation.backlog], ['Reimbursement claims / pending Rs.', `${dp.reimbClaims} / ${dp.reimbPending}`, '']], [40, 24, 24]);
+      const ex = (registers.exceptions || []).filter(x => x.dept === dp.dept);
+      if (includeExceptions && ex.length) { heading(ws2, 'Attendance exceptions (for verification)'); table(ws2, ['Exception', 'Severity', 'Employee', 'Observed', 'Baseline', 'Why flagged'], ex.map(x => [x.type, x.sev, `${x.name} ${x.code}`.trim(), x.observed, x.baseline, x.why]), [30, 10, 30, 22, 30, 50], { sevCol: 1 }); }
+      heading(ws2, 'Employee attendance (employee-days)');
+      table(ws2, ['Code', 'Employee', 'Designation', 'Scheduled', 'Present', 'Late', 'Half', 'WFH', 'OD', 'Leave', 'Absent', 'Missing', 'Hours', 'Compl. %'], by(registers.employees_attendance, dp.dept).map(e => [e.code, e.name, e.designation, e.scheduled, e.present, e.late, e.half, e.wfh, e.od, e.leave, e.absent, e.missing, e.hours, e.compliancePct]), [12, 24, 22, 10, 9, 7, 7, 7, 7, 8, 8, 9, 8, 10], { pct: [13] });
+      const jn = by(registers.joiners, dp.dept), ev = by(registers.exits, dp.dept);
+      if (jn.length || ev.length) { heading(ws2, 'Joinings and exits'); table(ws2, ['Type', 'Code', 'Employee', 'Designation', 'Date'], [...jn.map(r => ['Joining', r.code, r.name, r.designation, fmtD(r.date)]), ...ev.map(r => ['Last working day', r.code, r.name, r.designation, fmtD(r.date)])], []); }
+      const vc = by(registers.vacancies, dp.dept); if (vc.length) { heading(ws2, 'Open vacancies'); table(ws2, ['Position', 'Approved', 'Filled', 'Remaining', 'Age (days)', 'Status'], vc.map(r => [r.title, r.positions, r.filled, r.remaining, r.age, r.status]), []); }
+      const rg = by(registers.regularisation, dp.dept); if (rg.length) { heading(ws2, 'Regularisations'); table(ws2, ['Employee', 'Date', 'Original', 'Reason', 'Status', 'Approver'], rg.map(r => [r.name, fmtD(r.date), r.original, r.reason, r.status, r.approver]), []); }
+      const lv = by(registers.leave, dp.dept); if (lv.length) { heading(ws2, 'Leave requests'); table(ws2, ['Employee', 'Type', 'From', 'To', 'Days', 'Status'], lv.map(r => [r.name, r.type, fmtD(r.from), fmtD(r.to), r.days, r.status]), []); }
+      const gp = by(registers.gatepass, dp.dept); if (gp.length) { heading(ws2, 'Gate passes'); table(ws2, ['Date', 'Employee', 'Type', 'Status', 'Minutes', 'Closure'], gp.map(r => [fmtD(r.date), r.name, r.type, r.status, r.durationMin ?? '', r.closure]), []); }
+      const vs = by(registers.visitors, dp.dept); if (vs.length) { heading(ws2, 'Visitors hosted'); table(ws2, ['Type', 'Visitor', 'Host', 'Purpose', 'Status', 'Date'], vs.map(r => [r.type, r.visitor, r.host, r.purpose, r.status, fmtD(r.date)]), []); }
+      const rb = by(registers.reimbursements, dp.dept); if (rb.length) { heading(ws2, 'Reimbursement claims'); table(ws2, ['Employee', 'Type', 'Date', 'Amount (Rs.)', 'Status'], rb.map(r => [r.name, r.type, fmtD(r.date), r.amount, r.status]), [], { money: [3] }); }
+    }
+  }
   const buffer = await wb.xlsx.writeBuffer();
-  return { buffer, filename: `MIS_Intelligence_${per.from}_to_${per.to}.xlsx` };
+  const kind = per.preset === 'daily' ? 'Daily' : per.preset === 'weekly' ? 'Weekly' : per.preset === 'monthly' ? 'Monthly' : per.preset === 'quarterly' ? 'Quarterly' : 'Period';
+  const tag = per.preset === 'monthly' ? new Date(per.from + 'T00:00:00Z').toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).replace(' ', '_') : (per.from === per.to ? per.from : `${per.from}_to_${per.to}`);
+  const scopeTag = departmentWise ? '_DepartmentWise' : (m.filters?.department && m.filters.department !== 'all' ? '_' + String(m.filters.department).replace(/\W+/g, '_') : '');
+  return { buffer, filename: `MIS_${kind}_${tag}${scopeTag}.xlsx` };
 }
 
 // ── PDF (pdfmake docDefinition) ───────────────────────────────────────────
@@ -255,7 +339,7 @@ export function buildMisIntelligencePdf(res, registers, opts = {}) {
 
   content.push({ text: 'Executive summary', style: 'h' });
   const hi = res.insights.filter(i => i.status !== 'Dismissed' && ['Critical', 'High', 'Medium'].includes(i.severity)).slice(0, 6);
-  content.push({ text: `Attendance compliance ${fmtPct(T.rates.compliance)} and physical presence ${fmtPct(T.rates.physical)} across ${T.sched} scheduled employee-days. Headcount closed at ${res.workforce.company.closing} (${res.workforce.company.net >= 0 ? '+' : ''}${res.workforce.company.net}); ${res.workforce.recruitment.openVacancies} position(s) remain open.`, fontSize: 9, margin: [0, 0, 0, 6] });
+  for (const n of buildNarrative(res)) content.push({ text: [{ text: `${n.h}: `, bold: true, color: C.navy }, { text: asciiRs(n.t) }], fontSize: 8.5, margin: [0, 0, 0, 4] });
   // KPI grid, 4 per row
   const kp = res.kpis, rowsK = [];
   for (let i = 0; i < kp.length; i += 4) rowsK.push(kp.slice(i, i + 4));
