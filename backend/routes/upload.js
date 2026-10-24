@@ -168,6 +168,7 @@ router.get('/file/:id', async (req, res) => {
         return obj.Body.pipe(res);
       } catch (e) {
         console.warn('[upload] bucket read failed, falling back to presigned URL:', e.message);
+        res.setHeader('X-Bucket-Error', String(e.name + ': ' + e.message).replace(/[^ -~]/g, ' ').slice(0, 200)); // TEMP diagnostic
         const url = await presignBucketGet(row.r2_key, { expiresIn: 3600 });
         return res.redirect(302, url);
       }
