@@ -729,6 +729,59 @@ export function computeDataQuality(ctx, model, scope, today, attCur, workforce) 
   return items;
 }
 
+
+// ── people view: the same attendance data told in people, not employee-days ──
+const BANDS = (v, edges) => { for (let i = 0; i < edges.length; i++) if (v <= edges[i][0]) return edges[i][1]; return edges[edges.length - 1][1]; };
+export function peopleView(att, prevAtt, departmentsHead = {}) {
+  const T = att.total, days = att.perDay;
+  const wd = days.filter(d => d.sched > 0);
+  const n = wd.length || 0;
+  const avgOf = (x) => (n ? r1(x / n) : null);
+  const phys = T.present + T.late + T.short;
+  const mk = (t, nn) => ({ scheduled: nn ? r1(t.sched / nn) : null, present: nn ? r1((t.present + t.late + t.short) / nn) : null, half: nn ? r1(t.half / nn) : null, wfh: nn ? r1(t.wfh / nn) : null, od: nn ? r1(t.od / nn) : null, leave: nn ? r1(t.leave / nn) : null, absent: nn ? r1(t.absent / nn) : null, missing: nn ? r1((t.missing + t.incomplete) / nn) : null, late: nn ? r1(t.lateArrivals / nn) : null });
+  const avg = mk(T, n);
+  const prevN = prevAtt ? prevAtt.perDay.filter(d => d.sched > 0).length : 0;
+  const prevAvg = prevAtt ? mk(prevAtt.total, prevN) : null;
+  // weekday pattern
+  const wk = {};
+  for (const d of wd) { const name = DAY_NAMES[dow(d.date)]; const x = (wk[name] ||= { day: name, days: 0, sched: 0, present: 0, absent: 0, late: 0 }); x.days++; x.sched += d.sched; x.present += d.present + d.late + d.short; x.absent += d.absent; x.late += d.lateArrivals; }
+  const weekday = DAY_NAMES.filter(d => wk[d]).map(d => ({ day: d, workingDays: wk[d].days, avgScheduled: r1(wk[d].sched / wk[d].days), avgPresent: r1(wk[d].present / wk[d].days), avgAbsent: r1(wk[d].absent / wk[d].days), avgLate: r1(wk[d].late / wk[d].days), presencePct: pctOf(wk[d].present, wk[d].sched) }));
+  // how attendance is spread across people
+  const emps = [...att.perEmp.values()].filter(p => p.acc.sched > 0);
+  const band = (vals, edges) => { const out = {}; for (const [, l] of edges) out[l] = 0; for (const v of vals) out[BANDS(v, edges)]++; return out; };
+  const absentBands = band(emps.map(p => p.acc.absent), [[0, 'No absence'], [2, '1–2 days'], [5, '3–5 days'], [Infinity, '6+ days']]);
+  const lateBands = band(emps.map(p => p.acc.lateArrivals), [[0, 'Never late'], [2, '1–2 times'], [5, '3–5 times'], [Infinity, '6+ times']]);
+  const compBands = band(emps.map(p => rates(p.acc).compliance ?? 0), [[79.99, 'Below 80%'], [89.99, '80–90%'], [94.99, '90–95%'], [100, '95% and above']]);
+  const perfect = emps.filter(p => p.acc.absent === 0 && p.acc.missing === 0 && p.acc.late === 0 && p.acc.lateArrivals === 0).length;
+  const top = (f, min = 1) => emps.map(p => ({ code: p.e.code, name: p.e.name, dept: p.e.dept, n: f(p) })).filter(x => x.n >= min).sort((a, b) => b.n - a.n).slice(0, 10);
+  // department: share of the department present on an average day
+  const dept = Object.entries(att.perDept).map(([dp, v]) => ({ dept: dp, avgScheduled: n ? r1(v.sched / n) : null, avgPresent: n ? r1((v.present + v.late + v.short) / n) : null, avgAbsent: n ? r1(v.absent / n) : null, avgLeave: n ? r1(v.leave / n) : null, avgWfhOd: n ? r1((v.wfh + v.od) / n) : null, presencePct: pctOf(v.present + v.late + v.short, v.sched), sched: v.sched, headcount: v.headcount })).filter(x => x.sched > 0).sort((a, b) => (b.presencePct ?? 0) - (a.presencePct ?? 0));
+  return { workingDays: n, employeesTracked: emps.length, avg, prevAvg, prevWorkingDays: prevN, physicalDays: phys, weekday, absentBands, lateBands, compBands, perfect, topAbsent: top(p => p.acc.absent), topLate: top(p => p.acc.lateArrivals), topMissing: top(p => p.acc.missing + p.acc.incomplete), dept };
+}
+
+// ── who works here: composition and what is coming up ──
+export function computeComposition(ctx, model, scope, to, today) {
+  const act = scope.scopeEmps.filter(e => model.activeOn(e, to) && e.doj);
+  const count = (f) => { const o = {}; for (const e of act) { const k = f(e) || 'Not recorded'; o[k] = (o[k] || 0) + 1; } return Object.entries(o).map(([k, n]) => ({ k, n })).sort((a, b) => b.n - a.n); };
+  const ten = (e) => { const d = diffDays(e.doj, to); return d < 90 ? 'Under 3 months' : d < 365 ? '3–12 months' : d < 1095 ? '1–3 years' : d < 1825 ? '3–5 years' : '5+ years'; };
+  const order = ['Under 3 months', '3–12 months', '1–3 years', '3–5 years', '5+ years'];
+  const tenure = count(ten).sort((a, b) => order.indexOf(a.k) - order.indexOf(b.k));
+  const soon = addDays(today, 30);
+  const upcoming = { notice: [], probation: [], recentJoiners: [] };
+  for (const x of ctx.exits) {
+    const e = model.byUid[x.user_id]; if (!e || !scope.ok(e) || ['rejected', 'cancelled', 'withdrawn'].includes(x.status)) continue;
+    const l = dayOf(x.last_working_date); if (l && l >= today) upcoming.notice.push({ code: e.code, name: e.name, dept: e.dept, last: l, status: label(x.status) });
+  }
+  upcoming.notice.sort((a, b) => a.last.localeCompare(b.last));
+  for (const e of act) {
+    const pe = dayOf(e.raw.probation_end_date);
+    if (pe && pe >= today && pe <= soon && !e.separated) upcoming.probation.push({ code: e.code, name: e.name, dept: e.dept, date: pe });
+    if (e.doj >= addDays(today, -30) && e.doj <= today) upcoming.recentJoiners.push({ code: e.code, name: e.name, dept: e.dept, date: e.doj });
+  }
+  upcoming.probation.sort((a, b) => a.date.localeCompare(b.date)); upcoming.recentJoiners.sort((a, b) => b.date.localeCompare(a.date));
+  return { total: act.length, byLocation: count(e => e.loc), byType: count(e => label(e.empType)), byDesignation: count(e => e.designation).slice(0, 12), byTenure: tenure, upcoming };
+}
+
 // ── KPIs ──────────────────────────────────────────────────────────────────
 function coreMetrics(ctx, model, scope, from, to, today) {
   const att = computeAttendance(ctx, model, scope, from, to, today);
@@ -742,6 +795,11 @@ function coreMetrics(ctx, model, scope, from, to, today) {
   return { att, reg, lv, wf, rc, gp, vs, rb };
 }
 
+// Attendance cards are shown as PEOPLE on an average working day (easy to read); the employee-day total stays in the sub-line.
+const workDays = (m) => m.att.perDay.filter(d => d.sched > 0).length;
+const avgDay = (m, f) => { const n = workDays(m); return n ? r1(f(m.att.total) / n) : null; };
+const edSub = (m, f) => `${f(m.att.total)} employee-days over ${workDays(m)} working day(s)`;
+const AVG_HELP = ' Shown as people on an average working day (total ÷ working days); the sub-line gives the employee-day total.';
 const KPI_DEFS = [
   { key: 'headcount', label: 'Active headcount', unit: 'employees', help: 'Employees active on the last day of the period (joined on/before it and not past their last working day). A headcount, not an attendance count.', link: 'workforce', get: m => m.wf.company.closing, better: 'neutral' },
   { key: 'joinings', label: 'New joinings', unit: 'employees', help: 'Employees whose date of joining falls inside the period.', link: 'workforce', get: m => m.wf.company.joinings, better: 'neutral' },
@@ -750,14 +808,14 @@ const KPI_DEFS = [
   { key: 'vacancies', label: 'Open vacancies', unit: 'positions', help: 'Positions on published requisitions not yet filled (positions − candidates joined), as of the period end. The comparison uses the nightly snapshot nearest the comparison period end; before snapshots began there is no comparison.', link: 'workforce', get: (m, side) => side === 'cur' ? m.rc.openVacancies : (m.snap ? m.snap.vacancies.open : null), better: 'down' },
   { key: 'reqs', label: 'Requisitions raised', unit: 'requisitions', help: 'Requisitions created in the period.', link: 'workforce', get: m => m.rc.counts.raised, better: 'neutral' },
   { key: 'offers', label: 'Offers released / accepted', unit: 'candidates', help: 'Candidates at an offer stage / with an accepted offer (current pipeline). The comparison uses the nightly snapshot nearest the comparison period end.', link: 'workforce', get: (m, side) => side === 'cur' ? m.rc.offersReleased : (m.snap ? m.snap.offers.released : null), extra: (m) => `${m.rc.offersAccepted} accepted`, better: 'neutral' },
-  { key: 'present', label: 'Present (physical)', unit: 'ED', help: 'Employee-days with physical presence: present + late + short attendance. Half-day, WFH, OD and leave are separate cards, so the cards never overlap.', link: 'attendance', get: m => m.att.total.present + m.att.total.late + m.att.total.short, better: 'up' },
-  { key: 'absent', label: 'Absent', unit: 'ED', help: 'Employee-days marked absent on scheduled workdays.', link: 'attendance', get: m => m.att.total.absent, better: 'down' },
-  { key: 'leave', label: 'On approved leave', unit: 'ED', help: 'Employee-days recorded as leave on scheduled workdays.', link: 'leave', get: m => m.att.total.leave, better: 'neutral' },
-  { key: 'half', label: 'Half-day', unit: 'ED', help: 'Employee-days recorded as half-day.', link: 'attendance', get: m => m.att.total.half, better: 'down' },
-  { key: 'wfh', label: 'Approved WFH', unit: 'ED', help: 'Employee-days recorded as work from home.', link: 'attendance', get: m => m.att.total.wfh, better: 'neutral' },
-  { key: 'od', label: 'Approved On Duty', unit: 'ED', help: 'Employee-days recorded as on duty (client visits, field work).', link: 'attendance', get: m => m.att.total.od, better: 'neutral' },
-  { key: 'late', label: 'Late arrivals', unit: 'ED', help: 'Employee-days with a late arrival beyond the shift grace period.', link: 'attendance', get: m => m.att.total.lateArrivals, better: 'down' },
-  { key: 'missing', label: 'Missing / incomplete attendance', unit: 'ED', help: 'Scheduled days with no record, plus past days with check-in but no check-out.', link: 'exceptions', get: m => m.att.total.missing + m.att.total.incomplete, better: 'down' },
+  { key: 'present', label: 'Present (physical)', unit: 'people / day', help: 'Employee-days with physical presence: present + late + short attendance. Half-day, WFH, OD and leave are separate cards, so the cards never overlap.' + AVG_HELP, link: 'attendance', get: m => avgDay(m, t => t.present + t.late + t.short), extra: m => edSub(m, t => t.present + t.late + t.short), better: 'up' },
+  { key: 'absent', label: 'Absent', unit: 'people / day', help: 'Employee-days marked absent on scheduled workdays.' + AVG_HELP, link: 'attendance', get: m => avgDay(m, t => t.absent), extra: m => edSub(m, t => t.absent), better: 'down' },
+  { key: 'leave', label: 'On approved leave', unit: 'people / day', help: 'Employee-days recorded as leave on scheduled workdays.' + AVG_HELP, link: 'leave', get: m => avgDay(m, t => t.leave), extra: m => edSub(m, t => t.leave), better: 'neutral' },
+  { key: 'half', label: 'Half-day', unit: 'people / day', help: 'Employee-days recorded as half-day.' + AVG_HELP, link: 'attendance', get: m => avgDay(m, t => t.half), extra: m => edSub(m, t => t.half), better: 'down' },
+  { key: 'wfh', label: 'Approved WFH', unit: 'people / day', help: 'Employee-days recorded as work from home.' + AVG_HELP, link: 'attendance', get: m => avgDay(m, t => t.wfh), extra: m => edSub(m, t => t.wfh), better: 'neutral' },
+  { key: 'od', label: 'Approved On Duty', unit: 'people / day', help: 'Employee-days recorded as on duty (client visits, field work).' + AVG_HELP, link: 'attendance', get: m => avgDay(m, t => t.od), extra: m => edSub(m, t => t.od), better: 'neutral' },
+  { key: 'late', label: 'Late arrivals', unit: 'people / day', help: 'Employee-days with a late arrival beyond the shift grace period.' + AVG_HELP, link: 'attendance', get: m => avgDay(m, t => t.lateArrivals), extra: m => edSub(m, t => t.lateArrivals), better: 'down' },
+  { key: 'missing', label: 'Missing / incomplete attendance', unit: 'people / day', help: 'Scheduled days with no record, plus past days with check-in but no check-out.' + AVG_HELP, link: 'exceptions', get: m => avgDay(m, t => t.missing + t.incomplete), extra: m => edSub(m, t => t.missing + t.incomplete), better: 'down' },
   { key: 'reg_pending', label: 'Pending regularisations', unit: 'requests', help: 'Requests submitted in the period that are still waiting for manager or HR (today\'s status).', link: 'regularisation', get: m => m.reg.counts.pending + m.reg.counts.awaitingHr, better: 'down' },
   { key: 'gp', label: 'Gate passes issued', unit: 'passes', help: 'Gate passes requested in the period (all statuses).', link: 'gatepass', get: m => m.gp.counts.total, better: 'neutral' },
   { key: 'gp_open', label: 'Gate passes open / overdue', unit: 'passes', help: 'Approved or departed passes with no return recorded; overdue = past expected return or from an earlier day.', link: 'gatepass', get: m => m.gp.counts.open, extra: (m) => `${m.gp.counts.overdue} overdue`, better: 'down' },
@@ -965,13 +1023,14 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
       prevTotal: prev ? { ...prev.att.total } : null,
       trend: attD.perDay.map(d => ({ date: d.date, present: d.present + d.late + d.short, half: d.half, wfh: d.wfh, od: d.od, leave: d.leave, absent: d.absent, missing: d.missing, late: d.lateArrivals, sched: d.sched, compliance: d.rates.compliance, physical: d.rates.physical })),
       byDept: Object.entries(attD.perDept).map(([dp, v]) => ({ dept: dp, ...v })),
+      people: peopleView(attD, prev?.att),
       exceptions: exceptions.slice(0, 100), exceptionCount: exceptions.length,
       conflictCount: attD.conflicts.length, dateMissing: attD.dateMissing,
     },
     regularisation: { counts: regD.counts, prev: prev?.reg.counts || null, backlog: regD.backlogCount, backlogOverSla: regD.backlogOverSla, managers: regD.managers.slice(0, 15), byDept: regD.perDept },
     leave: { counts: leaveD.counts, prev: prev?.lv.counts || null, byType: leaveD.byType, byDept: leaveD.byDept, trend: leaveD.trend, balances: leaveD.balances, pendingLong: leaveD.pendingLong.slice(0, 20).map(x => ({ name: x.e?.name || '', dept: x.e?.dept || '', age: x.age })), patterns: patterns.slice(0, 100), patternCount: patterns.length,
       noLeave: Object.fromEntries(cfg.noLeaveWindows.map(w => [w, { window: w, from: noLeave[w].from, to: noLeave[w].to, total: noLeave[w].total, byClass: noLeave[w].byClass, sample: noLeave[w].rows.filter(r => r.class === 'Requires review' || r.class === 'Absences without leave applications').slice(0, 25) }])) },
-    workforce: { company: cur.wf.company, prevCompany: prev?.wf.company || null, transfers: { ...cur.wf.transfers, count: cur.wf.company.transfers, rows: cur.wf.transferList.slice(0, 50).map(t => ({ code: t.e.code, name: t.e.name, from: t.from, to: t.to, date: t.at })) }, timing: cur.rc.timing, departments: cur.wf.list, openingDate: cur.wf.openingDate, recruitment: { counts: cur.rc.counts, openVacancies: cur.rc.openVacancies, openReqs: cur.rc.openReqs, byDept: cur.rc.byDept, funnel: cur.rc.funnel, stage: cur.rc.stage, offers: { released: cur.rc.offersReleased, accepted: cur.rc.offersAccepted, declined: cur.rc.offersDeclined }, ageing: cur.rc.rowsReq.slice(0, 50), unapproved: cur.rc.unapproved.length, stale: cur.rc.rowsReq.filter(r => r.remaining > 0 && (!r.lastActivity || diffDays(r.lastActivity, today) > cfg.reqStaleDays)).length }, unavailable: { transfers: !cur.wf.transfers.available && !cur.wf.transfers.partial, sanctioned: true, timeToFill: !cur.rc.timing.timeToFill } },
+    workforce: { composition: computeComposition(ctx, model, scope, to, today), company: cur.wf.company, prevCompany: prev?.wf.company || null, transfers: { ...cur.wf.transfers, count: cur.wf.company.transfers, rows: cur.wf.transferList.slice(0, 50).map(t => ({ code: t.e.code, name: t.e.name, from: t.from, to: t.to, date: t.at })) }, timing: cur.rc.timing, departments: cur.wf.list, openingDate: cur.wf.openingDate, recruitment: { counts: cur.rc.counts, openVacancies: cur.rc.openVacancies, openReqs: cur.rc.openReqs, byDept: cur.rc.byDept, funnel: cur.rc.funnel, stage: cur.rc.stage, offers: { released: cur.rc.offersReleased, accepted: cur.rc.offersAccepted, declined: cur.rc.offersDeclined }, ageing: cur.rc.rowsReq.slice(0, 50), unapproved: cur.rc.unapproved.length, stale: cur.rc.rowsReq.filter(r => r.remaining > 0 && (!r.lastActivity || diffDays(r.lastActivity, today) > cfg.reqStaleDays)).length }, unavailable: { transfers: !cur.wf.transfers.available && !cur.wf.transfers.partial, sanctioned: true, timeToFill: !cur.rc.timing.timeToFill } },
     gatepass: { counts: gpD.counts, prev: prev?.gp.counts || null, exceptions: gpD.exceptions.slice(0, 100), exceptionCount: gpD.exceptions.length },
     visitors: { counts: vsD.counts, prev: prev?.vs.counts || null, issues: vsD.issues.slice(0, 30) },
     reimbursements: { counts: cur.rb.counts, prev: prev?.rb.counts || null, issues: cur.rb.issues.slice(0, 50) },

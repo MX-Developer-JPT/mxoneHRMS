@@ -30,7 +30,7 @@ export function OverviewTab({ d, setTab, onOpenInsight }) {
   return (
     <div className="space-y-4">
       <KpiGrid kpis={d.kpis} onOpen={(link) => setTab(link)} />
-      <p className="text-[11px] text-gray-500">ED = employee-days. Headcount counts people; attendance cards count employee-days and are never added to headcount. Hover the <span className="font-medium">ⓘ</span> on a card for its formula; click a card to open its detail.</p>
+      <p className="text-[11px] text-gray-500">Attendance cards show people on an average working day (the employee-day total is under each card). Headcount counts people. Hover the <span className="font-medium">ⓘ</span> on a card for its formula; click a card to open its detail.</p>
       <Section title="Management highlights" subtitle="Generated from verified records by explicit rules — open an insight to see the evidence and the rule that raised it." right={<button className="text-xs text-blue-700 hover:underline" onClick={() => setTab('insights')}>All {d.insights.length} insights →</button>}>
         {!top.length ? <p className="text-sm text-gray-500">No open insights for this period.</p> : (
           <div className="space-y-2">{top.map(i => (
@@ -50,6 +50,57 @@ export function OverviewTab({ d, setTab, onOpenInsight }) {
   );
 }
 
+// ───────────────────────────── Attendance, told in people
+function PeopleView({ d }) {
+  const p = d.attendance.people, a = p.avg, pa = p.prevAvg;
+  const cmpLbl = d.meta.compare ? d.meta.compare.label : null;
+  const cards = [['Present in office', a.present, pa?.present, 'text-blue-800'], ['Absent', a.absent, pa?.absent, 'text-red-700'], ['On leave', a.leave, pa?.leave, 'text-gray-800'], ['Work from home', a.wfh, pa?.wfh, 'text-sky-700'], ['On duty (field / client)', a.od, pa?.od, 'text-indigo-700'], ['Half-day', a.half, pa?.half, 'text-gray-800'], ['Late', a.late, pa?.late, 'text-amber-700'], ['No record / incomplete', a.missing, pa?.missing, 'text-amber-800']];
+  const bandData = (o) => Object.entries(o).map(([k, v]) => ({ k, v }));
+  const BandChart = ({ title, data, color }) => (
+    <div><div className="text-sm font-medium text-gray-800">{title}</div><div className="text-[11px] text-gray-500 mb-1">Number of employees</div>
+      <div style={{ height: 150 }}><ResponsiveContainer width="100%" height="100%"><BarChart data={bandData(data)} layout="vertical" margin={{ left: 30, right: 24 }}><XAxis type="number" tick={axis} allowDecimals={false} /><YAxis type="category" dataKey="k" tick={axis} width={90} /><Tooltip /><Bar dataKey="v" name="Employees" fill={color} /></BarChart></ResponsiveContainer></div></div>
+  );
+  const names = (rows, unit) => (rows.length ? <MiniTable heads={['Employee', 'Department', unit]} rows={rows.map(r => [<span key={r.code}>{r.name} <span className="text-xs text-gray-400">{r.code}</span></span>, r.dept, r.n])} /> : <p className="text-sm text-gray-500">None.</p>);
+  return (
+    <div className="space-y-4">
+      <Section title="On an average working day" subtitle={`${p.workingDays} working day(s) in ${periodText(d)}. Of about ${num(a.scheduled)} employees scheduled each day, this is how many were in each situation${cmpLbl ? ` — compared with the ${cmpLbl.charAt(0).toLowerCase() + cmpLbl.slice(1)}` : ''}.`}>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {cards.map(([l, v, pv, tone]) => (
+            <div key={l} className="rounded-lg border bg-white p-3"><div className={`text-2xl font-bold ${tone}`}>{num(v)}</div><div className="text-xs text-gray-600">{l}</div><div className="text-[11px] text-gray-400">{pv != null ? `was ${num(pv)}${a.scheduled ? ` · ${Math.round((v / a.scheduled) * 100)}% of scheduled` : ''}` : (a.scheduled ? `${Math.round((v / a.scheduled) * 100)}% of scheduled` : '')}</div></div>
+          ))}
+        </div>
+        <p className="text-xs text-gray-500 mt-3">&ldquo;Present in office&rdquo; means physically present. People on leave, WFH or on duty are accounted for but are not in the office, so they are shown separately.</p>
+      </Section>
+      <Section title="How attendance is spread across people" subtitle={`${p.employeesTracked} employees tracked. ${p.perfect} had a perfect record (no absence, no late arrival, no missing record).`}>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <BandChart title="Days absent" data={p.absentBands} color={COL.absent} />
+          <BandChart title="Times late" data={p.lateBands} color={COL.missing} />
+          <BandChart title="Attendance compliance (days accounted for)" data={p.compBands} color={COL.present} />
+        </div>
+      </Section>
+      <Grid>
+        <Section title="Which weekdays are weakest?" subtitle="Average per working day of that weekday.">
+          <MiniTable heads={['Weekday', 'Present', 'Absent', 'Late', 'Presence']} rows={p.weekday.map(w => [w.day, `${num(w.avgPresent)} of ${num(w.avgScheduled)}`, num(w.avgAbsent), num(w.avgLate), w.presencePct == null ? 'n/a' : `${w.presencePct}%`])} />
+        </Section>
+        <Section title="Share of each department in the office" subtitle="On an average working day.">
+          <Chart title="Present in office, % of department scheduled" sub="Unit: %" height={Math.max(180, p.dept.length * 22)}>
+            <BarChart data={p.dept} layout="vertical" margin={{ left: 60, right: 24 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} /><XAxis type="number" domain={[0, 100]} tick={axis} /><YAxis type="category" dataKey="dept" tick={axis} width={110} /><Tooltip formatter={(v) => `${v}%`} /><Bar dataKey="presencePct" name="In office %" fill={COL.present} /></BarChart>
+          </Chart>
+        </Section>
+      </Grid>
+      <Section title="Department detail — people on an average day">
+        <MiniTable heads={['Department', 'Scheduled', 'In office', 'Absent', 'On leave', 'WFH + on duty', 'In office %']} rows={p.dept.map(x => [x.dept, num(x.avgScheduled), num(x.avgPresent), num(x.avgAbsent), num(x.avgLeave), num(x.avgWfhOd), x.presencePct == null ? 'n/a' : `${x.presencePct}%`])} />
+      </Section>
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Section title="Most days absent">{names(p.topAbsent, 'Days')}</Section>
+        <Section title="Most late arrivals">{names(p.topLate, 'Times')}</Section>
+        <Section title="Most missing / incomplete records">{names(p.topMissing, 'Days')}</Section>
+      </div>
+      <p className="text-[11px] text-gray-500">These lists show where to look, not who to blame: a person absent every working day is usually someone on unrecorded leave, a long absence, or someone who has left — verify with the manager.</p>
+    </div>
+  );
+}
+
 // ───────────────────────────── Attendance
 export function AttendanceTab({ d, params }) {
   const A = d.attendance, T = A.total, P = A.prevTotal, R = d.regularisation;
@@ -57,6 +108,8 @@ export function AttendanceTab({ d, params }) {
   const deptBars = d.departments.filter(x => x.compliance != null && x.sched >= (d.meta.config?.minSample ?? 30)).sort((a, b) => a.compliance - b.compliance);
   return (
     <div className="space-y-4">
+      <PeopleView d={d} />
+      <div className="text-sm font-semibold text-gray-800 pt-2">Rates and totals</div>
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
         <Stat label="Scheduled employee-days" value={T.sched} sub={`${d.meta.attendanceEmployees} employees`} />
         <Stat label="Physical presence rate" value={T.rates.physical == null ? 'n/a' : `${T.rates.physical}%`} sub="(present+late+short+½ half) ÷ scheduled" />
@@ -66,7 +119,7 @@ export function AttendanceTab({ d, params }) {
         <Stat label="Average hours worked" value={T.avgHours ?? 'n/a'} sub={`${T.hoursDays} days with full punches`} />
       </div>
       <Grid>
-        <Section title="Attendance composition" subtitle="Each scheduled employee-day is counted once, in exactly one category. Leave, WFH and OD are not physical presence.">
+        <Section title="Attendance composition (employee-day totals)" subtitle="An employee-day is one person on one working day. Each is counted once, in exactly one category. Leave, WFH and OD are not physical presence.">
           <MiniTable heads={['Category', 'Employee-days', '% of scheduled', 'Comparison']} rows={[...rows.map(([l, k]) => [l, num(T[k]), T.sched ? `${Math.round(T[k] / T.sched * 1000) / 10}%` : 'n/a', P ? num(P[k]) : 'n/a']), [<b key="t">Scheduled</b>, <b key="s">{num(T.sched)}</b>, '100%', P ? num(P.sched) : 'n/a']]} />
         </Section>
         <Section title="Compliance by department" subtitle="Departments with at least the minimum sample of scheduled employee-days (a rate on a tiny sample misleads).">
@@ -197,6 +250,20 @@ export function WorkforceTab({ d, params, applyFilter, canTransfer, onRefresh })
           rows={[...W.departments.map(x => [<button key={x.dept} className="text-blue-700 hover:underline" onClick={() => applyFilter({ department: x.dept })}>{x.dept}</button>, x.opening, x.joinings, x.exits, x.transfersIn ?? 'n/a', x.transfersOut ?? 'n/a', x.closing, x.net > 0 ? `+${x.net}` : x.net, x.netPct == null ? (x.opening < 1 ? 'n/a' : '') : (x.opening < 5 ? `${x.netPct}% (small dept)` : `${x.netPct}%`), rc.byDept.find(v => v.dept === x.dept)?.open ?? 0]),
             [<b key="c">Company</b>, <b key="o">{co.opening}</b>, <b key="j">{co.joinings}</b>, <b key="e">{co.exits}</b>, (tf.available || tf.partial) ? <b key="ti">{co.transfers}</b> : 'n/a', (tf.available || tf.partial) ? <b key="to">{co.transfers}</b> : 'n/a', <b key="cl">{co.closing}</b>, <b key="n">{co.net}</b>, co.opening ? `${Math.round(co.net / co.opening * 1000) / 10}%` : 'n/a', rc.openVacancies]]} />
       </Section>
+      {W.composition && (
+        <Section title="Who works here" subtitle={`${W.composition.total} active employees at the end of the period.`}>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <Chart title="Length of service" sub="Number of employees" height={200}><BarChart data={W.composition.byTenure} margin={{ left: -10 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="k" tick={{ ...axis, fontSize: 10 }} /><YAxis tick={axis} allowDecimals={false} /><Tooltip /><Bar dataKey="n" name="Employees" fill={COL.blue} /></BarChart></Chart>
+            <div><div className="text-sm font-medium mb-1">By location</div><MiniTable heads={['Location', 'Employees']} rows={W.composition.byLocation.map(x => [x.k, x.n])} /></div>
+            <div><div className="text-sm font-medium mb-1">By employment type</div><MiniTable heads={['Type', 'Employees']} rows={W.composition.byType.map(x => [x.k, x.n])} /><div className="text-sm font-medium mt-3 mb-1">Largest designations</div><MiniTable heads={['Designation', 'Employees']} rows={W.composition.byDesignation.slice(0, 6).map(x => [x.k, x.n])} /></div>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3 mt-4">
+            <div><div className="text-sm font-medium mb-1">Serving notice</div><MiniTable heads={['Employee', 'Department', 'Last day']} rows={W.composition.upcoming.notice.map(x => [x.name, x.dept, fmtD(x.last)])} empty="Nobody has resigned and is still serving notice." /></div>
+            <div><div className="text-sm font-medium mb-1">Probation ending in 30 days</div><MiniTable heads={['Employee', 'Department', 'Ends']} rows={W.composition.upcoming.probation.map(x => [x.name, x.dept, fmtD(x.date)])} empty="No probation ends in the next 30 days." /></div>
+            <div><div className="text-sm font-medium mb-1">Joined in the last 30 days</div><MiniTable heads={['Employee', 'Department', 'Joined']} rows={W.composition.upcoming.recentJoiners.slice(0, 10).map(x => [x.name, x.dept, fmtD(x.date)])} empty="No new joiners in the last 30 days." /></div>
+          </div>
+        </Section>
+      )}
       <Section title="Opening versus closing headcount"><Chart title="Headcount by department" sub={`Opening (${fmtD(W.openingDate)}) vs closing (${fmtD(d.meta.period.to)}) · unit: employees`} height={300}><BarChart data={chart} margin={{ left: -10, bottom: 40 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="dept" tick={{ ...axis, fontSize: 10 }} interval={0} angle={-35} textAnchor="end" height={70} /><YAxis tick={axis} /><Tooltip /><Legend wrapperStyle={{ fontSize: 11 }} /><Bar dataKey="Opening" fill={COL.grey} /><Bar dataKey="Closing" fill={COL.blue} /></BarChart></Chart></Section>
       <Grid>
         <Section title="Recruitment funnel (current pipeline)" subtitle="Candidate records hold only a current stage, so this is a snapshot of the pipeline today."><Chart title="Candidates by stage" sub="Unit: candidates" height={240}><BarChart data={rc.funnel} layout="vertical" margin={{ left: 40, right: 20 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} /><XAxis type="number" tick={axis} /><YAxis type="category" dataKey="stage" tick={axis} width={120} /><Tooltip /><Bar dataKey="n" name="Candidates" fill={COL.blue} /></BarChart></Chart></Section>
