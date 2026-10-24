@@ -6450,6 +6450,33 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, ...out });
     }
 
+    // Record a department transfer (HR/Admin): moves the employee and keeps the history the MIS needs.
+    case 'recordDeptTransfer': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { user_id: tfUser, to_department: tfTo, effective_date: tfDate, reason: tfReason } = p;
+      if (!tfUser || !String(tfTo || '').trim()) return res.json({ success: false, error: 'employee and new department are required' });
+      const tfRow = await one("SELECT id, data FROM entities WHERE type='Employee' AND user_id=$1", [tfUser]);
+      if (!tfRow) return res.json({ success: false, error: 'Employee not found' });
+      const tfEmp = JSON.parse(tfRow.data);
+      const tfFrom = tfEmp.department;
+      if (String(tfFrom || '').trim() === String(tfTo).trim()) return res.json({ success: false, error: 'The employee is already in that department' });
+      const tfEff = /^\d{4}-\d{2}-\d{2}$/.test(String(tfDate || '')) ? tfDate : new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      // a transfer dated in the future is recorded but the employee moves on that date's nightly detection / next edit — keep it simple: apply now
+      tfEmp.department = String(tfTo).trim();
+      await run('UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2', [JSON.stringify(tfEmp), tfRow.id]);
+      const { recordTransfer } = await import('../utils/mis/history.js');
+      await recordTransfer({ user_id: tfUser, from_department: tfFrom, to_department: tfEmp.department, effective_date: tfEff, reason: tfReason, by: cu.id, source: 'recorded' });
+      cacheInvalidate('Employee');
+      return res.json({ success: true, from: tfFrom || 'Unassigned', to: tfEmp.department, effective_date: tfEff });
+    }
+
+    // Take (or preview) the MIS history snapshot now. dry_run=true writes nothing.
+    case 'runMisSnapshot': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { runSnapshot } = await import('../utils/mis/history.js');
+      return res.json({ success: true, ...(await runSnapshot({ persist: !p.dry_run })) });
+    }
+
     // ── Intelligent MIS (utils/mis/*): one engine for the dashboard, registers and exports ──
     case 'getMisAnalytics':
     case 'getMisRegister':

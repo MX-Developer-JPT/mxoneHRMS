@@ -387,6 +387,17 @@ cron.schedule('0 0 * * *', misJob('daily'), { timezone: 'Asia/Kolkata' });
 cron.schedule('10 0 * * 1', misJob('weekly'), { timezone: 'Asia/Kolkata' });
 cron.schedule('10 0 1 * *', misJob('monthly'), { timezone: 'Asia/Kolkata' });
 
+// ── MIS history: nightly headcount / vacancy / offer snapshot (also detects department moves and candidate stage
+// changes made through any write path). 12:30 AM IST, plus a catch-up shortly after boot if today's is missing. ──
+cron.schedule('30 0 * * *', async () => {
+  try { const { runSnapshot } = await import('./utils/mis/history.js'); const r = await runSnapshot({}); console.log(`[mis-history] snapshot ${r.date}: ${r.snapshot.total} employees, ${r.transfers.length} transfer(s), ${r.candidateMoves} candidate move(s)`); }
+  catch (err) { console.error('[mis-history] snapshot failed:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
+setTimeout(async () => {
+  try { const { ensureTodaySnapshot } = await import('./utils/mis/history.js'); const r = await ensureTodaySnapshot(); if (r) console.log(`[mis-history] catch-up snapshot ${r.date}: ${r.snapshot.total} employees`); }
+  catch (err) { console.error('[mis-history] catch-up snapshot failed:', err.message); }
+}, 90 * 1000);
+
 // ── L&D daily automation — 7:30 AM IST ──────────────────────
 // Auto-starts inductions for new joiners, unlocks time-gated reviews, marks overdue steps and
 // escalates (Employee → Manager → HOD → HR → L&D), reminds on assignments and expiring certificates.

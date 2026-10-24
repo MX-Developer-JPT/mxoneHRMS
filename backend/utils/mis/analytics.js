@@ -59,7 +59,8 @@ function parseRows(rows) {
   }
   return out;
 }
-const loadType = async (type) => parseRows(await all('SELECT id, data, created_at FROM entities WHERE type=$1', [type]));
+export const loadType = async (type) => parseRows(await all('SELECT id, data, created_at FROM entities WHERE type=$1', [type]));
+export const normDept = (d) => { const t = String(d || '').trim(); return !t || t.toLowerCase() === 'unassigned' ? 'Unassigned' : t; };
 
 // ── data loading ──────────────────────────────────────────────────────────
 async function loadAttendance(from, to) {
@@ -85,7 +86,8 @@ export async function loadContext({ cfg, rangeFrom, rangeTo, attFrom }) {
     loadType('AttendanceRegularisation'), loadType('GatePass'), loadType('Visitor'), loadType('JobRequisition'), loadType('Candidate'), loadType('Interview'),
     loadType('Reimbursement'), loadType('Exit'), loadType('MisInsightState'), loadAttendance(attFrom, rangeTo),
   ]);
-  return { cfg, rangeFrom, rangeTo, attFrom, employees, depts, shifts, holidays, leaves, policies, balances, regs, gps, visitors, reqs, cands, interviews, reimbs, exits, insightState, att };
+  const [transfers, snapshots] = await Promise.all([loadType('DeptTransfer'), loadType('HeadcountSnapshot')]);
+  return { cfg, rangeFrom, rangeTo, attFrom, employees, depts, shifts, holidays, leaves, policies, balances, regs, gps, visitors, reqs, cands, interviews, reimbs, exits, insightState, att, transfers, snapshots };
 }
 
 // ── employee model ────────────────────────────────────────────────────────
@@ -95,6 +97,9 @@ function buildModel(ctx) {
   const exitByUser = {};
   for (const x of ctx.exits) if (x.user_id && !['rejected', 'cancelled', 'withdrawn'].includes(x.status)) exitByUser[x.user_id] = x;
   const emps = [], byUid = {};
+  const tfBy = {};
+  for (const t of ctx.transfers || []) if (t.user_id && t.effective_date) (tfBy[t.user_id] ||= []).push({ at: dayOf(t.effective_date), from: normDept(t.from_department), to: normDept(t.to_department) });
+  for (const k of Object.keys(tfBy)) tfBy[k].sort((a, b) => a.at.localeCompare(b.at));
   for (const e of ctx.employees) {
     const uid = e.user_id || e.id;
     const x = exitByUser[e.user_id];
@@ -109,7 +114,7 @@ function buildModel(ctx) {
       uid, id: e.id, code: e.employee_code || '', name: e.display_name || e.full_name || '', dept: hasDept ? deptRaw : 'Unassigned',
       designation: e.designation || '', loc: e.work_location || '', mgr: e.reporting_manager_id || '', empType: e.employment_type || '', empStatus: e.employee_status || '',
       doj: dayOf(e.date_of_joining), lwd: lwd || '', separated, exempt: !!e.is_attendance_exempt,
-      workDays: new Set(Array.isArray(shift?.days) && shift.days.length ? shift.days : DAY_NAMES.filter(n => n !== 'Sunday')),
+      transfers: tfBy[uid] || (e.user_id ? tfBy[e.user_id] : null) || [], workDays: new Set(Array.isArray(shift?.days) && shift.days.length ? shift.days : DAY_NAMES.filter(n => n !== 'Sunday')),
       shiftName: shift?.name || 'Default', hasDept, noStatus: !e.status && !e.employee_status, raw: e,
     };
     emps.push(emp); byUid[uid] = emp;
@@ -119,8 +124,10 @@ function buildModel(ctx) {
   const isHoliday = (dept, d) => (holByDate[d] || []).some(h => h.off && !h.half && (!h.depts.length || h.depts.includes(dept)));
   // "separated" without any usable date cannot be placed in time — flagged in data quality, kept out of headcount.
   const activeOn = (e, d) => !!e.doj && e.doj <= d && (e.separated ? !!e.lwd && e.lwd >= d : (!e.lwd || e.lwd >= d));
+  // department on a given date: walk the transfer history back from the current department
+  const deptAt = (e, d) => { const t = (e.transfers || []).find(x => x.at > d); return t ? t.from : e.dept; };
   const scheduled = (e, d) => !e.exempt && !!e.doj && e.doj <= d && (!e.lwd || e.lwd >= d) && e.workDays.has(DAY_NAMES[dow(d)]) && !isHoliday(e.dept, d);
-  return { emps, byUid, isHoliday, activeOn, scheduled, holidayList, defaultShift, shiftsById };
+  return { emps, byUid, isHoliday, activeOn, scheduled, deptAt, holidayList, defaultShift, shiftsById };
 }
 
 function makeScope(model, filters, restrictUids) {
@@ -445,27 +452,34 @@ export function leavePatterns(ctx, model, scope, from, to, today, leaveCur, leav
 export function computeWorkforce(ctx, model, scope, from, to) {
   const open = addDays(from, -1);
   const rows = {};
-  const get = (dp) => (rows[dp] ||= { dept: dp, opening: 0, joinings: 0, exits: 0, closing: 0 });
-  const joinList = [], exitList = [], anomalies = [];
+  const get = (dp) => (rows[dp] ||= { dept: dp, opening: 0, joinings: 0, exits: 0, transfersIn: 0, transfersOut: 0, closing: 0 });
+  const joinList = [], exitList = [], anomalies = [], transferList = [];
   for (const e of scope.scopeEmps) {
     if (!e.doj) continue;
     if (e.lwd && e.lwd < e.doj) { anomalies.push({ e, kind: 'Last working day is before the joining date' }); continue; }
-    const r = get(e.dept);
     const activeOpen = model.activeOn(e, open), activeClose = model.activeOn(e, to);
-    if (activeOpen) r.opening++;
-    if (activeClose) r.closing++;
-    if (e.doj >= from && e.doj <= to) { r.joinings++; joinList.push(e); }
+    if (activeOpen) get(model.deptAt(e, open)).opening++;
+    if (activeClose) get(model.deptAt(e, to)).closing++;
+    if (e.doj >= from && e.doj <= to) { get(model.deptAt(e, e.doj)).joinings++; joinList.push(e); }
     // separation takes effect the day after the last working day
-    if (e.lwd && e.lwd >= open && e.lwd < to && (activeOpen || (e.doj >= from && e.doj <= to))) { r.exits++; exitList.push(e); }
+    if (e.lwd && e.lwd >= open && e.lwd < to && (activeOpen || (e.doj >= from && e.doj <= to))) { get(model.deptAt(e, e.lwd)).exits++; exitList.push(e); }
+    // moves between departments are not company joinings/exits
+    for (const t of e.transfers || []) {
+      if (t.at < from || t.at > to || t.at < e.doj || (e.lwd && t.at > e.lwd) || t.from === t.to) continue;
+      get(t.from).transfersOut++; get(t.to).transfersIn++; transferList.push({ e, ...t });
+    }
   }
+  const snapDates = (ctx.snapshots || []).map(x => x.date).concat((ctx.transfers || []).filter(t => t.source !== 'detected').map(t => dayOf(t.recorded_at))).filter(Boolean).sort();
+  const trackedSince = snapDates[0] || null;
+  const transfers = { available: !!trackedSince && trackedSince <= from, partial: !!trackedSince && trackedSince > from && trackedSince <= to, trackedSince };
   const list = Object.values(rows).map(r => {
-    const calc = r.opening + r.joinings - r.exits;
-    return { ...r, net: r.closing - r.opening, netPct: r.opening ? r1(((r.closing - r.opening) / r.opening) * 100) : null, reconciles: calc === r.closing, transfersIn: null, transfersOut: null };
+    const calc = r.opening + r.joinings - r.exits + r.transfersIn - r.transfersOut;
+    return { ...r, net: r.closing - r.opening, netPct: r.opening ? r1(((r.closing - r.opening) / r.opening) * 100) : null, reconciles: calc === r.closing, transfersIn: trackedSince ? r.transfersIn : null, transfersOut: trackedSince ? r.transfersOut : null, _in: r.transfersIn, _out: r.transfersOut };
   }).sort((a, b) => b.closing - a.closing);
-  const company = list.reduce((a, r) => ({ opening: a.opening + r.opening, joinings: a.joinings + r.joinings, exits: a.exits + r.exits, closing: a.closing + r.closing }), { opening: 0, joinings: 0, exits: 0, closing: 0 });
+  const company = list.reduce((a, r) => ({ opening: a.opening + r.opening, joinings: a.joinings + r.joinings, exits: a.exits + r.exits, closing: a.closing + r.closing, transfers: a.transfers + r._in }), { opening: 0, joinings: 0, exits: 0, closing: 0, transfers: 0 });
   company.net = company.closing - company.opening;
-  company.reconciles = company.opening + company.joinings - company.exits === company.closing;
-  return { list, company, joinList, exitList, anomalies, openingDate: open };
+  company.reconciles = company.opening + company.joinings - company.exits === company.closing && list.every(r => r.reconciles) && list.reduce((x, r) => x + r._in - r._out, 0) === 0;
+  return { list, company, joinList, exitList, anomalies, transferList, transfers, openingDate: open };
 }
 
 // ── recruitment, vacancies ────────────────────────────────────────────────
@@ -514,7 +528,33 @@ export function computeRecruitment(ctx, model, scope, from, to, today, { detail 
     { stage: 'Offer accepted', n: offersAccepted + cands.filter(c => FILLED.has(c.status)).length },
     { stage: 'Joined', n: cands.filter(c => FILLED.has(c.status)).length },
   ];
-  return { counts, openVacancies, openReqs: rowsReq.length, rowsReq, byDept: Object.values(byDept).sort((a, b) => b.open - a.open), stage, funnel, offersReleased: cands.filter(c => OFFER_RELEASED.has(c.status)).length, offersAccepted, offersDeclined: cands.filter(c => ['offer_declined', 'offer_rejected'].includes(c.status)).length, rejected: cands.filter(c => c.status === 'rejected').length, unapproved: live.filter(r => !(r.manager_approval_status === 'approved' && r.hr_approval_status === 'approved')) };
+  // ── time-to-fill / time-to-hire and stage movements: only from dates actually recorded (closed_date, status_history)
+  const days = (a, b) => Math.max(0, Math.round((new Date(b) - new Date(a)) / 86400000));
+  const filledReqs = reqs.filter(r => r.closed_date && r.closed_reason === 'filled' && reqDay(r));
+  const fillDays = filledReqs.map(r => days(reqDay(r), r.closed_date));
+  const fillIn = filledReqs.filter(r => dayOf(r.closed_date) >= from && dayOf(r.closed_date) <= to).map(r => days(reqDay(r), r.closed_date));
+  const hireDays = [], offerDays = [], events = {};
+  let firstTracked = '';
+  for (const c of cands) {
+    const h = Array.isArray(c.status_history) ? c.status_history : [];
+    const start = dayOf(c.applied_date || c._created);
+    for (const x of h) {
+      const d = dayOf(x.at); if (!d) continue;
+      if (x.source !== 'applied_date' && (!firstTracked || d < firstTracked)) firstTracked = d;
+      if (x.source !== 'applied_date' && d >= from && d <= to) events[x.status] = (events[x.status] || 0) + 1;
+      if (start && FILLED.has(x.status) && x.source !== 'applied_date') hireDays.push(days(start, x.at));
+      if (start && ['offered', 'offer_released', 'offer_sent'].includes(x.status)) offerDays.push(days(start, x.at));
+    }
+  }
+  const timing = {
+    trackedSince: firstTracked || (filledReqs.length ? dayOf(filledReqs.map(r => r.closed_date).sort()[0]) : null),
+    timeToFill: fillDays.length ? { avgDays: r1(mean(fillDays)), n: fillDays.length, inPeriodAvg: fillIn.length ? r1(mean(fillIn)) : null, inPeriodN: fillIn.length } : null,
+    timeToHire: hireDays.length ? { avgDays: r1(mean(hireDays)), n: hireDays.length } : null,
+    timeToOffer: offerDays.length ? { avgDays: r1(mean(offerDays)), n: offerDays.length } : null,
+    stageEvents: events,
+    cancelledOrClosedUnfilled: reqs.filter(r => r.status === 'closed' && r.closed_reason === 'closed' && dayOf(r.closed_date) >= from && dayOf(r.closed_date) <= to).length,
+  };
+  return { timing, counts, openVacancies, openReqs: rowsReq.length, rowsReq, byDept: Object.values(byDept).sort((a, b) => b.open - a.open), stage, funnel, offersReleased: cands.filter(c => OFFER_RELEASED.has(c.status)).length, offersAccepted, offersDeclined: cands.filter(c => ['offer_declined', 'offer_rejected'].includes(c.status)).length, rejected: cands.filter(c => c.status === 'rejected').length, unapproved: live.filter(r => !(r.manager_approval_status === 'approved' && r.hr_approval_status === 'approved')) };
 }
 
 // ── gate passes ───────────────────────────────────────────────────────────
@@ -660,6 +700,8 @@ export function computeDataQuality(ctx, model, scope, today, attCur, workforce) 
   const dup = {}; for (const e of model.emps) if (e.code) (dup[e.code] ||= []).push(e); const dupCodes = Object.entries(dup).filter(([, v]) => v.length > 1);
   add('dup_code', 'Duplicate employee codes', 'Employee master', dupCodes.length, 'Two employee records share one code.', 'Merge or renumber.', dupCodes.map(([c, v]) => `${c} (${v.length})`), 'High');
   const noStatus = emps.filter(e => e.noStatus); add('no_status', 'Employees with no employment status (counted as active)', 'Employee master', noStatus.length, 'Usually joiners created through onboarding whose profile was never activated; they are counted in headcount and show as absent.', 'Activate the profile, or set a joining date in the future until the person starts.', noStatus.map(nm), 'High');
+  const byU = {}; for (const e of model.emps) (byU[e.uid] ||= []).push(e); const dupU = Object.values(byU).filter(v => v.length > 1);
+  add('dup_uid', 'Employee records sharing one user id', 'Employee master', dupU.length, 'Two employee profiles point at the same login, so history by person (transfers, snapshots) cannot tell them apart.', 'Merge the duplicate profiles.', dupU.map(v => v.map(nm).join(' / ')), 'High');
   const noMgr = emps.filter(e => !e.mgr && !e.separated); add('no_mgr', 'Active employees without a reporting manager', 'Employee master', noMgr.length, 'Approvals cannot route to a manager.', 'Assign a reporting manager.', noMgr.map(nm), 'Low');
   const badMgr = emps.filter(e => e.mgr && !model.byUid[e.mgr]); add('bad_mgr', 'Reporting manager does not exist', 'Employee master', badMgr.length, 'Manager id points to a missing employee.', 'Re-assign the manager.', badMgr.map(nm));
   const badDept = emps.filter(e => e.hasDept && ctx.depts.length && !ctx.depts.some(d => d.name === e.dept)); add('dept_unlisted', 'Employee department not in the department list', 'Employee master', badDept.length, 'Department spelled differently from the master list.', 'Align the name with the Departments master.', [...new Set(badDept.map(e => e.dept))]);
@@ -701,9 +743,9 @@ const KPI_DEFS = [
   { key: 'joinings', label: 'New joinings', unit: 'employees', help: 'Employees whose date of joining falls inside the period.', link: 'workforce', get: m => m.wf.company.joinings, better: 'neutral' },
   { key: 'exits', label: 'Employee exits', unit: 'employees', help: 'Employees whose last working day is inside the period (the exit takes effect the next day).', link: 'workforce', get: m => m.wf.company.exits, better: 'down' },
   { key: 'net', label: 'Net headcount change', unit: 'employees', help: 'Closing headcount − opening headcount.', link: 'workforce', get: m => m.wf.company.net, better: 'neutral' },
-  { key: 'vacancies', label: 'Open vacancies', unit: 'positions', help: 'Positions on published requisitions not yet filled (positions − candidates joined). A snapshot of today; vacancy history is not stored, so there is no comparison.', link: 'workforce', get: (m, side) => side === 'cur' ? m.rc.openVacancies : null, better: 'down' },
+  { key: 'vacancies', label: 'Open vacancies', unit: 'positions', help: 'Positions on published requisitions not yet filled (positions − candidates joined), as of the period end. The comparison uses the nightly snapshot nearest the comparison period end; before snapshots began there is no comparison.', link: 'workforce', get: (m, side) => side === 'cur' ? m.rc.openVacancies : (m.snap ? m.snap.vacancies.open : null), better: 'down' },
   { key: 'reqs', label: 'Requisitions raised', unit: 'requisitions', help: 'Requisitions created in the period.', link: 'workforce', get: m => m.rc.counts.raised, better: 'neutral' },
-  { key: 'offers', label: 'Offers released / accepted', unit: 'candidates', help: 'Candidates currently at an offer stage / with an accepted offer. Candidate records hold no stage dates, so this is a current-pipeline view with no comparison.', link: 'workforce', get: (m, side) => side === 'cur' ? m.rc.offersReleased : null, extra: (m) => `${m.rc.offersAccepted} accepted`, better: 'neutral' },
+  { key: 'offers', label: 'Offers released / accepted', unit: 'candidates', help: 'Candidates at an offer stage / with an accepted offer (current pipeline). The comparison uses the nightly snapshot nearest the comparison period end.', link: 'workforce', get: (m, side) => side === 'cur' ? m.rc.offersReleased : (m.snap ? m.snap.offers.released : null), extra: (m) => `${m.rc.offersAccepted} accepted`, better: 'neutral' },
   { key: 'present', label: 'Present (physical)', unit: 'ED', help: 'Employee-days with physical presence: present + late + short attendance. Half-day, WFH, OD and leave are separate cards, so the cards never overlap.', link: 'attendance', get: m => m.att.total.present + m.att.total.late + m.att.total.short, better: 'up' },
   { key: 'absent', label: 'Absent', unit: 'ED', help: 'Employee-days marked absent on scheduled workdays.', link: 'attendance', get: m => m.att.total.absent, better: 'down' },
   { key: 'leave', label: 'On approved leave', unit: 'ED', help: 'Employee-days recorded as leave on scheduled workdays.', link: 'leave', get: m => m.att.total.leave, better: 'neutral' },
@@ -842,6 +884,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
 
   const cur = coreMetrics(ctx, model, scope, from, to, today);
   const prev = cmp ? coreMetrics(ctx, model, scope, cmp.from, cmp.to, today) : null;
+  if (prev) prev.snap = snapshotNear(ctx.snapshots, cmp.to, 7);
   // detail passes for the current period only
   const attD = computeAttendance(ctx, model, scope, from, to, today, { detail: true });
   const regD = computeRegularisation(ctx, model, scope, from, to, today, { detail: true });
@@ -865,7 +908,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
     const lvDays = leaveD.byDept[dp] || 0;
     const headcount = w?.closing ?? 0;
     return {
-      dept: dp, head: head?.name || '', opening: w?.opening ?? 0, closing: headcount, joinings: w?.joinings ?? 0, exits: w?.exits ?? 0, net: w?.net ?? 0,
+      dept: dp, head: head?.name || '', transfersIn: w?.transfersIn ?? null, transfersOut: w?.transfersOut ?? null, opening: w?.opening ?? 0, closing: headcount, joinings: w?.joinings ?? 0, exits: w?.exits ?? 0, net: w?.net ?? 0,
       openVacancies: rc?.open ?? 0, present: a.present + a.late + a.short + a.half, absent: a.absent, leave: a.leave, half: a.half, wfh: a.wfh, od: a.od, late: a.lateArrivals,
       regularisations: regD.perDept[dp] || 0, missing: a.missing + a.incomplete, compliance: a.sched ? rates(a).compliance : null, physical: a.sched ? rates(a).physical : null,
       leaveDays: r1(lvDays), leavePerHead: headcount ? r2(lvDays / headcount) : null, gatePasses: gpD.counts.byDept[dp] || 0,
@@ -875,10 +918,13 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
   }).filter(d => d.closing || d.sched || d.openVacancies || d.gatePasses || d.reimbClaims).sort((a, b) => b.closing - a.closing);
 
   const limitations = [
-    'Department transfers are not recorded in MaxVolt One, so transfers in/out show as unavailable and a department\'s headcount history uses each employee\'s CURRENT department.',
+    ...(cur.wf.transfers.available ? [`Department transfers are tracked since ${fmtD(cur.wf.transfers.trackedSince)}; department history before that date uses each employee's department as it was first recorded.`]
+      : cur.wf.transfers.partial ? [`Department transfers are tracked only since ${fmtD(cur.wf.transfers.trackedSince)}, part-way through this period — earlier moves inside the period are not visible, so department headcount for those days may be off.`]
+      : ['Department transfers were not recorded before tracking began (first nightly snapshot pending), so transfers show as unavailable and department history uses each employee\'s CURRENT department.']),
     'Sanctioned positions and budgeted headcount are not stored; "approved positions" come only from requisitions.',
-    'Vacancy and offer history is not stored (candidate records carry only a current status), so open-vacancy, offer and pipeline figures are snapshots of today with no period comparison. Time-to-fill / time-to-hire cannot be computed until requisition closure dates and stage dates are recorded.',
-    'Reporting-manager and department are taken as they are now; earlier assignments are not stored.',
+    ...(ctx.snapshots?.length ? [`Open-vacancy and offer comparisons come from nightly snapshots (first snapshot ${fmtD(ctx.snapshots.map(x => x.date).sort()[0])}); periods before that have no comparison.`] : ['Vacancy and offer history is captured by a nightly snapshot that has not run yet, so those figures are snapshots of today with no period comparison.']),
+    ...(cur.rc.timing.trackedSince ? [`Time-to-fill / time-to-hire use only requisitions closed and candidates moved since tracking began (${fmtD(cur.rc.timing.trackedSince)}) — small samples are shown with their size.`] : ['Time-to-fill / time-to-hire need requisition closure dates and candidate stage dates, which are only recorded from now on.']),
+    'Reporting-manager history is not stored; the reporting manager is taken as it is now.',
     'Leave balances are shown as stored — allocation rules differ by policy, so utilisation against entitlement is indicative.',
     'Calendar quarters (Jan–Mar …) are used for quarterly periods.',
   ];
@@ -887,6 +933,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
   const registers = {
     regularisation: regD.rows, gatepass: gpD.rows, gatepass_exceptions: gpD.exceptions, leave: leaveD.rows, exceptions, leave_patterns: patterns,
     vacancies: cur.rc.rowsReq, visitors: vsD.rows, reimbursements: cur.rb.rows, reimbursement_issues: cur.rb.issues, visitor_issues: vsD.issues, data_quality: dq.flatMap(d => d.samples.map(s => ({ check: d.title, record: s, source: d.source }))),
+    transfers: cur.wf.transferList.map(t => ({ code: t.e.code, name: t.e.name, from: t.from, to: t.to, date: t.at })),
     joiners: cur.wf.joinList.map(e => ({ code: e.code, name: e.name, dept: e.dept, designation: e.designation, date: e.doj, location: e.loc })),
     exits: cur.wf.exitList.map(e => ({ code: e.code, name: e.name, dept: e.dept, designation: e.designation, date: e.lwd })),
     employees_attendance: [...attD.perEmp.values()].map(p => ({ code: p.e.code, name: p.e.name, dept: p.e.dept, designation: p.e.designation, scheduled: p.acc.sched, present: p.acc.present, late: p.acc.late, short: p.acc.short, half: p.acc.half, wfh: p.acc.wfh, od: p.acc.od, leave: p.acc.leave, absent: p.acc.absent, missing: p.acc.missing, incomplete: p.acc.incomplete, lateArrivals: p.acc.lateArrivals, hours: r1(p.acc.hoursMins / 60), physicalPct: rates(p.acc).physical, compliancePct: rates(p.acc).compliance })),
@@ -919,7 +966,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
     regularisation: { counts: regD.counts, prev: prev?.reg.counts || null, backlog: regD.backlogCount, backlogOverSla: regD.backlogOverSla, managers: regD.managers.slice(0, 15), byDept: regD.perDept },
     leave: { counts: leaveD.counts, prev: prev?.lv.counts || null, byType: leaveD.byType, byDept: leaveD.byDept, trend: leaveD.trend, balances: leaveD.balances, pendingLong: leaveD.pendingLong.slice(0, 20).map(x => ({ name: x.e?.name || '', dept: x.e?.dept || '', age: x.age })), patterns: patterns.slice(0, 100), patternCount: patterns.length,
       noLeave: Object.fromEntries(cfg.noLeaveWindows.map(w => [w, { window: w, from: noLeave[w].from, to: noLeave[w].to, total: noLeave[w].total, byClass: noLeave[w].byClass, sample: noLeave[w].rows.filter(r => r.class === 'Requires review' || r.class === 'Absences without leave applications').slice(0, 25) }])) },
-    workforce: { company: cur.wf.company, prevCompany: prev?.wf.company || null, departments: cur.wf.list, openingDate: cur.wf.openingDate, recruitment: { counts: cur.rc.counts, openVacancies: cur.rc.openVacancies, openReqs: cur.rc.openReqs, byDept: cur.rc.byDept, funnel: cur.rc.funnel, stage: cur.rc.stage, offers: { released: cur.rc.offersReleased, accepted: cur.rc.offersAccepted, declined: cur.rc.offersDeclined }, ageing: cur.rc.rowsReq.slice(0, 50), unapproved: cur.rc.unapproved.length, stale: cur.rc.rowsReq.filter(r => r.remaining > 0 && (!r.lastActivity || diffDays(r.lastActivity, today) > cfg.reqStaleDays)).length }, unavailable: { transfers: true, sanctioned: true, timeToFill: true } },
+    workforce: { company: cur.wf.company, prevCompany: prev?.wf.company || null, transfers: { ...cur.wf.transfers, count: cur.wf.company.transfers, rows: cur.wf.transferList.slice(0, 50).map(t => ({ code: t.e.code, name: t.e.name, from: t.from, to: t.to, date: t.at })) }, timing: cur.rc.timing, departments: cur.wf.list, openingDate: cur.wf.openingDate, recruitment: { counts: cur.rc.counts, openVacancies: cur.rc.openVacancies, openReqs: cur.rc.openReqs, byDept: cur.rc.byDept, funnel: cur.rc.funnel, stage: cur.rc.stage, offers: { released: cur.rc.offersReleased, accepted: cur.rc.offersAccepted, declined: cur.rc.offersDeclined }, ageing: cur.rc.rowsReq.slice(0, 50), unapproved: cur.rc.unapproved.length, stale: cur.rc.rowsReq.filter(r => r.remaining > 0 && (!r.lastActivity || diffDays(r.lastActivity, today) > cfg.reqStaleDays)).length }, unavailable: { transfers: !cur.wf.transfers.available && !cur.wf.transfers.partial, sanctioned: true, timeToFill: !cur.rc.timing.timeToFill } },
     gatepass: { counts: gpD.counts, prev: prev?.gp.counts || null, exceptions: gpD.exceptions.slice(0, 100), exceptionCount: gpD.exceptions.length },
     visitors: { counts: vsD.counts, prev: prev?.vs.counts || null, issues: vsD.issues.slice(0, 30) },
     reimbursements: { counts: cur.rb.counts, prev: prev?.rb.counts || null, issues: cur.rb.issues.slice(0, 50) },
@@ -930,6 +977,12 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
   if (CACHE.size > 40) CACHE.clear();
   CACHE.set(key, { at: Date.now(), result });
   return result;
+}
+
+// nearest nightly snapshot on/before `date` (and not older than maxAge days) — vacancy / offer history exists only from when snapshots began
+function snapshotNear(snapshots, date, maxAge) {
+  const ok = (snapshots || []).filter(x => x.date <= date && diffDays(x.date, date) <= maxAge).sort((a, b) => b.date.localeCompare(a.date));
+  return ok[0] || null;
 }
 
 function reconcile(attD, cur, departments) {

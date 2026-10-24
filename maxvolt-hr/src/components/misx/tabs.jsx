@@ -3,6 +3,9 @@ import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, Cart
 import { toast } from 'sonner';
 import { mis, fmtD, fmtDT, num } from '@/lib/mis';
 import { Section, Pill, KpiGrid, MiniTable, Register, Unavailable, Chg } from '@/components/misx/common';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { useEmployees, EmployeeSelect, Field } from '@/components/ld/shared';
 
 const COL = { present: '#1E4E8C', half: '#7DA3D6', wfh: '#38BDF8', od: '#818CF8', leave: '#A7C4E8', absent: '#EF4444', missing: '#F59E0B', blue: '#2D5986', grey: '#9CA3AF' };
 const periodText = (d) => `${fmtD(d.meta.period.from)} – ${fmtD(d.meta.period.to)}`;
@@ -150,21 +153,49 @@ export function LeaveTab({ d, params }) {
 }
 
 // ───────────────────────────── Workforce
-export function WorkforceTab({ d, params, applyFilter }) {
-  const W = d.workforce, rc = W.recruitment, co = W.company, pc = W.prevCompany;
+function TransferDialog({ d, onClose, onDone }) {
+  const emps = useEmployees();
+  const [f, setF] = useState({ user_id: '', to_department: '', effective_date: new Date().toISOString().slice(0, 10), reason: '' });
+  const [busy, setBusy] = useState(false);
+  const cur = emps.find(e => e.user_id === f.user_id);
+  const go = async () => {
+    if (!f.user_id || !f.to_department) { toast.error('Choose the employee and the new department'); return; }
+    setBusy(true);
+    try { const r = await mis('recordDeptTransfer', f); toast.success(`Moved from ${r.from} to ${r.to}`); onDone(); onClose(); } catch (e) { toast.error(e.message); }
+    setBusy(false);
+  };
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Record a department transfer</DialogTitle></DialogHeader>
+        <p className="text-xs text-gray-500">Changes the employee&apos;s department and keeps the history, so department headcount, transfers in/out and past reports stay correct. Editing the department in the employee profile is also recorded automatically.</p>
+        <Field label="Employee"><EmployeeSelect emps={emps} value={f.user_id} onChange={v => setF(x => ({ ...x, user_id: v }))} placeholder="Choose employee" /></Field>
+        {cur && <p className="text-xs text-gray-600">Current department: <b>{cur.department || 'Unassigned'}</b></p>}
+        <Field label="New department"><select className="h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-sm" value={f.to_department} onChange={e => setF(x => ({ ...x, to_department: e.target.value }))}><option value="">Choose…</option>{(d.meta.filterOptions.departments || []).filter(x => x !== 'Unassigned').map(x => <option key={x} value={x}>{x}</option>)}</select></Field>
+        <Field label="Effective date"><input type="date" className="h-9 w-full rounded-md border border-gray-300 px-2 text-sm" value={f.effective_date} onChange={e => setF(x => ({ ...x, effective_date: e.target.value }))} /></Field>
+        <Field label="Reason (optional)"><input className="h-9 w-full rounded-md border border-gray-300 px-2 text-sm" value={f.reason} onChange={e => setF(x => ({ ...x, reason: e.target.value }))} /></Field>
+        <div className="flex justify-end gap-2"><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={go} disabled={busy}>Record transfer</Button></div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function WorkforceTab({ d, params, applyFilter, canTransfer, onRefresh }) {
+  const W = d.workforce, rc = W.recruitment, co = W.company, pc = W.prevCompany, tf = W.transfers, tm = W.timing;
+  const [tfOpen, setTfOpen] = useState(false);
   if (!rc) return <Unavailable>Recruitment detail is not available for your role.</Unavailable>;
   const chart = W.departments.map(x => ({ dept: x.dept, Opening: x.opening, Closing: x.closing }));
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
-        {[['Opening headcount', co.opening, pc?.opening], ['Joinings', co.joinings, pc?.joinings], ['Exits', co.exits, pc?.exits], ['Closing headcount', co.closing, pc?.closing], ['Net change', co.net, pc?.net], ['Open vacancies', rc.openVacancies, null], ['Requisitions raised', rc.counts.raised, null], ['Offers accepted', rc.offers.accepted, null]].map(([l, v, p]) => <Stat key={l} label={l} value={v} sub={p != null ? `was ${p}` : ''} />)}
+        {[['Opening headcount', co.opening, pc?.opening], ['Joinings', co.joinings, pc?.joinings], ['Exits', co.exits, pc?.exits], ['Transfers between depts', (tf.available || tf.partial) ? co.transfers : 'n/a', pc?.transfers], ['Closing headcount', co.closing, pc?.closing], ['Net change', co.net, pc?.net], ['Open vacancies', rc.openVacancies, null], ['Offers accepted', rc.offers.accepted, null]].map(([l, v, p]) => <Stat key={l} label={l} value={v} sub={p != null ? `was ${p}` : ''} />)}
       </div>
-      <p className="text-[11px] text-gray-500">Closing = Opening + Joinings − Exits (an exit takes effect the day after the last working day). {co.reconciles ? 'This reconciles for the company and every department.' : 'RECONCILIATION FAILED — see Data Quality.'}</p>
-      <Unavailable>Not recorded in MaxVolt One, so shown as unavailable rather than guessed: department transfers (a department&apos;s history uses each person&apos;s current department), sanctioned/budgeted positions, vacancy history, offer and stage dates, time-to-fill. Open vacancies and the offer pipeline are snapshots of today.</Unavailable>
+      <p className="text-[11px] text-gray-500">Closing = Opening + Joinings − Exits + Transfers in − Transfers out (an exit takes effect the day after the last working day). {co.reconciles ? 'This reconciles for the company and every department.' : 'RECONCILIATION FAILED — see Data Quality.'}</p>
+      <Unavailable>{tf.available ? `Department transfers are tracked since ${fmtD(tf.trackedSince)}.` : tf.partial ? `Department transfers are tracked only since ${fmtD(tf.trackedSince)} — part-way through this period, so earlier moves in it are not visible.` : 'Department transfers are not tracked for this period (tracking starts with the first nightly snapshot), so a department\'s history uses each person\'s current department.'} Sanctioned / budgeted positions are still not recorded. {tm.trackedSince ? `Time-to-fill / hire use records since ${fmtD(tm.trackedSince)}.` : 'Time-to-fill and time-to-hire start filling in as requisitions close and candidates move stages.'}{canTransfer && <> <button className="text-blue-700 underline" onClick={() => setTfOpen(true)}>Record a transfer</button></>}</Unavailable>
       <Section title="Department headcount movement" subtitle="Click a department to open its detailed report.">
         <MiniTable heads={['Department', 'Opening', 'Joinings', 'Exits', 'Transfers in', 'Transfers out', 'Closing', 'Net', 'Change %', 'Open vacancies']}
-          rows={[...W.departments.map(x => [<button key={x.dept} className="text-blue-700 hover:underline" onClick={() => applyFilter({ department: x.dept })}>{x.dept}</button>, x.opening, x.joinings, x.exits, 'n/a', 'n/a', x.closing, x.net > 0 ? `+${x.net}` : x.net, x.netPct == null ? (x.opening < 1 ? 'n/a' : '') : (x.opening < 5 ? `${x.netPct}% (small dept)` : `${x.netPct}%`), rc.byDept.find(v => v.dept === x.dept)?.open ?? 0]),
-            [<b key="c">Company</b>, <b key="o">{co.opening}</b>, <b key="j">{co.joinings}</b>, <b key="e">{co.exits}</b>, 'n/a', 'n/a', <b key="cl">{co.closing}</b>, <b key="n">{co.net}</b>, co.opening ? `${Math.round(co.net / co.opening * 1000) / 10}%` : 'n/a', rc.openVacancies]]} />
+          rows={[...W.departments.map(x => [<button key={x.dept} className="text-blue-700 hover:underline" onClick={() => applyFilter({ department: x.dept })}>{x.dept}</button>, x.opening, x.joinings, x.exits, x.transfersIn ?? 'n/a', x.transfersOut ?? 'n/a', x.closing, x.net > 0 ? `+${x.net}` : x.net, x.netPct == null ? (x.opening < 1 ? 'n/a' : '') : (x.opening < 5 ? `${x.netPct}% (small dept)` : `${x.netPct}%`), rc.byDept.find(v => v.dept === x.dept)?.open ?? 0]),
+            [<b key="c">Company</b>, <b key="o">{co.opening}</b>, <b key="j">{co.joinings}</b>, <b key="e">{co.exits}</b>, (tf.available || tf.partial) ? <b key="ti">{co.transfers}</b> : 'n/a', (tf.available || tf.partial) ? <b key="to">{co.transfers}</b> : 'n/a', <b key="cl">{co.closing}</b>, <b key="n">{co.net}</b>, co.opening ? `${Math.round(co.net / co.opening * 1000) / 10}%` : 'n/a', rc.openVacancies]]} />
       </Section>
       <Section title="Opening versus closing headcount"><Chart title="Headcount by department" sub={`Opening (${fmtD(W.openingDate)}) vs closing (${fmtD(d.meta.period.to)}) · unit: employees`} height={300}><BarChart data={chart} margin={{ left: -10, bottom: 40 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="dept" tick={{ ...axis, fontSize: 10 }} interval={0} angle={-35} textAnchor="end" height={70} /><YAxis tick={axis} /><Tooltip /><Legend wrapperStyle={{ fontSize: 11 }} /><Bar dataKey="Opening" fill={COL.grey} /><Bar dataKey="Closing" fill={COL.blue} /></BarChart></Chart></Section>
       <Grid>
@@ -174,6 +205,17 @@ export function WorkforceTab({ d, params, applyFilter }) {
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Stat label="Applications in period" value={rc.counts.applied} /><Stat label="Interviews scheduled in period" value={rc.counts.interviews} /><Stat label="Requisitions with no recent activity" value={rc.stale} /><Stat label="Published without full approval" value={rc.unapproved} /><Stat label="Offers declined (current)" value={rc.offers.declined} />
       </div>
+      <Section title="Time to fill and hire" subtitle={tm.trackedSince ? `From dates recorded since ${fmtD(tm.trackedSince)} — sample sizes shown; small samples are indicative only.` : 'Not available yet — these need requisition closure dates and candidate stage dates, which are now recorded automatically.'}>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Stat label="Avg time to fill (days)" value={tm.timeToFill?.avgDays ?? 'n/a'} sub={tm.timeToFill ? `${tm.timeToFill.n} requisition(s) filled` : 'no filled requisitions tracked'} />
+          <Stat label="Avg time to hire (days)" value={tm.timeToHire?.avgDays ?? 'n/a'} sub={tm.timeToHire ? `${tm.timeToHire.n} candidate(s) joined` : 'no joinings tracked'} />
+          <Stat label="Avg time to offer (days)" value={tm.timeToOffer?.avgDays ?? 'n/a'} sub={tm.timeToOffer ? `${tm.timeToOffer.n} offer(s)` : 'no offers tracked'} />
+          <Stat label="Closed unfilled in period" value={tm.cancelledOrClosedUnfilled} />
+        </div>
+        {Object.keys(tm.stageEvents).length > 0 && <p className="text-xs text-gray-600 mt-3">Stage movements in the period: {Object.entries(tm.stageEvents).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(' · ')}</p>}
+      </Section>
+      {tf.rows.length > 0 && <Section title="Transfers in the period"><MiniTable heads={['Code', 'Employee', 'From', 'To', 'Effective']} rows={tf.rows.map(t => [t.code, t.name, t.from, t.to, fmtD(t.date)])} /></Section>}
+      {tfOpen && <TransferDialog d={d} onClose={() => setTfOpen(false)} onDone={onRefresh} />}
       <Register kind="vacancies" params={params} title="Vacancy ageing" pageSize={15} subtitle="Remaining = approved positions − candidates joined."
         columns={[{ key: 'id', label: 'Req ID', render: r => r.id.slice(0, 8) }, { key: 'title', label: 'Position' }, { key: 'dept', label: 'Department' }, { key: 'raised', label: 'Raised', render: r => fmtD(r.raised) }, { key: 'positions', label: 'Approved' }, { key: 'filled', label: 'Filled' }, { key: 'remaining', label: 'Remaining' }, { key: 'owner', label: 'Owner' }, { key: 'status', label: 'Status' }, { key: 'age', label: 'Age (d)' }, { key: 'candidates', label: 'Candidates' }]} />
       <Grid>
@@ -195,7 +237,7 @@ export function DepartmentsTab({ d, applyFilter }) {
           <tbody>{d.departments.map(x => (
             <tr key={x.dept} className="border-b hover:bg-gray-50/60"><td className="p-2"><button className="text-blue-700 hover:underline whitespace-nowrap" onClick={() => applyFilter({ department: x.dept })}>{x.dept}</button></td><td className="p-2 whitespace-nowrap">{x.head || 'n/a'}</td>
               {[x.opening, x.closing, x.joinings, x.exits, x.net, x.openVacancies, x.present, x.absent, x.leave, x.wfh, x.od, x.late, x.regularisations, x.missing, x.compliance == null ? 'n/a' : `${x.compliance}%`, x.leaveDays, x.gatePasses, x.pendingApprovals, x.reimbClaims, x.reimbPending].map((v, i) => <td key={i} className="p-2 text-right tabular-nums">{v}</td>)}</tr>))}</tbody></table></div>
-        <p className="text-[11px] text-gray-500 mt-2">ED = employee-days. Transfers between departments are not recorded in MaxVolt One.</p>
+        <p className="text-[11px] text-gray-500 mt-2">ED = employee-days.</p>
       </Section>
     </div>
   );

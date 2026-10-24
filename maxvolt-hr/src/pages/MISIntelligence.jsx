@@ -56,7 +56,7 @@ export default function MISIntelligence() {
 
   const body = () => {
     if (!data) return null;
-    const common = { d: data, params: regParams, setTab, applyFilter };
+    const common = { d: data, params: regParams, setTab, applyFilter, canTransfer: ['hr', 'admin'].includes(role), onRefresh: () => load(true) };
     switch (tab) {
       case 'attendance': return <AttendanceTab {...common} />;
       case 'exceptions': return <ExceptionsTab {...common} />;

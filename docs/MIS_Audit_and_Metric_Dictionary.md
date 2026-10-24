@@ -31,15 +31,15 @@ Code: `backend/utils/mis/` (`calendar.js`, `analytics.js`, `export.js`), API cas
 
 All thresholds (absence/late/regularisation repeats, SLA days, ageing, outlier σ …) live in `DEFAULT_CFG` and can be overridden by HR/Admin (`saveMisConfig`).
 
-## 3. Data MaxVolt One does not store (shown as unavailable, never guessed)
+## 3. History now captured (and what is still not stored)
 
-1. **Department transfers** — no record type. Transfers in/out show "n/a"; department history uses each employee's *current* department.
-2. **Sanctioned / budgeted positions** — none; "approved positions" come only from requisitions.
-3. **Vacancy and offer history** — candidates have only a current status. Open vacancies and offers are snapshots of today (no comparison). **Time-to-fill / time-to-hire** need requisition closure dates and stage dates.
-4. **Reporting manager / department history** — current values only.
-5. **Leave deductions vs applications** — not reconcilable without a deduction ledger.
+Added 24 Oct 2026 — `backend/utils/mis/history.js`:
 
-To enable real history: add a monthly headcount snapshot job, a `Transfer` record, requisition closure date + reason, and candidate stage timestamps.
+* **`DeptTransfer` records** — written automatically when an employee's department is edited (entities PATCH hook), by HR via *Record a transfer* (`recordDeptTransfer`), and by the nightly job for any other write path. Department history is walked back from the current department, so opening/closing headcount per department, joinings/exits and **Transfers in/out** are exact from the first record; `Closing = Opening + Joinings − Exits + In − Out` is checked per department and company.
+* **`HeadcountSnapshot`** nightly at 12:30 AM IST (plus a catch-up 90 s after boot): who is in which department, open vacancies by department, offer pipeline, candidate stages. It supplies the *comparison* for open vacancies and offers, and detects department moves and candidate stage changes made outside the hooks. Preview without writing: `runMisSnapshot` with `dry_run`.
+* **`JobRequisition.closed_date / closed_reason`** (`filled` when joined ≥ positions, else `closed`) and **`Candidate.status_history`** — recorded on every status change. They drive **time to fill, time to hire, time to offer** and period stage movements. Existing closed requisitions have no closure date and are excluded rather than guessed.
+
+Everything reports its **tracked-since date** and sample size. Before tracking began, values stay "n/a", never 0. Still not stored: sanctioned / budgeted positions, reporting-manager history, a leave-deduction ledger.
 
 ## 4. Data-quality findings from live data (24 Oct 2026)
 

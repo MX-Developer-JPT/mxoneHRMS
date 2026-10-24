@@ -36,7 +36,7 @@ const att = (rows) => { const map = new Map(); const dupes = []; for (const r of
 const shift = { id: 's1', name: 'First', is_default: true, days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] };
 const mkCtx = (o = {}) => ({
   cfg: { ...A.DEFAULT_CFG }, employees: [], depts: [{ name: 'Ops' }], shifts: [shift], holidays: [], leaves: [], policies: [{ id: 'p1', name: 'Casual Leave' }], balances: [], regs: [], gps: [], visitors: [], reqs: [], cands: [], interviews: [], reimbs: [], exits: [], insightState: [],
-  att: att([]), ...o,
+  att: att([]), transfers: [], snapshots: [], ...o,
 });
 const prep = (ctx, filters = {}) => { const model = A.buildModel(ctx); const scope = A.makeScope(model, filters, null); scope.filters = filters; return { model, scope }; };
 const TODAY = '2026-10-31';
@@ -173,6 +173,69 @@ t('department moves are not company joinings/exits: totals equal the sum of depa
   const { model, scope } = prep(ctx);
   const w = A.computeWorkforce(ctx, model, scope, '2026-10-01', '2026-10-31');
   assert.equal(w.list.reduce((s, r) => s + r.closing, 0), w.company.closing); assert.ok(w.list.every(r => r.transfersIn === null));
+});
+
+// ── transfers (department history) ──
+const tfr = (uid, from, to, at, source = 'recorded') => ({ id: uid + at, user_id: uid, from_department: from, to_department: to, effective_date: at, source, recorded_at: at + 'T05:00:00Z' });
+t('transfer inside the period: department opening/closing follow the history and reconcile', () => {
+  const ctx = mkCtx({ depts: [{ name: 'Ops' }, { name: 'HR' }], snapshots: [{ date: '2026-09-01' }], employees: [emp({ uid: 'a', department: 'HR' }), emp({ uid: 'b' })], transfers: [tfr('a', 'Ops', 'HR', '2026-10-15')] });
+  const { model, scope } = prep(ctx);
+  const w = A.computeWorkforce(ctx, model, scope, '2026-10-01', '2026-10-31');
+  const ops = w.list.find(r => r.dept === 'Ops'), hr = w.list.find(r => r.dept === 'HR');
+  assert.deepEqual([ops.opening, ops.closing, ops.transfersOut, ops.transfersIn], [2, 1, 1, 0]);
+  assert.deepEqual([hr.opening, hr.closing, hr.transfersOut, hr.transfersIn], [0, 1, 0, 1]);
+  assert.ok(ops.reconciles && hr.reconciles && w.company.reconciles);
+  assert.equal(w.company.joinings, 0); assert.equal(w.company.exits, 0);          // a move is not a joining or an exit
+  assert.equal(w.transfers.available, true);
+});
+t('transfer before the period is history, not a movement in it', () => {
+  const ctx = mkCtx({ depts: [{ name: 'Ops' }, { name: 'HR' }], snapshots: [{ date: '2026-08-01' }], employees: [emp({ uid: 'a', department: 'HR' })], transfers: [tfr('a', 'Ops', 'HR', '2026-09-10')] });
+  const { model, scope } = prep(ctx);
+  const w = A.computeWorkforce(ctx, model, scope, '2026-10-01', '2026-10-31');
+  assert.equal(w.list.find(r => r.dept === 'HR').opening, 1); assert.equal(w.company.transfers, 0);
+  const past = A.computeWorkforce(ctx, model, scope, '2026-08-01', '2026-08-31');       // back then the employee was in Ops
+  assert.equal(past.list.find(r => r.dept === 'Ops').closing, 1); assert.equal(past.list.find(r => r.dept === 'HR'), undefined);
+});
+t('joined in one department, moved later in the same period', () => {
+  const ctx = mkCtx({ depts: [{ name: 'Ops' }, { name: 'HR' }], snapshots: [{ date: '2026-09-01' }], employees: [emp({ uid: 'a', department: 'HR', date_of_joining: '2026-10-05' })], transfers: [tfr('a', 'Ops', 'HR', '2026-10-20')] });
+  const { model, scope } = prep(ctx);
+  const w = A.computeWorkforce(ctx, model, scope, '2026-10-01', '2026-10-31');
+  assert.equal(w.list.find(r => r.dept === 'Ops').joinings, 1); assert.equal(w.list.find(r => r.dept === 'HR').closing, 1);
+  assert.ok(w.list.every(r => r.reconciles) && w.company.reconciles);
+});
+t('without any tracking, transfers are unavailable (null), not zero', () => {
+  const ctx = mkCtx({ employees: [emp({ uid: 'a' })] });
+  const { model, scope } = prep(ctx);
+  const w = A.computeWorkforce(ctx, model, scope, '2026-10-01', '2026-10-31');
+  assert.equal(w.transfers.available, false); assert.equal(w.transfers.trackedSince, null); assert.equal(w.list[0].transfersIn, null);
+});
+t('tracking that starts part-way through the period is flagged partial', () => {
+  const ctx = mkCtx({ snapshots: [{ date: '2026-10-12' }], employees: [emp({ uid: 'a' })] });
+  const { model, scope } = prep(ctx);
+  const w = A.computeWorkforce(ctx, model, scope, '2026-10-01', '2026-10-31');
+  assert.equal(w.transfers.partial, true); assert.equal(w.transfers.available, false);
+});
+
+// ── time to fill / hire from recorded dates ──
+t('time-to-fill and time-to-hire use only recorded closure / stage dates', () => {
+  const ctx = mkCtx({
+    reqs: [
+      { id: 'r1', position_title: 'A', department: 'Ops', number_of_positions: 1, status: 'closed', created_at: '2026-09-01T00:00:00Z', closed_date: '2026-09-21T00:00:00Z', closed_reason: 'filled' },
+      { id: 'r2', position_title: 'B', department: 'Ops', number_of_positions: 1, status: 'closed', created_at: '2026-09-01T00:00:00Z', closed_date: '2026-10-11T00:00:00Z', closed_reason: 'filled' },
+      { id: 'r3', position_title: 'C', department: 'Ops', number_of_positions: 1, status: 'closed', created_at: '2026-09-01T00:00:00Z', closed_date: '2026-10-05T00:00:00Z', closed_reason: 'closed' },
+      { id: 'r4', position_title: 'D', department: 'Ops', number_of_positions: 1, status: 'closed', created_at: '2026-01-01T00:00:00Z' },                                     // closed before tracking: no date → excluded
+    ],
+    cands: [{ id: 'c1', job_id: 'r1', status: 'joined', applied_date: '2026-09-01', status_history: [{ status: 'applied', at: '2026-09-01T00:00:00Z', source: 'applied_date' }, { status: 'offered', at: '2026-09-11T00:00:00Z', source: 'edit' }, { status: 'joined', at: '2026-09-21T00:00:00Z', source: 'edit' }] }],
+  });
+  const { model, scope } = prep(ctx);
+  const rc = A.computeRecruitment(ctx, model, scope, '2026-10-01', '2026-10-31', TODAY);
+  assert.equal(rc.timing.timeToFill.n, 2); assert.equal(rc.timing.timeToFill.avgDays, 30);   // (20 + 40) / 2
+  assert.equal(rc.timing.timeToFill.inPeriodN, 1); assert.equal(rc.timing.timeToFill.inPeriodAvg, 40);
+  assert.equal(rc.timing.timeToHire.avgDays, 20); assert.equal(rc.timing.timeToOffer.avgDays, 10);
+  assert.equal(rc.timing.cancelledOrClosedUnfilled, 1);
+  assert.deepEqual(rc.timing.stageEvents, {});                                                  // the September stage moves are outside October
+  const empty = A.computeRecruitment(mkCtx({ reqs: [{ id: 'x', status: 'closed', number_of_positions: 1 }] }), model, scope, '2026-10-01', '2026-10-31', TODAY);
+  assert.equal(empty.timing.timeToFill, null);                                                   // nothing recorded → unavailable, never 0
 });
 
 // ── recruitment / vacancies ──
