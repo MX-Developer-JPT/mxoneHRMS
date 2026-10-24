@@ -42,6 +42,7 @@ const DepartmentManagement = lazy(() => import('./pages/DepartmentManagement'));
 const HolidayCalendar = lazy(() => import('./pages/HolidayCalendar'));
 const AnnouncementManagement = lazy(() => import('./pages/AnnouncementManagement'));
 const MISDashboard = lazy(() => import('./pages/MISDashboard'));
+const MISIntelligence = lazy(() => import('./pages/MISIntelligence'));
 const InsuranceManagement = lazy(() => import('./pages/InsuranceManagement'));
 const MyInsurance = lazy(() => import('./pages/MyInsurance'));
 const OnboardingApproval = lazy(() => import('./pages/OnboardingApproval'));
@@ -393,6 +394,11 @@ const AuthenticatedApp = () => {
       <Route path="/AttendanceExemption" element={
         <LayoutWrapper currentPageName="AttendanceExemption">
           <AttendanceExemption />
+        </LayoutWrapper>
+      } />
+      <Route path="/MISIntelligence" element={
+        <LayoutWrapper currentPageName="MISIntelligence">
+          <MISIntelligence />
         </LayoutWrapper>
       } />
       <Route path="/MISDashboard" element={

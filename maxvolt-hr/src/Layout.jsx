@@ -101,6 +101,7 @@ const managementMenuGroups = [
   { label: 'Overview', items: [
     { name: 'Dashboard',                icon: LayoutDashboard, page: 'Dashboard' },
     { name: 'MIS Analytics',            icon: PieChart,        page: 'MISDashboard' },
+    { name: 'Intelligent MIS',          icon: BarChart3,       page: 'MISIntelligence' },
   ]},
   { label: 'My Team', items: [
     { name: 'My Team',                  icon: Users,           page: 'Employees' },
@@ -188,6 +189,7 @@ const managerMenuGroups = [
   { label: 'Overview', items: [
     { name: 'Dashboard',                icon: LayoutDashboard, page: 'Dashboard' },
     { name: 'Team MIS',                 icon: PieChart,        page: 'MISDashboard' },
+    { name: 'Intelligent Team MIS',     icon: BarChart3,       page: 'MISIntelligence' },
   ]},
   { label: 'My Team', items: [
     { name: 'My Team',                  icon: Users,           page: 'Employees' },
@@ -247,6 +249,7 @@ const hrMenuGroups = [
   { label: 'Overview', items: [
     { name: 'Dashboard',               icon: LayoutDashboard, page: 'Dashboard' },
     { name: 'MIS Analytics',           icon: PieChart,        page: 'MISDashboard' },
+    { name: 'Intelligent MIS',         icon: BarChart3,       page: 'MISIntelligence' },
   ]},
   { label: 'AI & Intelligence', items: [
     { name: 'Attrition Risk (AI)',     icon: ShieldAlert,     page: 'AttritionRisk' },

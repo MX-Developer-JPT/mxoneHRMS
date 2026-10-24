@@ -93,6 +93,7 @@ const UserRoleManagement = lazy(() => import('./pages/UserRoleManagement'));
 const MyInsurance = lazy(() => import('./pages/MyInsurance'));
 const InsuranceManagement = lazy(() => import('./pages/InsuranceManagement'));
 const MISDashboard = lazy(() => import('./pages/MISDashboard'));
+const MISIntelligence = lazy(() => import('./pages/MISIntelligence'));
 const AttendanceExemption = lazy(() => import('./pages/AttendanceExemption'));
 const GeofenceEligibility = lazy(() => import('./pages/GeofenceEligibility'));
 const FieldDutyEligibility = lazy(() => import('./pages/FieldDutyEligibility'));
@@ -178,6 +179,7 @@ export const PAGES = {
     "MyInsurance": MyInsurance,
     "InsuranceManagement": InsuranceManagement,
     "MISDashboard": MISDashboard,
+    "MISIntelligence": MISIntelligence,
     "AttendanceExemption": AttendanceExemption,
     "GeofenceEligibility": GeofenceEligibility,
     "FieldDutyEligibility": FieldDutyEligibility,

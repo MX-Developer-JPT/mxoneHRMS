@@ -1,1391 +1,1391 @@
-import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
-import jwt from 'jsonwebtoken';
-import { one, all, run, withTransaction } from '../db.js';
-import { sendEmail, emailTemplates } from '../utils/email.js';
-import { sendPushToUser } from '../utils/push.js';
-import { JWT_SECRET } from './auth.js';
-import { applyGatePassHalfDay, clearGatePassHalfDay } from './attendancelog.js';
-
-const router = Router();
-
-// Some Attendance rows can legitimately exist in duplicate for the same
-// (user_id, date) — a well-known code-map mismatch (JSON user_id set, DB
-// user_id column null, from an older biometric sync or auto-absent insert)
-// meant a later lookup-by-column-only could miss the real row and insert a
-// second one instead of updating it (now fixed at every write site in
-// functions.js, but existing duplicates from before that fix can still be
-// sitting in the DB). Every OTHER Attendance consumer already dedups this
-// way — getAllAttendance's own scoring, and mapAttendanceByUserDate for the
-// report/muster exports — but this generic list/filter route (what "My
-// Attendance"/AttendanceCalendar.jsx and the Employee Detail dialog's
-// calendar actually read from) did not, so a completed regularisation could
-// still show as absent here even though every other page had already
-// self-healed. Mirrors the same scoring: regularised > admin-corrected >
-// biometric-synced > has check-in > not absent.
-function dedupAttendanceRows(rows) {
-  const score = (r) => (r.regularised ? 16 : 0) + (r.admin_marked ? 8 : 0) + (r.biometric_synced ? 4 : 0) + (r.check_in_time ? 2 : 0) + (r.status && r.status !== 'absent' ? 1 : 0);
-  const best = new Map(); // `${user_id}|${date}` -> highest-scoring row seen so far
-  const keyOrder = [];    // first-seen order of each key, so output order is otherwise unchanged
-  for (const r of rows) {
-    if (!r.user_id || !r.date) { keyOrder.push({ row: r }); continue; } // no key to dedup on — pass through as-is
-    const key = `${r.user_id}|${String(r.date).slice(0, 10)}`;
-    if (!best.has(key)) keyOrder.push({ key });
-    const prev = best.get(key);
-    if (!prev) { best.set(key, r); continue; }
-    const rScore = score(r), prevScore = score(prev);
-    if (rScore > prevScore) {
-      best.set(key, r);
-    } else if (rScore === prevScore) {
-      // Two equally-"good" duplicate rows (both real biometric records) —
-      // `>=` used to always take whichever was iterated LAST, an
-      // arbitrary DB-order artifact that could show a later punch as
-      // "First In" while the day's genuine earliest check-in sat in the
-      // other duplicate (the classic user_id column/JSON mismatch: a
-      // later sync pass creates a fresh row because an earlier lookup
-      // missed the original one). Always prefer the earlier check-in.
-      const t1 = r.check_in_time    ? new Date(r.check_in_time).getTime()    : Infinity;
-      const t2 = prev.check_in_time ? new Date(prev.check_in_time).getTime() : Infinity;
-      if (t1 < t2) best.set(key, r);
-    }
-  }
-  return keyOrder.map(({ row, key }) => row || best.get(key));
-}
-
-// Entity types carrying financial, statutory, or otherwise highly sensitive
-// data. Every route below additionally restricts these to HR/admin/
-// management (unrestricted) or the record's own owner — closing the gap
-// where this whole router previously had no authorization at all, so any
-// caller (authenticated or not) could read/write PAN/Aadhaar/bank details,
-// payroll, loans, insurance claims, and POSH case records for anyone.
-const SENSITIVE_TYPES = new Set([
-  'Payroll', 'PayrollConfiguration', 'SalaryStructure', 'Loan', 'InsuranceClaim',
-  'POSHRecord', 'TaxDeclaration', 'Form16', 'BankDetail', 'LeaveBalance', 'Document',
-  'Reimbursement',
-  // Visitor is location-scoped (a Duhai gate admin must never be able to
-  // list an E82 visitor by calling the generic list/filter API directly,
-  // per the Visitor Management location-isolation requirement). Every
-  // legitimate read now goes through functions.js's getMyVisitors (self) or
-  // getVisitorsScoped (gate admin/HR, location-filtered server-side)
-  // instead — this just closes the generic route as a bypass. The default
-  // fallback below (owner-only) is a safe, never-leaks-cross-location floor
-  // for any caller that still hits this route directly.
-  'Visitor',
-]);
-const PRIVILEGED_ROLES = new Set(['hr', 'admin', 'management']);
-// LeaveBalance is the one SENSITIVE_TYPE that must never be self-editable,
-// even by its own owner — every other sensitive type's "own record" carve-
-// out below is intentional (an employee reading/updating their own Document,
-// Loan application, etc.), but a leave balance is a system-computed running
-// total, not something an employee ever legitimately edits directly. The
-// generic own-record exception used to let a plain employee PATCH literally
-// any field of their own LeaveBalance (including `available`) — which is
-// exactly what Leave.jsx's client-side "deduct on submit / restore on
-// cancel" calls were doing, non-atomically, from the browser. That's the
-// root of imported balances drifting: two racing submits (or a submit whose
-// follow-up balance PATCH never completes) reading/writing the same row with
-// no locking. Fixed at the source: PATCH now requires HR/admin/management
-// for LeaveBalance, full stop, and the actual reserve/release bookkeeping
-// moved server-side into the Leave create/cancel/delete paths below (see
-// reserveLeaveBalance/releaseLeaveReservation), atomic and race-free.
-const SELF_EDIT_EXEMPT_TYPES = new Set(['LeaveBalance']);
-
-// Leave balance reservation model: `available` is decremented (and
-// `pending_approval` incremented by the same amount) the INSTANT a Leave
-// request is created as 'pending' — not deferred to approval — so a second
-// concurrent request against the same balance can never be approved past
-// what's actually left. Approval (runLeaveAction in functions.js) then just
-// moves the reserved days from pending_approval to used, leaving `available`
-// where creation already put it. Rejection/cancellation/deletion of a still-
-// pending request releases that reservation back via releaseLeaveReservation
-// — the single place that does this arithmetic, so it can never drift out of
-// sync between the different ways a pending leave can end.
-async function reserveLeaveBalance(userId, leavePolicyId, year, days, client) {
-  if (!userId || !leavePolicyId || !days) return;
-  const balRows = (await client.query("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [userId])).rows;
-  const balRow = balRows.map(r => ({ id: r.id, d: JSON.parse(r.data) })).find(x => x.d.leave_policy_id === leavePolicyId && x.d.year === year);
-  if (!balRow) return; // no matching balance row — nothing to reserve against (checkLeaveBalanceSufficiency already let a 0-balance request through as a pre-existing edge case)
-  const upd = { ...balRow.d, available: Math.max((balRow.d.available || 0) - days, 0), pending_approval: (balRow.d.pending_approval || 0) + days };
-  await client.query("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), balRow.id]);
-}
-
-async function releaseLeaveReservation(userId, leavePolicyId, year, days) {
-  if (!userId || !leavePolicyId || !days) return;
-  const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [userId]);
-  const balRow = balRows.map(r => ({ id: r.id, d: JSON.parse(r.data) })).find(x => x.d.leave_policy_id === leavePolicyId && x.d.year === year);
-  if (!balRow) return;
-  const upd = { ...balRow.d, available: (balRow.d.available || 0) + days, pending_approval: Math.max((balRow.d.pending_approval || 0) - days, 0) };
-  await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), balRow.id]);
-}
-
-// Live DB lookup (not the JWT's embedded role, which can go stale for the
-// life of a 30-day token if the user is later promoted/demoted) — mirrors
-// the hasRole() convention used throughout routes/functions.js.
-async function getEffectiveRole(cu) {
-  if (!cu) return null;
-  try {
-    const row = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
-    return row?.custom_role || row?.role || cu.custom_role || cu.role || null;
-  } catch { return cu.custom_role || cu.role || null; }
-}
-
-// Reimbursement and LeaveBalance both carry data sensitive enough to
-// restrict like every other SENSITIVE_TYPES entry — but unlike the rest, a
-// non-privileged 'manager' role legitimately needs to see their own direct
-// reports' records too, not just their own: Reimbursement for approval
-// (checkApprovalAuthorization below), LeaveBalance because
-// LeaveManagement.jsx/LeaveDashboard.jsx read the whole team's balances to
-// show available-days context while a manager reviews a pending leave
-// request. These two helpers mirror checkApprovalAuthorization's manager
-// scoping exactly, so read access and write/approval access never disagree.
-const MANAGER_VISIBLE_SENSITIVE_TYPES = new Set(['Reimbursement', 'LeaveBalance']);
-async function getDirectReportUserIds(managerId) {
-  const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND data::jsonb->>'reporting_manager_id'=$1", [managerId]);
-  return new Set(rows.map(r => r.user_id));
-}
-
-// Whoever gets set as an Employee's reporting_manager_id must actually be
-// able to act on that report's approvals — Leave/GatePass/Reimbursement/
-// AttendanceRegularisation approval authorization is keyed purely on
-// reporting_manager_id matching the actor, but the NAV that gets a user to
-// LeaveManagement.jsx etc. in the first place is keyed on role/custom_role
-// being 'manager'/'management'/'hr'/'admin'. A user assigned as someone's
-// manager while still on the default 'employee' role could authorize fine
-// server-side but had no way to reach the approval screen at all.
-// Previously the only fix was an admin manually clicking "Sync Manager
-// Roles" in AdminPanel — and that function itself only ever matched the
-// legacy reporting_manager_email field, never the reporting_manager_id
-// every current UI (UserRoleManagement.jsx, OnboardingApproval.jsx) actually
-// writes, so it silently promoted nobody assigned through the current UI.
-// This runs automatically the moment reporting_manager_id is actually set,
-// so no separate admin step is ever required again. Never demotes or
-// touches anyone already at manager-or-higher.
-async function autoPromoteReportingManager(managerId) {
-  if (!managerId) return;
-  try {
-    const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [managerId]);
-    if (!u) return;
-    const role = u.custom_role || u.role;
-    if (['admin', 'hr', 'manager', 'management'].includes(role)) return;
-    await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [managerId]);
-  } catch (e) { console.error('[entities] autoPromoteReportingManager failed:', e.message); }
-}
-
-async function filterSensitive(data, cu, type) {
-  if (!SENSITIVE_TYPES.has(type)) return data;
-  const role = await getEffectiveRole(cu);
-  if (PRIVILEGED_ROLES.has(role)) return data;
-  if (MANAGER_VISIBLE_SENSITIVE_TYPES.has(type) && role === 'manager') {
-    const reportIds = await getDirectReportUserIds(cu.id);
-    return data.filter(d => d.user_id === cu.id || reportIds.has(d.user_id));
-  }
-  return data.filter(d => d.user_id === cu.id);
-}
-
-async function canAccessSensitive(cu, type, ownerUserId) {
-  if (!SENSITIVE_TYPES.has(type)) return true;
-  if (ownerUserId === cu.id) return true;
-  const role = await getEffectiveRole(cu);
-  if (PRIVILEGED_ROLES.has(role)) return true;
-  if (MANAGER_VISIBLE_SENSITIVE_TYPES.has(type) && role === 'manager') {
-    const row = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [ownerUserId]);
-    return row?.mgr === cu.id;
-  }
-  return false;
-}
-
-// Location Master (AppLocation) is admin-only to manage — everyone else can
-// still read it (employees need the list client-side for geofence matching),
-// but only an admin may create/update/delete a configured location. Leave
-// Policy (LeavePolicy) is HR/admin-only to manage — a 'manager' role could
-// previously create/update/delete any leave policy via this generic route
-// (nothing here gated it at all; the frontend's Leave Policies tab was
-// unguarded too — see LeaveManagement.jsx), letting a manager change
-// company-wide leave rules everyone else's balance/accrual math depends on.
-// Both take the already-authenticated `cu` and re-check the CURRENT role via
-// getEffectiveRole (live DB lookup), not the JWT's embedded role directly —
-// that raw-JWT-role version of this check let a demoted admin/HR keep
-// managing these for up to 30 days, the same staleness bug fixed everywhere
-// else in this file's authorization pass.
-async function requireAdminForType(cu, res, type) {
-  if (type === 'AppLocation') {
-    const role = await getEffectiveRole(cu);
-    if (role !== 'admin') { res.status(403).json({ error: 'Admin role required to manage locations' }); return false; }
-    return true;
-  }
-  if (type === 'LeavePolicy') {
-    const role = await getEffectiveRole(cu);
-    if (!['hr', 'admin'].includes(role)) { res.status(403).json({ error: 'HR or admin access required to manage leave policies' }); return false; }
-    return true;
-  }
-  return true;
-}
-
-// Employees may submit at most 5 AttendanceRegularisation requests per
-// calendar month (IST). Rejected requests don't count against the quota —
-// they were declined, not a wasted submission slot. Enforced server-side
-// here (not just as a frontend nicety) since creation goes through this
-// generic entity route rather than a dedicated function-route case.
-// `client` (a locked transaction connection — see withTransaction call sites
-// below) is optional so this can still be called standalone; when provided,
-// the read runs on the SAME connection holding the advisory lock, so it sees
-// a consistent view relative to the insert that follows inside that
-// transaction — closing the read-then-write race where two concurrent
-// requests could both read "4 this month" and both be allowed through.
-async function checkRegularisationLimit(res, type, data, client) {
-  if (type !== 'AttendanceRegularisation') return true;
-  if (!data.user_id) return true;
-  const rows = client
-    ? (await client.query("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id])).rows
-    : await all("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id]);
-  const nowIST = new Date(Date.now() + 5.5 * 3600000);
-  const curYM = `${nowIST.getUTCFullYear()}-${String(nowIST.getUTCMonth() + 1).padStart(2, '0')}`;
-  const countThisMonth = rows.filter(r => {
-    let d;
-    try { d = JSON.parse(r.data); } catch { return false; }
-    // Rejected doesn't count against the quota — declined, not a wasted
-    // slot. Cancelled is the same case: the employee withdrew it
-    // themselves before anyone acted on it, so it shouldn't cost them a
-    // slot either, now that self-cancel exists (checkApprovalAuthorization
-    // above).
-    if (d.status === 'rejected' || d.status === 'cancelled') return false;
-    if (!r.created_at) return false;
-    // created_at is Postgres CURRENT_TIMESTAMP::TEXT (UTC) — shift to IST so
-    // the "calendar month" boundary matches the rest of the app's convention.
-    const createdUtcMs = Date.parse(r.created_at.replace(' ', 'T') + (r.created_at.includes('Z') ? '' : 'Z'));
-    if (isNaN(createdUtcMs)) return false;
-    const createdIST = new Date(createdUtcMs + 5.5 * 3600000);
-    const ym = `${createdIST.getUTCFullYear()}-${String(createdIST.getUTCMonth() + 1).padStart(2, '0')}`;
-    return ym === curYM;
-  }).length;
-  if (countThisMonth >= 5) {
-    res.status(400).json({ error: 'You have already submitted 5 attendance regularisation requests this month — the monthly limit has been reached.' });
-    return false;
-  }
-  return true;
-}
-
-function getCurrentUser(req) {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  if (!token) return null;
-  try { return jwt.verify(token, JWT_SECRET); } catch { return null; }
-}
-
-// GatePass, Reimbursement and AttendanceRegularisation have no dedicated
-// approve/reject action of their own (unlike Leave/CompOff, which go through
-// runLeaveAction/decideCompOff in routes/functions.js) — approval happens by
-// PATCHing status straight through this generic entity route, which
-// previously had NO authorization check at all: any authenticated user could
-// approve/reject any employee's request for any of these three types.
-// Restricts an approved/rejected status change to: HR/admin/management
-// (unrestricted), or a 'manager' role approving only their own direct
-// report's request (Employee.reporting_manager_id === approver's id).
-const APPROVAL_SCOPED_TYPES = new Set(['GatePass', 'Reimbursement', 'AttendanceRegularisation', 'Leave']);
-// GatePass has a second scoped transition beyond approve/reject: the
-// physical gate-in/gate-out logging (departed/returned) done by whoever is
-// staffing the gate. Previously NEITHER transition had any check at all for
-// these two statuses, so any authenticated user (any role) could PATCH any
-// employee's gate pass to "departed"/"returned" directly.
-const GATE_LOG_TRANSITIONS = new Set(['departed', 'returned']);
-// Except for GatePass, every one of these approval-scoped types must clear
-// the reporting manager's own approval before HR/management can act — only
-// admin retains a blanket override. An employee with no reporting manager
-// configured at all is the one exception (there'd otherwise be no one who
-// could ever clear that first step for them).
-// Same GateAdminLocation entity/rule as Visitor Management's location
-// scoping (see functions.js) — one row per user_id, {locations:[name,...]}.
-// null = never configured = unrestricted (every location), for the same
-// backward-compatible reason: an existing gate admin must keep working
-// exactly as before until an admin explicitly narrows them to specific
-// location(s). Duplicated here (rather than imported from functions.js)
-// since entities.js and functions.js are separate route files with no
-// existing cross-import of this kind — keeps this route self-contained.
-async function getGateAdminAssignedLocations(userId) {
-  const row = await one("SELECT data FROM entities WHERE type='GateAdminLocation' AND user_id=$1", [userId]);
-  if (!row) return null;
-  const d = JSON.parse(row.data);
-  return Array.isArray(d.locations) ? d.locations : null;
-}
-
-async function getGateAdminUserIdsForLocation(locationName) {
-  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role)='gate_admin'");
-  const out = [];
-  for (const r of rows) {
-    const assigned = await getGateAdminAssignedLocations(r.id);
-    if (assigned === null || assigned.includes(locationName)) out.push(r.id);
-  }
-  return out;
-}
-
-// Is `targetUserId` a direct or indirect report of `managementUserId`? Walks
-// UP the reporting chain from the target (not down from the manager — this
-// is a single-target authorization check, not a visibility listing, so
-// there's no need to materialize the whole downstream tree) until it either
-// reaches managementUserId (true), runs out of chain (false), or hits a
-// cycle (guarded by a hop cap, false). Used to scope the 'management' role
-// to its own downstream hierarchy for Leave/GatePass/AttendanceRegularisation
-// approval — previously 'management' was unconditionally unrestricted
-// (org-wide) here, same as hr/admin, which is the behavior this closes.
-// Deliberately re-implemented here rather than imported from functions.js's
-// getVisibleUserIds (a different shape — that one is a downstream BFS for
-// LISTING, explicitly documented as not for approval authority, and the two
-// route files are kept self-contained with no cross-import between them).
-async function isInManagementDownstream(managementUserId, targetUserId) {
-  if (!targetUserId) return false;
-  let currentId = targetUserId;
-  const visited = new Set();
-  for (let hop = 0; hop < 50; hop++) {
-    if (visited.has(currentId)) return false;
-    visited.add(currentId);
-    const row = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [currentId]);
-    const mgr = row?.mgr;
-    if (!mgr) return false;
-    if (mgr === managementUserId) return true;
-    currentId = mgr;
-  }
-  return false;
-}
-
-async function hasManagerCleared(type, current) {
-  if (!current.user_id) return true; // no owner to resolve a manager for — nothing to gate on
-  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [current.user_id]);
-  const emp = empRow ? JSON.parse(empRow.data) : null;
-  if (!emp?.reporting_manager_id) return true;
-  if (type === 'Leave') return (current.current_approval_level || 1) > 1 || current.status === 'approved';
-  if (type === 'AttendanceRegularisation') return current.status === 'manager_approved';
-  if (type === 'Reimbursement') return !!current.manager_approved_by;
-  return true;
-}
-
-// Which pre-decision status(es) each approval-scoped type may still be
-// self-cancelled from — once an approver has actually acted (approved/
-// rejected/departed/etc.) cancelling here would leave the balance/
-// attendance bookkeeping those transitions already performed out of sync,
-// so this deliberately only covers "still awaiting a decision".
-const CANCELLABLE_STATUSES = {
-  Leave: ['pending'],
-  GatePass: ['pending_approval'],
-  AttendanceRegularisation: ['pending', 'sent_back'],
-};
-
-async function checkApprovalAuthorization(req, res, type, current, newStatus) {
-  if (!APPROVAL_SCOPED_TYPES.has(type)) return true;
-  if (!newStatus || newStatus === current.status) return true;
-
-  const isGateLogTransition = type === 'GatePass' && GATE_LOG_TRANSITIONS.has(newStatus);
-  const isApprovalTransition = ['approved', 'rejected'].includes(newStatus);
-  // Cancelling/withdrawing was previously NOT one of the transitions this
-  // function checked — it fell through to `return true` unconditionally
-  // below, and the PATCH route's general ownership check is deliberately
-  // skipped for every status change on these types (isScopedTransition),
-  // trusting this function to have already authorized it. The combination
-  // meant ANY authenticated user could cancel ANY OTHER employee's Leave/
-  // GatePass/AttendanceRegularisation, not just their own. Now explicitly
-  // scoped: the request's own owner may always cancel it (while it's still
-  // in a cancellable, pre-decision status — see CANCELLABLE_STATUSES), and
-  // HR/admin/management may cancel on an employee's behalf, same as every
-  // other approval-scoped action here.
-  const isCancelTransition = ['cancelled', 'withdrawn'].includes(newStatus);
-  if (!isGateLogTransition && !isApprovalTransition && !isCancelTransition) return true;
-
-  const cu = getCurrentUser(req);
-  if (!cu) { res.status(401).json({ error: 'Unauthorized' }); return false; }
-
-  const uRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
-  const role = uRow?.custom_role || uRow?.role || cu.custom_role || cu.role;
-
-  if (isCancelTransition) {
-    const cancellable = CANCELLABLE_STATUSES[type];
-    if (cancellable && !cancellable.includes(current.status)) {
-      res.status(400).json({ error: `This request can no longer be cancelled — it is already ${current.status.replace(/_/g, ' ')}.` });
-      return false;
-    }
-    if (current.user_id === cu.id) return true;
-    if (['hr', 'admin'].includes(role)) return true;
-    // 'management' may cancel on an employee's behalf only within their own
-    // downstream hierarchy — same scoping as the approve/reject grant below,
-    // so a management user can't act on a request outside their own team
-    // via cancel when they couldn't via approve/reject either.
-    if (await isInManagementDownstream(cu.id, current.user_id)) return true;
-    res.status(403).json({ error: 'Access denied — you can only cancel your own request' });
-    return false;
-  }
-
-  if (isGateLogTransition) {
-    if (['hr', 'admin'].includes(role)) return true;
-    if (role === 'gate_admin') {
-      // Every gate pass now carries its own departure location
-      // (current_location — the employee explicitly picks it from Location
-      // Master when requesting, GatePassRequest.jsx) regardless of outing
-      // type, so it's what determines which gate admin may act on it: a
-      // Duhai gate admin should only ever see/manage gate passes departing
-      // from Duhai. Deliberately NO fallback to the employee's own
-      // Employee.work_location for older passes that predate this field —
-      // that was tried and reverted: work_location is inferred/assignment
-      // data that isn't guaranteed to be configured or accurate for every
-      // employee, and silently gating a real gate-in/out action on it
-      // blocked gate admins from marking employees in on perfectly valid
-      // gate passes. A pass with no explicit current_location of its own
-      // stays unrestricted (any gate admin can act on it) — exactly the
-      // original behavior before location scoping existed at all.
-      const gateLocation = current.current_location;
-      if (gateLocation) {
-        const assigned = await getGateAdminAssignedLocations(cu.id);
-        if (assigned !== null && !assigned.includes(gateLocation)) {
-          res.status(403).json({ error: `You are not assigned to ${gateLocation} — this gate pass belongs to another office` });
-          return false;
-        }
-      }
-      return true;
-    }
-    res.status(403).json({ error: 'Access denied — gate admin access required' });
-    return false;
-  }
-
-  // Front Desk Admin has NO approval power over gate passes (it was removed): approving / rejecting is for the
-  // reporting manager, management and HR / admin only.
-  if (role === 'front_desk_admin' && type === 'GatePass') {
-    res.status(403).json({ error: 'Front Desk Admin cannot approve or reject gate passes' });
-    return false;
-  }
-
-  if (['hr', 'admin'].includes(role)) {
-    if (role !== 'admin' && type !== 'GatePass' && !(await hasManagerCleared(type, current))) {
-      res.status(403).json({ error: 'This request requires reporting manager approval first.' });
-      return false;
-    }
-    return true;
-  }
-
-  // 'management' is scoped to their own downstream hierarchy (direct +
-  // indirect reports) for Leave/GatePass/AttendanceRegularisation —
-  // previously unconditionally unrestricted here, same as hr/admin, letting
-  // a management user approve/reject any employee's request org-wide.
-  // Reimbursement is deliberately left out of this scoping (unrestricted,
-  // matching prior behavior) — it wasn't part of this change's scope and
-  // has its own configurable ApprovalWorkflow with a 'specific_user' step
-  // type below that a hierarchy restriction could conflict with.
-  if (role === 'management' && ['Leave', 'GatePass', 'AttendanceRegularisation'].includes(type)) {
-    if (!(await isInManagementDownstream(cu.id, current.user_id))) {
-      res.status(403).json({ error: 'Access denied — this request is outside your reporting hierarchy' });
-      return false;
-    }
-    if (type !== 'GatePass' && !(await hasManagerCleared(type, current))) {
-      res.status(403).json({ error: 'This request requires reporting manager approval first.' });
-      return false;
-    }
-    return true;
-  }
-  if (role === 'management') return true; // Reimbursement — unchanged, unrestricted
-
-  // A reporting manager — direct OR indirect (anyone further up the
-  // employee's reporting chain) — may approve/reject that employee's
-  // request. Judged purely by the reporting chain, not the user's role
-  // label, since being someone's reporting manager is what confers this.
-  if (await isInManagementDownstream(cu.id, current.user_id)) return true;
-
-  // Reimbursement's configurable ApprovalWorkflow (module 'expense') can
-  // assign a step to a 'specific_user' who isn't the claimant's manager —
-  // Approvals.jsx already surfaces such claims to that person (matching
-  // WorkflowBuilder.jsx's "integrated: true" note for this module), so the
-  // backend must recognize them as the authorized approver for their step
-  // too, not just HR/admin/management/direct-manager.
-  if (type === 'Reimbursement') {
-    const wfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='expense'");
-    const wf = wfRow ? JSON.parse(wfRow.data) : null;
-    if (wf?.is_active !== false && Array.isArray(wf?.steps) && wf.steps.length > 0) {
-      const step = wf.steps[current.wf_level || 0];
-      if (step?.approver_type === 'specific_user' && step.specific_user_id === cu.id) return true;
-    }
-  }
-
-  res.status(403).json({ error: 'Access denied — not authorized to approve this request' });
-  return false;
-}
-
-// Work-From-Home requests are submitted as a Leave with is_wfh/leave_type
-// set client-side (Leave.jsx only shows the WFH option when the employee's
-// wfh_eligible flag is set) — enforce that same rule server-side too, since
-// this generic route is reachable directly without going through the UI.
-async function checkWfhEligibility(res, type, data) {
-  if (type !== 'Leave') return true;
-  if (!data.is_wfh && data.leave_type !== 'work_from_home') return true;
-  if (!data.user_id) return true;
-  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [data.user_id]);
-  const emp = empRow ? JSON.parse(empRow.data) : null;
-  if (!emp?.wfh_eligible) {
-    res.status(403).json({ error: 'You are not eligible for Work From Home.' });
-    return false;
-  }
-  return true;
-}
-
-// Leave.jsx only enables Submit once client-side validation confirms
-// available >= total_days — but that's purely a UI nicety, bypassable by
-// calling this generic entity route directly. Enforced here too so a
-// request can never be created for more days than the employee actually
-// has, regardless of client. WFH doesn't draw from a leave balance at all
-// (see checkWfhEligibility above), so it's exempt from this check.
-async function checkLeaveBalanceSufficiency(res, type, data, client) {
-  if (type !== 'Leave') return true;
-  if (data.is_wfh || data.leave_type === 'work_from_home') return true;
-  if (!data.user_id || !data.leave_policy_id || !data.total_days) return true;
-  const year = new Date(data.start_date || Date.now()).getFullYear();
-  const balRows = client
-    ? (await client.query("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [data.user_id])).rows
-    : await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [data.user_id]);
-  const bal = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === data.leave_policy_id && b.year === year);
-  const available = bal?.available ?? 0;
-  if (data.total_days > available) {
-    res.status(400).json({ error: `Insufficient leave balance — requested ${data.total_days} day(s), only ${available} available.` });
-    return false;
-  }
-  return true;
-}
-
-/* ── helpers ─────────────────────────────────────────── */
-
-const parseRow = (row) => {
-  if (!row) return null;
-  const d = JSON.parse(row.data);
-  d.id           = row.id;
-  d.created_date = row.created_at;
-  d.updated_date = row.updated_at;
-  return d;
-};
-
-const isPrimitive = (v) => v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
-
-const matchesFilter = (data, filter) => {
-  if (!filter) return true;
-  return Object.entries(filter).every(([k, v]) => {
-    if (v === undefined || v === null) return true;
-    const fv = k === 'id' ? data.id : data[k];
-    if (typeof v === 'object' && !Array.isArray(v)) {
-      if ('$in'  in v) return Array.isArray(v.$in) && v.$in.includes(fv);
-      if ('$nin' in v) return Array.isArray(v.$nin) && !v.$nin.includes(fv);
-      if ('$ne'  in v) return fv !== v.$ne;
-      if ('$gt'  in v) return fv >  v.$gt;
-      if ('$gte' in v) return fv >= v.$gte;
-      if ('$lt'  in v) return fv <  v.$lt;
-      if ('$lte' in v) return fv <= v.$lte;
-      return true;
-    }
-    if (Array.isArray(v)) return v.includes(fv);
-    return fv === v;
-  });
-};
-
-const sortRows = (arr, sortField) => {
-  if (!sortField) return arr;
-  const desc = sortField.startsWith('-');
-  const field = desc ? sortField.slice(1) : sortField;
-  return [...arr].sort((a, b) => {
-    const av = a[field] ?? a.created_date ?? '';
-    const bv = b[field] ?? b.created_date ?? '';
-    const cmp = String(av).localeCompare(String(bv));
-    return desc ? -cmp : cmp;
-  });
-};
-
-/* ── In-memory cache for slow-changing entity types ───────── */
-// Caches list/filter results for 45 seconds; invalidated on write.
-const _cache = new Map();
-const CACHE_TTL = 45_000;
-const CACHEABLE = new Set([
-  'Employee', 'Department', 'LeavePolicy', 'Shift', 'AppLocation',
-  'PayrollConfiguration', 'Holiday', 'HelpdeskCategory', 'ShiftPolicy'
-]);
-
-function cacheGet(key) {
-  const e = _cache.get(key);
-  if (e && Date.now() < e.exp) return e.data;
-  _cache.delete(key);
-  return null;
-}
-function cacheSet(key, data) {
-  _cache.set(key, { data, exp: Date.now() + CACHE_TTL });
-}
-function cacheInvalidate(type) {
-  for (const k of _cache.keys()) {
-    if (k.startsWith(type + ':')) _cache.delete(k);
-  }
-}
-export { cacheInvalidate };
-
-/* ── Notification helpers ─────────────────────────────────── */
-// Fire-and-forget: writes one notifications row + push per recipient.
-async function notifyMany(userIds, { title, message, type = 'info', link = '' }) {
-  const ids = [...new Set((userIds || []).filter(Boolean))];
-  for (const uid of ids) {
-    try {
-      await run(
-        `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
-        [uuidv4(), uid, title, message, type, link || null]
-      );
-      sendPushToUser(uid, { title, message, type, link });
-    } catch (e) { console.error('[notif] notifyMany error:', e.message); }
-  }
-}
-
-async function getHrAdminUserIds() {
-  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('hr','admin')");
-  return rows.map(r => r.id);
-}
-
-// Announcement audience: 'all' (or unset) → every active employee;
-// 'specific_locations' → every active employee whose work_location is one
-// of target_locations (matches AppLocation.name, per Location Master —
-// see OnboardingApproval.jsx's location dropdown); anything else (the
-// existing 'specific_departments' path) → every active employee in one of
-// target_departments (matches Employee.department, which is always stored
-// as the department's NAME — see OnboardingApproval.jsx's department
-// dropdown — never its short code).
-export async function getAnnouncementAudienceUserIds(data) {
-  const audience = data.target_audience || 'all';
-  if (audience === 'specific_locations') {
-    const locs = Array.isArray(data.target_locations) ? data.target_locations : [];
-    if (!locs.length) {
-      const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
-      return rows.map(r => r.user_id).filter(Boolean);
-    }
-    const rows = await all(
-      "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'work_location' = ANY($1)",
-      [locs]
-    );
-    return rows.map(r => r.user_id).filter(Boolean);
-  }
-  const depts = Array.isArray(data.target_departments) ? data.target_departments : [];
-  if (audience === 'all' || depts.length === 0) {
-    const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
-    return rows.map(r => r.user_id).filter(Boolean);
-  }
-  const rows = await all(
-    "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department' = ANY($1)",
-    [depts]
-  );
-  return rows.map(r => r.user_id).filter(Boolean);
-}
-
-/* ── SQL ORDER BY + LIMIT builder ─────────────────────────── */
-// Pushes sorting and limiting into the database query so the server
-// never loads thousands of rows just to slice them in JavaScript.
-function buildOrderLimit(sort, limit) {
-  let order = '';
-  if (sort) {
-    const desc = sort.startsWith('-');
-    const field = desc ? sort.slice(1) : sort;
-    const dir = desc ? 'DESC' : 'ASC';
-    if (field === 'created_date' || field === 'created_at') {
-      order = ` ORDER BY created_at ${dir}`;
-    } else if (field === 'updated_date' || field === 'updated_at') {
-      order = ` ORDER BY updated_at ${dir}`;
-    } else if (/^[A-Za-z0-9_]+$/.test(field)) {
-      // JSON field — safe because we validated it's alphanumeric+underscore
-      order = ` ORDER BY data::jsonb->>'${field}' ${dir} NULLS LAST`;
-    }
-  }
-  const lim = limit ? ` LIMIT ${Math.min(parseInt(limit, 10), 50000)}` : '';
-  return order + lim;
-}
-
-/* ── LIST  GET /api/entities/:type ───────────────────── */
-// Survey answers and the survey access log are reachable ONLY through the ps_* functions (routes/pulse.js), which
-// enforce HR-only access, anonymity and small-group rules. The generic entity API must never list them.
-const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog']);
-router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
-
-router.get('/:type', async (req, res) => {
-  const cu = getCurrentUser(req);
-  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-  const { type } = req.params;
-  const { sort, limit } = req.query;
-
-  const cacheKey = `${type}:list:${sort || ''}:${limit || ''}`;
-  let data;
-  if (CACHEABLE.has(type)) {
-    const hit = cacheGet(cacheKey);
-    if (hit) data = hit;
-  }
-  if (!data) {
-    const sql = `SELECT * FROM entities WHERE type = $1${buildOrderLimit(sort, limit)}`;
-    const rows = await all(sql, [type]);
-    data = rows.map(parseRow);
-    if (CACHEABLE.has(type)) cacheSet(cacheKey, data);
-  }
-
-  if (type === 'Attendance') data = dedupAttendanceRows(data);
-  data = await filterSensitive(data, cu, type);
-  res.json(data);
-});
-
-/* ── FILTER  POST /api/entities/:type/filter ─────────── */
-router.post('/:type/filter', async (req, res) => {
-  const cu = getCurrentUser(req);
-  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-  const { type } = req.params;
-  const { query = {}, sort, limit } = req.body;
-
-  const simpleUserId = isPrimitive(query.user_id) ? query.user_id : undefined;
-  const simpleStatus = isPrimitive(query.status)  ? query.status  : undefined;
-
-  // Only push LIMIT/ORDER to SQL when the entire filter is handled by SQL columns
-  // (pushing LIMIT before JS filtering would cut off valid matching records)
-  const isSimpleFilter = !!(simpleUserId || simpleStatus ||
-    (query.is_active !== undefined && isPrimitive(query.is_active) && Object.keys(query).length === 1));
-  const sqlSuffix = isSimpleFilter ? buildOrderLimit(sort, limit) : '';
-
-  const baseParams = [type];
-  let sql;
-  if (simpleUserId && simpleStatus) {
-    sql = `SELECT * FROM entities WHERE type=$1 AND user_id=$2 AND status=$3`;
-    baseParams.push(simpleUserId, simpleStatus);
-  } else if (simpleUserId) {
-    sql = `SELECT * FROM entities WHERE type=$1 AND user_id=$2`;
-    baseParams.push(simpleUserId);
-  } else if (simpleStatus) {
-    sql = `SELECT * FROM entities WHERE type=$1 AND status=$2`;
-    baseParams.push(simpleStatus);
-  } else if (query.is_active !== undefined && isPrimitive(query.is_active)) {
-    sql = `SELECT * FROM entities WHERE type=$1 AND is_active=$2`;
-    baseParams.push(query.is_active ? 1 : 0);
-  } else {
-    sql = `SELECT * FROM entities WHERE type=$1`;
-  }
-
-  // Additionally push a `date` range down to SQL when present, regardless
-  // of isSimpleFilter — a purely additive fetch-size narrowing. matchesFilter()
-  // below still re-validates every condition (including this one)
-  // identically, so a bug here could only ever under-narrow — same behavior
-  // as before this change — never return wrong results. This matters most
-  // for large, long-lived tables like Attendance: a `{date: {$gte, $lte}}`
-  // filter isn't one of the "simple" fields above, so before this change no
-  // SQL WHERE was ever applied and the entire table (every Attendance row
-  // ever created, for every employee) was pulled into Node memory on every
-  // date-ranged report/page load before being filtered down in JS.
-  const dateFilter = query.date;
-  if (dateFilter && typeof dateFilter === 'object' && !Array.isArray(dateFilter)) {
-    const gte = isPrimitive(dateFilter.$gte) ? dateFilter.$gte : undefined;
-    const lte = isPrimitive(dateFilter.$lte) ? dateFilter.$lte : undefined;
-    if (gte !== undefined) { baseParams.push(gte); sql += ` AND data::jsonb->>'date' >= $${baseParams.length}`; }
-    if (lte !== undefined) { baseParams.push(lte); sql += ` AND data::jsonb->>'date' <= $${baseParams.length}`; }
-  }
-
-  sql += sqlSuffix;
-  const rows = await all(sql, baseParams);
-
-  let data = rows.map(parseRow).filter(d => matchesFilter(d, query));
-  if (type === 'Attendance') data = dedupAttendanceRows(data);
-  if (!isSimpleFilter) {
-    if (sort)  data = sortRows(data, sort);
-    if (limit) data = data.slice(0, parseInt(limit, 10));
-  }
-  data = await filterSensitive(data, cu, type);
-  res.json(data);
-});
-
-/* ── GET ONE  GET /api/entities/:type/:id ─────────────── */
-router.get('/:type/:id', async (req, res) => {
-  const cu = getCurrentUser(req);
-  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-  const { type, id } = req.params;
-  const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
-  if (!row) return res.status(404).json({ error: 'Not found' });
-  const data = parseRow(row);
-  if (!(await canAccessSensitive(cu, type, data.user_id))) return res.status(403).json({ error: 'Access denied' });
-  res.json(data);
-});
-
-/* ── CREATE  POST /api/entities/:type ─────────────────── */
-router.post('/:type', async (req, res) => {
-  const cu = getCurrentUser(req);
-  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-  const { type } = req.params;
-  if (!(await requireAdminForType(cu, res, type))) return;
-  const body = req.body;
-  const id = body.id || uuidv4();
-  const data = { ...body, id };
-
-  // A non-privileged caller may only create a record attributed to
-  // themselves — closes the gap where any authenticated user could POST a
-  // Loan/Leave/etc. with someone else's user_id in the body and have it
-  // silently attributed to that other person.
-  //
-  // gate_admin is the one deliberate exception, scoped to Attendance only:
-  // marking an employee's return on a gate pass (GateAdminDashboard.jsx's
-  // markReturn) creates that employee's Attendance record for the day when
-  // one doesn't exist yet — a gate admin marking attendance-relevant state
-  // for someone else is exactly their job, not a privilege gap. Without
-  // this, marking departure (GatePass-only, already separately authorized
-  // via checkApprovalAuthorization's gate-log-transition branch) succeeded
-  // while marking the SAME person back in failed with a 403 the instant no
-  // Attendance row existed yet for that day.
-  if (data.user_id && data.user_id !== cu.id) {
-    const role = await getEffectiveRole(cu);
-    const isGateAdminAttendance = type === 'Attendance' && role === 'gate_admin';
-    const isFrontDeskCard = type === 'DigitalBusinessCard' && role === 'front_desk_admin';
-    if (!PRIVILEGED_ROLES.has(role) && !isGateAdminAttendance && !isFrontDeskCard) return res.status(403).json({ error: 'Cannot create a record on behalf of another user' });
-  }
-
-  // SENSITIVE_TYPES also need a create-time gate — GET/PATCH/DELETE all
-  // restrict these, but creation had no type-level check at all, so a plain
-  // employee could self-fabricate e.g. a LeaveBalance with an inflated
-  // `available` and have checkLeaveBalanceSufficiency trust it, or POST a
-  // brand-new org-wide PayrollConfiguration (which has no user_id at all,
-  // so even the "on behalf of another user" check above never applies to
-  // it). A few of these types ARE legitimately self-created by an ordinary
-  // employee (LoanManagement.jsx's self-service loan application,
-  // OnboardingForm.jsx's own-document upload) — those keep working via the
-  // self-ownership exception; everything else requires HR/admin/management.
-  if (SENSITIVE_TYPES.has(type)) {
-    const SELF_CREATABLE = new Set(['Loan', 'InsuranceClaim', 'Document']);
-    const isSelfCreatable = SELF_CREATABLE.has(type) && data.user_id === cu.id;
-    if (!isSelfCreatable) {
-      const role = await getEffectiveRole(cu);
-      if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Not authorized to create this record' });
-    }
-  }
-
-  if (!(await checkWfhEligibility(res, type, data))) return;
-
-  let row;
-  if (type === 'AttendanceRegularisation' || type === 'Leave') {
-    // These two have a read-then-write quota/balance check that a bare
-    // check-then-insert can't make atomic under concurrent requests from
-    // the same user — serialize per (type,user_id) with a transaction-scoped
-    // advisory lock so the second of two racing requests re-reads the
-    // first's effect before its own check runs.
-    let ok = true;
-    try {
-      row = await withTransaction(async (client) => {
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${type}:${data.user_id}`]);
-        if (!(await checkRegularisationLimit(res, type, data, client))) { ok = false; return null; }
-        if (!(await checkLeaveBalanceSufficiency(res, type, data, client))) { ok = false; return null; }
-        await client.query(
-          `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
-          [id, type, data.user_id ?? null, data.status ?? null, data.is_active !== false ? 1 : 0, JSON.stringify(data)]
-        );
-        // Reserve the requested days against the balance the instant a
-        // normal (self-service, still-'pending') Leave is created — same
-        // advisory lock, same transaction as the sufficiency check above, so
-        // the two can never race. Scoped to status==='pending' specifically:
-        // HRApplyOnBehalf.jsx creates a Leave already 'approved' (HR applying
-        // on an employee's behalf, decided on the spot) and does its own
-        // direct used/available adjustment for that case — reserving here
-        // too would double-deduct it.
-        const isWfhLeave = type === 'Leave' && (data.is_wfh || data.leave_type === 'work_from_home');
-        if (type === 'Leave' && !isWfhLeave && data.status === 'pending' && data.user_id && data.leave_policy_id && data.total_days) {
-          const leaveYear = new Date(data.start_date || Date.now()).getFullYear();
-          await reserveLeaveBalance(data.user_id, data.leave_policy_id, leaveYear, data.total_days, client);
-        }
-        const { rows } = await client.query('SELECT * FROM entities WHERE id=$1', [id]);
-        return rows[0];
-      });
-    } catch (e) {
-      if (ok) { console.error('[entities] transactional create failed:', e.message); return res.status(500).json({ error: 'Failed to create record' }); }
-    }
-    if (!ok) return; // checkRegularisationLimit/checkLeaveBalanceSufficiency already sent the response
-  } else {
-    await run(
-      `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
-      [id, type, data.user_id ?? null, data.status ?? null, data.is_active !== false ? 1 : 0, JSON.stringify(data)]
-    );
-    row = await one('SELECT * FROM entities WHERE id=$1', [id]);
-  }
-
-  // Post-creation hook: notify reporting manager (fire and forget)
-  (async () => {
-    try {
-      const NOTIF_TYPES = ['Leave', 'GatePass', 'AttendanceRegularisation', 'Reimbursement'];
-      if (NOTIF_TYPES.includes(type) && data.user_id) {
-        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [data.user_id]);
-        const emp    = empRow ? JSON.parse(empRow.data) : null;
-        const managerId = emp?.reporting_manager_id;
-        if (managerId) {
-          const empName = emp?.display_name || 'An employee';
-          let title = '', message = '', link = '';
-          if (type === 'Leave') {
-            title   = `Leave Request from ${empName}`;
-            message = `${empName} has applied for ${data.total_days || ''} day(s) of leave (${data.start_date || ''} – ${data.end_date || ''}).`;
-            link    = '/Approvals';
-          } else if (type === 'GatePass') {
-            const labels = { official_outing:'Official Outing', unofficial_outing:'Unofficial Outing', half_day:'Half Day', short_break:'Short Break', early_leave:'Early Leave', travelling_to_another_office:'Travelling to Another Office' };
-            title   = `Gate Pass Request from ${empName}`;
-            message = `${empName} has requested a gate pass (${labels[data.outing_type] || data.outing_type || 'outing'}).`;
-            link    = '/Approvals';
-          } else if (type === 'AttendanceRegularisation') {
-            title   = `Regularisation Request from ${empName}`;
-            message = `${empName} has submitted a regularisation request for ${data.date || ''} (${data.reason || ''}).`;
-            link    = '/Approvals';
-          } else if (type === 'Reimbursement') {
-            title   = `Expense Claim from ${empName}`;
-            message = `${empName} has submitted a ₹${data.amount || 0} expense claim for ${(data.expense_type || '').replace(/_/g,' ')}.`;
-            link    = '/Approvals';
-          }
-          if (title) {
-            const notifId = uuidv4();
-            await run(
-              `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
-              [notifId, managerId, title, message, 'info', link]
-            );
-            sendPushToUser(managerId, { title, message, type: 'info', link });
-          }
-        }
-      }
-    } catch(ne) { console.error('[notif] post-create hook error:', ne.message); }
-  })();
-
-  // Broadcast / support-inbox notifications on creation (fire and forget)
-  (async () => {
-    try {
-      if (type === 'Announcement' && data.status === 'published') {
-        const audience = await getAnnouncementAudienceUserIds(data);
-        await notifyMany(audience, {
-          title: `📢 ${data.title || 'New Announcement'}`,
-          message: (data.content || '').slice(0, 180),
-          type: 'info',
-          link: '/Announcements',
-        });
-      } else if (type === 'JobRequisition') {
-        if (data.status === 'pending_manager_approval' && data.hiring_manager_id) {
-          await notifyMany([data.hiring_manager_id], {
-            title: 'Job Requisition Awaiting Your Approval',
-            message: `A requisition for ${data.number_of_positions || 1} × ${data.title || 'position'} (${data.department || ''}) needs your approval.`,
-            type: 'info', link: '/JobRequisitions',
-          });
-        } else if (data.status === 'pending_hr_approval') {
-          await notifyMany(await getHrAdminUserIds(), {
-            title: 'Job Requisition Awaiting HR Approval',
-            message: `A requisition for ${data.number_of_positions || 1} × ${data.title || 'position'} (${data.department || ''}) needs HR approval.`,
-            type: 'info', link: '/JobRequisitions',
-          });
-        }
-      } else if (type === 'Ticket') {
-        // HR/admin always see every ticket (oversight), plus everyone in the
-        // ticket's assigned_department (set from the chosen HelpdeskCategory's
-        // default_department_name at creation — see Helpdesk.jsx) so the
-        // concerned department is notified immediately, not just once HR
-        // manually assigns it to a specific person later (see the
-        // assigned_to notification on Ticket update, below).
-        const ticketAudience = new Set(await getHrAdminUserIds());
-        if (data.assigned_department) {
-          const deptRows = await all(
-            "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department'=$1",
-            [data.assigned_department]
-          );
-          for (const r of deptRows) if (r.user_id) ticketAudience.add(r.user_id);
-        }
-        // A category can also name one specific default assignee (set on
-        // HelpdeskCategoryManagement) — routed at creation time, not only
-        // once HR manually assigns it later. Gets its own clearer "assigned
-        // to you" wording rather than the generic department-broadcast one.
-        if (data.assigned_to) ticketAudience.delete(data.assigned_to);
-        await notifyMany([...ticketAudience], {
-          title: 'New Helpdesk Ticket',
-          message: `${data.subject || 'A new ticket'} (${data.priority || 'medium'} priority) was raised.`,
-          type: data.priority === 'high' || data.priority === 'urgent' ? 'warning' : 'info',
-          link: '/Helpdesk',
-        });
-        if (data.assigned_to) {
-          await notifyMany([data.assigned_to], {
-            title: 'Helpdesk Ticket Assigned to You',
-            message: `${data.subject || 'A new ticket'} (${data.priority || 'medium'} priority) was routed to you.`,
-            type: 'info', link: '/Helpdesk',
-          });
-        }
-        // Acknowledgement to whoever raised it — confirms it was received
-        // and says where it went, so they're not left wondering.
-        if (data.user_id) {
-          const routedTo = data.assigned_to
-            ? (await one('SELECT full_name FROM users WHERE id=$1', [data.assigned_to]))?.full_name
-            : (data.assigned_department || null);
-          await notifyMany([data.user_id], {
-            title: 'Ticket Raised',
-            message: `Your ticket "${data.subject || 'support request'}" has been raised${routedTo ? ` and routed to ${routedTo}` : ''}. We'll update you as it progresses.`,
-            type: 'info', link: '/Helpdesk',
-          });
-        }
-      } else if (type === 'POSHRecord') {
-        await notifyMany(await getHrAdminUserIds(), {
-          title: 'New POSH Record Logged',
-          message: `A new ${(data.record_type || 'POSH').replace(/_/g,' ')} record was logged and needs review.`,
-          type: 'warning', link: '/POSHCompliance',
-        });
-      }
-    } catch (ne) { console.error('[notif] post-create broadcast hook error:', ne.message); }
-  })();
-
-  cacheInvalidate(type);
-  res.status(201).json(parseRow(row));
-});
-
-/* ── UPDATE  PATCH /api/entities/:type/:id ─────────────── */
-router.patch('/:type/:id', async (req, res) => {
-  const cu = getCurrentUser(req);
-  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-  const { type, id } = req.params;
-  if (!(await requireAdminForType(cu, res, type))) return;
-  const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
-  if (!row) return res.status(404).json({ error: 'Not found' });
-
-  const current = JSON.parse(row.data);
-  if (!(await checkApprovalAuthorization(req, res, type, current, req.body.status))) return;
-
-  // Is this PATCH exactly the approve/reject (or GatePass gate-log)
-  // transition checkApprovalAuthorization just verified above? That
-  // function already correctly allows a direct manager (or, for
-  // Reimbursement, a workflow specific_user) to flip `status` on someone
-  // else's record — but that authorization is scoped to THIS ONE
-  // transition, not a blanket "may edit any field of a report's record."
-  // Both checks below must treat it as its own case, not fold it into the
-  // general owner-or-privileged rule.
-  const isScopedTransition = APPROVAL_SCOPED_TYPES.has(type) && req.body.status && req.body.status !== current.status;
-
-  // Financial/statutory/compliance records may only be edited by HR/admin/
-  // management or the record's own owner for anything OTHER than that one
-  // already-authorized transition — deliberately NOT using the
-  // manager-of-report read exception here (canAccessSensitive), since that
-  // exists so a manager can SEE a report's LeaveBalance/Reimbursement, not
-  // edit arbitrary fields of it.
-  if (!isScopedTransition && SENSITIVE_TYPES.has(type) && (row.user_id !== cu.id || SELF_EDIT_EXEMPT_TYPES.has(type))) {
-    const role = await getEffectiveRole(cu);
-    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
-  }
-
-  // General ownership baseline for every OTHER type that carries a user_id
-  // (Ticket, Feedback360, SkillEntry, Document, etc.) — previously these had
-  // no write authorization at all beyond "any authenticated user." Skipped
-  // when: the record has no user_id (an org-wide config type — Department,
-  // HolidayCalendar, AppLocation — left to their existing role-gated UI);
-  // this is the already-authorized scoped transition above; or the caller
-  // is the record's assignee (assigned_to) — the pattern Helpdesk tickets
-  // use for support staff who aren't the ticket's original raiser. gate_admin
-  // gets the same Attendance-only exception as the POST route above — marking
-  // an employee's return on a gate pass (GateAdminDashboard.jsx's markReturn)
-  // PATCHes that employee's already-existing Attendance record for the day
-  // just as often as it creates a new one, and both paths need to agree.
-  if (!isScopedTransition && current.user_id && current.user_id !== cu.id && current.assigned_to !== cu.id && current.assigned_to_user_id !== cu.id) {
-    const genRole = await getEffectiveRole(cu);
-    const isGateAdminAttendance = type === 'Attendance' && genRole === 'gate_admin';
-    const isFrontDeskCard = type === 'DigitalBusinessCard' && genRole === 'front_desk_admin';
-    if (!PRIVILEGED_ROLES.has(genRole) && !isGateAdminAttendance && !isFrontDeskCard) return res.status(403).json({ error: 'Access denied — not your record' });
-  }
-
-  const updated = { ...current, ...req.body, id };
-
-  // A business-card photo, once uploaded, stays until someone removes it ON PURPOSE (the card form sends
-  // _remove_photo). A blank value from anywhere else — a bulk-import row with an empty photo cell, an older
-  // client — must never wipe it.
-  if (type === 'DigitalBusinessCard') {
-    if (current.profile_picture_url && !String(req.body.profile_picture_url || '').trim() && !req.body._remove_photo) updated.profile_picture_url = current.profile_picture_url;
-    delete updated._remove_photo;
-  }
-
-  // Leave's WFH-eligibility and balance-sufficiency rules were previously
-  // only enforced at creation (POST) — an owner could PATCH their own
-  // already-created Leave to raise total_days past their balance, or flip
-  // is_wfh/leave_type to 'work_from_home' without being wfh_eligible.
-  // Re-validate, but ONLY when one of those leave-determining fields is
-  // actually part of this PATCH, and NOT on an approve/reject transition —
-  // deliberately narrow, since LeaveBalance's available/pending_approval
-  // bookkeeping around the approval step (runLeaveAction) isn't something
-  // this generic route should second-guess with its own re-derivation.
-  const isLeaveContentChange = type === 'Leave' && ['total_days', 'is_wfh', 'leave_type', 'leave_policy_id', 'start_date'].some(f => f in req.body);
-  if (isLeaveContentChange && !isScopedTransition) {
-    if (!(await checkWfhEligibility(res, type, updated))) return;
-    if (!(await checkLeaveBalanceSufficiency(res, type, updated))) return;
-  }
-
-  await run(
-    `UPDATE entities SET data=$1, user_id=$2, status=$3, is_active=$4, updated_at=NOW()::TEXT WHERE id=$5`,
-    [JSON.stringify(updated), updated.user_id ?? row.user_id, updated.status ?? row.status,
-     updated.is_active !== false ? 1 : 0, id]
-  );
-
-  // A reporting manager being newly assigned (or changed) must actually be
-  // able to reach the approval screens for their new report — see
-  // autoPromoteReportingManager's own comment above for the full story.
-  if (type === 'Employee' && req.body.reporting_manager_id && req.body.reporting_manager_id !== current.reporting_manager_id) {
-    autoPromoteReportingManager(req.body.reporting_manager_id).catch(() => {});
-  }
-
-  // Releasing a still-'pending' Leave's reservation (see reserveLeaveBalance
-  // above) — only when it was actually reserved: a WFH request never drew
-  // from a balance, and a request already approved/rejected had its
-  // reservation resolved by runLeaveAction already, not here. This covers
-  // both the employee's own self-service cancel (Leave.jsx) and an HR/
-  // manager-initiated withdrawal, since both land here as a bare status PATCH.
-  if (type === 'Leave' && current.status === 'pending' && ['cancelled', 'withdrawn'].includes(req.body.status)
-      && !(current.is_wfh || current.leave_type === 'work_from_home') && current.leave_policy_id && current.total_days) {
-    try {
-      const leaveYear = new Date(current.start_date || Date.now()).getFullYear();
-      await releaseLeaveReservation(current.user_id, current.leave_policy_id, leaveYear, current.total_days);
-    } catch (e) { console.error(`[entities] leave balance release failed for ${id}:`, e.message); }
-  }
-
-  const newRow = await one('SELECT * FROM entities WHERE id=$1', [id]);
-
-  // Notify the employee when any request's status changes to approved/rejected.
-  const APPROVAL_TYPES = {
-    Leave:                    { label: 'Leave request',      link: '/Leave' },
-    GatePass:                 { label: 'Gate pass',          link: '/GatePassRequest' },
-    Reimbursement:            { label: 'Expense claim',      link: '/Reimbursements' },
-    AttendanceRegularisation: { label: 'Regularisation request', link: '/AttendanceRegularisation' },
-  };
-  if (APPROVAL_TYPES[type] && req.body.status && req.body.status !== current.status &&
-      ['approved', 'rejected'].includes(req.body.status)) {
-    const cfg = APPROVAL_TYPES[type];
-    const targetUserId = updated.user_id || row.user_id;
-    const isApproved = req.body.status === 'approved';
-    const title = `${cfg.label} ${isApproved ? 'Approved' : 'Rejected'}`;
-    const reason = updated.rejection_reason || updated.comments || updated.approval_comments || '';
-    const message = `Your ${cfg.label.toLowerCase()} has been ${req.body.status}${reason ? ` — ${reason}` : '.'}`;
-    (async () => {
-      try {
-        // In-app notification
-        await run(
-          `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
-          [uuidv4(), targetUserId, title, message, isApproved ? 'success' : 'warning', cfg.link]
-        );
-        // Push notification
-        sendPushToUser(targetUserId, { title, message, type: isApproved ? 'success' : 'warning', link: cfg.link });
-
-        // Leave also gets a formatted email
-        if (type === 'Leave') {
-          const uRow = await one('SELECT email, full_name FROM users WHERE id=$1', [targetUserId]);
-          if (uRow?.email) {
-            const polRow = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND id=$1", [updated.leave_policy_id]);
-            const polData = polRow ? JSON.parse(polRow.data) : {};
-            const tpl = emailTemplates.leaveUpdate({
-              employeeName: uRow.full_name || 'Employee',
-              leaveType: polData.name || updated.leave_type || updated.leave_policy_id || 'Leave',
-              startDate: updated.start_date || '',
-              endDate: updated.end_date || '',
-              days: updated.total_days || '',
-              status: req.body.status,
-              remarks: reason,
-            });
-            sendEmail({ to: uRow.email, ...tpl }).catch(e => console.error('[email] Leave notification failed:', e.message));
-          }
-        }
-      } catch (e) { console.error('[approval-notify] error:', e.message); }
-    })();
-  }
-
-  // Broadcast / workflow-step notifications on update (fire and forget)
-  (async () => {
-    try {
-      if (type === 'Announcement' && req.body.status === 'published' && current.status !== 'published') {
-        const audience = await getAnnouncementAudienceUserIds(updated);
-        await notifyMany(audience, {
-          title: `📢 ${updated.title || 'New Announcement'}`,
-          message: (updated.content || '').slice(0, 180),
-          type: 'info', link: '/Announcements',
-        });
-      } else if (type === 'JobRequisition') {
-        const posLabel = `${updated.number_of_positions || 1} × ${updated.title || 'position'} (${updated.department || ''})`;
-        if (req.body.manager_approval_status === 'approved' && current.manager_approval_status !== 'approved') {
-          await notifyMany(await getHrAdminUserIds(), {
-            title: 'Job Requisition Awaiting HR Approval',
-            message: `${posLabel} was approved by the hiring manager and needs HR approval.`,
-            type: 'info', link: '/JobRequisitions',
-          });
-        }
-        if (req.body.manager_approval_status === 'rejected' && current.manager_approval_status !== 'rejected') {
-          await notifyMany([updated.requested_by].filter(Boolean), {
-            title: 'Job Requisition Rejected',
-            message: `${posLabel} was rejected by the hiring manager${updated.manager_rejection_reason ? ` — ${updated.manager_rejection_reason}` : '.'}`,
-            type: 'warning', link: '/JobRequisitions',
-          });
-        }
-        if (req.body.hr_approval_status === 'approved' && current.hr_approval_status !== 'approved') {
-          await notifyMany([updated.requested_by, updated.hiring_manager_id].filter(Boolean), {
-            title: 'Job Requisition Approved',
-            message: `${posLabel} was approved by HR. Generate & approve the JD to publish it.`,
-            type: 'success', link: '/JobRequisitions',
-          });
-        }
-        if (req.body.hr_approval_status === 'rejected' && current.hr_approval_status !== 'rejected') {
-          await notifyMany([updated.requested_by, updated.hiring_manager_id].filter(Boolean), {
-            title: 'Job Requisition Rejected',
-            message: `${posLabel} was rejected by HR${updated.rejection_reason ? ` — ${updated.rejection_reason}` : '.'}`,
-            type: 'warning', link: '/JobRequisitions',
-          });
-        }
-        if (req.body.status === 'published' && current.status !== 'published') {
-          await notifyMany([updated.requested_by, updated.hiring_manager_id].filter(Boolean), {
-            title: 'Job Requisition Published',
-            message: `${posLabel} is now live and accepting applications.`,
-            type: 'success', link: '/JobRequisitions',
-          });
-        }
-      } else if (type === 'Ticket') {
-        if (req.body.assigned_to && req.body.assigned_to !== current.assigned_to) {
-          await notifyMany([req.body.assigned_to], {
-            title: 'Helpdesk Ticket Assigned to You',
-            message: `${updated.subject || 'A ticket'} was assigned to you.`,
-            type: 'info', link: '/Helpdesk',
-          });
-        }
-        if (req.body.status && ['resolved', 'closed'].includes(req.body.status) && !['resolved', 'closed'].includes(current.status) && updated.user_id) {
-          await notifyMany([updated.user_id], {
-            title: `Ticket ${req.body.status === 'resolved' ? 'Resolved' : 'Closed'}`,
-            message: `${updated.subject || 'Your ticket'} was marked ${req.body.status}.`,
-            type: 'success', link: '/Helpdesk',
-          });
-        }
-        if (req.body.status === 'in_progress' && current.status !== 'in_progress' && updated.user_id) {
-          await notifyMany([updated.user_id], {
-            title: 'Ticket In Progress',
-            message: `${updated.subject || 'Your ticket'} is now being worked on.`,
-            type: 'info', link: '/Helpdesk',
-          });
-        }
-        // A new comment — notify whoever DIDN'T just write it: the raiser if
-        // the assignee/department commented, or the assignee (falling back
-        // to HR/admin if unassigned) if the raiser themselves commented.
-        if (Array.isArray(req.body.comments) && req.body.comments.length > (current.comments?.length || 0)) {
-          const lastComment = req.body.comments[req.body.comments.length - 1];
-          const commenterId = lastComment?.author_id;
-          const commentPreview = (lastComment?.text || '').slice(0, 120);
-          const recipients = commenterId === updated.user_id
-            ? (updated.assigned_to ? [updated.assigned_to] : await getHrAdminUserIds())
-            : [updated.user_id].filter(Boolean);
-          await notifyMany(recipients.filter(id => id !== commenterId), {
-            title: 'New Comment on Ticket',
-            message: `${lastComment?.author_name || 'Someone'} commented on "${updated.subject || 'a ticket'}"${commentPreview ? `: ${commentPreview}` : ''}`,
-            type: 'info', link: '/Helpdesk',
-          });
-        }
-      } else if (type === 'Asset') {
-        if (req.body.assigned_to_user_id && req.body.assigned_to_user_id !== current.assigned_to_user_id) {
-          await notifyMany([req.body.assigned_to_user_id], {
-            title: 'Asset Assigned to You',
-            message: `${updated.asset_name || 'An asset'} (${updated.asset_id || ''}) has been assigned to you.`,
-            type: 'info', link: '/AssetTracking',
-          });
-        }
-      } else if (type === 'GatePass' && req.body.status === 'approved' && current.status !== 'approved' && updated.current_location) {
-        // Manager just cleared a gate pass — route it to whichever gate
-        // admin(s) are assigned to the DEPARTURE office (current_location,
-        // picked from Location Master on every gate pass request now), not
-        // a blanket broadcast to every gate admin, so it lands in the right
-        // office's queue regardless of outing type.
-        const emp = updated.employee_user_id
-          ? JSON.parse((await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [updated.employee_user_id]))?.data || '{}')
-          : {};
-        const empName = emp?.display_name || 'An employee';
-        const gateAdminIds = await getGateAdminUserIdsForLocation(updated.current_location);
-        const isTravelling = updated.outing_type === 'travelling_to_another_office';
-        await notifyMany(gateAdminIds, isTravelling ? {
-          title: 'Inter-Office Travel — Gate Pass Approved',
-          message: `${empName}'s gate pass to travel from ${updated.current_location} to ${updated.destination_location || 'another office'} was approved by their manager — awaiting departure.`,
-          type: 'info', link: '/GateAdminDashboard',
-        } : {
-          title: 'Gate Pass Approved — Awaiting Departure',
-          message: `${empName}'s gate pass (${updated.outing_type ? updated.outing_type.replace(/_/g, ' ') : 'outing'}) at ${updated.current_location} was approved by their manager — awaiting departure.`,
-          type: 'info', link: '/GateAdminDashboard',
-        });
-      } else if (type === 'GatePass' && req.body.status && req.body.status !== current.status && ['departed', 'returned'].includes(req.body.status)) {
-        // Gate-log transitions (mark-out/mark-in by the gate admin) — notify
-        // the employee themselves ("you're currently out" / "welcome back")
-        // and their reporting manager, so both see live outing status
-        // without having to open All Attendance / Gate Admin Dashboard.
-        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [updated.employee_user_id]);
-        const emp = empRow ? JSON.parse(empRow.data) : null;
-        const empName = emp?.display_name || 'Employee';
-        const managerId = emp?.reporting_manager_id;
-        const outingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
-        const outingLabel = outingLabels[updated.outing_type] || updated.outing_type || 'outing';
-        // Half-day outing: departure = check-out, and the day is a half-day present (see applyGatePassHalfDay).
-        try {
-          if (req.body.status === 'departed') await applyGatePassHalfDay(updated);
-          else await clearGatePassHalfDay(updated);
-        } catch (he) { console.error('[gatepass] half-day attendance update failed:', he.message); }
-        if (req.body.status === 'departed') {
-          await notifyMany([updated.employee_user_id].filter(Boolean), {
-            title: "You're Currently Out",
-            message: `Your gate pass (${outingLabel}) is active — you're marked out${updated.reason ? `: ${updated.reason}` : '.'}`,
-            type: 'info', link: '/GatePassRequest',
-          });
-          await notifyMany([managerId].filter(Boolean), {
-            title: `${empName} is Currently Out`,
-            message: `${empName} has stepped out on a gate pass (${outingLabel})${updated.reason ? ` — ${updated.reason}` : '.'}`,
-            type: 'info', link: '/AllAttendance',
-          });
-        } else {
-          await notifyMany([updated.employee_user_id].filter(Boolean), {
-            title: 'Welcome Back',
-            message: `Your gate pass outing (${outingLabel}) has been marked as returned.`,
-            type: 'success', link: '/GatePassRequest',
-          });
-          await notifyMany([managerId].filter(Boolean), {
-            title: `${empName} Has Returned`,
-            message: `${empName} is back from their gate pass outing (${outingLabel}).`,
-            type: 'success', link: '/AllAttendance',
-          });
-        }
-      } else if (type === 'Candidate' && req.body.status === 'rejected' && current.status !== 'rejected' && updated.email) {
-        // Candidates aren't app users — there's no in-app notification target,
-        // only email. Previously a rejection only changed the status field
-        // silently; the candidate never heard back at all.
-        const tpl = emailTemplates.candidateRejection({
-          candidateName: updated.full_name || 'Applicant',
-          position: updated.position_applied || 'the role',
-        });
-        sendEmail({ to: updated.email, ...tpl }).catch(e => console.error('[email] Candidate rejection notification failed:', e.message));
-      }
-    } catch (ne) { console.error('[notif] post-update broadcast hook error:', ne.message); }
-  })();
-
-  cacheInvalidate(type);
-  res.json(parseRow(newRow));
-});
-
-/* ── DELETE  DELETE /api/entities/:type/:id ─────────────── */
-router.delete('/:type/:id', async (req, res) => {
-  const cu = getCurrentUser(req);
-  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-  const { type, id } = req.params;
-  if (!(await requireAdminForType(cu, res, type))) return;
-  // Deleting a financial/statutory/compliance record is never self-serve —
-  // always requires HR/admin/management, regardless of ownership.
-  if (SENSITIVE_TYPES.has(type)) {
-    const role = await getEffectiveRole(cu);
-    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
-  } else {
-    // General ownership baseline for every other type — deleting is
-    // destructive/irreversible, so it deserves at least an ownership check
-    // even outside the SENSITIVE_TYPES allowlist: any authenticated user
-    // could otherwise delete any other employee's Ticket/GatePass/Leave/etc.
-    // by id alone. Skipped for records with no user_id (org-wide config).
-    const existing = await one('SELECT user_id FROM entities WHERE type=$1 AND id=$2', [type, id]);
-    if (existing?.user_id && existing.user_id !== cu.id) {
-      const genRole = await getEffectiveRole(cu);
-      const isFrontDeskCard = type === 'DigitalBusinessCard' && genRole === 'front_desk_admin';
-      if (!PRIVILEGED_ROLES.has(genRole) && !isFrontDeskCard) return res.status(403).json({ error: 'Access denied — not your record' });
-    }
-  }
-
-  // Deleting a still-'pending' Leave must release its reservation first
-  // (see reserveLeaveBalance) — the row (and the days it reserved) is about
-  // to disappear entirely, so without this the reservation would be lost
-  // for good, permanently understating the employee's real available balance.
-  if (type === 'Leave') {
-    const lvRow = await one('SELECT data FROM entities WHERE type=$1 AND id=$2', [type, id]);
-    const lv = lvRow ? JSON.parse(lvRow.data) : null;
-    if (lv && lv.status === 'pending' && !(lv.is_wfh || lv.leave_type === 'work_from_home') && lv.leave_policy_id && lv.total_days) {
-      try {
-        const leaveYear = new Date(lv.start_date || Date.now()).getFullYear();
-        await releaseLeaveReservation(lv.user_id, lv.leave_policy_id, leaveYear, lv.total_days);
-      } catch (e) { console.error(`[entities] leave balance release failed for deleted ${id}:`, e.message); }
-    }
-  }
-
-  const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [type, id]);
-  if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
-  cacheInvalidate(type);
-  res.json({ success: true });
-});
-
-export default router;
+import { Router } from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import jwt from 'jsonwebtoken';
+import { one, all, run, withTransaction } from '../db.js';
+import { sendEmail, emailTemplates } from '../utils/email.js';
+import { sendPushToUser } from '../utils/push.js';
+import { JWT_SECRET } from './auth.js';
+import { applyGatePassHalfDay, clearGatePassHalfDay } from './attendancelog.js';
+
+const router = Router();
+
+// Some Attendance rows can legitimately exist in duplicate for the same
+// (user_id, date) — a well-known code-map mismatch (JSON user_id set, DB
+// user_id column null, from an older biometric sync or auto-absent insert)
+// meant a later lookup-by-column-only could miss the real row and insert a
+// second one instead of updating it (now fixed at every write site in
+// functions.js, but existing duplicates from before that fix can still be
+// sitting in the DB). Every OTHER Attendance consumer already dedups this
+// way — getAllAttendance's own scoring, and mapAttendanceByUserDate for the
+// report/muster exports — but this generic list/filter route (what "My
+// Attendance"/AttendanceCalendar.jsx and the Employee Detail dialog's
+// calendar actually read from) did not, so a completed regularisation could
+// still show as absent here even though every other page had already
+// self-healed. Mirrors the same scoring: regularised > admin-corrected >
+// biometric-synced > has check-in > not absent.
+function dedupAttendanceRows(rows) {
+  const score = (r) => (r.regularised ? 16 : 0) + (r.admin_marked ? 8 : 0) + (r.biometric_synced ? 4 : 0) + (r.check_in_time ? 2 : 0) + (r.status && r.status !== 'absent' ? 1 : 0);
+  const best = new Map(); // `${user_id}|${date}` -> highest-scoring row seen so far
+  const keyOrder = [];    // first-seen order of each key, so output order is otherwise unchanged
+  for (const r of rows) {
+    if (!r.user_id || !r.date) { keyOrder.push({ row: r }); continue; } // no key to dedup on — pass through as-is
+    const key = `${r.user_id}|${String(r.date).slice(0, 10)}`;
+    if (!best.has(key)) keyOrder.push({ key });
+    const prev = best.get(key);
+    if (!prev) { best.set(key, r); continue; }
+    const rScore = score(r), prevScore = score(prev);
+    if (rScore > prevScore) {
+      best.set(key, r);
+    } else if (rScore === prevScore) {
+      // Two equally-"good" duplicate rows (both real biometric records) —
+      // `>=` used to always take whichever was iterated LAST, an
+      // arbitrary DB-order artifact that could show a later punch as
+      // "First In" while the day's genuine earliest check-in sat in the
+      // other duplicate (the classic user_id column/JSON mismatch: a
+      // later sync pass creates a fresh row because an earlier lookup
+      // missed the original one). Always prefer the earlier check-in.
+      const t1 = r.check_in_time    ? new Date(r.check_in_time).getTime()    : Infinity;
+      const t2 = prev.check_in_time ? new Date(prev.check_in_time).getTime() : Infinity;
+      if (t1 < t2) best.set(key, r);
+    }
+  }
+  return keyOrder.map(({ row, key }) => row || best.get(key));
+}
+
+// Entity types carrying financial, statutory, or otherwise highly sensitive
+// data. Every route below additionally restricts these to HR/admin/
+// management (unrestricted) or the record's own owner — closing the gap
+// where this whole router previously had no authorization at all, so any
+// caller (authenticated or not) could read/write PAN/Aadhaar/bank details,
+// payroll, loans, insurance claims, and POSH case records for anyone.
+const SENSITIVE_TYPES = new Set([
+  'Payroll', 'PayrollConfiguration', 'SalaryStructure', 'Loan', 'InsuranceClaim',
+  'POSHRecord', 'TaxDeclaration', 'Form16', 'BankDetail', 'LeaveBalance', 'Document',
+  'Reimbursement',
+  // Visitor is location-scoped (a Duhai gate admin must never be able to
+  // list an E82 visitor by calling the generic list/filter API directly,
+  // per the Visitor Management location-isolation requirement). Every
+  // legitimate read now goes through functions.js's getMyVisitors (self) or
+  // getVisitorsScoped (gate admin/HR, location-filtered server-side)
+  // instead — this just closes the generic route as a bypass. The default
+  // fallback below (owner-only) is a safe, never-leaks-cross-location floor
+  // for any caller that still hits this route directly.
+  'Visitor',
+]);
+const PRIVILEGED_ROLES = new Set(['hr', 'admin', 'management']);
+// LeaveBalance is the one SENSITIVE_TYPE that must never be self-editable,
+// even by its own owner — every other sensitive type's "own record" carve-
+// out below is intentional (an employee reading/updating their own Document,
+// Loan application, etc.), but a leave balance is a system-computed running
+// total, not something an employee ever legitimately edits directly. The
+// generic own-record exception used to let a plain employee PATCH literally
+// any field of their own LeaveBalance (including `available`) — which is
+// exactly what Leave.jsx's client-side "deduct on submit / restore on
+// cancel" calls were doing, non-atomically, from the browser. That's the
+// root of imported balances drifting: two racing submits (or a submit whose
+// follow-up balance PATCH never completes) reading/writing the same row with
+// no locking. Fixed at the source: PATCH now requires HR/admin/management
+// for LeaveBalance, full stop, and the actual reserve/release bookkeeping
+// moved server-side into the Leave create/cancel/delete paths below (see
+// reserveLeaveBalance/releaseLeaveReservation), atomic and race-free.
+const SELF_EDIT_EXEMPT_TYPES = new Set(['LeaveBalance']);
+
+// Leave balance reservation model: `available` is decremented (and
+// `pending_approval` incremented by the same amount) the INSTANT a Leave
+// request is created as 'pending' — not deferred to approval — so a second
+// concurrent request against the same balance can never be approved past
+// what's actually left. Approval (runLeaveAction in functions.js) then just
+// moves the reserved days from pending_approval to used, leaving `available`
+// where creation already put it. Rejection/cancellation/deletion of a still-
+// pending request releases that reservation back via releaseLeaveReservation
+// — the single place that does this arithmetic, so it can never drift out of
+// sync between the different ways a pending leave can end.
+async function reserveLeaveBalance(userId, leavePolicyId, year, days, client) {
+  if (!userId || !leavePolicyId || !days) return;
+  const balRows = (await client.query("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [userId])).rows;
+  const balRow = balRows.map(r => ({ id: r.id, d: JSON.parse(r.data) })).find(x => x.d.leave_policy_id === leavePolicyId && x.d.year === year);
+  if (!balRow) return; // no matching balance row — nothing to reserve against (checkLeaveBalanceSufficiency already let a 0-balance request through as a pre-existing edge case)
+  const upd = { ...balRow.d, available: Math.max((balRow.d.available || 0) - days, 0), pending_approval: (balRow.d.pending_approval || 0) + days };
+  await client.query("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), balRow.id]);
+}
+
+async function releaseLeaveReservation(userId, leavePolicyId, year, days) {
+  if (!userId || !leavePolicyId || !days) return;
+  const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [userId]);
+  const balRow = balRows.map(r => ({ id: r.id, d: JSON.parse(r.data) })).find(x => x.d.leave_policy_id === leavePolicyId && x.d.year === year);
+  if (!balRow) return;
+  const upd = { ...balRow.d, available: (balRow.d.available || 0) + days, pending_approval: Math.max((balRow.d.pending_approval || 0) - days, 0) };
+  await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), balRow.id]);
+}
+
+// Live DB lookup (not the JWT's embedded role, which can go stale for the
+// life of a 30-day token if the user is later promoted/demoted) — mirrors
+// the hasRole() convention used throughout routes/functions.js.
+async function getEffectiveRole(cu) {
+  if (!cu) return null;
+  try {
+    const row = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
+    return row?.custom_role || row?.role || cu.custom_role || cu.role || null;
+  } catch { return cu.custom_role || cu.role || null; }
+}
+
+// Reimbursement and LeaveBalance both carry data sensitive enough to
+// restrict like every other SENSITIVE_TYPES entry — but unlike the rest, a
+// non-privileged 'manager' role legitimately needs to see their own direct
+// reports' records too, not just their own: Reimbursement for approval
+// (checkApprovalAuthorization below), LeaveBalance because
+// LeaveManagement.jsx/LeaveDashboard.jsx read the whole team's balances to
+// show available-days context while a manager reviews a pending leave
+// request. These two helpers mirror checkApprovalAuthorization's manager
+// scoping exactly, so read access and write/approval access never disagree.
+const MANAGER_VISIBLE_SENSITIVE_TYPES = new Set(['Reimbursement', 'LeaveBalance']);
+async function getDirectReportUserIds(managerId) {
+  const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND data::jsonb->>'reporting_manager_id'=$1", [managerId]);
+  return new Set(rows.map(r => r.user_id));
+}
+
+// Whoever gets set as an Employee's reporting_manager_id must actually be
+// able to act on that report's approvals — Leave/GatePass/Reimbursement/
+// AttendanceRegularisation approval authorization is keyed purely on
+// reporting_manager_id matching the actor, but the NAV that gets a user to
+// LeaveManagement.jsx etc. in the first place is keyed on role/custom_role
+// being 'manager'/'management'/'hr'/'admin'. A user assigned as someone's
+// manager while still on the default 'employee' role could authorize fine
+// server-side but had no way to reach the approval screen at all.
+// Previously the only fix was an admin manually clicking "Sync Manager
+// Roles" in AdminPanel — and that function itself only ever matched the
+// legacy reporting_manager_email field, never the reporting_manager_id
+// every current UI (UserRoleManagement.jsx, OnboardingApproval.jsx) actually
+// writes, so it silently promoted nobody assigned through the current UI.
+// This runs automatically the moment reporting_manager_id is actually set,
+// so no separate admin step is ever required again. Never demotes or
+// touches anyone already at manager-or-higher.
+async function autoPromoteReportingManager(managerId) {
+  if (!managerId) return;
+  try {
+    const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [managerId]);
+    if (!u) return;
+    const role = u.custom_role || u.role;
+    if (['admin', 'hr', 'manager', 'management'].includes(role)) return;
+    await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [managerId]);
+  } catch (e) { console.error('[entities] autoPromoteReportingManager failed:', e.message); }
+}
+
+async function filterSensitive(data, cu, type) {
+  if (!SENSITIVE_TYPES.has(type)) return data;
+  const role = await getEffectiveRole(cu);
+  if (PRIVILEGED_ROLES.has(role)) return data;
+  if (MANAGER_VISIBLE_SENSITIVE_TYPES.has(type) && role === 'manager') {
+    const reportIds = await getDirectReportUserIds(cu.id);
+    return data.filter(d => d.user_id === cu.id || reportIds.has(d.user_id));
+  }
+  return data.filter(d => d.user_id === cu.id);
+}
+
+async function canAccessSensitive(cu, type, ownerUserId) {
+  if (!SENSITIVE_TYPES.has(type)) return true;
+  if (ownerUserId === cu.id) return true;
+  const role = await getEffectiveRole(cu);
+  if (PRIVILEGED_ROLES.has(role)) return true;
+  if (MANAGER_VISIBLE_SENSITIVE_TYPES.has(type) && role === 'manager') {
+    const row = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [ownerUserId]);
+    return row?.mgr === cu.id;
+  }
+  return false;
+}
+
+// Location Master (AppLocation) is admin-only to manage — everyone else can
+// still read it (employees need the list client-side for geofence matching),
+// but only an admin may create/update/delete a configured location. Leave
+// Policy (LeavePolicy) is HR/admin-only to manage — a 'manager' role could
+// previously create/update/delete any leave policy via this generic route
+// (nothing here gated it at all; the frontend's Leave Policies tab was
+// unguarded too — see LeaveManagement.jsx), letting a manager change
+// company-wide leave rules everyone else's balance/accrual math depends on.
+// Both take the already-authenticated `cu` and re-check the CURRENT role via
+// getEffectiveRole (live DB lookup), not the JWT's embedded role directly —
+// that raw-JWT-role version of this check let a demoted admin/HR keep
+// managing these for up to 30 days, the same staleness bug fixed everywhere
+// else in this file's authorization pass.
+async function requireAdminForType(cu, res, type) {
+  if (type === 'AppLocation') {
+    const role = await getEffectiveRole(cu);
+    if (role !== 'admin') { res.status(403).json({ error: 'Admin role required to manage locations' }); return false; }
+    return true;
+  }
+  if (type === 'LeavePolicy') {
+    const role = await getEffectiveRole(cu);
+    if (!['hr', 'admin'].includes(role)) { res.status(403).json({ error: 'HR or admin access required to manage leave policies' }); return false; }
+    return true;
+  }
+  return true;
+}
+
+// Employees may submit at most 5 AttendanceRegularisation requests per
+// calendar month (IST). Rejected requests don't count against the quota —
+// they were declined, not a wasted submission slot. Enforced server-side
+// here (not just as a frontend nicety) since creation goes through this
+// generic entity route rather than a dedicated function-route case.
+// `client` (a locked transaction connection — see withTransaction call sites
+// below) is optional so this can still be called standalone; when provided,
+// the read runs on the SAME connection holding the advisory lock, so it sees
+// a consistent view relative to the insert that follows inside that
+// transaction — closing the read-then-write race where two concurrent
+// requests could both read "4 this month" and both be allowed through.
+async function checkRegularisationLimit(res, type, data, client) {
+  if (type !== 'AttendanceRegularisation') return true;
+  if (!data.user_id) return true;
+  const rows = client
+    ? (await client.query("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id])).rows
+    : await all("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id]);
+  const nowIST = new Date(Date.now() + 5.5 * 3600000);
+  const curYM = `${nowIST.getUTCFullYear()}-${String(nowIST.getUTCMonth() + 1).padStart(2, '0')}`;
+  const countThisMonth = rows.filter(r => {
+    let d;
+    try { d = JSON.parse(r.data); } catch { return false; }
+    // Rejected doesn't count against the quota — declined, not a wasted
+    // slot. Cancelled is the same case: the employee withdrew it
+    // themselves before anyone acted on it, so it shouldn't cost them a
+    // slot either, now that self-cancel exists (checkApprovalAuthorization
+    // above).
+    if (d.status === 'rejected' || d.status === 'cancelled') return false;
+    if (!r.created_at) return false;
+    // created_at is Postgres CURRENT_TIMESTAMP::TEXT (UTC) — shift to IST so
+    // the "calendar month" boundary matches the rest of the app's convention.
+    const createdUtcMs = Date.parse(r.created_at.replace(' ', 'T') + (r.created_at.includes('Z') ? '' : 'Z'));
+    if (isNaN(createdUtcMs)) return false;
+    const createdIST = new Date(createdUtcMs + 5.5 * 3600000);
+    const ym = `${createdIST.getUTCFullYear()}-${String(createdIST.getUTCMonth() + 1).padStart(2, '0')}`;
+    return ym === curYM;
+  }).length;
+  if (countThisMonth >= 5) {
+    res.status(400).json({ error: 'You have already submitted 5 attendance regularisation requests this month — the monthly limit has been reached.' });
+    return false;
+  }
+  return true;
+}
+
+function getCurrentUser(req) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return null;
+  try { return jwt.verify(token, JWT_SECRET); } catch { return null; }
+}
+
+// GatePass, Reimbursement and AttendanceRegularisation have no dedicated
+// approve/reject action of their own (unlike Leave/CompOff, which go through
+// runLeaveAction/decideCompOff in routes/functions.js) — approval happens by
+// PATCHing status straight through this generic entity route, which
+// previously had NO authorization check at all: any authenticated user could
+// approve/reject any employee's request for any of these three types.
+// Restricts an approved/rejected status change to: HR/admin/management
+// (unrestricted), or a 'manager' role approving only their own direct
+// report's request (Employee.reporting_manager_id === approver's id).
+const APPROVAL_SCOPED_TYPES = new Set(['GatePass', 'Reimbursement', 'AttendanceRegularisation', 'Leave']);
+// GatePass has a second scoped transition beyond approve/reject: the
+// physical gate-in/gate-out logging (departed/returned) done by whoever is
+// staffing the gate. Previously NEITHER transition had any check at all for
+// these two statuses, so any authenticated user (any role) could PATCH any
+// employee's gate pass to "departed"/"returned" directly.
+const GATE_LOG_TRANSITIONS = new Set(['departed', 'returned']);
+// Except for GatePass, every one of these approval-scoped types must clear
+// the reporting manager's own approval before HR/management can act — only
+// admin retains a blanket override. An employee with no reporting manager
+// configured at all is the one exception (there'd otherwise be no one who
+// could ever clear that first step for them).
+// Same GateAdminLocation entity/rule as Visitor Management's location
+// scoping (see functions.js) — one row per user_id, {locations:[name,...]}.
+// null = never configured = unrestricted (every location), for the same
+// backward-compatible reason: an existing gate admin must keep working
+// exactly as before until an admin explicitly narrows them to specific
+// location(s). Duplicated here (rather than imported from functions.js)
+// since entities.js and functions.js are separate route files with no
+// existing cross-import of this kind — keeps this route self-contained.
+async function getGateAdminAssignedLocations(userId) {
+  const row = await one("SELECT data FROM entities WHERE type='GateAdminLocation' AND user_id=$1", [userId]);
+  if (!row) return null;
+  const d = JSON.parse(row.data);
+  return Array.isArray(d.locations) ? d.locations : null;
+}
+
+async function getGateAdminUserIdsForLocation(locationName) {
+  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role)='gate_admin'");
+  const out = [];
+  for (const r of rows) {
+    const assigned = await getGateAdminAssignedLocations(r.id);
+    if (assigned === null || assigned.includes(locationName)) out.push(r.id);
+  }
+  return out;
+}
+
+// Is `targetUserId` a direct or indirect report of `managementUserId`? Walks
+// UP the reporting chain from the target (not down from the manager — this
+// is a single-target authorization check, not a visibility listing, so
+// there's no need to materialize the whole downstream tree) until it either
+// reaches managementUserId (true), runs out of chain (false), or hits a
+// cycle (guarded by a hop cap, false). Used to scope the 'management' role
+// to its own downstream hierarchy for Leave/GatePass/AttendanceRegularisation
+// approval — previously 'management' was unconditionally unrestricted
+// (org-wide) here, same as hr/admin, which is the behavior this closes.
+// Deliberately re-implemented here rather than imported from functions.js's
+// getVisibleUserIds (a different shape — that one is a downstream BFS for
+// LISTING, explicitly documented as not for approval authority, and the two
+// route files are kept self-contained with no cross-import between them).
+async function isInManagementDownstream(managementUserId, targetUserId) {
+  if (!targetUserId) return false;
+  let currentId = targetUserId;
+  const visited = new Set();
+  for (let hop = 0; hop < 50; hop++) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const row = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [currentId]);
+    const mgr = row?.mgr;
+    if (!mgr) return false;
+    if (mgr === managementUserId) return true;
+    currentId = mgr;
+  }
+  return false;
+}
+
+async function hasManagerCleared(type, current) {
+  if (!current.user_id) return true; // no owner to resolve a manager for — nothing to gate on
+  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [current.user_id]);
+  const emp = empRow ? JSON.parse(empRow.data) : null;
+  if (!emp?.reporting_manager_id) return true;
+  if (type === 'Leave') return (current.current_approval_level || 1) > 1 || current.status === 'approved';
+  if (type === 'AttendanceRegularisation') return current.status === 'manager_approved';
+  if (type === 'Reimbursement') return !!current.manager_approved_by;
+  return true;
+}
+
+// Which pre-decision status(es) each approval-scoped type may still be
+// self-cancelled from — once an approver has actually acted (approved/
+// rejected/departed/etc.) cancelling here would leave the balance/
+// attendance bookkeeping those transitions already performed out of sync,
+// so this deliberately only covers "still awaiting a decision".
+const CANCELLABLE_STATUSES = {
+  Leave: ['pending'],
+  GatePass: ['pending_approval'],
+  AttendanceRegularisation: ['pending', 'sent_back'],
+};
+
+async function checkApprovalAuthorization(req, res, type, current, newStatus) {
+  if (!APPROVAL_SCOPED_TYPES.has(type)) return true;
+  if (!newStatus || newStatus === current.status) return true;
+
+  const isGateLogTransition = type === 'GatePass' && GATE_LOG_TRANSITIONS.has(newStatus);
+  const isApprovalTransition = ['approved', 'rejected'].includes(newStatus);
+  // Cancelling/withdrawing was previously NOT one of the transitions this
+  // function checked — it fell through to `return true` unconditionally
+  // below, and the PATCH route's general ownership check is deliberately
+  // skipped for every status change on these types (isScopedTransition),
+  // trusting this function to have already authorized it. The combination
+  // meant ANY authenticated user could cancel ANY OTHER employee's Leave/
+  // GatePass/AttendanceRegularisation, not just their own. Now explicitly
+  // scoped: the request's own owner may always cancel it (while it's still
+  // in a cancellable, pre-decision status — see CANCELLABLE_STATUSES), and
+  // HR/admin/management may cancel on an employee's behalf, same as every
+  // other approval-scoped action here.
+  const isCancelTransition = ['cancelled', 'withdrawn'].includes(newStatus);
+  if (!isGateLogTransition && !isApprovalTransition && !isCancelTransition) return true;
+
+  const cu = getCurrentUser(req);
+  if (!cu) { res.status(401).json({ error: 'Unauthorized' }); return false; }
+
+  const uRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
+  const role = uRow?.custom_role || uRow?.role || cu.custom_role || cu.role;
+
+  if (isCancelTransition) {
+    const cancellable = CANCELLABLE_STATUSES[type];
+    if (cancellable && !cancellable.includes(current.status)) {
+      res.status(400).json({ error: `This request can no longer be cancelled — it is already ${current.status.replace(/_/g, ' ')}.` });
+      return false;
+    }
+    if (current.user_id === cu.id) return true;
+    if (['hr', 'admin'].includes(role)) return true;
+    // 'management' may cancel on an employee's behalf only within their own
+    // downstream hierarchy — same scoping as the approve/reject grant below,
+    // so a management user can't act on a request outside their own team
+    // via cancel when they couldn't via approve/reject either.
+    if (await isInManagementDownstream(cu.id, current.user_id)) return true;
+    res.status(403).json({ error: 'Access denied — you can only cancel your own request' });
+    return false;
+  }
+
+  if (isGateLogTransition) {
+    if (['hr', 'admin'].includes(role)) return true;
+    if (role === 'gate_admin') {
+      // Every gate pass now carries its own departure location
+      // (current_location — the employee explicitly picks it from Location
+      // Master when requesting, GatePassRequest.jsx) regardless of outing
+      // type, so it's what determines which gate admin may act on it: a
+      // Duhai gate admin should only ever see/manage gate passes departing
+      // from Duhai. Deliberately NO fallback to the employee's own
+      // Employee.work_location for older passes that predate this field —
+      // that was tried and reverted: work_location is inferred/assignment
+      // data that isn't guaranteed to be configured or accurate for every
+      // employee, and silently gating a real gate-in/out action on it
+      // blocked gate admins from marking employees in on perfectly valid
+      // gate passes. A pass with no explicit current_location of its own
+      // stays unrestricted (any gate admin can act on it) — exactly the
+      // original behavior before location scoping existed at all.
+      const gateLocation = current.current_location;
+      if (gateLocation) {
+        const assigned = await getGateAdminAssignedLocations(cu.id);
+        if (assigned !== null && !assigned.includes(gateLocation)) {
+          res.status(403).json({ error: `You are not assigned to ${gateLocation} — this gate pass belongs to another office` });
+          return false;
+        }
+      }
+      return true;
+    }
+    res.status(403).json({ error: 'Access denied — gate admin access required' });
+    return false;
+  }
+
+  // Front Desk Admin has NO approval power over gate passes (it was removed): approving / rejecting is for the
+  // reporting manager, management and HR / admin only.
+  if (role === 'front_desk_admin' && type === 'GatePass') {
+    res.status(403).json({ error: 'Front Desk Admin cannot approve or reject gate passes' });
+    return false;
+  }
+
+  if (['hr', 'admin'].includes(role)) {
+    if (role !== 'admin' && type !== 'GatePass' && !(await hasManagerCleared(type, current))) {
+      res.status(403).json({ error: 'This request requires reporting manager approval first.' });
+      return false;
+    }
+    return true;
+  }
+
+  // 'management' is scoped to their own downstream hierarchy (direct +
+  // indirect reports) for Leave/GatePass/AttendanceRegularisation —
+  // previously unconditionally unrestricted here, same as hr/admin, letting
+  // a management user approve/reject any employee's request org-wide.
+  // Reimbursement is deliberately left out of this scoping (unrestricted,
+  // matching prior behavior) — it wasn't part of this change's scope and
+  // has its own configurable ApprovalWorkflow with a 'specific_user' step
+  // type below that a hierarchy restriction could conflict with.
+  if (role === 'management' && ['Leave', 'GatePass', 'AttendanceRegularisation'].includes(type)) {
+    if (!(await isInManagementDownstream(cu.id, current.user_id))) {
+      res.status(403).json({ error: 'Access denied — this request is outside your reporting hierarchy' });
+      return false;
+    }
+    if (type !== 'GatePass' && !(await hasManagerCleared(type, current))) {
+      res.status(403).json({ error: 'This request requires reporting manager approval first.' });
+      return false;
+    }
+    return true;
+  }
+  if (role === 'management') return true; // Reimbursement — unchanged, unrestricted
+
+  // A reporting manager — direct OR indirect (anyone further up the
+  // employee's reporting chain) — may approve/reject that employee's
+  // request. Judged purely by the reporting chain, not the user's role
+  // label, since being someone's reporting manager is what confers this.
+  if (await isInManagementDownstream(cu.id, current.user_id)) return true;
+
+  // Reimbursement's configurable ApprovalWorkflow (module 'expense') can
+  // assign a step to a 'specific_user' who isn't the claimant's manager —
+  // Approvals.jsx already surfaces such claims to that person (matching
+  // WorkflowBuilder.jsx's "integrated: true" note for this module), so the
+  // backend must recognize them as the authorized approver for their step
+  // too, not just HR/admin/management/direct-manager.
+  if (type === 'Reimbursement') {
+    const wfRow = await one("SELECT data FROM entities WHERE type='ApprovalWorkflow' AND data::jsonb->>'module'='expense'");
+    const wf = wfRow ? JSON.parse(wfRow.data) : null;
+    if (wf?.is_active !== false && Array.isArray(wf?.steps) && wf.steps.length > 0) {
+      const step = wf.steps[current.wf_level || 0];
+      if (step?.approver_type === 'specific_user' && step.specific_user_id === cu.id) return true;
+    }
+  }
+
+  res.status(403).json({ error: 'Access denied — not authorized to approve this request' });
+  return false;
+}
+
+// Work-From-Home requests are submitted as a Leave with is_wfh/leave_type
+// set client-side (Leave.jsx only shows the WFH option when the employee's
+// wfh_eligible flag is set) — enforce that same rule server-side too, since
+// this generic route is reachable directly without going through the UI.
+async function checkWfhEligibility(res, type, data) {
+  if (type !== 'Leave') return true;
+  if (!data.is_wfh && data.leave_type !== 'work_from_home') return true;
+  if (!data.user_id) return true;
+  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [data.user_id]);
+  const emp = empRow ? JSON.parse(empRow.data) : null;
+  if (!emp?.wfh_eligible) {
+    res.status(403).json({ error: 'You are not eligible for Work From Home.' });
+    return false;
+  }
+  return true;
+}
+
+// Leave.jsx only enables Submit once client-side validation confirms
+// available >= total_days — but that's purely a UI nicety, bypassable by
+// calling this generic entity route directly. Enforced here too so a
+// request can never be created for more days than the employee actually
+// has, regardless of client. WFH doesn't draw from a leave balance at all
+// (see checkWfhEligibility above), so it's exempt from this check.
+async function checkLeaveBalanceSufficiency(res, type, data, client) {
+  if (type !== 'Leave') return true;
+  if (data.is_wfh || data.leave_type === 'work_from_home') return true;
+  if (!data.user_id || !data.leave_policy_id || !data.total_days) return true;
+  const year = new Date(data.start_date || Date.now()).getFullYear();
+  const balRows = client
+    ? (await client.query("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [data.user_id])).rows
+    : await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [data.user_id]);
+  const bal = balRows.map(r => JSON.parse(r.data)).find(b => b.leave_policy_id === data.leave_policy_id && b.year === year);
+  const available = bal?.available ?? 0;
+  if (data.total_days > available) {
+    res.status(400).json({ error: `Insufficient leave balance — requested ${data.total_days} day(s), only ${available} available.` });
+    return false;
+  }
+  return true;
+}
+
+/* ── helpers ─────────────────────────────────────────── */
+
+const parseRow = (row) => {
+  if (!row) return null;
+  const d = JSON.parse(row.data);
+  d.id           = row.id;
+  d.created_date = row.created_at;
+  d.updated_date = row.updated_at;
+  return d;
+};
+
+const isPrimitive = (v) => v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+
+const matchesFilter = (data, filter) => {
+  if (!filter) return true;
+  return Object.entries(filter).every(([k, v]) => {
+    if (v === undefined || v === null) return true;
+    const fv = k === 'id' ? data.id : data[k];
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      if ('$in'  in v) return Array.isArray(v.$in) && v.$in.includes(fv);
+      if ('$nin' in v) return Array.isArray(v.$nin) && !v.$nin.includes(fv);
+      if ('$ne'  in v) return fv !== v.$ne;
+      if ('$gt'  in v) return fv >  v.$gt;
+      if ('$gte' in v) return fv >= v.$gte;
+      if ('$lt'  in v) return fv <  v.$lt;
+      if ('$lte' in v) return fv <= v.$lte;
+      return true;
+    }
+    if (Array.isArray(v)) return v.includes(fv);
+    return fv === v;
+  });
+};
+
+const sortRows = (arr, sortField) => {
+  if (!sortField) return arr;
+  const desc = sortField.startsWith('-');
+  const field = desc ? sortField.slice(1) : sortField;
+  return [...arr].sort((a, b) => {
+    const av = a[field] ?? a.created_date ?? '';
+    const bv = b[field] ?? b.created_date ?? '';
+    const cmp = String(av).localeCompare(String(bv));
+    return desc ? -cmp : cmp;
+  });
+};
+
+/* ── In-memory cache for slow-changing entity types ───────── */
+// Caches list/filter results for 45 seconds; invalidated on write.
+const _cache = new Map();
+const CACHE_TTL = 45_000;
+const CACHEABLE = new Set([
+  'Employee', 'Department', 'LeavePolicy', 'Shift', 'AppLocation',
+  'PayrollConfiguration', 'Holiday', 'HelpdeskCategory', 'ShiftPolicy'
+]);
+
+function cacheGet(key) {
+  const e = _cache.get(key);
+  if (e && Date.now() < e.exp) return e.data;
+  _cache.delete(key);
+  return null;
+}
+function cacheSet(key, data) {
+  _cache.set(key, { data, exp: Date.now() + CACHE_TTL });
+}
+function cacheInvalidate(type) {
+  for (const k of _cache.keys()) {
+    if (k.startsWith(type + ':')) _cache.delete(k);
+  }
+}
+export { cacheInvalidate };
+
+/* ── Notification helpers ─────────────────────────────────── */
+// Fire-and-forget: writes one notifications row + push per recipient.
+async function notifyMany(userIds, { title, message, type = 'info', link = '' }) {
+  const ids = [...new Set((userIds || []).filter(Boolean))];
+  for (const uid of ids) {
+    try {
+      await run(
+        `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
+        [uuidv4(), uid, title, message, type, link || null]
+      );
+      sendPushToUser(uid, { title, message, type, link });
+    } catch (e) { console.error('[notif] notifyMany error:', e.message); }
+  }
+}
+
+async function getHrAdminUserIds() {
+  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('hr','admin')");
+  return rows.map(r => r.id);
+}
+
+// Announcement audience: 'all' (or unset) → every active employee;
+// 'specific_locations' → every active employee whose work_location is one
+// of target_locations (matches AppLocation.name, per Location Master —
+// see OnboardingApproval.jsx's location dropdown); anything else (the
+// existing 'specific_departments' path) → every active employee in one of
+// target_departments (matches Employee.department, which is always stored
+// as the department's NAME — see OnboardingApproval.jsx's department
+// dropdown — never its short code).
+export async function getAnnouncementAudienceUserIds(data) {
+  const audience = data.target_audience || 'all';
+  if (audience === 'specific_locations') {
+    const locs = Array.isArray(data.target_locations) ? data.target_locations : [];
+    if (!locs.length) {
+      const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
+      return rows.map(r => r.user_id).filter(Boolean);
+    }
+    const rows = await all(
+      "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'work_location' = ANY($1)",
+      [locs]
+    );
+    return rows.map(r => r.user_id).filter(Boolean);
+  }
+  const depts = Array.isArray(data.target_departments) ? data.target_departments : [];
+  if (audience === 'all' || depts.length === 0) {
+    const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
+    return rows.map(r => r.user_id).filter(Boolean);
+  }
+  const rows = await all(
+    "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department' = ANY($1)",
+    [depts]
+  );
+  return rows.map(r => r.user_id).filter(Boolean);
+}
+
+/* ── SQL ORDER BY + LIMIT builder ─────────────────────────── */
+// Pushes sorting and limiting into the database query so the server
+// never loads thousands of rows just to slice them in JavaScript.
+function buildOrderLimit(sort, limit) {
+  let order = '';
+  if (sort) {
+    const desc = sort.startsWith('-');
+    const field = desc ? sort.slice(1) : sort;
+    const dir = desc ? 'DESC' : 'ASC';
+    if (field === 'created_date' || field === 'created_at') {
+      order = ` ORDER BY created_at ${dir}`;
+    } else if (field === 'updated_date' || field === 'updated_at') {
+      order = ` ORDER BY updated_at ${dir}`;
+    } else if (/^[A-Za-z0-9_]+$/.test(field)) {
+      // JSON field — safe because we validated it's alphanumeric+underscore
+      order = ` ORDER BY data::jsonb->>'${field}' ${dir} NULLS LAST`;
+    }
+  }
+  const lim = limit ? ` LIMIT ${Math.min(parseInt(limit, 10), 50000)}` : '';
+  return order + lim;
+}
+
+/* ── LIST  GET /api/entities/:type ───────────────────── */
+// Survey answers and the survey access log are reachable ONLY through the ps_* functions (routes/pulse.js), which
+// enforce HR-only access, anonymity and small-group rules. The generic entity API must never list them.
+const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig']);
+router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
+
+router.get('/:type', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+  const { type } = req.params;
+  const { sort, limit } = req.query;
+
+  const cacheKey = `${type}:list:${sort || ''}:${limit || ''}`;
+  let data;
+  if (CACHEABLE.has(type)) {
+    const hit = cacheGet(cacheKey);
+    if (hit) data = hit;
+  }
+  if (!data) {
+    const sql = `SELECT * FROM entities WHERE type = $1${buildOrderLimit(sort, limit)}`;
+    const rows = await all(sql, [type]);
+    data = rows.map(parseRow);
+    if (CACHEABLE.has(type)) cacheSet(cacheKey, data);
+  }
+
+  if (type === 'Attendance') data = dedupAttendanceRows(data);
+  data = await filterSensitive(data, cu, type);
+  res.json(data);
+});
+
+/* ── FILTER  POST /api/entities/:type/filter ─────────── */
+router.post('/:type/filter', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+  const { type } = req.params;
+  const { query = {}, sort, limit } = req.body;
+
+  const simpleUserId = isPrimitive(query.user_id) ? query.user_id : undefined;
+  const simpleStatus = isPrimitive(query.status)  ? query.status  : undefined;
+
+  // Only push LIMIT/ORDER to SQL when the entire filter is handled by SQL columns
+  // (pushing LIMIT before JS filtering would cut off valid matching records)
+  const isSimpleFilter = !!(simpleUserId || simpleStatus ||
+    (query.is_active !== undefined && isPrimitive(query.is_active) && Object.keys(query).length === 1));
+  const sqlSuffix = isSimpleFilter ? buildOrderLimit(sort, limit) : '';
+
+  const baseParams = [type];
+  let sql;
+  if (simpleUserId && simpleStatus) {
+    sql = `SELECT * FROM entities WHERE type=$1 AND user_id=$2 AND status=$3`;
+    baseParams.push(simpleUserId, simpleStatus);
+  } else if (simpleUserId) {
+    sql = `SELECT * FROM entities WHERE type=$1 AND user_id=$2`;
+    baseParams.push(simpleUserId);
+  } else if (simpleStatus) {
+    sql = `SELECT * FROM entities WHERE type=$1 AND status=$2`;
+    baseParams.push(simpleStatus);
+  } else if (query.is_active !== undefined && isPrimitive(query.is_active)) {
+    sql = `SELECT * FROM entities WHERE type=$1 AND is_active=$2`;
+    baseParams.push(query.is_active ? 1 : 0);
+  } else {
+    sql = `SELECT * FROM entities WHERE type=$1`;
+  }
+
+  // Additionally push a `date` range down to SQL when present, regardless
+  // of isSimpleFilter — a purely additive fetch-size narrowing. matchesFilter()
+  // below still re-validates every condition (including this one)
+  // identically, so a bug here could only ever under-narrow — same behavior
+  // as before this change — never return wrong results. This matters most
+  // for large, long-lived tables like Attendance: a `{date: {$gte, $lte}}`
+  // filter isn't one of the "simple" fields above, so before this change no
+  // SQL WHERE was ever applied and the entire table (every Attendance row
+  // ever created, for every employee) was pulled into Node memory on every
+  // date-ranged report/page load before being filtered down in JS.
+  const dateFilter = query.date;
+  if (dateFilter && typeof dateFilter === 'object' && !Array.isArray(dateFilter)) {
+    const gte = isPrimitive(dateFilter.$gte) ? dateFilter.$gte : undefined;
+    const lte = isPrimitive(dateFilter.$lte) ? dateFilter.$lte : undefined;
+    if (gte !== undefined) { baseParams.push(gte); sql += ` AND data::jsonb->>'date' >= $${baseParams.length}`; }
+    if (lte !== undefined) { baseParams.push(lte); sql += ` AND data::jsonb->>'date' <= $${baseParams.length}`; }
+  }
+
+  sql += sqlSuffix;
+  const rows = await all(sql, baseParams);
+
+  let data = rows.map(parseRow).filter(d => matchesFilter(d, query));
+  if (type === 'Attendance') data = dedupAttendanceRows(data);
+  if (!isSimpleFilter) {
+    if (sort)  data = sortRows(data, sort);
+    if (limit) data = data.slice(0, parseInt(limit, 10));
+  }
+  data = await filterSensitive(data, cu, type);
+  res.json(data);
+});
+
+/* ── GET ONE  GET /api/entities/:type/:id ─────────────── */
+router.get('/:type/:id', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+  const { type, id } = req.params;
+  const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  const data = parseRow(row);
+  if (!(await canAccessSensitive(cu, type, data.user_id))) return res.status(403).json({ error: 'Access denied' });
+  res.json(data);
+});
+
+/* ── CREATE  POST /api/entities/:type ─────────────────── */
+router.post('/:type', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+  const { type } = req.params;
+  if (!(await requireAdminForType(cu, res, type))) return;
+  const body = req.body;
+  const id = body.id || uuidv4();
+  const data = { ...body, id };
+
+  // A non-privileged caller may only create a record attributed to
+  // themselves — closes the gap where any authenticated user could POST a
+  // Loan/Leave/etc. with someone else's user_id in the body and have it
+  // silently attributed to that other person.
+  //
+  // gate_admin is the one deliberate exception, scoped to Attendance only:
+  // marking an employee's return on a gate pass (GateAdminDashboard.jsx's
+  // markReturn) creates that employee's Attendance record for the day when
+  // one doesn't exist yet — a gate admin marking attendance-relevant state
+  // for someone else is exactly their job, not a privilege gap. Without
+  // this, marking departure (GatePass-only, already separately authorized
+  // via checkApprovalAuthorization's gate-log-transition branch) succeeded
+  // while marking the SAME person back in failed with a 403 the instant no
+  // Attendance row existed yet for that day.
+  if (data.user_id && data.user_id !== cu.id) {
+    const role = await getEffectiveRole(cu);
+    const isGateAdminAttendance = type === 'Attendance' && role === 'gate_admin';
+    const isFrontDeskCard = type === 'DigitalBusinessCard' && role === 'front_desk_admin';
+    if (!PRIVILEGED_ROLES.has(role) && !isGateAdminAttendance && !isFrontDeskCard) return res.status(403).json({ error: 'Cannot create a record on behalf of another user' });
+  }
+
+  // SENSITIVE_TYPES also need a create-time gate — GET/PATCH/DELETE all
+  // restrict these, but creation had no type-level check at all, so a plain
+  // employee could self-fabricate e.g. a LeaveBalance with an inflated
+  // `available` and have checkLeaveBalanceSufficiency trust it, or POST a
+  // brand-new org-wide PayrollConfiguration (which has no user_id at all,
+  // so even the "on behalf of another user" check above never applies to
+  // it). A few of these types ARE legitimately self-created by an ordinary
+  // employee (LoanManagement.jsx's self-service loan application,
+  // OnboardingForm.jsx's own-document upload) — those keep working via the
+  // self-ownership exception; everything else requires HR/admin/management.
+  if (SENSITIVE_TYPES.has(type)) {
+    const SELF_CREATABLE = new Set(['Loan', 'InsuranceClaim', 'Document']);
+    const isSelfCreatable = SELF_CREATABLE.has(type) && data.user_id === cu.id;
+    if (!isSelfCreatable) {
+      const role = await getEffectiveRole(cu);
+      if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Not authorized to create this record' });
+    }
+  }
+
+  if (!(await checkWfhEligibility(res, type, data))) return;
+
+  let row;
+  if (type === 'AttendanceRegularisation' || type === 'Leave') {
+    // These two have a read-then-write quota/balance check that a bare
+    // check-then-insert can't make atomic under concurrent requests from
+    // the same user — serialize per (type,user_id) with a transaction-scoped
+    // advisory lock so the second of two racing requests re-reads the
+    // first's effect before its own check runs.
+    let ok = true;
+    try {
+      row = await withTransaction(async (client) => {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${type}:${data.user_id}`]);
+        if (!(await checkRegularisationLimit(res, type, data, client))) { ok = false; return null; }
+        if (!(await checkLeaveBalanceSufficiency(res, type, data, client))) { ok = false; return null; }
+        await client.query(
+          `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [id, type, data.user_id ?? null, data.status ?? null, data.is_active !== false ? 1 : 0, JSON.stringify(data)]
+        );
+        // Reserve the requested days against the balance the instant a
+        // normal (self-service, still-'pending') Leave is created — same
+        // advisory lock, same transaction as the sufficiency check above, so
+        // the two can never race. Scoped to status==='pending' specifically:
+        // HRApplyOnBehalf.jsx creates a Leave already 'approved' (HR applying
+        // on an employee's behalf, decided on the spot) and does its own
+        // direct used/available adjustment for that case — reserving here
+        // too would double-deduct it.
+        const isWfhLeave = type === 'Leave' && (data.is_wfh || data.leave_type === 'work_from_home');
+        if (type === 'Leave' && !isWfhLeave && data.status === 'pending' && data.user_id && data.leave_policy_id && data.total_days) {
+          const leaveYear = new Date(data.start_date || Date.now()).getFullYear();
+          await reserveLeaveBalance(data.user_id, data.leave_policy_id, leaveYear, data.total_days, client);
+        }
+        const { rows } = await client.query('SELECT * FROM entities WHERE id=$1', [id]);
+        return rows[0];
+      });
+    } catch (e) {
+      if (ok) { console.error('[entities] transactional create failed:', e.message); return res.status(500).json({ error: 'Failed to create record' }); }
+    }
+    if (!ok) return; // checkRegularisationLimit/checkLeaveBalanceSufficiency already sent the response
+  } else {
+    await run(
+      `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id, type, data.user_id ?? null, data.status ?? null, data.is_active !== false ? 1 : 0, JSON.stringify(data)]
+    );
+    row = await one('SELECT * FROM entities WHERE id=$1', [id]);
+  }
+
+  // Post-creation hook: notify reporting manager (fire and forget)
+  (async () => {
+    try {
+      const NOTIF_TYPES = ['Leave', 'GatePass', 'AttendanceRegularisation', 'Reimbursement'];
+      if (NOTIF_TYPES.includes(type) && data.user_id) {
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [data.user_id]);
+        const emp    = empRow ? JSON.parse(empRow.data) : null;
+        const managerId = emp?.reporting_manager_id;
+        if (managerId) {
+          const empName = emp?.display_name || 'An employee';
+          let title = '', message = '', link = '';
+          if (type === 'Leave') {
+            title   = `Leave Request from ${empName}`;
+            message = `${empName} has applied for ${data.total_days || ''} day(s) of leave (${data.start_date || ''} – ${data.end_date || ''}).`;
+            link    = '/Approvals';
+          } else if (type === 'GatePass') {
+            const labels = { official_outing:'Official Outing', unofficial_outing:'Unofficial Outing', half_day:'Half Day', short_break:'Short Break', early_leave:'Early Leave', travelling_to_another_office:'Travelling to Another Office' };
+            title   = `Gate Pass Request from ${empName}`;
+            message = `${empName} has requested a gate pass (${labels[data.outing_type] || data.outing_type || 'outing'}).`;
+            link    = '/Approvals';
+          } else if (type === 'AttendanceRegularisation') {
+            title   = `Regularisation Request from ${empName}`;
+            message = `${empName} has submitted a regularisation request for ${data.date || ''} (${data.reason || ''}).`;
+            link    = '/Approvals';
+          } else if (type === 'Reimbursement') {
+            title   = `Expense Claim from ${empName}`;
+            message = `${empName} has submitted a ₹${data.amount || 0} expense claim for ${(data.expense_type || '').replace(/_/g,' ')}.`;
+            link    = '/Approvals';
+          }
+          if (title) {
+            const notifId = uuidv4();
+            await run(
+              `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
+              [notifId, managerId, title, message, 'info', link]
+            );
+            sendPushToUser(managerId, { title, message, type: 'info', link });
+          }
+        }
+      }
+    } catch(ne) { console.error('[notif] post-create hook error:', ne.message); }
+  })();
+
+  // Broadcast / support-inbox notifications on creation (fire and forget)
+  (async () => {
+    try {
+      if (type === 'Announcement' && data.status === 'published') {
+        const audience = await getAnnouncementAudienceUserIds(data);
+        await notifyMany(audience, {
+          title: `📢 ${data.title || 'New Announcement'}`,
+          message: (data.content || '').slice(0, 180),
+          type: 'info',
+          link: '/Announcements',
+        });
+      } else if (type === 'JobRequisition') {
+        if (data.status === 'pending_manager_approval' && data.hiring_manager_id) {
+          await notifyMany([data.hiring_manager_id], {
+            title: 'Job Requisition Awaiting Your Approval',
+            message: `A requisition for ${data.number_of_positions || 1} × ${data.title || 'position'} (${data.department || ''}) needs your approval.`,
+            type: 'info', link: '/JobRequisitions',
+          });
+        } else if (data.status === 'pending_hr_approval') {
+          await notifyMany(await getHrAdminUserIds(), {
+            title: 'Job Requisition Awaiting HR Approval',
+            message: `A requisition for ${data.number_of_positions || 1} × ${data.title || 'position'} (${data.department || ''}) needs HR approval.`,
+            type: 'info', link: '/JobRequisitions',
+          });
+        }
+      } else if (type === 'Ticket') {
+        // HR/admin always see every ticket (oversight), plus everyone in the
+        // ticket's assigned_department (set from the chosen HelpdeskCategory's
+        // default_department_name at creation — see Helpdesk.jsx) so the
+        // concerned department is notified immediately, not just once HR
+        // manually assigns it to a specific person later (see the
+        // assigned_to notification on Ticket update, below).
+        const ticketAudience = new Set(await getHrAdminUserIds());
+        if (data.assigned_department) {
+          const deptRows = await all(
+            "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department'=$1",
+            [data.assigned_department]
+          );
+          for (const r of deptRows) if (r.user_id) ticketAudience.add(r.user_id);
+        }
+        // A category can also name one specific default assignee (set on
+        // HelpdeskCategoryManagement) — routed at creation time, not only
+        // once HR manually assigns it later. Gets its own clearer "assigned
+        // to you" wording rather than the generic department-broadcast one.
+        if (data.assigned_to) ticketAudience.delete(data.assigned_to);
+        await notifyMany([...ticketAudience], {
+          title: 'New Helpdesk Ticket',
+          message: `${data.subject || 'A new ticket'} (${data.priority || 'medium'} priority) was raised.`,
+          type: data.priority === 'high' || data.priority === 'urgent' ? 'warning' : 'info',
+          link: '/Helpdesk',
+        });
+        if (data.assigned_to) {
+          await notifyMany([data.assigned_to], {
+            title: 'Helpdesk Ticket Assigned to You',
+            message: `${data.subject || 'A new ticket'} (${data.priority || 'medium'} priority) was routed to you.`,
+            type: 'info', link: '/Helpdesk',
+          });
+        }
+        // Acknowledgement to whoever raised it — confirms it was received
+        // and says where it went, so they're not left wondering.
+        if (data.user_id) {
+          const routedTo = data.assigned_to
+            ? (await one('SELECT full_name FROM users WHERE id=$1', [data.assigned_to]))?.full_name
+            : (data.assigned_department || null);
+          await notifyMany([data.user_id], {
+            title: 'Ticket Raised',
+            message: `Your ticket "${data.subject || 'support request'}" has been raised${routedTo ? ` and routed to ${routedTo}` : ''}. We'll update you as it progresses.`,
+            type: 'info', link: '/Helpdesk',
+          });
+        }
+      } else if (type === 'POSHRecord') {
+        await notifyMany(await getHrAdminUserIds(), {
+          title: 'New POSH Record Logged',
+          message: `A new ${(data.record_type || 'POSH').replace(/_/g,' ')} record was logged and needs review.`,
+          type: 'warning', link: '/POSHCompliance',
+        });
+      }
+    } catch (ne) { console.error('[notif] post-create broadcast hook error:', ne.message); }
+  })();
+
+  cacheInvalidate(type);
+  res.status(201).json(parseRow(row));
+});
+
+/* ── UPDATE  PATCH /api/entities/:type/:id ─────────────── */
+router.patch('/:type/:id', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+  const { type, id } = req.params;
+  if (!(await requireAdminForType(cu, res, type))) return;
+  const row = await one('SELECT * FROM entities WHERE type=$1 AND id=$2', [type, id]);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+
+  const current = JSON.parse(row.data);
+  if (!(await checkApprovalAuthorization(req, res, type, current, req.body.status))) return;
+
+  // Is this PATCH exactly the approve/reject (or GatePass gate-log)
+  // transition checkApprovalAuthorization just verified above? That
+  // function already correctly allows a direct manager (or, for
+  // Reimbursement, a workflow specific_user) to flip `status` on someone
+  // else's record — but that authorization is scoped to THIS ONE
+  // transition, not a blanket "may edit any field of a report's record."
+  // Both checks below must treat it as its own case, not fold it into the
+  // general owner-or-privileged rule.
+  const isScopedTransition = APPROVAL_SCOPED_TYPES.has(type) && req.body.status && req.body.status !== current.status;
+
+  // Financial/statutory/compliance records may only be edited by HR/admin/
+  // management or the record's own owner for anything OTHER than that one
+  // already-authorized transition — deliberately NOT using the
+  // manager-of-report read exception here (canAccessSensitive), since that
+  // exists so a manager can SEE a report's LeaveBalance/Reimbursement, not
+  // edit arbitrary fields of it.
+  if (!isScopedTransition && SENSITIVE_TYPES.has(type) && (row.user_id !== cu.id || SELF_EDIT_EXEMPT_TYPES.has(type))) {
+    const role = await getEffectiveRole(cu);
+    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
+  }
+
+  // General ownership baseline for every OTHER type that carries a user_id
+  // (Ticket, Feedback360, SkillEntry, Document, etc.) — previously these had
+  // no write authorization at all beyond "any authenticated user." Skipped
+  // when: the record has no user_id (an org-wide config type — Department,
+  // HolidayCalendar, AppLocation — left to their existing role-gated UI);
+  // this is the already-authorized scoped transition above; or the caller
+  // is the record's assignee (assigned_to) — the pattern Helpdesk tickets
+  // use for support staff who aren't the ticket's original raiser. gate_admin
+  // gets the same Attendance-only exception as the POST route above — marking
+  // an employee's return on a gate pass (GateAdminDashboard.jsx's markReturn)
+  // PATCHes that employee's already-existing Attendance record for the day
+  // just as often as it creates a new one, and both paths need to agree.
+  if (!isScopedTransition && current.user_id && current.user_id !== cu.id && current.assigned_to !== cu.id && current.assigned_to_user_id !== cu.id) {
+    const genRole = await getEffectiveRole(cu);
+    const isGateAdminAttendance = type === 'Attendance' && genRole === 'gate_admin';
+    const isFrontDeskCard = type === 'DigitalBusinessCard' && genRole === 'front_desk_admin';
+    if (!PRIVILEGED_ROLES.has(genRole) && !isGateAdminAttendance && !isFrontDeskCard) return res.status(403).json({ error: 'Access denied — not your record' });
+  }
+
+  const updated = { ...current, ...req.body, id };
+
+  // A business-card photo, once uploaded, stays until someone removes it ON PURPOSE (the card form sends
+  // _remove_photo). A blank value from anywhere else — a bulk-import row with an empty photo cell, an older
+  // client — must never wipe it.
+  if (type === 'DigitalBusinessCard') {
+    if (current.profile_picture_url && !String(req.body.profile_picture_url || '').trim() && !req.body._remove_photo) updated.profile_picture_url = current.profile_picture_url;
+    delete updated._remove_photo;
+  }
+
+  // Leave's WFH-eligibility and balance-sufficiency rules were previously
+  // only enforced at creation (POST) — an owner could PATCH their own
+  // already-created Leave to raise total_days past their balance, or flip
+  // is_wfh/leave_type to 'work_from_home' without being wfh_eligible.
+  // Re-validate, but ONLY when one of those leave-determining fields is
+  // actually part of this PATCH, and NOT on an approve/reject transition —
+  // deliberately narrow, since LeaveBalance's available/pending_approval
+  // bookkeeping around the approval step (runLeaveAction) isn't something
+  // this generic route should second-guess with its own re-derivation.
+  const isLeaveContentChange = type === 'Leave' && ['total_days', 'is_wfh', 'leave_type', 'leave_policy_id', 'start_date'].some(f => f in req.body);
+  if (isLeaveContentChange && !isScopedTransition) {
+    if (!(await checkWfhEligibility(res, type, updated))) return;
+    if (!(await checkLeaveBalanceSufficiency(res, type, updated))) return;
+  }
+
+  await run(
+    `UPDATE entities SET data=$1, user_id=$2, status=$3, is_active=$4, updated_at=NOW()::TEXT WHERE id=$5`,
+    [JSON.stringify(updated), updated.user_id ?? row.user_id, updated.status ?? row.status,
+     updated.is_active !== false ? 1 : 0, id]
+  );
+
+  // A reporting manager being newly assigned (or changed) must actually be
+  // able to reach the approval screens for their new report — see
+  // autoPromoteReportingManager's own comment above for the full story.
+  if (type === 'Employee' && req.body.reporting_manager_id && req.body.reporting_manager_id !== current.reporting_manager_id) {
+    autoPromoteReportingManager(req.body.reporting_manager_id).catch(() => {});
+  }
+
+  // Releasing a still-'pending' Leave's reservation (see reserveLeaveBalance
+  // above) — only when it was actually reserved: a WFH request never drew
+  // from a balance, and a request already approved/rejected had its
+  // reservation resolved by runLeaveAction already, not here. This covers
+  // both the employee's own self-service cancel (Leave.jsx) and an HR/
+  // manager-initiated withdrawal, since both land here as a bare status PATCH.
+  if (type === 'Leave' && current.status === 'pending' && ['cancelled', 'withdrawn'].includes(req.body.status)
+      && !(current.is_wfh || current.leave_type === 'work_from_home') && current.leave_policy_id && current.total_days) {
+    try {
+      const leaveYear = new Date(current.start_date || Date.now()).getFullYear();
+      await releaseLeaveReservation(current.user_id, current.leave_policy_id, leaveYear, current.total_days);
+    } catch (e) { console.error(`[entities] leave balance release failed for ${id}:`, e.message); }
+  }
+
+  const newRow = await one('SELECT * FROM entities WHERE id=$1', [id]);
+
+  // Notify the employee when any request's status changes to approved/rejected.
+  const APPROVAL_TYPES = {
+    Leave:                    { label: 'Leave request',      link: '/Leave' },
+    GatePass:                 { label: 'Gate pass',          link: '/GatePassRequest' },
+    Reimbursement:            { label: 'Expense claim',      link: '/Reimbursements' },
+    AttendanceRegularisation: { label: 'Regularisation request', link: '/AttendanceRegularisation' },
+  };
+  if (APPROVAL_TYPES[type] && req.body.status && req.body.status !== current.status &&
+      ['approved', 'rejected'].includes(req.body.status)) {
+    const cfg = APPROVAL_TYPES[type];
+    const targetUserId = updated.user_id || row.user_id;
+    const isApproved = req.body.status === 'approved';
+    const title = `${cfg.label} ${isApproved ? 'Approved' : 'Rejected'}`;
+    const reason = updated.rejection_reason || updated.comments || updated.approval_comments || '';
+    const message = `Your ${cfg.label.toLowerCase()} has been ${req.body.status}${reason ? ` — ${reason}` : '.'}`;
+    (async () => {
+      try {
+        // In-app notification
+        await run(
+          `INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)`,
+          [uuidv4(), targetUserId, title, message, isApproved ? 'success' : 'warning', cfg.link]
+        );
+        // Push notification
+        sendPushToUser(targetUserId, { title, message, type: isApproved ? 'success' : 'warning', link: cfg.link });
+
+        // Leave also gets a formatted email
+        if (type === 'Leave') {
+          const uRow = await one('SELECT email, full_name FROM users WHERE id=$1', [targetUserId]);
+          if (uRow?.email) {
+            const polRow = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND id=$1", [updated.leave_policy_id]);
+            const polData = polRow ? JSON.parse(polRow.data) : {};
+            const tpl = emailTemplates.leaveUpdate({
+              employeeName: uRow.full_name || 'Employee',
+              leaveType: polData.name || updated.leave_type || updated.leave_policy_id || 'Leave',
+              startDate: updated.start_date || '',
+              endDate: updated.end_date || '',
+              days: updated.total_days || '',
+              status: req.body.status,
+              remarks: reason,
+            });
+            sendEmail({ to: uRow.email, ...tpl }).catch(e => console.error('[email] Leave notification failed:', e.message));
+          }
+        }
+      } catch (e) { console.error('[approval-notify] error:', e.message); }
+    })();
+  }
+
+  // Broadcast / workflow-step notifications on update (fire and forget)
+  (async () => {
+    try {
+      if (type === 'Announcement' && req.body.status === 'published' && current.status !== 'published') {
+        const audience = await getAnnouncementAudienceUserIds(updated);
+        await notifyMany(audience, {
+          title: `📢 ${updated.title || 'New Announcement'}`,
+          message: (updated.content || '').slice(0, 180),
+          type: 'info', link: '/Announcements',
+        });
+      } else if (type === 'JobRequisition') {
+        const posLabel = `${updated.number_of_positions || 1} × ${updated.title || 'position'} (${updated.department || ''})`;
+        if (req.body.manager_approval_status === 'approved' && current.manager_approval_status !== 'approved') {
+          await notifyMany(await getHrAdminUserIds(), {
+            title: 'Job Requisition Awaiting HR Approval',
+            message: `${posLabel} was approved by the hiring manager and needs HR approval.`,
+            type: 'info', link: '/JobRequisitions',
+          });
+        }
+        if (req.body.manager_approval_status === 'rejected' && current.manager_approval_status !== 'rejected') {
+          await notifyMany([updated.requested_by].filter(Boolean), {
+            title: 'Job Requisition Rejected',
+            message: `${posLabel} was rejected by the hiring manager${updated.manager_rejection_reason ? ` — ${updated.manager_rejection_reason}` : '.'}`,
+            type: 'warning', link: '/JobRequisitions',
+          });
+        }
+        if (req.body.hr_approval_status === 'approved' && current.hr_approval_status !== 'approved') {
+          await notifyMany([updated.requested_by, updated.hiring_manager_id].filter(Boolean), {
+            title: 'Job Requisition Approved',
+            message: `${posLabel} was approved by HR. Generate & approve the JD to publish it.`,
+            type: 'success', link: '/JobRequisitions',
+          });
+        }
+        if (req.body.hr_approval_status === 'rejected' && current.hr_approval_status !== 'rejected') {
+          await notifyMany([updated.requested_by, updated.hiring_manager_id].filter(Boolean), {
+            title: 'Job Requisition Rejected',
+            message: `${posLabel} was rejected by HR${updated.rejection_reason ? ` — ${updated.rejection_reason}` : '.'}`,
+            type: 'warning', link: '/JobRequisitions',
+          });
+        }
+        if (req.body.status === 'published' && current.status !== 'published') {
+          await notifyMany([updated.requested_by, updated.hiring_manager_id].filter(Boolean), {
+            title: 'Job Requisition Published',
+            message: `${posLabel} is now live and accepting applications.`,
+            type: 'success', link: '/JobRequisitions',
+          });
+        }
+      } else if (type === 'Ticket') {
+        if (req.body.assigned_to && req.body.assigned_to !== current.assigned_to) {
+          await notifyMany([req.body.assigned_to], {
+            title: 'Helpdesk Ticket Assigned to You',
+            message: `${updated.subject || 'A ticket'} was assigned to you.`,
+            type: 'info', link: '/Helpdesk',
+          });
+        }
+        if (req.body.status && ['resolved', 'closed'].includes(req.body.status) && !['resolved', 'closed'].includes(current.status) && updated.user_id) {
+          await notifyMany([updated.user_id], {
+            title: `Ticket ${req.body.status === 'resolved' ? 'Resolved' : 'Closed'}`,
+            message: `${updated.subject || 'Your ticket'} was marked ${req.body.status}.`,
+            type: 'success', link: '/Helpdesk',
+          });
+        }
+        if (req.body.status === 'in_progress' && current.status !== 'in_progress' && updated.user_id) {
+          await notifyMany([updated.user_id], {
+            title: 'Ticket In Progress',
+            message: `${updated.subject || 'Your ticket'} is now being worked on.`,
+            type: 'info', link: '/Helpdesk',
+          });
+        }
+        // A new comment — notify whoever DIDN'T just write it: the raiser if
+        // the assignee/department commented, or the assignee (falling back
+        // to HR/admin if unassigned) if the raiser themselves commented.
+        if (Array.isArray(req.body.comments) && req.body.comments.length > (current.comments?.length || 0)) {
+          const lastComment = req.body.comments[req.body.comments.length - 1];
+          const commenterId = lastComment?.author_id;
+          const commentPreview = (lastComment?.text || '').slice(0, 120);
+          const recipients = commenterId === updated.user_id
+            ? (updated.assigned_to ? [updated.assigned_to] : await getHrAdminUserIds())
+            : [updated.user_id].filter(Boolean);
+          await notifyMany(recipients.filter(id => id !== commenterId), {
+            title: 'New Comment on Ticket',
+            message: `${lastComment?.author_name || 'Someone'} commented on "${updated.subject || 'a ticket'}"${commentPreview ? `: ${commentPreview}` : ''}`,
+            type: 'info', link: '/Helpdesk',
+          });
+        }
+      } else if (type === 'Asset') {
+        if (req.body.assigned_to_user_id && req.body.assigned_to_user_id !== current.assigned_to_user_id) {
+          await notifyMany([req.body.assigned_to_user_id], {
+            title: 'Asset Assigned to You',
+            message: `${updated.asset_name || 'An asset'} (${updated.asset_id || ''}) has been assigned to you.`,
+            type: 'info', link: '/AssetTracking',
+          });
+        }
+      } else if (type === 'GatePass' && req.body.status === 'approved' && current.status !== 'approved' && updated.current_location) {
+        // Manager just cleared a gate pass — route it to whichever gate
+        // admin(s) are assigned to the DEPARTURE office (current_location,
+        // picked from Location Master on every gate pass request now), not
+        // a blanket broadcast to every gate admin, so it lands in the right
+        // office's queue regardless of outing type.
+        const emp = updated.employee_user_id
+          ? JSON.parse((await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [updated.employee_user_id]))?.data || '{}')
+          : {};
+        const empName = emp?.display_name || 'An employee';
+        const gateAdminIds = await getGateAdminUserIdsForLocation(updated.current_location);
+        const isTravelling = updated.outing_type === 'travelling_to_another_office';
+        await notifyMany(gateAdminIds, isTravelling ? {
+          title: 'Inter-Office Travel — Gate Pass Approved',
+          message: `${empName}'s gate pass to travel from ${updated.current_location} to ${updated.destination_location || 'another office'} was approved by their manager — awaiting departure.`,
+          type: 'info', link: '/GateAdminDashboard',
+        } : {
+          title: 'Gate Pass Approved — Awaiting Departure',
+          message: `${empName}'s gate pass (${updated.outing_type ? updated.outing_type.replace(/_/g, ' ') : 'outing'}) at ${updated.current_location} was approved by their manager — awaiting departure.`,
+          type: 'info', link: '/GateAdminDashboard',
+        });
+      } else if (type === 'GatePass' && req.body.status && req.body.status !== current.status && ['departed', 'returned'].includes(req.body.status)) {
+        // Gate-log transitions (mark-out/mark-in by the gate admin) — notify
+        // the employee themselves ("you're currently out" / "welcome back")
+        // and their reporting manager, so both see live outing status
+        // without having to open All Attendance / Gate Admin Dashboard.
+        const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [updated.employee_user_id]);
+        const emp = empRow ? JSON.parse(empRow.data) : null;
+        const empName = emp?.display_name || 'Employee';
+        const managerId = emp?.reporting_manager_id;
+        const outingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
+        const outingLabel = outingLabels[updated.outing_type] || updated.outing_type || 'outing';
+        // Half-day outing: departure = check-out, and the day is a half-day present (see applyGatePassHalfDay).
+        try {
+          if (req.body.status === 'departed') await applyGatePassHalfDay(updated);
+          else await clearGatePassHalfDay(updated);
+        } catch (he) { console.error('[gatepass] half-day attendance update failed:', he.message); }
+        if (req.body.status === 'departed') {
+          await notifyMany([updated.employee_user_id].filter(Boolean), {
+            title: "You're Currently Out",
+            message: `Your gate pass (${outingLabel}) is active — you're marked out${updated.reason ? `: ${updated.reason}` : '.'}`,
+            type: 'info', link: '/GatePassRequest',
+          });
+          await notifyMany([managerId].filter(Boolean), {
+            title: `${empName} is Currently Out`,
+            message: `${empName} has stepped out on a gate pass (${outingLabel})${updated.reason ? ` — ${updated.reason}` : '.'}`,
+            type: 'info', link: '/AllAttendance',
+          });
+        } else {
+          await notifyMany([updated.employee_user_id].filter(Boolean), {
+            title: 'Welcome Back',
+            message: `Your gate pass outing (${outingLabel}) has been marked as returned.`,
+            type: 'success', link: '/GatePassRequest',
+          });
+          await notifyMany([managerId].filter(Boolean), {
+            title: `${empName} Has Returned`,
+            message: `${empName} is back from their gate pass outing (${outingLabel}).`,
+            type: 'success', link: '/AllAttendance',
+          });
+        }
+      } else if (type === 'Candidate' && req.body.status === 'rejected' && current.status !== 'rejected' && updated.email) {
+        // Candidates aren't app users — there's no in-app notification target,
+        // only email. Previously a rejection only changed the status field
+        // silently; the candidate never heard back at all.
+        const tpl = emailTemplates.candidateRejection({
+          candidateName: updated.full_name || 'Applicant',
+          position: updated.position_applied || 'the role',
+        });
+        sendEmail({ to: updated.email, ...tpl }).catch(e => console.error('[email] Candidate rejection notification failed:', e.message));
+      }
+    } catch (ne) { console.error('[notif] post-update broadcast hook error:', ne.message); }
+  })();
+
+  cacheInvalidate(type);
+  res.json(parseRow(newRow));
+});
+
+/* ── DELETE  DELETE /api/entities/:type/:id ─────────────── */
+router.delete('/:type/:id', async (req, res) => {
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+  const { type, id } = req.params;
+  if (!(await requireAdminForType(cu, res, type))) return;
+  // Deleting a financial/statutory/compliance record is never self-serve —
+  // always requires HR/admin/management, regardless of ownership.
+  if (SENSITIVE_TYPES.has(type)) {
+    const role = await getEffectiveRole(cu);
+    if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Access denied' });
+  } else {
+    // General ownership baseline for every other type — deleting is
+    // destructive/irreversible, so it deserves at least an ownership check
+    // even outside the SENSITIVE_TYPES allowlist: any authenticated user
+    // could otherwise delete any other employee's Ticket/GatePass/Leave/etc.
+    // by id alone. Skipped for records with no user_id (org-wide config).
+    const existing = await one('SELECT user_id FROM entities WHERE type=$1 AND id=$2', [type, id]);
+    if (existing?.user_id && existing.user_id !== cu.id) {
+      const genRole = await getEffectiveRole(cu);
+      const isFrontDeskCard = type === 'DigitalBusinessCard' && genRole === 'front_desk_admin';
+      if (!PRIVILEGED_ROLES.has(genRole) && !isFrontDeskCard) return res.status(403).json({ error: 'Access denied — not your record' });
+    }
+  }
+
+  // Deleting a still-'pending' Leave must release its reservation first
+  // (see reserveLeaveBalance) — the row (and the days it reserved) is about
+  // to disappear entirely, so without this the reservation would be lost
+  // for good, permanently understating the employee's real available balance.
+  if (type === 'Leave') {
+    const lvRow = await one('SELECT data FROM entities WHERE type=$1 AND id=$2', [type, id]);
+    const lv = lvRow ? JSON.parse(lvRow.data) : null;
+    if (lv && lv.status === 'pending' && !(lv.is_wfh || lv.leave_type === 'work_from_home') && lv.leave_policy_id && lv.total_days) {
+      try {
+        const leaveYear = new Date(lv.start_date || Date.now()).getFullYear();
+        await releaseLeaveReservation(lv.user_id, lv.leave_policy_id, leaveYear, lv.total_days);
+      } catch (e) { console.error(`[entities] leave balance release failed for deleted ${id}:`, e.message); }
+    }
+  }
+
+  const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [type, id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
+  cacheInvalidate(type);
+  res.json({ success: true });
+});
+
+export default router;

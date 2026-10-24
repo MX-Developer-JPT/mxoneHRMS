@@ -6450,6 +6450,85 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, ...out });
     }
 
+    // ── Intelligent MIS (utils/mis/*): one engine for the dashboard, registers and exports ──
+    case 'getMisAnalytics':
+    case 'getMisRegister':
+    case 'exportMisIntelligence':
+    case 'setMisInsightStatus':
+    case 'getMisConfig':
+    case 'saveMisConfig': {
+      const fullAccess = await hasRole(cu, MGR_ROLES);
+      const teamAccess = !fullAccess && await hasRole(cu, ['manager']);
+      if (!fullAccess && !teamAccess) return res.status(403).json({ error: 'HR / Management / Manager access required' });
+      const mis = await import('../utils/mis/analytics.js');
+      const misExp = await import('../utils/mis/export.js');
+      const restrictUids = teamAccess ? new Set([cu.id, ...(await getDownstreamUserIds(cu.id))]) : null;
+      const strip = (r) => {
+        const out = mis.stripPrivate(r);
+        if (teamAccess) {
+          out.visitors = null; out.reimbursements = null; out.workforce = { ...out.workforce, recruitment: null };
+          out.dataQuality = []; out.reconciliation = [];
+          out.insights = out.insights.filter(i => !['Recruitment', 'Reimbursement', 'Visitors'].includes(i.category));
+          out.meta = { ...out.meta, config: undefined };
+        }
+        return out;
+      };
+      const base = { preset: p.preset, anchor: p.anchor, from: p.from, to: p.to, compare: p.compare, compareFrom: p.compare_from, compareTo: p.compare_to, filters: p.filters || {} };
+
+      if (name === 'getMisConfig') {
+        if (!fullAccess) return res.status(403).json({ error: 'HR access required' });
+        return res.json({ success: true, config: await mis.loadConfig(), defaults: mis.DEFAULT_CFG });
+      }
+      if (name === 'saveMisConfig') {
+        if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR/Admin access required' });
+        const clean = {};
+        for (const [k, v] of Object.entries(p.config || {})) {
+          if (k in mis.DEFAULT_CFG && typeof v === typeof mis.DEFAULT_CFG[k] && (!Array.isArray(v) || v.every(x => Number.isFinite(Number(x))))) clean[k] = v;
+        }
+        const payload = JSON.stringify({ cfg: clean, updated_by: cu.id, updated_at: new Date().toISOString() });
+        const row = await one("SELECT id FROM entities WHERE type='MisConfig' LIMIT 1");
+        if (row) await run("UPDATE entities SET data=$1 WHERE id=$2", [payload, row.id]);
+        else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'MisConfig',$2,'active',$3)", [uuidv4(), cu.id, payload]);
+        return res.json({ success: true, config: await mis.loadConfig() });
+      }
+      if (name === 'setMisInsightStatus') {
+        if (!fullAccess) return res.status(403).json({ error: 'HR access required' });
+        const okStatus = ['New', 'Under Review', 'Resolved', 'Dismissed'];
+        if (!p.key || !okStatus.includes(p.status)) return res.json({ success: false, error: 'key and a valid status are required' });
+        const k = String(p.key).slice(0, 200);
+        const payload = JSON.stringify({ key: k, status: p.status, note: String(p.note || '').slice(0, 500), by: cu.id, at: new Date().toISOString() });
+        const row = await one("SELECT id FROM entities WHERE type='MisInsightState' AND data::jsonb->>'key'=$1", [k]);
+        if (row) await run("UPDATE entities SET data=$1 WHERE id=$2", [payload, row.id]);
+        else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'MisInsightState',$2,'active',$3)", [uuidv4(), cu.id, payload]);
+        return res.json({ success: true });
+      }
+      let result;
+      try { result = await mis.runAnalytics(base, cu, { restrictUids, fresh: !!p._t && name === 'getMisAnalytics' }); }
+      catch (e) { console.error('[mis] analytics failed:', e); return res.json({ success: false, error: 'MIS data could not be retrieved: ' + e.message, retrievalFailed: true }); }
+      if (name === 'getMisAnalytics') return res.json({ success: true, ...strip(result) });
+      if (name === 'getMisRegister') {
+        const MGR_ONLY = ['vacancies', 'visitors', 'reimbursements', 'reimbursement_issues', 'visitor_issues', 'data_quality', 'joiners', 'exits'];
+        if (teamAccess && MGR_ONLY.includes(p.kind)) return res.status(403).json({ error: 'Not available for your role' });
+        const reg = await mis.getRegister(result, p.kind, { page: p.page, pageSize: p.page_size, q: p.q, sort: p.sort, dir: p.dir });
+        if (!reg) return res.json({ success: false, error: 'Unknown register' });
+        return res.json({ success: true, ...reg });
+      }
+      // export — HR / management only
+      if (!fullAccess) return res.status(403).json({ error: 'HR/Management access required to export' });
+      const eo = { includeInsights: p.include_insights !== false, includeExceptions: p.include_exceptions !== false, includeCharts: p.include_charts !== false, includeDetail: p.include_detail !== false };
+      const stripped = mis.stripPrivate(result);
+      console.log(`[audit] MIS export (${p.format || 'xlsx'}) by ${cu.id} for ${result.meta.period.from}..${result.meta.period.to}`);
+      if (p.format === 'pdf') {
+        const def = misExp.buildMisIntelligencePdf(stripped, result._registers, eo);
+        const fileName = def.filename; delete def.filename;
+        const buf = await renderPdf(def);
+        return res.json({ success: true, base64: buf.toString('base64'), filename: fileName, mime: 'application/pdf' });
+      }
+      const ExcelJSi = (await import('exceljs')).default;
+      const wbOut = await misExp.buildMisIntelligenceWorkbook(stripped, result._registers, ExcelJSi, eo);
+      return res.json({ success: true, base64: Buffer.from(wbOut.buffer).toString('base64'), filename: wbOut.filename, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    }
+
     // MIS export — daily / weekly / monthly; whole company, one department, or department-wise.
     case 'exportMIS': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
