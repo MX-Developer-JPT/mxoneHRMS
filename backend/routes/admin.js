@@ -67,6 +67,10 @@ router.get('/entity-types', async (_req, res) => {
 });
 
 // ── List entities of a type (paginated) ───────────────────
+// Permanent records (signed policy acknowledgements) cannot be changed or deleted through the admin entity tools.
+const PERMANENT_TYPES = new Set(['LdPolicyAck']);
+router.use('/entities/:type', (req, res, next) => (PERMANENT_TYPES.has(req.params.type) && req.method !== 'GET' ? res.status(403).json({ error: 'This is a permanent record and cannot be changed or deleted' }) : next()));
+
 router.get('/entities/:type', async (req, res) => {
   const { type } = req.params;
   const page   = parseInt(req.query.page  || 1,  10);

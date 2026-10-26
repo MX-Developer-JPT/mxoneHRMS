@@ -69,6 +69,9 @@ const TrainingNeeds = lazy(() => import('./pages/TrainingNeeds'));
 const MyTraining = lazy(() => import('./pages/MyTraining'));
 const MyLearning = lazy(() => import('./pages/MyLearning'));
 const LdInductionDetail = lazy(() => import('./pages/LdInductionDetail'));
+const LdWebsiteTour = lazy(() => import('./pages/LdWebsiteTour'));
+const LdPolicyReader = lazy(() => import('./pages/LdPolicyReader'));
+const LdDeptIntro = lazy(() => import('./pages/LdDeptIntro'));
 const PulseSurveyResults = lazy(() => import('./pages/PulseSurveyResults'));
 const LdAssessment = lazy(() => import('./pages/LdAssessment'));
 const LdCertificate = lazy(() => import('./pages/LdCertificate'));
@@ -475,6 +478,21 @@ const AuthenticatedApp = () => {
       <Route path="/PulseSurveyResults" element={
         <LayoutWrapper currentPageName="PulseSurveys">
           <PulseSurveyResults />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdWebsiteTour" element={
+        <LayoutWrapper currentPageName="LdWebsiteTour">
+          <LdWebsiteTour />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdPolicyReader" element={
+        <LayoutWrapper currentPageName="LdPolicyReader">
+          <LdPolicyReader />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdDeptIntro" element={
+        <LayoutWrapper currentPageName="LdDeptIntro">
+          <LdDeptIntro />
         </LayoutWrapper>
       } />
       <Route path="/LdInductionDetail" element={

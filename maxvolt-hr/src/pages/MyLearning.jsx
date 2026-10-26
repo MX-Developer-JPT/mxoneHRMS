@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import { Loader2, GraduationCap, ArrowRight, Award, AlertTriangle, CheckCircle2, Clock, BookOpen, Users, Lock, Star, ExternalLink, ClipboardCheck } from 'lucide-react';
 import { ld, GATE_STATUS, fmtDate, openContent } from '@/lib/ld';
 import { PausedBanner } from '@/components/ld/PauseControl';
+import { downloadBase64 } from '@/lib/mis';
 
 const Stat = ({ icon: Icon, label, value, tone = 'text-gray-900' }) => (
   <div className="rounded-xl border bg-white p-4 flex items-center gap-3">
@@ -32,8 +33,10 @@ export default function MyLearning() {
   const [feedback, setFeedback] = useState(null);
   const [checkin, setCheckin] = useState(null);
   const [note, setNote] = useState('');
+  const [acks, setAcks] = useState([]);
 
   const load = useCallback(async () => {
+    ld('ld_getMyPolicyAcks').then(r => setAcks(r.acks)).catch(() => {});
     try { setData(await ld('ld_getMyLearning')); }
     catch (e) { toast.error('Could not load your learning: ' + e.message); }
     setLoading(false);
@@ -118,6 +121,7 @@ export default function MyLearning() {
         <TabsList className="flex-wrap h-auto">
           <TabsTrigger value="learning">My training ({data.assignments.length})</TabsTrigger>
           <TabsTrigger value="certs">Certificates ({data.certificates.length})</TabsTrigger>
+          {acks.length > 0 && <TabsTrigger value="acks">Policies I signed ({acks.length})</TabsTrigger>}
           {data.actions_for_me.length > 0 && <TabsTrigger value="actions">Needs my action ({data.actions_for_me.length})</TabsTrigger>}
           {data.buddy_for.length > 0 && <TabsTrigger value="buddy">As a buddy ({data.buddy_for.length})</TabsTrigger>}
         </TabsList>
@@ -158,6 +162,16 @@ export default function MyLearning() {
                 <div className="text-xs text-gray-500">{c.certificate_id} · issued {fmtDate(c.issue_date)}{c.expiry_date ? ` · expires ${fmtDate(c.expiry_date)}` : ''}{c.score != null ? ` · score ${c.score}%` : ''}</div></div>
               <div className="flex items-center gap-2"><Badge variant="outline" className={c.status === 'VALID' ? 'border-green-300 text-green-700' : c.status === 'EXPIRING' ? 'border-amber-300 text-amber-700' : 'border-red-300 text-red-700'}>{c.status}</Badge>
                 <Link to={`/LdCertificate?id=${c.id}`}><Button size="sm" variant="outline">View / print</Button></Link></div>
+            </CardContent></Card>
+          ))}
+        </TabsContent>
+
+        <TabsContent value="acks" className="space-y-2">
+          <p className="text-xs text-gray-500">Your signed acknowledgements are stored permanently. You can download a receipt for each.</p>
+          {acks.map(a => (
+            <Card key={a.id}><CardContent className="p-4 flex flex-wrap items-center justify-between gap-3">
+              <div><div className="font-semibold">{a.policy_title}</div><div className="text-xs text-gray-500">Signed {new Date(a.signed_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} as “{a.typed_name}”</div></div>
+              <Button size="sm" variant="outline" onClick={async () => { try { const r = await ld('ld_policyAckReceipt', { id: a.id }); downloadBase64(r.base64, r.filename, 'application/pdf'); } catch (e) { toast.error(e.message); } }}>Receipt (PDF)</Button>
             </CardContent></Card>
           ))}
         </TabsContent>

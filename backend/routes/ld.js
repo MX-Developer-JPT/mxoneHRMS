@@ -10,6 +10,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { DEFAULT_CONFIG, DEFAULT_TEMPLATE, DEFAULT_ASSESSMENT, DEFAULT_COURSES, SEED_QUESTION_TAGS } from '../utils/ldSeed.js';
 import { drawQuestions, makeOptionOrders, publicQuestions, unmapAnswers, gradeAttempt } from '../utils/ldAssess.js';
+import { isPdfUrl, openingGates, withOpeningGates, addWatchTime, syncPolicyTasks, policyStates, inductionPolicies, namesMatch, buildDeptOrg, makeOrgQuiz, gradeOrgQuiz, ACK_STATEMENT, WEBSITE_URL, WEBSITE_SECONDS, ORG_QUIZ_QUESTIONS } from '../utils/ldOpening.js';
+import { createHash } from 'crypto';
 
 const IST_MS = 5.5 * 3600000;
 export const todayIST = () => new Date(Date.now() + IST_MS).toISOString().slice(0, 10);
@@ -244,6 +246,7 @@ async function hrUserIds() { return (await all("SELECT id FROM users WHERE role 
 
 // After a gate state change: unlock dependants, complete the induction if everything is done.
 async function afterChange(ind, actorId) {
+  await syncPolicyGate(ind);
   const unlocked = recompute(ind);
   for (const g of unlocked) {
     await notify(ind.user_id, { title: 'New step unlocked', message: `"${g.name}" is ready. Due ${g.due_date}.`, link: '/MyLearning' });
@@ -440,6 +443,66 @@ function publicInduction(ind, ctx) {
   return d;
 }
 
+
+// ── opening steps: website tour, policy acknowledgements, department org chart ─────────────
+const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+const fileHashCache = new Map();
+// SHA-256 of the policy file that was shown when it was signed (proves which document was acknowledged); null if it cannot be read.
+async function fileHash(fileUrl) {
+  const m = String(fileUrl || '').match(/\/api\/upload\/file\/([0-9a-f-]{36})/i);
+  if (!m) return null;
+  if (fileHashCache.has(m[1])) return fileHashCache.get(m[1]);
+  let h = null;
+  try {
+    const row = await one("SELECT data, storage, r2_key FROM files WHERE id=$1", [m[1]]);
+    if (row?.data) h = sha256(row.data);
+    else if (row?.storage === 'railway' && row.r2_key) {
+      const { getFromBucket } = await import('../utils/bucket.js');
+      const obj = await getFromBucket(row.r2_key);
+      const chunks = []; for await (const c of obj.Body) chunks.push(c);
+      h = sha256(Buffer.concat(chunks));
+    }
+  } catch (e) { console.warn('[ld] policy file hash failed:', e.message); }
+  if (h) fileHashCache.set(m[1], h);
+  return h;
+}
+const ipOf = (res) => { const r = res.req; const f = r?.headers?.['x-forwarded-for']; return String(f ? String(f).split(',')[0] : r?.ip || '').trim().slice(0, 64); };
+const gateActive = (g) => !!g && ['READY', 'IN_PROGRESS', 'OVERDUE'].includes(g.status);
+async function activeEmployees() {
+  const today = todayIST();
+  return (await list('Employee')).filter(e => e.user_id && e.status === 'active' && !(e.last_working_date && String(e.last_working_date).slice(0, 10) < today) && !(e.exit_date && String(e.exit_date).slice(0, 10) < today));
+}
+// Policy step: tasks follow the company policy list (Company Policies page) until the step is finished.
+async function syncPolicyGate(ind) {
+  const g = ind.gates?.find(x => x.gate_id === 'P1');
+  if (!g || TERMINAL.has(g.status)) return false;
+  const next = syncPolicyTasks(g.tasks || [], await list('CompanyPolicy'));
+  if (JSON.stringify(next.map(x => [x.id, x.title, x.file_url, x.min_read_seconds])) === JSON.stringify((g.tasks || []).map(x => [x.id, x.title, x.file_url, x.min_read_seconds]))) return false;
+  g.tasks = next;
+  return true;
+}
+function ackReceiptDoc(a) {
+  const f = (v) => ({ text: String(v ?? '—'), fontSize: 10 });
+  const when = new Date(Date.parse(a.signed_at) + IST_MS).toISOString().replace('T', ' ').slice(0, 19) + ' IST';
+  const row = (k, v) => [{ text: k, bold: true, fontSize: 9, color: '#374151' }, f(v)];
+  return {
+    pageSize: 'A4', pageMargins: [50, 50, 50, 50], defaultStyle: { font: 'Roboto', color: '#1F2937' },
+    content: [
+      { text: 'Maxvolt Energy Industries Limited', fontSize: 10, color: '#6B7280' },
+      { text: 'Policy Acknowledgement Receipt', fontSize: 20, bold: true, color: '#1A3C5E', margin: [0, 2, 0, 14] },
+      { table: { widths: [130, '*'], body: [row('Employee', `${a.employee_name} (${a.employee_code || '—'})`), row('Department / designation', `${a.department || '—'} · ${a.designation || '—'}`), row('Policy', a.policy_title), row('Category', a.policy_category || '—'), row('Policy version', a.policy_version || '—'), row('Signed on', when), row('Time spent reading', `${Math.floor((a.read_seconds || 0) / 60)} min ${(a.read_seconds || 0) % 60} s`)] }, layout: 'lightHorizontalLines', margin: [0, 0, 0, 14] },
+      { text: 'Statement acknowledged', bold: true, fontSize: 11, color: '#1A3C5E', margin: [0, 4, 0, 4] },
+      { text: `“${a.statement}”`, italics: true, fontSize: 12, margin: [0, 0, 0, 12] },
+      { text: 'Signed (typed name)', bold: true, fontSize: 11, color: '#1A3C5E', margin: [0, 0, 0, 4] },
+      { text: a.typed_name, fontSize: 18, italics: true, margin: [0, 0, 0, 16] },
+      { text: 'Integrity details', bold: true, fontSize: 10, color: '#6B7280', margin: [0, 6, 0, 3] },
+      { table: { widths: [130, '*'], body: [row('Receipt ID', a.id), row('Document SHA-256', a.policy_file_sha256 || 'not available'), row('Record SHA-256', a.record_sha256), row('Signed from', a.ip || '—')] }, layout: 'lightHorizontalLines' },
+      { text: 'This acknowledgement is stored permanently in Maxvolt One and cannot be edited or deleted.', fontSize: 8, color: '#6B7280', margin: [0, 14, 0, 0] },
+    ],
+  };
+}
+async function activeTemplate() { return (await list('LdTemplate')).filter(t => t.status === 'active').sort((a, b) => (b.version || 0) - (a.version || 0))[0] || null; }
+
 export async function handleLd(name, p, cu, res) {
   if (!cu) return fail(res, 'Unauthorized', 401);
   await ensureSeed();
@@ -554,6 +617,7 @@ const HANDLERS = {
       if (t.actor === 'employee') { if (ctx.id !== ind.user_id && !ctx.isHR) { forbid(res, 'Only the employee can complete this item'); return false; } }
       else if (!canOwn(ctx, ind, g)) { forbid(res, 'Only the trainer / manager / HR responsible for this step can complete this item'); return false; }
       if (t.auto_check && !p.undo) { fail(res, 'This item completes automatically when the action is done in Maxvolt One'); return false; }
+      if (t.server_only && !p.undo) { fail(res, 'Open this step and complete it there — it cannot be ticked off by hand'); return false; }
       if (t.evidence_required && !p.undo && clean(p.evidence).length < 10) { fail(res, 'Please write your answer (at least a sentence) before marking this done'); return false; }
       if (p.undo) {
         if (!(ctx.isHR || ctx.isAdmin)) { forbid(res, 'Only HR can undo a completed item'); return false; }
@@ -1487,6 +1551,14 @@ const HANDLERS = {
     add('trainers', trainers.length ? 'ok' : 'fail', 'Trainers', trainers.length ? `${trainers.length} active trainer(s) registered.` : 'No trainer is registered. Sign-offs for the learning, policy, practical and capability steps need a trainer (or HR). Register trainers, then assign them to the running inductions.', trainers.length ? null : { type: 'tab', tab: 'trainers', label: 'Add trainers' });
     add('ld_admins', cfg.ld_admin_user_ids.length ? 'ok' : 'warn', 'L&D administrators', cfg.ld_admin_user_ids.length ? `${cfg.ld_admin_user_ids.length} named L&D administrator(s).` : 'No L&D administrator is named, so the last escalation level goes to HR. Name one or more in Settings if someone besides HR should own this.', cfg.ld_admin_user_ids.length ? null : { type: 'tab', tab: 'settings', label: 'Open Settings' });
 
+    const hasOpening = !!tpl?.gates?.some(g => g.gate_id === 'W1');
+    add('opening', hasOpening ? 'ok' : 'warn', 'Website, policy and org-chart steps', hasOpening ? 'Every induction starts with the 10-minute website tour, the HR policies (read and sign one by one) and the department org chart.' : 'Not part of the induction yet. Publish them so every new joiner starts with the website tour, policy acknowledgements and the department org chart.', hasOpening ? null : { type: 'publish_opening', label: 'Publish these steps' });
+    if (hasOpening) {
+      const allPols = await list('CompanyPolicy');
+      const pols = inductionPolicies(allPols);
+      const nonPdf = allPols.filter(x => x.is_active !== false && x.induction_required !== false && x.file_url && !isPdfUrl(x.file_url));
+      add('policies', pols.length ? (nonPdf.length ? 'warn' : 'ok') : 'fail', 'HR policies for the induction', pols.length ? `${pols.length} policies, in this order: ${pols.map(x => x.title).join(' → ')}.${nonPdf.length ? ` Not included because they are not PDF files (save them as PDF and upload again): ${nonPdf.map(x => x.title).join(', ')}.` : ''}` : 'No active PDF policy is set for the induction, so new joiners cannot pass the policy step. Upload the policies (PDF) in Company Policies.', pols.length ? null : { type: 'link', page: 'CompanyPolicies', label: 'Open Company Policies' });
+    }
     const noHod = open.filter(i => !i.hod_user_id);
     const deptsNoHead = depts.filter(d => !d.head_user_id).map(d => d.name);
     const fillableHod = noHod.filter(i => depts.some(d => d.head_user_id && String(d.name).toLowerCase() === String(i.employee.department || '').toLowerCase())).length;
@@ -1630,6 +1702,234 @@ const HANDLERS = {
     let trainerSet = 0;
     if (p.trainer_user_id) { const c = cap(); await HANDLERS.ld_bulkAssignPeople({ scope: 'all_open', trainer_user_id: p.trainer_user_id, only_missing: true }, ctx, c); trainerSet = c.body?.updated || 0; }
     return ok(res, { updated, trainerSet, skipped: skipped.slice(0, 20) });
+  },
+
+  // ───────────────────────── opening steps ─────────────────────────
+  // Heartbeat from the website tour / org chart / policy reader. Adds the REAL visible time since the last beat.
+  async ld_trackTime(p, ctx, res) {
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
+    return withLock('ind:' + p.induction_id, async () => {
+      const ind = await loadInduction(p.induction_id);
+      if (!ind) return fail(res, 'Induction not found', 404);
+      if (ctx.id !== ind.user_id) return forbid(res, 'Only the employee can do this step');
+      const g = ind.gates.find(x => x.gate_id === p.gate_id);
+      const t = g?.tasks.find(x => x.id === p.task_id);
+      if (!g || !t || !['timed', 'org_view', 'policy_ack'].includes(t.type)) return fail(res, 'Step not found', 404);
+      const info = (extra = {}) => ({ seconds: Math.round(t.watch?.sec || 0), target: t.target_seconds || t.min_read_seconds || 0, done: !!t.done, ...extra });
+      if (t.done) return ok(res, info());
+      if (!gateActive(g)) return fail(res, 'This step is not open yet');
+      if (t.type === 'policy_ack') { t.target_seconds = t.min_read_seconds; if (policyStates(g.tasks).find(x => x.id === t.id)?.state !== 'open') return fail(res, 'Sign the previous policy first'); }
+      const r = addWatchTime(t, Date.now(), !!p.visible);
+      if (g.status === 'READY' && r.seconds > 0) setStatus(g, 'IN_PROGRESS', 'system');
+      if (t.type !== 'policy_ack' && r.done) {
+        t.done = true; t.done_at = nowIso(); t.done_by = ctx.id;
+        await audit('LdInduction', ind.id, 'task_completed', ctx.id, { gate: g.gate_id, task: t.id, title: t.title, seconds: Math.round(r.seconds) }, ind.user_id);
+        evaluateGate(ind, g);
+        await afterChange(ind, ctx.id);
+      }
+      await save('LdInduction', ind);
+      return ok(res, info({ gate_status: g.status }));
+    });
+  },
+
+  // The policy step as the employee sees it: ordered policies, only the next one open.
+  async ld_getPolicyGate(p, ctx, res) {
+    let ind = await loadInduction(p.induction_id);
+    if (!ind) return fail(res, 'Induction not found', 404);
+    if (!canView(ctx, ind)) return forbid(res);
+    const frozen = !!ctx.cfg.paused && !ind.pause_exempt;
+    if (ctx.id === ind.user_id && !frozen) await withLock('ind:' + ind.id, async () => { const fresh = await loadInduction(ind.id); if (await syncPolicyGate(fresh)) await save('LdInduction', fresh); ind = fresh; });
+    const g = ind.gates.find(x => x.gate_id === 'P1');
+    if (!g) return fail(res, 'This induction has no policy step');
+    const tasks = policyStates(g.tasks).map(x => ({ id: x.id, title: x.title, category: x.category, file_url: x.file_url, min_read_seconds: x.min_read_seconds, state: x.state, seconds: Math.round(x.watch?.sec || 0), done_at: x.done_at, ack_id: x.ack_id || null }));
+    return ok(res, { paused: frozen ? pausedInfo(ctx.cfg) : null, gate: { gate_id: g.gate_id, name: g.name, status: g.status, due_date: g.due_date, description: g.description }, tasks, statement: ACK_STATEMENT, employee_name: ind.employee.name, is_self: ctx.id === ind.user_id, locked: !gateActive(g) && !TERMINAL.has(g.status) });
+  },
+
+  // Sign one policy: after the minimum reading time, with the employee's own name typed as the signature. Stored permanently.
+  async ld_acknowledgePolicy(p, ctx, res) {
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
+    return withLock('ind:' + p.induction_id, async () => {
+      const ind = await loadInduction(p.induction_id);
+      if (!ind) return fail(res, 'Induction not found', 404);
+      if (ctx.id !== ind.user_id) return forbid(res, 'Only the employee can sign');
+      const g = ind.gates.find(x => x.gate_id === 'P1');
+      const t = g?.tasks.find(x => x.id === p.task_id && x.type === 'policy_ack');
+      if (!g || !t) return fail(res, 'Policy not found', 404);
+      if (t.done) return fail(res, 'You have already signed this policy');
+      if (!gateActive(g)) return fail(res, 'This step is not open yet');
+      if (policyStates(g.tasks).find(x => x.id === t.id)?.state !== 'open') return fail(res, 'Sign the previous policy first');
+      if (p.accept !== true) return fail(res, 'Please tick the acknowledgement');
+      const need = t.min_read_seconds || 0;
+      if ((t.watch?.sec || 0) < need) return fail(res, `Please keep the policy open and read it — ${Math.max(1, Math.ceil(need - (t.watch?.sec || 0)))} more second(s) needed before you can sign`);
+      const emp = await getEmployee(ctx.id);
+      if (!namesMatch(p.typed_name, emp?.display_name) && !namesMatch(p.typed_name, emp?.full_name)) return fail(res, 'Type your own full name exactly as it appears in Maxvolt One to sign');
+      const policy = await get('CompanyPolicy', t.policy_id);
+      const rec = {
+        employee_user_id: ctx.id, employee_name: emp.display_name || emp.full_name || ind.employee.name, employee_code: emp.employee_code || ind.employee.code, department: emp.department || ind.employee.department, designation: emp.designation || ind.employee.designation,
+        induction_id: ind.id, task_id: t.id, policy_id: t.policy_id, policy_title: policy?.title || t.title, policy_category: policy?.category || t.category || '', policy_version: t.version || policy?.updated_at || '', policy_file_url: t.file_url,
+        policy_file_sha256: await fileHash(t.file_url), statement: ACK_STATEMENT, typed_name: clean(p.typed_name, 120), signed_at: nowIso(), read_seconds: Math.round(t.watch?.sec || 0), ip: ipOf(res), user_agent: clean(res.req?.headers?.['user-agent'], 200), status: 'SIGNED',
+      };
+      rec.record_sha256 = sha256(JSON.stringify(rec));
+      // stored WITHOUT the user link (and under employee_user_id) so deleting or purging a user account never removes the signed record
+      const doc = await create('LdPolicyAck', rec, null);
+      t.done = true; t.done_at = rec.signed_at; t.done_by = ctx.id; t.ack_id = doc.id;
+      await audit('LdInduction', ind.id, 'policy_acknowledged', ctx.id, { policy: rec.policy_title, ack: doc.id }, ind.user_id);
+      evaluateGate(ind, g);
+      await afterChange(ind, ctx.id);
+      await save('LdInduction', ind);
+      const left = g.tasks.filter(x => !x.done).length;
+      return ok(res, { ack_id: doc.id, signed_at: rec.signed_at, remaining: left, gate_status: g.status });
+    });
+  },
+
+  async ld_getMyPolicyAcks(p, ctx, res) {
+    const mine = (await list('LdPolicyAck')).filter(a => a.employee_user_id === ctx.id).sort((a, b) => String(b.signed_at).localeCompare(String(a.signed_at)));
+    return ok(res, { acks: mine.map(a => ({ id: a.id, policy_title: a.policy_title, policy_category: a.policy_category, signed_at: a.signed_at, typed_name: a.typed_name })) });
+  },
+
+  // Register for HR / L&D: who signed what and when. Never editable or deletable from the application.
+  async ld_listPolicyAcks(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const q = String(p.q || '').toLowerCase();
+    let rows = await list('LdPolicyAck');
+    if (p.policy_id) rows = rows.filter(a => a.policy_id === p.policy_id);
+    if (p.department) rows = rows.filter(a => String(a.department || '').toLowerCase() === String(p.department).toLowerCase());
+    if (p.from) rows = rows.filter(a => String(a.signed_at).slice(0, 10) >= p.from);
+    if (p.to) rows = rows.filter(a => String(a.signed_at).slice(0, 10) <= p.to);
+    if (q) rows = rows.filter(a => `${a.employee_name} ${a.employee_code} ${a.policy_title} ${a.department}`.toLowerCase().includes(q));
+    rows.sort((a, b) => String(b.signed_at).localeCompare(String(a.signed_at)));
+    const ps = Math.min(Math.max(Number(p.page_size) || 25, 1), 200), pg = Math.max(Number(p.page) || 1, 1);
+    return ok(res, { total: rows.length, page: pg, page_size: ps, rows: rows.slice((pg - 1) * ps, pg * ps).map(a => ({ id: a.id, employee_name: a.employee_name, employee_code: a.employee_code, department: a.department, designation: a.designation, policy_id: a.policy_id, policy_title: a.policy_title, signed_at: a.signed_at, typed_name: a.typed_name, read_seconds: a.read_seconds, ip: a.ip })) });
+  },
+  async ld_policyCoverage(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const pols = inductionPolicies(await list('CompanyPolicy'));
+    const acks = await list('LdPolicyAck');
+    const emps = await activeEmployees();
+    const activeIds = new Set(emps.map(e => e.user_id));
+    return ok(res, { employees: emps.length, policies: pols.map(pl => { const who = new Set(acks.filter(a => a.policy_id === pl.id && activeIds.has(a.employee_user_id)).map(a => a.employee_user_id)); return { id: pl.id, title: pl.title, category: pl.category || '', signed: who.size, pending: Math.max(0, emps.length - who.size), pct: emps.length ? Math.round((who.size / emps.length) * 1000) / 10 : 0 }; }), total_acks: acks.length });
+  },
+  async ld_exportPolicyAcks(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const rows = (await list('LdPolicyAck')).sort((a, b) => String(b.signed_at).localeCompare(String(a.signed_at)));
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('Policy acknowledgements');
+    ws.addRow(['Maxvolt Energy — Policy acknowledgements (permanent record)']); ws.mergeCells(1, 1, 1, 12);
+    Object.assign(ws.getCell(1, 1), { font: { bold: true, size: 14, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1A3C5E' } } });
+    ws.addRow([`Generated ${todayIST()} (IST) · ${rows.length} acknowledgement(s)`]); ws.addRow([]);
+    const h = ws.addRow(['Employee code', 'Employee', 'Department', 'Designation', 'Policy', 'Category', 'Signed on (IST)', 'Typed signature', 'Statement', 'Read time (s)', 'Document SHA-256', 'Record SHA-256', 'Signed from', 'Receipt ID']);
+    h.eachCell(c => Object.assign(c, { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2D5986' } } }));
+    for (const a of rows) ws.addRow([a.employee_code, a.employee_name, a.department, a.designation, a.policy_title, a.policy_category, new Date(Date.parse(a.signed_at) + IST_MS).toISOString().replace('T', ' ').slice(0, 19), a.typed_name, a.statement, a.read_seconds, a.policy_file_sha256 || '', a.record_sha256, a.ip, a.id]);
+    [14, 24, 20, 22, 34, 14, 20, 24, 60, 12, 66, 66, 16, 38].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    ws.views = [{ state: 'frozen', ySplit: 4 }]; ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: 14 } };
+    return ok(res, { base64: Buffer.from(await wb.xlsx.writeBuffer()).toString('base64'), filename: `Policy_Acknowledgements_${todayIST()}.xlsx` });
+  },
+  async ld_policyAckReceipt(p, ctx, res) {
+    const a = await get('LdPolicyAck', p.id);
+    if (!a || (a.employee_user_id !== ctx.id && !ctx.isLdAdmin)) return fail(res, 'Receipt not found', 404);
+    const { renderPdf } = await import('../utils/pdfRender.js');
+    const buf = await renderPdf(ackReceiptDoc(a));
+    return ok(res, { base64: buf.toString('base64'), filename: `Policy_Acknowledgement_${String(a.employee_code || 'employee').replace(/\W+/g, '_')}_${String(a.policy_title).replace(/\W+/g, '_').slice(0, 40)}.pdf` });
+  },
+
+  // Department introduction: the org chart of the employee's department, with the study timer and quiz status.
+  async ld_getOrgIntro(p, ctx, res) {
+    let ind = null, department;
+    if (p.induction_id) {
+      ind = await loadInduction(p.induction_id);
+      if (!ind) return fail(res, 'Induction not found', 404);
+      if (!canView(ctx, ind)) return forbid(res);
+      department = ind.employee.department;
+    } else { if (!ctx.isLdAdmin) return forbid(res); department = p.department; }
+    const org = buildDeptOrg(department, await activeEmployees(), { viewerUid: ind?.user_id, today: todayIST() });
+    const g = ind?.gates.find(x => x.gate_id === 'D1') || null;
+    const view = g?.tasks.find(x => x.type === 'org_view'), quiz = g?.tasks.find(x => x.type === 'org_quiz');
+    return ok(res, {
+      org, department: department || '', pass_score: ctx.cfg.induction_pass_score, questions: ORG_QUIZ_QUESTIONS, is_self: !!ind && ctx.id === ind.user_id, paused: !!ind && !!ctx.cfg.paused && !ind.pause_exempt,
+      gate: g ? { gate_id: g.gate_id, name: g.name, status: g.status, due_date: g.due_date, description: g.description } : null,
+      view: view ? { task_id: view.id, done: !!view.done, seconds: Math.round(view.watch?.sec || 0), target: view.target_seconds } : null,
+      quiz: quiz ? { task_id: quiz.id, done: !!quiz.done, attempts: (quiz.attempts || []).length, last_score: quiz.attempts?.length ? quiz.attempts[quiz.attempts.length - 1].score : null } : null,
+    });
+  },
+  async ld_startOrgQuiz(p, ctx, res) {
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
+    const ind = await loadInduction(p.induction_id);
+    if (!ind) return fail(res, 'Induction not found', 404);
+    if (ctx.id !== ind.user_id) return forbid(res, 'Only the employee can take the quiz');
+    const g = ind.gates.find(x => x.gate_id === 'D1');
+    const view = g?.tasks.find(x => x.type === 'org_view'), qt = g?.tasks.find(x => x.type === 'org_quiz');
+    if (!g || !qt) return fail(res, 'Quiz step not found', 404);
+    if (qt.done) return fail(res, 'You have already passed this quiz');
+    if (!gateActive(g)) return fail(res, 'This step is not open yet');
+    if (!view?.done) return fail(res, 'Study the org chart for the required time first');
+    let quiz = (await list('LdOrgQuiz', 'AND user_id=$2', [ctx.id])).find(x => x.induction_id === ind.id && x.status === 'IN_PROGRESS');
+    if (!quiz) {
+      const org = buildDeptOrg(ind.employee.department, await activeEmployees(), { viewerUid: ind.user_id, today: todayIST() });
+      const seed = Math.floor(Math.random() * 2 ** 31);
+      const questions = makeOrgQuiz(org, { n: ORG_QUIZ_QUESTIONS, seed });
+      if (questions.length < 4) return fail(res, 'Your department chart is too small for a quiz yet — HR will sign this step off manually');
+      quiz = await create('LdOrgQuiz', { user_id: ctx.id, induction_id: ind.id, department: ind.employee.department, seed, questions, status: 'IN_PROGRESS', started_at: nowIso() }, ctx.id);
+    }
+    return ok(res, { quiz_id: quiz.id, pass_score: ctx.cfg.induction_pass_score, attempt_no: (qt.attempts || []).length + 1, questions: quiz.questions.map(q => ({ id: q.id, level: q.level, text: q.text, options: q.options })) });
+  },
+  async ld_submitOrgQuiz(p, ctx, res) {
+    const quiz = await get('LdOrgQuiz', p.quiz_id);
+    if (!quiz || quiz.user_id !== ctx.id) return fail(res, 'Quiz not found', 404);
+    if (quiz.status !== 'IN_PROGRESS') return fail(res, 'This quiz was already submitted');
+    if (await frozenFor(ctx, quiz.induction_id)) return fail(res, PAUSED_MSG);
+    return mutate(quiz.induction_id, ctx, res, async (ind) => {
+      const g = ind.gates.find(x => x.gate_id === 'D1');
+      const qt = g?.tasks.find(x => x.type === 'org_quiz');
+      if (!g || !qt) { fail(res, 'Quiz step not found', 404); return false; }
+      const need = ctx.cfg.induction_pass_score;
+      const gr = gradeOrgQuiz(quiz.questions, p.answers || {}, need);
+      Object.assign(quiz, { status: 'SUBMITTED', submitted_at: nowIso(), answers: p.answers || {}, score: gr.score, passed: gr.passed });
+      await save('LdOrgQuiz', quiz);
+      qt.attempts = [...(qt.attempts || []), { quiz_id: quiz.id, at: quiz.submitted_at, score: gr.score, passed: gr.passed }];
+      if (gr.passed) { qt.done = true; qt.done_at = nowIso(); qt.done_by = ctx.id; }
+      await audit('LdInduction', ind.id, gr.passed ? 'org_quiz_passed' : 'org_quiz_failed', ctx.id, { score: gr.score }, ind.user_id);
+      evaluateGate(ind, g);
+      return { result: { score: gr.score, passed: gr.passed, pass_score: need, right: gr.right, total: gr.total, results: gr.results.map(r => ({ id: r.id, level: r.level, ok: r.ok, picked: r.picked, correct_index: r.correct_index, correct_text: r.correct_text })) } };
+    });
+  },
+
+  // HR: add the website / policy / org-chart steps to the induction template (new version) and, optionally, to running inductions
+  // that have not started the corporate induction yet. Safe to run again.
+  async ld_publishOpeningSteps(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const cur = await activeTemplate();
+    if (!cur) return fail(res, 'No active induction template');
+    const has = ['W1', 'P1', 'D1'].every(id => cur.gates.some(g => g.gate_id === id));
+    let version = cur.version;
+    if (!has) {
+      cur.status = 'superseded'; await save('LdTemplate', cur);
+      const doc = await create('LdTemplate', { ...clone(cur), id: undefined, gates: withOpeningGates(cur.gates), version: (cur.version || 0) + 1, status: 'active', previous_version: cur.version || null, changed_by: ctx.id, created_at: undefined });
+      version = doc.version;
+      await audit('LdTemplate', doc.id, 'opening_steps_published', ctx.id, { version });
+    }
+    const migrated = [], skipped = [];
+    if (p.apply_to_running) {
+      for (const row of (await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS' && !i.gates.some(g => g.gate_id === 'W1'))) {
+        await withLock('ind:' + row.id, async () => {
+          const ind = await loadInduction(row.id);
+          if (!ind || ind.status !== 'IN_PROGRESS') return;
+          const started = ind.gates.some(g => g.seq >= 1 && (g.tasks.some(t => t.done) || (g.attempts || []).length || !['LOCKED', 'READY'].includes(g.status)));
+          if (started) { skipped.push(ind.employee.name); return; }
+          const newGates = openingGates().map(g => buildGate(g, ind.anchor_date));
+          const g00 = ind.gates.findIndex(g => g.gate_id === 'G00');
+          ind.gates.splice(g00 + 1, 0, ...newGates);
+          const g01 = ind.gates.find(g => g.gate_id === 'G01');
+          if (g01) { g01.depends_on = ['D1']; if (g01.status === 'READY') setStatus(g01, 'LOCKED', ctx.id, 'opening steps added before this step'); }
+          recompute(ind);
+          await syncPolicyGate(ind);
+          ind.progress = progressOf(ind);
+          await save('LdInduction', ind);
+          await audit('LdInduction', ind.id, 'opening_steps_added', ctx.id, {}, ind.user_id);
+          migrated.push(ind.employee.name);
+        });
+      }
+    }
+    return ok(res, { version, already: has, migrated: migrated.length, skipped });
   },
 
   async ld_runDailyTick(p, ctx, res) {

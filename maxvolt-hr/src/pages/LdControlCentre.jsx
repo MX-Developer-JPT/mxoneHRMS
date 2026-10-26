@@ -9,6 +9,7 @@ import LdSkillsCertsTab from '@/components/ld/LdSkillsCertsTab';
 import LdTrainersTab from '@/components/ld/LdTrainersTab';
 import LdReportsTab from '@/components/ld/LdReportsTab';
 import LdSettingsTab from '@/components/ld/LdSettingsTab';
+import LdPoliciesTab from '@/components/ld/LdPoliciesTab';
 import PauseControl from '@/components/ld/PauseControl';
 
 // HR / L&D control centre — new-joiner induction control, catalogue, assessments, skills,
@@ -30,6 +31,7 @@ export default function LdControlCentre() {
           <TabsTrigger value="assessments">Assessments</TabsTrigger>
           <TabsTrigger value="skills">Skills &amp; certificates</TabsTrigger>
           <TabsTrigger value="trainers">Trainers</TabsTrigger>
+          <TabsTrigger value="policies">Policies &amp; org chart</TabsTrigger>
           <TabsTrigger value="reports">Reports</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
@@ -38,6 +40,7 @@ export default function LdControlCentre() {
         <TabsContent value="catalogue">{tab === 'catalogue' && <LdCatalogueTab />}</TabsContent>
         <TabsContent value="assessments">{tab === 'assessments' && <LdAssessmentsTab />}</TabsContent>
         <TabsContent value="skills">{tab === 'skills' && <LdSkillsCertsTab />}</TabsContent>
+        <TabsContent value="policies">{tab === 'policies' && <LdPoliciesTab />}</TabsContent>
         <TabsContent value="trainers">{tab === 'trainers' && <LdTrainersTab />}</TabsContent>
         <TabsContent value="reports">{tab === 'reports' && <LdReportsTab />}</TabsContent>
         <TabsContent value="settings">{tab === 'settings' && <LdSettingsTab />}</TabsContent>

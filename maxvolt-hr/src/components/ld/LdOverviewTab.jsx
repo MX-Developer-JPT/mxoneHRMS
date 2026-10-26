@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { createPageUrl } from '@/utils';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { Loader2, RefreshCw, Play, CheckCircle2, AlertTriangle, XCircle, Info } from 'lucide-react';
@@ -9,6 +11,38 @@ import { ld, fmtDate } from '@/lib/ld';
 import { Tile } from '@/components/ld/shared';
 import BulkAssignDialog from '@/components/ld/BulkAssignDialog';
 import SuggestAssignDialog from '@/components/ld/SuggestAssignDialog';
+
+
+// Add the website tour, policy acknowledgements and department org chart to the induction template (and optionally to
+// inductions already running that have not started the corporate induction).
+export function PublishOpeningDialog({ onClose, onDone }) {
+  const [running, setRunning] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true);
+    try {
+      const r = await ld('ld_publishOpeningSteps', { apply_to_running: running });
+      toast.success(r.already ? `Steps were already in the template${running ? `; added to ${r.migrated} running induction(s)` : ''}` : `Published as template version ${r.version}${running ? `; added to ${r.migrated} running induction(s)` : ''}`);
+      if (r.skipped?.length) toast.warning(`Left unchanged because they have already started the corporate induction: ${r.skipped.slice(0, 5).join(', ')}${r.skipped.length > 5 ? '…' : ''}`, { duration: 12000 });
+      onDone?.();
+    } catch (e) { toast.error(e.message); }
+    setBusy(false);
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Publish the opening steps</DialogTitle></DialogHeader>
+        <div className="text-sm text-gray-700 space-y-2">
+          <p>Every induction will start, in this order:</p>
+          <ol className="list-decimal pl-5 space-y-0.5"><li><b>Explore the Maxvolt website</b> — 10 minutes, timed</li><li><b>HR policies</b> — each opens in turn; read, then sign the acknowledgement (stored permanently)</li><li><b>Department introduction</b> — the department org chart (Management at the top, their direct reports in the middle) and a quiz on it</li></ol>
+          <p>The Corporate Induction and everything after it start once these three are done. New joiners get this automatically from now on.</p>
+        </div>
+        <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={running} onChange={e => setRunning(e.target.checked)} />Also add the steps to running inductions that have not started the Corporate Induction yet (people who already have progress are left as they are).</label>
+        <div className="flex justify-end gap-2"><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={go} disabled={busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Publish</Button></div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 const ICON = { ok: [CheckCircle2, 'text-green-600'], warn: [AlertTriangle, 'text-amber-600'], fail: [XCircle, 'text-red-600'], info: [Info, 'text-blue-500'] };
 
@@ -19,6 +53,8 @@ function ReadinessCard({ onTab }) {
   const [busy, setBusy] = useState('');
   const [assign, setAssign] = useState(false);
   const [suggest, setSuggest] = useState(false);
+  const [pub, setPub] = useState(false);
+  const nav = useNavigate();
   const load = useCallback(async () => { try { setRd(await ld('ld_getReadiness')); } catch (e) { toast.error(e.message); } }, []);
   useEffect(() => { load(); }, [load]);
   if (!rd) return null;
@@ -27,6 +63,8 @@ function ReadinessCard({ onTab }) {
     if (a.type === 'tab') onTab?.(a.tab);
     else if (a.type === 'bulk') setAssign(true);
     else if (a.type === 'suggest') setSuggest(true);
+    else if (a.type === 'publish_opening') setPub(true);
+    else if (a.type === 'link') nav(createPageUrl(a.page));
     else if (a.type === 'auto_hod') {
       setBusy('hod');
       try { const r = await ld('ld_bulkAssignPeople', { scope: 'all_open', hod_from_department: true }); toast.success(`${r.updated} HOD(s) filled from the department heads`); await load(); } catch (e) { toast.error(e.message); }
@@ -58,6 +96,7 @@ function ReadinessCard({ onTab }) {
       )}
       <BulkAssignDialog open={assign} onClose={() => setAssign(false)} ids={null} onDone={load} />
       <SuggestAssignDialog open={suggest} onClose={() => setSuggest(false)} onDone={load} />
+      {pub && <PublishOpeningDialog onClose={() => setPub(false)} onDone={() => { setPub(false); load(); }} />}
     </Card>
   );
 }

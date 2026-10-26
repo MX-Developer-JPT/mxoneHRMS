@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { toast } from 'sonner';
+import { pdfjs } from 'react-pdf';
 import { BookOpen, Plus, Trash2, Edit2, Upload, FileText, Loader2, Eye } from 'lucide-react';
 
 const CATEGORY_LABELS = {
@@ -32,7 +33,19 @@ const CATEGORY_COLORS = {
   other: 'bg-gray-100 text-gray-700',
 };
 
-const EMPTY_FORM = { title: '', category: 'other', description: '', file_url: '', is_active: true };
+const EMPTY_FORM = { title: '', category: 'other', description: '', file_url: '', is_active: true, induction_required: true, induction_order: '', min_read_seconds: 60 };
+
+// Guess a category from a file name when several policies are uploaded together.
+const guessCategory = (n) => { const s = n.toLowerCase(); return /leave|maternity|paternity/.test(s) ? 'leave' : /attendance|flexi/.test(s) ? 'attendance' : /travel/.test(s) ? 'travel' : /loan|gratuity|payroll|salary/.test(s) ? 'payroll' : /zero tolerance|posh|harass|conduct/.test(s) ? 'conduct' : /safety|uniform|ppe/.test(s) ? 'safety' : 'other'; };
+pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
+// Default minimum reading time: 20 s per page, between 30 s and 5 min (HR can change it per policy).
+const pageCount = async (file) => { try { const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise; const n = doc.numPages; doc.destroy(); return n; } catch { return 3; } };
+const readSeconds = (pages) => Math.min(300, Math.max(30, pages * 20));
+
+// Default reading order for a multi-upload: conduct and safety first, benefits and process policies later; anything else last (A–Z).
+const READ_ORDER = [/zero.?tolerance/, /posh|harass/, /attendance/, /flexi/, /maternity/, /paternity/, /uniform|safety|ppe/, /travel/, /loan|advance/, /gratuity/, /referral/];
+const readRank = (n) => { const i = READ_ORDER.findIndex(r => r.test(n.toLowerCase())); return i < 0 ? 99 : i; };
+const titleFromFile = (n) => n.replace(/\.[^.]+$/, '').replace(/\s*\(\d+\)\s*$/, '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
 
 export default function CompanyPolicies() {
   const [policies, setPolicies] = useState([]);
@@ -43,6 +56,7 @@ export default function CompanyPolicies() {
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [viewUrl, setViewUrl] = useState(null);
+  const [bulk, setBulk] = useState(null);
 
   useEffect(() => { loadPolicies(); }, []);
 
@@ -70,6 +84,9 @@ export default function CompanyPolicies() {
       description: policy.description || '',
       file_url: policy.file_url || '',
       is_active: policy.is_active !== false,
+      induction_required: policy.induction_required !== false,
+      induction_order: policy.induction_order ?? '',
+      min_read_seconds: policy.min_read_seconds ?? 60,
     });
     setShowForm(true);
   };
@@ -94,7 +111,7 @@ export default function CompanyPolicies() {
     setSaving(true);
     try {
       const user = await base44.auth.me();
-      const payload = { ...formData, uploaded_by: user.id };
+      const payload = { ...formData, uploaded_by: user.id, induction_order: formData.induction_order === '' ? null : Number(formData.induction_order), min_read_seconds: Math.max(10, Number(formData.min_read_seconds) || 60) };
       if (editing) {
         await base44.entities.CompanyPolicy.update(editing.id, payload);
         toast.success('Policy updated');
@@ -117,6 +134,33 @@ export default function CompanyPolicies() {
     loadPolicies();
   };
 
+  // Several PDFs at once: each becomes a policy (title from the file name, category guessed, induction order = order chosen).
+  const handleBulkUpload = async (e) => {
+    const files = [...(e.target.files || [])];
+    e.target.value = '';
+    if (!files.length) return;
+    setBulk({ done: 0, total: files.length });
+    const user = await base44.auth.me();
+    const startOrder = Math.max(0, ...policies.map(p => Number(p.induction_order) || 0));
+    let added = 0; const problems = [];
+    for (const [i, file] of files.sort((a, b) => readRank(a.name) - readRank(b.name) || a.name.localeCompare(b.name)).entries()) {
+      try {
+        if (!/\.pdf$/i.test(file.name)) { problems.push(`${file.name}: save it as a PDF first — employees read policies in the browser`); continue; }
+        const title = titleFromFile(file.name);
+        if (policies.some(p => String(p.title).toLowerCase() === title.toLowerCase())) { problems.push(`${title}: already exists`); continue; }
+        const pages = await pageCount(file);
+        const { file_url } = await base44.integrations.Core.UploadFile({ file });
+        await base44.entities.CompanyPolicy.create({ title, category: guessCategory(file.name), description: '', file_url, is_active: true, induction_required: true, induction_order: startOrder + added + 1, min_read_seconds: readSeconds(pages), page_count: pages, uploaded_by: user.id });
+        added++;
+      } catch (err) { problems.push(`${file.name}: ${err.message}`); }
+      setBulk({ done: i + 1, total: files.length });
+    }
+    setBulk(null);
+    if (added) toast.success(`${added} polic${added === 1 ? 'y' : 'ies'} added — set their order and reading time with the edit button`);
+    if (problems.length) toast.warning(problems.slice(0, 4).join(' · '), { duration: 12000 });
+    loadPolicies();
+  };
+
   const toggleActive = async (policy) => {
     await base44.entities.CompanyPolicy.update(policy.id, { is_active: !policy.is_active });
     loadPolicies();
@@ -136,11 +180,17 @@ export default function CompanyPolicies() {
             <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
               <BookOpen className="w-6 h-6 text-blue-600" /> Company Policies
             </h1>
-            <p className="text-sm text-gray-500 mt-1">Manage policy documents used by AskMax AI assistant</p>
+            <p className="text-sm text-gray-500 mt-1">Policy documents used by the AskMax AI assistant and read &amp; signed by every new joiner in the induction (PDF files only)</p>
           </div>
-          <Button onClick={openCreate} className="bg-blue-600 hover:bg-blue-700">
-            <Plus className="w-4 h-4 mr-2" /> Add Policy
-          </Button>
+          <div className="flex items-center gap-2">
+            <label className={`inline-flex items-center gap-2 cursor-pointer border rounded-md px-3 h-9 text-sm bg-white hover:bg-gray-50 ${bulk ? 'opacity-60 pointer-events-none' : ''}`}>
+              {bulk ? <><Loader2 className="w-4 h-4 animate-spin" />Uploading {bulk.done}/{bulk.total}…</> : <><Upload className="w-4 h-4" />Upload several PDFs</>}
+              <input type="file" multiple accept=".pdf" className="hidden" onChange={handleBulkUpload} />
+            </label>
+            <Button onClick={openCreate} className="bg-blue-600 hover:bg-blue-700">
+              <Plus className="w-4 h-4 mr-2" /> Add Policy
+            </Button>
+          </div>
         </div>
 
         {/* Stats */}
@@ -178,6 +228,8 @@ export default function CompanyPolicies() {
                         <Badge className={CATEGORY_COLORS[policy.category] || CATEGORY_COLORS.other}>
                           {CATEGORY_LABELS[policy.category] || policy.category}
                         </Badge>
+                        {policy.induction_required !== false && policy.file_url && <Badge className="bg-blue-100 text-blue-700">Induction{policy.induction_order ? ` #${policy.induction_order}` : ''} · {policy.min_read_seconds || 60}s</Badge>}
+                        {policy.file_url && !/\.pdf(\?|#|$)/i.test(policy.file_url) && <Badge className="bg-amber-100 text-amber-800">Not a PDF — cannot be used in induction</Badge>}
                         {policy.is_active !== false ? (
                           <Badge className="bg-green-100 text-green-700">Active</Badge>
                         ) : (
@@ -255,6 +307,19 @@ export default function CompanyPolicies() {
             <div className="flex items-center gap-3">
               <Switch checked={formData.is_active} onCheckedChange={v => setFormData({ ...formData, is_active: v })} />
               <Label>Active (used by AskMax AI)</Label>
+            </div>
+            <div className="rounded-lg border bg-blue-50/50 p-3 space-y-3">
+              <div className="flex items-center gap-3">
+                <Switch checked={formData.induction_required} onCheckedChange={v => setFormData({ ...formData, induction_required: v })} />
+                <Label>New joiners must read and sign this policy in the induction</Label>
+              </div>
+              {formData.induction_required && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div><Label>Order in induction</Label><Input type="number" min="1" value={formData.induction_order} onChange={e => setFormData({ ...formData, induction_order: e.target.value })} placeholder="1, 2, 3…" /></div>
+                  <div><Label>Minimum reading time (seconds)</Label><Input type="number" min="10" value={formData.min_read_seconds} onChange={e => setFormData({ ...formData, min_read_seconds: e.target.value })} /></div>
+                  <p className="col-span-2 text-xs text-gray-500">Policies open one by one in this order. The employee can sign only after keeping the policy open for the minimum time. The document must be a PDF.</p>
+                </div>
+              )}
             </div>
             <div className="flex gap-3 justify-end pt-2">
               <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>

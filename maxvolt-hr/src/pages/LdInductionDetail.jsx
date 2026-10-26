@@ -14,6 +14,11 @@ import { Loader2, ChevronDown, ChevronRight, Lock, CheckCircle2, Circle, Clipboa
 import { ld, ROLE_LABEL, STAGES, fmtDate, fmtDateTime, openContent } from '@/lib/ld';
 import { StatusPill } from '@/pages/MyLearning';
 import { PausedBanner } from '@/components/ld/PauseControl';
+import { createPageUrl } from '@/utils';
+import { mmss } from '@/lib/ldTime';
+
+// Steps that open their own screen (they cannot be ticked off by hand)
+const STEP_PAGE = { timed: 'LdWebsiteTour', policy_ack: 'LdPolicyReader', org_view: 'LdDeptIntro', org_quiz: 'LdDeptIntro' };
 
 const ACTIVE_EDIT = ['READY', 'IN_PROGRESS', 'OVERDUE'];
 
@@ -144,15 +149,19 @@ export default function LdInductionDetail() {
               <div className="space-y-2">
                 {g.tasks.map(t => {
                   const mine = t.actor === 'employee' ? (can.self || v.is_hr) : can.owner;
-                  const actionable = editable && !t.done && mine && !t.auto_check;
+                  const actionable = editable && !t.done && mine && !t.auto_check && !t.server_only;
+                  const stepPage = t.server_only && STEP_PAGE[t.type];
                   return (
                     <div key={t.id} className="flex items-start gap-2 text-sm">
                       {t.done ? <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5 shrink-0" /> : <Circle className="w-4 h-4 text-gray-300 mt-0.5 shrink-0" />}
                       <div className="flex-1">
                         <div className={t.done ? 'text-gray-500' : 'text-gray-900'}>{t.title} <span className="text-[10px] text-gray-400">{t.actor === 'owner' ? `· ${(g.owner_roles || []).map(r => ROLE_LABEL[r] || r).join(' / ') || 'owner'}` : '· employee'}{t.auto_check ? ' · automatic' : ''}</span></div>
+                        {!t.done && t.watch?.sec > 0 && <div className="text-[11px] text-blue-600">{mmss(t.watch.sec)} of {mmss(t.target_seconds || t.min_read_seconds || 0)} so far</div>}
+                        {t.type === 'org_quiz' && t.attempts?.length > 0 && !t.done && <div className="text-[11px] text-gray-500">{t.attempts.length} attempt(s) · last score {t.attempts[t.attempts.length - 1].score}%</div>}
                         {t.done && <div className="text-[11px] text-gray-400">{t.done_by === 'system' ? 'Verified automatically' : `Done ${fmtDateTime(t.done_at)}`}{t.evidence ? ` — “${t.evidence}”` : ''}</div>}
                         {actionable && t.evidence_required && <Textarea className="mt-1 text-sm" placeholder="Write your answer…" value={evidence[t.id] || ''} onChange={e => setEvidence(x => ({ ...x, [t.id]: e.target.value }))} />}
                       </div>
+                      {stepPage && !t.done && ACTIVE_EDIT.includes(g.status) && <Link to={`${createPageUrl(stepPage)}?id=${ind.id}`}><Button size="sm" variant="outline">{can.self ? (t.watch?.sec > 0 || t.attempts?.length ? 'Continue' : 'Start') : 'View'}</Button></Link>}
                       {actionable && <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => run(t.id, 'ld_completeTask', { gate_id: g.gate_id, task_id: t.id, evidence: evidence[t.id] })}>{t.type === 'ack' ? 'I confirm' : 'Mark done'}</Button>}
                       {t.done && v.is_hr && ['READY', 'IN_PROGRESS', 'OVERDUE', 'SUBMITTED', 'UNDER_REVIEW'].includes(g.status) && <button className="text-[11px] text-gray-400 underline" onClick={() => run(t.id, 'ld_completeTask', { gate_id: g.gate_id, task_id: t.id, undo: true })}>undo</button>}
                     </div>
