@@ -1,4 +1,4 @@
-// Employee ID cards (55 x 88 mm, portrait, one page per card).
+// Employee ID cards, one page per card: Maxvolt Energy (55 x 88 mm) and Maxvolt ReEarth (54 x 85 mm).
 //
 // The company's blank card artwork (assets/id-card-template.pdf) is embedded UNCHANGED as a vector
 // page; only the personal details are drawn on top: name (up to two lines) + designation under the
@@ -8,7 +8,7 @@
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { PDFDocument, rgb, degrees, pushGraphicsState, popGraphicsState, moveTo, lineTo, closePath, clip, endPath } from 'pdf-lib';
+import { PDFDocument, rgb, degrees, pushGraphicsState, popGraphicsState, moveTo, lineTo, appendBezierCurve, closePath, clip, endPath } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import sharp from 'sharp';
 import QRCode from 'qrcode';
@@ -49,6 +49,34 @@ function loadAssets() {
   };
   return _cache;
 }
+let _reCache;
+function loadReearthAssets() {
+  if (_reCache) return _reCache;
+  _reCache = {
+    template: readFileSync(join(ASSETS, 'reearth-id-card-template.pdf')),
+    bold: readFileSync(join(ASSETS, 'fonts/Montserrat-Bold.woff')),
+    semibold: loadAssets().semibold,
+  };
+  return _reCache;
+}
+
+// Which company's card this is: the explicit choice wins; otherwise ReEarth employee codes (MVR…) get the ReEarth card.
+export function cardCompany(card) {
+  const c = String(card?.company || '').toLowerCase();
+  if (c === 'reearth' || c === 'energy') return c;
+  return /^MVR/i.test(String(card?.employee_id || card?.code || '').trim()) ? 'reearth' : 'energy';
+}
+
+// ── Maxvolt ReEarth card geometry (measured from the approved sample; distances are from the TOP edge, in pt) ──
+const RE = {
+  FRAME: { x0: 40.56, y0: 56.97, x1: 111.43, y1: 127.84, r: 10.7 },      // grey photo frame
+  PHOTO: { x0: 40.39, y0: 56.96, x1: 111.59, y1: 127.92 },               // the sample's photo covers the frame by a hair
+  NAME_BASE: 141.63, ROLE_BASE: 150.08, LINE_GAP: 8.4, TEXT_MAX_W: 126,
+  LABEL_X: 28.54,
+  ROWS: [['Employee Id', 81.36, 86.35, 167.08], ['D.O.J', 80.81, 85.8, 176.49], ['Department', 81.01, 86.0, 185.91], ['Emergency No.', 81.85, 85.13, 195.32]],   // label, colon x, value x, baseline
+  VALUE_MAX_W: 62,
+  INK: rgb(26 / 255, 26 / 255, 24 / 255), GREEN: rgb(0.49, 0.6, 0.16), LEAF: rgb(0.58, 0.71, 0.18),
+};
 
 function fitSize(font, text, size, maxW, minSize = 4.6) {
   let s = size;
@@ -70,31 +98,44 @@ function wrapName(font, name, size) {
 }
 
 // Decodes a data URL / base64 string and prepares it for the card. Returns { bytes, type, cutout }.
-export async function preparePhoto(photoBase64) {
+export async function preparePhoto(photoBase64, shape = 'portrait') {
   if (!photoBase64) return null;
   const raw = String(photoBase64).replace(/^data:[^;]+;base64,/, '');
   const input = Buffer.from(raw, 'base64');
   if (!input.length) return null;
   const meta = await sharp(input).metadata();
   const cutout = !!meta.hasAlpha;
-  const box = cutout ? PHOTO_BOX_CUTOUT : PHOTO_BOX;
-  const boxW = PHOTO_W, boxH = box.bottom - box.top;
+  const square = shape === 'square';   // ReEarth: a rounded square frame
+  const box = square ? { top: RE.PHOTO.y0, bottom: RE.PHOTO.y1 } : cutout ? PHOTO_BOX_CUTOUT : PHOTO_BOX;
+  const boxW = square ? RE.PHOTO.x1 - RE.PHOTO.x0 : PHOTO_W, boxH = box.bottom - box.top;
   const SCALE = 8; // px per pt — ample for 300 dpi print
   let img = sharp(input).rotate(); // honour EXIF orientation from phones
   if (cutout) {
     img = img.resize(Math.round(boxW * SCALE), Math.round(boxH * SCALE), { fit: 'contain', position: 'bottom', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png();
   } else {
-    img = img.resize(Math.round(boxW * SCALE), Math.round(boxH * SCALE), { fit: 'cover', position: sharp.strategy.attention }).jpeg({ quality: 90 });
+    img = img.resize(Math.round(boxW * SCALE), Math.round(boxH * SCALE), { fit: 'cover', position: square ? 'north' : sharp.strategy.attention }).jpeg({ quality: 90 });
   }
-  return { bytes: await img.toBuffer(), type: cutout ? 'png' : 'jpg', cutout, box };
+  return { bytes: await img.toBuffer(), type: cutout ? 'png' : 'jpg', cutout, box, shape: square ? 'square' : 'portrait' };
 }
 
 // Serialisable form of a prepared photo (what is stored with a saved ID card) and back.
 export async function prepareCard(card) {
   if (card.photo_prepared) return card;
-  const ph = await preparePhoto(card.photo_base64);
+  const ph = await preparePhoto(card.photo_base64, cardCompany(card) === 'reearth' ? 'square' : 'portrait');
   const { photo_base64, ...rest } = card;
-  return { ...rest, photo_prepared: ph ? { b64: ph.bytes.toString('base64'), type: ph.type, cutout: ph.cutout } : null };
+  return { ...rest, photo_prepared: ph ? { b64: ph.bytes.toString('base64'), type: ph.type, cutout: ph.cutout, shape: ph.shape } : null };
+}
+// A photo prepared for one company's frame, re-cut for the other (cards can change company).
+async function recutPhoto(pp, want) {
+  if (!pp || (pp.shape || 'portrait') === want) return pp;
+  const SCALE = 8;
+  const box = want === 'square' ? { top: RE.PHOTO.y0, bottom: RE.PHOTO.y1 } : pp.cutout ? PHOTO_BOX_CUTOUT : PHOTO_BOX;
+  const w = want === 'square' ? RE.PHOTO.x1 - RE.PHOTO.x0 : PHOTO_W, h = box.bottom - box.top;
+  const input = Buffer.from(pp.b64, 'base64');
+  const img = pp.cutout
+    ? sharp(input).resize(Math.round(w * SCALE), Math.round(h * SCALE), { fit: 'contain', position: 'bottom', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png()
+    : sharp(input).resize(Math.round(w * SCALE), Math.round(h * SCALE), { fit: 'cover', position: want === 'square' ? 'north' : 'centre' }).jpeg({ quality: 90 });
+  return { b64: (await img.toBuffer()).toString('base64'), type: pp.cutout ? 'png' : 'jpg', cutout: pp.cutout, shape: want };
 }
 const fromPrepared = (pp) => (pp ? { bytes: Buffer.from(pp.b64, 'base64'), type: pp.type, box: pp.cutout ? PHOTO_BOX_CUTOUT : PHOTO_BOX } : null);
 
@@ -158,37 +199,143 @@ function drawBack(page, { W, H, font, logo, emergency_no, qr_url }) {
   centerText(page, font, 'www.maxvoltenergy.com', 6, 6.5, WHITE, W);
 }
 
+// Rounded-rectangle clip (so the photo takes the shape of the template's frame). y values are PDF coordinates.
+function clipRoundedRect(page, x0, yBottom, x1, yTop, r) {
+  const k = 0.5523 * r;
+  page.pushOperators(
+    pushGraphicsState(), moveTo(x0 + r, yBottom), lineTo(x1 - r, yBottom), appendBezierCurve(x1 - r + k, yBottom, x1, yBottom + r - k, x1, yBottom + r),
+    lineTo(x1, yTop - r), appendBezierCurve(x1, yTop - r + k, x1 - r + k, yTop, x1 - r, yTop), lineTo(x0 + r, yTop),
+    appendBezierCurve(x0 + r - k, yTop, x0, yTop - r + k, x0, yTop - r), lineTo(x0, yBottom + r), appendBezierCurve(x0, yBottom + r - k, x0 + r - k, yBottom, x0 + r, yBottom),
+    closePath(), clip(), endPath());
+}
+
+const fitOrCut = (font, text, size, maxW, minSize) => {
+  let t = text, sz = fitSize(font, t, size, maxW, minSize);
+  while (font.widthOfTextAtSize(t, sz) > maxW && t.length > 3) { t = t.slice(0, -2); sz = minSize; }
+  return { t: t === text ? t : t.trimEnd() + '…', sz };
+};
+
+// Front of a ReEarth card: the embedded template + photo in the rounded frame + centred name / designation + the four detail rows.
+async function drawReearthFront(out, page, { front, bold, semibold, H }, card, emergency_no) {
+  const F = RE.FRAME;
+  const pp = await recutPhoto(card.photo_prepared, 'square');
+  const ph = pp ? { bytes: Buffer.from(pp.b64, 'base64'), type: pp.type } : null;
+  page.drawPage(front);
+  if (ph) {
+    const img = ph.type === 'png' ? await out.embedPng(ph.bytes) : await out.embedJpg(ph.bytes);
+    clipRoundedRect(page, F.x0 - 0.17, H - (F.y1 + 0.08), F.x1 + 0.17, H - (F.y0 - 0.01), F.r);
+    page.drawImage(img, { x: RE.PHOTO.x0, y: H - RE.PHOTO.y1, width: RE.PHOTO.x1 - RE.PHOTO.x0, height: RE.PHOTO.y1 - RE.PHOTO.y0 });
+    page.pushOperators(popGraphicsState());
+  } else {                                           // no photo yet: initials in the empty frame
+    const ini = String(card.name || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    if (ini) page.drawText(ini, { x: (F.x0 + F.x1) / 2 - bold.widthOfTextAtSize(ini, 26) / 2, y: H - (F.y0 + F.y1) / 2 - 9, size: 26, font: bold, color: rgb(1, 1, 1) });
+  }
+
+  const W = page.getWidth();
+  const center = (text, font, size, baseTop) => page.drawText(text, { x: (W - font.widthOfTextAtSize(text, size)) / 2, y: H - baseTop, size, font, color: RE.INK });
+  const name = String(card.name || '').trim();
+  let roleBase = RE.ROLE_BASE;
+  if (name) {
+    const full = `Name - ${name}`;
+    let size = fitSize(bold, full, 7, RE.TEXT_MAX_W, 6);
+    if (bold.widthOfTextAtSize(full, size) <= RE.TEXT_MAX_W) center(full, bold, size, RE.NAME_BASE);
+    else {                                          // long name: two centred lines
+      const words = full.split(/\s+/); let best = null;
+      for (let k = 1; k < words.length; k++) { const a = words.slice(0, k).join(' '), b = words.slice(k).join(' '); const w = Math.max(bold.widthOfTextAtSize(a, 7), bold.widthOfTextAtSize(b, 7)); if (!best || w < best.w) best = { w, lines: [a, b] }; }
+      const lines = best?.lines || [full];
+      size = Math.min(7, ...lines.map(l => fitSize(bold, l, 7, RE.TEXT_MAX_W, 5)));
+      lines.slice(0, 2).forEach((l, n) => center(l, bold, size, RE.NAME_BASE + n * RE.LINE_GAP));
+      roleBase = RE.ROLE_BASE + (lines.length > 1 ? RE.LINE_GAP : 0) - (lines.length > 1 ? 1.2 : 0);
+    }
+    const role = String(card.designation || '').trim();
+    if (role) { const { t, sz } = fitOrCut(semibold, `(${role})`, 7, RE.TEXT_MAX_W, 4.8); center(t, semibold, sz, roleBase); }
+  }
+  const values = [card.employee_id, card.doj, card.department, emergency_no];
+  RE.ROWS.forEach(([label, colonX, valueX, base], n) => {
+    page.drawText(label, { x: RE.LABEL_X, y: H - base, size: 6.03, font: bold, color: RE.INK });
+    page.drawText(':', { x: colonX, y: H - base, size: 6.03, font: bold, color: RE.INK });
+    const v = String(values[n] || '').trim();
+    if (v) { const { t, sz } = fitOrCut(bold, v, 6.03, RE.VALUE_MAX_W, 4.2); page.drawText(t, { x: valueX, y: H - base, size: sz, font: bold, color: RE.INK }); }
+  });
+}
+
+// Back of a ReEarth card (no approved artwork yet): same content as the Energy back in ReEarth colours.
+function drawReearthBack(page, { W, H, font, logo, emergency_no, qr_url }) {
+  const G = RE.GREEN, INKC = RE.INK;
+  page.drawPage(logo, { x: 3, y: H - LOGO_CLIP_H + 2 });
+  page.drawRectangle({ x: 14, y: H - 50, width: W - 28, height: 1.4, color: G });
+  centerText(page, font, 'EMPLOYEE ID CARD', 7.2, H - 62, G, W);
+  const para = wrapText(font, 'This card is the property of Maxvolt ReEarth. It must be worn visibly on company premises, is not transferable, and must be surrendered on leaving the company.', 5.3, W - 32);
+  let y = H - 74;
+  for (const l of para) { page.drawText(l, { x: 16, y, size: 5.3, font, color: GREY }); y -= 7; }
+  y -= 4;
+  page.drawText('If found, please return to Maxvolt ReEarth:', { x: 16, y, size: 5.6, font, color: INKC }); y -= 8;
+  for (const l of ['Registered office: E-82, Bulandshahr Road', 'Industrial Area, Vijay Nagar (Ghaziabad)', 'Ghaziabad - 201009, Uttar Pradesh']) { page.drawText(l, { x: 16, y, size: 5.3, font, color: GREY }); y -= 7; }
+  y -= 4;
+  page.drawText('Emergency No. :', { x: 16, y, size: 6.4, font, color: INKC });
+  page.drawText(String(emergency_no || ''), { x: 16 + font.widthOfTextAtSize('Emergency No. :', 6.4) + 4, y, size: 6.8, font, color: G });
+  const QR = 32, qrTop = y - 8;                       // keep everything above the footer band
+  drawQr(page, qr_url, 17, qrTop - QR, QR);
+  page.drawText('Scan to connect', { x: 16, y: qrTop - QR - 8, size: 5, font, color: GREY });
+  const sigY = qrTop - QR + 6;
+  page.drawLine({ start: { x: 82, y: sigY }, end: { x: W - 14, y: sigY }, thickness: 0.5, color: GREY });
+  page.drawText('Authorised Signatory', { x: 82 + (W - 14 - 82 - font.widthOfTextAtSize('Authorised Signatory', 5)) / 2, y: sigY - 7, size: 5, font, color: GREY });
+  page.drawSvgPath('M0 0 L' + W + ' 14 L' + W + ' 34 L0 34 Z', { x: 0, y: 34, scale: 1, color: G, borderWidth: 0 });
+  centerText(page, font, 'www.maxvoltenergy.com', 6, 6.5, WHITE, W);
+}
+
 /**
- * @param {Array<{name,designation,employee_id,doj,department,photo_base64}>} cards
+ * @param {Array<{name,designation,employee_id,doj,department,photo_base64,company?}>} cards  company: 'energy' | 'reearth' (default: ReEarth for MVR… codes)
  * @param {{emergency_no: string}} opts  same emergency number on every card
- * @returns {Promise<Uint8Array>} PDF bytes (1 page per card)
+ * @returns {Promise<Uint8Array>} PDF bytes (1 page per card side; a ReEarth page is 54 x 85 mm, an Energy page 55 x 88 mm)
  */
 export async function buildIdCardsPdf(cards, { emergency_no = '', sides = 'front' } = {}) {
-  const assets = loadAssets();
-  const tpl = await PDFDocument.load(assets.template);
-  const tplPage = tpl.getPage(0);
-  const { width: W, height: H } = tplPage.getSize();
-
   const out = await PDFDocument.create();
   out.registerFontkit(fontkit);
-  const font = await out.embedFont(assets.semibold, { subset: true });
-  const [front] = await out.embedPages([tplPage]);
-  const logo = await out.embedPage(tplPage, { left: 3, bottom: H - LOGO_CLIP_H + 2, right: W - 3, top: H - 2 });
-  out.setTitle('Maxvolt Energy - ID Cards');
+  const kits = {};
+  const energy = async () => kits.energy ||= await (async () => {
+    const assets = loadAssets();
+    const tplPage = (await PDFDocument.load(assets.template)).getPage(0);
+    const { width: W, height: H } = tplPage.getSize();
+    const font = await out.embedFont(assets.semibold, { subset: true });
+    const [front] = await out.embedPages([tplPage]);
+    const logo = await out.embedPage(tplPage, { left: 3, bottom: H - LOGO_CLIP_H + 2, right: W - 3, top: H - 2 });
+    return { W, H, font, front, logo };
+  })();
+  const reearth = async () => kits.reearth ||= await (async () => {
+    const assets = loadReearthAssets();
+    const tplPage = (await PDFDocument.load(assets.template)).getPage(0);
+    const { width: W, height: H } = tplPage.getSize();
+    const bold = await out.embedFont(assets.bold, { subset: true });
+    const semibold = await out.embedFont(assets.semibold, { subset: true });
+    const [front] = await out.embedPages([tplPage]);
+    const logo = await out.embedPage(tplPage, { left: 3, bottom: H - LOGO_CLIP_H + 2, right: W - 3, top: H - 2 });
+    return { W, H, bold, semibold, font: semibold, front, logo };
+  })();
+  const used = new Set();
   out.setAuthor('Maxvolt Energy Industries Limited');
   out.setCreator('Maxvolt One');
 
   for (const rawCard of cards) {
-    const card = rawCard.photo_prepared || !rawCard.photo_base64 ? rawCard : await prepareCard(rawCard);
-    if (sides === 'back' || sides === 'both') {
-      // (for 'both' the back is added after the front below)
+    const company = cardCompany(rawCard);
+    used.add(company);
+    const card = rawCard.photo_prepared || !rawCard.photo_base64 ? rawCard : await prepareCard({ ...rawCard, company });
+    const qr_url = card.qr_url || 'https://www.maxvoltenergy.com';
+
+    if (company === 'reearth') {
+      const K = await reearth();
+      if (sides !== 'back') { const page = out.addPage([K.W, K.H]); await drawReearthFront(out, page, K, card, emergency_no); }
+      if (sides === 'back' || sides === 'both') drawReearthBack(out.addPage([K.W, K.H]), { W: K.W, H: K.H, font: K.font, logo: K.logo, emergency_no, qr_url });
+      continue;
     }
+
+    const { W, H, font, front, logo } = await energy();
     const page = out.addPage([W, H]);
-    if (sides === 'back') { drawBack(page, { W, H, font, logo, emergency_no, qr_url: card.qr_url || 'https://www.maxvoltenergy.com' }); continue; }
+    if (sides === 'back') { drawBack(page, { W, H, font, logo, emergency_no, qr_url }); continue; }
     page.drawPage(front);
 
     // Photo first, so the text is always drawn on top of it.
-    const photo = fromPrepared(card.photo_prepared);
+    const photo = fromPrepared(await recutPhoto(card.photo_prepared, 'portrait'));
     if (photo) {
       const img = photo.type === 'png' ? await out.embedPng(photo.bytes) : await out.embedJpg(photo.bytes);
       const imgOpts = { x: PHOTO_X, y: H - photo.box.bottom, width: PHOTO_W, height: photo.box.bottom - photo.box.top };
@@ -228,10 +375,8 @@ export async function buildIdCardsPdf(cards, { emergency_no = '', sides = 'front
       page.drawText(text, { x: VALUE_X, y: H - DETAIL_BASE[i], size: s, font, color: INK });
     });
 
-    if (sides === 'both') {
-      const bp = out.addPage([W, H]);
-      drawBack(bp, { W, H, font, logo, emergency_no, qr_url: card.qr_url || 'https://www.maxvoltenergy.com' });
-    }
+    if (sides === 'both') drawBack(out.addPage([W, H]), { W, H, font, logo, emergency_no, qr_url });
   }
+  out.setTitle(used.size > 1 ? 'Maxvolt - ID Cards' : used.has('reearth') ? 'Maxvolt ReEarth - ID Cards' : 'Maxvolt Energy - ID Cards');
   return out.save();
 }

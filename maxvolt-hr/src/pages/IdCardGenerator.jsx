@@ -11,7 +11,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import BulkDownload from '@/components/idcard/BulkDownload';
 import CardHistory from '@/components/idcard/CardHistory';
 
-const EMPTY = { employee_ref: '', name: '', designation: '', employee_id: '', doj: '', department: '', photo: '' };
+const EMPTY = { employee_ref: '', name: '', designation: '', employee_id: '', doj: '', department: '', photo: '', company: 'energy' };
+const COMPANIES = { energy: 'Maxvolt Energy', reearth: 'Maxvolt ReEarth' };
+// ReEarth employees have codes starting MVR…; everyone else gets the Energy card unless HR chooses otherwise.
+const companyFor = (code) => (/^MVR/i.test(String(code || '').trim()) ? 'reearth' : 'energy');
 
 // 2022-08-17 -> 17-Aug-2022 (the format printed on the card)
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -73,7 +76,7 @@ export default function IdCardGenerator() {
   const pickEmployee = (e) => {
     setForm(f => ({
       ...f, employee_ref: e.id, name: e.display_name || '', designation: e.designation || '',
-      employee_id: e.employee_code || '', department: e.department || '', doj: String(e.date_of_joining || '').slice(0, 10),
+      employee_id: e.employee_code || '', department: e.department || '', doj: String(e.date_of_joining || '').slice(0, 10), company: companyFor(e.employee_code),
     }));
     setEmpQuery('');
   };
@@ -84,7 +87,7 @@ export default function IdCardGenerator() {
     try { set('photo', await readPhoto(file)); } catch (e) { toast.error(e.message); }
   };
 
-  const toPayload = (c) => ({ name: c.name, designation: c.designation, employee_id: c.employee_id, doj: cardDate(c.doj), department: c.department, photo_base64: c.photo || undefined });
+  const toPayload = (c) => ({ name: c.name, designation: c.designation, employee_id: c.employee_id, doj: cardDate(c.doj), department: c.department, company: c.company, photo_base64: c.photo || undefined });
 
   const validate = (c) => {
     if (!c.name.trim()) { toast.error('Enter the name'); return false; }
@@ -126,7 +129,7 @@ export default function IdCardGenerator() {
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-5">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><IdCard className="w-6 h-6 text-blue-600" />ID Cards</h1>
-        <p className="text-sm text-gray-500">Create an employee ID card on the Maxvolt template (55 x 88 mm, print-ready PDF).</p>
+        <p className="text-sm text-gray-500">Create an employee ID card on the company template — Maxvolt Energy (55 x 88 mm) or Maxvolt ReEarth (54 x 85 mm) — as a print-ready PDF.</p>
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
@@ -163,10 +166,16 @@ export default function IdCardGenerator() {
             )}
           </div>
 
+          <div className="flex flex-wrap items-center gap-2">
+            <Label className="text-xs">Company</Label>
+            <div className="flex rounded-lg border overflow-hidden text-sm">{Object.entries(COMPANIES).map(([k, l]) => <button key={k} type="button" onClick={() => set('company', k)} className={`px-3 py-1.5 ${form.company === k ? (k === 'reearth' ? 'bg-green-700 text-white' : 'bg-blue-600 text-white') : 'bg-white text-gray-700 hover:bg-gray-50'}`}>{l}</button>)}</div>
+            {form.company === 'reearth' && <span className="text-[11px] text-gray-500">ReEarth card: photo in the rounded frame, name centred, no cut-out needed. The back side is a standard layout (no approved artwork yet).</span>}
+          </div>
+
           <div className="grid sm:grid-cols-2 gap-3">
             <div><Label className="text-xs">Name *</Label><Input className="mt-1" value={form.name} onChange={e => set('name', e.target.value)} placeholder="Full name" /></div>
             <div><Label className="text-xs">Designation</Label><Input className="mt-1" value={form.designation} onChange={e => set('designation', e.target.value)} placeholder="e.g. Senior Analyst" /></div>
-            <div><Label className="text-xs">Employee ID *</Label><Input className="mt-1" value={form.employee_id} onChange={e => set('employee_id', e.target.value)} placeholder="e.g. MVE00429" /></div>
+            <div><Label className="text-xs">Employee ID *</Label><Input className="mt-1" value={form.employee_id} onChange={e => set('employee_id', e.target.value)} placeholder={form.company === 'reearth' ? 'e.g. MVR00010' : 'e.g. MVE00429'} /></div>
             <div><Label className="text-xs">Date of joining</Label><Input type="date" className="mt-1" value={form.doj} onChange={e => set('doj', e.target.value)} /></div>
             <div className="sm:col-span-2"><Label className="text-xs">Department</Label><Input className="mt-1" value={form.department} onChange={e => set('department', e.target.value)} placeholder="e.g. Legal & Compliance" /></div>
           </div>
@@ -210,7 +219,7 @@ export default function IdCardGenerator() {
               <div key={i} className="flex items-center justify-between gap-2 border rounded-md px-3 py-2 text-sm">
                 <div className="flex items-center gap-3">
                   {c.photo ? <img src={c.photo} alt="" className="w-8 h-10 object-cover rounded border" /> : <div className="w-8 h-10 rounded border border-dashed" />}
-                  <div><div className="font-medium">{c.name}</div><div className="text-xs text-gray-500">{c.employee_id} · {c.designation || '—'}</div></div>
+                  <div><div className="font-medium">{c.name} <span className={`ml-1 text-[10px] px-1.5 py-0.5 rounded ${c.company === 'reearth' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>{COMPANIES[c.company]?.replace('Maxvolt ', '')}</span></div><div className="text-xs text-gray-500">{c.employee_id} · {c.designation || '—'}</div></div>
                 </div>
                 <Button variant="ghost" size="sm" className="text-red-600" onClick={() => setBatch(b => b.filter((_, j) => j !== i))}><Trash2 className="w-4 h-4" /></Button>
               </div>

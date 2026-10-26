@@ -117,7 +117,7 @@ export default function BulkDownload() {
             {shown.map(r => (
               <tr key={r.user_id} className="border-b last:border-0 hover:bg-gray-50 cursor-pointer" onClick={() => toggle(r.user_id)}>
                 <td className="p-2"><input type="checkbox" checked={sel.has(r.user_id)} onChange={() => toggle(r.user_id)} onClick={e => e.stopPropagation()} /></td>
-                <td><div className="font-medium">{r.name}</div><div className="text-[11px] text-gray-400">{r.code} · {r.designation || '—'}</div></td>
+                <td><div className="font-medium">{r.name}{r.company === 'reearth' && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-800 align-middle">ReEarth</span>}</div><div className="text-[11px] text-gray-400">{r.code} · {r.designation || '—'}</div></td>
                 <td>{r.department || '—'}</td>
                 <td>{r.id_card ? <Badge variant="outline" className="border-green-300 text-green-700">Saved</Badge> : <Badge variant="outline" className="text-gray-400">Not created</Badge>}</td>
                 <td>{r.business_card ? <Badge variant="outline" className="border-green-300 text-green-700">Exists</Badge> : <Badge variant="outline" className="border-amber-300 text-amber-700">Will be created</Badge>}</td>

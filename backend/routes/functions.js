@@ -14,7 +14,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { extractPayslipFields, monthMismatch } from '../utils/payslipExtract.js';
 import { buildVisitingCardsPdf } from '../utils/visitingCard.js';
-import { buildIdCardsPdf, prepareCard } from '../utils/idCard.js';
+import { buildIdCardsPdf, prepareCard, cardCompany } from '../utils/idCard.js';
 import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js';
 
 const _require  = createRequire(import.meta.url);
@@ -14627,7 +14627,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     case 'generateIdCards': {
       if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Not authorized' });
-      const icCards = (Array.isArray(p.cards) ? p.cards : []).slice(0, 100);
+      const icCards = (Array.isArray(p.cards) ? p.cards : []).slice(0, 100).map(c => ({ ...c, company: ['energy', 'reearth'].includes(String(c.company || '').toLowerCase()) ? String(c.company).toLowerCase() : undefined }));
       if (!icCards.length) return res.json({ success: false, error: 'Add at least one card' });
       for (const c of icCards) {
         if (!String(c.name || '').trim()) return res.json({ success: false, error: 'Name is required on every card' });
@@ -14645,7 +14645,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           prepared.push(pc);
           const code = String(pc.employee_id || '').trim().toUpperCase();
           if (!code) continue;
-          const rec = { employee_id: code, name: pc.name, designation: pc.designation || '', doj: pc.doj || '', department: pc.department || '', photo_prepared: pc.photo_prepared || null, saved_by: cu.id, saved_at: new Date().toISOString() };
+          const rec = { employee_id: code, name: pc.name, designation: pc.designation || '', doj: pc.doj || '', department: pc.department || '', company: cardCompany(pc), photo_prepared: pc.photo_prepared || null, saved_by: cu.id, saved_at: new Date().toISOString() };
           const ex = await one("SELECT id FROM entities WHERE type='IdCardRecord' AND data::jsonb->>'employee_id'=$1 LIMIT 1", [code]);
           if (ex) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...rec, id: ex.id }), ex.id]);
           else { const rid = uuidv4(); await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'IdCardRecord',$2,'active',$3)", [rid, cu.id, JSON.stringify({ ...rec, id: rid })]); }
@@ -14658,11 +14658,12 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const logId = uuidv4();
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'IdCardLog',$2,'active',$3)", [logId, cu.id, JSON.stringify({
           id: logId, created_by: cu.id, at: new Date().toISOString(),
-          cards: icCards.map(c => ({ name: c.name, employee_id: c.employee_id || '', designation: c.designation || '', department: c.department || '' })),
+          cards: icCards.map(c => ({ name: c.name, employee_id: c.employee_id || '', designation: c.designation || '', department: c.department || '', company: cardCompany(c) })),
         })]);
       } catch (e) { console.warn('[idcard] log failed:', e.message); }
       await saveCardPdfHistory({ kind: 'id_card', filename: `ID_Cards.pdf`, bytes: icBytes, total: icCards.length, names: icCards.map(c => `${c.name} (${c.employee_id || ''})`), sides: icSides, cu });
-      const icName = icCards.length === 1 ? `ID_Card_${String(icCards[0].name).replace(/[^\w]+/g, '_')}.pdf` : `ID_Cards_${new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10)}.pdf`;
+      const icOnly = new Set(icCards.map(c => cardCompany(c)));
+      const icName = icCards.length === 1 ? `ID_Card_${String(icCards[0].name).replace(/[^\w]+/g, '_')}.pdf` : `${icOnly.size === 1 && icOnly.has('reearth') ? 'ReEarth_' : ''}ID_Cards_${new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10)}.pdf`;
       return res.json({ success: true, base64: Buffer.from(icBytes).toString('base64'), filename: icName, total: icCards.length });
     }
 
@@ -14681,7 +14682,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const employees = bsEmps.filter(e => e.user_id).map(e => {
         const em = String(e.official_email || bsEmail[e.user_id] || '').toLowerCase();
         return {
-          user_id: e.user_id, name: e.display_name || '', code: e.employee_code || '', department: e.department || '', designation: e.designation || '',
+          user_id: e.user_id, name: e.display_name || '', code: e.employee_code || '', department: e.department || '', designation: e.designation || '', company: cardCompany({ employee_id: e.employee_code }),
           id_card: bsSaved.has(String(e.employee_code || '').toUpperCase()),
           business_card: (em && bsByEmail.has(em)) || bsByName.has(String(e.display_name || '').trim().toLowerCase()),
         };
