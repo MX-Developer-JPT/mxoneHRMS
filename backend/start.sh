@@ -5,7 +5,9 @@ set -e
 mkdir -p /app/uploads
 
 # ── Start Ollama in background if installed ───────────────────────
-if command -v ollama > /dev/null 2>&1; then
+if [ -n "$GROQ_API_KEY" ]; then
+  echo "[start] Groq configured — not starting Ollama (saves memory/CPU)"
+elif command -v ollama > /dev/null 2>&1; then
   echo "[start] Starting Ollama server..."
   ollama serve > /tmp/ollama.log 2>&1 &
   echo "[start] Ollama started (PID $!)"

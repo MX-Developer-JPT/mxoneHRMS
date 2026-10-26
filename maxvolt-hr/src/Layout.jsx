@@ -670,6 +670,11 @@ export default function Layout({ children, currentPageName }) {
     try {
       const currentUser = await base44.auth.me();
       setUser(currentUser);
+      // These calls don't depend on each other — start them together instead of one after another,
+      // so the cost of each round trip to the server isn't paid in sequence on every page load.
+      const clearancePromise = base44.functions.invoke('getMyExitClearanceRoles').catch(() => null);
+      const ldRolesPromise = base44.functions.invoke('ld_getMyRoles', {}).catch(() => null);
+      const fieldTripsPromise = base44.functions.invoke('getFieldTrips', { scope: 'mine' }).catch(() => null);
       try {
         const empRecords = await base44.entities.Employee.filter({ user_id: currentUser.id });
         if (empRecords.length > 0) {
@@ -702,12 +707,12 @@ export default function Layout({ children, currentPageName }) {
       // Panel → Exit Clearance Owners) needs a nav path to Exit Management —
       // otherwise they have no way to act on cases assigned to them.
       try {
-        const clr = await base44.functions.invoke('getMyExitClearanceRoles');
-        const clrData = clr.data || clr;
+        const clr = await clearancePromise;
+        const clrData = clr?.data || clr;
         if (clrData?.success) setMyClearanceDepts(clrData.dept_keys || []);
       } catch (_) {}
 
-      base44.functions.invoke('ld_getMyRoles', {}).then(r => setLdRoles(r?.data || r)).catch(() => {});
+      ldRolesPromise.then(r => { if (r) setLdRoles(r?.data || r); });
 
       // Resume GPS tracking for an already-active Field Duty trip (e.g. one auto-started
       // from a Gate Pass request, or one left running from before a page reload) — the
@@ -715,8 +720,8 @@ export default function Layout({ children, currentPageName }) {
       // a full reload/relogin rather than only surviving in-app navigation.
       (async () => {
         try {
-          const res = await base44.functions.invoke('getFieldTrips', { scope: 'mine' });
-          const d = res.data || res;
+          const res = await fieldTripsPromise;
+          const d = res?.data || res;
           const active = d?.success && (d.trips || []).find(t => t.status === 'active');
           if (active) startFieldTripTracking(active.id, active.distance_km || 0);
         } catch { /* Field Duty not applicable for this role, or offline — non-fatal */ }
