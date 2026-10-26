@@ -118,11 +118,13 @@ export async function getCtx(cu) {
   const trainerRows = await list('LdTrainer');
   const isAdmin = role === 'admin' || u?.role === 'admin';
   const isHR = isAdmin || role === 'hr' || u?.role === 'hr';
+  // The "L&D Trainer" role (custom_role 'ld_trainer') has the full L&D toolset but none of HR's wider powers.
+  const isLdTrainerRole = role === 'ld_trainer' || u?.role === 'ld_trainer';
   return {
-    id: cu.id, user: u, role, cfg, isAdmin, isHR,
-    isLdAdmin: isHR || cfg.ld_admin_user_ids.includes(cu.id),
+    id: cu.id, user: u, role, cfg, isAdmin, isHR, isLdTrainerRole,
+    isLdAdmin: isHR || isLdTrainerRole || cfg.ld_admin_user_ids.includes(cu.id),
     isManagement: role === 'management',
-    isTrainer: trainerRows.some(t => t.user_id === cu.id && t.active !== false),
+    isTrainer: isLdTrainerRole || trainerRows.some(t => t.user_id === cu.id && t.active !== false),
   };
 }
 
@@ -535,7 +537,40 @@ const HANDLERS = {
     const asBuddy = inductions.some(i => i.buddy_user_id === ctx.id && i.status !== 'COMPLETED');
     const mine = inductions.find(i => i.user_id === ctx.id && i.status !== 'CANCELLED');
     const reports = (await list('Employee')).some(e => e.reporting_manager_id === ctx.id);
-    return ok(res, { is_ld_admin: ctx.isLdAdmin, is_hr: ctx.isHR, is_trainer: ctx.isTrainer, is_manager: asManager || reports, is_hod: asHod || !!(await one("SELECT id FROM entities WHERE type='Department' AND data::jsonb->>'head_user_id'=$1", [ctx.id])), is_buddy: asBuddy, has_induction: !!mine });
+    return ok(res, { is_ld_admin: ctx.isLdAdmin, is_ld_trainer: ctx.isLdTrainerRole, is_hr: ctx.isHR, is_trainer: ctx.isTrainer, is_manager: asManager || reports, is_hod: asHod || !!(await one("SELECT id FROM entities WHERE type='Department' AND data::jsonb->>'head_user_id'=$1", [ctx.id])), is_buddy: asBuddy, has_induction: !!mine });
+  },
+
+  // Home screen for the L&D Trainer role: what needs the trainer's action today, plus the learners most at risk.
+  async ld_getTrainerHome(p, ctx, res) {
+    if (!ctx.isLdAdmin && !ctx.isTrainer) return forbid(res);
+    const today = todayIST();
+    const all = p.scope === 'all';
+    const inds = (await list('LdInduction')).filter(i => i.status !== 'CANCELLED' && i.status !== 'COMPLETED');
+    const mineInds = inds.filter(i => i.trainer_user_id === ctx.id);
+    const scoped = all ? inds : mineInds;
+    const sums = scoped.map(i => summarise(i, today));
+    const awaiting = sums.filter(x => x.pending_signoffs > 0);
+    const atRisk = sums.filter(x => x.overdue_gates > 0 || x.failed_gates > 0 || x.blocked_gates > 0);
+    const assignments = (await list('LdAssignment')).filter(a => !['CANCELLED', 'COMPLETED', 'WAIVED'].includes(a.status));
+    const overdueAssign = assignments.filter(a => a.due_date && a.due_date < today);
+    const courses = Object.fromEntries((await list('LdCourse')).map(c => [c.id, c]));
+    const emps = Object.fromEntries((await list('Employee')).map(e => [e.user_id, e]));
+    const certs = (await list('LdCertificate')).map(c => ({ ...c, status: certStatus(c, ctx.cfg) }));
+    const expiring = certs.filter(c => c.expiry_date && c.status !== 'REVOKED' && daysBetween(today, String(c.expiry_date).slice(0, 10)) <= 30 && daysBetween(today, String(c.expiry_date).slice(0, 10)) >= 0);
+    const slim = (x) => ({ id: x.id, name: x.name, code: x.code, department: x.department, designation: x.designation, current_gate: x.current_gate, current_status: x.current_status, due_date: x.due_date, progress: x.progress, overdue_gates: x.overdue_gates, failed_gates: x.failed_gates, blocked_gates: x.blocked_gates, pending_signoffs: x.pending_signoffs, days_in: x.days_in });
+    return ok(res, {
+      scope: all ? 'all' : 'mine',
+      kpis: {
+        my_learners: mineInds.length, active_inductions: inds.length, awaiting_signoff: awaiting.reduce((n, x) => n + x.pending_signoffs, 0),
+        at_risk: atRisk.length, overdue_assignments: overdueAssign.length, open_assignments: assignments.length, certs_expiring_30d: expiring.length,
+        pending_waivers: (await list('LdWaiver')).filter(w => w.status === 'PENDING').length,
+      },
+      awaiting_signoff: awaiting.sort((a, b) => String(a.due_date).localeCompare(String(b.due_date))).slice(0, 25).map(slim),
+      at_risk: atRisk.sort((a, b) => (b.overdue_gates + b.failed_gates) - (a.overdue_gates + a.failed_gates)).slice(0, 25).map(slim),
+      overdue_assignments: overdueAssign.sort((a, b) => String(a.due_date).localeCompare(String(b.due_date))).slice(0, 25).map(a => ({ id: a.id, employee_name: emps[a.user_id]?.display_name || '', department: emps[a.user_id]?.department || '', course: courses[a.course_id]?.title || '', due_date: a.due_date, mandatory: !!a.mandatory })),
+      expiring_certs: expiring.sort((a, b) => String(a.expiry_date).localeCompare(String(b.expiry_date))).slice(0, 25).map(c => ({ certificate_id: c.certificate_id, employee_name: c.employee_name || emps[c.user_id]?.display_name || '', title: c.title, expiry_date: c.expiry_date })),
+      paused: pausedInfo(ctx.cfg),
+    });
   },
 
   async ld_getMyLearning(p, ctx, res) {

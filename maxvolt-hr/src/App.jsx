@@ -77,6 +77,7 @@ const LdAssessment = lazy(() => import('./pages/LdAssessment'));
 const LdCertificate = lazy(() => import('./pages/LdCertificate'));
 const LdControlCentre = lazy(() => import('./pages/LdControlCentre'));
 const LdTeamLearning = lazy(() => import('./pages/LdTeamLearning'));
+const LdTrainerWorkbench = lazy(() => import('./pages/LdTrainerWorkbench'));
 const EmployeeEngagementPortal = lazy(() => import('./pages/EmployeeEngagementPortal'));
 const GatePassRequest = lazy(() => import('./pages/GatePassRequest'));
 const GatePassApproval = lazy(() => import('./pages/GatePassApproval'));
@@ -513,6 +514,11 @@ const AuthenticatedApp = () => {
       <Route path="/LdControlCentre" element={
         <LayoutWrapper currentPageName="LdControlCentre">
           <LdControlCentre />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdTrainerWorkbench" element={
+        <LayoutWrapper currentPageName="LdTrainerWorkbench">
+          <LdTrainerWorkbench />
         </LayoutWrapper>
       } />
       <Route path="/LdTeamLearning" element={

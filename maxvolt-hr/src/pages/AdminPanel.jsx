@@ -140,6 +140,7 @@ const ROLES = [
   { value: 'employee',           label: 'Employee',           color: 'bg-blue-100 text-blue-800' },
   { value: 'management',         label: 'Management',         color: 'bg-teal-100 text-teal-800' },
   { value: 'recruiter',          label: 'Recruiter',          color: 'bg-pink-100 text-pink-800' },
+  { value: 'ld_trainer',         label: 'L&D Trainer',        color: 'bg-indigo-100 text-indigo-800' },
   { value: 'gate_admin',         label: 'Gate Admin',         color: 'bg-green-100 text-green-800' },
   { value: 'front_desk_admin',   label: 'Front Desk Admin',   color: 'bg-amber-100 text-amber-800' },
   { value: 'onboarding_pending', label: 'Onboarding Pending', color: 'bg-gray-100 text-gray-700' },

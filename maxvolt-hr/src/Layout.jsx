@@ -9,7 +9,7 @@ import {
   LayoutDashboard, Clock, Calendar, FileText, Users, CreditCard,
   Target, HelpCircle, Settings, LogOut, Menu, X, Briefcase,
   DollarSign, FolderOpen, Bell, UserPlus, TrendingDown, BarChart3,
-  UserCog, Building2, ShieldOff, PieChart, Shield, GraduationCap,
+  UserCog, Building2, ShieldOff, PieChart, Shield, GraduationCap, ClipboardCheck,
   ShieldCheck, Sparkles, AlertTriangle, QrCode, IdCard, ArrowLeft, User2, ShieldAlert, Award, Landmark, FileSignature, Receipt, ClipboardList, ScanSearch,
   Sun, Moon, BookOpen, SlidersHorizontal, MapPin, Laptop, ChevronRight,
   Home, Zap, Star, HeartHandshake, Timer, Download, MessageSquare, Search, UserCheck,
@@ -455,6 +455,7 @@ function Avatar({ name, role, size = 'md' }) {
     gate_admin: 'bg-[#FF9500]',   // Apple orange
     front_desk_admin: 'bg-[#FF9500]',
     recruiter:  'bg-[#FF2D55]',   // Apple pink
+    ld_trainer: 'bg-[#5856D6]',   // Apple indigo
   };
   const bg   = colors[role] || 'bg-[#8E8E93]';
   const dims  = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-9 h-9 text-sm';
@@ -841,6 +842,7 @@ export default function Layout({ children, currentPageName }) {
     const have = new Set(menuGroups.flatMap(g => g.items.map(i => i.page)));
     const extra = [];
     if (!have.has('MyLearning')) extra.push({ name: 'My Learning', icon: GraduationCap, page: 'MyLearning' });
+    if (ldRoles?.is_ld_trainer && !have.has('LdTrainerWorkbench')) extra.push({ name: 'Trainer Workbench', icon: ClipboardCheck, page: 'LdTrainerWorkbench' });
     if (ldRoles?.is_ld_admin && !have.has('LdControlCentre')) extra.push({ name: 'L&D Control Centre', icon: GraduationCap, page: 'LdControlCentre' });
     if ((ldRoles?.is_manager || ldRoles?.is_hod || ldRoles?.is_trainer) && !have.has('LdTeamLearning')) extra.push({ name: 'Team Learning', icon: Users, page: 'LdTeamLearning' });
     if (extra.length) menuGroups = [...menuGroups, { label: 'Learning', items: extra }];
