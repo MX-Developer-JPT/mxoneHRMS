@@ -11,6 +11,7 @@ import { Loader2, Plus } from 'lucide-react';
 import { ld, fmtDate } from '@/lib/ld';
 import { useEmployees, EmployeeSelect, EmployeeMultiSelect, Field } from '@/components/ld/shared';
 import BulkAssignDialog from '@/components/ld/BulkAssignDialog';
+import SuggestAssignDialog from '@/components/ld/SuggestAssignDialog';
 
 export default function LdJoinersTab() {
   const emps = useEmployees();
@@ -22,6 +23,7 @@ export default function LdJoinersTab() {
   const [busy, setBusy] = useState(false);
   const [sel, setSel] = useState([]);          // selected induction ids
   const [assignOpen, setAssignOpen] = useState(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);
   const [act, setAct] = useState(null); // { kind: 'restart' | 'cancel', row, reason, anchor, start_date }
 
   const load = useCallback(async () => {
@@ -85,6 +87,7 @@ export default function LdJoinersTab() {
           <option value="all">All departments</option>{depts.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
         <div className="flex-1" />
+        <Button size="sm" variant="outline" onClick={() => setSuggestOpen(true)}>Suggest buddies &amp; HODs</Button>
         <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)}>{sel.length ? `Assign people to ${sel.length} selected` : 'Assign people to all running'}</Button>
         <Button size="sm" onClick={() => setDlg({})}><Plus className="w-4 h-4 mr-1" />Start induction</Button>
       </div>
@@ -108,6 +111,7 @@ export default function LdJoinersTab() {
         </table>
       </CardContent></Card>
 
+      <SuggestAssignDialog open={suggestOpen} onClose={() => setSuggestOpen(false)} onDone={load} />
       <BulkAssignDialog open={assignOpen} onClose={() => setAssignOpen(false)} ids={sel.length ? sel : null} count={sel.length} onDone={() => { setSel([]); load(); }} />
 
       <Dialog open={!!act} onOpenChange={o => !o && setAct(null)}>

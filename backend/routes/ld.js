@@ -1490,11 +1490,11 @@ const HANDLERS = {
     const noHod = open.filter(i => !i.hod_user_id);
     const deptsNoHead = depts.filter(d => !d.head_user_id).map(d => d.name);
     const fillableHod = noHod.filter(i => depts.some(d => d.head_user_id && String(d.name).toLowerCase() === String(i.employee.department || '').toLowerCase())).length;
-    add('hods', noHod.length ? 'warn' : 'ok', 'Department heads (HOD)', noHod.length ? `${noHod.length} running induction(s) have no HOD, so the department-induction step (G06) can only be signed by HR / L&D.${fillableHod ? ` ${fillableHod} can be filled from the department heads already set.` : ''}${deptsNoHead.length ? ` Departments without a head: ${deptsNoHead.slice(0, 8).join(', ')}${deptsNoHead.length > 8 ? '…' : ''}.` : ''}` : 'Every running induction has a HOD.', noHod.length && fillableHod ? { type: 'auto_hod', label: `Fill ${fillableHod} HOD(s) from departments` } : null);
+    add('hods', noHod.length ? 'warn' : 'ok', 'Department heads (HOD)', noHod.length ? `${noHod.length} running induction(s) have no HOD, so the department-induction step (G06) can only be signed by HR / L&D.${fillableHod ? ` ${fillableHod} can be filled from the department heads already set.` : ''}${deptsNoHead.length ? ` Departments without a head: ${deptsNoHead.slice(0, 8).join(', ')}${deptsNoHead.length > 8 ? '…' : ''}.` : ''}` : 'Every running induction has a HOD.', noHod.length ? (fillableHod ? { type: 'auto_hod', label: `Fill ${fillableHod} HOD(s) from departments` } : { type: 'suggest', label: 'Suggest HODs' }) : null);
 
     const noBuddy = open.filter(i => !i.buddy_user_id);
     const g0Blocked = noBuddy.filter(i => !OKAY(i.gates.find(g => g.gate_id === 'G00')?.status)).length;
-    add('buddies', noBuddy.length ? 'fail' : 'ok', 'Buddies', noBuddy.length ? `${noBuddy.length} running induction(s) have no buddy.${g0Blocked ? ` ${g0Blocked} of them are stuck at step G00 “Pre-joining readiness” because “Buddy assigned” cannot complete.` : ''} A buddy is a peer — not the new joiner or the Reporting Manager.` : 'Every running induction has a buddy.', noBuddy.length ? { type: 'bulk', label: 'Assign people' } : null);
+    add('buddies', noBuddy.length ? 'fail' : 'ok', 'Buddies', noBuddy.length ? `${noBuddy.length} running induction(s) have no buddy.${g0Blocked ? ` ${g0Blocked} of them are stuck at step G00 “Pre-joining readiness” because “Buddy assigned” cannot complete.` : ''} A buddy is a peer — not the new joiner or the Reporting Manager.` : 'Every running induction has a buddy.', noBuddy.length ? { type: 'suggest', label: 'Suggest buddies' } : null);
     const noTrainer = open.filter(i => !i.trainer_user_id).length;
     if (noTrainer) add('trainer_assign', trainers.length ? 'warn' : 'fail', 'Trainer on running inductions', `${noTrainer} running induction(s) have no trainer assigned.`, trainers.length ? { type: 'bulk', label: 'Assign people' } : null);
 
@@ -1557,6 +1557,79 @@ const HANDLERS = {
       });
     }
     return ok(res, { updated, selected: want.length, skipped: skipped.slice(0, 20) });
+  },
+
+  // Proposal only (writes nothing): who could be buddy / HOD for the running inductions that have none, and who could be trainer.
+  // Buddy = a settled colleague (>= 6 months) in the joiner's department, never the joiner or their Reporting Manager, not
+  // someone who is themselves in an induction, at most 3 buddies each, closest in level, same location preferred.
+  async ld_suggestAssignments(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const today = todayIST();
+    const allInds = await list('LdInduction');
+    const inds = allInds.filter(i => i.status === 'IN_PROGRESS').sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+    const emps = (await list('Employee')).filter(e => e.user_id && e.status === 'active' && !(e.last_working_date && String(e.last_working_date).slice(0, 10) < today) && !(e.exit_date && String(e.exit_date).slice(0, 10) < today));
+    const byUid = Object.fromEntries(emps.map(e => [e.user_id, e]));
+    const inInduction = new Set(inds.map(i => i.user_id));
+    const depts = await list('Department');
+    const tenure = (e) => (e.date_of_joining ? daysBetween(String(e.date_of_joining).slice(0, 10), today) : 0);
+    const tierOf = (e) => Number(e.designation_tier) || 0;
+    const load = {}; for (const i of inds) if (i.buddy_user_id) load[i.buddy_user_id] = (load[i.buddy_user_id] || 0) + 1;
+    const CAP = 3;
+    const mgrWord = /head|hod|general manager|\bgm\b|director|vice president|\bvp\b|manager|lead/i;
+    const brief = (e) => ({ user_id: e.user_id, name: e.display_name || e.full_name || '', code: e.employee_code || '', designation: e.designation || '', department: e.department || '' });
+    const rows = [];
+    for (const ind of inds) {
+      const needBuddy = !ind.buddy_user_id, needHod = !ind.hod_user_id;
+      if (!needBuddy && !needHod) continue;
+      const emp = ind.employee || {}, dept = String(emp.department || '').toLowerCase(), joiner = byUid[ind.user_id];
+      const row = { induction_id: ind.id, joiner: emp.name || '', department: emp.department || 'Unassigned', current: { buddy: ind.buddy_name || '', hod: ind.hod_name || '', trainer: ind.trainer_name || '' }, buddy: null, hod: null };
+      if (needBuddy) {
+        const ok_ = (c, sameDept) => c.user_id !== ind.user_id && c.user_id !== emp.reporting_manager_id && !inInduction.has(c.user_id) && tenure(c) >= 180 && (load[c.user_id] || 0) < CAP && (sameDept ? String(c.department || '').toLowerCase() === dept : String(c.department || '').toLowerCase() !== dept);
+        let pool = emps.filter(c => ok_(c, true)), cross = false;
+        if (!pool.length) { pool = emps.filter(c => ok_(c, false) && joiner && c.work_location && c.work_location === joiner.work_location); cross = true; }
+        pool.sort((a, b) => ((load[a.user_id] || 0) * 10 + Math.abs(tierOf(a) - tierOf(joiner || {})) * 2 + (joiner && a.work_location === joiner.work_location ? 0 : 1) - Math.min(tenure(a), 1500) / 1500) - ((load[b.user_id] || 0) * 10 + Math.abs(tierOf(b) - tierOf(joiner || {})) * 2 + (joiner && b.work_location === joiner.work_location ? 0 : 1) - Math.min(tenure(b), 1500) / 1500));
+        const c = pool[0];
+        if (c) { load[c.user_id] = (load[c.user_id] || 0) + 1; row.buddy = { ...brief(c), reason: `${cross ? 'No eligible colleague in the department — same-location colleague from another department' : 'Same department'}, ${Math.floor(tenure(c) / 30)} months in the company, buddy to ${load[c.user_id]} joiner(s)` }; }
+      }
+      if (needHod) {
+        const d = depts.find(x => x.head_user_id && String(x.name).toLowerCase() === dept);
+        if (d && byUid[d.head_user_id] && d.head_user_id !== ind.user_id) row.hod = { ...brief(byUid[d.head_user_id]), reason: 'Department head set in Departments', inferred: false };
+        else {
+          const c = emps.filter(x => x.user_id !== ind.user_id && String(x.department || '').toLowerCase() === dept && mgrWord.test(x.designation || '')).sort((a, b) => tierOf(b) - tierOf(a) || tenure(b) - tenure(a))[0];
+          if (c) row.hod = { ...brief(c), reason: `Most senior in the department by designation (“${c.designation}”) — no department head is set; please confirm`, inferred: true };
+        }
+      }
+      rows.push(row);
+    }
+    const trainers = (await list('LdTrainer')).filter(t => t.active !== false);
+    const hodIds = new Set(rows.map(r => r.hod?.user_id).filter(Boolean));
+    const cand = new Map();
+    for (const e of emps) if (/^hr$/i.test(String(e.department || '').trim()) || (ctx.cfg.ld_admin_user_ids || []).includes(e.user_id)) cand.set(e.user_id, { ...brief(e), reason: /^hr$/i.test(String(e.department || '').trim()) ? 'HR team' : 'L&D administrator' });
+    for (const id of hodIds) if (byUid[id] && !cand.has(id)) cand.set(id, { ...brief(byUid[id]), reason: 'Suggested department head' });
+    return ok(res, { rows, summary: { inductions: inds.length, needBuddy: inds.filter(i => !i.buddy_user_id).length, needHod: inds.filter(i => !i.hod_user_id).length, needTrainer: inds.filter(i => !i.trainer_user_id).length, buddiesProposed: rows.filter(r => r.buddy).length, hodsProposed: rows.filter(r => r.hod).length }, trainers: { registered: trainers.length, candidates: [...cand.values()].slice(0, 20) } });
+  },
+
+  // Apply a reviewed proposal: rows = [{ induction_id, buddy_user_id?, hod_user_id? }] (+ optional trainer for every induction without one).
+  // Goes through the same checks as the bulk assignment (buddy is never the joiner or the Reporting Manager).
+  async ld_applyAssignments(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const rows = (Array.isArray(p.rows) ? p.rows : []).slice(0, 300);
+    if (!rows.length && !p.trainer_user_id) return fail(res, 'Nothing to apply');
+    const cap = () => { const o = { body: null, status() { return o; }, json(b) { o.body = b; return o; } }; return o; };
+    if (p.trainer_user_id) {
+      const t = (await list('LdTrainer')).find(x => x.user_id === p.trainer_user_id);
+      if (!t || t.active === false) { const r = cap(); await HANDLERS.ld_saveTrainer({ user_id: p.trainer_user_id, active: true }, ctx, r); if (!r.body?.success) return fail(res, r.body?.error || 'Could not register the trainer'); }
+    }
+    let updated = 0; const skipped = [];
+    for (const r of rows) {
+      if (!r.induction_id || (!r.buddy_user_id && !r.hod_user_id)) continue;
+      const c = cap();
+      await HANDLERS.ld_bulkAssignPeople({ induction_ids: [r.induction_id], buddy_user_id: r.buddy_user_id || undefined, hod_user_id: r.hod_user_id || undefined, only_missing: true }, ctx, c);
+      if (c.body?.success) { updated += c.body.updated || 0; skipped.push(...(c.body.skipped || [])); } else skipped.push(c.body?.error || 'Could not update one induction');
+    }
+    let trainerSet = 0;
+    if (p.trainer_user_id) { const c = cap(); await HANDLERS.ld_bulkAssignPeople({ scope: 'all_open', trainer_user_id: p.trainer_user_id, only_missing: true }, ctx, c); trainerSet = c.body?.updated || 0; }
+    return ok(res, { updated, trainerSet, skipped: skipped.slice(0, 20) });
   },
 
   async ld_runDailyTick(p, ctx, res) {

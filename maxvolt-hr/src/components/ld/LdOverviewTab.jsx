@@ -8,6 +8,7 @@ import { Loader2, RefreshCw, Play, CheckCircle2, AlertTriangle, XCircle, Info } 
 import { ld, fmtDate } from '@/lib/ld';
 import { Tile } from '@/components/ld/shared';
 import BulkAssignDialog from '@/components/ld/BulkAssignDialog';
+import SuggestAssignDialog from '@/components/ld/SuggestAssignDialog';
 
 const ICON = { ok: [CheckCircle2, 'text-green-600'], warn: [AlertTriangle, 'text-amber-600'], fail: [XCircle, 'text-red-600'], info: [Info, 'text-blue-500'] };
 
@@ -17,6 +18,7 @@ function ReadinessCard({ onTab }) {
   const [open, setOpen] = useState(true);
   const [busy, setBusy] = useState('');
   const [assign, setAssign] = useState(false);
+  const [suggest, setSuggest] = useState(false);
   const load = useCallback(async () => { try { setRd(await ld('ld_getReadiness')); } catch (e) { toast.error(e.message); } }, []);
   useEffect(() => { load(); }, [load]);
   if (!rd) return null;
@@ -24,6 +26,7 @@ function ReadinessCard({ onTab }) {
   const act = async (a) => {
     if (a.type === 'tab') onTab?.(a.tab);
     else if (a.type === 'bulk') setAssign(true);
+    else if (a.type === 'suggest') setSuggest(true);
     else if (a.type === 'auto_hod') {
       setBusy('hod');
       try { const r = await ld('ld_bulkAssignPeople', { scope: 'all_open', hod_from_department: true }); toast.success(`${r.updated} HOD(s) filled from the department heads`); await load(); } catch (e) { toast.error(e.message); }
@@ -54,6 +57,7 @@ function ReadinessCard({ onTab }) {
         </CardContent>
       )}
       <BulkAssignDialog open={assign} onClose={() => setAssign(false)} ids={null} onDone={load} />
+      <SuggestAssignDialog open={suggest} onClose={() => setSuggest(false)} onDone={load} />
     </Card>
   );
 }
