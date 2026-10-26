@@ -3504,7 +3504,7 @@ router.post('/:name', async (req, res) => {
       // HR/admin/recruiter are operators of the app, not employees — exclude
       // them from the org chart, which should reflect the actual workforce.
       const operatorIds = new Set(
-        (await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('admin','hr','recruiter','gate_admin','front_desk_admin')"))
+        (await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('admin','hr','recruiter','gate_admin','front_desk_admin','ld_trainer')"))
           .map(u => u.id)
       );
       const emps = (await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'"))
@@ -7252,7 +7252,7 @@ router.post('/:name', async (req, res) => {
       const userMap   = Object.fromEntries(users.map(u => [u.id, u]));
       // HR/admin/recruiter/gate_admin are operators of the app, not
       // employees — excluded here to match the Employee Directory page.
-      const OPERATOR_ROLES_DIR = ['admin', 'hr', 'recruiter', 'gate_admin', 'front_desk_admin'];
+      const OPERATOR_ROLES_DIR = ['admin', 'hr', 'recruiter', 'gate_admin', 'front_desk_admin', 'ld_trainer'];
       const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' ORDER BY data::jsonb->>'department', data::jsonb->>'display_name'"))
         .filter(e => !OPERATOR_ROLES_DIR.includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
       const empByUserId = Object.fromEntries(employees.map(e => [e.user_id, e]));
@@ -7500,7 +7500,7 @@ router.post('/:name', async (req, res) => {
       const deptRows  = parseEntities(await all("SELECT data FROM entities WHERE type='Department' ORDER BY data::jsonb->>'name'"));
       const dUsers     = await all("SELECT id, email, display_name, full_name, role, custom_role FROM users");
       const dUserMap   = Object.fromEntries(dUsers.map(u => [u.id, u]));
-      const OPERATOR_ROLES_D = ['admin', 'hr', 'recruiter', 'gate_admin', 'front_desk_admin'];
+      const OPERATOR_ROLES_D = ['admin', 'hr', 'recruiter', 'gate_admin', 'front_desk_admin', 'ld_trainer'];
       const dEmployees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' ORDER BY data::jsonb->>'department', data::jsonb->>'display_name'"))
         .filter(e => !OPERATOR_ROLES_D.includes(dUserMap[e.user_id]?.custom_role || dUserMap[e.user_id]?.role));
       const dEmpByUserId = Object.fromEntries(dEmployees.map(e => [e.user_id, e]));
@@ -10886,7 +10886,7 @@ router.post('/:name', async (req, res) => {
 
       const employeesRaw = empRows.map(r => JSON.parse(r.data));
       // HR/admin/recruiter are operators of the app, not employees.
-      const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin', 'front_desk_admin'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
+      const employees = employeesRaw.filter(e => !['admin', 'hr', 'recruiter', 'gate_admin', 'front_desk_admin', 'ld_trainer'].includes(userMap[e.user_id]?.custom_role || userMap[e.user_id]?.role));
       const activeEmployeeCount = employees.length;
 
       // Present = any employee with ANY attendance record for the day —

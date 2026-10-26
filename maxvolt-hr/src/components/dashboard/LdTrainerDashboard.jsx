@@ -2,14 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Loader2, GraduationCap, ClipboardCheck, AlertTriangle, CalendarClock, Award, Users, BookOpen } from 'lucide-react';
+import { Loader2, GraduationCap, ClipboardCheck, AlertTriangle, CalendarClock, Award, Users } from 'lucide-react';
 import { ld } from '@/lib/ld';
 import { createPageUrl } from '@/utils';
 import { Tile } from '@/components/ld/shared';
-import EmployeeDashboard from './EmployeeDashboard';
 import { SignoffList, AtRiskList, OverdueTrainingList, ExpiringCertList } from '@/components/ldtrainer/TrainerLists';
 
-// Home screen for the L&D Trainer role: today's actions first, then the person's own employee dashboard.
+// Home screen for the L&D Trainer role: what needs action today. This role is an operator role, not an employee one.
 export default function LdTrainerDashboard({ user }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -17,11 +16,11 @@ export default function LdTrainerDashboard({ user }) {
   const k = data?.kpis;
   const links = [
     ['L&D Control Centre', 'LdControlCentre', GraduationCap], ['Trainer Workbench', 'LdTrainerWorkbench', ClipboardCheck],
-    ['Team Learning', 'LdTeamLearning', Users], ['My Learning', 'MyLearning', BookOpen],
+    ['Team Learning', 'LdTeamLearning', Users],
   ];
   const who = user?.display_name || user?.full_name;
   return (
-    <div className="space-y-6">
+    <div>
       <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-4 pb-0">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><GraduationCap className="w-6 h-6 text-blue-600" />Trainer desk</h1>
@@ -51,7 +50,6 @@ export default function LdTrainerDashboard({ user }) {
           <div className="text-right"><Link to={createPageUrl('LdTrainerWorkbench')} className="text-sm text-blue-700 hover:underline">Open the full workbench →</Link></div>
         </>}
       </div>
-      <div className="border-t pt-2"><EmployeeDashboard user={user} /></div>
     </div>
   );
 }

@@ -27,7 +27,7 @@ export function AtRiskList({ rows, limit }) {
     <div key={r.id} className="py-2.5 flex items-center justify-between gap-3">
       <div className="min-w-0">
         <div className="font-medium truncate">{r.name} <span className="text-xs text-gray-400">{r.code}</span></div>
-        <div className="text-xs text-gray-500 truncate">{r.current_gate} · day {r.days_in} · {r.progress ?? 0}% done</div>
+        <div className="text-xs text-gray-500 truncate">{r.current_gate} · day {r.days_in} · {r.progress?.percent ?? 0}% done</div>
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
         {r.overdue_gates > 0 && <Badge variant="outline" className="border-red-300 text-red-700">{r.overdue_gates} overdue</Badge>}

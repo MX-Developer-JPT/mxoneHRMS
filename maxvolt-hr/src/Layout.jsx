@@ -374,6 +374,18 @@ const hrMenuGroups = [
 // standard employee self-service sections every role gets (attendance,
 // leave, payslips, profile). No employee-management, payroll, or other
 // HR-only sections — those stay HR/admin/management-only.
+// L&D Trainer — an operator role (like HR / admin), strictly for Learning & Development: no attendance, leave or payroll.
+const ldTrainerMenuGroups = [
+  { label: 'Overview', items: [
+    { name: 'Dashboard',            icon: LayoutDashboard, page: 'Dashboard' },
+  ]},
+  { label: 'Learning & Development', items: [
+    { name: 'L&D Control Centre',   icon: GraduationCap,   page: 'LdControlCentre' },
+    { name: 'Trainer Workbench',    icon: ClipboardCheck,  page: 'LdTrainerWorkbench' },
+    { name: 'Team Learning',        icon: Users,           page: 'LdTeamLearning' },
+  ]},
+];
+
 const recruiterMenuGroups = [
   { label: 'Overview', items: [
     { name: 'Dashboard',                icon: LayoutDashboard, page: 'Dashboard' },
@@ -818,6 +830,7 @@ export default function Layout({ children, currentPageName }) {
   const isGateAdmin  = userRole === 'gate_admin'  || user.role === 'gate_admin';
   const isFrontDesk  = userRole === 'front_desk_admin' || user.role === 'front_desk_admin';
   const isRecruiter  = userRole === 'recruiter'   || user.role === 'recruiter';
+  const isLdTrainerRole = userRole === 'ld_trainer' || user.role === 'ld_trainer';
   // Matches the "IT" department however HR spelled it out in Department
   // Management — exact 'it', or any variant of "Information Technology"
   // (with or without the "Information Technology" wording, hyphenated or
@@ -834,6 +847,7 @@ export default function Layout({ children, currentPageName }) {
   else if (isTopManagement) menuGroups = managementMenuGroups;
   else if (isManager)       menuGroups = managerMenuGroups;
   else if (isRecruiter)     menuGroups = recruiterMenuGroups;
+  else if (isLdTrainerRole) menuGroups = ldTrainerMenuGroups;
   else if (isGateAdmin)     menuGroups = gateAdminMenuGroups;
   else if (isFrontDesk)     menuGroups = frontDeskMenuGroups;
   // Learning & Development — everyone gets My Learning; recruiters / gate admins aren't in the lists above,
@@ -841,8 +855,7 @@ export default function Layout({ children, currentPageName }) {
   {
     const have = new Set(menuGroups.flatMap(g => g.items.map(i => i.page)));
     const extra = [];
-    if (!have.has('MyLearning')) extra.push({ name: 'My Learning', icon: GraduationCap, page: 'MyLearning' });
-    if (ldRoles?.is_ld_trainer && !have.has('LdTrainerWorkbench')) extra.push({ name: 'Trainer Workbench', icon: ClipboardCheck, page: 'LdTrainerWorkbench' });
+    if (!isLdTrainerRole && !have.has('MyLearning')) extra.push({ name: 'My Learning', icon: GraduationCap, page: 'MyLearning' });
     if (ldRoles?.is_ld_admin && !have.has('LdControlCentre')) extra.push({ name: 'L&D Control Centre', icon: GraduationCap, page: 'LdControlCentre' });
     if ((ldRoles?.is_manager || ldRoles?.is_hod || ldRoles?.is_trainer) && !have.has('LdTeamLearning')) extra.push({ name: 'Team Learning', icon: Users, page: 'LdTeamLearning' });
     if (extra.length) menuGroups = [...menuGroups, { label: 'Learning', items: extra }];
