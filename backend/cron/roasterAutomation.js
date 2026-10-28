@@ -1,10 +1,11 @@
-// Monthly Roaster credit: every active employee working at Duhai gets 1 Roaster holiday per calendar month.
+// Monthly Roaster credit: every active employee working at Duhai gets 1 Roaster holiday per calendar month
+// (Production, Testing, Quality and Finance & Accounts are excluded).
 // An unused credit lapses when the next month's is credited (balance goes back to exactly 1).
 // The job is idempotent — each balance row remembers which months it was credited for — so it can run daily
 // (and at startup) and will also credit someone who joins Duhai or is transferred there part-way through a month.
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
-import { ROASTER_CODE, ROASTER_NAME, isDuhai } from '../utils/roaster.js';
+import { ROASTER_CODE, ROASTER_NAME, isRoasterEligible } from '../utils/roaster.js';
 
 export const ROASTER_START_MONTH = '2026-10';
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -39,7 +40,7 @@ export async function runRoasterCredits() {
   if (month < ROASTER_START_MONTH) return out;
   const year = Number(month.slice(0, 4));
   const policy = await ensureRoasterPolicy();
-  const employees = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")).map(r => JSON.parse(r.data)).filter(e => e.user_id && isDuhai(e));
+  const employees = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")).map(r => JSON.parse(r.data)).filter(e => e.user_id && isRoasterEligible(e));
   out.eligible = employees.length;
   const balances = {};
   for (const r of await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND data::jsonb->>'leave_policy_id'=$1", [policy.id])) {
