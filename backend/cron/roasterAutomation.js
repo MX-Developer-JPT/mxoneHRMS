@@ -1,4 +1,5 @@
 // Monthly Roaster credit: every active employee working at Duhai gets 1 Roaster holiday per calendar month.
+// An unused credit lapses when the next month's is credited (balance goes back to exactly 1).
 // The job is idempotent — each balance row remembers which months it was credited for — so it can run daily
 // (and at startup) and will also credit someone who joins Duhai or is transferred there part-way through a month.
 import { v4 as uuidv4 } from 'uuid';
@@ -50,7 +51,8 @@ export async function runRoasterCredits() {
       if (b) {
         const months = b.d.roaster_credited_months || [];
         if (months.includes(month)) continue;
-        const d = { ...b.d, roaster_credited_months: [...months, month], total_allocated: (b.d.total_allocated || 0) + 1, accrued_this_year: (b.d.accrued_this_year || 0) + 1, available: (b.d.available || 0) + 1 };
+        const lapsed = Math.max(0, b.d.available || 0); // unused credit from earlier month(s) expires
+        const d = { ...b.d, roaster_credited_months: [...months, month], total_allocated: (b.d.total_allocated || 0) + 1, accrued_this_year: (b.d.accrued_this_year || 0) + 1, available: 1, roaster_lapsed: (b.d.roaster_lapsed || 0) + lapsed };
         await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(d), b.id]);
       } else {
         const id = uuidv4();
@@ -58,7 +60,7 @@ export async function runRoasterCredits() {
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [id, emp.user_id, JSON.stringify(d)]);
       }
       out.credited++;
-      await notify(emp.user_id, '1 Roaster holiday was credited for this month. You can take it on any Saturday from the Leave page.');
+      await notify(emp.user_id, '1 Roaster holiday was credited for this month. Take it on any Saturday of this month from the Leave page — an unused one lapses at month end.');
     } catch (e) { out.errors++; console.warn('[roaster] failed for', emp.user_id, e.message); }
   }
   console.log('[roaster]', JSON.stringify(out));

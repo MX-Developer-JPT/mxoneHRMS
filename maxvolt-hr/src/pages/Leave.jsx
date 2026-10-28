@@ -503,7 +503,7 @@ export default function Leave() {
                   {selectedPolicy.code === 'CL' && <p className="text-xs text-gray-500">Max 3 consecutive days • No carry forward • Cannot be clubbed</p>}
                   {selectedPolicy.code === 'EL' && <p className="text-xs text-gray-500">Must apply in advance • Post-confirmation only • Fully carry forward</p>}
                   {selectedPolicy.code === 'SL' && <p className="text-xs text-gray-500">Manager+ only • Medical proof if &gt;2 days • Can club with EL</p>}
-                  {isRoaster(selectedPolicy) && <p className="text-xs text-amber-700">1 Roaster credited every month • Saturdays only • One day, once a month • Duhai location</p>}
+                  {isRoaster(selectedPolicy) && <p className="text-xs text-amber-700">1 Roaster credited every month • Saturdays of the current month only • One day • Unused one lapses at month end • Duhai location</p>}
                 </div>
               )}
             </div>

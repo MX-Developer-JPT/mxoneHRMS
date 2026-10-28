@@ -1,6 +1,7 @@
 // "Roaster" holiday — a leave type for employees posted at the Duhai location.
 //   • one Roaster is credited to every active Duhai employee each calendar month (cron/roasterAutomation.js)
-//   • it can only be taken on a single Saturday, never a half day, and at most one per calendar month
+//   • it can only be taken on a single Saturday of the month it was credited for, never a half day, at most once a month
+//   • an unused credit lapses when the next month's one is credited
 // The same rules are checked when the employee applies (validateLeaveApplication) and again by the
 // generic Leave route (entities.js), so no client can get around them.
 export const ROASTER_CODE = 'ROASTER';
@@ -16,7 +17,9 @@ export const isSaturday = (ds) => !!ds && dayOfWeek(ds) === 6;
 
 // Returns a list of plain-language errors; empty means the application follows the Roaster rules.
 // `existing` = the employee's other Leave rows for this policy (the one being edited must be left out).
-export function roasterErrors({ emp, start_date, end_date, half_day, existing = [] }) {
+export const istMonth = () => new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 7);
+
+export function roasterErrors({ emp, start_date, end_date, half_day, existing = [], nowMonth = istMonth() }) {
   const errors = [];
   if (!isDuhai(emp)) errors.push('Roaster holiday is only available to employees working at the Duhai location.');
   const s = String(start_date || '').slice(0, 10), e = String(end_date || start_date || '').slice(0, 10);
@@ -24,6 +27,7 @@ export function roasterErrors({ emp, start_date, end_date, half_day, existing = 
   if (!isSaturday(s)) errors.push('Roaster holiday can only be taken on a Saturday.');
   if (half_day) errors.push('Roaster holiday is a full day — half days are not allowed.');
   const month = s.slice(0, 7);
+  if (month && month !== nowMonth) errors.push('Roaster holiday is credited month by month — it can only be taken on a Saturday of the current month.');
   if (month && existing.some(l => !INACTIVE_LEAVE.has(l.status) && String(l.start_date || '').slice(0, 7) === month)) {
     errors.push('You already have a Roaster holiday in this month — only one can be taken per month.');
   }
