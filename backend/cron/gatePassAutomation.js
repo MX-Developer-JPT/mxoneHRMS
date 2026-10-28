@@ -180,6 +180,7 @@ export async function closeStaleGatePassRequests() {
   if (rows.length === 0) return { checked: 0, closed: 0 };
 
   const empCache = {};
+  const defaultShift = await getDefaultShift();
   const hrAdminIds = await getHrAdminUserIds();
   let closed = 0;
 
@@ -192,6 +193,9 @@ export async function closeStaleGatePassRequests() {
       empCache[pass.employee_user_id] = empRow ? JSON.parse(empRow.data) : null;
     }
     const emp = empCache[pass.employee_user_id];
+    // A night-shift employee's day runs into the next calendar date — keep their pass open until that shift ends.
+    const stShift = await getShiftForEmployee(emp, defaultShift);
+    if (Date.now() + IST_OFFSET_MS < shiftEndDateTime(pass.request_date, { ...defaultShift, ...stShift }).getTime()) continue;
     const wasPending = pass.status === 'pending_approval';
 
     const updatedPass = {

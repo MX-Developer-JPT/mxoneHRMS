@@ -289,6 +289,8 @@ const APPROVAL_SCOPED_TYPES = new Set(['GatePass', 'Reimbursement', 'AttendanceR
 // these two statuses, so any authenticated user (any role) could PATCH any
 // employee's gate pass to "departed"/"returned" directly.
 const GATE_LOG_TRANSITIONS = new Set(['departed', 'returned']);
+// Fields only an approver / the gate admin / the auto-close job may write on a gate pass.
+const GATE_PASS_DECISION_FIELDS = ['manager_approval_date', 'manager_comment', 'departure_time', 'return_time', 'gate_admin_notes', 'auto_closed', 'auto_closed_reason'];
 // Except for GatePass, every one of these approval-scoped types must clear
 // the reporting manager's own approval before HR/management can act — only
 // admin retains a blanket override. An employee with no reporting manager
@@ -865,6 +867,20 @@ router.post('/:type', async (req, res) => {
 
   if (!(await checkWfhEligibility(res, type, data))) return;
 
+  // A gate pass always starts as a pending request in the requester's own name: approval, departure and return
+  // are recorded later by the approver / gate admin, so an employee cannot create one that is already approved.
+  if (type === 'GatePass') {
+    const gpRole = await getEffectiveRole(cu);
+    if (!['hr', 'admin'].includes(gpRole)) {
+      if (data.employee_user_id && data.employee_user_id !== cu.id) return res.status(403).json({ error: 'Cannot request a gate pass on behalf of another user' });
+      data.employee_user_id = cu.id;
+      data.status = 'pending_approval';
+      data.manager_approval_status = 'pending';
+      data.lop_deduction_days = 0;
+      for (const f of GATE_PASS_DECISION_FIELDS) delete data[f];
+    }
+  }
+
   let row;
   if (type === 'AttendanceRegularisation' || type === 'Leave') {
     // These two have a read-then-write quota/balance check that a bare
@@ -1048,6 +1064,21 @@ router.patch('/:type/:id', async (req, res) => {
 
   const current = JSON.parse(row.data);
   if (!(await checkApprovalAuthorization(req, res, type, current, req.body.status))) return;
+
+  if (type === 'GatePass') {
+    // A gate pass moves one step at a time: pending -> approved/rejected -> departed -> returned.
+    const gpTo = req.body.status;
+    if (gpTo && gpTo !== current.status) {
+      const gpFrom = { approved: 'pending_approval', rejected: 'pending_approval', departed: 'approved', returned: 'departed' }[gpTo];
+      if (gpFrom && current.status !== gpFrom) {
+        return res.status(400).json({ error: `This gate pass is ${String(current.status).replace(/_/g, ' ')} — it cannot be marked ${gpTo} now.` });
+      }
+    }
+    // The requester can withdraw their own pass but cannot write the approver's / gate admin's fields on it.
+    if (current.user_id === cu.id && !['hr', 'admin'].includes(await getEffectiveRole(cu))) {
+      for (const f of [...GATE_PASS_DECISION_FIELDS, 'manager_approval_status', 'manager_user_id', 'lop_deduction_days']) delete req.body[f];
+    }
+  }
 
   // Is this PATCH exactly the approve/reject (or GatePass gate-log)
   // transition checkApprovalAuthorization just verified above? That

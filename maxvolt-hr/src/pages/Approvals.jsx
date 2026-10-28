@@ -255,10 +255,12 @@ export default function Approvals() {
   const handleGatePassAction = async (gatePassId, action) => {
     setProcessing(p => ({ ...p, [gatePassId]: true }));
     try {
+      // Same fields the Gate Pass Approval page records, so the gate admin / employee see who decided and when.
       await base44.entities.GatePass.update(gatePassId, {
         status: action === 'approve' ? 'approved' : 'rejected',
-        manager_action_at: new Date().toISOString(),
-        manager_id: user.id,
+        manager_approval_status: action === 'approve' ? 'approved' : 'rejected',
+        manager_user_id: user.id,
+        manager_approval_date: new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString(),
       });
       toast.success(`Gate pass ${action === 'approve' ? 'approved' : 'rejected'}`);
       loadData();

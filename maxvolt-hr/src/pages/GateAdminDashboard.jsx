@@ -91,7 +91,9 @@ export default function GateAdminDashboard() {
       setUser(currentUser);
       setEmployees(empMap);
 
-      let visible = allPasses.filter(p => p.status !== 'pending_approval');
+      // Pending passes stay in the list only so the "Pending Mgr Approval" card can count them;
+      // the Active / History tabs below never show them.
+      let visible = allPasses;
       // Location scoping: every gate pass now carries its own departure
       // location (current_location — picked from Location Master when the
       // employee requests it, GatePassRequest.jsx), regardless of outing
@@ -146,7 +148,9 @@ export default function GateAdminDashboard() {
     setActionLoading(true);
     try {
       const nowISO = nowIST();
-      const todayStr = nowISO.slice(0, 10);
+      // The attendance day the pass belongs to — the same day the auto-close job uses, so a night-shift
+      // employee marked in after midnight does not get a second record on the next date.
+      const todayStr = selected.request_date || nowISO.slice(0, 10);
 
       // Calculate LOP based on outing type and duration
       const lop = calculateLOP(selected.outing_type, selected.departure_time, nowISO);
@@ -193,7 +197,7 @@ export default function GateAdminDashboard() {
   const activePasses = passes.filter(p => ['approved', 'departed'].includes(p.status));
   const historyPasses = passes.filter(p => {
     const d = p.request_date || p.created_date?.slice(0, 10);
-    return d === historyDate;
+    return d === historyDate && p.status !== 'pending_approval';
   });
 
   const filteredActive = activePasses.filter(p => {
