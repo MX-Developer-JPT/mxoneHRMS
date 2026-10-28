@@ -415,6 +415,18 @@ cron.schedule('0 3 * * *', async () => {
   catch (err) { console.error('[leave-grant] failed:', err.message); }
 }, { timezone: 'Asia/Kolkata' });
 
+// ── Roaster holiday credit — 3:20 AM IST daily (idempotent) ──
+// 1 Roaster per calendar month for every active employee working at Duhai; also catches mid-month transfers.
+cron.schedule('20 3 * * *', async () => {
+  try { const { runRoasterCredits } = await import('./cron/roasterAutomation.js'); await runRoasterCredits(); }
+  catch (err) { console.error('[roaster] failed:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
+// Also once shortly after startup, so a deploy part-way through a month credits that month straight away.
+setTimeout(async () => {
+  try { const { runRoasterCredits } = await import('./cron/roasterAutomation.js'); await runRoasterCredits(); }
+  catch (err) { console.error('[roaster] startup run failed:', err.message); }
+}, 45_000);
+
 // ── Geofence tracking safety net — every 30 minutes ──────────
 // Catches the case where a phone's background location tracking silently
 // dies mid-day (see closeStaleGeofenceSessions for why) — without this, a

@@ -16,6 +16,7 @@ import { extractPayslipFields, monthMismatch } from '../utils/payslipExtract.js'
 import { buildVisitingCardsPdf } from '../utils/visitingCard.js';
 import { buildIdCardsPdf, prepareCard, cardCompany } from '../utils/idCard.js';
 import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js';
+import { isRoasterPolicy, roasterErrors } from '../utils/roaster.js';
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -2857,9 +2858,22 @@ router.post('/:name', async (req, res) => {
       // real balance is told plainly, before they even try to submit.
       const available_balance = bal?.available ?? 0;
 
+      // Roaster holiday: Duhai employees only, one Saturday, once a month
+      const vlaPolRow = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND id=$1", [leave_policy_id]);
+      if (vlaPolRow && isRoasterPolicy(JSON.parse(vlaPolRow.data))) {
+        const vlaOthers = parseEntities(await all("SELECT data FROM entities WHERE type='Leave' AND user_id=$1 AND data::jsonb->>'leave_policy_id'=$2", [uid, leave_policy_id]));
+        errors.push(...roasterErrors({ emp: vlaEmp, start_date, end_date, half_day, existing: vlaOthers }));
+      }
       if (adjusted_days > available_balance) errors.push(`Insufficient balance. Available: ${available_balance}, Requested: ${adjusted_days}`);
       if (adjusted_days > 30) errors.push('Cannot exceed 30 days at once');
       return res.json({ valid:errors.length===0, adjusted_days, available_balance, errors, warnings });
+    }
+
+    // HR can trigger the monthly Roaster credit on demand (it also runs nightly at 3:20 AM IST).
+    case 'runRoasterCredits': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { runRoasterCredits } = await import('../cron/roasterAutomation.js');
+      return res.json({ success: true, ...(await runRoasterCredits()) });
     }
 
     // HR can trigger the working-day grant job on demand (it is also scheduled nightly at 3 AM IST).
@@ -2877,6 +2891,7 @@ router.post('/:name', async (req, res) => {
       for (const emp of employees) {
         for (const pol of policies) {
           if (['CL','SL','EL'].includes(pol.code)) continue; // granted by working-day rules (cron/leaveGrantAutomation.js)
+          if (pol.code === 'ROASTER') continue; // credited per month to Duhai employees only (cron/roasterAutomation.js)
           const monthly = (pol.total_days||0) / 12;
           const existing = parseEntities(await all("SELECT data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [emp.user_id]))
             .find(b=>b.leave_policy_id===pol.id && b.year===year);

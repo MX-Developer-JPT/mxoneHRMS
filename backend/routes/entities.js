@@ -6,6 +6,7 @@ import { sendEmail, emailTemplates } from '../utils/email.js';
 import { sendPushToUser } from '../utils/push.js';
 import { JWT_SECRET } from './auth.js';
 import { applyGatePassHalfDay, clearGatePassHalfDay } from './attendancelog.js';
+import { isRoasterPolicy, roasterErrors } from '../utils/roaster.js';
 
 const router = Router();
 
@@ -526,6 +527,21 @@ async function checkWfhEligibility(res, type, data) {
 // request can never be created for more days than the employee actually
 // has, regardless of client. WFH doesn't draw from a leave balance at all
 // (see checkWfhEligibility above), so it's exempt from this check.
+// Roaster holiday rules (Duhai employees only, a single Saturday, once a month) — see utils/roaster.js.
+async function checkRoasterRules(res, type, data, client, selfId) {
+  if (type !== 'Leave' || data.is_wfh || !data.user_id || !data.leave_policy_id) return true;
+  const q = async (sql, params) => (client ? (await client.query(sql, params)).rows : await all(sql, params));
+  const polRows = await q("SELECT data FROM entities WHERE type='LeavePolicy' AND id=$1", [data.leave_policy_id]);
+  if (!polRows.length || !isRoasterPolicy(JSON.parse(polRows[0].data))) return true;
+  const empRows = await q("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [data.user_id]);
+  const emp = empRows.length ? JSON.parse(empRows[0].data) : {};
+  const others = (await q("SELECT id, data FROM entities WHERE type='Leave' AND user_id=$1 AND data::jsonb->>'leave_policy_id'=$2", [data.user_id, data.leave_policy_id]))
+    .filter(r => r.id !== selfId && r.id !== data.id).map(r => JSON.parse(r.data));
+  const errs = roasterErrors({ emp, start_date: data.start_date, end_date: data.end_date, half_day: data.half_day, existing: others });
+  if (errs.length) { res.status(400).json({ error: errs[0] }); return false; }
+  return true;
+}
+
 async function checkLeaveBalanceSufficiency(res, type, data, client) {
   if (type !== 'Leave') return true;
   if (data.is_wfh || data.leave_type === 'work_from_home') return true;
@@ -860,6 +876,7 @@ router.post('/:type', async (req, res) => {
       row = await withTransaction(async (client) => {
         await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${type}:${data.user_id}`]);
         if (!(await checkRegularisationLimit(res, type, data, client))) { ok = false; return null; }
+        if (!(await checkRoasterRules(res, type, data, client))) { ok = false; return null; }
         if (!(await checkLeaveBalanceSufficiency(res, type, data, client))) { ok = false; return null; }
         await client.query(
           `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
@@ -1090,9 +1107,10 @@ router.patch('/:type/:id', async (req, res) => {
   // deliberately narrow, since LeaveBalance's available/pending_approval
   // bookkeeping around the approval step (runLeaveAction) isn't something
   // this generic route should second-guess with its own re-derivation.
-  const isLeaveContentChange = type === 'Leave' && ['total_days', 'is_wfh', 'leave_type', 'leave_policy_id', 'start_date'].some(f => f in req.body);
+  const isLeaveContentChange = type === 'Leave' && ['total_days', 'is_wfh', 'leave_type', 'leave_policy_id', 'start_date', 'end_date', 'half_day'].some(f => f in req.body);
   if (isLeaveContentChange && !isScopedTransition) {
     if (!(await checkWfhEligibility(res, type, updated))) return;
+    if (!(await checkRoasterRules(res, type, updated, null, id))) return;
     if (!(await checkLeaveBalanceSufficiency(res, type, updated))) return;
   }
 

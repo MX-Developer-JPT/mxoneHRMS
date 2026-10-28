@@ -41,6 +41,7 @@ const POLICY_COLORS = {
   CL: 'bg-blue-100 text-blue-700',
   EL: 'bg-green-100 text-green-700',
   SL: 'bg-purple-100 text-purple-700',
+  ROASTER: 'bg-amber-100 text-amber-800',
   // Compensatory Off — the LeavePolicy created (find-or-create) and credited
   // automatically the moment a comp-off claim is approved (functions.js).
   // From that point on it's a genuinely ordinary LeavePolicy/LeaveBalance
@@ -103,8 +104,12 @@ export default function Leave() {
 
   const selectedPolicy = leavePolicies.find(p => p.id === formData.leave_policy_id);
 
+  // Roaster holiday is credited only to Duhai employees — everyone else never sees it.
+  const isRoaster = (p) => p?.code === 'ROASTER';
+  const visiblePolicies = leavePolicies.filter(p => !isRoaster(p) || leaveBalances.some(b => b.leave_policy_id === p.id));
+
   // Only show policies where the employee has a balance record with > 0 available days
-  const availablePolicies = leavePolicies.filter(p => {
+  const availablePolicies = visiblePolicies.filter(p => {
     const balance = leaveBalances.find(b => b.leave_policy_id === p.id);
     // If no balance record exists yet, still show (balance may not have been initialized)
     if (!balance) return true;
@@ -298,7 +303,7 @@ export default function Leave() {
         <div>
           <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Leave Balances ({new Date().getFullYear()})</h2>
           <div className="grid md:grid-cols-3 gap-4">
-            {leavePolicies.map(policy => {
+            {visiblePolicies.map(policy => {
               const balance = leaveBalances.find(b => b.leave_policy_id === policy.id);
               return (
                 <Card key={policy.id} className="border border-gray-200">
@@ -477,7 +482,7 @@ export default function Leave() {
               <Label>Leave Type</Label>
               <MobileSelect
                 value={formData.leave_policy_id}
-                onValueChange={(v) => setFormData({ ...formData, leave_policy_id: v })}
+                onValueChange={(v) => setFormData({ ...formData, leave_policy_id: v, ...(isRoaster(leavePolicies.find(p => p.id === v)) ? { half_day: false } : {}) })}
                 placeholder="Select leave type"
                 label="Select Leave Type"
                 options={[
@@ -498,6 +503,7 @@ export default function Leave() {
                   {selectedPolicy.code === 'CL' && <p className="text-xs text-gray-500">Max 3 consecutive days • No carry forward • Cannot be clubbed</p>}
                   {selectedPolicy.code === 'EL' && <p className="text-xs text-gray-500">Must apply in advance • Post-confirmation only • Fully carry forward</p>}
                   {selectedPolicy.code === 'SL' && <p className="text-xs text-gray-500">Manager+ only • Medical proof if &gt;2 days • Can club with EL</p>}
+                  {isRoaster(selectedPolicy) && <p className="text-xs text-amber-700">1 Roaster credited every month • Saturdays only • One day, once a month • Duhai location</p>}
                 </div>
               )}
             </div>
@@ -510,7 +516,7 @@ export default function Leave() {
                 used to be hardcoded to CL only here on the frontend with no
                 backend rule behind it, so EL/SL/Compensatory Off and any
                 other leave type could never be applied for as a half day. */}
-            {!isWFH && selectedPolicy && (
+            {!isWFH && selectedPolicy && !isRoaster(selectedPolicy) && (
               <div className="flex items-center gap-2">
                 <input type="checkbox" id="half_day" checked={formData.half_day}
                   onChange={(e) => setFormData({ ...formData, half_day: e.target.checked })}
@@ -523,13 +529,14 @@ export default function Leave() {
               <div>
                 <Label>Start Date</Label>
                 <Input type="date" value={formData.start_date}
-                  onChange={(e) => setFormData({ ...formData, start_date: e.target.value })} required />
+                  onChange={(e) => setFormData({ ...formData, start_date: e.target.value, ...(isRoaster(selectedPolicy) ? { end_date: e.target.value } : {}) })} required />
+                {isRoaster(selectedPolicy) && formData.start_date && new Date(formData.start_date + 'T00:00:00Z').getUTCDay() !== 6 && <p className="text-xs text-red-600 mt-1">Roaster holiday can only be taken on a Saturday.</p>}
               </div>
               <div>
                 <Label>End Date</Label>
                 <Input type="date" value={formData.end_date} min={formData.start_date}
                   onChange={(e) => setFormData({ ...formData, end_date: e.target.value })}
-                  disabled={formData.half_day} required />
+                  disabled={formData.half_day || isRoaster(selectedPolicy)} required />
               </div>
             </div>
 
