@@ -18,6 +18,7 @@ import { buildIdCardsPdf, prepareCard, cardCompany } from '../utils/idCard.js';
 import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js';
 import { isRoasterPolicy, roasterErrors, departmentAllowed, isDuhai, ROASTER_EXCLUDED_DEPARTMENTS } from '../utils/roaster.js';
 import { loadRoasterConfig, saveRoasterConfig } from '../utils/roasterConfig.js';
+import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -2864,6 +2865,9 @@ router.post('/:name', async (req, res) => {
       if (vlaPolRow && isRoasterPolicy(JSON.parse(vlaPolRow.data))) {
         const vlaOthers = parseEntities(await all("SELECT data FROM entities WHERE type='Leave' AND user_id=$1 AND data::jsonb->>'leave_policy_id'=$2", [uid, leave_policy_id]));
         errors.push(...roasterErrors({ emp: vlaEmp, start_date, end_date, half_day, existing: vlaOthers, cfg: await loadRoasterConfig() }));
+      }
+      if (vlaPolRow && JSON.parse(vlaPolRow.data).code === 'EL' && elBlockedByProbation(vlaEmp, new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10))) {
+        errors.push('Earned Leave (EL) can be applied for only after your probation is confirmed.');
       }
       if (adjusted_days > available_balance) errors.push(`Insufficient balance. Available: ${available_balance}, Requested: ${adjusted_days}`);
       if (adjusted_days > 30) errors.push('Cannot exceed 30 days at once');
@@ -14567,6 +14571,31 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         errors: importErrors, warnings,
         message: `Processed ${profiles.length} records: ${newEmployeesCount} new, ${updatedEmployeesCount} updated, ${noChangeCount} unchanged, ${autoConfirmedCount} auto-confirmed from probation, ${skippedRows.length} skipped. ${bankCreated} bank detail(s) created, ${bankUpdated} updated. ${salCreated} salary structure(s) created, ${salUpdated} updated. ${managersPromoted} promoted to manager role. Default password for new accounts: ${DEFAULT_PASSWORD}`,
       });
+    }
+
+    // Admin Panel → Probation & Confirmation: HR/admin moves an employee from probation to confirmation (or back).
+    // Once confirmed the employee starts earning EL (cron/leaveGrantAutomation.js) and may apply for it.
+    case 'confirmEmployee': {
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const ceUid = p.user_id;
+      const ceRow = ceUid ? await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [ceUid]) : null;
+      if (!ceRow) return res.json({ success: false, error: 'Employee not found' });
+      const ceEmp = JSON.parse(ceRow.data);
+      const ceToday = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);
+      if (p.action === 'revert') {
+        const ceUpd = { ...ceEmp, employee_status: 'probation', employee_confirmation_date: '', confirmation_date: '' };
+        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(ceUpd), ceRow.id]);
+        return res.json({ success: true, employee_status: 'probation' });
+      }
+      const ceDate = String(p.confirmation_date || ceToday).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(ceDate)) return res.json({ success: false, error: 'Invalid confirmation date' });
+      if (ceDate > ceToday) return res.json({ success: false, error: 'Confirmation date cannot be in the future' });
+      const ceUpd = { ...ceEmp, employee_status: 'confirmation', employee_confirmation_date: ceDate, confirmation_date: ceDate };
+      await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(ceUpd), ceRow.id]);
+      try {
+        await notify(ceUid, { title: 'Employment Confirmed', message: `Your employment has been confirmed effective ${ceDate}. You now earn Earned Leave (EL) and can apply for it from the Leave page.`, type: 'success', link: '/Leave' });
+      } catch { /* notification is best-effort */ }
+      return res.json({ success: true, employee_status: 'confirmation', confirmation_date: ceDate });
     }
 
     case 'updateEmployeeConfirmation': {

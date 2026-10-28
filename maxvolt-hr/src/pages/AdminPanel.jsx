@@ -19,6 +19,7 @@ import { toast } from 'sonner';
 import AdoptionDashboardTab from '@/components/admin/AdoptionDashboardTab';
 import NotificationHealthTab from '@/components/admin/NotificationHealthTab';
 import ExitClearanceConfigTab from '@/components/admin/ExitClearanceConfigTab';
+import ProbationConfirmationTab from '@/components/admin/ProbationConfirmationTab';
 
 const TOKEN_KEY = 'base44_access_token';
 const API = (path) => `/api/admin${path}`;
@@ -2820,6 +2821,7 @@ export default function AdminPanel() {
     { id: 'entities',   label: 'Data Browser',      icon: Database },
     { id: 'users',      label: 'User Management',    icon: UserCog  },
     { id: 'emp',        label: 'Employee Attrs',     icon: Settings2 },
+    { id: 'confirmation', label: 'Probation & Confirmation', icon: CheckCircle2 },
     { id: 'att_import', label: 'Attendance Import',  icon: Download },
     { id: 'att_manual', label: 'Manual Attendance',  icon: CalendarClock },
     { id: 'stats',      label: 'Statistics',         icon: BarChart3 },
@@ -2866,6 +2868,7 @@ export default function AdminPanel() {
       {tab === 'entities'   && <EntitiesTab typeCounts={typeCounts} />}
       {tab === 'users'      && <UsersTab />}
       {tab === 'emp'        && <EmployeeAttrsTab />}
+      {tab === 'confirmation' && <ProbationConfirmationTab />}
       {tab === 'att_import' && <AttendanceImportTab />}
       {tab === 'att_manual' && <ManualAttendanceTab />}
       {tab === 'notify'     && <NotifyTab />}

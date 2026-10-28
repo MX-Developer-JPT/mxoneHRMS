@@ -8,6 +8,7 @@ import { JWT_SECRET } from './auth.js';
 import { applyGatePassHalfDay, clearGatePassHalfDay } from './attendancelog.js';
 import { isRoasterPolicy, roasterErrors } from '../utils/roaster.js';
 import { loadRoasterConfig } from '../utils/roasterConfig.js';
+import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
 
 const router = Router();
 
@@ -545,6 +546,21 @@ async function checkRoasterRules(res, type, data, client, selfId) {
   return true;
 }
 
+// Earned Leave can be applied for only after probation is confirmed (Admin Panel → Probation & Confirmation).
+async function checkElEligibility(res, type, data, client) {
+  if (type !== 'Leave' || data.is_wfh || !data.user_id || !data.leave_policy_id) return true;
+  const q = async (sql, params) => (client ? (await client.query(sql, params)).rows : await all(sql, params));
+  const polRows = await q("SELECT data FROM entities WHERE type='LeavePolicy' AND id=$1", [data.leave_policy_id]);
+  if (!polRows.length || JSON.parse(polRows[0].data).code !== 'EL') return true;
+  const empRows = await q("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [data.user_id]);
+  const today = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);
+  if (empRows.length && elBlockedByProbation(JSON.parse(empRows[0].data), today)) {
+    res.status(400).json({ error: 'Earned Leave (EL) can be applied for only after your probation is confirmed.' });
+    return false;
+  }
+  return true;
+}
+
 async function checkLeaveBalanceSufficiency(res, type, data, client) {
   if (type !== 'Leave') return true;
   if (data.is_wfh || data.leave_type === 'work_from_home') return true;
@@ -894,6 +910,7 @@ router.post('/:type', async (req, res) => {
         await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${type}:${data.user_id}`]);
         if (!(await checkRegularisationLimit(res, type, data, client))) { ok = false; return null; }
         if (!(await checkRoasterRules(res, type, data, client))) { ok = false; return null; }
+        if (!(await checkElEligibility(res, type, data, client))) { ok = false; return null; }
         if (!(await checkLeaveBalanceSufficiency(res, type, data, client))) { ok = false; return null; }
         await client.query(
           `INSERT INTO entities (id, type, user_id, status, is_active, data) VALUES ($1,$2,$3,$4,$5,$6)`,
@@ -1143,6 +1160,7 @@ router.patch('/:type/:id', async (req, res) => {
   if (isLeaveContentChange && !isScopedTransition) {
     if (!(await checkWfhEligibility(res, type, updated))) return;
     if (!(await checkRoasterRules(res, type, updated, null, id))) return;
+    if (!(await checkElEligibility(res, type, updated))) return;
     if (!(await checkLeaveBalanceSufficiency(res, type, updated))) return;
   }
 

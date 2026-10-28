@@ -36,6 +36,13 @@ export function isOnProbation(emp, ds) {
   return !!confDate && ds < String(confDate).slice(0, 10);
 }
 
+// Stricter than isOnProbation (which also treats a blank status as probation for accrual): applying for EL is
+// blocked only for an employee explicitly on probation, or whose confirmation date has not arrived yet.
+export function elBlockedByProbation(emp, ds) {
+  const confDate = String(emp?.employee_confirmation_date || emp?.confirmation_date || '').slice(0, 10);
+  return emp?.employee_status === 'probation' || (!!confDate && ds < confDate);
+}
+
 async function notify(userId, title, message) {
   try {
     await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [uuidv4(), userId, title, message, 'success', '/Leave']);
