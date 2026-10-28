@@ -1,6 +1,7 @@
 // "Roaster" holiday — a leave type for employees posted at the Duhai location.
 //   • one Roaster is credited to every active Duhai employee each calendar month (cron/roasterAutomation.js),
-//     except the Production, Testing, Quality and Finance & Accounts departments
+//     in the departments HR / admin has marked eligible (RoasterConfig); until they choose, every department except
+//     Production, Testing, Quality and Finance & Accounts
 //   • it can only be taken on a single Saturday of the month it was credited for, never a half day, at most once a month
 //   • an unused credit lapses when the next month's one is credited
 // The same rules are checked when the employee applies (validateLeaveApplication) and again by the
@@ -12,8 +13,12 @@ const INACTIVE_LEAVE = new Set(['rejected', 'cancelled', 'withdrawn']);
 
 export const ROASTER_EXCLUDED_DEPARTMENTS = ['PRODUCTION', 'TESTING', 'QUALITY', 'FINANCE & ACCOUNTS'];
 export const isDuhai = (emp) => String(emp?.work_location || '').trim().toLowerCase() === ROASTER_LOCATION;
-export const isExcludedDepartment = (emp) => ROASTER_EXCLUDED_DEPARTMENTS.includes(String(emp?.department || '').trim().toUpperCase());
-export const isRoasterEligible = (emp) => isDuhai(emp) && !isExcludedDepartment(emp);
+const deptKey = (d) => String(d || '').trim().toUpperCase();
+// cfg = { eligible_departments: [...] } once HR has chosen; null/undefined = the default list above
+export const departmentAllowed = (cfg, dept) => (Array.isArray(cfg?.eligible_departments)
+  ? cfg.eligible_departments.some(d => deptKey(d) === deptKey(dept))
+  : !ROASTER_EXCLUDED_DEPARTMENTS.includes(deptKey(dept)));
+export const isRoasterEligible = (emp, cfg) => isDuhai(emp) && departmentAllowed(cfg, emp?.department);
 export const isRoasterPolicy = (policy) => !!policy && (policy.code === ROASTER_CODE || policy.name === ROASTER_NAME);
 
 const dayOfWeek = (ds) => new Date(String(ds).slice(0, 10) + 'T00:00:00Z').getUTCDay();
@@ -23,10 +28,10 @@ export const isSaturday = (ds) => !!ds && dayOfWeek(ds) === 6;
 // `existing` = the employee's other Leave rows for this policy (the one being edited must be left out).
 export const istMonth = () => new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 7);
 
-export function roasterErrors({ emp, start_date, end_date, half_day, existing = [], nowMonth = istMonth() }) {
+export function roasterErrors({ emp, start_date, end_date, half_day, existing = [], nowMonth = istMonth(), cfg = null }) {
   const errors = [];
   if (!isDuhai(emp)) errors.push('Roaster holiday is only available to employees working at the Duhai location.');
-  else if (isExcludedDepartment(emp)) errors.push('Roaster holiday is not applicable to your department.');
+  else if (!departmentAllowed(cfg, emp?.department)) errors.push('Roaster holiday is not applicable to your department.');
   const s = String(start_date || '').slice(0, 10), e = String(end_date || start_date || '').slice(0, 10);
   if (s !== e) errors.push('Roaster holiday is for one day only — pick a single Saturday.');
   if (!isSaturday(s)) errors.push('Roaster holiday can only be taken on a Saturday.');

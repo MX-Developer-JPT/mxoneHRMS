@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import { Plus, Edit2, Trash2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import RoasterEligibility from './RoasterEligibility';
 
 export default function LeavePolicyManager({ onUpdate }) {
   const [policies, setPolicies] = useState([]);
@@ -118,6 +119,8 @@ export default function LeavePolicyManager({ onUpdate }) {
           Add Leave Type
         </Button>
       </div>
+
+      <RoasterEligibility />
 
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
         {policies.map(policy => (

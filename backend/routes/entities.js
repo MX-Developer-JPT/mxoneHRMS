@@ -7,6 +7,7 @@ import { sendPushToUser } from '../utils/push.js';
 import { JWT_SECRET } from './auth.js';
 import { applyGatePassHalfDay, clearGatePassHalfDay } from './attendancelog.js';
 import { isRoasterPolicy, roasterErrors } from '../utils/roaster.js';
+import { loadRoasterConfig } from '../utils/roasterConfig.js';
 
 const router = Router();
 
@@ -537,7 +538,7 @@ async function checkRoasterRules(res, type, data, client, selfId) {
   const emp = empRows.length ? JSON.parse(empRows[0].data) : {};
   const others = (await q("SELECT id, data FROM entities WHERE type='Leave' AND user_id=$1 AND data::jsonb->>'leave_policy_id'=$2", [data.user_id, data.leave_policy_id]))
     .filter(r => r.id !== selfId && r.id !== data.id).map(r => JSON.parse(r.data));
-  const errs = roasterErrors({ emp, start_date: data.start_date, end_date: data.end_date, half_day: data.half_day, existing: others });
+  const errs = roasterErrors({ emp, start_date: data.start_date, end_date: data.end_date, half_day: data.half_day, existing: others, cfg: await loadRoasterConfig() });
   if (errs.length) { res.status(400).json({ error: errs[0] }); return false; }
   return true;
 }
@@ -708,7 +709,7 @@ function buildOrderLimit(sort, limit) {
 /* ── LIST  GET /api/entities/:type ───────────────────── */
 // Survey answers and the survey access log are reachable ONLY through the ps_* functions (routes/pulse.js), which
 // enforce HR-only access, anonymity and small-group rules. The generic entity API must never list them.
-const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz']);   // policy acknowledgements are permanent records: only the L&D functions may touch them
+const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'RoasterConfig']);   // policy acknowledgements are permanent records: only the L&D functions may touch them
 router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
 
 router.get('/:type', async (req, res) => {

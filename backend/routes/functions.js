@@ -16,7 +16,8 @@ import { extractPayslipFields, monthMismatch } from '../utils/payslipExtract.js'
 import { buildVisitingCardsPdf } from '../utils/visitingCard.js';
 import { buildIdCardsPdf, prepareCard, cardCompany } from '../utils/idCard.js';
 import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js';
-import { isRoasterPolicy, roasterErrors } from '../utils/roaster.js';
+import { isRoasterPolicy, roasterErrors, departmentAllowed, isDuhai, ROASTER_EXCLUDED_DEPARTMENTS } from '../utils/roaster.js';
+import { loadRoasterConfig, saveRoasterConfig } from '../utils/roasterConfig.js';
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -2862,11 +2863,33 @@ router.post('/:name', async (req, res) => {
       const vlaPolRow = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND id=$1", [leave_policy_id]);
       if (vlaPolRow && isRoasterPolicy(JSON.parse(vlaPolRow.data))) {
         const vlaOthers = parseEntities(await all("SELECT data FROM entities WHERE type='Leave' AND user_id=$1 AND data::jsonb->>'leave_policy_id'=$2", [uid, leave_policy_id]));
-        errors.push(...roasterErrors({ emp: vlaEmp, start_date, end_date, half_day, existing: vlaOthers }));
+        errors.push(...roasterErrors({ emp: vlaEmp, start_date, end_date, half_day, existing: vlaOthers, cfg: await loadRoasterConfig() }));
       }
       if (adjusted_days > available_balance) errors.push(`Insufficient balance. Available: ${available_balance}, Requested: ${adjusted_days}`);
       if (adjusted_days > 30) errors.push('Cannot exceed 30 days at once');
       return res.json({ valid:errors.length===0, adjusted_days, available_balance, errors, warnings });
+    }
+
+    // Which departments are eligible for the Roaster holiday — HR / admin only.
+    case 'getRoasterConfig': {
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const rcCfg = await loadRoasterConfig();
+      const rcEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const rcDeptNames = new Set([...rcEmps.map(e => String(e.department || '').trim()), ...parseEntities(await all("SELECT data FROM entities WHERE type='Department'")).map(d => String(d.name || '').trim())].filter(Boolean));
+      const rcDepartments = [...rcDeptNames].sort((a, b) => a.localeCompare(b)).map(name => ({
+        name, eligible: departmentAllowed(rcCfg, name), duhai_employees: rcEmps.filter(e => isDuhai(e) && String(e.department || '').trim() === name).length,
+      }));
+      return res.json({ success: true, is_default: !rcCfg, default_excluded: ROASTER_EXCLUDED_DEPARTMENTS, departments: rcDepartments, updated_at: rcCfg?.updated_at || null });
+    }
+
+    case 'setRoasterConfig': {
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR/Admin access required' });
+      if (!Array.isArray(p.eligible_departments)) return res.json({ success: false, error: 'eligible_departments (a list) is required' });
+      await saveRoasterConfig(p.eligible_departments, cu.id);
+      const { runRoasterCredits, revokeIneligibleRoasterCredits } = await import('../cron/roasterAutomation.js');
+      const rcRevoked = await revokeIneligibleRoasterCredits();
+      const rcCredited = await runRoasterCredits();
+      return res.json({ success: true, credited: rcCredited.credited, revoked: rcRevoked.revoked });
     }
 
     // HR can trigger the monthly Roaster credit on demand (it also runs nightly at 3:20 AM IST).

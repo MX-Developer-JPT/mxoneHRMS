@@ -6,6 +6,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { ROASTER_CODE, ROASTER_NAME, isRoasterEligible } from '../utils/roaster.js';
+import { loadRoasterConfig } from '../utils/roasterConfig.js';
 
 export const ROASTER_START_MONTH = '2026-10';
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -34,13 +35,31 @@ async function notify(userId, message) {
   } catch (e) { console.warn('[roaster] notify failed:', e.message); }
 }
 
+// After HR narrows the eligible departments: take back this month's still-unused credit from anyone no longer eligible.
+// A balance that was never touched is deleted; one with a request in flight or days used is only emptied of what is left.
+export async function revokeIneligibleRoasterCredits() {
+  const out = { revoked: 0 };
+  const policy = await ensureRoasterPolicy();
+  const cfg = await loadRoasterConfig();
+  const emps = Object.fromEntries((await all("SELECT data FROM entities WHERE type='Employee'")).map(r => JSON.parse(r.data)).map(e => [e.user_id, e]));
+  const year = Number(istNow().toISOString().slice(0, 4));
+  for (const r of await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND data::jsonb->>'leave_policy_id'=$1", [policy.id])) {
+    const d = JSON.parse(r.data);
+    if (Number(d.year) !== year || isRoasterEligible(emps[d.user_id], cfg)) continue;
+    if (!(d.used > 0) && !(d.pending_approval > 0)) { await run("DELETE FROM entities WHERE id=$1", [r.id]); out.revoked++; }
+    else if (d.available > 0) { await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...d, total_allocated: (d.total_allocated || 0) - d.available, accrued_this_year: (d.accrued_this_year || 0) - d.available, available: 0 }), r.id]); out.revoked++; }
+  }
+  return out;
+}
+
 export async function runRoasterCredits() {
   const out = { eligible: 0, credited: 0, errors: 0 };
   const month = istNow().toISOString().slice(0, 7);
   if (month < ROASTER_START_MONTH) return out;
   const year = Number(month.slice(0, 4));
   const policy = await ensureRoasterPolicy();
-  const employees = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")).map(r => JSON.parse(r.data)).filter(e => e.user_id && isRoasterEligible(e));
+  const cfg = await loadRoasterConfig();
+  const employees = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")).map(r => JSON.parse(r.data)).filter(e => e.user_id && isRoasterEligible(e, cfg));
   out.eligible = employees.length;
   const balances = {};
   for (const r of await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND data::jsonb->>'leave_policy_id'=$1", [policy.id])) {
