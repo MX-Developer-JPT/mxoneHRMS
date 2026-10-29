@@ -60,11 +60,11 @@ export default function LdProductTraining() {
   const answered = quiz ? quiz.questions.every(q => answers[q.id] !== undefined) : false;
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
+    <div className="p-3 sm:p-4 md:p-6 max-w-5xl mx-auto space-y-3 sm:space-y-4 overflow-x-hidden">
       <div className="flex flex-wrap items-center gap-3">
         <Package className="w-5 h-5 text-blue-600" />
-        <h1 className="text-xl font-bold text-gray-900">Know our products, services and segments</h1>
-        <Link to={id ? createPageUrl('MyLearning') : createPageUrl('LdControlCentre')} className="ml-auto text-sm text-blue-700 hover:underline">{id ? '← My Learning' : '← Control Centre'}</Link>
+        <h1 className="text-lg sm:text-xl font-bold text-gray-900 min-w-0 flex-1 sm:flex-none">Know our products, services and segments</h1>
+        <Link to={id ? createPageUrl('MyLearning') : createPageUrl('LdControlCentre')} className="sm:ml-auto text-sm text-blue-700 hover:underline">{id ? '← My Learning' : '← Control Centre'}</Link>
       </div>
       {!id && <div className="text-sm bg-blue-50 border border-blue-200 rounded p-2 text-blue-900">Preview — this is the material and quiz a new joiner sees. Content last reviewed {d.updated}; update it in <code>backend/utils/ldProducts.js</code> when the catalogue changes.</div>}
       {g && g.status === 'LOCKED' && <div className="text-sm bg-gray-50 border rounded p-3 text-gray-700">This step opens after the website tour.</div>}
@@ -80,17 +80,17 @@ export default function LdProductTraining() {
       )}
       {d.is_self && studyDone && <div className="text-sm bg-green-50 border border-green-200 text-green-800 rounded p-2.5 flex items-center gap-2"><CheckCircle2 className="w-4 h-4" />Study time complete — you can revisit any section while you take the quiz.</div>}
 
-      <nav className="flex flex-wrap gap-1.5 text-xs">
-        {d.sections.map(s => <a key={s.id} href={`#sec-${s.id}`} className="px-2 py-1 rounded-full bg-gray-100 text-gray-700 hover:bg-blue-100">{s.title.split(' — ')[0]}</a>)}
+      <nav className="flex gap-1.5 text-xs overflow-x-auto -mx-3 px-3 pb-1 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible">
+        {d.sections.map(s => <a key={s.id} href={`#sec-${s.id}`} className="px-2.5 py-1.5 rounded-full bg-gray-100 text-gray-700 hover:bg-blue-100 whitespace-nowrap shrink-0">{s.title.split(' — ')[0]}</a>)}
       </nav>
 
       <div className="space-y-4">
         {d.sections.map((s, i) => (
-          <section key={s.id} id={`sec-${s.id}`} className="rounded-xl border bg-white p-4 md:p-5 scroll-mt-20">
+          <section key={s.id} id={`sec-${s.id}`} className="rounded-xl border bg-white p-3 sm:p-4 md:p-5 scroll-mt-20">
             <div className="flex items-start gap-3">
               <span className="w-7 h-7 shrink-0 rounded-full bg-blue-600 text-white text-sm font-semibold flex items-center justify-center">{i + 1}</span>
               <div className="min-w-0 flex-1">
-                <h2 className="text-lg font-semibold text-gray-900">{s.title}</h2>
+                <h2 className="text-base sm:text-lg font-semibold text-gray-900 break-words">{s.title}</h2>
                 <p className="text-sm text-gray-700 mt-1">{s.intro}</p>
               </div>
             </div>
@@ -98,43 +98,43 @@ export default function LdProductTraining() {
               <div className="mt-3 grid gap-3 grid-cols-2 md:grid-cols-3">
                 {s.images.map(m => (
                   <figure key={m.src} className="rounded-lg border bg-gray-50 overflow-hidden">
-                    <img src={m.src} alt={m.caption} loading="lazy" className="w-full h-40 md:h-44 object-contain bg-white" />
+                    <img src={m.src} alt={m.caption} loading="lazy" className="w-full h-32 sm:h-40 md:h-44 object-contain bg-white" />
                     <figcaption className="px-2 py-1 text-[11px] text-gray-500 border-t">{m.caption}</figcaption>
                   </figure>
                 ))}
               </div>
             )}
             {s.facts?.length > 0 && (
-              <div className="mt-3 grid gap-2 grid-cols-2 md:grid-cols-4">
-                {s.facts.map(([k, v]) => <div key={k} className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-blue-700">{k}</div><div className="text-sm font-medium text-gray-900">{v}</div></div>)}
+              <div className="mt-3 grid gap-2 grid-cols-1 min-[420px]:grid-cols-2 md:grid-cols-4">
+                {s.facts.map(([k, v]) => <div key={k} className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 min-w-0"><div className="text-[10px] uppercase tracking-wide text-blue-700">{k}</div><div className="text-sm font-medium text-gray-900 break-words">{v}</div></div>)}
               </div>
             )}
-            <ul className="mt-3 space-y-1.5 text-sm text-gray-800 list-disc pl-5">{s.points.map((p, pi) => <li key={pi}>{p}</li>)}</ul>
+            <ul className="mt-3 space-y-2 text-sm text-gray-800 list-disc pl-5 break-words">{s.points.map((p, pi) => <li key={pi}>{p}</li>)}</ul>
           </section>
         ))}
       </div>
 
       {d.is_self && g && (
-        <div className="rounded-xl border bg-white p-4 space-y-3">
+        <div className="rounded-xl border bg-white p-3 sm:p-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2"><ClipboardCheck className="w-5 h-5 text-blue-600" /><h2 className="font-semibold text-gray-900">Product knowledge quiz</h2><span className="text-xs text-gray-500">{d.questions} questions · pass mark {d.pass_score}% · you can retake it — each attempt is a new quiz{d.quiz?.attempts ? ` · attempts so far: ${d.quiz.attempts}` : ''}</span></div>
           {quizDone && (
             <div className="flex flex-wrap items-center gap-3 text-sm text-green-800 bg-green-50 border border-green-200 rounded p-3"><CheckCircle2 className="w-5 h-5" />Quiz passed. This step is complete.
               {next && <Link to={next} className="ml-auto"><Button size="sm">Continue to HR policies <ArrowRight className="w-4 h-4 ml-1" /></Button></Link>}</div>
           )}
           {!quizDone && !studyDone && <p className="text-sm text-gray-600">The quiz opens after you have studied the material for {mmss(target)}.</p>}
-          {!quizDone && studyDone && !quiz && <Button onClick={start} disabled={busy || !open}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Start quiz</Button>}
+          {!quizDone && studyDone && !quiz && <Button className="w-full sm:w-auto" onClick={start} disabled={busy || !open}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Start quiz</Button>}
           {!quizDone && quiz && !result && (
             <div className="space-y-4">
               {quiz.questions.map((q, i) => (
                 <div key={q.id} className="rounded-lg border p-3">
                   <div className="flex items-start gap-2"><span className="text-sm font-semibold text-gray-500">{i + 1}.</span><div className="text-sm font-medium text-gray-900">{q.text}</div></div>
                   <div className="mt-2 grid gap-1.5 sm:grid-cols-2">{q.options.map((o, oi) => (
-                    <label key={oi} className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm cursor-pointer ${answers[q.id] === oi ? 'border-blue-600 bg-blue-50' : 'hover:bg-gray-50'}`}><input type="radio" name={q.id} checked={answers[q.id] === oi} onChange={() => setAnswers(a => ({ ...a, [q.id]: oi }))} />{o}</label>
+                    <label key={oi} className={`flex items-start gap-2 rounded-md border px-3 py-3 sm:py-2 text-sm cursor-pointer ${answers[q.id] === oi ? 'border-blue-600 bg-blue-50' : 'hover:bg-gray-50'}`}><input type="radio" className="mt-0.5 shrink-0" name={q.id} checked={answers[q.id] === oi} onChange={() => setAnswers(a => ({ ...a, [q.id]: oi }))} />{o}</label>
                   ))}</div>
                 </div>
               ))}
-              <Button onClick={submit} disabled={!answered || busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Submit answers</Button>
-              {!answered && <span className="ml-3 text-xs text-gray-500">Answer all {quiz.questions.length} questions.</span>}
+              <Button className="w-full sm:w-auto" onClick={submit} disabled={!answered || busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Submit answers</Button>
+              {!answered && <span className="block sm:inline sm:ml-3 mt-1 text-xs text-gray-500">Answer all {quiz.questions.length} questions.</span>}
             </div>
           )}
           {result && (
