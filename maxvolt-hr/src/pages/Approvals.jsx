@@ -45,6 +45,31 @@ export default function Approvals() {
     return false;
   };
 
+  // Can the current user act on this leave at ITS current approval step? Mirrors runLeaveAction on the server,
+  // so a request already passed on to HR shows "Awaiting HR" instead of buttons that would only error.
+  const leaveStepInfo = (leave) => {
+    const role = user?.custom_role || user?.role;
+    const emp = employees.find(e => e.user_id === leave.user_id);
+    const level = leave.current_approval_level || 1;
+    const wf = workflows.leave;
+    const step = wf?.steps?.length ? wf.steps[level - 1] : null;
+    const isHrRole = role === 'hr';
+    const inChain = !!user && (emp?.reporting_manager_id === user.id || resolveHierarchy(user.id, employees).downstreamIds.has(leave.user_id));
+    const mgmtIn = role === 'management' && inChain;
+    let can = role === 'admin';
+    if (!can) {
+      if (wf?.steps?.length) {
+        if (!step) can = isHrRole || mgmtIn;
+        else if (step.approver_type === 'reporting_manager') can = inChain || isHrRole;
+        else if (step.approver_type === 'hr') can = isHrRole || mgmtIn;
+        else if (step.approver_type === 'specific_user') can = step.specific_user_id === user?.id;
+      } else if (level === 1) can = emp?.reporting_manager_id ? inChain : isHrRole;
+      else if (level === 2) can = isHrRole || mgmtIn;
+    }
+    const approver = step ? ({ reporting_manager: 'reporting manager', hr: 'HR', admin: 'admin', specific_user: 'the assigned approver' }[step.approver_type] || 'the next approver') : (level === 1 ? 'reporting manager' : 'HR');
+    return { can, waitingFor: approver, level };
+  };
+
   const loadData = async () => {
     try {
       const currentUser = await base44.auth.me();
@@ -489,6 +514,7 @@ export default function Approvals() {
                   {leaveRequests.length > 0 ? (
                     leaveRequests.map(leave => {
                       const emp = employees.find(e => e.user_id === leave.user_id);
+                      const step = leaveStepInfo(leave);
                       return (
                         <div key={leave.id} className="border rounded-lg p-4">
                           <div className="flex justify-between items-start gap-4 flex-wrap">
@@ -501,14 +527,18 @@ export default function Approvals() {
                               <p className="text-sm text-muted-foreground">{leave.total_days} day(s)</p>
                               <p className="text-sm mt-2">{leave.reason}</p>
                             </div>
-                            <div className="flex gap-2">
-                              <Button onClick={() => handleLeaveApproval(leave.id, 'approved')} disabled={processing[leave.id]} size="sm" className="bg-green-600 hover:bg-green-700">
-                                <Check className="w-4 h-4 mr-1" /> Approve
-                              </Button>
-                              <Button onClick={() => handleLeaveApproval(leave.id, 'rejected')} disabled={processing[leave.id]} size="sm" variant="destructive">
-                                <X className="w-4 h-4 mr-1" /> Reject
-                              </Button>
-                            </div>
+                            {step.can ? (
+                              <div className="flex gap-2">
+                                <Button onClick={() => handleLeaveApproval(leave.id, 'approved')} disabled={processing[leave.id]} size="sm" className="bg-green-600 hover:bg-green-700">
+                                  <Check className="w-4 h-4 mr-1" /> Approve
+                                </Button>
+                                <Button onClick={() => handleLeaveApproval(leave.id, 'rejected')} disabled={processing[leave.id]} size="sm" variant="destructive">
+                                  <X className="w-4 h-4 mr-1" /> Reject
+                                </Button>
+                              </div>
+                            ) : (
+                              <Badge className="bg-orange-100 text-orange-800">Awaiting {step.waitingFor} (level {step.level})</Badge>
+                            )}
                           </div>
                         </div>
                       );
