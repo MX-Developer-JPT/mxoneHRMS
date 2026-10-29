@@ -19765,6 +19765,19 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
   }
 });
 
+// Object key inside the bucket from a stored path-style presigned URL (".../<bucket>/<key>?X-Amz-..."); null if it
+// is not a bucket URL.
+function payslipKeyFromUrl(url) {
+  const bucket = process.env.RAILWAY_BUCKET_NAME;
+  if (!url || !bucket) return null;
+  try {
+    const path = decodeURIComponent(new URL(url).pathname).replace(/^\/+/, '');
+    if (path.startsWith(bucket + '/')) return path.slice(bucket.length + 1);
+    const prefix = (process.env.RAILWAY_BUCKET_PREFIX || 'maxvolt-hr') + '/';
+    return path.startsWith(prefix) ? path : null; // virtual-hosted style: the path is already the key
+  } catch { return null; }
+}
+
 /* Resolves a Payroll's uploaded payslip PDF to a fresh URL (or base64 fallback), self-healing
    records stuck on inline base64 by migrating them to the bucket. Shared by getPayslipFileUrl and
    the token-based public download route. */
@@ -20136,6 +20149,21 @@ export async function payslipDownloadFile(req, res) {
   const d = JSON.parse(row.data);
   const f = await resolvePayslipFile(row, d);
   const filename = `Payslip_${d.employee_code || d.user_id}_${d.year}-${String(d.month).padStart(2, '0')}.pdf`;
+  // The URL stored on the record is a presigned link that dies after 7 days ("Request has expired"), so never
+  // hand it out: read the object straight from the bucket (header-signed, no expiry) and stream it.
+  const key = payslipKeyFromUrl(f.url);
+  if (key) {
+    try {
+      const { getFromBucket } = await import('../utils/bucket.js');
+      const obj = await getFromBucket(key);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+      if (obj.ContentLength != null) res.setHeader('Content-Length', obj.ContentLength);
+      obj.Body.on('error', () => res.destroy());
+      return obj.Body.pipe(res);
+    } catch (e) { console.error('[payslip-download] bucket read failed:', e.message); }
+  }
   if (f.url) return res.redirect(302, f.url);
   if (f.base64) {
     res.setHeader('Content-Type', 'application/pdf');
