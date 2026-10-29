@@ -107,6 +107,17 @@ async function getEmployee(userId) {
   const r = await one("SELECT id, data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
   return r ? parse(r) : null;
 }
+// A test cycle also works for an L&D admin who has no employee record: a stand-in profile is built from their user account (never saved
+// as an employee). It borrows the busiest department's name so the department org-chart steps have a real chart to study.
+async function testStandIn(userId) {
+  const u = await getUserRow(userId);
+  if (!u) return null;
+  const counts = {};
+  for (const e of await list('Employee')) if (e.status === 'active' && e.department) counts[e.department] = (counts[e.department] || 0) + 1;
+  const department = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+  const name = u.full_name || u.email || 'Test learner';
+  return { user_id: userId, display_name: name, full_name: name, employee_code: 'TEST', department, designation: 'Test learner', status: 'active', work_location: '', date_of_joining: todayIST() };
+}
 async function nameOf(userId) {
   if (!userId) return '';
   const e = await getEmployee(userId);
@@ -294,7 +305,7 @@ async function runAutoChecks(ind) {
     if (key in cache) return cache[key];
     let v = false;
     if (key === 'buddy_assigned') v = !!ind.buddy_user_id;
-    else if (key === 'onboarding_approved') { const e = await getEmployee(ind.user_id); v = !!e && e.status === 'active' && e.onboarding_rejected !== true; }
+    else if (key === 'onboarding_approved') { const e = await getEmployee(ind.user_id); v = !!ind.is_test || (!!e && e.status === 'active' && e.onboarding_rejected !== true); }
     else if (key === 'attendance_marked') v = !!(await one("SELECT id FROM entities WHERE type='Attendance' AND user_id=$1 LIMIT 1", [ind.user_id]));
     else if (key === 'helpdesk_ticket') v = !!(await one("SELECT id FROM entities WHERE type='Ticket' AND user_id=$1 LIMIT 1", [ind.user_id]));
     return (cache[key] = v);
@@ -310,7 +321,7 @@ export async function createInduction(userId, { actorId = 'system', buddy_user_i
   await ensureSeed();
   const existing = (await list('LdInduction')).find(i => i.user_id === userId && i.status !== 'CANCELLED');
   if (existing) { if (!force) return existing; }
-  const emp = await getEmployee(userId);
+  const emp = (await getEmployee(userId)) || (test ? await testStandIn(userId) : null);
   if (!emp) throw new Error('Employee record not found for this user');
   const tpls = (await list('LdTemplate')).filter(t => t.status === 'active').sort((a, b) => (b.version || 0) - (a.version || 0));
   const tpl = tpls[0];
@@ -1900,7 +1911,7 @@ const HANDLERS = {
       if (p.accept !== true) return fail(res, 'Please tick the acknowledgement');
       const need = t.min_read_seconds || 0;
       if ((t.watch?.sec || 0) < need) return fail(res, `Please keep the policy open and read it — ${Math.max(1, Math.ceil(need - (t.watch?.sec || 0)))} more second(s) needed before you can sign`);
-      const emp = await getEmployee(ctx.id);
+      const emp = (await getEmployee(ctx.id)) || (ind.is_test ? await testStandIn(ctx.id) : null);
       if (!namesMatch(p.typed_name, emp?.display_name) && !namesMatch(p.typed_name, emp?.full_name)) return fail(res, 'Type your own full name exactly as it appears in Maxvolt One to sign');
       const policy = await get('CompanyPolicy', t.policy_id);
       const rec = {
@@ -2125,7 +2136,7 @@ const HANDLERS = {
     }
     let ind;
     try { ind = await createInduction(ctx.id, { actorId: ctx.id, test: true }); }
-    catch (e) { return fail(res, e.message === 'Employee record not found for this user' ? 'Your login has no employee record, so a test induction cannot be built for you. Ask an admin to add one.' : e.message); }
+    catch (e) { return fail(res, e.message); }
     const course = await create('LdCourse', { is_test: true, test_owner: ctx.id, title: 'TEST — training cycle check', category: 'Test', type: 'document', description: 'Created by the L&D test cycle. Start it, wait 30 seconds, then mark it complete to see the whole training flow, including the certificate.', duration_min: 1, mandatory: false, issues_certificate: true, validity_months: 0, status: 'active', version: 1, code: 'TEST-' + uuidv4().slice(0, 6).toUpperCase() });
     await create('LdAssignment', { is_test: true, test_owner: ctx.id, user_id: ctx.id, course_id: course.id, course_title: course.title, assigned_by: ctx.id, assigned_at: nowIso(), due_date: addDays(todayIST(), 7), mandatory: false, source: 'test', status: 'ASSIGNED', progress: 0, course_version: 1 }, ctx.id);
     await audit('LdInduction', ind.id, 'test_cycle_started', ctx.id, { restart: !!p.restart }, ctx.id);
