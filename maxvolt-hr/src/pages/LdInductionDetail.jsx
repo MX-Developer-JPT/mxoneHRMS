@@ -18,12 +18,12 @@ import { createPageUrl } from '@/utils';
 import { mmss } from '@/lib/ldTime';
 
 // Steps that open their own screen (they cannot be ticked off by hand)
-const STEP_PAGE = { timed: 'LdWebsiteTour', policy_ack: 'LdPolicyReader', org_view: 'LdDeptIntro', org_quiz: 'LdDeptIntro', product_study: 'LdProductTraining', product_quiz: 'LdProductTraining' };
+const STEP_PAGE = { timed: 'LdWebsiteTour', policy_ack: 'LdPolicyReader', org_view: 'LdDeptIntro', org_quiz: 'LdDeptIntro', product_study: 'LdProductTraining', product_quiz: 'LdProductTraining', course_study: 'LdInductionCourse', course_quiz: 'LdInductionCourse' };
 
 const ACTIVE_EDIT = ['READY', 'IN_PROGRESS', 'OVERDUE'];
 
 // After a failed attempt the employee must revisit the weak topics (and wait a short cooling-off) before retrying.
-function RelearnPanel({ g, onConfirm, busy }) {
+function RelearnPanel({ g, onConfirm, busy, courseId }) {
   const info = g.attempts_info || {};
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
@@ -38,7 +38,9 @@ function RelearnPanel({ g, onConfirm, busy }) {
       )}
       {last?.gaps?.length > 0 && <details className="text-xs text-amber-900"><summary className="cursor-pointer">Questions you missed</summary><ul className="list-disc pl-4 mt-1 space-y-0.5">{last.gaps.slice(0, 15).map((q, i) => <li key={i}>{q}</li>)}</ul></details>}
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" onClick={() => openContent('induction-deck').catch(e => toast.error(e.message))}>Open induction presentation</Button>
+        {courseId
+          ? <Link to={`${createPageUrl('LdInductionCourse')}?id=${courseId}`}><Button size="sm" variant="outline">Open the induction course</Button></Link>
+          : <Button size="sm" variant="outline" onClick={() => openContent('induction-deck').catch(e => toast.error(e.message))}>Open induction presentation</Button>}
         <Button size="sm" variant="outline" onClick={() => openContent('induction-guide').catch(e => toast.error(e.message))}>Open training guide</Button>
         <Button size="sm" disabled={left > 0 || busy} onClick={onConfirm}>{left > 0 ? `I have reviewed the topics (${left}s)` : 'I have reviewed the topics'}</Button>
       </div>
@@ -139,7 +141,11 @@ export default function LdInductionDetail() {
             <p className="text-sm text-gray-600 pt-3">{g.description}</p>
             {g.status === 'BLOCKED' && <div className="text-sm bg-orange-50 border border-orange-200 rounded p-2 text-orange-800"><ShieldAlert className="w-4 h-4 inline mr-1" />Blocked: {g.block_reason || 'on hold'}</div>}
             {g.status === 'WAIVED' && <div className="text-sm bg-purple-50 border border-purple-200 rounded p-2 text-purple-800">Formally waived — see the Waivers tab for the approval.</div>}
-            {g.content?.length > 0 && (
+            {g.content?.length > 0 && can.self && ind.gates.some(x => x.gate_id === 'C1') && (
+              <div className="text-sm bg-blue-50 border border-blue-200 rounded p-2 text-blue-900 flex flex-wrap items-center gap-2">The lessons for this step are in the induction course.
+                <Link to={`${createPageUrl('LdInductionCourse')}?id=${ind.id}`}><Button size="sm" variant="outline">Open the induction course</Button></Link></div>
+            )}
+            {g.content?.length > 0 && !(can.self && ind.gates.some(x => x.gate_id === 'C1')) && (
               <div className="flex flex-wrap gap-2">
                 {g.content.map(c => <Button key={c.file} size="sm" variant="outline" onClick={() => openContent(c.file).catch(e => toast.error(e.message))}><ExternalLink className="w-3.5 h-3.5 mr-1" />{c.title}</Button>)}
               </div>
@@ -210,7 +216,7 @@ export default function LdInductionDetail() {
                 </div>
                 {g.attempts_info?.critical_rule && <div className="text-[11px] text-gray-500">Safety / compliance questions marked “critical” must all be answered correctly in addition to the pass mark.</div>}
                 {g.attempts.length > 0 && <div className="text-xs text-gray-600 space-y-0.5">{g.attempts.map((a, i) => <div key={a.attempt_id}>Attempt {i + 1}: <b className={a.passed ? 'text-green-700' : 'text-red-700'}>{a.expired ? 'time expired' : `${a.score}%`}</b> {a.passed ? 'passed' : 'not passed'}{a.critical_failed > 0 ? ` · ${a.critical_failed} critical wrong` : ''} · {fmtDateTime(a.at)}</div>)}</div>}
-                {can.self && g.attempts_info?.needs_relearn && editable && <RelearnPanel g={g} busy={busy === 'rl'} onConfirm={() => run('rl', 'ld_ackRelearn', { gate_id: g.gate_id }, 'Thanks — you can retake the assessment now')} />}
+                {can.self && g.attempts_info?.needs_relearn && editable && <RelearnPanel g={g} courseId={ind.gates.some(x => x.gate_id === 'C1') ? ind.id : null} busy={busy === 'rl'} onConfirm={() => run('rl', 'ld_ackRelearn', { gate_id: g.gate_id }, 'Thanks — you can retake the assessment now')} />}
                 {can.self && editable && tasksDone && !g.attempts_info?.needs_relearn && <Link to={`/LdAssessment?induction_id=${ind.id}&gate_id=${g.gate_id}`}><Button size="sm" className="gap-1"><ClipboardCheck className="w-4 h-4" />{g.attempts.length ? 'Retake assessment' : 'Take assessment'}</Button></Link>}
                 {can.self && editable && !tasksDone && <div className="text-xs text-gray-500">Finish the preparation items first.</div>}
               </div>

@@ -73,6 +73,7 @@ const LdWebsiteTour = lazy(() => import('./pages/LdWebsiteTour'));
 const LdPolicyReader = lazy(() => import('./pages/LdPolicyReader'));
 const LdDeptIntro = lazy(() => import('./pages/LdDeptIntro'));
 const LdProductTraining = lazy(() => import('./pages/LdProductTraining'));
+const LdInductionCourse = lazy(() => import('./pages/LdInductionCourse'));
 const PulseSurveyResults = lazy(() => import('./pages/PulseSurveyResults'));
 const LdAssessment = lazy(() => import('./pages/LdAssessment'));
 const LdCertificate = lazy(() => import('./pages/LdCertificate'));
@@ -485,6 +486,11 @@ const AuthenticatedApp = () => {
       <Route path="/LdWebsiteTour" element={
         <LayoutWrapper currentPageName="LdWebsiteTour">
           <LdWebsiteTour />
+        </LayoutWrapper>
+      } />
+      <Route path="/LdInductionCourse" element={
+        <LayoutWrapper currentPageName="LdInductionCourse">
+          <LdInductionCourse />
         </LayoutWrapper>
       } />
       <Route path="/LdProductTraining" element={

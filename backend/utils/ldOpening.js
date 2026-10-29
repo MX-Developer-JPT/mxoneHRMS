@@ -1,5 +1,6 @@
 // L&D opening steps — pure logic (no database): the three steps a new joiner starts with.
 //   W1  Explore the Maxvolt website for 10 minutes (time is tracked while the page is open and in focus)
+//   C1  Maxvolt induction course: the whole induction deck as lessons (study time tracked), then a quiz
 //   W2  Know our products, services and segments: study the product material, then a quiz (pass mark as set in L&D settings)
 //   P1  HR policies, one by one: read, then sign "I have read and acknowledged the said policy and promise to adhere to it"
 //   D1  Department introduction: the department's org chart (Management = top level, their direct reports = middle level)
@@ -12,6 +13,8 @@ export const ACK_STATEMENT = 'I have read and acknowledged the said policy and p
 export const DEFAULT_MIN_READ_SECONDS = 60;
 export const ORG_VIEW_SECONDS = 120;
 export const ORG_QUIZ_QUESTIONS = 10;
+export const COURSE_STUDY_SECONDS = 900;
+export const COURSE_QUIZ_QUESTIONS = 15;
 export const PRODUCT_STUDY_SECONDS = 480;
 export const PRODUCT_QUIZ_QUESTIONS = 10;
 
@@ -27,7 +30,16 @@ export function openingGates() {
       tasks: [t('W1-1', 'Browse www.maxvoltenergy.com for 10 minutes', { type: 'timed', target_seconds: WEBSITE_SECONDS, url: WEBSITE_URL })],
     },
     {
-      gate_id: 'W2', seq: 0.3, name: 'Know Our Products, Services and Segments', owner_roles: ['hr'], required: true, depends_on: ['W1'],
+      gate_id: 'C1', seq: 0.25, name: 'Maxvolt Induction Course', owner_roles: ['hr'], required: true, depends_on: ['W1'],
+      due_offset_days: 1, completion: 'auto',
+      description: 'The full Maxvolt induction as interactive lessons: who we are, values, business, journey, ReEarth, research, how we operate, leadership and departments, culture, working hours and benefits, Maxvolt One, your first 90 days and your support network. Study the lessons, then pass a short quiz.',
+      tasks: [
+        t('C1-1', 'Study the Maxvolt induction course (13 lessons)', { type: 'course_study', target_seconds: COURSE_STUDY_SECONDS }),
+        t('C1-2', 'Induction course quiz — pass mark as set in L&D settings', { type: 'course_quiz' }),
+      ],
+    },
+    {
+      gate_id: 'W2', seq: 0.3, name: 'Know Our Products, Services and Segments', owner_roles: ['hr'], required: true, depends_on: ['C1'],
       due_offset_days: 1, completion: 'auto',
       description: 'What Maxvolt makes and who it serves: e-mobility batteries, inverter batteries and smart inverters, solar and rack-type storage, custom packs, services, ReEarth recycling. Study the material, then pass a short quiz.',
       tasks: [
@@ -55,7 +67,7 @@ export function openingGates() {
 
 // Add (or refresh) the opening gates in a template's gate list and re-point the first learning gate at them.
 export function withOpeningGates(gates) {
-  const ids = new Set(['W1', 'W2', 'P1', 'D1']);
+  const ids = new Set(['W1', 'C1', 'W2', 'P1', 'D1']);
   const base = gates.filter(g => !ids.has(g.gate_id)).map(g => JSON.parse(JSON.stringify(g)));
   const first = base.find(g => g.gate_id === 'G01');
   if (first) first.depends_on = ['D1'];

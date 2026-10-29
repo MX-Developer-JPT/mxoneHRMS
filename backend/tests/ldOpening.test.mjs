@@ -147,9 +147,9 @@ t('policies: induction list, order, one-by-one unlocking, signed ones are kept',
 t('template: opening gates go after Pre-Joining Readiness and the first learning gate waits for them; idempotent', () => {
   const base = [{ gate_id: 'G00', seq: 0, depends_on: [] }, { gate_id: 'G01', seq: 1, depends_on: ['G00'] }, { gate_id: 'G02', seq: 2, depends_on: ['G01'] }];
   const out = withOpeningGates(base);
-  assert.deepEqual(out.map(g => g.gate_id), ['G00', 'W1', 'W2', 'P1', 'D1', 'G01', 'G02']);
+  assert.deepEqual(out.map(g => g.gate_id), ['G00', 'W1', 'C1', 'W2', 'P1', 'D1', 'G01', 'G02']);
   assert.deepEqual(out.find(g => g.gate_id === 'G01').depends_on, ['D1']);
-  assert.deepEqual(out.find(g => g.gate_id === 'W1').depends_on, ['G00']); assert.deepEqual(out.find(g => g.gate_id === 'W2').depends_on, ['W1']); assert.deepEqual(out.find(g => g.gate_id === 'P1').depends_on, ['W2']); assert.deepEqual(out.find(g => g.gate_id === 'D1').depends_on, ['P1']);
+  assert.deepEqual(out.find(g => g.gate_id === 'W1').depends_on, ['G00']); assert.deepEqual(out.find(g => g.gate_id === 'C1').depends_on, ['W1']); assert.deepEqual(out.find(g => g.gate_id === 'W2').depends_on, ['C1']); assert.deepEqual(out.find(g => g.gate_id === 'P1').depends_on, ['W2']); assert.deepEqual(out.find(g => g.gate_id === 'D1').depends_on, ['P1']);
   assert.deepEqual(withOpeningGates(out).map(g => g.gate_id), out.map(g => g.gate_id));
   assert.deepEqual(base[1].depends_on, ['G00'], 'input untouched');
   assert.ok(openingGates().every(g => g.completion === 'auto' && g.tasks.every(x => x.server_only) || g.gate_id === 'P1'));

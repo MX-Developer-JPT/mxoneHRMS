@@ -53,9 +53,9 @@ t('learner content never contains the answer key', () => {
   assert.equal(productTrainingContent().study_seconds, PRODUCT_STUDY_SECONDS);
 });
 
-t('W2 gate: study then quiz, both server-only, waits for the website tour', () => {
+t('W2 gate: study then quiz, both server-only, waits for the induction course', () => {
   const w2 = openingGates().find(g => g.gate_id === 'W2');
-  assert.deepEqual(w2.depends_on, ['W1']);
+  assert.deepEqual(w2.depends_on, ['C1']);
   assert.deepEqual(w2.tasks.map(x => x.type), ['product_study', 'product_quiz']);
   assert.ok(w2.tasks.every(x => x.server_only && x.required));
   assert.equal(w2.tasks[0].target_seconds, PRODUCT_STUDY_SECONDS);
