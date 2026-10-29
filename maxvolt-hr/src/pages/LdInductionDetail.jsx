@@ -18,7 +18,7 @@ import { createPageUrl } from '@/utils';
 import { mmss } from '@/lib/ldTime';
 
 // Steps that open their own screen (they cannot be ticked off by hand)
-const STEP_PAGE = { timed: 'LdWebsiteTour', policy_ack: 'LdPolicyReader', org_view: 'LdDeptIntro', org_quiz: 'LdDeptIntro' };
+const STEP_PAGE = { timed: 'LdWebsiteTour', policy_ack: 'LdPolicyReader', org_view: 'LdDeptIntro', org_quiz: 'LdDeptIntro', product_study: 'LdProductTraining', product_quiz: 'LdProductTraining' };
 
 const ACTIVE_EDIT = ['READY', 'IN_PROGRESS', 'OVERDUE'];
 

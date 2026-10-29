@@ -10,7 +10,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { DEFAULT_CONFIG, DEFAULT_TEMPLATE, DEFAULT_ASSESSMENT, DEFAULT_COURSES, SEED_QUESTION_TAGS } from '../utils/ldSeed.js';
 import { drawQuestions, makeOptionOrders, publicQuestions, unmapAnswers, gradeAttempt } from '../utils/ldAssess.js';
-import { isPdfUrl, openingGates, withOpeningGates, addWatchTime, syncPolicyTasks, policyStates, inductionPolicies, namesMatch, buildDeptOrg, makeOrgQuiz, gradeOrgQuiz, ACK_STATEMENT, WEBSITE_URL, WEBSITE_SECONDS, ORG_QUIZ_QUESTIONS } from '../utils/ldOpening.js';
+import { isPdfUrl, openingGates, withOpeningGates, addWatchTime, syncPolicyTasks, policyStates, inductionPolicies, namesMatch, buildDeptOrg, makeOrgQuiz, gradeOrgQuiz, ACK_STATEMENT, WEBSITE_URL, WEBSITE_SECONDS, ORG_QUIZ_QUESTIONS, PRODUCT_QUIZ_QUESTIONS } from '../utils/ldOpening.js';
+import { makeProductQuiz, productTrainingContent } from '../utils/ldProducts.js';
 import { createHash } from 'crypto';
 
 const IST_MS = 5.5 * 3600000;
@@ -1586,8 +1587,8 @@ const HANDLERS = {
     add('trainers', trainers.length ? 'ok' : 'fail', 'Trainers', trainers.length ? `${trainers.length} active trainer(s) registered.` : 'No trainer is registered. Sign-offs for the learning, policy, practical and capability steps need a trainer (or HR). Register trainers, then assign them to the running inductions.', trainers.length ? null : { type: 'tab', tab: 'trainers', label: 'Add trainers' });
     add('ld_admins', cfg.ld_admin_user_ids.length ? 'ok' : 'warn', 'L&D administrators', cfg.ld_admin_user_ids.length ? `${cfg.ld_admin_user_ids.length} named L&D administrator(s).` : 'No L&D administrator is named, so the last escalation level goes to HR. Name one or more in Settings if someone besides HR should own this.', cfg.ld_admin_user_ids.length ? null : { type: 'tab', tab: 'settings', label: 'Open Settings' });
 
-    const hasOpening = !!tpl?.gates?.some(g => g.gate_id === 'W1');
-    add('opening', hasOpening ? 'ok' : 'warn', 'Website, policy and org-chart steps', hasOpening ? 'Every induction starts with the 10-minute website tour, the HR policies (read and sign one by one) and the department org chart.' : 'Not part of the induction yet. Publish them so every new joiner starts with the website tour, policy acknowledgements and the department org chart.', hasOpening ? null : { type: 'publish_opening', label: 'Publish these steps' });
+    const hasOpening = !!tpl?.gates?.some(g => g.gate_id === 'W2');
+    add('opening', hasOpening ? 'ok' : 'warn', 'Website, product, policy and org-chart steps', hasOpening ? 'Every induction starts with the 10-minute website tour, product knowledge (study + quiz), the HR policies (read and sign one by one) and the department org chart.' : 'Not part of the induction yet. Publish them so every new joiner starts with the website tour, product knowledge, policy acknowledgements and the department org chart.', hasOpening ? null : { type: 'publish_opening', label: 'Publish these steps' });
     if (hasOpening) {
       const allPols = await list('CompanyPolicy');
       const pols = inductionPolicies(allPols);
@@ -1749,7 +1750,7 @@ const HANDLERS = {
       if (ctx.id !== ind.user_id) return forbid(res, 'Only the employee can do this step');
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       const t = g?.tasks.find(x => x.id === p.task_id);
-      if (!g || !t || !['timed', 'org_view', 'policy_ack'].includes(t.type)) return fail(res, 'Step not found', 404);
+      if (!g || !t || !['timed', 'org_view', 'policy_ack', 'product_study'].includes(t.type)) return fail(res, 'Step not found', 404);
       const info = (extra = {}) => ({ seconds: Math.round(t.watch?.sec || 0), target: t.target_seconds || t.min_read_seconds || 0, done: !!t.done, ...extra });
       if (t.done) return ok(res, info());
       if (!gateActive(g)) return fail(res, 'This step is not open yet');
@@ -1928,13 +1929,70 @@ const HANDLERS = {
     });
   },
 
-  // HR: add the website / policy / org-chart steps to the induction template (new version) and, optionally, to running inductions
+  // Product knowledge (step W2): what Maxvolt makes and who it serves — study material, tracked study time and a quiz.
+  async ld_getProductTraining(p, ctx, res) {
+    let ind = null;
+    if (p.induction_id) {
+      ind = await loadInduction(p.induction_id);
+      if (!ind) return fail(res, 'Induction not found', 404);
+      if (!canView(ctx, ind)) return forbid(res);
+    } else if (!ctx.isLdAdmin) return forbid(res);
+    const g = ind?.gates.find(x => x.gate_id === 'W2') || null;
+    const study = g?.tasks.find(x => x.type === 'product_study'), quiz = g?.tasks.find(x => x.type === 'product_quiz');
+    return ok(res, {
+      ...productTrainingContent(), pass_score: ctx.cfg.induction_pass_score, questions: PRODUCT_QUIZ_QUESTIONS,
+      is_self: !!ind && ctx.id === ind.user_id, paused: !!ind && !!ctx.cfg.paused && !ind.pause_exempt,
+      gate: g ? { gate_id: g.gate_id, name: g.name, status: g.status, due_date: g.due_date, description: g.description } : null,
+      study: study ? { task_id: study.id, done: !!study.done, seconds: Math.round(study.watch?.sec || 0), target: study.target_seconds } : null,
+      quiz: quiz ? { task_id: quiz.id, done: !!quiz.done, attempts: (quiz.attempts || []).length, last_score: quiz.attempts?.length ? quiz.attempts[quiz.attempts.length - 1].score : null } : null,
+    });
+  },
+  async ld_startProductQuiz(p, ctx, res) {
+    if (await frozenFor(ctx, p.induction_id)) return fail(res, PAUSED_MSG);
+    const ind = await loadInduction(p.induction_id);
+    if (!ind) return fail(res, 'Induction not found', 404);
+    if (ctx.id !== ind.user_id) return forbid(res, 'Only the employee can take the quiz');
+    const g = ind.gates.find(x => x.gate_id === 'W2');
+    const study = g?.tasks.find(x => x.type === 'product_study'), qt = g?.tasks.find(x => x.type === 'product_quiz');
+    if (!g || !qt) return fail(res, 'Quiz step not found', 404);
+    if (qt.done) return fail(res, 'You have already passed this quiz');
+    if (!gateActive(g)) return fail(res, 'This step is not open yet');
+    if (!study?.done) return fail(res, 'Study the product material for the required time first');
+    let quiz = (await list('LdProductQuiz', 'AND user_id=$2', [ctx.id])).find(x => x.induction_id === ind.id && x.status === 'IN_PROGRESS');
+    if (!quiz) {
+      const seed = Math.floor(Math.random() * 2 ** 31);
+      quiz = await create('LdProductQuiz', { user_id: ctx.id, induction_id: ind.id, seed, questions: makeProductQuiz({ n: PRODUCT_QUIZ_QUESTIONS, seed }), status: 'IN_PROGRESS', started_at: nowIso() }, ctx.id);
+    }
+    return ok(res, { quiz_id: quiz.id, pass_score: ctx.cfg.induction_pass_score, attempt_no: (qt.attempts || []).length + 1, questions: quiz.questions.map(q => ({ id: q.id, topic: q.topic, text: q.text, options: q.options })) });
+  },
+  async ld_submitProductQuiz(p, ctx, res) {
+    const quiz = await get('LdProductQuiz', p.quiz_id);
+    if (!quiz || quiz.user_id !== ctx.id) return fail(res, 'Quiz not found', 404);
+    if (quiz.status !== 'IN_PROGRESS') return fail(res, 'This quiz was already submitted');
+    if (await frozenFor(ctx, quiz.induction_id)) return fail(res, PAUSED_MSG);
+    return mutate(quiz.induction_id, ctx, res, async (ind) => {
+      const g = ind.gates.find(x => x.gate_id === 'W2');
+      const qt = g?.tasks.find(x => x.type === 'product_quiz');
+      if (!g || !qt) { fail(res, 'Quiz step not found', 404); return false; }
+      const need = ctx.cfg.induction_pass_score;
+      const gr = gradeOrgQuiz(quiz.questions, p.answers || {}, need);
+      Object.assign(quiz, { status: 'SUBMITTED', submitted_at: nowIso(), answers: p.answers || {}, score: gr.score, passed: gr.passed });
+      await save('LdProductQuiz', quiz);
+      qt.attempts = [...(qt.attempts || []), { quiz_id: quiz.id, at: quiz.submitted_at, score: gr.score, passed: gr.passed }];
+      if (gr.passed) { qt.done = true; qt.done_at = nowIso(); qt.done_by = ctx.id; }
+      await audit('LdInduction', ind.id, gr.passed ? 'product_quiz_passed' : 'product_quiz_failed', ctx.id, { score: gr.score }, ind.user_id);
+      evaluateGate(ind, g);
+      return { result: { score: gr.score, passed: gr.passed, pass_score: need, right: gr.right, total: gr.total, results: gr.results.map(r => ({ id: r.id, ok: r.ok, picked: r.picked, correct_index: r.correct_index, correct_text: r.correct_text })) } };
+    });
+  },
+
+  // HR: add the website / product / policy / org-chart steps to the induction template (new version) and, optionally, to running inductions
   // that have not started the corporate induction yet. Safe to run again.
   async ld_publishOpeningSteps(p, ctx, res) {
     if (!ctx.isLdAdmin) return forbid(res);
     const cur = await activeTemplate();
     if (!cur) return fail(res, 'No active induction template');
-    const has = ['W1', 'P1', 'D1'].every(id => cur.gates.some(g => g.gate_id === id));
+    const has = ['W1', 'W2', 'P1', 'D1'].every(id => cur.gates.some(g => g.gate_id === id));
     let version = cur.version;
     if (!has) {
       cur.status = 'superseded'; await save('LdTemplate', cur);
@@ -1960,6 +2018,26 @@ const HANDLERS = {
           ind.progress = progressOf(ind);
           await save('LdInduction', ind);
           await audit('LdInduction', ind.id, 'opening_steps_added', ctx.id, {}, ind.user_id);
+          migrated.push(ind.employee.name);
+        });
+      }
+    }
+    if (p.apply_to_running) {
+      // inductions that already got the website / policy / org-chart steps earlier: add the product step after the website tour
+      for (const row of (await list('LdInduction')).filter(i => i.status === 'IN_PROGRESS' && i.gates.some(g => g.gate_id === 'W1') && !i.gates.some(g => g.gate_id === 'W2'))) {
+        await withLock('ind:' + row.id, async () => {
+          const ind = await loadInduction(row.id);
+          if (!ind || ind.status !== 'IN_PROGRESS') return;
+          const started = ind.gates.some(g => g.seq >= 1 && (g.tasks.some(t => t.done) || (g.attempts || []).length || !['LOCKED', 'READY'].includes(g.status)));
+          if (started) { skipped.push(ind.employee.name); return; }
+          const w2 = buildGate(openingGates().find(g => g.gate_id === 'W2'), ind.anchor_date);
+          ind.gates.splice(ind.gates.findIndex(g => g.gate_id === 'W1') + 1, 0, w2);
+          const p1 = ind.gates.find(g => g.gate_id === 'P1');
+          if (p1) { p1.depends_on = ['W2']; if (p1.status === 'READY' && !p1.tasks.some(t => t.done)) setStatus(p1, 'LOCKED', ctx.id, 'product step added before this step'); }
+          recompute(ind);
+          ind.progress = progressOf(ind);
+          await save('LdInduction', ind);
+          await audit('LdInduction', ind.id, 'product_step_added', ctx.id, {}, ind.user_id);
           migrated.push(ind.employee.name);
         });
       }

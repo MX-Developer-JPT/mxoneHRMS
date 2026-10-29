@@ -36,7 +36,8 @@ export default function LdWebsiteTour() {
   const done = !!t.done || clock.done;
   const secs = done ? target : Math.min(clock.seconds, target);
   const pct = Math.min(100, Math.round((secs / target) * 100));
-  const next = ind.gates.find(x => x.gate_id === 'P1');
+  const nextProducts = ind.gates.find(x => x.gate_id === 'W2');
+  const next = nextProducts || ind.gates.find(x => x.gate_id === 'P1');
 
   return (
     <div className="flex flex-col" style={{ minHeight: 'calc(100vh - 80px)' }}>
@@ -57,7 +58,7 @@ export default function LdWebsiteTour() {
         {done && (
           <div className="flex flex-wrap items-center gap-3 text-sm text-green-800 bg-green-50 border border-green-200 rounded p-2.5">
             <CheckCircle2 className="w-4 h-4" />10 minutes complete — well done.
-            {next && <Link to={`${createPageUrl('LdPolicyReader')}?id=${id}`} className="ml-auto"><Button size="sm">Continue to HR policies <ArrowRight className="w-4 h-4 ml-1" /></Button></Link>}
+            {next && <Link to={`${createPageUrl(nextProducts ? 'LdProductTraining' : 'LdPolicyReader')}?id=${id}`} className="ml-auto"><Button size="sm">{nextProducts ? 'Continue to our products' : 'Continue to HR policies'} <ArrowRight className="w-4 h-4 ml-1" /></Button></Link>}
           </div>
         )}
       </div>
