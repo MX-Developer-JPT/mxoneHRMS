@@ -19,6 +19,7 @@ import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js
 import { isRoasterPolicy, roasterErrors, departmentAllowed, isDuhai, ROASTER_EXCLUDED_DEPARTMENTS } from '../utils/roaster.js';
 import { loadRoasterConfig, saveRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
+import { COMPETENCIES, MIN_RATERS, LEGACY_PERIOD, currentPeriod, normalizePeriod, periodLabel, validateSubmission, summarize, periodsOf } from '../utils/feedback360.js';
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18778,39 +18779,113 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       return res.json({ success: true, records, summary });
     }
 
+    // ── 360° feedback ─────────────────────────────────────────────────────────────────────────────────────────────
+    // One rating per reviewer, colleague and half-year period (a second submission edits the first). Nobody — not the person rated,
+    // not their manager, not HR — ever sees who rated; see utils/feedback360.js for the anonymity rules.
     case 'submit360Feedback': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { subject_user_id, relationship, answers, period } = p;
-      const feedbackId = uuidv4();
-      const data = { id: feedbackId, subject_user_id, reviewer_user_id: cu?.id, relationship, answers: answers || {}, period: period || `${new Date().getFullYear()}-H1`, submitted_at: new Date().toISOString() };
-      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Feedback360',$2,'submitted',$3)", [feedbackId, subject_user_id, JSON.stringify(data)]);
-      return res.json({ success: true, feedback_id: feedbackId });
+      const sfPeriod = normalizePeriod(p.period);
+      const sfV = validateSubmission({ reviewerId: cu.id, subjectId: p.subject_user_id, relationship: p.relationship, answers: p.answers });
+      if (!sfV.ok) return res.json({ success: false, error: sfV.error });
+      const sfSubj = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1 AND status='active'", [p.subject_user_id]);
+      if (!sfSubj) return res.json({ success: false, error: 'That colleague was not found.' });
+      const sfMine = (await all("SELECT id, data FROM entities WHERE type='Feedback360' AND user_id=$1 AND data::jsonb->>'reviewer_user_id'=$2", [p.subject_user_id, cu.id])).map(r => ({ id: r.id, ...JSON.parse(r.data) }));
+      const sfOld = sfMine.find(r => (r.period || LEGACY_PERIOD) === sfPeriod);
+      const sfNow = new Date().toISOString();
+      const sfId = sfOld?.id || uuidv4();
+      const sfData = { id: sfId, subject_user_id: p.subject_user_id, reviewer_user_id: cu.id, relationship: p.relationship, answers: sfV.clean, period: sfPeriod, submitted_at: sfOld?.submitted_at || sfNow, updated_at: sfNow };
+      if (sfOld) await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(sfData), sfId]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Feedback360',$2,'submitted',$3)", [sfId, p.subject_user_id, JSON.stringify(sfData)]);
+      // the person rated hears the moment their results become visible (the third rater), never who rated
+      if (!sfOld && p.relationship !== 'self') {
+        const sfCount = (await all("SELECT data FROM entities WHERE type='Feedback360' AND user_id=$1", [p.subject_user_id])).map(r => JSON.parse(r.data)).filter(r => (r.period || LEGACY_PERIOD) === sfPeriod && r.relationship !== 'self').length;
+        if (sfCount === MIN_RATERS) await notify(p.subject_user_id, { title: '360° feedback results are ready', message: `${MIN_RATERS} colleagues have now rated you for ${periodLabel(sfPeriod)} — your results are available under 360° Feedback.`, type: 'info', link: '/FeedbackSystem' });
+      }
+      return res.json({ success: true, feedback_id: sfId, updated: !!sfOld, period: sfPeriod });
     }
 
     case 'get360FeedbackData': {
-      const { subject_user_id, period } = p;
-      const targetUser = subject_user_id || cu?.id;
-      if (!(await canAccessEmployee(cu, targetUser))) return res.status(403).json({ error: 'Access denied' });
-      const rows = await all("SELECT data FROM entities WHERE type='Feedback360' AND user_id=$1", [targetUser]);
-      const feedbacks = rows.map(r => JSON.parse(r.data)).filter(f => !period || f.period === period);
+      const gfTarget = p.subject_user_id || cu?.id;
+      if (!(await canAccessEmployee(cu, gfTarget))) return res.status(403).json({ error: 'Access denied' });
+      const gfPrivileged = await hasRole(cu, HR_ROLES);
+      const gfRows = (await all("SELECT data FROM entities WHERE type='Feedback360' AND user_id=$1", [gfTarget])).map(r => JSON.parse(r.data)).map(r => ({ ...r, period: r.period || LEGACY_PERIOD }));
+      const gfPeriods = periodsOf(gfRows);
+      if (!gfPeriods.includes(currentPeriod())) gfPeriods.unshift(currentPeriod());
+      const gfPeriod = p.period || gfPeriods[0];
+      const gfSummary = summarize(gfRows.filter(r => r.period === gfPeriod), { privileged: gfPrivileged });
+      const gfTrend = gfPeriods.filter(x => gfRows.some(r => r.period === x)).reverse().map(x => { const sm = summarize(gfRows.filter(r => r.period === x), { privileged: gfPrivileged }); return { period: x, label: periodLabel(x), overall: sm.overall, reviewers: sm.reviewers, hidden: sm.hidden }; });
+      const gfEmp = gfTarget !== cu.id ? await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [gfTarget]) : null;
+      const gfE = gfEmp ? JSON.parse(gfEmp.data) : null;
+      return res.json({
+        success: true, period: gfPeriod, period_label: periodLabel(gfPeriod), periods: gfPeriods.map(x => ({ value: x, label: periodLabel(x) })), competencies: COMPETENCIES,
+        subject: gfE ? { user_id: gfTarget, name: gfE.display_name, code: gfE.employee_code, department: gfE.department, designation: gfE.designation } : null,
+        ...gfSummary, total_reviewers: gfSummary.reviewers, trend: gfTrend, viewer_is_hr: gfPrivileged,
+      });
+    }
 
-      if (!feedbacks.length) return res.json({ success: true, feedbacks: [], aggregate: null });
+    // Who the signed-in person can give feedback to: their manager, their direct reports and their peers, with what is already done.
+    case 'get360Tasks': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const gtPeriod = currentPeriod();
+      const gtEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")).filter(e => e.user_id);
+      const gtMe = gtEmps.find(e => e.user_id === cu.id) || null;
+      const gtGiven = (await all("SELECT data FROM entities WHERE type='Feedback360' AND data::jsonb->>'reviewer_user_id'=$1", [cu.id])).map(r => JSON.parse(r.data)).filter(r => (r.period || LEGACY_PERIOD) === gtPeriod);
+      const gtDone = new Set(gtGiven.map(r => r.subject_user_id));
+      const gtRow = (e, relationship) => ({ user_id: e.user_id, name: e.display_name || e.full_name || e.email, designation: e.designation || '', department: e.department || '', relationship, done: gtDone.has(e.user_id) });
+      const gtOut = [];
+      if (gtMe?.reporting_manager_id) { const m = gtEmps.find(e => e.user_id === gtMe.reporting_manager_id); if (m) gtOut.push(gtRow(m, 'direct_report')); }   // my manager: I am their direct report
+      for (const e of gtEmps.filter(e => e.reporting_manager_id === cu.id)) gtOut.push(gtRow(e, 'manager'));                                                  // my reports: I am their manager
+      const gtPeers = gtMe ? gtEmps.filter(e => e.user_id !== cu.id && (gtMe.reporting_manager_id ? e.reporting_manager_id === gtMe.reporting_manager_id : e.department && e.department === gtMe.department)) : [];
+      for (const e of gtPeers.slice(0, 12)) gtOut.push(gtRow(e, 'peer'));
+      return res.json({ success: true, period: gtPeriod, period_label: periodLabel(gtPeriod), self_done: gtDone.has(cu.id), suggestions: gtOut, given_count: gtDone.size });
+    }
 
-      // Aggregate scores
-      const allScores = {};
-      for (const fb of feedbacks) {
-        for (const [k, v] of Object.entries(fb.answers || {})) {
-          if (typeof v === 'number') {
-            if (!allScores[k]) allScores[k] = [];
-            allScores[k].push(v);
-          }
-        }
+    // HR / admin: the ratings of every employee for a period.
+    case 'get360Overview':
+    case 'export360Feedback': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const ovRows = (await all("SELECT data FROM entities WHERE type='Feedback360'")).map(r => JSON.parse(r.data)).map(r => ({ ...r, period: r.period || LEGACY_PERIOD }));
+      const ovPeriods = periodsOf(ovRows); if (!ovPeriods.includes(currentPeriod())) ovPeriods.unshift(currentPeriod());
+      const ovPeriod = p.period || ovPeriods[0];
+      const ovBySubject = {};
+      for (const r of ovRows) if (r.period === ovPeriod) (ovBySubject[r.subject_user_id] ||= []).push(r);
+      const ovEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'")).filter(e => e.user_id);
+      const ovList = ovEmps.map(e => {
+        const sm = summarize(ovBySubject[e.user_id] || [], { privileged: true });
+        return { user_id: e.user_id, name: e.display_name || e.full_name || '', code: e.employee_code || '', department: e.department || '', designation: e.designation || '', reviewers: sm.reviewers, self_done: !!sm.self, self_overall: sm.self?.overall ?? null, overall: sm.overall, scores: sm.aggregate || {}, low_sample: sm.low_sample, by_relationship: Object.fromEntries(Object.entries(sm.by_relationship).map(([k, v]) => [k, { count: v.count, overall: v.overall }])), comments: sm.comments };
+      }).sort((a, b) => (b.overall ?? -1) - (a.overall ?? -1) || a.name.localeCompare(b.name));
+      if (name === 'export360Feedback') {
+        const ExcelJS = (await import('exceljs')).default;
+        const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('360 ratings');
+        ws.addRow([`Maxvolt Energy — 360° feedback ratings, ${periodLabel(ovPeriod)}`]); ws.mergeCells(1, 1, 1, 15);
+        Object.assign(ws.getCell(1, 1), { font: { bold: true, size: 14, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1A3C5E' } } });
+        ws.addRow(['Ratings only — the people who rated are never recorded here. "Low sample" = fewer than ' + MIN_RATERS + ' raters.']); ws.addRow([]);
+        const h = ws.addRow(['Code', 'Employee', 'Department', 'Designation', 'Raters', 'Self overall', 'Overall (others)', ...COMPETENCIES.map(c => c.label), 'Manager overall', 'Peers overall', 'Direct reports overall', 'Low sample']);
+        h.eachCell(c => Object.assign(c, { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2D5986' } } }));
+        for (const r of ovList) ws.addRow([r.code, r.name, r.department, r.designation, r.reviewers, r.self_overall ?? '', r.overall ?? '', ...COMPETENCIES.map(c => r.scores[c.key] ?? ''), r.by_relationship.manager?.overall ?? '', r.by_relationship.peer?.overall ?? '', r.by_relationship.direct_report?.overall ?? '', r.reviewers && r.low_sample ? 'Yes' : '']);
+        [12, 24, 20, 24, 8, 12, 14, ...COMPETENCIES.map(() => 14), 14, 14, 18, 11].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+        ws.views = [{ state: 'frozen', ySplit: 4 }]; ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: 7 + COMPETENCIES.length + 4 } };
+        const wc = wb.addWorksheet('Comments (anonymous)');
+        const hc = wc.addRow(['Code', 'Employee', 'Rated by (role only)', 'Strengths', 'To improve', 'Other comments']);
+        hc.eachCell(c => Object.assign(c, { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2D5986' } } }));
+        for (const r of ovList) for (const c of r.comments) wc.addRow([r.code, r.name, c.relationship.replace('_', ' '), c.strengths, c.improvements, c.comment]);
+        [12, 24, 18, 50, 50, 50].forEach((w, i) => { wc.getColumn(i + 1).width = w; });
+        return res.json({ success: true, base64: Buffer.from(await wb.xlsx.writeBuffer()).toString('base64'), filename: `360_Feedback_${ovPeriod}.xlsx` });
       }
-      const aggregate = Object.fromEntries(Object.entries(allScores).map(([k, vals]) => [k, Math.round((vals.reduce((a,b) => a+b, 0)/vals.length)*10)/10]));
-
-      // Anonymize: don't return reviewer IDs
-      const anonymized = feedbacks.map(f => ({ relationship: f.relationship, answers: f.answers, period: f.period }));
-      return res.json({ success: true, feedbacks: anonymized, aggregate, total_reviewers: feedbacks.length });
+      const ovRated = ovList.filter(r => r.reviewers > 0);
+      const ovAvg = (arr) => (arr.length ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10 : null);
+      const ovDept = {};
+      for (const r of ovRated) (ovDept[r.department || 'Unassigned'] ||= []).push(r.overall);
+      return res.json({
+        success: true, period: ovPeriod, period_label: periodLabel(ovPeriod), periods: ovPeriods.map(x => ({ value: x, label: periodLabel(x) })), competencies: COMPETENCIES, min_raters: MIN_RATERS,
+        summary: {
+          employees: ovList.length, rated: ovRated.length, coverage_pct: ovList.length ? Math.round((ovRated.length / ovList.length) * 100) : 0, low_sample: ovRated.filter(r => r.low_sample).length,
+          average: ovAvg(ovRated.map(r => r.overall)), self_done: ovList.filter(r => r.self_done).length,
+          competency_avg: Object.fromEntries(COMPETENCIES.map(c => [c.key, ovAvg(ovRated.map(r => r.scores[c.key]).filter(v => v != null))])),
+          departments: Object.entries(ovDept).map(([department, v]) => ({ department, rated: v.length, average: ovAvg(v) })).sort((a, b) => b.average - a.average),
+        },
+        rows: ovList.map(({ comments, ...r }) => ({ ...r, comment_count: comments.length })),
+      });
     }
 
     case 'getSkillMatrix': {
