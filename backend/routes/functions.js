@@ -3349,7 +3349,7 @@ router.post('/:name', async (req, res) => {
       if (!worked) return res.json({ success: false, error: 'No attendance record found for that date — comp-off needs a punch on the worked holiday' });
 
       // No duplicate claim for the same date
-      const dup = await one("SELECT id FROM entities WHERE type='CompOff' AND user_id=$1 AND data::jsonb->>'work_date'=$2 AND data::jsonb->>'status' != 'rejected'", [cu.id, work_date]);
+      const dup = await one("SELECT id FROM entities WHERE type='CompOff' AND user_id=$1 AND data::jsonb->>'work_date'=$2 AND COALESCE(data::jsonb->>'status','') NOT IN ('rejected','cancelled')", [cu.id, work_date]);
       if (dup) return res.json({ success: false, error: 'A comp-off request for this date already exists' });
 
       const coId = uuidv4();
@@ -3469,6 +3469,45 @@ router.post('/:name', async (req, res) => {
       }
       await notify(coRow.user_id, { title: `Comp-off ${newStatus}`, message: action === 'approve' ? `Your comp-off for ${co.work_date} was approved — ${co.days || 1} day credited to your Compensatory Off balance.` : `Your comp-off for ${co.work_date} was rejected${note ? ': ' + note : ''}.`, type: action === 'approve' ? 'success' : 'warning', link: '/CompOff' });
       return res.json({ success: true, status: newStatus });
+    }
+
+    // Admin Panel → Comp-Off Requests: every comp-off claim with the employee's details (HR/admin only).
+    case 'listCompOffs': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const lcRows = parseEntities(await all("SELECT data FROM entities WHERE type='CompOff' ORDER BY created_at DESC LIMIT 1000"));
+      const lcEmps = Object.fromEntries(parseEntities(await all("SELECT data FROM entities WHERE type='Employee'")).map(e => [e.user_id, e]));
+      return res.json({ success: true, comp_offs: lcRows.map(c => ({ ...c, employee_name: lcEmps[c.user_id]?.display_name || '', employee_code: lcEmps[c.user_id]?.employee_code || '', department: lcEmps[c.user_id]?.department || '' })) });
+    }
+
+    // Admin cancels a comp-off claim (pending or already approved). An approved one gives its credited day(s) back
+    // out of the Compensatory Off balance, and the employee can then raise a fresh request for the same date.
+    case 'cancelCompOff': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const ccRow = p.comp_off_id ? await one("SELECT id,user_id,data FROM entities WHERE id=$1 AND type='CompOff'", [p.comp_off_id]) : null;
+      if (!ccRow) return res.json({ success: false, error: 'Comp-off request not found' });
+      const cc = JSON.parse(ccRow.data);
+      if (!['pending', 'approved'].includes(cc.status)) return res.json({ success: false, error: `A ${cc.status} comp-off cannot be cancelled` });
+
+      let ccReversed = 0, ccUnrecovered = 0;
+      if (cc.status === 'approved') {
+        const ccCredit = cc.days || 1;
+        const ccPol = await one("SELECT data FROM entities WHERE type='LeavePolicy' AND data::jsonb->>'name'='Compensatory Off'");
+        const ccPolId = ccPol ? (JSON.parse(ccPol.data).id) : null;
+        const ccYear = new Date(cc.decided_at || Date.now()).getFullYear();
+        const ccBals = ccPolId ? await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [ccRow.user_id]) : [];
+        const ccBal = ccBals.map(r => ({ rowId: r.id, ...JSON.parse(r.data) })).find(b => b.leave_policy_id === ccPolId && Number(b.year) === ccYear);
+        if (ccBal) {
+          const { rowId, ...bd } = ccBal;
+          ccReversed = Math.min(ccCredit, Math.max(0, bd.available || 0));
+          ccUnrecovered = ccCredit - ccReversed; // already used or reserved by a pending leave — not clawed back
+          await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...bd, total_allocated: Math.max(0, (bd.total_allocated || 0) - ccReversed), accrued_this_year: Math.max(0, (bd.accrued_this_year || 0) - ccReversed), available: (bd.available || 0) - ccReversed }), rowId]);
+        } else ccUnrecovered = ccCredit;
+      }
+      const ccUpd = { ...cc, status: 'cancelled', cancelled_by: cu.id, cancelled_at: new Date().toISOString(), cancel_reason: p.reason || '', credit_reversed: ccReversed, credit_not_recovered: ccUnrecovered,
+        approval_history: [...(cc.approval_history || []), { approver_id: cu.id, action: 'cancelled', note: p.reason || '', at: new Date().toISOString() }] };
+      await run("UPDATE entities SET data=$1, status='cancelled', updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(ccUpd), ccRow.id]);
+      await notify(ccRow.user_id, { title: 'Comp-off cancelled', message: `Your comp-off for ${cc.work_date} was cancelled by HR${p.reason ? ': ' + p.reason : ''}. You can raise a new comp-off request for that date.`, type: 'warning', link: '/CompOff' });
+      return res.json({ success: true, credit_reversed: ccReversed, credit_not_recovered: ccUnrecovered });
     }
 
     case 'getCompOffData': {
