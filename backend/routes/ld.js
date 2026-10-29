@@ -109,12 +109,15 @@ async function getEmployee(userId) {
 }
 // A test cycle also works for an L&D admin who has no employee record: a stand-in profile is built from their user account (never saved
 // as an employee). It borrows the busiest department's name so the department org-chart steps have a real chart to study.
+async function deptHeadcounts() {
+  const counts = {};
+  for (const e of await list('Employee')) if (e.status === 'active' && e.department) counts[e.department] = (counts[e.department] || 0) + 1;
+  return counts;
+}
 async function testStandIn(userId) {
   const u = await getUserRow(userId);
   if (!u) return null;
-  const counts = {};
-  for (const e of await list('Employee')) if (e.status === 'active' && e.department) counts[e.department] = (counts[e.department] || 0) + 1;
-  const department = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+  const department = Object.entries(await deptHeadcounts()).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
   const name = u.full_name || u.email || 'Test learner';
   return { user_id: userId, display_name: name, full_name: name, employee_code: 'TEST', department, designation: 'Test learner', status: 'active', work_location: '', date_of_joining: todayIST() };
 }
@@ -304,7 +307,8 @@ async function runAutoChecks(ind) {
   const check = async (key) => {
     if (key in cache) return cache[key];
     let v = false;
-    if (key === 'buddy_assigned') v = !!ind.buddy_user_id;
+    if (ind.is_test) v = true;     // test cycle: the tester has no real attendance / ticket / onboarding history, so every automatic check passes
+    else if (key === 'buddy_assigned') v = !!ind.buddy_user_id;
     else if (key === 'onboarding_approved') { const e = await getEmployee(ind.user_id); v = !!ind.is_test || (!!e && e.status === 'active' && e.onboarding_rejected !== true); }
     else if (key === 'attendance_marked') v = !!(await one("SELECT id FROM entities WHERE type='Attendance' AND user_id=$1 LIMIT 1", [ind.user_id]));
     else if (key === 'helpdesk_ticket') v = !!(await one("SELECT id FROM entities WHERE type='Ticket' AND user_id=$1 LIMIT 1", [ind.user_id]));
@@ -348,7 +352,11 @@ export async function createInduction(userId, { actorId = 'system', buddy_user_i
     buddy_checkins: [],
   };
   // Test cycle: the tester is the learner and every owner, every timer is 30 seconds, nobody else is told.
-  if (test) { isolateTestPeople(ind, userId, ind.employee.name); applyTestTiming(ind, today); }
+  if (test) {
+    isolateTestPeople(ind, userId, ind.employee.name); applyTestTiming(ind, today);
+    const counts = await deptHeadcounts();
+    if ((counts[ind.employee.department] || 0) < 8) ind.employee.department = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || ind.employee.department;   // too small for an org-chart quiz
+  }
   // Long-serving employee: "pre-joining readiness" does not apply, so the induction opens at Corporate Induction.
   if (!test && daysBetween(doj, today) > 30) {
     const g0 = ind.gates.find(x => x.gate_id === 'G00');
