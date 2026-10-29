@@ -13,6 +13,7 @@ import { drawQuestions, makeOptionOrders, publicQuestions, unmapAnswers, gradeAt
 import { isPdfUrl, openingGates, withOpeningGates, addWatchTime, syncPolicyTasks, policyStates, inductionPolicies, namesMatch, buildDeptOrg, makeOrgQuiz, gradeOrgQuiz, ACK_STATEMENT, WEBSITE_URL, WEBSITE_SECONDS, ORG_QUIZ_QUESTIONS, PRODUCT_QUIZ_QUESTIONS } from '../utils/ldOpening.js';
 import { makeProductQuiz, productTrainingContent } from '../utils/ldProducts.js';
 import { makeCourseQuiz, courseContent, COURSE_QUIZ_QUESTIONS } from '../utils/ldCourse.js';
+import { TEST_SECONDS, applyTestTiming, isolateTestPeople, testWaitLeft, TEST_TYPES } from '../utils/ldTest.js';
 import { createHash } from 'crypto';
 
 const IST_MS = 5.5 * 3600000;
@@ -25,8 +26,13 @@ const clean = (s, n = 4000) => String(s ?? '').trim().slice(0, n);
 
 // ── storage helpers ───────────────────────────────────────────────────────
 const parse = (r) => { try { const d = JSON.parse(r.data); return { ...d, id: d.id || r.id }; } catch { return null; } };
-export async function list(type, extraSql = '', params = []) {
+// Every row, including L&D test-cycle data (is_test) — only the test-cycle screens and the learner flows of a test induction use this.
+export async function listAll(type, extraSql = '', params = []) {
   return (await all(`SELECT id, data FROM entities WHERE type=$1 ${extraSql}`, [type, ...params])).map(parse).filter(Boolean);
+}
+// The real data: KPIs, registers, dashboards, escalations and exports never see test-cycle rows.
+export async function list(type, extraSql = '', params = []) {
+  return (await listAll(type, extraSql, params)).filter(d => !d.is_test);
 }
 export async function get(type, id) {
   if (!id) return null;
@@ -132,7 +138,7 @@ export async function getCtx(cu) {
 
 // Which roles may act on THIS induction (an employee can never act as an owner on their own induction).
 function rolesOnInduction(ctx, ind) {
-  if (ctx.id === ind.user_id) return new Set();
+  if (ctx.id === ind.user_id && !ind.is_test) return new Set();
   const r = new Set();
   if (ctx.isHR) r.add('hr');
   if (ctx.isLdAdmin) r.add('ld');
@@ -143,7 +149,7 @@ function rolesOnInduction(ctx, ind) {
   return r;
 }
 const canOwn = (ctx, ind, gate) => {
-  if (ctx.id === ind.user_id) return false;
+  if (ctx.id === ind.user_id && !ind.is_test) return false;   // a test cycle is the one place a person signs off their own steps
   if (ctx.isAdmin || ctx.isLdAdmin) return true; // HR / L&D admins can manage every step of anyone else's induction
   const mine = rolesOnInduction(ctx, ind);
   return gate.owner_roles.some(r => mine.has(r)) || (ctx.isHR && gate.owner_roles.includes('hr_spoc'));
@@ -233,7 +239,7 @@ async function maybeComplete(ind, actorId) {
   ind.completed_at = nowIso();
   const g5 = ind.gates.find(g => g.gate_id === 'G05');
   const cert = await create('LdCertificate', {
-    certificate_id: await nextCertificateId(), user_id: ind.user_id, employee_name: ind.employee.name, employee_code: ind.employee.code,
+    certificate_id: ind.is_test ? `TEST-IND-${todayIST().slice(0, 4)}-${String(Date.now()).slice(-6)}` : await nextCertificateId(), is_test: !!ind.is_test, user_id: ind.user_id, employee_name: ind.employee.name, employee_code: ind.employee.code,
     title: 'New Employee Induction & Training Program', source: 'induction', induction_id: ind.id,
     score: g5?.last_score ?? null, trainer_name: ind.trainer_name || '', issue_date: todayIST(), expiry_date: null, status: 'VALID',
   }, ind.user_id);
@@ -242,7 +248,7 @@ async function maybeComplete(ind, actorId) {
   await notify([ind.user_id, ind.employee.reporting_manager_id, ind.hod_user_id, ind.buddy_user_id].filter(Boolean), {
     title: 'Induction completed 🎉', message: `${ind.employee.name} has completed the New Employee Induction. Certificate ${cert.certificate_id} issued.`, type: 'success', link: ind.user_id ? '/MyLearning' : '/LdControlCentre',
   });
-  await notify(await hrUserIds(), { title: 'Induction completed', message: `${ind.employee.name} (${ind.employee.department}) completed the induction.`, link: `/LdInductionDetail?id=${ind.id}` });
+  if (!ind.is_test) await notify(await hrUserIds(), { title: 'Induction completed', message: `${ind.employee.name} (${ind.employee.department}) completed the induction.`, link: `/LdInductionDetail?id=${ind.id}` });
   return true;
 }
 
@@ -300,7 +306,7 @@ async function runAutoChecks(ind) {
   return changed;
 }
 
-export async function createInduction(userId, { actorId = 'system', buddy_user_id = null, trainer_user_id = null, force = false, anchor_override = null, pause_exempt = false } = {}) {
+export async function createInduction(userId, { actorId = 'system', buddy_user_id = null, trainer_user_id = null, force = false, anchor_override = null, pause_exempt = false, test = false } = {}) {
   await ensureSeed();
   const existing = (await list('LdInduction')).find(i => i.user_id === userId && i.status !== 'CANCELLED');
   if (existing) { if (!force) return existing; }
@@ -330,8 +336,10 @@ export async function createInduction(userId, { actorId = 'system', buddy_user_i
     gates: tpl.gates.map(g => buildGate(g, anchor)),
     buddy_checkins: [],
   };
+  // Test cycle: the tester is the learner and every owner, every timer is 30 seconds, nobody else is told.
+  if (test) { isolateTestPeople(ind, userId, ind.employee.name); applyTestTiming(ind, today); }
   // Long-serving employee: "pre-joining readiness" does not apply, so the induction opens at Corporate Induction.
-  if (daysBetween(doj, today) > 30) {
+  if (!test && daysBetween(doj, today) > 30) {
     const g0 = ind.gates.find(x => x.gate_id === 'G00');
     if (g0) setStatus(g0, 'WAIVED', actorId, 'Existing employee — pre-joining readiness not applicable');
   }
@@ -341,7 +349,8 @@ export async function createInduction(userId, { actorId = 'system', buddy_user_i
   recompute(ind);
   ind.progress = progressOf(ind);
   const doc = await create('LdInduction', ind, userId);
-  await audit('LdInduction', doc.id, 'induction_created', actorId, { template: `${tpl.name} v${tpl.version}`, anchor }, userId);
+  await audit('LdInduction', doc.id, 'induction_created', actorId, { template: `${tpl.name} v${tpl.version}`, anchor, test }, userId);
+  if (test) return doc;     // no welcome / HR / manager notifications for a test cycle
   await notify(userId, { title: 'Welcome to Maxvolt — your induction is ready', message: 'Open My Learning to see what to do next.', type: 'success', link: '/MyLearning' });
   const hrs = await hrUserIds();
   await notify([...hrs, mgrId, ind.hod_user_id], { title: 'New joiner induction started', message: `${ind.employee.name} (${ind.employee.department}) — induction workflow created automatically.`, link: `/LdInductionDetail?id=${doc.id}` });
@@ -437,7 +446,7 @@ function publicInduction(ind, ctx) {
     if (g.completion === 'assessment') {
       const max = g.max_attempts || ctx.cfg.max_attempts;
       const used = g.attempts.length - (g.attempt_base || 0);
-      const wait = ctx.cfg.relearn_min_seconds ?? 60;
+      const wait = ind.is_test ? TEST_SECONDS : (ctx.cfg.relearn_min_seconds ?? 60);
       g.attempts_info = { used, max, left: Math.max(0, max - used), needs_relearn: !!g.needs_relearn, relearn_topics: g.relearn_topics || [], relearn_ready_at: g.needs_relearn && g.relearn_from ? new Date(Date.parse(g.relearn_from) + wait * 1000).toISOString() : null, critical_rule: ctx.cfg.critical_rule !== false };
     }
   }
@@ -481,10 +490,37 @@ async function syncPolicyGate(ind) {
   const g = ind.gates?.find(x => x.gate_id === 'P1');
   if (!g || TERMINAL.has(g.status)) return false;
   const next = syncPolicyTasks(g.tasks || [], await list('CompanyPolicy'));
+  if (ind.is_test) for (const t of next) if (!t.done) t.min_read_seconds = TEST_SECONDS;   // test cycle: every policy is a 30-second read
   if (JSON.stringify(next.map(x => [x.id, x.title, x.file_url, x.min_read_seconds])) === JSON.stringify((g.tasks || []).map(x => [x.id, x.title, x.file_url, x.min_read_seconds]))) return false;
   g.tasks = next;
   return true;
 }
+// ── test cycle helpers ────────────────────────────────────────────────────
+async function testCycleView(userId) {
+  const ind = (await listAll('LdInduction', 'AND user_id=$2', [userId])).find(i => i.is_test && i.status !== 'CANCELLED') || null;
+  const a = (await listAll('LdAssignment', 'AND user_id=$2', [userId])).find(x => x.is_test) || null;
+  const certs = (await listAll('LdCertificate', 'AND user_id=$2', [userId])).filter(c => c.is_test);
+  return {
+    active: !!(ind || a), seconds: TEST_SECONDS,
+    induction: ind ? { id: ind.id, status: ind.status, progress: ind.progress || progressOf(ind), started_at: ind.started_at, completed_at: ind.completed_at || null, gates: ind.gates.map(g => ({ gate_id: g.gate_id, name: g.name, status: g.status, completion: g.completion, tasks_total: g.tasks.length, tasks_done: g.tasks.filter(t => t.done).length })) } : null,
+    training: a ? { id: a.id, title: a.course_title, status: a.status, started_at: a.started_at || null, completed_at: a.completed_at || null, wait_left: a.status === 'COMPLETED' ? 0 : testWaitLeft(a) } : null,
+    certificates: certs.map(c => ({ certificate_id: c.certificate_id, title: c.title, source: c.source, issue_date: c.issue_date })),
+  };
+}
+// Removes everything this person's test cycle created (and only that): the rows are flagged is_test and owned by the tester.
+async function wipeTestData(userId) {
+  const rows = await all(`SELECT id, type, data FROM entities WHERE type = ANY($2::text[]) AND data::jsonb->>'is_test' = 'true' AND (user_id = $1 OR data::jsonb->>'employee_user_id' = $1 OR data::jsonb->>'test_owner' = $1)`, [userId, TEST_TYPES]);
+  const ids = rows.map(r => r.id);
+  if (!ids.length) return 0;
+  const linked = rows.filter(r => ['LdInduction', 'LdAssignment'].includes(r.type)).map(r => r.id);
+  if (linked.length) {
+    await run(`DELETE FROM entities WHERE type='LdAudit' AND data::jsonb->>'entity_id' = ANY($1::text[])`, [linked]);
+    for (const id of linked) await run(`DELETE FROM notifications WHERE user_id=$1 AND link LIKE $2`, [userId, `%${id}%`]);
+  }
+  await run(`DELETE FROM entities WHERE id = ANY($1::text[])`, [ids]);
+  return ids.length;
+}
+
 function ackReceiptDoc(a) {
   const f = (v) => ({ text: String(v ?? '—'), fontSize: 10 });
   const when = new Date(Date.parse(a.signed_at) + IST_MS).toISOString().replace('T', ' ').slice(0, 19) + ' IST';
@@ -562,10 +598,10 @@ function studyQuizHandlers({ names, gate, studyType, quizType, entity, auditKey,
       if (qt.done) return fail(res, 'You have already passed this quiz');
       if (!gateActive(g)) return fail(res, 'This step is not open yet');
       if (!study?.done) return fail(res, 'Study the material for the required time first');
-      let quiz = (await list(entity, 'AND user_id=$2', [ctx.id])).find(x => x.induction_id === ind.id && x.status === 'IN_PROGRESS');
+      let quiz = (await listAll(entity, 'AND user_id=$2', [ctx.id])).find(x => x.induction_id === ind.id && x.status === 'IN_PROGRESS');
       if (!quiz) {
         const seed = Math.floor(Math.random() * 2 ** 31);
-        quiz = await create(entity, { user_id: ctx.id, induction_id: ind.id, seed, questions: build(seed), status: 'IN_PROGRESS', started_at: nowIso() }, ctx.id);
+        quiz = await create(entity, { is_test: !!ind.is_test, user_id: ctx.id, induction_id: ind.id, seed, questions: build(seed), status: 'IN_PROGRESS', started_at: nowIso() }, ctx.id);
       }
       return ok(res, { quiz_id: quiz.id, pass_score: ctx.cfg.induction_pass_score, attempt_no: (qt.attempts || []).length + 1, questions: quiz.questions.map(q => ({ id: q.id, topic: q.topic || q.module, text: q.text, options: q.options })) });
     },
@@ -698,7 +734,7 @@ const HANDLERS = {
       ind = fresh;
     });
     const trail = (await list('LdAudit')).filter(a => a.entity_id === ind.id).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 200);
-    const waivers = (await list('LdWaiver')).filter(w => w.induction_id === ind.id);
+    const waivers = (await listAll('LdWaiver')).filter(w => w.induction_id === ind.id);
     const people = {};
     for (const uid of new Set(trail.map(a => a.actor_id).filter(x => x && x !== 'system'))) people[uid] = await nameOf(uid);
     return ok(res, { paused: frozen ? pausedInfo(ctx.cfg) : null, induction: publicInduction(ind, ctx), audit: trail.map(a => ({ ...a, actor_name: a.actor_id === 'system' ? 'System' : (people[a.actor_id] || a.actor_id) })), waivers });
@@ -755,7 +791,7 @@ const HANDLERS = {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       const c = g?.competencies?.find(x => x.id === p.competency_id);
       if (!g || !c) { fail(res, 'Competency not found', 404); return false; }
-      if (ctx.id === ind.user_id) { forbid(res, 'You cannot sign off your own practical capability'); return false; }
+      if (ctx.id === ind.user_id && !ind.is_test) { forbid(res, 'You cannot sign off your own practical capability'); return false; }
       if (!canOwn(ctx, ind, g)) { forbid(res, 'Only the trainer / manager can sign off practical capability'); return false; }
       if (!ACTIVE.has(g.status) || g.status === 'SUBMITTED') { fail(res, `This step is ${g.status.replace('_', ' ').toLowerCase()}`); return false; }
       const target = p.stage || STAGES[Math.min(STAGES.length - 1, STAGES.indexOf(c.stage) + 1)];
@@ -773,7 +809,7 @@ const HANDLERS = {
     return mutate(p.induction_id, ctx, res, async (ind) => {
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       if (!g) { fail(res, 'Step not found', 404); return false; }
-      if (ctx.id === ind.user_id) { forbid(res, 'You cannot approve your own induction'); return false; }
+      if (ctx.id === ind.user_id && !ind.is_test) { forbid(res, 'You cannot approve your own induction'); return false; }
       if (!canOwn(ctx, ind, g)) { forbid(res, 'You are not an approver for this step'); return false; }
       if (!['SUBMITTED', 'UNDER_REVIEW'].includes(g.status)) { fail(res, `This step is ${g.status.replace('_', ' ').toLowerCase()} — it has nothing to approve`); return false; }
       const decision = p.decision === 'fail' ? 'fail' : 'pass';
@@ -956,13 +992,13 @@ const HANDLERS = {
     if (!ind) return fail(res, 'Induction not found', 404);
     const g = ind.gates.find(x => x.gate_id === p.gate_id);
     if (!g) return fail(res, 'Step not found', 404);
-    if (ctx.id === ind.user_id) return forbid(res, 'You cannot request a waiver for your own induction');
+    if (ctx.id === ind.user_id && !ind.is_test) return forbid(res, 'You cannot request a waiver for your own induction');
     if (!(ctx.isLdAdmin || ind.employee.reporting_manager_id === ctx.id || ind.hod_user_id === ctx.id)) return forbid(res);
     if (TERMINAL.has(g.status)) return fail(res, 'This step is already completed / waived');
     if (clean(p.reason).length < 10) return fail(res, 'A reason (at least a sentence) is required');
-    const w = await create('LdWaiver', { induction_id: ind.id, gate_id: g.gate_id, gate_name: g.name, user_id: ind.user_id, employee_name: ind.employee.name, reason: clean(p.reason, 1500), evidence: clean(p.evidence, 1500), requester_id: ctx.id, requester_name: await nameOf(ctx.id), status: 'PENDING' }, ind.user_id);
+    const w = await create('LdWaiver', { is_test: !!ind.is_test, induction_id: ind.id, gate_id: g.gate_id, gate_name: g.name, user_id: ind.user_id, employee_name: ind.employee.name, reason: clean(p.reason, 1500), evidence: clean(p.evidence, 1500), requester_id: ctx.id, requester_name: await nameOf(ctx.id), status: 'PENDING' }, ind.user_id);
     await audit('LdInduction', ind.id, 'waiver_requested', ctx.id, { gate: g.gate_id, reason: p.reason }, ind.user_id);
-    await notify([...(await hrUserIds()), ...(await getConfig()).ld_admin_user_ids], { title: 'Waiver request', message: `${w.requester_name} requested a waiver of "${g.name}" for ${ind.employee.name}.`, type: 'warning', link: `/LdInductionDetail?id=${ind.id}` });
+    await notify(ind.is_test ? [] : [...(await hrUserIds()), ...(await getConfig()).ld_admin_user_ids], { title: 'Waiver request', message: `${w.requester_name} requested a waiver of "${g.name}" for ${ind.employee.name}.`, type: 'warning', link: `/LdInductionDetail?id=${ind.id}` });
     if (p.approve_now && ctx.isLdAdmin) return HANDLERS.ld_decideWaiver({ waiver_id: w.id, decision: 'approve', comments: clean(p.comments || 'Approved at request'), }, ctx, res);
     return ok(res, { waiver: w });
   },
@@ -993,7 +1029,7 @@ const HANDLERS = {
       if (!ind || !gate || gate.completion !== 'assessment') return fail(res, 'Assessment step not found', 404);
       if (ind.user_id !== ctx.id) return forbid(res, 'Only the employee can take their own assessment');
       // one active attempt at a time: resume an open one, or close it (counts as used) if its time ran out
-      const open = (await list('LdAttempt', 'AND user_id=$2', [ctx.id])).find(a => a.status === 'IN_PROGRESS' && a.induction_id === ind.id && a.gate_id === gate.gate_id);
+      const open = (await listAll('LdAttempt', 'AND user_id=$2', [ctx.id])).find(a => a.status === 'IN_PROGRESS' && a.induction_id === ind.id && a.gate_id === gate.gate_id);
       if (open) {
         if (!open.expires_at || Date.now() <= Date.parse(open.expires_at)) {
           const oa = await get('LdAssessment', open.assessment_id);
@@ -1015,7 +1051,7 @@ const HANDLERS = {
       const course = await get('LdCourse', assignment.course_id);
       assessment = await get('LdAssessment', course?.assessment_id);
       if (!assessment) return fail(res, 'This course has no assessment');
-      const mine = (await list('LdAttempt', 'AND user_id=$2', [ctx.id])).filter(a => a.assignment_id === assignment.id);
+      const mine = (await listAll('LdAttempt', 'AND user_id=$2', [ctx.id])).filter(a => a.assignment_id === assignment.id);
       const open = mine.find(a => a.status === 'IN_PROGRESS');
       if (open) {
         if (!open.expires_at || Date.now() <= Date.parse(open.expires_at)) return ok(res, { attempt_id: open.id, resumed: true, title: assessment.title, time_limit_min: assessment.time_limit_min || null, pass_score: open.pass_score, questions: publicQuestions(assessment.questions, open.order, open.opt_order), expires_at: open.expires_at, attempt_no: open.attempt_no, max_attempts: open.max_attempts, critical_rule: ctx.cfg.critical_rule !== false });
@@ -1026,13 +1062,13 @@ const HANDLERS = {
       if (mine.length >= max) return fail(res, 'Maximum attempts used');
     } else return fail(res, 'induction_id + gate_id or assignment_id required');
     if (!assessment) return fail(res, 'Assessment not configured', 404);
-    const prior = ind ? gate.attempts.length : (await list('LdAttempt', 'AND user_id=$2', [ctx.id])).filter(a => a.assignment_id === assignment.id).length;
+    const prior = ind ? gate.attempts.length : (await listAll('LdAttempt', 'AND user_id=$2', [ctx.id])).filter(a => a.assignment_id === assignment.id).length;
     const order = (assessment.randomize === false ? assessment.questions.map(q => q.id) : drawQuestions(assessment.questions, assessment.questions_per_attempt, await seenCounts(ctx.id, assessment.key || assessment.id)));
     const optOrders = makeOptionOrders(assessment.questions, order, assessment.shuffle_options !== false);
     const secs = (Number(assessment.time_limit_min) || 0) * 60;
     const attempt = await create('LdAttempt', {
       user_id: ctx.id, assessment_id: assessment.id, assessment_key: assessment.key || assessment.id, assessment_version: assessment.version, assessment_title: assessment.title,
-      induction_id: ind?.id || null, gate_id: gate?.gate_id || null, assignment_id: assignment?.id || null, order, opt_order: optOrders,
+      is_test: !!(ind?.is_test || assignment?.is_test), induction_id: ind?.id || null, gate_id: gate?.gate_id || null, assignment_id: assignment?.id || null, order, opt_order: optOrders,
       attempt_no: prior - (gate?.attempt_base || 0) + 1, max_attempts: max, pass_score: passNeed, device: deviceOf(res),
       started_at: nowIso(), expires_at: secs ? new Date(Date.now() + secs * 1000 + 60000).toISOString() : null, status: 'IN_PROGRESS',
     }, ctx.id);
@@ -1071,7 +1107,7 @@ const HANDLERS = {
     finish(gr, need);
     await save('LdAttempt', att);
     if (gr.passed && att.assignment_id) await completeAssignment(att.assignment_id, ctx.id, gr.score);
-    const used = (await list('LdAttempt', 'AND user_id=$2', [ctx.id])).filter(a => a.assignment_id === att.assignment_id).length;
+    const used = (await listAll('LdAttempt', 'AND user_id=$2', [ctx.id])).filter(a => a.assignment_id === att.assignment_id).length;
     return ok(res, { result: view(gr, need, { attempt_no: used, attempts_left: Math.max(0, (assessment.max_attempts || ctx.cfg.max_attempts) - used) }) });
   },
 
@@ -1082,7 +1118,7 @@ const HANDLERS = {
       if (ind.user_id !== ctx.id) { forbid(res, 'Only the employee can confirm this'); return false; }
       const g = ind.gates.find(x => x.gate_id === p.gate_id);
       if (!g || !g.needs_relearn) { fail(res, 'There is nothing to review right now'); return false; }
-      const wait = ctx.cfg.relearn_min_seconds ?? 60;
+      const wait = ind.is_test ? TEST_SECONDS : (ctx.cfg.relearn_min_seconds ?? 60);
       const since = (Date.now() - Date.parse(g.relearn_from || nowIso())) / 1000;
       if (since < wait) { fail(res, `Please spend a little more time on the content — ${Math.ceil(wait - since)}s left before the next attempt unlocks`); return false; }
       g.needs_relearn = false; g.relearn_ack_at = nowIso();
@@ -1158,6 +1194,10 @@ const HANDLERS = {
     const course = await get('LdCourse', a.course_id);
     if (p.action === 'start' && isOwner) { if (a.status === 'ASSIGNED') { a.status = 'IN_PROGRESS'; a.started_at = nowIso(); await save('LdAssignment', a); } return ok(res, { assignment: a }); }
     if (p.action === 'complete') {
+      if (a.is_test) {   // test cycle: the training takes 30 seconds from the moment it is started
+        const left = testWaitLeft(a);
+        if (left > 0) return fail(res, `Test timer — ${left}s left before this training can be marked complete`);
+      }
       if (course?.assessment_id) return fail(res, 'This course is completed by passing its assessment');
       const live = ['live_classroom', 'webinar', 'workshop', 'shadowing', 'on_the_job', 'practical_task'].includes(course?.type);
       if (live && isOwner && !ctx.isLdAdmin && !ctx.isTrainer) return fail(res, 'A trainer / manager marks this one complete after you attend');
@@ -1865,7 +1905,7 @@ const HANDLERS = {
       const policy = await get('CompanyPolicy', t.policy_id);
       const rec = {
         employee_user_id: ctx.id, employee_name: emp.display_name || emp.full_name || ind.employee.name, employee_code: emp.employee_code || ind.employee.code, department: emp.department || ind.employee.department, designation: emp.designation || ind.employee.designation,
-        induction_id: ind.id, task_id: t.id, policy_id: t.policy_id, policy_title: policy?.title || t.title, policy_category: policy?.category || t.category || '', policy_version: t.version || policy?.updated_at || '', policy_file_url: t.file_url,
+        is_test: !!ind.is_test, induction_id: ind.id, task_id: t.id, policy_id: t.policy_id, policy_title: policy?.title || t.title, policy_category: policy?.category || t.category || '', policy_version: t.version || policy?.updated_at || '', policy_file_url: t.file_url,
         policy_file_sha256: await fileHash(t.file_url), statement: ACK_STATEMENT, typed_name: clean(p.typed_name, 120), signed_at: nowIso(), read_seconds: Math.round(t.watch?.sec || 0), ip: ipOf(res), user_agent: clean(res.req?.headers?.['user-agent'], 200), status: 'SIGNED',
       };
       rec.record_sha256 = sha256(JSON.stringify(rec));
@@ -1961,13 +2001,13 @@ const HANDLERS = {
     if (qt.done) return fail(res, 'You have already passed this quiz');
     if (!gateActive(g)) return fail(res, 'This step is not open yet');
     if (!view?.done) return fail(res, 'Study the org chart for the required time first');
-    let quiz = (await list('LdOrgQuiz', 'AND user_id=$2', [ctx.id])).find(x => x.induction_id === ind.id && x.status === 'IN_PROGRESS');
+    let quiz = (await listAll('LdOrgQuiz', 'AND user_id=$2', [ctx.id])).find(x => x.induction_id === ind.id && x.status === 'IN_PROGRESS');
     if (!quiz) {
       const org = buildDeptOrg(ind.employee.department, await activeEmployees(), { viewerUid: ind.user_id, today: todayIST() });
       const seed = Math.floor(Math.random() * 2 ** 31);
       const questions = makeOrgQuiz(org, { n: ORG_QUIZ_QUESTIONS, seed });
       if (questions.length < 4) return fail(res, 'Your department chart is too small for a quiz yet — HR will sign this step off manually');
-      quiz = await create('LdOrgQuiz', { user_id: ctx.id, induction_id: ind.id, department: ind.employee.department, seed, questions, status: 'IN_PROGRESS', started_at: nowIso() }, ctx.id);
+      quiz = await create('LdOrgQuiz', { is_test: !!ind.is_test, user_id: ctx.id, induction_id: ind.id, department: ind.employee.department, seed, questions, status: 'IN_PROGRESS', started_at: nowIso() }, ctx.id);
     }
     return ok(res, { quiz_id: quiz.id, pass_score: ctx.cfg.induction_pass_score, attempt_no: (qt.attempts || []).length + 1, questions: quiz.questions.map(q => ({ id: q.id, level: q.level, text: q.text, options: q.options })) });
   },
@@ -2070,6 +2110,32 @@ const HANDLERS = {
     return ok(res, { version, already: has, migrated: migrated.length, skipped });
   },
 
+  // ───────────────────────── test cycle ─────────────────────────
+  // A full dry run for the L&D admin: a test induction (every timed step 30 s) plus a test training assignment, kept apart from real data.
+  async ld_getTestCycle(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    return ok(res, await testCycleView(ctx.id));
+  },
+  async ld_startTestCycle(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    const cur = await testCycleView(ctx.id);
+    if (cur.active) {
+      if (!p.restart) return fail(res, 'A test cycle is already running — end it first, or restart it.');
+      await wipeTestData(ctx.id);
+    }
+    let ind;
+    try { ind = await createInduction(ctx.id, { actorId: ctx.id, test: true }); }
+    catch (e) { return fail(res, e.message === 'Employee record not found for this user' ? 'Your login has no employee record, so a test induction cannot be built for you. Ask an admin to add one.' : e.message); }
+    const course = await create('LdCourse', { is_test: true, test_owner: ctx.id, title: 'TEST — training cycle check', category: 'Test', type: 'document', description: 'Created by the L&D test cycle. Start it, wait 30 seconds, then mark it complete to see the whole training flow, including the certificate.', duration_min: 1, mandatory: false, issues_certificate: true, validity_months: 0, status: 'active', version: 1, code: 'TEST-' + uuidv4().slice(0, 6).toUpperCase() });
+    await create('LdAssignment', { is_test: true, test_owner: ctx.id, user_id: ctx.id, course_id: course.id, course_title: course.title, assigned_by: ctx.id, assigned_at: nowIso(), due_date: addDays(todayIST(), 7), mandatory: false, source: 'test', status: 'ASSIGNED', progress: 0, course_version: 1 }, ctx.id);
+    await audit('LdInduction', ind.id, 'test_cycle_started', ctx.id, { restart: !!p.restart }, ctx.id);
+    return ok(res, await testCycleView(ctx.id));
+  },
+  async ld_endTestCycle(p, ctx, res) {
+    if (!ctx.isLdAdmin) return forbid(res);
+    return ok(res, { removed: await wipeTestData(ctx.id), ...(await testCycleView(ctx.id)) });
+  },
+
   async ld_runDailyTick(p, ctx, res) {
     if (!ctx.isLdAdmin) return forbid(res);
     const { ldDailyTick } = await import('../cron/ldAutomation.js');
@@ -2132,7 +2198,7 @@ async function completeAssignment(id, actorId, score = null) {
   if (c?.issues_certificate || c?.validity_months) {
     const e = await getEmployee(a.user_id);
     const n = (await list('LdCertificate')).length + 1;
-    await create('LdCertificate', { certificate_id: `MV-CRT-${new Date().getUTCFullYear()}-${String(n).padStart(4, '0')}`, user_id: a.user_id, employee_name: e?.display_name || '', employee_code: e?.employee_code || '', title: c.title, source: 'course', course_id: c.id, score, issue_date: todayIST(), expiry_date: c.validity_months ? addMonths(todayIST(), c.validity_months) : null, status: 'VALID' }, a.user_id);
+    await create('LdCertificate', { is_test: !!a.is_test, certificate_id: a.is_test ? `TEST-CRT-${String(Date.now()).slice(-6)}` : `MV-CRT-${new Date().getUTCFullYear()}-${String(n).padStart(4, '0')}`, user_id: a.user_id, employee_name: e?.display_name || '', employee_code: e?.employee_code || '', title: c.title, source: 'course', course_id: c.id, score, issue_date: todayIST(), expiry_date: c.validity_months ? addMonths(todayIST(), c.validity_months) : null, status: 'VALID' }, a.user_id);
   }
   await notify(a.user_id, { title: 'Training completed', message: `"${a.course_title}" is marked complete.`, type: 'success', link: '/MyLearning' });
 }

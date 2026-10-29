@@ -10,6 +10,7 @@ import LdTrainersTab from '@/components/ld/LdTrainersTab';
 import LdReportsTab from '@/components/ld/LdReportsTab';
 import LdSettingsTab from '@/components/ld/LdSettingsTab';
 import LdPoliciesTab from '@/components/ld/LdPoliciesTab';
+import LdTestCycleTab from '@/components/ld/LdTestCycleTab';
 import PauseControl from '@/components/ld/PauseControl';
 
 // HR / L&D control centre — new-joiner induction control, catalogue, assessments, skills,
@@ -34,6 +35,7 @@ export default function LdControlCentre() {
           <TabsTrigger value="policies">Policies &amp; org chart</TabsTrigger>
           <TabsTrigger value="reports">Reports</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="test">Test cycle</TabsTrigger>
         </TabsList>
         <TabsContent value="overview">{tab === 'overview' && <LdOverviewTab onTab={setTab} />}</TabsContent>
         <TabsContent value="joiners">{tab === 'joiners' && <LdJoinersTab />}</TabsContent>
@@ -44,6 +46,7 @@ export default function LdControlCentre() {
         <TabsContent value="trainers">{tab === 'trainers' && <LdTrainersTab />}</TabsContent>
         <TabsContent value="reports">{tab === 'reports' && <LdReportsTab />}</TabsContent>
         <TabsContent value="settings">{tab === 'settings' && <LdSettingsTab />}</TabsContent>
+        <TabsContent value="test">{tab === 'test' && <LdTestCycleTab />}</TabsContent>
       </Tabs>
     </div>
   );
