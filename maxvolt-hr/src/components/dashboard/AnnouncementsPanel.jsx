@@ -7,7 +7,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { isAnnouncementForEmployee } from '@/lib/announcementAudience';
-import { MAX_SHOWN, dateOf, isRead, pickAnnouncements, whenLabel } from '@/lib/announcementPriority';
+import { MAX_SHOWN, dateOf, isRead, isNew, pickAnnouncements, whenLabel } from '@/lib/announcementPriority';
 
 const CATEGORY = {
   urgent: { label: 'Urgent', icon: AlertTriangle, chip: 'bg-red-600 text-white' },
@@ -44,9 +44,18 @@ export default function AnnouncementsPanel({ user, width = 'max-w-6xl' }) {
 
   const shown = useMemo(() => (list ? pickAnnouncements(list, user.id) : []), [list, user?.id]);
   if (!list) return null;
-  if (shown.length === 0) return null;
+  if (shown.length === 0) {
+    // Nothing has been announced to this person yet — say so, instead of leaving a gap people mistake for a fault.
+    return (
+      <div className="p-4 md:p-6 pb-0 md:pb-0">
+        <div className={`${width} mx-auto`}>
+          <Card className="border border-dashed"><CardContent className="p-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground"><Megaphone className="w-4 h-4" />No announcements right now.<Link to={createPageUrl('Announcements')} className="ml-auto text-xs text-primary hover:underline">View all</Link></CardContent></Card>
+        </div>
+      </div>
+    );
+  }
 
-  const unread = shown.filter(a => !isRead(a, user.id));
+  const unread = shown.filter(a => isNew(a, user.id));
   const markLocal = (ids) => setList(cur => cur.map(a => (ids.includes(a.id) ? { ...a, read_by: [...(a.read_by || []).filter(r => r.user_id !== user.id), { user_id: user.id, read_at: new Date().toISOString() }] } : a)));
   const openIt = (a) => {
     setOpen(a);
@@ -78,13 +87,13 @@ export default function AnnouncementsPanel({ user, width = 'max-w-6xl' }) {
           </div>
           <CardContent className="p-0 divide-y">
             {visible.map(a => {
-              const c = catOf(a); const Icon = c.icon; const read = isRead(a, user.id); const urgent = a.category === 'urgent';
+              const c = catOf(a); const Icon = c.icon; const fresh = isNew(a, user.id); const read = !fresh; const urgent = a.category === 'urgent';
               return (
-                <button key={a.id} type="button" onClick={() => openIt(a)} className={`w-full text-left flex items-start gap-3 px-4 py-3 transition-colors hover:bg-muted/50 ${urgent && !read ? 'bg-red-50/70 dark:bg-red-950/20' : ''}`}>
+                <button key={a.id} type="button" onClick={() => openIt(a)} className={`w-full text-left flex items-start gap-3 px-4 py-3 transition-colors hover:bg-muted/50 ${urgent && fresh ? 'bg-red-50/70 dark:bg-red-950/20' : ''}`}>
                   <span className={`mt-0.5 w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${urgent ? 'bg-red-100 text-red-600 dark:bg-red-950/60' : 'bg-muted text-muted-foreground'}`}><Icon className="w-4 h-4" /></span>
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                      {!read && <span className="w-2 h-2 rounded-full bg-primary shrink-0" aria-label="Unread" />}
+                      {fresh && <span className="w-2 h-2 rounded-full bg-primary shrink-0" aria-label="New" />}
                       <span className={`text-sm ${read ? 'font-medium text-muted-foreground' : 'font-semibold text-foreground'}`}>{a.title}</span>
                       <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${c.chip}`}>{c.label}</span>
                       {a.attachment_url && <Paperclip className="w-3 h-3 text-muted-foreground" aria-label="Has an attachment" />}
