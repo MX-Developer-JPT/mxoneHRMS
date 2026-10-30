@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
 import { safeDate, nowIST } from '@/lib/dateUtils';
-import { Search, LogOut, LogIn, User, Clock, History, CheckCircle2, XCircle, FileClock, MapPin, Download, Loader2 } from 'lucide-react';
+import { Search, LogOut, LogIn, User, Clock, History, CheckCircle2, XCircle, FileClock, MapPin, Download, Loader2, ChevronLeft, ChevronRight, CalendarDays } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 import { toast } from 'sonner';
 
@@ -39,6 +39,17 @@ const OUTING_TYPE_LABELS = {
   travelling_to_another_office: 'Travelling to Another Office',
 };
 
+// The calendar day (India time, yyyy-MM-dd) a pass was raised on.
+const dayOf = (d) => { const t = d ? new Date(d).getTime() : NaN; return Number.isNaN(t) ? '' : new Date(t + 5.5 * 3600000).toISOString().slice(0, 10); };
+const todayIST = () => dayOf(Date.now());
+const shiftDay = (day, delta) => { const t = new Date(day + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + delta); return t.toISOString().slice(0, 10); };
+const dayLabel = (day) => {
+  if (!day) return 'Unknown date';
+  const t = todayIST();
+  const name = new Date(day + 'T00:00:00Z').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  return day === t ? `Today · ${name}` : day === shiftDay(t, -1) ? `Yesterday · ${name}` : name;
+};
+
 export default function GatePassManagement() {
   const [currentUser, setCurrentUser] = useState(null);
   const [passes, setPasses] = useState([]);
@@ -54,6 +65,8 @@ export default function GatePassManagement() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [view, setView] = useState('day'); // 'day' = one day at a time (default) · 'all' = every pass, grouped by day
+  const [day, setDay] = useState(todayIST());
 
   useEffect(() => {
     loadData();
@@ -115,18 +128,25 @@ export default function GatePassManagement() {
     const name = (emp?.display_name || u?.full_name || '').toLowerCase();
     const matchesSearch = !search || name.includes(search.toLowerCase());
     const matchesFilter = filter === 'all' || p.status === filter;
-    const passDate = p.created_date ? new Date(p.created_date) : null;
-    const matchesFrom = !dateFrom || (passDate && passDate >= new Date(dateFrom));
-    const matchesTo = !dateTo || (passDate && passDate <= new Date(dateTo + 'T23:59:59'));
-    return matchesSearch && matchesFilter && matchesFrom && matchesTo;
+    const pd = dayOf(p.created_date);
+    const matchesDay = view === 'day' ? pd === day : (!dateFrom || pd >= dateFrom) && (!dateTo || pd <= dateTo);
+    return matchesSearch && matchesFilter && matchesDay;
   });
 
+  // the figures describe what is on screen: the chosen day, or every pass in "All days"
+  const scope = view === 'day' ? passes.filter(p => dayOf(p.created_date) === day) : passes;
   const stats = {
-    total: passes.length,
-    pending: passes.filter(p => p.status === 'pending_approval').length,
-    out: passes.filter(p => p.status === 'departed').length,
-    returned: passes.filter(p => p.status === 'returned').length,
+    total: scope.length,
+    pending: scope.filter(p => p.status === 'pending_approval').length,
+    out: scope.filter(p => p.status === 'departed').length,
+    returned: scope.filter(p => p.status === 'returned').length,
   };
+  // people still out, or requests still waiting, from days other than the one being viewed
+  const elsewhere = view === 'day' ? passes.filter(p => dayOf(p.created_date) !== day && ['pending_approval', 'departed'].includes(p.status)) : [];
+
+  // "All days": the same list, under a heading per day (newest first)
+  const groups = [];
+  if (view === 'all') for (const p of filtered) { const d = dayOf(p.created_date); const g = groups[groups.length - 1]; if (g && g.day === d) g.items.push(p); else groups.push({ day: d, items: [p] }); }
 
   // HR/admin only (isHR, checked at the call site) — exports exactly the
   // passes currently visible under the Live View filters/search/date range,
@@ -199,7 +219,7 @@ export default function GatePassManagement() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Gate_Passes_${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
+      a.download = view === 'day' ? `Gate_Passes_${day}.xlsx` : `Gate_Passes_${format(new Date(), 'yyyy-MM-dd')}.xlsx`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err) {
@@ -222,12 +242,12 @@ export default function GatePassManagement() {
           </Button>
         )}
       </div>
-      <p className="text-gray-500 text-sm mb-5">Track all employee gate passes</p>
+      <p className="text-gray-500 text-sm mb-5">Track employee gate passes — one day at a time, or all days together</p>
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         {[
-          { label: 'Total Passes', value: stats.total, color: 'text-gray-700' },
+          { label: view === 'day' ? 'Passes this day' : 'Total Passes', value: stats.total, color: 'text-gray-700' },
           { label: 'Pending Approval', value: stats.pending, color: 'text-yellow-700' },
           { label: 'Currently Out', value: stats.out, color: 'text-orange-700' },
           { label: 'Returned', value: stats.returned, color: 'text-green-700' },
@@ -263,6 +283,31 @@ export default function GatePassManagement() {
 
       {activeTab === 'live' && (
         <>
+          {/* Day / all days */}
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <div className="inline-flex rounded-lg border p-0.5 bg-gray-50">
+              {[['day', 'Day-wise'], ['all', 'All days']].map(([k, label]) => (
+                <button key={k} onClick={() => setView(k)} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${view === k ? 'bg-white shadow-sm text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}>{label}</button>
+              ))}
+            </div>
+            {view === 'day' && (
+              <div className="flex items-center gap-1.5">
+                <Button size="icon" variant="outline" className="h-9 w-9" onClick={() => setDay(shiftDay(day, -1))} aria-label="Previous day"><ChevronLeft className="w-4 h-4" /></Button>
+                <Input type="date" className="w-40 text-sm" value={day} max={todayIST()} onChange={e => e.target.value && setDay(e.target.value)} aria-label="Pick a day" />
+                <Button size="icon" variant="outline" className="h-9 w-9" onClick={() => setDay(shiftDay(day, 1))} disabled={day >= todayIST()} aria-label="Next day"><ChevronRight className="w-4 h-4" /></Button>
+                {day !== todayIST() && <Button size="sm" variant="ghost" onClick={() => setDay(todayIST())}>Today</Button>}
+              </div>
+            )}
+            {view === 'day' && <span className="flex items-center gap-1.5 text-sm font-medium text-gray-700"><CalendarDays className="w-4 h-4 text-blue-600" />{dayLabel(day)}</span>}
+          </div>
+          {elsewhere.length > 0 && (
+            <button onClick={() => setView('all')} className="w-full text-left mb-4 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-yellow-800 hover:bg-yellow-100">
+              {elsewhere.filter(p => p.status === 'pending_approval').length > 0 && <>{elsewhere.filter(p => p.status === 'pending_approval').length} request(s) from other days still waiting for approval. </>}
+              {elsewhere.filter(p => p.status === 'departed').length > 0 && <>{elsewhere.filter(p => p.status === 'departed').length} employee(s) from other days have not been marked back. </>}
+              <span className="underline">View all days</span>
+            </button>
+          )}
+
           {/* Filters */}
           <div className="flex flex-col gap-3 mb-5">
             <div className="flex flex-col sm:flex-row gap-3">
@@ -275,14 +320,14 @@ export default function GatePassManagement() {
                   onChange={e => setSearch(e.target.value)}
                 />
               </div>
-              <div className="flex gap-2 items-center">
+              {view === 'all' && <div className="flex gap-2 items-center">
                 <Input type="date" className="w-36 text-sm" value={dateFrom} onChange={e => setDateFrom(e.target.value)} placeholder="From" />
                 <span className="text-gray-400 text-sm">–</span>
                 <Input type="date" className="w-36 text-sm" value={dateTo} onChange={e => setDateTo(e.target.value)} placeholder="To" />
                 {(dateFrom || dateTo) && (
                   <Button size="sm" variant="ghost" onClick={() => { setDateFrom(''); setDateTo(''); }}>Clear</Button>
                 )}
-              </div>
+              </div>}
             </div>
             <div className="flex gap-2 flex-wrap">
               {['all', 'pending_approval', 'approved', 'departed', 'returned', 'rejected'].map(f => (
@@ -300,9 +345,12 @@ export default function GatePassManagement() {
 
           <div className="space-y-2">
             {filtered.length === 0 && (
-              <div className="text-center py-12 text-gray-400">No gate passes found.</div>
+              <div className="text-center py-12 text-gray-400">{view === 'day' ? `No gate passes on ${dayLabel(day).replace(/^(Today|Yesterday) · /, '')}.` : 'No gate passes found.'}</div>
             )}
-            {filtered.map(pass => {
+            {(view === 'day' ? [{ day: null, items: filtered }] : groups).map(g => (
+              <React.Fragment key={g.day || 'one'}>
+                {g.day !== null && <div className="flex items-center gap-2 pt-3 pb-1"><CalendarDays className="w-4 h-4 text-blue-600" /><h3 className="text-sm font-semibold text-gray-700">{dayLabel(g.day)}</h3><span className="text-xs text-gray-400">{g.items.length} pass{g.items.length === 1 ? '' : 'es'}</span><button className="ml-auto text-xs text-blue-600 hover:underline" onClick={() => { setDay(g.day); setView('day'); }}>Open this day</button></div>}
+            {g.items.map(pass => {
               const u = users[pass.employee_user_id];
               const emp = employees[pass.employee_user_id];
               const displayName = emp?.display_name || u?.full_name || 'Unknown';
@@ -355,6 +403,8 @@ export default function GatePassManagement() {
                 </Card>
               );
             })}
+              </React.Fragment>
+            ))}
           </div>
         </>
       )}
