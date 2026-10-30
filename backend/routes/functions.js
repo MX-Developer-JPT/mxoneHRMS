@@ -2507,13 +2507,16 @@ router.post('/:name', async (req, res) => {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { announcement_id: marId } = p;
       if (!marId) return res.json({ success: false, error: 'announcement_id required' });
-      const marRow = await one("SELECT id,data FROM entities WHERE type='Announcement' AND id=$1", [marId]);
-      if (!marRow) return res.json({ success: false, error: 'Announcement not found' });
-      const marAnn = JSON.parse(marRow.data);
-      const marNow = new Date().toISOString();
-      const marReadBy = Array.isArray(marAnn.read_by) ? marAnn.read_by.filter(r => r.user_id !== cu.id) : [];
-      marReadBy.push({ user_id: cu.id, read_at: marNow });
-      await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...marAnn, read_by: marReadBy }), marRow.id]);
+      // One atomic statement: many people opening the same announcement at once must all be recorded
+      // (a read-then-rewrite of the whole row would let the last writer silently drop the others).
+      const marRes = await run(
+        `UPDATE entities SET data = jsonb_set(data::jsonb, '{read_by}',
+           COALESCE((SELECT jsonb_agg(r) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(data::jsonb->'read_by')='array' THEN data::jsonb->'read_by' ELSE '[]'::jsonb END) r WHERE r->>'user_id' <> $1), '[]'::jsonb)
+           || jsonb_build_array(jsonb_build_object('user_id', $1::text, 'read_at', $2::text)), true)::text
+         WHERE type='Announcement' AND id=$3`,
+        [cu.id, new Date().toISOString(), marId]
+      );
+      if (!marRes.rowCount) return res.json({ success: false, error: 'Announcement not found' });
       return res.json({ success: true });
     }
 

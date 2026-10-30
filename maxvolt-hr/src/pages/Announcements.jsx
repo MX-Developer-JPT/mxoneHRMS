@@ -66,6 +66,14 @@ export default function Announcements() {
       const filtered = isHR ? published : published.filter(a => isAnnouncementForEmployee(a, empRecord[0]));
 
       setAnnouncements(filtered);
+      // a notification links here with ?id=<announcement>: open that one straight away
+      const wanted = new URLSearchParams(window.location.search).get('id');
+      const target = wanted && filtered.find(a => a.id === wanted);
+      if (target) {
+        setOpenAnnouncement(target);
+        base44.functions.invoke('markAnnouncementRead', { announcement_id: target.id }).catch(() => {});
+        if (isHR || role === 'management') loadReadStats(target.id);
+      }
     } catch (error) {
       console.error('Error loading announcements:', error);
     }

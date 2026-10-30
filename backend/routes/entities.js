@@ -221,7 +221,29 @@ async function requireAdminForType(cu, res, type) {
     if (!['hr', 'admin'].includes(role)) { res.status(403).json({ error: 'HR or admin access required to manage leave policies' }); return false; }
     return true;
   }
+  if (type === 'Announcement') {
+    const role = await getEffectiveRole(cu);
+    if (!['hr', 'admin'].includes(role)) { res.status(403).json({ error: 'Only HR or admin can create or change announcements' }); return false; }
+    return true;
+  }
   return true;
+}
+
+// What an announcement must look like before it is stored. `a` is the full record as it will be saved.
+// A draft may be incomplete; a published one must have a real audience (never "nothing selected = everyone").
+const ANNOUNCEMENT_CATEGORIES = ['general', 'policy', 'event', 'holiday', 'urgent'];
+const ANNOUNCEMENT_AUDIENCES = ['all', 'specific_departments', 'specific_locations'];
+function announcementProblem(a) {
+  if (!String(a.title || '').trim()) return 'Give the announcement a title.';
+  if (!String(a.content || '').trim()) return 'Write the announcement text.';
+  if (a.category && !ANNOUNCEMENT_CATEGORIES.includes(a.category)) return 'Unknown announcement category.';
+  if (a.target_audience && !ANNOUNCEMENT_AUDIENCES.includes(a.target_audience)) return 'Unknown audience.';
+  if (a.status && !['draft', 'published', 'archived'].includes(a.status)) return 'Unknown announcement status.';
+  if (a.status === 'published') {
+    if (a.target_audience === 'specific_departments' && !(Array.isArray(a.target_departments) && a.target_departments.length)) return 'Select at least one department, or choose Everyone.';
+    if (a.target_audience === 'specific_locations' && !(Array.isArray(a.target_locations) && a.target_locations.length)) return 'Select at least one location, or choose Everyone.';
+  }
+  return null;
 }
 
 // Employees may submit at most 5 AttendanceRegularisation requests per
@@ -678,28 +700,23 @@ async function getHrAdminUserIds() {
 // dropdown — never its short code).
 export async function getAnnouncementAudienceUserIds(data) {
   const audience = data.target_audience || 'all';
-  if (audience === 'specific_locations') {
-    const locs = Array.isArray(data.target_locations) ? data.target_locations : [];
-    if (!locs.length) {
-      const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
-      return rows.map(r => r.user_id).filter(Boolean);
-    }
-    const rows = await all(
-      "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'work_location' = ANY($1)",
-      [locs]
-    );
-    return rows.map(r => r.user_id).filter(Boolean);
+  const norm = (list) => (Array.isArray(list) ? list : []).map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
+  const col = (field) => `LOWER(TRIM(COALESCE(data::jsonb->>'${field}', '')))`;
+  let rows;
+  if (audience === 'specific_locations' || audience === 'specific_departments') {
+    const picked = norm(audience === 'specific_locations' ? data.target_locations : data.target_departments);
+    // A targeted announcement with nothing selected reaches nobody (the API refuses to publish one) — never everybody.
+    if (!picked.length) return [];
+    rows = await all(`SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND ${col(audience === 'specific_locations' ? 'work_location' : 'department')} = ANY($1)`, [picked]);
+    return [...new Set(rows.map(r => r.user_id).filter(Boolean))];
   }
-  const depts = Array.isArray(data.target_departments) ? data.target_departments : [];
-  if (audience === 'all' || depts.length === 0) {
-    const rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
-    return rows.map(r => r.user_id).filter(Boolean);
-  }
-  const rows = await all(
-    "SELECT user_id FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'department' = ANY($1)",
-    [depts]
+  rows = await all("SELECT user_id FROM entities WHERE type='Employee' AND status='active'");
+  const ids = rows.map(r => r.user_id).filter(Boolean);
+  // Staff logins that have no employee record (an admin, a recruiter) are still part of "everyone".
+  const staff = await all(
+    "SELECT id FROM users u WHERE COALESCE(NULLIF(custom_role,''), role) IN ('hr','admin','recruiter','manager','management','ld_trainer') AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.type='Employee' AND e.user_id=u.id)"
   );
-  return rows.map(r => r.user_id).filter(Boolean);
+  return [...new Set([...ids, ...staff.map(r => r.id)])];
 }
 
 /* ── SQL ORDER BY + LIMIT builder ─────────────────────────── */
@@ -840,6 +857,13 @@ router.post('/:type', async (req, res) => {
   const body = req.body;
   const id = body.id || uuidv4();
   const data = { ...body, id };
+  if (type === 'Announcement') {
+    const problem = announcementProblem(data);
+    if (problem) return res.status(400).json({ error: problem });
+    data.title = String(data.title).trim(); data.content = String(data.content).trim();
+    data.published_by = cu.id; delete data.read_by;
+    if (data.status === 'published') data.publish_date = new Date().toISOString();
+  }
 
   // A non-privileged caller may only create a record attributed to
   // themselves — closes the gap where any authenticated user could POST a
@@ -995,7 +1019,7 @@ router.post('/:type', async (req, res) => {
           title: `📢 ${data.title || 'New Announcement'}`,
           message: (data.content || '').slice(0, 180),
           type: 'info',
-          link: '/Announcements',
+          link: `/Announcements?id=${id}`,
         });
       } else if (type === 'JobRequisition') {
         if (data.status === 'pending_manager_approval' && data.hiring_manager_id) {
@@ -1137,6 +1161,13 @@ router.patch('/:type/:id', async (req, res) => {
     if (!PRIVILEGED_ROLES.has(genRole) && !isGateAdminAttendance && !isFrontDeskCard) return res.status(403).json({ error: 'Access denied — not your record' });
   }
 
+  if (type === 'Announcement') {
+    // read receipts belong to readers (markAnnouncementRead), never to an edit
+    delete req.body.read_by; delete req.body.published_by;
+    const problem = announcementProblem({ ...current, ...req.body });
+    if (problem) return res.status(400).json({ error: problem });
+    if (req.body.status === 'published' && current.status !== 'published') { req.body.publish_date = new Date().toISOString(); req.body.published_by = cu.id; }
+  }
   const updated = { ...current, ...req.body, id };
 
   // A business-card photo, once uploaded, stays until someone removes it ON PURPOSE (the card form sends
@@ -1253,7 +1284,7 @@ router.patch('/:type/:id', async (req, res) => {
         await notifyMany(audience, {
           title: `📢 ${updated.title || 'New Announcement'}`,
           message: (updated.content || '').slice(0, 180),
-          type: 'info', link: '/Announcements',
+          type: 'info', link: `/Announcements?id=${id}`,
         });
       } else if (type === 'JobRequisition') {
         const posLabel = `${updated.number_of_positions || 1} × ${updated.title || 'position'} (${updated.department || ''})`;

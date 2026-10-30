@@ -90,13 +90,15 @@ export default function AnnouncementManagement() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!formData.title?.trim()) return toast.error('Give the announcement a title');
+    if (!formData.content?.trim()) return toast.error('Write the announcement text');
+    if (formData.status === 'published') {
+      if (formData.target_audience === 'specific_departments' && !(formData.target_departments || []).length) return toast.error('Select at least one department, or choose Everyone');
+      if (formData.target_audience === 'specific_locations' && !(formData.target_locations || []).length) return toast.error('Select at least one location, or choose Everyone');
+    }
     try {
-      const user = await base44.auth.me();
-      const data = {
-        ...formData,
-        published_by: user.id,
-        publish_date: formData.status === 'published' ? new Date().toISOString() : null
-      };
+      // who published it and when are recorded by the server
+      const { published_by, publish_date, read_by, ...data } = formData;
 
       if (editingAnnouncement) {
         await base44.entities.Announcement.update(editingAnnouncement.id, data);
@@ -111,13 +113,15 @@ export default function AnnouncementManagement() {
       setFormData(emptyForm);
       loadData();
     } catch (error) {
-      toast.error('Failed to save announcement');
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to save announcement');
     }
   };
 
   const handlePublish = async (id) => {
-    await base44.entities.Announcement.update(id, { status: 'published', publish_date: new Date().toISOString() });
-    toast.success('Announcement published');
+    try {
+      await base44.entities.Announcement.update(id, { status: 'published' });
+      toast.success('Announcement published');
+    } catch (error) { toast.error(error?.response?.data?.error || error?.message || 'Could not publish'); }
     loadData();
   };
 
