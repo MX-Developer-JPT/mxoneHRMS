@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ctcToRupees, ctcPreview, ctcTooHigh } from '@/lib/ctc';
 import { toast } from 'sonner';
 import { Briefcase, MapPin, Clock, Users, Search, ChevronRight, Calendar, CheckCircle2, Upload, Loader2, ArrowLeft, Sparkles, Building2, IndianRupee, GraduationCap, FileText } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
@@ -245,6 +246,10 @@ function JobDetailPage({ jobId, onBack }) {
       toast.error('Name, email and phone are required');
       return;
     }
+    if (ctcTooHigh(form.current_ctc) || ctcTooHigh(form.expected_ctc)) {
+      toast.error('Please check your CTC — it looks too high. Enter it in lakhs per annum, for example 6.5');
+      return;
+    }
     setSubmitting(true);
     try {
       let resume_url = '';
@@ -261,8 +266,8 @@ function JobDetailPage({ jobId, onBack }) {
         candidateData: {
           ...form,
           experience_years: parseFloat(form.experience_years) || 0,
-          current_ctc: parseFloat(form.current_ctc) || 0,
-          expected_ctc: parseFloat(form.expected_ctc) || 0,
+          current_ctc: ctcToRupees(form.current_ctc),
+          expected_ctc: ctcToRupees(form.expected_ctc),
           notice_period: parseInt(form.notice_period) || 0,
           key_skills: form.key_skills ? form.key_skills.split(',').map(s => s.trim()).filter(Boolean) : [],
           resume_url,
@@ -408,8 +413,10 @@ function JobDetailPage({ jobId, onBack }) {
               <div><Label className="text-xs font-semibold">Highest Qualification</Label><Input className="mt-1" value={form.highest_qualification} onChange={e => set('highest_qualification', e.target.value)} /></div>
               <div><Label className="text-xs font-semibold">Current Company</Label><Input className="mt-1" value={form.current_company} onChange={e => set('current_company', e.target.value)} /></div>
               <div><Label className="text-xs font-semibold">Current Designation</Label><Input className="mt-1" value={form.current_designation} onChange={e => set('current_designation', e.target.value)} /></div>
-              <div><Label className="text-xs font-semibold">Current CTC (LPA)</Label><Input className="mt-1" type="number" min="0" value={form.current_ctc} onChange={e => set('current_ctc', e.target.value)} /></div>
-              <div><Label className="text-xs font-semibold">Expected CTC (LPA)</Label><Input className="mt-1" type="number" min="0" value={form.expected_ctc} onChange={e => set('expected_ctc', e.target.value)} /></div>
+              <div><Label className="text-xs font-semibold">Current CTC (lakhs per annum)</Label><Input className="mt-1" type="number" inputMode="decimal" min="0" step="any" placeholder="e.g. 6 or 6.5" value={form.current_ctc} onChange={e => set('current_ctc', e.target.value)} />
+                <p className={`text-xs mt-1 ${ctcTooHigh(form.current_ctc) ? 'text-red-600' : 'text-gray-500'}`}>{ctcPreview(form.current_ctc) || 'Yearly salary in lakhs — 6 means ₹6,00,000'}</p></div>
+              <div><Label className="text-xs font-semibold">Expected CTC (lakhs per annum)</Label><Input className="mt-1" type="number" inputMode="decimal" min="0" step="any" placeholder="e.g. 8 or 8.5" value={form.expected_ctc} onChange={e => set('expected_ctc', e.target.value)} />
+                <p className={`text-xs mt-1 ${ctcTooHigh(form.expected_ctc) ? 'text-red-600' : 'text-gray-500'}`}>{ctcPreview(form.expected_ctc) || 'Yearly salary in lakhs — 8 means ₹8,00,000'}</p></div>
               <div><Label className="text-xs font-semibold">Notice Period (days)</Label><Input className="mt-1" type="number" min="0" value={form.notice_period} onChange={e => set('notice_period', e.target.value)} /></div>
               <div><Label className="text-xs font-semibold">Available From</Label><Input className="mt-1" type="date" value={form.available_from} onChange={e => set('available_from', e.target.value)} /></div>
             </div>

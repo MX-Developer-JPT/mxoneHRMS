@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ctcToRupees, ctcPreview, ctcTooHigh } from '@/lib/ctc';
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { Briefcase, MapPin, Clock, CheckCircle2, Upload, Loader2 } from 'lucide-react';
@@ -93,8 +94,8 @@ export default function ApplyForJob() {
           current_company: form.current_company,
           current_designation: form.current_designation,
           highest_qualification: form.highest_qualification,
-          current_ctc: parseFloat(form.current_ctc) || 0,
-          expected_ctc: parseFloat(form.expected_ctc) || 0,
+          current_ctc: ctcToRupees(form.current_ctc),
+          expected_ctc: ctcToRupees(form.expected_ctc),
           notice_period: parseInt(form.notice_period) || 0,
           linkedin_url: form.linkedin_url,
           portfolio_url: form.portfolio_url,
@@ -323,12 +324,14 @@ export default function ApplyForJob() {
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Compensation</p>
                 <div className="grid sm:grid-cols-2 gap-4">
                   <div>
-                    <Label>Current CTC (₹ per annum)</Label>
-                    <Input type="number" min="0" value={form.current_ctc} onChange={e => setForm({ ...form, current_ctc: e.target.value })} placeholder="e.g., 600000" />
+                    <Label>Current CTC (per annum)</Label>
+                    <Input type="number" inputMode="decimal" min="0" step="any" value={form.current_ctc} onChange={e => setForm({ ...form, current_ctc: e.target.value })} placeholder="e.g., 6 (lakhs) or 600000" />
+                    <p className={`text-xs mt-1 ${ctcTooHigh(form.current_ctc) ? 'text-red-600' : 'text-gray-500'}`}>{ctcPreview(form.current_ctc) || 'Type lakhs (6) or the full amount (600000)'}</p>
                   </div>
                   <div>
-                    <Label>Expected CTC (₹ per annum)</Label>
-                    <Input type="number" min="0" value={form.expected_ctc} onChange={e => setForm({ ...form, expected_ctc: e.target.value })} placeholder="e.g., 800000" />
+                    <Label>Expected CTC (per annum)</Label>
+                    <Input type="number" inputMode="decimal" min="0" step="any" value={form.expected_ctc} onChange={e => setForm({ ...form, expected_ctc: e.target.value })} placeholder="e.g., 8 (lakhs) or 800000" />
+                    <p className={`text-xs mt-1 ${ctcTooHigh(form.expected_ctc) ? 'text-red-600' : 'text-gray-500'}`}>{ctcPreview(form.expected_ctc) || 'Type lakhs (8) or the full amount (800000)'}</p>
                   </div>
                 </div>
               </div>

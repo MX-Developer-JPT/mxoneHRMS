@@ -12922,6 +12922,8 @@ ${contextBlock || 'No employee context available — answer from general policy 
         applied_date: new Date().toISOString(),
         status_token: statusToken,
       };
+      // CTC is stored as annual rupees; a bare "6" or "6.5" can only mean lakhs, so older pages / other callers cannot save ₹6
+      for (const k of ['current_ctc', 'expected_ctc']) { const v = Number(d[k]); if (v > 0 && v < 1000) d[k] = Math.round(v * 100000); }
       await run("INSERT INTO entities(id,type,status,data) VALUES($1,'Candidate','applied',$2)", [id, JSON.stringify(d)]);
 
       const appBase = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
