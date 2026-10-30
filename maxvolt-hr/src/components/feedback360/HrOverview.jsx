@@ -95,7 +95,7 @@ export default function HrOverview() {
 
       <div className="hidden md:block rounded-xl border bg-white overflow-x-auto">
         <table className="w-full text-sm">
-          <thead><tr className="text-left text-xs text-gray-500 border-b bg-gray-50"><th className="px-3 py-2 font-medium">Employee</th><th className="px-3 py-2 font-medium">Raters</th><th className="px-3 py-2 font-medium w-44">Overall</th>{d.competencies.map(c => <th key={c.key} className="px-2 py-2 font-medium whitespace-nowrap">{c.label.split(' ')[0]}</th>)}<th className="px-3 py-2 font-medium">Self</th></tr></thead>
+          <thead><tr className="text-left text-xs text-gray-500 border-b bg-gray-50"><th className="px-3 py-2 font-medium">Employee</th><th className="px-3 py-2 font-medium">Raters</th><th className="px-3 py-2 font-medium w-44">Overall</th>{d.competencies.map(c => <th key={c.key} className="px-2 py-2 font-medium whitespace-nowrap">{c.short || c.label}</th>)}<th className="px-3 py-2 font-medium">Self</th></tr></thead>
           <tbody>
             {rows.map(r => (
               <tr key={r.user_id} className="border-b last:border-0 hover:bg-blue-50/40 cursor-pointer" onClick={() => setOpen(r)}>

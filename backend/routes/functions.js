@@ -19,7 +19,7 @@ import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js
 import { isRoasterPolicy, roasterErrors, departmentAllowed, isDuhai, ROASTER_EXCLUDED_DEPARTMENTS } from '../utils/roaster.js';
 import { loadRoasterConfig, saveRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
-import { COMPETENCIES, MIN_RATERS, LEGACY_PERIOD, currentPeriod, normalizePeriod, periodLabel, validateSubmission, summarize, periodsOf } from '../utils/feedback360.js';
+import { COMPETENCIES, SCALE, OPEN_QUESTIONS, MIN_RATERS, LEGACY_PERIOD, currentPeriod, normalizePeriod, periodLabel, validateSubmission, summarize, periodsOf } from '../utils/feedback360.js';
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18842,7 +18842,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       for (const e of gtEmps.filter(e => e.reporting_manager_id === cu.id)) gtOut.push(gtRow(e, 'manager'));                                                  // my reports: I am their manager
       const gtPeers = gtMe ? gtEmps.filter(e => e.user_id !== cu.id && (gtMe.reporting_manager_id ? e.reporting_manager_id === gtMe.reporting_manager_id : e.department && e.department === gtMe.department)) : [];
       for (const e of gtPeers.slice(0, 12)) gtOut.push(gtRow(e, 'peer'));
-      return res.json({ success: true, period: gtPeriod, period_label: periodLabel(gtPeriod), self_done: gtDone.has(cu.id), suggestions: gtOut, given_count: gtDone.size });
+      return res.json({ success: true, competencies: COMPETENCIES, scale: SCALE, open_questions: OPEN_QUESTIONS, period: gtPeriod, period_label: periodLabel(gtPeriod), self_done: gtDone.has(cu.id), suggestions: gtOut, given_count: gtDone.size });
     }
 
     // HR / admin: the ratings of every employee for a period.

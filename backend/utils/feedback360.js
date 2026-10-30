@@ -6,12 +6,42 @@
 //   • the person rated (and their manager) sees results only once at least MIN_RATERS people other than themself have rated them;
 //   • HR / admin see every rating of every employee (that is their job) but flagged "low sample" when fewer than MIN_RATERS rated.
 
+// What Maxvolt asks about: how people deliver in a manufacturing / energy-storage / e-mobility business — ownership of results,
+// safety and quality on the floor, customers (internal and external), teamwork across departments, and learning fast in a
+// fast-changing industry. Each has a plain question and three observable behaviours, so a 4 from one rater means what a 4 from
+// another does. `optional` = may be left "not observed" (not everyone deals with customers or manages people).
 export const COMPETENCIES = [
-  { key: 'communication', label: 'Communication' },
-  { key: 'collaboration', label: 'Collaboration' },
-  { key: 'technical', label: 'Technical Skills' },
-  { key: 'leadership', label: 'Leadership' },
-  { key: 'reliability', label: 'Reliability' },
+  { key: 'technical', short: 'Job Skills', label: 'Job Knowledge & Quality of Work', question: 'How well does this person know their job and how good is the work they produce?',
+    behaviours: ['Has the knowledge and skills the role needs', 'Work is accurate and needs little rework or correction', 'Keeps their knowledge of products, processes and tools up to date'] },
+  { key: 'ownership', short: 'Ownership', label: 'Ownership & Reliability', question: 'Can you count on this person to take responsibility and deliver?',
+    behaviours: ['Meets deadlines and commitments, or warns early when they cannot', 'Owns problems and mistakes instead of blaming others', 'Honest and dependable — follows policy and keeps confidences'] },
+  { key: 'quality_safety', short: 'Safety & Quality', label: 'Safety, Quality & Compliance', question: 'How seriously does this person treat safety, quality standards and rules?',
+    behaviours: ['Follows safety rules, SOPs and checklists, even when busy', 'Raises a hazard, defect or compliance risk instead of ignoring it', 'Builds quality in the first time rather than fixing it later'] },
+  { key: 'customer', short: 'Customer', label: 'Customer Focus', question: 'How well does this person serve the people who depend on their work — customers, dealers or other teams?', optional: true,
+    behaviours: ['Understands what the customer or internal team actually needs', 'Responds promptly and follows up until it is resolved', 'Keeps the other side informed, including bad news'] },
+  { key: 'collaboration', short: 'Teamwork', label: 'Teamwork Across Departments', question: 'How well does this person work with others, including people from other departments and locations?',
+    behaviours: ['Shares information and helps others without being asked', 'Resolves disagreements respectfully and keeps the work moving', 'Treats people at every level with courtesy and respect'] },
+  { key: 'communication', short: 'Comms', label: 'Communication', question: 'How clearly and respectfully does this person communicate?',
+    behaviours: ['Explains things clearly, in writing and in person', 'Listens and checks they have understood before acting', 'Gives timely updates so nobody is surprised'] },
+  { key: 'problem_solving', short: 'Problem Solving', label: 'Problem Solving & Initiative', question: 'When something goes wrong or could be better, what does this person do?',
+    behaviours: ['Looks for the root cause rather than a quick patch', 'Brings a suggested solution, not just the problem', 'Acts without waiting to be told when the need is clear'] },
+  { key: 'learning', short: 'Learning', label: 'Learning & Adaptability', question: 'How well does this person learn new things and cope with change?',
+    behaviours: ['Picks up new products, systems and ways of working quickly', 'Stays positive and effective when plans or priorities change', 'Asks for and acts on feedback'] },
+  { key: 'leadership', short: 'Leadership', label: 'Leadership & Developing Others', question: 'If this person guides others — how well do they lead, coach and set an example?', optional: true,
+    behaviours: ['Sets clear direction and expectations', 'Coaches, gives honest feedback and develops people', 'Sets an example others want to follow'] },
+];
+export const SCALE = [
+  { value: 1, label: 'Needs significant improvement', hint: 'Rarely shows this; it is affecting the team or results' },
+  { value: 2, label: 'Needs improvement', hint: 'Sometimes shows this, but not consistently' },
+  { value: 3, label: 'Meets expectations', hint: 'Shows this reliably — what the role needs' },
+  { value: 4, label: 'Exceeds expectations', hint: 'Often goes beyond what the role needs' },
+  { value: 5, label: 'Role model', hint: 'Outstanding; others learn from them' },
+];
+// the three written questions
+export const OPEN_QUESTIONS = [
+  { key: 'strengths', label: 'What should this person keep doing? (a recent example helps)' },
+  { key: 'improvements', label: 'What one thing, if they improved it, would help the team or company most?' },
+  { key: 'comments', label: 'Anything else you would like to add? (optional)' },
 ];
 export const RELATIONSHIPS = ['self', 'manager', 'peer', 'direct_report'];
 export const OTHERS = ['manager', 'peer', 'direct_report'];
@@ -42,7 +72,9 @@ export function validateSubmission({ reviewerId, subjectId, relationship, answer
   const a = answers || {};
   const clean = {};
   for (const c of COMPETENCIES) {
-    const v = Number(a[c.key]);
+    const raw = a[c.key];
+    if (c.optional && (raw == null || raw === '' || raw === 0 || raw === '0' || raw === 'na')) continue;   // "not observed"
+    const v = Number(raw);
     if (!Number.isInteger(v) || v < 1 || v > 5) return { ok: false, error: `Please rate ${c.label} from 1 to 5.` };
     clean[c.key] = v;
   }

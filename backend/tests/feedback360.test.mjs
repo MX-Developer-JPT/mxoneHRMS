@@ -1,9 +1,9 @@
 // 360° feedback rules — pure tests. Run: node backend/tests/feedback360.test.mjs
 import assert from 'node:assert/strict';
-import { COMPETENCIES, MIN_RATERS, currentPeriod, normalizePeriod, periodLabel, validateSubmission, scoreOf, summarize, periodsOf, submissionKey } from '../utils/feedback360.js';
+import { COMPETENCIES, SCALE, OPEN_QUESTIONS, MIN_RATERS, currentPeriod, normalizePeriod, periodLabel, validateSubmission, scoreOf, summarize, periodsOf, submissionKey } from '../utils/feedback360.js';
 let n = 0; const t = (name, fn) => { fn(); n++; console.log('ok  ', name); };
 
-const ans = (v, extra = {}) => ({ communication: v, collaboration: v, technical: v, leadership: v, reliability: v, ...extra });
+const ans = (v, extra = {}) => ({ ...Object.fromEntries(COMPETENCIES.map(c => [c.key, v])), ...extra });
 const row = (rel, v, extra = {}) => ({ relationship: rel, period: '2026-H2', answers: ans(v, extra) });
 
 t('review periods are half-years in IST', () => {
@@ -24,7 +24,7 @@ t('a valid submission is cleaned; ratings must be whole numbers 1–5 for every 
     const r = validateSubmission({ reviewerId: 'a', subjectId: 'b', relationship: 'peer', answers: ans(bad) });
     assert.equal(r.ok, false, String(bad)); assert.match(r.error, /rate/i);
   }
-  assert.equal(validateSubmission({ reviewerId: 'a', subjectId: 'b', relationship: 'peer', answers: { ...ans(3), reliability: undefined } }).ok, false, 'one missing competency');
+  assert.equal(validateSubmission({ reviewerId: 'a', subjectId: 'b', relationship: 'peer', answers: { ...ans(3), ownership: undefined } }).ok, false, 'one missing competency');
   assert.equal(validateSubmission({ reviewerId: 'a', subjectId: 'b', relationship: 'peer', answers: ans('3') }).ok, true, 'numeric strings from a form are accepted');
 });
 
@@ -45,7 +45,7 @@ t('free text is trimmed and capped', () => {
 t('scores: per-competency averages to one decimal and an overall that is the mean of them', () => {
   const s = scoreOf([row('peer', 5), row('peer', 4), row('peer', 4)]);
   assert.equal(s.scores.communication, 4.3); assert.equal(s.overall, 4.3);
-  const mixed = scoreOf([{ answers: { communication: 5, collaboration: 3, technical: 4, leadership: 2, reliability: 1 } }]);
+  const mixed = scoreOf([{ answers: { communication: 5, collaboration: 3, technical: 4, leadership: 2, ownership: 1 } }]);
   assert.equal(mixed.overall, 3); assert.equal(scoreOf([]).overall, null);
 });
 
@@ -87,7 +87,24 @@ t('self-assessment is shown alongside, with the gap to what others said; it neve
 t('periods are listed newest first, legacy rows last; a resubmission has the same key', () => {
   assert.deepEqual(periodsOf([{ period: '2026-H1' }, { period: 'current' }, { period: '2026-H2' }, { period: '2025-H2' }, {}]), ['2026-H2', '2026-H1', '2025-H2', 'current']);
   assert.equal(submissionKey({ reviewer_user_id: 'a', subject_user_id: 'b', period: '2026-H2' }), 'a|b|2026-H2');
-  assert.equal(COMPETENCIES.length, 5);
+  assert.equal(COMPETENCIES.length, 9);
+});
+
+t('the questionnaire: every competency has a question and three behaviours; the scale is 1-5 with a meaning for each point', () => {
+  for (const c of COMPETENCIES) { assert.ok(c.label && c.question.length > 20, c.key); assert.equal(c.behaviours.length, 3, c.key); }
+  assert.equal(new Set(COMPETENCIES.map(c => c.key)).size, COMPETENCIES.length, 'unique keys');
+  assert.deepEqual(SCALE.map(x => x.value), [1, 2, 3, 4, 5]); assert.ok(SCALE.every(x => x.label && x.hint));
+  assert.deepEqual(OPEN_QUESTIONS.map(q => q.key), ['strengths', 'improvements', 'comments']);
+  assert.deepEqual(COMPETENCIES.filter(c => c.optional).map(c => c.key), ['customer', 'leadership']);
+});
+
+t('optional competencies may be left "not observed" and then do not pull the overall score down; required ones may not', () => {
+  const { customer, leadership, ...required } = ans(4);
+  const r = validateSubmission({ reviewerId: 'a', subjectId: 'b', relationship: 'peer', answers: required });
+  assert.equal(r.ok, true); assert.equal('customer' in r.clean, false); assert.equal('leadership' in r.clean, false);
+  for (const skip of [0, '', null, 'na']) assert.equal(validateSubmission({ reviewerId: 'a', subjectId: 'b', relationship: 'peer', answers: { ...required, customer: skip } }).ok, true, String(skip));
+  assert.equal(validateSubmission({ reviewerId: 'a', subjectId: 'b', relationship: 'peer', answers: { ...required, leadership: 9 } }).ok, false, 'a given optional rating must still be 1-5');
+  const sc = scoreOf([{ answers: r.clean }]); assert.equal(sc.overall, 4); assert.equal(sc.scores.customer, null);
 });
 
 console.log(`\n${n} 360° feedback rule tests passed`);
