@@ -18859,20 +18859,102 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       }).sort((a, b) => (b.overall ?? -1) - (a.overall ?? -1) || a.name.localeCompare(b.name));
       if (name === 'export360Feedback') {
         const ExcelJS = (await import('exceljs')).default;
-        const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('360 ratings');
-        ws.addRow([`Maxvolt Energy — 360° feedback ratings, ${periodLabel(ovPeriod)}`]); ws.mergeCells(1, 1, 1, 15);
-        Object.assign(ws.getCell(1, 1), { font: { bold: true, size: 14, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1A3C5E' } } });
-        ws.addRow(['Ratings only — the people who rated are never recorded here. "Low sample" = fewer than ' + MIN_RATERS + ' raters.']); ws.addRow([]);
-        const h = ws.addRow(['Code', 'Employee', 'Department', 'Designation', 'Raters', 'Self overall', 'Overall (others)', ...COMPETENCIES.map(c => c.label), 'Manager overall', 'Peers overall', 'Direct reports overall', 'Low sample']);
-        h.eachCell(c => Object.assign(c, { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2D5986' } } }));
-        for (const r of ovList) ws.addRow([r.code, r.name, r.department, r.designation, r.reviewers, r.self_overall ?? '', r.overall ?? '', ...COMPETENCIES.map(c => r.scores[c.key] ?? ''), r.by_relationship.manager?.overall ?? '', r.by_relationship.peer?.overall ?? '', r.by_relationship.direct_report?.overall ?? '', r.reviewers && r.low_sample ? 'Yes' : '']);
-        [12, 24, 20, 24, 8, 12, 14, ...COMPETENCIES.map(() => 14), 14, 14, 18, 11].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
-        ws.views = [{ state: 'frozen', ySplit: 4 }]; ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: 7 + COMPETENCIES.length + 4 } };
-        const wc = wb.addWorksheet('Comments (anonymous)');
-        const hc = wc.addRow(['Code', 'Employee', 'Rated by (role only)', 'Strengths', 'To improve', 'Other comments']);
-        hc.eachCell(c => Object.assign(c, { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2D5986' } } }));
-        for (const r of ovList) for (const c of r.comments) wc.addRow([r.code, r.name, c.relationship.replace('_', ' '), c.strengths, c.improvements, c.comment]);
-        [12, 24, 18, 50, 50, 50].forEach((w, i) => { wc.getColumn(i + 1).width = w; });
+        const NAVY = 'FF1A3C5E', BLUE = 'FF2D5986', PALE = 'FFEAF1F8', GREY = 'FFF5F7FA', LINE = 'FFD0D7DE';
+        const solid = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+        const thin = { style: 'thin', color: { argb: LINE } };
+        const box = { top: thin, left: thin, bottom: thin, right: thin };
+        const FONT = 'Calibri';
+        const wb = new ExcelJS.Workbook(); wb.creator = 'Maxvolt One'; wb.created = new Date();
+        const rated = ovList.filter(r => r.reviewers > 0);
+        const avg = (arr) => (arr.length ? Math.round((arr.reduce((x, y) => x + y, 0) / arr.length) * 10) / 10 : null);
+        const band = (v) => (v == null || v === '' ? '' : v >= 4.5 ? 'Outstanding' : v >= 4 ? 'Strong' : v >= 3 ? 'Meets expectations' : v >= 2 ? 'Needs improvement' : 'Concern');
+        const title = (ws, text, sub, cols) => {
+          ws.mergeCells(1, 1, 1, cols); ws.mergeCells(2, 1, 2, cols);
+          Object.assign(ws.getCell(1, 1), { value: text, font: { name: FONT, bold: true, size: 16, color: { argb: 'FFFFFFFF' } }, fill: solid(NAVY), alignment: { vertical: 'middle', indent: 1 } });
+          Object.assign(ws.getCell(2, 1), { value: sub, font: { name: FONT, italic: true, size: 10, color: { argb: 'FF5A6B7B' } }, alignment: { vertical: 'middle', indent: 1, wrapText: true }, fill: solid(PALE) });
+          ws.getRow(1).height = 32; ws.getRow(2).height = 30;
+        };
+        const head = (row) => { row.height = 34; row.eachCell(c => Object.assign(c, { font: { name: FONT, bold: true, size: 10.5, color: { argb: 'FFFFFFFF' } }, fill: solid(BLUE), border: box, alignment: { horizontal: 'center', vertical: 'middle', wrapText: true } })); };
+        const scale = (ws, ref) => ws.addConditionalFormatting({ ref, rules: [{ type: 'colorScale', cfvo: [{ type: 'num', value: 1 }, { type: 'num', value: 3 }, { type: 'num', value: 5 }], color: [{ argb: 'FFF8B4B4' }, { argb: 'FFFFF2B3' }, { argb: 'FFB7E1C1' }] }] });
+        const note = `Ratings only — the people who rated are never recorded. Scores are on a 1–5 scale. "Low sample" = fewer than ${MIN_RATERS} raters, so treat the score with care. Exported ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' })}.`;
+
+        // 1 - Summary
+        const ws0 = wb.addWorksheet('Summary', { views: [{ showGridLines: false }], properties: { tabColor: { argb: NAVY } } });
+        ws0.columns = [{ width: 36 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 3 }, { width: 30 }, { width: 14 }];
+        title(ws0, `360° Feedback — ${periodLabel(ovPeriod)}`, note, 7);
+        const kpis = [['Employees', ovList.length], ['Rated by at least one person', rated.length], ['Coverage', ovList.length ? Math.round((rated.length / ovList.length) * 100) / 100 : 0], ['Company average (out of 5)', avg(rated.map(r => r.overall))], ['Completed self-assessment', ovList.filter(r => r.self_overall != null).length], [`Low sample (fewer than ${MIN_RATERS} raters)`, rated.filter(r => r.low_sample).length]];
+        let rw = 4;
+        Object.assign(ws0.getCell(rw, 1), { value: 'Key figures', font: { name: FONT, bold: true, size: 12, color: { argb: NAVY } } }); rw++;
+        for (const [k, v] of kpis) {
+          Object.assign(ws0.getCell(rw, 1), { value: k, font: { name: FONT, size: 11 }, fill: solid(GREY), border: box, alignment: { vertical: 'middle', indent: 1 } });
+          Object.assign(ws0.getCell(rw, 2), { value: v, font: { name: FONT, bold: true, size: 12, color: { argb: NAVY } }, border: box, alignment: { horizontal: 'center' }, ...(k === 'Coverage' ? { numFmt: '0%' } : k.startsWith('Company') ? { numFmt: '0.0' } : {}) });
+          ws0.getRow(rw).height = 21; rw++;
+        }
+        let cr = 4;
+        Object.assign(ws0.getCell(cr, 6), { value: 'Average by competency', font: { name: FONT, bold: true, size: 12, color: { argb: NAVY } } }); cr++;
+        const compStart = cr;
+        for (const c of COMPETENCIES) {
+          Object.assign(ws0.getCell(cr, 6), { value: c.label, font: { name: FONT, size: 11 }, fill: solid(GREY), border: box, alignment: { indent: 1 } });
+          Object.assign(ws0.getCell(cr, 7), { value: avg(rated.map(r => r.scores[c.key]).filter(v => v != null)), numFmt: '0.0', font: { name: FONT, bold: true }, border: box, alignment: { horizontal: 'center' } });
+          cr++;
+        }
+        if (COMPETENCIES.length) scale(ws0, `G${compStart}:G${cr - 1}`);
+        rw = Math.max(rw, cr) + 1;
+        Object.assign(ws0.getCell(rw, 1), { value: 'By department', font: { name: FONT, bold: true, size: 12, color: { argb: NAVY } } }); rw++;
+        const dh = ws0.getRow(rw); ['Department', 'Employees', 'Rated', 'Average'].forEach((t, i) => { dh.getCell(i + 1).value = t; }); head(dh); rw++;
+        const byDept = {}; for (const r of ovList) (byDept[r.department || 'Unassigned'] ||= []).push(r);
+        const deptRows = Object.entries(byDept).map(([d, list]) => [d, list.length, list.filter(r => r.reviewers > 0).length, avg(list.filter(r => r.reviewers > 0).map(r => r.overall))]).sort((x, y) => (y[3] ?? -1) - (x[3] ?? -1));
+        const dStart = rw;
+        deptRows.forEach(([d, n, rt, av], i) => {
+          const row = ws0.getRow(rw);
+          [d, n, rt, av ?? '—'].forEach((v, j) => { Object.assign(row.getCell(j + 1), { value: v, font: { name: FONT, size: 11 }, border: box, alignment: { horizontal: j === 0 ? 'left' : 'center', indent: j === 0 ? 1 : 0 }, ...(i % 2 ? { fill: solid(GREY) } : {}), ...(j === 3 && av != null ? { numFmt: '0.0' } : {}) }); });
+          rw++;
+        });
+        if (deptRows.length) scale(ws0, `D${dStart}:D${rw - 1}`);
+
+        // 2 - Ratings
+        const ws = wb.addWorksheet('Ratings', { properties: { tabColor: { argb: BLUE } } });
+        const heads = ['Code', 'Employee', 'Department', 'Designation', 'Raters', 'Self overall', 'Overall (others)', 'Result', ...COMPETENCIES.map(c => c.label), 'Manager overall', 'Peers overall', 'Direct reports overall', 'Note'];
+        title(ws, `360° ratings by employee — ${periodLabel(ovPeriod)}`, note, heads.length);
+        ws.addRow([]);
+        head(ws.addRow(heads));
+        [11, 26, 20, 24, 8, 11, 13, 20, ...COMPETENCIES.map(() => 14), 13, 13, 15, 22].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+        ovList.forEach((r, i) => {
+          const noteTxt = !r.reviewers ? 'Not rated yet' : r.low_sample ? 'Low sample' : '';
+          const row = ws.addRow([r.code, r.name, r.department, r.designation, r.reviewers, r.self_overall ?? '', r.overall ?? '', band(r.overall), ...COMPETENCIES.map(c => r.scores[c.key] ?? ''), r.by_relationship.manager?.overall ?? '', r.by_relationship.peer?.overall ?? '', r.by_relationship.direct_report?.overall ?? '', noteTxt]);
+          row.height = 20;
+          row.eachCell({ includeEmpty: true }, (c, col) => {
+            Object.assign(c, { font: { name: FONT, size: 10.5, ...(col === 7 ? { bold: true } : {}) }, border: box, alignment: { vertical: 'middle', horizontal: col <= 4 || col === 8 || col === heads.length ? 'left' : 'center', indent: col === 2 ? 1 : 0 }, ...(i % 2 ? { fill: solid(GREY) } : {}) });
+            if (col >= 6 && col !== 8 && col !== heads.length && typeof c.value === 'number') c.numFmt = '0.0';
+          });
+          if (!r.reviewers) row.getCell(heads.length).font = { name: FONT, size: 10.5, italic: true, color: { argb: 'FF8A97A5' } };
+          else if (r.low_sample) row.getCell(heads.length).font = { name: FONT, size: 10.5, bold: true, color: { argb: 'FFB45309' } };
+        });
+        const lastRow = ws.rowCount, firstRow = 5;
+        if (lastRow >= firstRow) {
+          const colL = (n) => ws.getColumn(n).letter;
+          scale(ws, `${colL(6)}${firstRow}:${colL(7)}${lastRow}`);
+          scale(ws, `${colL(9)}${firstRow}:${colL(heads.length - 1)}${lastRow}`);
+        }
+        ws.views = [{ state: 'frozen', xSplit: 2, ySplit: 4, showGridLines: false }];
+        ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: heads.length } };
+        ws.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+        ws.headerFooter.oddFooter = '&LMaxvolt One — 360° feedback (confidential)&RPage &P of &N';
+
+        // 3 - Comments
+        const wc = wb.addWorksheet('Comments', { properties: { tabColor: { argb: 'FF5B9BD5' } } });
+        title(wc, `Written comments — ${periodLabel(ovPeriod)}`, 'Anonymous: only the role of the person who rated is shown, never their name.', 6);
+        wc.addRow([]);
+        head(wc.addRow(['Code', 'Employee', 'Rated by (role)', 'Strengths', 'To improve', 'Other comments']));
+        [11, 24, 16, 52, 52, 44].forEach((w, i) => { wc.getColumn(i + 1).width = w; });
+        let ci = 0;
+        for (const r of ovList) for (const c of r.comments) {
+          const row = wc.addRow([r.code, r.name, String(c.relationship || '').replace(/_/g, ' ').replace(/^./, m => m.toUpperCase()), c.strengths || '', c.improvements || '', c.comment || '']);
+          row.eachCell(cell => Object.assign(cell, { font: { name: FONT, size: 10.5 }, border: box, alignment: { vertical: 'top', wrapText: true }, ...(ci % 2 ? { fill: solid(GREY) } : {}) })); ci++;
+        }
+        if (!ci) { wc.mergeCells(5, 1, 5, 6); Object.assign(wc.getCell(5, 1), { value: 'No written comments for this period.', font: { name: FONT, italic: true, color: { argb: 'FF8A97A5' } }, alignment: { indent: 1 } }); }
+        wc.views = [{ state: 'frozen', ySplit: 4, showGridLines: false }];
+        if (ci) wc.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: 6 } };
         return res.json({ success: true, base64: Buffer.from(await wb.xlsx.writeBuffer()).toString('base64'), filename: `360_Feedback_${ovPeriod}.xlsx` });
       }
       const ovRated = ovList.filter(r => r.reviewers > 0);
