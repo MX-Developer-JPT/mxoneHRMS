@@ -87,7 +87,7 @@ export async function reconcileBiometricPunches({ from, to, codes, apply = false
   const shiftCache = new Map(), halfCache = new Map();
   const shiftFor = async (emp) => { const k = emp?.shift_id || 'default'; if (!shiftCache.has(k)) shiftCache.set(k, await getShift(emp)); return shiftCache.get(k); };
   const logPatches = [];                         // [logId, patch]
-  const stamp = (p, rowId) => { const patch = { applied_to: rowId, applied_at: new Date().toISOString() }; if (!p.log.user_id) { patch.user_id = p.uid; stats.relinked_logs++; } if (p.log.off_role) patch.off_role = false; if (!p.log.applied_to || p.log.user_id !== patch.user_id || p.log.off_role) logPatches.push([p.logId, { ...patch, user_id: p.uid, off_role: false }]); };
+  const stamp = (p, rowId) => { const patch = { applied_to: rowId, applied_at: new Date().toISOString() }; if (!p.log.user_id) { patch.user_id = p.uid; stats.relinked_logs++; } if (p.log.off_role) patch.off_role = false; if (!p.log.applied_to || !p.log.user_id || p.log.off_role) logPatches.push([p.logId, { ...patch, user_id: p.uid, off_role: false }]); };
 
   for (const [uid, punches] of byUser) {
     const emp = empByUser.get(uid);
