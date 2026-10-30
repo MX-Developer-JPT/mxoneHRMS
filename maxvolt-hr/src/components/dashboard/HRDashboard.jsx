@@ -603,27 +603,6 @@ export default function HRDashboard({ user }) {
           </Card>
         </div>
 
-        {/* Announcements */}
-        {data.announcements.length > 0 && (
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center justify-between text-foreground">
-                Latest Announcements
-                <Link to={createPageUrl('AnnouncementManagement')} className="text-sm text-primary font-normal hover:underline">Manage →</Link>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="grid md:grid-cols-3 gap-3">
-              {data.announcements.map(a => (
-                <div key={a.id} className="p-3 bg-violet-50 dark:bg-violet-950/40 rounded-xl">
-                  <Badge className="text-xs capitalize bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-300 mb-2 border-0">{a.category}</Badge>
-                  <p className="text-sm font-semibold text-foreground">{a.title}</p>
-                  <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{a.content}</p>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        )}
-
         {/* Upcoming Events & Compliance Insights Row */}
         <div className="grid md:grid-cols-2 gap-4">
           {/* Upcoming Events */}

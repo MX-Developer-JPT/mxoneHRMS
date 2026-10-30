@@ -12,7 +12,6 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { safeTime } from '@/lib/dateUtils';
-import { isAnnouncementForEmployee } from '@/lib/announcementAudience';
 
 export default function ManagementDashboard({ user }) {
   const [data, setData] = useState(null);
@@ -36,16 +35,12 @@ export default function ManagementDashboard({ user }) {
   const loadData = async () => {
     const today = format(new Date(), 'yyyy-MM-dd');
 
-    const [employeesRaw, usersResp, leaves, reimbursements, regularisations, announcements, teamAssets, teamTrainings, myEmp] = await Promise.all([
+    const [employeesRaw, usersResp, leaves, reimbursements, regularisations, teamAssets, teamTrainings, myEmp] = await Promise.all([
       base44.entities.Employee.filter({ reporting_manager_id: user.id }).catch(() => []),
       base44.functions.invoke('getAllUsers', {}).catch(() => ({ data: { users: [] } })),
       base44.entities.Leave.filter({ status: 'pending' }).catch(() => []),
       base44.entities.Reimbursement.filter({ status: 'pending' }).catch(() => []),
       base44.entities.AttendanceRegularisation.filter({ manager_id: user.id, status: 'pending' }).catch(() => []),
-      // Fetch more than the widget shows — audience-filtered below, so
-      // pulling only 4 by recency could leave the widget empty even when
-      // older announcements actually targeted at this manager exist.
-      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 30).catch(() => []),
       // 'signed' is a sub-state of 'assigned' (AssetCheckoutDialog.jsx sets it
       // once the employee completes the digital acknowledgment) — matching
       // AssetTracking.jsx/MyAssets.jsx's ACTIVE_ASSIGNMENT_STATUSES.
@@ -149,7 +144,6 @@ export default function ManagementDashboard({ user }) {
       teamExpenses: teamExpenses.length,
       pendingRegularisations: regularisations.length,
       todayTeamAtt,
-      announcements: announcements.filter(a => isAnnouncementForEmployee(a, myEmp?.[0])).slice(0, 4),
       teamAssetCount,
       teamTrainingCount,
     });
@@ -473,24 +467,6 @@ export default function ManagementDashboard({ user }) {
             </CardContent>
           </Card>
 
-          {/* Announcements */}
-          <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-base text-foreground">Announcements</CardTitle></CardHeader>
-            <CardContent>
-              {data.announcements.length > 0 ? (
-                <div className="space-y-3">
-                  {data.announcements.map(a => (
-                    <div key={a.id} className="p-3 bg-indigo-50 dark:bg-indigo-950/40 rounded-xl">
-                      <p className="text-sm font-semibold text-foreground">{a.title}</p>
-                      <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{a.content}</p>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-muted-foreground text-sm text-center py-6">No announcements</p>
-              )}
-            </CardContent>
-          </Card>
         </div>
 
         {/* Detail Modal */}

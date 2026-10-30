@@ -6,13 +6,9 @@ import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from '@/components/ui/button';
-import {
-  Clock, Calendar, FileText, DollarSign, HelpCircle, Bell, CheckCircle2,
-  AlertCircle, ChevronRight, Briefcase, GraduationCap, Shield, RefreshCw
-} from 'lucide-react';
+import { Clock, Calendar, FileText, DollarSign, HelpCircle, CheckCircle2, AlertCircle, ChevronRight, Briefcase, GraduationCap, Shield, RefreshCw } from 'lucide-react';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
 import { safeDate, safeTime } from '@/lib/dateUtils';
-import { isAnnouncementForEmployee } from '@/lib/announcementAudience';
 import { PRESENT_LIKE_STATUSES } from '@/lib/attendanceSource';
 
 export default function EmployeeDashboard({ user }) {
@@ -35,7 +31,7 @@ export default function EmployeeDashboard({ user }) {
     const monthEnd = format(endOfMonth(new Date()), 'yyyy-MM-dd');
     const currentYear = new Date().getFullYear();
 
-    const [todayAtt, monthlyAtt, leaveBalances, leavePolicies, myLeaves, myReimbursements, myTickets, announcements, regularisations, trainingNotifs, myAssets, myEmp] = await Promise.all([
+    const [todayAtt, monthlyAtt, leaveBalances, leavePolicies, myLeaves, myReimbursements, myTickets, regularisations, trainingNotifs, myAssets, myEmp] = await Promise.all([
       base44.entities.Attendance.filter({ user_id: user.id, date: today }).catch(() => []),
       base44.entities.Attendance.filter({ user_id: user.id, date: { $gte: monthStart, $lte: monthEnd } }).catch(() => []),
       base44.entities.LeaveBalance.filter({ user_id: user.id, year: currentYear }).catch(() => []),
@@ -43,10 +39,6 @@ export default function EmployeeDashboard({ user }) {
       base44.entities.Leave.filter({ user_id: user.id }, '-created_date', 5).catch(() => []),
       base44.entities.Reimbursement.filter({ user_id: user.id, status: 'pending' }).catch(() => []),
       base44.entities.Ticket.filter({ user_id: user.id, status: { $in: ['open', 'in_progress'] } }).catch(() => []),
-      // Fetch more than the widget shows — audience-filtered below, so
-      // pulling only 5 by recency could leave the widget empty even when
-      // older announcements actually targeted at this employee exist.
-      base44.entities.Announcement.filter({ status: 'published' }, '-created_date', 30).catch(() => []),
       base44.entities.AttendanceRegularisation.filter({ user_id: user.id, status: 'pending' }).catch(() => []),
       base44.entities.TrainingNotification.filter({ user_id: user.id, is_read: false }, '-created_date', 10).catch(() => []),
       // 'signed' (AssetCheckoutDialog.jsx, once the employee completes the
@@ -109,7 +101,6 @@ export default function EmployeeDashboard({ user }) {
       recentLeaves: myLeaves,
       pendingReimbursements: myReimbursements.length,
       openTickets: myTickets.length,
-      announcements: announcements.filter(a => isAnnouncementForEmployee(a, employeeRecord)).slice(0, 5),
       pendingRegularisations: regularisations.length,
       trainingNotifs,
       myAssets,
@@ -402,33 +393,6 @@ export default function EmployeeDashboard({ user }) {
                   </Link>
                 );
               })}
-            </CardContent>
-          </Card>
-
-          {/* Announcements */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center justify-between text-foreground">
-                <span className="flex items-center gap-2"><Bell className="w-4 h-4" /> Announcements</span>
-                <Link to={createPageUrl('Announcements')} className="text-sm text-primary font-normal hover:underline">View All →</Link>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {data.announcements.length > 0 ? (
-                <div className="space-y-3">
-                  {data.announcements.slice(0, 4).map(a => (
-                    <div key={a.id} className="p-3 bg-blue-50 dark:bg-blue-950/40 rounded-xl">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="text-sm font-semibold text-foreground">{a.title}</p>
-                        <Badge className="text-xs capitalize shrink-0 bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 border-0">{a.category}</Badge>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{a.content}</p>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-muted-foreground text-sm text-center py-6">No announcements</p>
-              )}
             </CardContent>
           </Card>
 

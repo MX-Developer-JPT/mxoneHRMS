@@ -860,6 +860,11 @@ export default function Layout({ children, currentPageName }) {
     if ((ldRoles?.is_manager || ldRoles?.is_hod || ldRoles?.is_trainer) && !have.has('LdTeamLearning')) extra.push({ name: 'Team Learning', icon: Users, page: 'LdTeamLearning' });
     if (extra.length) menuGroups = [...menuGroups, { label: 'Learning', items: extra }];
   }
+  // 360° Feedback: any role that is also an employee can give and read feedback, but only the Employee and HR menus listed it —
+  // managers, top management, recruiters, L&D trainers and front desk had no way to reach it. (Gate admins keep their gate-only menu.)
+  if (!isGateAdmin && !menuGroups.some(g => g.items.some(i => i.page === 'FeedbackSystem'))) {
+    menuGroups = [...menuGroups, { label: 'Feedback', items: [{ name: '360° Feedback', icon: MessageSquare, page: 'FeedbackSystem' }] }];
+  }
   if ((isITDept || isAdminDept) && !isHR) {
     menuGroups = [...menuGroups, { label: isITDept ? 'IT' : 'Assets', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
   }

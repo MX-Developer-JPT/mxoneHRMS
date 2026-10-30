@@ -6,6 +6,7 @@ import HRDashboard from '../components/dashboard/HRDashboard';
 import RecruiterDashboard from '../components/dashboard/RecruiterDashboard';
 import FrontDeskDashboard from '../components/dashboard/FrontDeskDashboard';
 import LdTrainerDashboard from '../components/dashboard/LdTrainerDashboard';
+import AnnouncementsPanel from '../components/dashboard/AnnouncementsPanel';
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
@@ -19,10 +20,19 @@ export default function Dashboard() {
   if (!user) return null;
 
   const role = user.custom_role || user.role;
-  if (role === 'hr' || role === 'admin') return <HRDashboard user={user} />;
-  if (role === 'management' || role === 'manager') return <ManagementDashboard user={user} />;
-  if (role === 'recruiter') return <RecruiterDashboard user={user} />;
-  if (role === 'ld_trainer') return <LdTrainerDashboard user={user} />;
-  if (role === 'front_desk_admin') return <FrontDeskDashboard user={user} />;
-  return <EmployeeDashboard user={user} />;
+  const wide = ['hr', 'admin', 'recruiter', 'ld_trainer'].includes(role);   // match each dashboard's own width
+  let body;
+  if (role === 'hr' || role === 'admin') body = <HRDashboard user={user} />;
+  else if (role === 'management' || role === 'manager') body = <ManagementDashboard user={user} />;
+  else if (role === 'recruiter') body = <RecruiterDashboard user={user} />;
+  else if (role === 'ld_trainer') body = <LdTrainerDashboard user={user} />;
+  else if (role === 'front_desk_admin') body = <FrontDeskDashboard user={user} />;
+  else body = <EmployeeDashboard user={user} />;
+  // Announcements come first on every role's dashboard.
+  return (
+    <>
+      <AnnouncementsPanel user={user} width={wide ? 'max-w-7xl' : 'max-w-6xl'} />
+      {body}
+    </>
+  );
 }
