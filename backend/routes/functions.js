@@ -8806,6 +8806,16 @@ router.post('/:name', async (req, res) => {
       });
     }
 
+    // HR / admin: finds every biometric punch (of a mapped employee) that is not on the day's attendance record and puts it there.
+    // dry_run (default true) only reports. Pass { from, to } (yyyy-MM-dd) to limit the dates, { codes: [...] } to limit the biometric codes.
+    case 'reconcileBiometricPunches': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const { reconcileBiometricPunches } = await import('../utils/punchReconcile.js');
+      const rcApply = p.dry_run === false;
+      const rc = await reconcileBiometricPunches({ from: p.from, to: p.to, codes: p.codes, apply: rcApply });
+      return res.json({ success: true, applied: rcApply, ...rc.stats, unmapped_codes: rc.samples.unmapped_codes, status_changes_sample: rc.samples.status_changes, error_sample: rc.samples.error || null });
+    }
+
     case 'reprocessAttendanceLogs': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       // Re-reads stored AttendanceLogs for a date range and upserts Attendance records.

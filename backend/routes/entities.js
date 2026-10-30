@@ -1013,7 +1013,11 @@ router.post('/:type', async (req, res) => {
   // Broadcast / support-inbox notifications on creation (fire and forget)
   (async () => {
     try {
-      if (type === 'Announcement' && data.status === 'published') {
+      if (type === 'BiometricCodeMapping' && data.biometric_code) {
+        // a code was just mapped to an employee: apply every punch that code already sent
+        const { reconcileBiometricPunches } = await import('../utils/punchReconcile.js');
+        await reconcileBiometricPunches({ codes: [data.biometric_code], apply: true });
+      } else if (type === 'Announcement' && data.status === 'published') {
         const audience = await getAnnouncementAudienceUserIds(data);
         await notifyMany(audience, {
           title: `📢 ${data.title || 'New Announcement'}`,
@@ -1279,7 +1283,11 @@ router.patch('/:type/:id', async (req, res) => {
   // Broadcast / workflow-step notifications on update (fire and forget)
   (async () => {
     try {
-      if (type === 'Announcement' && req.body.status === 'published' && current.status !== 'published') {
+      if ((type === 'BiometricCodeMapping' && req.body.biometric_code) || (type === 'Employee' && (req.body.biometric_id || req.body.employee_code))) {
+        const codes = type === 'Employee' ? [updated.biometric_id, updated.employee_code] : [updated.biometric_code];
+        const { reconcileBiometricPunches } = await import('../utils/punchReconcile.js');
+        await reconcileBiometricPunches({ codes: codes.filter(Boolean), apply: true });
+      } else if (type === 'Announcement' && req.body.status === 'published' && current.status !== 'published') {
         const audience = await getAnnouncementAudienceUserIds(updated);
         await notifyMany(audience, {
           title: `📢 ${updated.title || 'New Announcement'}`,

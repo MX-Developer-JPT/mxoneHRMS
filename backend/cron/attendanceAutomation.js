@@ -956,6 +956,10 @@ export async function runNightlyAttendanceAutomation(targetDate) {
   const date = targetDate || istDateString(-1);
   const noRecord = await markMissingAttendanceAsAbsent(date);
   await healAttendanceFromLogs().catch(e => console.warn('[attendance-heal] failed:', e.message));
+  // every punch of a mapped employee from the last 10 days must be on its day's record (creates missing days, keeps punches on frozen days)
+  await import('../utils/punchReconcile.js').then(m => m.reconcileBiometricPunches({ from: istDateString(-10), apply: true }))
+    .then(r => { const s = r.stats; if (s.punches_missing) console.log(`[punch-reconcile] applied ${s.punches_missing} missing punch(es): ${s.days_created} day(s) created, ${s.days_merged} merged, ${s.days_kept_only} kept on frozen days, ${s.days_hr_status_kept} HR-status days filled`); })
+    .catch(e => console.warn('[punch-reconcile] failed:', e.message));
   const unclosed = await closeUnfinishedSessions(date);
   // Exempt employees: backfill from each one's joining date through today (so
   // newly-exempted employees and any missed runs self-heal) — today is

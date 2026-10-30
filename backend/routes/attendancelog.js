@@ -137,7 +137,7 @@ async function resolveAttendanceRow(userId, punchIso, punchDate, shift) {
 }
 
 // Resolve shift for an employee (by shift_id or default shift)
-async function getShift(empData) {
+export async function getShift(empData) {
   if (empData?.shift_id) {
     const row = await one("SELECT data FROM entities WHERE type='Shift' AND id=$1", [empData.shift_id]);
     if (row) return JSON.parse(row.data);
@@ -590,6 +590,12 @@ async function processRecordUnlocked(record) {
   // progress). Matches the already-correct "employee not yet mapped" case
   // just below, which is exactly this same kind of legitimate no-op skip.
   if (/T00:00:00\.000Z$/.test(punchIso)) {
+    // Still recorded (flagged) so no machine record is ever lost — it just is not applied to the day.
+    const mid = String(record.PunchId || '').trim() ? await one("SELECT id FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'PunchId'=$1", [String(record.PunchId).trim()]) : await one("SELECT id FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'EmployeeCode'=$1 AND data::jsonb->>'LogDate'=$2", [codeStr, punchIso]);
+    if (!mid) {
+      const mId = uuidv4();
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AttendanceLog',NULL,'active',$2)", [mId, JSON.stringify({ id: mId, EmployeeCode: codeStr, PunchId: record.PunchId ? String(record.PunchId).trim() : null, LogDate: punchIso, Direction: direction, DeviceName: deviceName, SerialNumber: serial, VerificationType: verType, placeholder_midnight: true, off_role: false, ProcessedAt: new Date().toISOString(), source: record.__source || 'webhook' })]);
+    }
     return {
       ok: true, log_stored: false, attendance_updated: false,
       note: 'punch_time is midnight (00:00:00) — biometric device placeholder, not a real punch. Skipped.',
@@ -913,6 +919,18 @@ router.post('/reprocess', authMiddleware, async (req, res) => {
     const errors  = results.filter(r => !r.ok).length;
 
     return res.json({ success: true, total_logs: logsInRange.length, attendance_updated: updated, skipped, errors });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// Put every stored punch of a mapped employee onto its attendance day (dry run unless apply:true). Body: { from?, to?, codes?, apply? }
+router.post('/reconcile', authMiddleware, async (req, res) => {
+  try {
+    const { reconcileBiometricPunches } = await import('../utils/punchReconcile.js');
+    const { from, to, codes, apply } = req.body || {};
+    const r = await reconcileBiometricPunches({ from, to, codes, apply: apply === true });
+    return res.json({ success: true, ...r.stats, unmapped_codes: r.samples.unmapped_codes, status_changes_sample: r.samples.status_changes });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
