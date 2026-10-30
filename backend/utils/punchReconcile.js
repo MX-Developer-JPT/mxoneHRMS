@@ -40,7 +40,7 @@ const isHrSetStatus = (d) => /^imported from muster/i.test(String(d.notes || '')
 /**
  * @param {{from?:string,to?:string,codes?:string[],apply?:boolean}} opts   dates are yyyy-MM-dd (IST); codes limits to those biometric codes
  */
-export async function reconcileBiometricPunches({ from, to, codes, apply = false } = {}) {
+export async function reconcileBiometricPunches({ from, to, codes, apply = false, backupFile } = {}) {
   const stats = { logs_scanned: 0, off_role_unmapped: 0, placeholder_skipped: 0, already_applied: 0, relinked_logs: 0, punches_missing: 0,
     days_created: 0, days_merged: 0, days_kept_only: 0, days_hr_status_kept: 0, status_changes: 0, errors: 0, apply };
   const samples = { status_changes: [], unmapped_codes: {} };
@@ -169,7 +169,12 @@ export async function reconcileBiometricPunches({ from, to, codes, apply = false
     // rollback material: the previous JSON of every record changed, and the ids of records created
     backup.updated = []; backup.created = [];
     for (const { id, d, dirty, orig, created } of rows.values()) { if (created) backup.created.push(id); else if (dirty) backup.updated.push({ id, was: orig }); }
-    for (const { id, d, dirty } of rows.values()) if (dirty) await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [d.status, JSON.stringify(d), id]);
+    if (backupFile) (await import('node:fs')).writeFileSync(backupFile, JSON.stringify(backup));   // before any write, so a crash still leaves the way back
+    const dirtyRows = [...rows.values()].filter(r => r.dirty);
+    for (let i = 0; i < dirtyRows.length; i += 200) {
+      const chunk = dirtyRows.slice(i, i + 200);
+      await run("UPDATE entities e SET data=v.data, status=v.status, updated_at=NOW()::TEXT FROM unnest($1::text[], $2::text[], $3::text[]) AS v(id, data, status) WHERE e.id=v.id", [chunk.map(r => r.id), chunk.map(r => JSON.stringify(r.d)), chunk.map(r => r.d.status || '')]);
+    }
     // stamp the logs in chunks: one statement merges many patches
     for (let i = 0; i < logPatches.length; i += 500) {
       const chunk = logPatches.slice(i, i + 500);
