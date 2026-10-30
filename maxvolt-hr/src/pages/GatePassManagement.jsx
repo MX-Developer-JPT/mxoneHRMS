@@ -50,6 +50,10 @@ const dayLabel = (day) => {
   return day === t ? `Today · ${name}` : day === shiftDay(t, -1) ? `Yesterday · ${name}` : name;
 };
 
+const monthOf = (d) => dayOf(d).slice(0, 7);
+const monthLabel = (m) => new Date(m + '-01T00:00:00Z').toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+const lastDayOf = (m) => { const [y, mo] = m.split('-').map(Number); return `${m}-${String(new Date(Date.UTC(y, mo, 0)).getUTCDate()).padStart(2, '0')}`; };
+
 export default function GatePassManagement() {
   const [currentUser, setCurrentUser] = useState(null);
   const [passes, setPasses] = useState([]);
@@ -76,7 +80,7 @@ export default function GatePassManagement() {
     setLoading(true);
     const [me, allPasses, allUsers, allEmployees] = await Promise.all([
       base44.auth.me(),
-      base44.entities.GatePass.list('-created_date', 500),
+      base44.entities.GatePass.list('-created_date'),   // every pass, no cap
       base44.entities.User.list(),
       base44.entities.Employee.list(),
     ]);
@@ -134,7 +138,7 @@ export default function GatePassManagement() {
   });
 
   // the figures describe what is on screen: the chosen day, or every pass in "All days"
-  const scope = view === 'day' ? passes.filter(p => dayOf(p.created_date) === day) : passes;
+  const scope = view === 'day' ? passes.filter(p => dayOf(p.created_date) === day) : view === 'all' ? passes.filter(p => { const pd = dayOf(p.created_date); return (!dateFrom || pd >= dateFrom) && (!dateTo || pd <= dateTo); }) : passes;
   const stats = {
     total: scope.length,
     pending: scope.filter(p => p.status === 'pending_approval').length,
@@ -143,6 +147,12 @@ export default function GatePassManagement() {
   };
   // people still out, or requests still waiting, from days other than the one being viewed
   const elsewhere = view === 'day' ? passes.filter(p => dayOf(p.created_date) !== day && ['pending_approval', 'departed'].includes(p.status)) : [];
+
+  // one row per calendar month, counting every pass raised in it (not affected by the search / status filters)
+  const months = [];
+  { const byMonth = new Map();
+    for (const p of passes) { const m = monthOf(p.created_date) || 'unknown'; if (!byMonth.has(m)) byMonth.set(m, { month: m, total: 0 }); const row = byMonth.get(m); row.total++; row[p.status] = (row[p.status] || 0) + 1; }
+    months.push(...[...byMonth.values()].sort((a, b) => b.month.localeCompare(a.month))); }
 
   // "All days": the same list, under a heading per day (newest first)
   const groups = [];
@@ -247,7 +257,7 @@ export default function GatePassManagement() {
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         {[
-          { label: view === 'day' ? 'Passes this day' : 'Total Passes', value: stats.total, color: 'text-gray-700' },
+          { label: view === 'day' ? 'Passes this day' : view === 'all' && (dateFrom || dateTo) ? 'Passes in range' : 'Total Passes', value: stats.total, color: 'text-gray-700' },
           { label: 'Pending Approval', value: stats.pending, color: 'text-yellow-700' },
           { label: 'Currently Out', value: stats.out, color: 'text-orange-700' },
           { label: 'Returned', value: stats.returned, color: 'text-green-700' },
@@ -286,7 +296,7 @@ export default function GatePassManagement() {
           {/* Day / all days */}
           <div className="flex flex-wrap items-center gap-3 mb-4">
             <div className="inline-flex rounded-lg border p-0.5 bg-gray-50">
-              {[['day', 'Day-wise'], ['all', 'All days']].map(([k, label]) => (
+              {[['day', 'Day-wise'], ['month', 'Month-wise'], ['all', 'All days']].map(([k, label]) => (
                 <button key={k} onClick={() => setView(k)} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${view === k ? 'bg-white shadow-sm text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}>{label}</button>
               ))}
             </div>
@@ -300,6 +310,30 @@ export default function GatePassManagement() {
             )}
             {view === 'day' && <span className="flex items-center gap-1.5 text-sm font-medium text-gray-700"><CalendarDays className="w-4 h-4 text-blue-600" />{dayLabel(day)}</span>}
           </div>
+          {view === 'month' && (
+            <Card className="mb-5"><CardContent className="p-0 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+                  <th className="text-left px-4 py-2.5 font-medium">Month</th>
+                  <th className="px-3 py-2.5 font-medium text-center">Total passes</th>
+                  {['pending_approval', 'approved', 'departed', 'returned', 'rejected', 'cancelled'].map(k => <th key={k} className="px-3 py-2.5 font-medium text-center">{STATUS_LABELS[k]}</th>)}
+                </tr></thead>
+                <tbody>
+                  {months.map(m => (
+                    <tr key={m.month} className="border-t hover:bg-blue-50/40 cursor-pointer" onClick={() => { if (m.month === 'unknown') return; setDateFrom(`${m.month}-01`); setDateTo(lastDayOf(m.month)); setFilter('all'); setView('all'); }}>
+                      <td className="px-4 py-2.5 font-medium text-gray-900">{m.month === 'unknown' ? 'No date' : monthLabel(m.month)}</td>
+                      <td className="px-3 py-2.5 text-center text-base font-bold text-blue-700 tabular-nums">{m.total}</td>
+                      {['pending_approval', 'approved', 'departed', 'returned', 'rejected', 'cancelled'].map(k => <td key={k} className="px-3 py-2.5 text-center tabular-nums text-gray-600">{m[k] || <span className="text-gray-300">0</span>}</td>)}
+                    </tr>
+                  ))}
+                  {months.length === 0 && <tr><td colSpan={8} className="text-center py-10 text-gray-400">No gate passes yet.</td></tr>}
+                </tbody>
+                {months.length > 0 && <tfoot><tr className="border-t-2 bg-gray-50 font-semibold"><td className="px-4 py-2.5">All months</td><td className="px-3 py-2.5 text-center text-base text-blue-700 tabular-nums">{passes.length}</td>
+                  {['pending_approval', 'approved', 'departed', 'returned', 'rejected', 'cancelled'].map(k => <td key={k} className="px-3 py-2.5 text-center tabular-nums">{months.reduce((n, m) => n + (m[k] || 0), 0)}</td>)}</tr></tfoot>}
+              </table>
+            </CardContent></Card>
+          )}
+          {view === 'month' && <p className="text-xs text-gray-400 mb-4 -mt-2">Click a month to see its passes day by day.</p>}
           {elsewhere.length > 0 && (
             <button onClick={() => setView('all')} className="w-full text-left mb-4 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-yellow-800 hover:bg-yellow-100">
               {elsewhere.filter(p => p.status === 'pending_approval').length > 0 && <>{elsewhere.filter(p => p.status === 'pending_approval').length} request(s) from other days still waiting for approval. </>}
@@ -309,7 +343,7 @@ export default function GatePassManagement() {
           )}
 
           {/* Filters */}
-          <div className="flex flex-col gap-3 mb-5">
+          {view !== 'month' && <div className="flex flex-col gap-3 mb-5">
             <div className="flex flex-col sm:flex-row gap-3">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -341,9 +375,9 @@ export default function GatePassManagement() {
                 </Button>
               ))}
             </div>
-          </div>
+          </div>}
 
-          <div className="space-y-2">
+          {view !== 'month' && <div className="space-y-2">
             {filtered.length === 0 && (
               <div className="text-center py-12 text-gray-400">{view === 'day' ? `No gate passes on ${dayLabel(day).replace(/^(Today|Yesterday) · /, '')}.` : 'No gate passes found.'}</div>
             )}
@@ -405,7 +439,7 @@ export default function GatePassManagement() {
             })}
               </React.Fragment>
             ))}
-          </div>
+          </div>}
         </>
       )}
 

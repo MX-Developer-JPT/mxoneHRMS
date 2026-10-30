@@ -77,7 +77,7 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
   const loadData = async () => {
     setLoading(true);
     const [allPasses, allUsers, allEmployees] = await Promise.all([
-      base44.entities.GatePass.list('-created_date', 500),
+      base44.entities.GatePass.list('-created_date'),
       base44.entities.User.list(),
       base44.entities.Employee.list(),
     ]);
