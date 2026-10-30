@@ -55,8 +55,10 @@ export default function Feedback360Results({ subjectUserId = null, initialPeriod
 
       {!hasAny && !d.hidden && <div className="text-center py-10 text-gray-400"><Award className="w-8 h-8 mx-auto mb-2 opacity-40" />No feedback for this period yet.</div>}
 
-      {d.low_sample && (
-        <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-900 flex gap-2 items-center"><AlertTriangle className="w-4 h-4 shrink-0" />Low sample — only {d.reviewers} colleague{d.reviewers === 1 ? '' : 's'} rated. The person concerned cannot see these results yet (needs {d.min_raters}); read them with care.</div>
+      {d.low_sample && d.reviewers > 0 && (
+        <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-900 flex gap-2 items-center"><AlertTriangle className="w-4 h-4 shrink-0" />{d.subject
+          ? `Low sample — only ${d.reviewers} colleague${d.reviewers === 1 ? '' : 's'} rated. ${d.subject.name.split(' ')[0]} cannot see these results yet (it takes ${d.min_raters}), so read them with care.`
+          : `Only ${d.reviewers} colleague${d.reviewers === 1 ? ' has' : 's have'} rated you so far. You can see this because you are HR / admin; other employees see their results once ${d.min_raters} colleagues have rated them.`}</div>
       )}
 
       {!d.hidden && d.reviewers > 0 && (
