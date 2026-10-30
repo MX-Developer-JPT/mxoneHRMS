@@ -20,6 +20,7 @@ const parseTs = (s) => {
 };
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const LEGACY_UTC_BEFORE = '2026-06-27';   // records dated earlier than this may have been stored in real UTC
 
 // Current instant as an "IST digits + Z" ISO string, matching the storage
 // convention used everywhere else in this app (see comment at top of file).
@@ -42,7 +43,9 @@ export const safeTime = (ts) => {
     // almost certainly a pre-fix UTC-stored timestamp → add IST offset to display.
     const str = String(ts).trim();
     const isFullIsoWithZ = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str) && str.includes('Z');
-    if (isFullIsoWithZ && d.getHours() < 5) {
+    // Only for punches from before that fix (26 Jun 2026): a genuine punch just after midnight (00:00–04:59 IST) on any later
+    // date is already in IST digits and must be shown exactly as stored.
+    if (isFullIsoWithZ && str.slice(0, 10) < LEGACY_UTC_BEFORE && d.getHours() < 5) {
       return format(new Date(d.getTime() + IST_OFFSET_MS), 'h:mm a');
     }
     return format(d, 'h:mm a');
