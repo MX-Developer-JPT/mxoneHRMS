@@ -55,6 +55,7 @@ export default function AllAttendance() {
   const [searchParams] = useSearchParams();
   const forceOrgScope = searchParams.get('scope') === 'org';
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [canAdminister, setCanAdminister] = useState(false);   // HR / admin only: Mark Absent and Repair Sessions change records and are refused for everyone else
   const [isTeamScoped, setIsTeamScoped] = useState(false); // drives the page title only — actual filtering happens in loadData
   const [attendanceMap, setAttendanceMap] = useState({});
   const [gatePasses, setGatePasses] = useState({}); // user_id -> { status, outing_type, reason, is_out, ... } for the selected date
@@ -151,6 +152,7 @@ export default function AllAttendance() {
       const currentUser = await base44.auth.me();
       const userRole = currentUser.custom_role || currentUser.role;
       setIsTeamScoped(['manager', 'management'].includes(userRole) && !forceOrgScope);
+      setCanAdminister(['hr', 'admin'].includes(userRole));
 
       const [empRecords, usersResp, attendanceResp, deptRecords] = await Promise.all([
         // 5000, not the 500 several other pages use — this is the org-wide
@@ -461,12 +463,14 @@ export default function AllAttendance() {
               <BarChart3 className="w-4 h-4 mr-1" /> Analytics
             </Button>
             <BiometricSyncStatus />
+            {canAdminister && (<>
             <Button variant="outline" size="sm" onClick={handleMarkAbsent} disabled={markingAbsent} title="Mark employees without attendance as Absent">
               <UserX className="w-4 h-4 mr-1" /> {markingAbsent ? 'Marking...' : 'Mark Absent'}
             </Button>
             <Button variant="outline" size="sm" onClick={handleRepairSessions} disabled={repairingSessions} title="Fix records with fake 1-minute sessions/bogus breaks caused by late biometric syncs">
               {repairingSessions ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Wrench className="w-4 h-4 mr-1" />} {repairingSessions ? 'Repairing...' : 'Repair Sessions'}
             </Button>
+            </>)}
             <Button variant="outline" size="sm" onClick={exportToExcel} title={isTeamScoped ? 'Export the Attendance Muster of your team (monthly summary)' : 'Export Attendance Muster (monthly summary)'}>
               <Download className="w-4 h-4 mr-1" /> Muster
             </Button>
