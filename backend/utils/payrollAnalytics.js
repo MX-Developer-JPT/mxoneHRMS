@@ -158,6 +158,22 @@ export function movements(curRows, baseRows, everBefore) {
   };
 }
 
+// ── cost forecast: a straight-line trend through the latest months of actual payslip cost (needs at least 3 months) ─────────────────
+// This is a projection of past payroll, nothing more: it knows nothing about future hires, exits or increments, and says so.
+export function forecastCost(trend, ahead = 3) {
+  const pts = trend.filter(t => t.has_data && t.cost > 0).slice(-6);
+  if (pts.length < 3) return { available: false, reason: `A forecast needs at least 3 months of payslips; ${pts.length} month(s) are available.`, points: [] };
+  const n = pts.length, xs = pts.map((_, i) => i), ys = pts.map(p => p.cost);
+  const mx = xs.reduce((a, b) => a + b, 0) / n, my = ys.reduce((a, b) => a + b, 0) / n;
+  const sxx = xs.reduce((a, x) => a + (x - mx) ** 2, 0), slope = sxx ? xs.reduce((a, x, i) => a + (x - mx) * (ys[i] - my), 0) / sxx : 0, icpt = my - slope * mx;
+  const resid = ys.map((y, i) => y - (icpt + slope * i)), rmse = Math.sqrt(resid.reduce((a, r) => a + r * r, 0) / Math.max(1, n - 2));
+  const last = pts[n - 1].ym, points = [];
+  for (let k = 1; k <= ahead; k++) { const v = Math.max(0, icpt + slope * (n - 1 + k)); points.push({ ym: shiftYm(last, k), label: monthLabel(shiftYm(last, k)), cost: r2(v), low: r2(Math.max(0, v - 1.5 * rmse)), high: r2(v + 1.5 * rmse) }); }
+  const avgMom = pts.slice(1).map((p, i) => pct(p.cost, pts[i].cost)).filter(v => v != null);
+  return { available: true, basis: `${n} months, ${pts[0].label} – ${pts[n - 1].label}`, monthly_change: r2(slope), avg_mom_pct: avgMom.length ? r2(avgMom.reduce((a, b) => a + b, 0) / avgMom.length) : null, points,
+    caveat: 'A straight-line projection of past payslip cost. It does not know about planned hires, exits, increments or bonuses; the range is ±1.5 × the typical month-to-month deviation.' };
+}
+
 // ── the whole dashboard payload ─────────────────────────────────────────────────────────────────────────────────────────
 export function buildPayrollAnalytics(payrollRows, employees, params = {}, { batches = [], today = new Date() } = {}) {
   const empByUser = new Map((employees || []).map(e => [e.user_id, e]));
@@ -192,6 +208,7 @@ export function buildPayrollAnalytics(payrollRows, employees, params = {}, { bat
 
   // trend: the months of the period (FY / custom) or the 12 months up to the chosen month; plus a 24-month tail for the line chart
   const trendMonths = period.mode === 'month' ? monthsBetween(shiftYm(period.months[0], -11), period.months[0]) : period.months;
+  const trendAll = monthsBetween(available[0] || period.months[0], available.at(-1) || period.months[0]).map(m => { const t = totalsOf(months.get(m) || []); return { ym: m, label: monthLabel(m), has_data: months.has(m), cost: t.cost }; });
   const trend = trendMonths.map(m => { const t = totalsOf(months.get(m) || []); return { ym: m, label: monthLabel(m), has_data: months.has(m), headcount: t.headcount, gross: t.gross, net: t.net, deductions: t.deductions, employer: t.employer, cost: t.cost, avg_gross: t.avg_gross }; });
   trend.forEach((t, i) => { const p = i ? trend[i - 1] : null; t.mom_pct = p && p.has_data && t.has_data ? pct(t.cost, p.cost) : null; });
 
@@ -285,7 +302,7 @@ export function buildPayrollAnalytics(payrollRows, employees, params = {}, { bat
     departments_all: [...new Set(all.map(r => r.department))].sort(),
     summary, previous: { ...prev, label: period.prevLabel }, year_ago: { ...yoy, label: period.yoyLabel },
     comparison: { previous: compare(cur, prev), year_ago: compare(cur, yoy), has_previous: prev.records > 0, has_year_ago: yoy.records > 0 },
-    trend, departments, department_trend: { depts: topDepts, points: deptTrend }, yoy_table: yoyTable, salary, movements: mv, data_quality: dataQuality, insights,
+    forecast: forecastCost(trendAll), trend, departments, department_trend: { depts: topDepts, points: deptTrend }, yoy_table: yoyTable, salary, movements: mv, data_quality: dataQuality, insights,
     definitions: { gross: 'Total earnings printed on the payslip', net: 'Take-home pay disbursed to the employee', deductions: 'Employee deductions (PF, ESI, PT, TDS, loan, LOP…) — taken out of gross, not an extra cost', employer: 'Employer PF / ESI etc. where the payslip prints them', cost: 'Total payroll cost = gross salary + employer contributions' },
   };
 }

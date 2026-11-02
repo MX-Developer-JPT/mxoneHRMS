@@ -32,7 +32,7 @@ export const SEV_CLS = {
 
 export const PERIODS = [
   { id: 'daily', label: 'Daily' }, { id: 'weekly', label: 'Weekly' }, { id: 'monthly', label: 'Monthly' },
-  { id: 'quarterly', label: 'Quarterly' }, { id: 'ytd', label: 'Year to date' }, { id: 'custom', label: 'Custom range' },
+  { id: 'quarterly', label: 'Quarterly' }, { id: 'ytd', label: 'Year to date' }, { id: 'fy', label: 'Financial year (Apr–Mar)' }, { id: 'cy', label: 'Calendar year' }, { id: 'custom', label: 'Custom range' },
 ];
 export const COMPARES = [
   { id: 'previous', label: 'Previous period' }, { id: 'last_year', label: 'Same period last year' },

@@ -446,9 +446,11 @@ export function InsightsTab({ d, onRefresh, focusKey, canEdit }) {
           {open === i.key && (
             <div className="px-3 pb-3 space-y-2 text-sm border-t pt-3">
               <div className="grid sm:grid-cols-3 gap-2 text-xs"><div><span className="text-gray-500">Current</span><div className="text-base font-semibold">{num(i.current)}</div></div><div><span className="text-gray-500">Comparison</span><div className="text-base font-semibold">{num(i.comparison)}</div></div><div><span className="text-gray-500">Variance</span><div><Chg k={{ prev: i.comparison, abs: i.abs, pct: i.pct, dir: i.abs > 0 ? 'up' : i.abs < 0 ? 'down' : 'flat', better: 'neutral', note: i.note }} /></div></div></div>
-              <p><b className="text-gray-700">Evidence:</b> {i.evidence || '—'}</p>
-              <p><b className="text-gray-700">Why this was raised:</b> {i.why}</p>
-              <p><b className="text-gray-700">Suggested action:</b> {i.action} <span className="text-gray-500">(owner: {i.owner})</span></p>
+              <p><b className="text-gray-700">Observation:</b> {i.observation || i.title}</p>
+              <p><b className="text-gray-700">Analysis — why it matters:</b> {i.analysis || i.why}</p>
+              <p><b className="text-gray-700">Supporting data:</b> {i.supporting || i.evidence || '—'}</p>
+              <p><b className="text-gray-700">Recommendation:</b> {i.recommendation || i.action} <span className="text-gray-500">(owner: {i.owner})</span></p>
+              <p><b className="text-gray-700">Priority:</b> {i.priority || i.severity}</p>
               {canEdit && <div className="flex items-center gap-1.5 flex-wrap pt-1"><span className="text-xs text-gray-500">Status:</span>{STATUSES.map(s => <button key={s} onClick={() => setStatus(i, s)} className={`h-7 px-2.5 rounded-full text-xs border ${i.status === s ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}>{s}</button>)}</div>}
             </div>
           )}

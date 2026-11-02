@@ -5,6 +5,8 @@
 // db.js connects on import, so it is loaded on first query — the calculation functions stay testable without a database.
 const all = async (sql, params) => (await import('../../db.js')).all(sql, params);
 import { istDate, addDays, diffDays, dow, DAY_NAMES, eachDay, fmtD, resolvePeriod, resolveCompare, applyElapsed, change } from './calendar.js';
+import { loadHrExtras, computeProbation, computeLetters, computeAttrition, computeLoans, computeLifecycle, computeRecruitmentPlus, hrInsights, payrollInsights, withFiveFields } from './hr.js';
+import { buildPayrollAnalytics } from '../payrollAnalytics.js';
 
 export const DEFAULT_CFG = {
   absentRepeat: 3,            // unexplained absences in a 30-day equivalent
@@ -1046,7 +1048,32 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
   const patterns = leavePatterns(ctx, model, scope, from, to, today, leaveD, leavePrev, attD);
   const exceptions = attendanceExceptions(ctx, model, scope, attD, prev?.att, regD, from, to);
   const kpis = buildKpis(cur, prev);
-  const insights = buildInsights({ ctx, model, scope, period, cmp, cur, prev, noLeave, exceptions, today });
+  let insights = buildInsights({ ctx, model, scope, period, cmp, cur, prev, noLeave, exceptions, today });
+  // HR lifecycle analytics (probation, letters, attrition, loans, lifecycle, recruitment extras): HR / management only — a manager's
+  // team-scoped view never carries them (restrictUids is set for managers).
+  let hr = null;
+  if (!restrictUids) {
+    const hx = await loadHrExtras();
+    hr = {
+      probation: computeProbation(ctx, model, scope, from, to, today, hx), letters: computeLetters(ctx, model, scope, from, to, today, hx),
+      attrition: computeAttrition(ctx, model, scope, from, to, today, hx), loans: computeLoans(ctx, model, scope, from, to, today, hx),
+      lifecycle: computeLifecycle(ctx, model, scope, from, to, today, hx), recruitment: computeRecruitmentPlus(ctx, model, scope, from, to, today),
+    };
+    // payroll findings come from the uploaded payslips (same engine as Payroll & compensation); only when no department / person filter narrows the view
+    let pay = null;
+    if (!scope.anyFilter) {
+      try {
+        const pRows = (await all("SELECT user_id, (data::jsonb - 'payslip_file_base64')::text AS data FROM entities WHERE type='Payroll'")).map(r => ({ ...JSON.parse(r.data), user_id: r.user_id }));
+        pay = buildPayrollAnalytics(pRows, ctx.employees.map(e => ({ ...e, user_id: e.user_id })), { mode: 'month' }, { batches: [] });
+        hr.payroll = pay.available_months.length ? { month: pay.summary.last_month.label, cost: pay.summary.last_month.cost, prevCost: pay.summary.last_month.prev_cost, momPct: pay.summary.mom_growth_pct, headcount: pay.summary.last_month.headcount, forecast: pay.forecast?.available ? pay.forecast.points[0] : null } : null;
+      } catch (e) { console.warn('[mis] payroll findings skipped:', e.message); }
+    }
+    const extra = [...hrInsights({ cfg: ctx.cfg, hr, wf: cur.wf, rc: cur.rc, today, period }), ...payrollInsights(pay, today, period)];
+    const st = {}; for (const x of ctx.insightState) if (x.key) st[x.key] = x;
+    for (const i of extra) { const x = st[i.key]; if (x) { i.status = x.status || 'New'; i.note = x.note || ''; } }
+    insights = [...insights, ...extra].sort((a, b) => (SEV_RANK[b.severity] || 0) - (SEV_RANK[a.severity] || 0));
+  }
+  insights = insights.map(withFiveFields);
   const dq = computeDataQuality(ctx, model, scope, today, attD, cur.wf);
   const abnList = collectAbnormalities({ ctx, model, scope, from, to, today, cur, prev, exceptions, patterns, dq });
   const abnormalities = summariseAbnormalities(abnList);
@@ -1124,7 +1151,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
     gatepass: { counts: gpD.counts, prev: prev?.gp.counts || null, exceptions: gpD.exceptions.slice(0, 100), exceptionCount: gpD.exceptions.length },
     visitors: { counts: vsD.counts, prev: prev?.vs.counts || null, issues: vsD.issues.slice(0, 30) },
     reimbursements: { counts: cur.rb.counts, prev: prev?.rb.counts || null, issues: cur.rb.issues.slice(0, 50) },
-    departments, insights, dataQuality: dq, abnormalities, limitations,
+    departments, insights, hr, dataQuality: dq, abnormalities, limitations,
     reconciliation: reconcile(attD, cur, departments),
     _registers: registers, _cfgKeys: Object.keys(cfg),
   };

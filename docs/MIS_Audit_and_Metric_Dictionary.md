@@ -48,3 +48,16 @@ Duplicate employee codes (2), 17 duplicate attendance rows, ~149 scheduled days 
 ## 5. Access control
 
 HR / Admin / Management: everything, exports, insight status. Managers: their downstream team only (attendance, regularisation, leave, gate pass); no visitors, reimbursements, recruitment or data-quality; no export. Enforced server-side; internal record types `MisConfig` / `MisInsightState` are blocked from the generic entities API. Exports are written to the server log.
+
+## 6. HR lifecycle, payroll and loan analytics (added 2 Nov 2026)
+
+Code: `backend/utils/mis/hr.js` (probation, letters, attrition, loans, lifecycle, recruitment extras, findings) and `backend/utils/payrollAnalytics.js` (payslip-based payroll). Both feed the same `getMisAnalytics` / `exportMisIntelligence` result, so screen, Excel, PDF and the automatic monthly mail show the same figures. HR / admin / management only — a manager's team-scoped view never carries them.
+
+* **Payroll** — read only from uploaded payslips. Total payroll cost = gross + employer contributions; net = take-home; employee deductions are never an extra cost. One record per employee-month; department as printed on that month's payslip. Forecast = straight line through the latest months (≥3), with a stated range; it knows nothing of future hires or increments.
+* **Probation** — "overdue" = status still Probation and the end date (or the extended date from the latest probation review) has passed. Time to confirm uses only employees with a recorded confirmation date.
+* **Letters** — recorded letters are the HR letters generated in Letter Generator (Document, `hr_letter`). Appointment letters are judged pending only for employees who joined after letters began to be recorded; confirmation pending = confirmed on review / with a confirmation date but no letter; transfer = department change in the last 90 days with no transfer/promotion letter. Document completion = Aadhaar, PAN, education certificate and bank details.
+* **Attrition** — exits ÷ average headcount × 100; annualised ×365/days; trailing 12-month rate; retention = opening cohort still employed at the end. Voluntary = resignation, involuntary = termination/absconding, retirement separate. Requires a last working day; leavers without one are reported as a data gap.
+* **Loans** — repayments are the loan deduction printed on the payslips since the loan began; where none exists the stored balance is shown. Behind = scheduled instalments to date minus repaid, more than one instalment.
+* **Findings** — each carries Observation, Analysis, Supporting data, Recommendation and Priority (High / Medium / Low), raised by a rule over these figures. Nothing is raised without data.
+
+Not stored (so shown as unavailable): recruiter owning a candidate, sanctioned/budgeted positions, a loan repayment ledger other than payslips, promotion records other than HR letters.

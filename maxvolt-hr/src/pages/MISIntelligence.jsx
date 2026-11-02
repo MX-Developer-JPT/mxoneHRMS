@@ -7,13 +7,14 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { mis, downloadBase64, fmtD, todayIST, PERIODS, COMPARES } from '@/lib/mis';
 import PayrollTab from '@/components/misx/PayrollTab';
+import { HrStrip, ProbationTab, LettersTab, AttritionTab, LoansTab, LifecycleTab } from '@/components/misx/HrTabs';
 import { OverviewTab, AttendanceTab, AbnormalitiesTab, ExceptionsTab, LeaveTab, WorkforceTab, DepartmentsTab, GatePassTab, VisitorsTab, ReimbursementsTab, InsightsTab, DataQualityTab } from '@/components/misx/tabs';
 
 const TABS = [
-  ['overview', 'Overview'], ['abnormalities', 'Abnormalities'], ['attendance', 'Attendance'], ['exceptions', 'Exceptions'], ['leave', 'Leave'], ['workforce', 'Workforce & recruitment'],
+  ['overview', 'Overview'], ['abnormalities', 'Abnormalities'], ['attendance', 'Attendance'], ['exceptions', 'Exceptions'], ['leave', 'Leave'], ['workforce', 'Workforce & recruitment'], ['probation', 'Probation & confirmation'], ['attrition', 'Attrition & retention'], ['letters', 'Letters & documents'], ['loans', 'Loans & advances'], ['lifecycle', 'Lifecycle & HR ops'],
   ['departments', 'Departments'], ['gatepass', 'Gate pass'], ['visitors', 'Visitors'], ['reimbursements', 'Reimbursements'], ['payroll', 'Payroll & compensation'], ['insights', 'Insights'], ['quality', 'Data quality'],
 ];
-const LINK_TAB = { regularisation: 'attendance', workforce: 'workforce', attendance: 'attendance', leave: 'leave', exceptions: 'exceptions', gatepass: 'gatepass', visitors: 'visitors', reimbursements: 'reimbursements', departments: 'departments' };
+const LINK_TAB = { regularisation: 'attendance', workforce: 'workforce', attendance: 'attendance', leave: 'leave', exceptions: 'exceptions', gatepass: 'gatepass', visitors: 'visitors', reimbursements: 'reimbursements', departments: 'departments', probation: 'probation', letters: 'letters', attrition: 'attrition', loans: 'loans', lifecycle: 'lifecycle', recruitment: 'workforce', payroll: 'payroll' };
 const cls = 'h-9 rounded-md border border-gray-300 bg-white px-2 text-sm';
 const Lbl = ({ t, children }) => <label className="text-[11px] text-gray-500 flex flex-col gap-1">{t}{children}</label>;
 const DEFAULT = { preset: 'monthly', anchor: todayIST(), from: todayIST(), to: todayIST(), compare: 'previous', compare_from: '', compare_to: '', filters: {} };
@@ -70,10 +71,15 @@ export default function MISIntelligence() {
       case 'reimbursements': return <ReimbursementsTab {...common} />;
       case 'insights': return <InsightsTab d={data} onRefresh={() => load(true)} focusKey={focusKey} canEdit={fullAccess} />;
       case 'quality': return <DataQualityTab {...common} />;
-      default: return <OverviewTab d={data} setTab={setTab} onOpenInsight={(i) => { setFocusKey(i.key); setTab('insights'); }} />;
+      case 'probation': return <ProbationTab {...common} />;
+      case 'attrition': return <AttritionTab {...common} />;
+      case 'letters': return <LettersTab {...common} />;
+      case 'loans': return <LoansTab {...common} />;
+      case 'lifecycle': return <LifecycleTab {...common} />;
+      default: return (<div className="space-y-4"><OverviewTab d={data} setTab={setTab} onOpenInsight={(i) => { setFocusKey(i.key); setTab('insights'); }} /><HrStrip d={data} setTab={setTab} /></div>);
     }
   };
-  const visibleTabs = TABS.filter(([id]) => fullAccess || !['visitors', 'reimbursements', 'quality', 'payroll'].includes(id));
+  const visibleTabs = TABS.filter(([id]) => fullAccess || !['visitors', 'reimbursements', 'quality', 'payroll', 'probation', 'attrition', 'letters', 'loans', 'lifecycle'].includes(id));
   const isPayroll = tab === 'payroll' && fullAccess;     // payroll has its own period / department controls and its own export
 
   return (

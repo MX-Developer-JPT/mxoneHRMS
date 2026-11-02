@@ -154,6 +154,22 @@ export default function PayrollTab({ canCorrect }) {
             </div>
           </Section>
 
+          {/* forecast */}
+          <Section title="Payroll cost forecast" subtitle="A straight-line projection of recent payslip cost — not a budget.">
+            {!d.forecast?.available ? <Unavailable>{d.forecast?.reason || 'Not enough history yet.'}</Unavailable> : (
+              <div className="grid gap-6 lg:grid-cols-3">
+                <div className="lg:col-span-2">
+                  <Chart title="Actual and projected total payroll cost" sub={`Based on ${d.forecast.basis}`} height={240}>
+                    <ComposedChart data={[...(d.trend.filter(t => t.has_data).slice(-6).map(t => ({ label: t.label, actual: t.cost }))), ...d.forecast.points.map(p => ({ label: p.label, forecast: p.cost, range: [p.low, p.high] }))]}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" /><XAxis dataKey="label" tick={axis} /><YAxis tick={axis} tickFormatter={short} width={64} /><Tooltip formatter={(v) => (Array.isArray(v) ? `${inr(v[0])} – ${inr(v[1])}` : inr(v))} /><Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar dataKey="actual" name="Actual" fill="#1E4E8C" radius={[3, 3, 0, 0]} /><Bar dataKey="range" name="Likely range" fill="#BFDBFE" radius={[3, 3, 0, 0]} /><Line type="monotone" dataKey="forecast" name="Projected" stroke="#F59E0B" strokeWidth={2} strokeDasharray="5 4" dot={{ r: 3 }} /></ComposedChart>
+                  </Chart>
+                </div>
+                <div className="space-y-2">{d.forecast.points.map(p => <div key={p.ym} className="rounded-lg border p-3"><div className="text-xs text-gray-500">{p.label}</div><div className="text-lg font-bold">{inr(p.cost)}</div><div className="text-[11px] text-gray-500">range {short(p.low)} – {short(p.high)}</div></div>)}<p className="text-[11px] text-gray-500">{d.forecast.caveat}</p></div>
+              </div>
+            )}
+          </Section>
+
           {/* department table */}
           <Section title="Department-wise payroll" subtitle={`Variance is against ${d.period.prev_label}. Share is the department's part of the total payroll cost.`}>
             <MiniTable

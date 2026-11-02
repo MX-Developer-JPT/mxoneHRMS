@@ -60,6 +60,10 @@ export const METRIC_DEFINITIONS = [
   ['Gate pass duration', 'Return − departure, only where both are recorded and the pass was not auto-closed (auto-closed returns are system times, not real ones).'],
   ['Reimbursement amounts', 'Claimed = all submitted; Approved = approved or paid; Paid = confirmed paid; Outstanding = claimed but not yet paid and not rejected. An approved claim is not treated as paid.'],
   ['Comparison period', 'Previous working day / week / month / quarter, same period last year, or custom. For a period still running, the comparison is cut to the same number of elapsed days. Percentage change is not shown when the comparison value is 0.'],
+  ['Attrition rate', 'Employees who left in the period ÷ average headcount × 100 (average = headcount the day before the period and on its last day). Annualised scales to 365 days; retention = share of the opening cohort still employed at the end. Dates: actual joining and last working day.'],
+  ['Probation overdue', 'Employee status is still Probation and the recorded probation end date (or the extended date) has passed.'],
+  ['Pending letters', 'Appointment: joined after letters began to be recorded here and none on record. Confirmation: confirmed but no confirmation letter sent. Transfer: department change in the last 90 days with no letter. Letters recorded before tracking began are not judged.'],
+  ['Loan outstanding', 'Loan amount minus the loan deductions printed on the uploaded payslips since the loan began; the stored balance is used only where no payslip exists. Overdue = behind schedule by more than one instalment.'],
   ['Exceptions & insights', 'Indicators for verification, never findings about conduct. Each rule combines a configured threshold with population outlier detection when ≥30 people are available.'],
 ];
 
@@ -117,7 +121,7 @@ export async function buildMisIntelligenceWorkbook(res, registers, ExcelJS, opts
   note(ws, 'ED = employee-days. Headcount is a count of people; the attendance indicators are counts of employee-days and must not be added to headcount.');
   if (includeInsights) {
     heading(ws, 'Management highlights');
-    table(ws, ['Severity', 'Insight', 'Why it was raised', 'Suggested action', 'Owner'], res.insights.filter(i => i.status !== 'Dismissed').slice(0, 12).map(i => [i.severity, i.title, i.why, i.action, i.owner]), [14, 60, 60, 50, 22], { sevCol: 0 });
+    table(ws, ['Priority', 'Observation', 'Analysis', 'Supporting data', 'Recommendation', 'Owner'], res.insights.filter(i => i.status !== 'Dismissed').slice(0, 20).map(i => [i.priority || i.severity, i.observation || i.title, i.analysis || i.why, i.supporting || i.evidence, i.recommendation || i.action, i.owner]), [10, 46, 46, 46, 46, 18], { sevCol: 0 });
   }
   heading(ws, 'Population and calendar used');
   table(ws, ['Item', 'Value'], [['Active employees in scope (period end)', m.employeesInScope], ['Employees included in attendance', m.attendanceEmployees], ['Scheduled employee-days', m.workingCalendar.scheduledEmployeeDays], ['Holidays in period', m.workingCalendar.holidays.map(h => `${fmtD(h.date)} ${h.name}`).join('; ') || 'None'], ['Default shift', m.workingCalendar.defaultShift ? `${m.workingCalendar.defaultShift.name} (${(m.workingCalendar.defaultShift.days || []).join(', ')})` : 'n/a']], [44, 60]);
@@ -272,6 +276,83 @@ export async function buildMisIntelligenceWorkbook(res, registers, ExcelJS, opts
   heading(ws, 'Known limitations of this report');
   for (const l of res.limitations) { const r = ws.addRow([l]); r.getCell(1).font = font(false, 'FF1F2937', 10); r.getCell(1).alignment = { wrapText: true }; }
   ws.getColumn(1).width = Math.max(ws.getColumn(1).width || 0, 60);
+
+
+  // HR lifecycle sheets (HR / management only: res.hr is null for a team-scoped manager)
+  if (res.hr) {
+    const H = res.hr, Pb = H.probation, Lt = H.letters, At = H.attrition, Ln = H.loans, Lc = H.lifecycle, Rp = H.recruitment;
+    ws = top('Probation & Confirmation', 'Probation & confirmation');
+    heading(ws, 'Summary');
+    table(ws, ['Measure', 'Value'], [['On probation', Pb.counts.onProbation], ['Probation ended — confirmation overdue', Pb.counts.overdue], [`Ending within the next 30 days`, Pb.counts.endingSoon], ['Probation extended', Pb.counts.extended], ['No probation end date recorded', Pb.counts.noEndDate], ['Confirmed in the period', Pb.counts.confirmedInPeriod], ['Average days from joining to confirmation', Pb.avgDaysToConfirm ? `${Pb.avgDaysToConfirm.avg} (from ${Pb.avgDaysToConfirm.n} of ${Pb.avgDaysToConfirm.of} confirmed employees with a recorded confirmation date)` : 'not available']], [44, 30]);
+    heading(ws, 'By department');
+    table(ws, ['Department', 'On probation', 'Overdue', 'Ending soon', 'Extended', 'Confirmed in period'], Pb.byDept.map(d => [d.dept, d.onProbation, d.overdue, d.endingSoon, d.extended, d.confirmedInPeriod]), [26, 14, 12, 14, 12, 18]);
+    heading(ws, 'Overdue confirmations (act first)');
+    table(ws, ['Code', 'Employee', 'Department', 'Designation', 'Joined', 'Probation ended', 'Days overdue', 'Review status'], Pb.overdue.map(r => [r.code, r.name, r.dept, r.designation, fmtD(r.doj), fmtD(r.end), r.overdueBy, r.reviewStatus]), [12, 26, 22, 24, 12, 14, 12, 24]);
+    heading(ws, 'Ending soon / upcoming confirmation dates');
+    table(ws, ['Code', 'Employee', 'Department', 'Probation ends', 'Days left', 'Extended', 'Review status'], Pb.upcoming.map(r => [r.code, r.name, r.dept, fmtD(r.end), r.daysLeft, r.extended ? 'Yes' : '', r.reviewStatus]), []);
+
+    ws = top('Letters & Documents', 'Employee letters & documentation');
+    note(ws, Lt.note);
+    heading(ws, 'Letters recorded');
+    table(ws, ['Letter type', 'Total', 'In period', 'Sent', 'Generated, not sent'], Lt.byType.map(t => [t.label, t.total, t.inPeriod, t.sent, t.pendingIssue]), [28, 10, 12, 10, 20]);
+    heading(ws, 'Pending actions by department');
+    table(ws, ['Department', 'Appointment letters', 'Confirmation letters', 'Transfer / promotion letters', 'Letters not sent', 'Incomplete documents'], Lt.pendingByDept.map(d => [d.dept, d.appointment, d.confirmation, d.transfer, d.issue, d.documents]), [26, 18, 18, 22, 16, 18]);
+    heading(ws, 'Warning letters');
+    table(ws, ['Date', 'Code', 'Employee', 'Department', 'Reason', 'Reference'], Lt.warnings.map(w => [fmtD(w.date), w.code, w.name, w.dept, w.reason, w.ref]), [12, 12, 26, 22, 50, 18]);
+    heading(ws, 'Employees with multiple warning letters');
+    table(ws, ['Code', 'Employee', 'Department', 'Warnings'], Lt.multiWarning.map(r => [r.code, r.name, r.dept, r.warnings]), []);
+    heading(ws, 'Appointment letters pending');
+    table(ws, ['Code', 'Employee', 'Department', 'Joined', 'Days since joining'], Lt.pendingAppointment.map(r => [r.code, r.name, r.dept, fmtD(r.doj), r.daysSinceJoining]), []);
+    heading(ws, 'Confirmation / transfer letters pending');
+    table(ws, ['Code', 'Employee', 'Department', 'Why'], [...Lt.pendingConfirmation, ...Lt.pendingTransfer].map(r => [r.code, r.name, r.dept, r.reason]), [12, 26, 22, 80]);
+    heading(ws, 'Employee document completion (incomplete only)');
+    table(ws, ['Code', 'Employee', 'Department', 'Present', 'Required', 'Missing'], Lt.incompleteDocs.map(r => [r.code, r.name, r.dept, r.present, r.required, r.missing]), []);
+
+    ws = top('Attrition & Retention', 'Attrition & retention');
+    heading(ws, 'Headline');
+    table(ws, ['Measure', 'This period', 'Previous period'], [['Opening headcount', At.company.opening, At.previous.opening], ['Joiners', At.company.joiners, At.previous.joiners], ['Exits', At.company.exits, At.previous.exits], ['Closing headcount', At.company.closing, At.previous.closing], ['Attrition rate % (period)', At.company.rate ?? 'n/a', At.previous.rate ?? 'n/a'], ['Attrition rate % (annualised)', At.company.annualised ?? 'n/a', At.previous.annualised ?? 'n/a'], ['Trailing 12-month attrition %', At.annual.rate ?? 'n/a', ''], ['Retention rate %', At.retention.rate ?? 'n/a', ''], ['Average tenure of current employees (years)', At.avgTenureYears ?? 'n/a', ''], ['Average tenure at exit (years)', At.avgTenureAtExitYears ?? 'n/a', '']], [44, 16, 16]);
+    heading(ws, 'Monthly trend (12 months)');
+    table(ws, ['Month', 'Opening', 'Joiners', 'Exits', 'Closing', 'Attrition %'], At.trend.map(t => [t.label, t.openingHc, t.joiners, t.exits, t.closingHc, t.rate ?? 'n/a']), []);
+    heading(ws, 'By department');
+    table(ws, ['Department', 'Opening', 'Closing', 'Joiners', 'Exits', 'Attrition % (period)', 'Annualised %'], At.byDept.map(d => [d.dept, d.open, d.close, d.joiners, d.exits, d.rate ?? 'n/a', d.annualised ?? 'n/a']), [26, 10, 10, 10, 10, 18, 14]);
+    heading(ws, 'By designation');
+    table(ws, ['Designation', 'Exits', 'Average headcount', 'Attrition %'], At.byDesignation.map(d => [d.designation, d.exits, d.avg, d.rate ?? 'n/a']), []);
+    heading(ws, 'Voluntary vs involuntary, reasons, tenure at exit');
+    table(ws, ['Type', 'Exits'], Object.entries(At.kinds), []); table(ws, ['Reason', 'Exits'], Object.entries(At.reasons), []); table(ws, ['Tenure at exit', 'Exits'], At.tenure.map(t => [t.band, t.exits]), []);
+    heading(ws, 'Leavers in the period');
+    table(ws, ['Code', 'Employee', 'Department', 'Designation', 'Joined', 'Last working day', 'Tenure (days)', 'Type', 'Reason'], At.exits.map(l => [l.code, l.name, l.dept, l.designation, fmtD(l.doj), fmtD(l.lwd), l.tenureDays ?? '', l.type, l.reason]), []);
+    heading(ws, 'How attrition is calculated');
+    for (const t of At.method) { const r = ws.addRow([t]); r.getCell(1).font = font(false, 'FF1F2937', 10); r.getCell(1).alignment = { wrapText: true }; }
+
+    ws = top('Loans & Advances', 'Loans & advances');
+    note(ws, Ln.note);
+    heading(ws, 'Summary');
+    table(ws, ['Measure', 'Value'], [['Loans / advances on record', Ln.counts.total], ['Active', Ln.counts.active], ['Fully repaid', Ln.counts.fullyRepaid], ['Pending approval', Ln.counts.pendingApproval], ['Sanctioned in the period (count)', Ln.counts.sanctionedInPeriod], ['Total disbursed (INR)', Ln.amounts.disbursed], ['Total outstanding (INR)', Ln.amounts.outstanding], ['Outstanding salary advances (INR)', Ln.amounts.outstandingAdvances], ['Monthly deduction (INR)', Ln.amounts.monthlyDeduction], ['Behind schedule (INR)', Ln.amounts.behind]], [44, 20], { money: [1] });
+    heading(ws, 'Department-wise exposure');
+    table(ws, ['Department', 'Active', 'Outstanding (INR)', 'Monthly deduction (INR)', 'Overdue'], Ln.byDept.map(d => [d.dept, d.loans, d.outstanding, d.monthly, d.overdue]), [26, 10, 20, 22, 10], { money: [2, 3] });
+    heading(ws, 'Employee-wise statement');
+    table(ws, ['Code', 'Employee', 'Department', 'Kind', 'Status', 'Amount', 'Monthly', 'Start', 'Repaid', 'Repaid %', 'Outstanding', 'Behind by', 'Overdue', 'Basis'], Ln.statement.map(r => [r.code, r.name, r.dept, r.kind, r.status, r.amount, r.monthly, fmtD(r.start), r.repaid, r.repaidPct ?? '', r.outstanding ?? '', r.behind ?? '', r.overdue ? 'Yes' : '', r.basis]), [12, 24, 20, 14, 12, 12, 12, 12, 12, 10, 14, 12, 10, 34], { money: [5, 6, 8, 10, 11] });
+
+    ws = top('Lifecycle & HR Ops', 'Employee lifecycle & HR operations');
+    heading(ws, 'Onboarding');
+    table(ws, ['Stage', 'Employees'], Object.entries(Lc.onboarding.stages), []); table(ws, ['Invite status', 'Count'], Object.entries(Lc.onboarding.invites), []);
+    table(ws, ['Code', 'Employee', 'Department', 'Stage', 'Joined'], Lc.onboarding.pending.map(r => [r.code, r.name, r.dept, r.stage, fmtD(r.doj)]), []);
+    heading(ws, 'Helpdesk');
+    table(ws, ['Measure', 'Value'], [['Tickets on record', Lc.tickets.total], ['Raised in the period', Lc.tickets.raisedInPeriod], ['Resolved', Lc.tickets.resolved], ['Open', Lc.tickets.open], [`Open longer than ${7} days`, Lc.tickets.openOverdue], ['Average days to resolve', Lc.tickets.avgResolutionDays ?? 'n/a']], [34, 14]);
+    heading(ws, 'Exit clearance and account deactivation');
+    table(ws, ['Code', 'Employee', 'Department', 'Last working day', 'Exit record', 'Access deactivated'], Lc.exits.leavers.map(l => [l.code, l.name, l.dept, fmtD(l.lwd), l.exitStatus, l.accessDeactivated === true ? 'Yes' : l.accessDeactivated === false ? 'No' : 'Not recorded']), []);
+    heading(ws, 'Performance reviews, PIPs, training');
+    table(ws, ['Area', 'Status', 'Count'], [...Object.entries(Lc.performance.byStatus).map(([k, v]) => ['Performance review', k, v]), ...Object.entries(Lc.performance.pipStatus).map(([k, v]) => ['PIP', k, v]), ...Object.entries(Lc.training.byStatus).map(([k, v]) => ['Training enrolment', k, v])], []);
+
+    ws = top('Recruitment Detail', 'Recruitment — sources, interviews, offers');
+    heading(ws, 'Source-wise candidates');
+    table(ws, ['Source', 'Candidates', 'Reached interview', 'Offered', 'Joined'], Rp.sources.map(r => [r.source, r.candidates, r.interviewed, r.offered, r.joined]), [24, 12, 18, 12, 10]);
+    heading(ws, 'Offers');
+    table(ws, ['Measure', 'Value'], [['Offers released', Rp.offers.released], ['Offers accepted', Rp.offers.accepted], ['Joined', Rp.offers.joined], ['Acceptance rate %', Rp.offers.acceptanceRate ?? 'n/a'], ['Offer-to-joining %', Rp.offers.offerToJoin ?? 'n/a']], [34, 14]);
+    heading(ws, 'Requisitions by status and interview results');
+    table(ws, ['Requisition status', 'Count'], Object.entries(Rp.requisitionStatus), []); table(ws, ['Interview result', 'Count'], Object.entries(Rp.interviews.byResult), []);
+    if (Rp.recruiterWise?.unavailable) note(ws, Rp.recruiterWise.reason);
+  }
 
   // definitions
   ws = top('Definitions', 'Metric definitions and methodology');

@@ -22,7 +22,7 @@ export function minusYear(d, years = 1) {
   return `${y - years}-${pad(m)}-${pad(Math.min(dd, Number(last)))}`;
 }
 
-// preset: daily | weekly | monthly | quarterly | ytd | custom
+// preset: daily | weekly | monthly | quarterly | ytd | fy (Indian financial year Apr–Mar containing the date) | cy (calendar year) | custom
 export function resolvePeriod({ preset = 'monthly', anchor, from, to } = {}) {
   const a = isDate(anchor) ? anchor : istDate();
   if (preset === 'custom') {
@@ -41,6 +41,14 @@ export function resolvePeriod({ preset = 'monthly', anchor, from, to } = {}) {
     const q = Math.floor((m - 1) / 3);
     const f = `${y}-${pad(q * 3 + 1)}-01`;
     return { preset, from: f, to: lastOfMonth(y, q * 3 + 3), label: `Q${q + 1} ${y} (Jan–Dec quarters)` };
+  }
+  if (preset === 'fy') {
+    const [y, m] = a.split('-').map(Number), s0 = m >= 4 ? y : y - 1;
+    return { preset, from: `${s0}-04-01`, to: `${s0 + 1}-03-31`, label: `FY ${s0}-${String((s0 + 1) % 100).padStart(2, '0')} (Apr–Mar)` };
+  }
+  if (preset === 'cy') {
+    const y = a.slice(0, 4);
+    return { preset, from: `${y}-01-01`, to: `${y}-12-31`, label: `Calendar year ${y}` };
   }
   if (preset === 'ytd') {
     const y = a.slice(0, 4);
@@ -82,7 +90,7 @@ export function resolveCompare(period, { compare = 'previous', compareFrom, comp
     const q = Math.floor((m - 1) / 3);
     return { kind: 'previous', from: `${y}-${pad(q * 3 + 1)}-01`, to: lastOfMonth(y, q * 3 + 3), label: 'Previous quarter' };
   }
-  if (preset === 'ytd') return { kind: 'previous', from: minusYear(from), to: minusYear(to), label: 'Same period last year' };
+  if (['ytd', 'fy', 'cy'].includes(preset)) return { kind: 'previous', from: minusYear(from), to: minusYear(to), label: preset === 'ytd' ? 'Same period last year' : `Previous ${preset === 'fy' ? 'financial' : 'calendar'} year` };
   const len = diffDays(from, to) + 1;
   return { kind: 'previous', from: addDays(from, -len), to: addDays(from, -1), label: `Previous ${len} day(s)` };
 }
