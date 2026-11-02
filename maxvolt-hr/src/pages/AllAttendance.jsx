@@ -362,7 +362,7 @@ export default function AllAttendance() {
     const [yr, mo] = date.split('-').map(Number);
     try {
       toast.info('Generating attendance report…');
-      const res = await base44.functions.invoke('exportAttendanceReport', { month: mo, year: yr });
+      const res = await base44.functions.invoke('exportAttendanceReport', { month: mo, year: yr, team_only: isTeamScoped });
       if (!res.data?.success) { toast.error(res.data?.error || 'Export failed'); return; }
       let blob;
       if (res.data.base64) {
@@ -388,7 +388,7 @@ export default function AllAttendance() {
     setExportingSwipe(true);
     try {
       toast.info('Generating swipe details…');
-      const res = await base44.functions.invoke('exportSwipeDetails', { month: mo, year: yr, department: deptFilter });
+      const res = await base44.functions.invoke('exportSwipeDetails', { month: mo, year: yr, department: deptFilter, team_only: isTeamScoped });
       if (!res.data?.success) { toast.error(res.data?.error || 'Swipe details export failed'); return; }
       const byteChars = atob(res.data.base64);
       const byteNums = new Array(byteChars.length).fill(0).map((_, i) => byteChars.charCodeAt(i));
@@ -470,7 +470,7 @@ export default function AllAttendance() {
             <Button variant="outline" size="sm" onClick={exportToExcel} title={isTeamScoped ? 'Export the Attendance Muster of your team (monthly summary)' : 'Export Attendance Muster (monthly summary)'}>
               <Download className="w-4 h-4 mr-1" /> Muster
             </Button>
-            <Button variant="outline" size="sm" onClick={exportDetailedReport} title="Export detailed report with session hours and overtime">
+            <Button variant="outline" size="sm" onClick={exportDetailedReport} title={isTeamScoped ? 'Export the detailed report (session hours, overtime) of your team' : 'Export detailed report with session hours and overtime'}>
               <FileSpreadsheet className="w-4 h-4 mr-1" /> Report
             </Button>
             <Button variant="outline" size="sm" onClick={exportSwipeDetails} disabled={exportingSwipe} title="Export first check-in/last check-out, method (biometric/selfie/geofence) and locations for every day of the month">

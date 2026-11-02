@@ -5873,7 +5873,12 @@ router.post('/:name', async (req, res) => {
 
     /* ── Attendance Report Export (session time + overtime) ── */
     case 'exportAttendanceReport': {
-      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      // HR / admin / management: the whole organisation. A manager: only their own team (direct + indirect reports).
+      // `team_only` lets a management user export just their team from the "Team Attendance" page.
+      const arOrg = await hasRole(cu, MGR_ROLES);
+      const arMgr = !arOrg && await hasRole(cu, ['manager']);
+      if (!arOrg && !arMgr) return res.status(403).json({ error: 'Manager, HR or management access required' });
+      const arTeam = (arMgr || (p.team_only && await hasRole(cu, ['management']))) ? new Set(await getDownstreamUserIds(cu.id)) : null;
       const { month, year, night_shift_only: arNightOnly } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const m = parseInt(month), y = parseInt(year);
@@ -5882,6 +5887,7 @@ router.post('/:name', async (req, res) => {
       const daysInMonth = new Date(y, m, 0).getDate();
 
       let employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      if (arTeam) employees = employees.filter(e => arTeam.has(e.user_id));
       const attRows   = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
 
       // Build attendance map: user_id → date → record (dedups any duplicate
@@ -6884,7 +6890,11 @@ router.post('/:name', async (req, res) => {
     // and the check-in/check-out location for selfie or geofence days
     // (biometric has no location signal to show).
     case 'exportSwipeDetails': {
-      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      // same scoping as the muster / report: org-wide for HR / admin / management, own team (direct + indirect) for a manager
+      const swOrg = await hasRole(cu, MGR_ROLES);
+      const swMgr = !swOrg && await hasRole(cu, ['manager']);
+      if (!swOrg && !swMgr) return res.status(403).json({ error: 'Manager, HR or management access required' });
+      const swTeam = (swMgr || (p.team_only && await hasRole(cu, ['management']))) ? new Set(await getDownstreamUserIds(cu.id)) : null;
       const { month, year, department: swdDept, night_shift_only: swNightOnly } = p;
       if (!month || !year) return res.json({ success: false, error: 'month and year required' });
       const swM = parseInt(month), swY = parseInt(year);
@@ -6894,6 +6904,7 @@ router.post('/:name', async (req, res) => {
       const swMonthLabel = new Date(swY, swM-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
       let swEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      if (swTeam) swEmps = swEmps.filter(e => swTeam.has(e.user_id));
       if (swdDept && swdDept !== 'all') swEmps = swEmps.filter(e => e.department === swdDept);
       swEmps.sort((a, b) => (a.department||'').localeCompare(b.department||'') || (a.display_name||'').localeCompare(b.display_name||''));
 
