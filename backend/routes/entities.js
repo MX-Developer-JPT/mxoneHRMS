@@ -247,7 +247,10 @@ function announcementProblem(a) {
 }
 
 // Employees may submit at most 5 AttendanceRegularisation requests per
-// calendar month (IST). Rejected requests don't count against the quota —
+// calendar month (IST) — counted against the month of the ATTENDANCE DATE being
+// corrected, not the month the request is raised in: correcting a September day
+// in October uses September's allowance and leaves October's untouched.
+// Rejected requests don't count against the quota —
 // they were declined, not a wasted submission slot. Enforced server-side
 // here (not just as a frontend nicety) since creation goes through this
 // generic entity route rather than a dedicated function-route case.
@@ -264,7 +267,9 @@ async function checkRegularisationLimit(res, type, data, client) {
     ? (await client.query("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id])).rows
     : await all("SELECT data, created_at FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1", [data.user_id]);
   const nowIST = new Date(Date.now() + 5.5 * 3600000);
-  const curYM = `${nowIST.getUTCFullYear()}-${String(nowIST.getUTCMonth() + 1).padStart(2, '0')}`;
+  // the month this request is FOR (its attendance date); a request without a usable date falls back to the current month
+  const forDate = String(data.attendance_date || '').slice(0, 7);
+  const curYM = /^\d{4}-\d{2}$/.test(forDate) ? forDate : `${nowIST.getUTCFullYear()}-${String(nowIST.getUTCMonth() + 1).padStart(2, '0')}`;
   const countThisMonth = rows.filter(r => {
     let d;
     try { d = JSON.parse(r.data); } catch { return false; }
@@ -274,8 +279,11 @@ async function checkRegularisationLimit(res, type, data, client) {
     // slot either, now that self-cancel exists (checkApprovalAuthorization
     // above).
     if (d.status === 'rejected' || d.status === 'cancelled') return false;
+    // which month's allowance this existing request used: the month of its attendance date
+    const usedYM = String(d.attendance_date || '').slice(0, 7);
+    if (/^\d{4}-\d{2}$/.test(usedYM)) return usedYM === curYM;
     if (!r.created_at) return false;
-    // created_at is Postgres CURRENT_TIMESTAMP::TEXT (UTC) — shift to IST so
+    // (older requests without a date) created_at is Postgres CURRENT_TIMESTAMP::TEXT (UTC) — shift to IST so
     // the "calendar month" boundary matches the rest of the app's convention.
     const createdUtcMs = Date.parse(r.created_at.replace(' ', 'T') + (r.created_at.includes('Z') ? '' : 'Z'));
     if (isNaN(createdUtcMs)) return false;
@@ -284,7 +292,9 @@ async function checkRegularisationLimit(res, type, data, client) {
     return ym === curYM;
   }).length;
   if (countThisMonth >= 5) {
-    res.status(400).json({ error: 'You have already submitted 5 attendance regularisation requests this month — the monthly limit has been reached.' });
+    const [qy, qm] = curYM.split('-').map(Number);
+    const qName = new Date(Date.UTC(qy, qm - 1, 1)).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    res.status(400).json({ error: `You have already submitted 5 attendance regularisation requests for ${qName} — that month's limit has been reached.` });
     return false;
   }
   return true;

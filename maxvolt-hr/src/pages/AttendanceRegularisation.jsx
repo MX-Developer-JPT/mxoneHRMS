@@ -170,6 +170,20 @@ export default function AttendanceRegularisation() {
         }
       }
 
+      // each date counts against the allowance of ITS OWN month (a September date uses September's five, even when raised in October)
+      if (!editingRequest) {
+        const need = {};
+        for (const date of datesToProcess) { const ym = String(date).slice(0, 7); need[ym] = (need[ym] || 0) + 1; }
+        for (const [ym, n] of Object.entries(need)) {
+          const left = MONTHLY_LIMIT - usedIn(ym);
+          if (n > left) {
+            toast.error(left <= 0 ? `You have already used all ${MONTHLY_LIMIT} regularisation requests for ${monthName(ym)}.` : `${monthName(ym)} has only ${left} request(s) left — you selected ${n} date(s) in that month.`);
+            setSaving(false);
+            return;
+          }
+        }
+      }
+
       const attRecords = await base44.entities.Attendance.filter({ user_id: user.id });
 
       for (const date of datesToProcess) {
@@ -272,13 +286,19 @@ export default function AttendanceRegularisation() {
   const MONTHLY_LIMIT = 5;
   const nowIST = new Date(Date.now() + 5.5 * 3600000);
   const curYM = `${nowIST.getUTCFullYear()}-${String(nowIST.getUTCMonth() + 1).padStart(2, '0')}`;
-  const usedThisMonth = requests.filter(r => {
-    if (r.status === 'rejected' || r.status === 'cancelled') return false;
-    if (!r.created_date) return false;
-    const createdIST = new Date(new Date(r.created_date).getTime() + 5.5 * 3600000);
-    return `${createdIST.getUTCFullYear()}-${String(createdIST.getUTCMonth() + 1).padStart(2, '0')}` === curYM;
-  }).length;
+  // The allowance belongs to the month of the ATTENDANCE DATE being corrected: a September day corrected in October uses
+  // September's five, not October's (mirrors the server).
+  const monthOfRequest = (r) => {
+    const m = String(r.attendance_date || '').slice(0, 7);
+    if (/^\d{4}-\d{2}$/.test(m)) return m;
+    if (!r.created_date) return null;
+    const c = new Date(new Date(r.created_date).getTime() + 5.5 * 3600000);
+    return `${c.getUTCFullYear()}-${String(c.getUTCMonth() + 1).padStart(2, '0')}`;
+  };
+  const usedIn = (ym, exceptId) => requests.filter(r => r.id !== exceptId && !['rejected', 'cancelled'].includes(r.status) && monthOfRequest(r) === ym).length;
+  const usedThisMonth = usedIn(curYM);
   const limitReached = usedThisMonth >= MONTHLY_LIMIT;
+  const monthName = (ym) => { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' }); };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-6">
@@ -289,15 +309,14 @@ export default function AttendanceRegularisation() {
             <h1 className="text-2xl md:text-3xl font-bold">Attendance Regularisation</h1>
             <p className="text-gray-600 mt-1">Raise requests to correct missing or incorrect attendance</p>
             <p className={`text-xs mt-1 ${limitReached ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
-              {usedThisMonth}/{MONTHLY_LIMIT} requests used this month
-              {limitReached && ' — monthly limit reached'}
+              {usedThisMonth}/{MONTHLY_LIMIT} requests used for this month's dates
+              {limitReached && ' — this month\'s limit reached (earlier months keep their own allowance)'}
             </p>
           </div>
           <Button
             className="bg-blue-600 hover:bg-blue-700"
             onClick={() => setShowForm(true)}
-            disabled={limitReached}
-            title={limitReached ? `You've used all ${MONTHLY_LIMIT} regularisation requests for this month` : undefined}
+            title={limitReached ? `This month's ${MONTHLY_LIMIT} requests are used — you can still correct a date in an earlier month that has requests left` : undefined}
           >
             <Plus className="w-4 h-4 mr-2" /> New Request
           </Button>
