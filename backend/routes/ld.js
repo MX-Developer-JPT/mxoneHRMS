@@ -351,7 +351,7 @@ export async function createInduction(userId, { actorId = 'system', buddy_user_i
     gates: tpl.gates.map(g => buildGate(g, anchor)),
     buddy_checkins: [],
   };
-  // Test cycle: the tester is the learner and every owner, every timer is 30 seconds, nobody else is told.
+  // Test cycle: the tester is the learner and every owner, every timer is 10 seconds, nobody else is told.
   if (test) {
     isolateTestPeople(ind, userId, ind.employee.name); applyTestTiming(ind, today);
     const counts = await deptHeadcounts();
@@ -509,7 +509,7 @@ async function syncPolicyGate(ind) {
   const g = ind.gates?.find(x => x.gate_id === 'P1');
   if (!g || TERMINAL.has(g.status)) return false;
   const next = syncPolicyTasks(g.tasks || [], await list('CompanyPolicy'));
-  if (ind.is_test) for (const t of next) if (!t.done) t.min_read_seconds = TEST_SECONDS;   // test cycle: every policy is a 30-second read
+  if (ind.is_test) for (const t of next) if (!t.done) t.min_read_seconds = TEST_SECONDS;   // test cycle: every policy is a 10-second read
   if (JSON.stringify(next.map(x => [x.id, x.title, x.file_url, x.min_read_seconds])) === JSON.stringify((g.tasks || []).map(x => [x.id, x.title, x.file_url, x.min_read_seconds]))) return false;
   g.tasks = next;
   return true;
@@ -1213,7 +1213,7 @@ const HANDLERS = {
     const course = await get('LdCourse', a.course_id);
     if (p.action === 'start' && isOwner) { if (a.status === 'ASSIGNED') { a.status = 'IN_PROGRESS'; a.started_at = nowIso(); await save('LdAssignment', a); } return ok(res, { assignment: a }); }
     if (p.action === 'complete') {
-      if (a.is_test) {   // test cycle: the training takes 30 seconds from the moment it is started
+      if (a.is_test) {   // test cycle: the training takes 10 seconds from the moment it is started
         const left = testWaitLeft(a);
         if (left > 0) return fail(res, `Test timer — ${left}s left before this training can be marked complete`);
       }
@@ -2130,7 +2130,7 @@ const HANDLERS = {
   },
 
   // ───────────────────────── test cycle ─────────────────────────
-  // A full dry run for the L&D admin: a test induction (every timed step 30 s) plus a test training assignment, kept apart from real data.
+  // A full dry run for the L&D admin: a test induction (every timed step 10 s) plus a test training assignment, kept apart from real data.
   async ld_getTestCycle(p, ctx, res) {
     if (!ctx.isLdAdmin) return forbid(res);
     return ok(res, await testCycleView(ctx.id));
@@ -2145,7 +2145,7 @@ const HANDLERS = {
     let ind;
     try { ind = await createInduction(ctx.id, { actorId: ctx.id, test: true }); }
     catch (e) { return fail(res, e.message); }
-    const course = await create('LdCourse', { is_test: true, test_owner: ctx.id, title: 'TEST — training cycle check', category: 'Test', type: 'document', description: 'Created by the L&D test cycle. Start it, wait 30 seconds, then mark it complete to see the whole training flow, including the certificate.', duration_min: 1, mandatory: false, issues_certificate: true, validity_months: 0, status: 'active', version: 1, code: 'TEST-' + uuidv4().slice(0, 6).toUpperCase() });
+    const course = await create('LdCourse', { is_test: true, test_owner: ctx.id, title: 'TEST — training cycle check', category: 'Test', type: 'document', description: 'Created by the L&D test cycle. Start it, wait 10 seconds, then mark it complete to see the whole training flow, including the certificate.', duration_min: 1, mandatory: false, issues_certificate: true, validity_months: 0, status: 'active', version: 1, code: 'TEST-' + uuidv4().slice(0, 6).toUpperCase() });
     await create('LdAssignment', { is_test: true, test_owner: ctx.id, user_id: ctx.id, course_id: course.id, course_title: course.title, assigned_by: ctx.id, assigned_at: nowIso(), due_date: addDays(todayIST(), 7), mandatory: false, source: 'test', status: 'ASSIGNED', progress: 0, course_version: 1 }, ctx.id);
     await audit('LdInduction', ind.id, 'test_cycle_started', ctx.id, { restart: !!p.restart }, ctx.id);
     return ok(res, await testCycleView(ctx.id));

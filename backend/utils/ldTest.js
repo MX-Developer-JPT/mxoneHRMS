@@ -1,13 +1,13 @@
 // L&D test cycle — pure helpers (no database). A test cycle is a normal induction (plus a training assignment) that belongs to
-// the L&D admin who started it, is flagged `is_test`, and runs with every timed step shortened to 30 seconds so the whole
+// the L&D admin who started it, is flagged `is_test`, and runs with every timed step shortened to 10 seconds so the whole
 // journey can be walked through in one sitting. Test data never reaches KPIs, registers or other people (see routes/ld.js).
 // Unit-tested in backend/tests/ldTest.test.mjs.
 
-export const TEST_SECONDS = 30;
+export const TEST_SECONDS = 10;
 
 const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
 
-// Every timed task (website tour, course / product study, org-chart reading, policy reading) becomes 30 seconds; every step is open from
+// Every timed task (website tour, course / product study, org-chart reading, policy reading) becomes 10 seconds; every step is open from
 // today and due a week from today, so nothing waits for a calendar date or turns overdue mid-test.
 export function applyTestTiming(ind, today) {
   ind.is_test = true;

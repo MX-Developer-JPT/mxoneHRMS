@@ -15,7 +15,7 @@ const STEP_LINKS = [
 ];
 
 // L&D Control Centre → Test cycle. A dry run of the whole journey for the person testing: a test induction and a test training
-// assignment where every timed step takes 30 seconds. Test data is flagged, kept out of every report, register and certificate
+// assignment where every timed step takes 10 seconds. Test data is flagged, kept out of every report, register and certificate
 // list, and never notifies anyone else; "End test cycle" deletes all of it.
 export default function LdTestCycleTab() {
   const [d, setD] = useState(null);
@@ -37,9 +37,9 @@ export default function LdTestCycleTab() {
     try { const r = await fn(); if (okMsg) toast.success(okMsg(r)); await load(); } catch (e) { toast.error(e.message); }
     setBusy('');
   };
-  const start = (restart = false) => act('start', () => ld('ld_startTestCycle', { restart }), () => 'Test cycle started — every timed step is 30 seconds');
+  const start = (restart = false) => act('start', () => ld('ld_startTestCycle', { restart }), () => 'Test cycle started — every timed step is 10 seconds');
   const end = () => { if (window.confirm('End the test cycle and delete everything it created (test induction, test training, test certificates and signed test acknowledgements)? Nothing real is touched.')) act('end', () => ld('ld_endTestCycle'), (r) => `Test cycle ended — ${r.removed} test record(s) removed`); };
-  const trainStart = () => act('t', () => ld('ld_updateProgress', { assignment_id: d.training.id, action: 'start' }), () => 'Training started — it can be completed in 30 seconds');
+  const trainStart = () => act('t', () => ld('ld_updateProgress', { assignment_id: d.training.id, action: 'start' }), () => 'Training started — it can be completed in 10 seconds');
   const trainDone = () => act('t', () => ld('ld_updateProgress', { assignment_id: d.training.id, action: 'complete' }), () => 'Training completed — see the test certificate below');
 
   if (!d) return <div className="flex items-center justify-center py-16 text-gray-400"><Loader2 className="w-5 h-5 animate-spin mr-2" />Loading…</div>;

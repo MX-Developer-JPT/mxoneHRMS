@@ -13,21 +13,21 @@ const mkInd = () => ({
   ],
 });
 
-t('every timed task becomes 30 seconds, whatever it was', () => {
+t('every timed task becomes 10 seconds, whatever it was', () => {
   const ind = applyTestTiming(mkInd(), '2026-11-02');
   const timed = ind.gates.flatMap(g => g.tasks).filter(x => x.target_seconds);
   assert.ok(timed.length >= 4); assert.ok(timed.every(x => x.target_seconds === TEST_SECONDS));
-  assert.equal(TEST_SECONDS, 30);
-  assert.equal(ind.gates.find(g => g.gate_id === 'W1').tasks[0].target_seconds, 30);
-  assert.equal(ind.gates.find(g => g.gate_id === 'C1').tasks[0].target_seconds, 30);
-  assert.equal(ind.gates.find(g => g.gate_id === 'W2').tasks[0].target_seconds, 30);
-  assert.equal(ind.gates.find(g => g.gate_id === 'D1').tasks.find(x => x.type === 'org_view').target_seconds, 30);
-  assert.equal(ind.gates.find(g => g.gate_id === 'P1b').tasks[0].min_read_seconds, 30);
+  assert.equal(TEST_SECONDS, 10);
+  assert.equal(ind.gates.find(g => g.gate_id === 'W1').tasks[0].target_seconds, 10);
+  assert.equal(ind.gates.find(g => g.gate_id === 'C1').tasks[0].target_seconds, 10);
+  assert.equal(ind.gates.find(g => g.gate_id === 'W2').tasks[0].target_seconds, 10);
+  assert.equal(ind.gates.find(g => g.gate_id === 'D1').tasks.find(x => x.type === 'org_view').target_seconds, 10);
+  assert.equal(ind.gates.find(g => g.gate_id === 'P1b').tasks[0].min_read_seconds, 10);
 });
 
 t('every step is open from today and due a week later; the induction is flagged', () => {
   const ind = applyTestTiming(mkInd(), '2026-11-02');
-  assert.equal(ind.is_test, true); assert.equal(ind.test_seconds, 30); assert.equal(ind.anchor_date, '2026-11-02');
+  assert.equal(ind.is_test, true); assert.equal(ind.test_seconds, 10); assert.equal(ind.anchor_date, '2026-11-02');
   assert.ok(ind.gates.every(g => g.available_from === '2026-11-02' && g.due_date === '2026-11-09' && g.test_timed));
 });
 
@@ -43,12 +43,12 @@ t('the tester is the learner and every owner; no real manager / HOD / buddy / tr
   assert.equal(ind.pause_exempt, true);
 });
 
-t('test training can be completed only 30 seconds after it was started', () => {
+t('test training can be completed only 10 seconds after it was started', () => {
   const now = Date.parse('2026-11-02T10:00:00Z');
-  assert.equal(testWaitLeft({}, now), 30, 'not started');
-  assert.equal(testWaitLeft({ started_at: '2026-11-02T10:00:00Z' }, now), 30);
-  assert.equal(testWaitLeft({ started_at: '2026-11-02T10:00:00Z' }, now + 12000), 18);
-  assert.equal(testWaitLeft({ started_at: '2026-11-02T10:00:00Z' }, now + 30000), 0);
+  assert.equal(testWaitLeft({}, now), 10, 'not started');
+  assert.equal(testWaitLeft({ started_at: '2026-11-02T10:00:00Z' }, now), 10);
+  assert.equal(testWaitLeft({ started_at: '2026-11-02T10:00:00Z' }, now + 4000), 6);
+  assert.equal(testWaitLeft({ started_at: '2026-11-02T10:00:00Z' }, now + 10000), 0);
   assert.equal(testWaitLeft({ started_at: '2026-11-02T10:00:00Z' }, now + 90000), 0);
 });
 
