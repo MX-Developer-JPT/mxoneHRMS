@@ -213,6 +213,7 @@ export default function PayrollAnalytics() {
           <div>
             <h1 className="text-2xl md:text-3xl font-bold">Payroll Analytics</h1>
             <p className="text-gray-600 mt-1 text-sm md:text-base">Analyze payroll trends and insights</p>
+            <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">This older view treats <b>net salary</b> as cost. For the payslip-based analysis — total payroll cost (gross + employer contributions), departments, comparisons and trends — open <a className="underline font-medium" href="/MISIntelligence?tab=payroll">Intelligent MIS → Payroll &amp; compensation</a>.</div>
           </div>
           <div className="flex flex-wrap gap-2">
             <Select value={selectedMonth.toString()} onValueChange={(v) => setSelectedMonth(parseInt(v))}>

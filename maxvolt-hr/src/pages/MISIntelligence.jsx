@@ -6,11 +6,12 @@ import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { mis, downloadBase64, fmtD, todayIST, PERIODS, COMPARES } from '@/lib/mis';
+import PayrollTab from '@/components/misx/PayrollTab';
 import { OverviewTab, AttendanceTab, AbnormalitiesTab, ExceptionsTab, LeaveTab, WorkforceTab, DepartmentsTab, GatePassTab, VisitorsTab, ReimbursementsTab, InsightsTab, DataQualityTab } from '@/components/misx/tabs';
 
 const TABS = [
   ['overview', 'Overview'], ['abnormalities', 'Abnormalities'], ['attendance', 'Attendance'], ['exceptions', 'Exceptions'], ['leave', 'Leave'], ['workforce', 'Workforce & recruitment'],
-  ['departments', 'Departments'], ['gatepass', 'Gate pass'], ['visitors', 'Visitors'], ['reimbursements', 'Reimbursements'], ['insights', 'Insights'], ['quality', 'Data quality'],
+  ['departments', 'Departments'], ['gatepass', 'Gate pass'], ['visitors', 'Visitors'], ['reimbursements', 'Reimbursements'], ['payroll', 'Payroll & compensation'], ['insights', 'Insights'], ['quality', 'Data quality'],
 ];
 const LINK_TAB = { regularisation: 'attendance', workforce: 'workforce', attendance: 'attendance', leave: 'leave', exceptions: 'exceptions', gatepass: 'gatepass', visitors: 'visitors', reimbursements: 'reimbursements', departments: 'departments' };
 const cls = 'h-9 rounded-md border border-gray-300 bg-white px-2 text-sm';
@@ -72,7 +73,8 @@ export default function MISIntelligence() {
       default: return <OverviewTab d={data} setTab={setTab} onOpenInsight={(i) => { setFocusKey(i.key); setTab('insights'); }} />;
     }
   };
-  const visibleTabs = TABS.filter(([id]) => fullAccess || !['visitors', 'reimbursements', 'quality'].includes(id));
+  const visibleTabs = TABS.filter(([id]) => fullAccess || !['visitors', 'reimbursements', 'quality', 'payroll'].includes(id));
+  const isPayroll = tab === 'payroll' && fullAccess;     // payroll has its own period / department controls and its own export
 
   return (
     <div className="p-4 md:p-6 max-w-[1500px] mx-auto space-y-4">
@@ -81,15 +83,15 @@ export default function MISIntelligence() {
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><BarChart3 className="w-6 h-6 text-blue-600" />Intelligent MIS</h1>
           <p className="text-sm text-gray-500">Attendance, leave, workforce, recruitment, gate pass, visitors and reimbursements — one calculation engine for the screen and the exports.</p>
         </div>
-        <div className="flex items-center gap-2">
+        {!isPayroll && <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setShowFilters(s => !s)}><SlidersHorizontal className="w-4 h-4 mr-1.5" />Filters{activeFilters.length ? ` (${activeFilters.length})` : ''}</Button>
           <Button variant="outline" size="sm" onClick={() => load(true)} disabled={loading}><RefreshCw className={`w-4 h-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} />Refresh</Button>
           {fullAccess && <Button size="sm" onClick={() => setExportOpen(true)} disabled={!data}><Download className="w-4 h-4 mr-1.5" />Export</Button>}
-        </div>
+        </div>}
       </div>
 
       {/* period + comparison */}
-      <div className="bg-white border border-gray-200 rounded-xl p-3 flex flex-wrap items-end gap-3">
+      {!isPayroll && <div className="bg-white border border-gray-200 rounded-xl p-3 flex flex-wrap items-end gap-3">
         <Lbl t="Reporting period"><select className={cls} value={params.preset} onChange={e => set({ preset: e.target.value })}>{PERIODS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></Lbl>
         {params.preset === 'custom'
           ? (<><Lbl t="From"><input type="date" className={cls} value={params.from} max={params.to} onChange={e => set({ from: e.target.value })} /></Lbl><Lbl t="To"><input type="date" className={cls} value={params.to} min={params.from} onChange={e => set({ to: e.target.value })} /></Lbl></>)
@@ -103,9 +105,9 @@ export default function MISIntelligence() {
             <div>Data as of {new Date(data.meta.generatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })} IST{data.meta.scoped ? ' · your reporting team only' : ''}</div>
           </div>
         )}
-      </div>
+      </div>}
 
-      {showFilters && (
+      {showFilters && !isPayroll && (
         <div className="bg-white border border-gray-200 rounded-xl p-3 flex flex-wrap items-end gap-3">
           {[['department', 'Department', opts?.departments], ['location', 'Location / plant', opts?.locations], ['category', 'Employee category', opts?.categories], ['employment_status', 'Employment status', opts?.employmentStatuses], ['designation', 'Designation', opts?.designations]].map(([k, l, list]) => (
             <Lbl key={k} t={l}><select className={`${cls} max-w-[200px]`} value={params.filters[k] || 'all'} onChange={e => setFilter(k, e.target.value)}><option value="all">All</option>{(list || []).map(v => <option key={v} value={v}>{v}</option>)}</select></Lbl>
@@ -114,19 +116,20 @@ export default function MISIntelligence() {
           {!!activeFilters.length && <button className="h-9 text-sm text-blue-700 hover:underline" onClick={() => set({ filters: {} })}>Clear filters</button>}
         </div>
       )}
-      {!showFilters && !!activeFilters.length && (
+      {!showFilters && !isPayroll && !!activeFilters.length && (
         <div className="flex flex-wrap items-center gap-2">{activeFilters.map(([k, v]) => <span key={k} className="inline-flex items-center gap-1 text-xs bg-blue-50 border border-blue-200 text-blue-800 rounded-full px-2.5 py-1">{k.replace(/_/g, ' ')}: {k === 'manager' ? (opts?.managers.find(m => m.id === v)?.name || v) : v}<button onClick={() => setFilter(k, 'all')} aria-label={`Remove ${k} filter`}><X className="w-3 h-3" /></button></span>)}</div>
       )}
 
-      {error && (
+      {error && !isPayroll && (
         <div className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 flex items-start gap-2"><AlertTriangle className="w-5 h-5 shrink-0" /><div><b>MIS data could not be retrieved.</b> {error}<div className="text-xs mt-1">No figures are shown for this request — a failed retrieval is never displayed as zeros.{data ? ' The figures below are from the previous successful request, not the one you asked for.' : ''}</div><button className="underline mt-1" onClick={() => load(true)}>Try again</button></div></div>
       )}
 
       <div className="border-b border-gray-200 overflow-x-auto"><div className="flex gap-1 min-w-max">{visibleTabs.map(([id, label]) => <button key={id} onClick={() => setTab(id)} className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 -mb-px ${tab === id ? 'border-blue-600 text-blue-700 font-medium' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>{label}{id === 'insights' && data ? ` (${data.insights.filter(i => !['Resolved', 'Dismissed'].includes(i.status)).length})` : ''}{id === 'abnormalities' && data ? ` (${data.abnormalities.total})` : ''}</button>)}</div></div>
 
+      {isPayroll ? <PayrollTab canCorrect={['hr', 'admin'].includes(role)} /> : (
       <div className={loading && data ? 'opacity-60 pointer-events-none transition-opacity' : ''}>
         {!data && loading ? <div className="flex items-center justify-center py-24 text-gray-400 gap-2"><Loader2 className="w-5 h-5 animate-spin" />Calculating from live records…</div> : body()}
-      </div>
+      </div>)}
 
       {exportOpen && data && <ExportDialog data={data} params={params} onClose={() => setExportOpen(false)} />}
     </div>

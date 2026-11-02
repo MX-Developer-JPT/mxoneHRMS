@@ -6564,6 +6564,62 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, ...(await runSnapshot({ persist: !p.dry_run })) });
     }
 
+    // ── Payslip-based payroll analytics (utils/payrollAnalytics.js): built ONLY from the uploaded payslips' Payroll records ──
+    // HR / admin / management only: it carries every employee's pay. Nothing here calculates or processes salary.
+    case 'getPayrollAnalytics':
+    case 'exportPayrollAnalytics': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR / Management access required' });
+      const pa = await import('../utils/payrollAnalytics.js');
+      // the stored PDF bytes (base64) and the unmapped-file bytes inside upload batches are left out of the query
+      const paRows = (await all("SELECT user_id, (data::jsonb - 'payslip_file_base64')::text AS data FROM entities WHERE type='Payroll'")).map(r => ({ ...JSON.parse(r.data), user_id: r.user_id }));
+      const paEmps = (await all("SELECT user_id, data FROM entities WHERE type='Employee'")).map(r => ({ ...JSON.parse(r.data), user_id: r.user_id }));
+      const paBatches = (await all("SELECT (data::jsonb - 'files')::text AS data FROM entities WHERE type='PayslipUploadBatch'")).map(r => JSON.parse(r.data));
+      const paOut = pa.buildPayrollAnalytics(paRows, paEmps, { mode: p.mode, month: p.month, fy: p.fy, from: p.from, to: p.to, department: p.department }, { batches: paBatches });
+      if (name === 'getPayrollAnalytics') return res.json({ success: true, ...paOut });
+      const { buildPayrollWorkbook } = await import('../utils/payrollExport.js');
+      const paWb = await buildPayrollWorkbook(paOut);
+      const paSafe = paOut.period.label.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '');
+      return res.json({ success: true, base64: Buffer.from(await paWb.xlsx.writeBuffer()).toString('base64'), filename: `Payroll_Analytics_${paSafe}.xlsx` });
+    }
+
+    // HR / admin: correct a figure the extraction got wrong. Every correction is logged on the record (who, when, why, old → new);
+    // the analytics read the record live, so they recalculate by themselves.
+    case 'correctPayslipData': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const cpRow = await one("SELECT id, user_id, data FROM entities WHERE type='Payroll' AND id=$1", [p.payroll_id]);
+      if (!cpRow) return res.status(404).json({ error: 'Payslip record not found' });
+      const cpReason = String(p.reason || '').trim();
+      if (cpReason.length < 5) return res.json({ success: false, error: 'Please say why the figure is being corrected (at least a few words).' });
+      const cpData = JSON.parse(cpRow.data); const cpIn = p.changes || {};
+      const cpNum = (v) => { const x = Number(String(v ?? '').replace(/,/g, '')); return Number.isFinite(x) && x >= 0 && x < 1e9 ? Math.round(x * 100) / 100 : null; };
+      const cpTop = ['gross_salary', 'basic_salary', 'hra', 'conveyance', 'special_allowance', 'incentive', 'overtime', 'bonus', 'total_deductions', 'net_salary', 'loss_of_pay_days'];
+      const cpDed = ['pf', 'esi', 'professional_tax', 'tds', 'loan', 'lop', 'other'], cpEmp = ['pf', 'esi', 'other'];
+      const cpChanges = {}, cpNext = { ...cpData, deductions: { ...(cpData.deductions || {}) }, employer_contributions: { ...(cpData.employer_contributions || {}) } };
+      const cpSet = (path, from, to) => { if (to !== from) cpChanges[path] = { from: from ?? null, to }; };
+      for (const k of cpTop) if (k in cpIn) { const v = cpNum(cpIn[k]); if (v == null) return res.json({ success: false, error: `"${k}" must be a number` }); cpSet(k, cpData[k], v); cpNext[k] = v; }
+      for (const k of cpDed) if (cpIn.deductions && k in cpIn.deductions) { const v = cpNum(cpIn.deductions[k]); if (v == null) return res.json({ success: false, error: `Deduction "${k}" must be a number` }); cpSet(`deductions.${k}`, cpData.deductions?.[k], v); cpNext.deductions[k] = v; }
+      for (const k of cpEmp) if (cpIn.employer_contributions && k in cpIn.employer_contributions) { const v = cpNum(cpIn.employer_contributions[k]); if (v == null) return res.json({ success: false, error: `Employer contribution "${k}" must be a number` }); cpSet(`employer_contributions.${k}`, cpData.employer_contributions?.[k], v); cpNext.employer_contributions[k] = v; }
+      for (const k of ['department', 'designation']) if (typeof cpIn[k] === 'string' && cpIn[k].trim() && cpIn[k].trim() !== (cpData[k] || '')) { cpSet(k, cpData[k], cpIn[k].trim()); cpNext[k] = cpIn[k].trim(); }
+      if (!Object.keys(cpChanges).length) return res.json({ success: false, error: 'Nothing was changed.' });
+      const cpWarnLeft = (cpData.payslip_extraction_warnings || []);
+      cpNext.payslip_corrections = [...(cpData.payslip_corrections || []), { by: cu.id, at: new Date().toISOString(), reason: cpReason, changes: cpChanges }];
+      await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cpNext), cpRow.id]);
+      const cpChk = (cpNext.gross_salary || 0) - (cpNext.total_deductions || 0) - (cpNext.net_salary || 0);
+      return res.json({ success: true, changed: Object.keys(cpChanges).length, reconciles: Math.abs(cpChk) <= 5, difference: Math.round(cpChk * 100) / 100, earlier_warnings: cpWarnLeft.length });
+    }
+
+    // HR / admin: the stored figures of ONE payslip record, for the correction form.
+    case 'getPayslipRecord': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const gpRow = await one("SELECT user_id, (data::jsonb - 'payslip_file_base64')::text AS data FROM entities WHERE type='Payroll' AND id=$1", [p.payroll_id]);
+      if (!gpRow) return res.status(404).json({ error: 'Payslip record not found' });
+      const gp = JSON.parse(gpRow.data);
+      return res.json({ success: true, record: { id: gp.id, user_id: gpRow.user_id, month: gp.month, year: gp.year, employee_code: gp.employee_code, department: gp.department, designation: gp.designation,
+        gross_salary: gp.gross_salary, basic_salary: gp.basic_salary, hra: gp.hra, conveyance: gp.conveyance, special_allowance: gp.special_allowance, incentive: gp.incentive, overtime: gp.overtime, bonus: gp.bonus,
+        deductions: gp.deductions || {}, employer_contributions: gp.employer_contributions || {}, total_deductions: gp.total_deductions, net_salary: gp.net_salary, loss_of_pay_days: gp.loss_of_pay_days,
+        warnings: gp.payslip_extraction_warnings || [], corrections: gp.payslip_corrections || [], file_url: gp.payslip_file_url || null } });
+    }
+
     // ── Intelligent MIS (utils/mis/*): one engine for the dashboard, registers and exports ──
     case 'getMisAnalytics':
     case 'getMisRegister':
