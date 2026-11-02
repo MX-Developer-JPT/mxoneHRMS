@@ -101,6 +101,7 @@ export function AttritionTab({ d }) {
   const co = h.company, pv = h.previous;
   return (
     <div className="space-y-4">
+      {h.historyLimited && <Unavailable>Exits are recorded only from {fmtD(h.firstExit)}. Anyone who left before then is not in the system, so the trailing 12-month and annualised rates below are understated until a full year of exits has been recorded.</Unavailable>}
       <Grid n={5}>
         <Stat label="Exits this period" value={co.exits} sub={`previous period ${pv.exits}`} />
         <Stat label="Attrition rate" value={co.rate == null ? '—' : `${co.rate}%`} sub={`annualised ${co.annualised ?? '—'}% (previous ${pv.annualised ?? '—'}%)`} />
