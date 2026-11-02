@@ -1,6 +1,7 @@
 // Excel + PDF exports for the Intelligent MIS. Both are built from the SAME result object the dashboard shows
 // (utils/mis/analytics.js), so totals can never differ between screen and file.
 import { fmtD } from './calendar.js';
+import { addPayrollSheets } from '../payrollExport.js';
 
 const NAVY = 'FF1A3C5E', BLUE = 'FF2D5986', LIGHT = 'FFEEF2F7', GREY = 'FF6B7280';
 const SEV_FILL = { Critical: 'FFFECACA', High: 'FFFED7AA', Medium: 'FFFEF08A', Low: 'FFE5E7EB', Informational: 'FFDBEAFE' };
@@ -34,6 +35,7 @@ export function buildNarrative(res) {
   { const ab = res.abnormalities; out.push({ h: 'Abnormalities', t: `${ab.total} abnormalit${ab.total === 1 ? 'y was' : 'ies were'} flagged for verification: ${ab.bySeverity.Critical} critical, ${ab.bySeverity.High} high, ${ab.bySeverity.Medium} medium and ${ab.bySeverity.Low} low. Most flagged areas: ${[...ab.byDomain].filter(x => x.total).sort((a, b) => b.total - a.total).slice(0, 4).map(x => `${x.domain} ${x.total}`).join(', ')}.${ab.hotDepartments.length ? ` Departments with the most high-severity flags: ${ab.hotDepartments.slice(0, 3).map(x => `${x.dept} (${x.serious})`).join(', ')}.` : ''} The Abnormalities sheet lists each one with what was observed, what it was compared with, why it was raised and what to do.` }); }
   const bad = res.dataQuality.filter(d => d.count && ['High', 'Critical'].includes(d.sev));
   out.push({ h: 'Data quality', t: `${res.reconciliation.every(r => r.ok) ? 'All reconciliation checks pass' : `${res.reconciliation.filter(r => !r.ok).length} reconciliation check(s) FAILED`}. ${bad.length ? `High-severity data issues: ${bad.slice(0, 4).map(d => `${d.title} (${d.count})`).join('; ')}.` : 'No high-severity data issues.'}` });
+  if (res.hr?.payroll) { const p = res.hr.payroll; out.push({ h: 'Payroll', t: `Total payroll cost for ${p.month} was ${rs(p.cost)}${p.momPct != null ? `, ${p.momPct > 0 ? 'up' : 'down'} ${Math.abs(p.momPct)}% on the previous month (${rs(p.prevCost)})` : ''}, for ${p.headcount} employee(s) on the uploaded payslips. Total cost = gross salary + employer contributions; employee deductions are not an extra cost.` }); }
   const top = res.insights.filter(i => i.status !== 'Dismissed' && i.severity !== 'Informational').slice(0, 4);
   if (top.length) out.push({ h: 'Needs attention', t: top.map(i => `${i.title} — ${i.action}`).join('  ·  ') });
   return out;
@@ -278,6 +280,11 @@ export async function buildMisIntelligenceWorkbook(res, registers, ExcelJS, opts
   ws.getColumn(1).width = Math.max(ws.getColumn(1).width || 0, 60);
 
 
+  // Payroll & compensation (from the uploaded payslips, for the SELECTED period) — HR / management only
+  { const PA = registers?.payroll_analytics;
+    if (PA && PA.empty) { ws = top('Payroll', 'Payroll & compensation'); note(ws, `No payslips are uploaded for ${PA.label}${PA.anyPayslips ? ' — payslips exist for other months; pick a period that includes them.' : ' yet.'}`); }
+    else if (PA) addPayrollSheets(wb, PA, 'Payroll - '); }
+
   // HR lifecycle sheets (HR / management only: res.hr is null for a team-scoped manager)
   if (res.hr) {
     const H = res.hr, Pb = H.probation, Lt = H.letters, At = H.attrition, Ln = H.loans, Lc = H.lifecycle, Rp = H.recruitment;
@@ -475,6 +482,19 @@ export function buildMisIntelligencePdf(res, registers, opts = {}) {
   { const ab = res.abnormalities; content.push({ text: 'Abnormalities detected', style: 'h' }); content.push({ text: `${ab.total} flagged — ${ab.bySeverity.Critical} critical, ${ab.bySeverity.High} high, ${ab.bySeverity.Medium} medium, ${ab.bySeverity.Low} low. Indicators to verify, not findings about conduct; the Excel report lists all of them.`, fontSize: 8.5, margin: [0, 0, 0, 4] });
     content.push(tbl(['Area', 'Total', 'Critical', 'High', 'Medium', 'Low'], ab.byDomain.map(x => [x.domain, x.total, x.Critical, x.High, x.Medium, x.Low]), [140, 55, 55, 55, 55, 55]));
     content.push(tbl(['Severity', 'Area', 'Abnormality', 'Who / what', 'Observed', 'What to do'], ab.top.filter(x => ['Critical', 'High'].includes(x.sev)).slice(0, 25).map(x => [x.sev, x.domain, x.type, `${x.subject} ${x.code}`.trim(), `${x.observed}${x.baseline ? ' vs ' + x.baseline : ''}`, x.action]), [42, 55, 95, 90, 100, 90], { sevCol: 0, max: 25 })); }
+  { const PA = registers?.payroll_analytics;
+    if (PA && !PA.empty) {
+      const S = PA.summary, cp = PA.comparison.previous, rsx = (v) => `Rs. ${Math.round(v || 0).toLocaleString('en-IN')}`, pc = (v) => (v == null ? 'n/a' : `${v > 0 ? '+' : ''}${v}%`);
+      content.push({ text: 'Payroll & compensation', style: 'h', pageBreak: 'before' });
+      content.push({ text: `${PA.period.label} — read from the uploaded payslips. Total payroll cost = gross salary + employer contributions; net salary is take-home; employee deductions are not an extra cost. Compared with ${PA.period.prev_label}.`, fontSize: 8, color: C.grey, margin: [0, 0, 0, 6] });
+      content.push(tbl(['Measure', PA.period.label, PA.period.prev_label, 'Change'], [['Total payroll cost', rsx(S.cost), rsx(PA.previous.cost), pc(cp.cost.pct)], ['Gross salary', rsx(S.gross), rsx(PA.previous.gross), pc(cp.gross.pct)], ['Net salary disbursed', rsx(S.net), rsx(PA.previous.net), pc(cp.net.pct)], ['Employee deductions (not a cost)', rsx(S.deductions), rsx(PA.previous.deductions), ''], ['Employer contributions', rsx(S.employer), rsx(PA.previous.employer), ''], ['Employees on payroll', S.headcount, PA.previous.headcount, pc(cp.headcount.pct)], ['Average gross per employee', rsx(S.avg_gross), rsx(PA.previous.avg_gross), pc(cp.avg_gross.pct)]], [160, 110, 110, 70]));
+      content.push({ text: 'Department-wise payroll cost', style: 'h2' });
+      content.push(tbl(['Department', 'Employees', 'Total cost', 'Share', 'Avg gross', 'vs previous'], PA.departments.slice(0, 15).map(d => [d.department, d.headcount, rsx(d.cost), `${d.share_pct}%`, rsx(d.avg_gross), d.prev_cost ? pc(d.variance_pct) : 'new']), [130, 55, 95, 45, 80, 60]));
+      const md = PA.movements.drivers;
+      if (PA.movements.has_base) content.push({ text: `${PA.movements.label} against ${PA.movements.base_label}: joiners added ${rsx(md.joiners_cost)} (${PA.movements.counts.joiners}), exits removed ${rsx(Math.abs(md.exits_cost))} (${PA.movements.counts.exits}), employees who stayed moved ${md.existing_change >= 0 ? '+' : '-'}${rsx(Math.abs(md.existing_change))}; ${PA.movements.counts.significant} individual change(s) of 10% or more.`, fontSize: 8, margin: [0, 4, 0, 4] });
+      if (PA.forecast?.available) content.push({ text: `Straight-line projection of recent payslip cost: ${PA.forecast.points.map(p => `${p.label} ${rsx(p.cost)}`).join(', ')} (a projection of past payroll, not a budget).`, fontSize: 8, color: C.grey });
+      if (PA.data_quality.flagged_count) content.push({ text: `${PA.data_quality.flagged_count} payslip record(s) have missing or inconsistent figures and are included as extracted; ${PA.data_quality.missing_payslips.count} active employee(s) have no payslip for ${PA.data_quality.missing_payslips.month}.`, fontSize: 8, color: C.grey, margin: [0, 2, 0, 0] });
+    } else if (PA?.empty) { content.push({ text: 'Payroll & compensation', style: 'h' }); content.push({ text: `No payslips are uploaded for ${PA.label}.`, fontSize: 8, color: C.grey }); } }
   content.push({ text: 'Attendance', style: 'h', pageBreak: 'before' });
   { const pe = A.people, av = pe.avg, pv = pe.prevAvg; content.push({ text: 'On an average working day', style: 'h2' }); content.push(tbl(['Situation', 'People per day', '% of scheduled', 'Previous period'], [['Scheduled to work', av.scheduled], ['Present in office', av.present], ['Absent', av.absent], ['On approved leave', av.leave], ['Work from home', av.wfh], ['On duty (field / client)', av.od], ['Half-day', av.half], ['Late', av.late], ['No record / incomplete', av.missing]].map(([l, v], i) => [l, v, i && av.scheduled ? `${Math.round(v / av.scheduled * 1000) / 10}%` : (i ? 'n/a' : '100%'), pv ? [pv.scheduled, pv.present, pv.absent, pv.leave, pv.wfh, pv.od, pv.half, pv.late, pv.missing][i] : 'n/a']), [150, 90, 90, 90]));
     content.push({ text: `${pe.workingDays} working day(s). ${pe.perfect} of ${pe.employeesTracked} employees had a perfect record (no absence, no late arrival, no missing record). Absent days per person: ${Object.entries(pe.absentBands).map(([k, v]) => `${k}: ${v}`).join(', ')}.`, fontSize: 8, color: C.grey, margin: [0, 0, 0, 6] });

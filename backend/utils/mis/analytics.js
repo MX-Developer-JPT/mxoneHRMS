@@ -1051,7 +1051,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
   let insights = buildInsights({ ctx, model, scope, period, cmp, cur, prev, noLeave, exceptions, today });
   // HR lifecycle analytics (probation, letters, attrition, loans, lifecycle, recruitment extras): HR / management only — a manager's
   // team-scoped view never carries them (restrictUids is set for managers).
-  let hr = null;
+  let hr = null, payrollForExport = null;
   if (!restrictUids) {
     const hx = await loadHrExtras();
     hr = {
@@ -1061,10 +1061,21 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
     };
     // payroll findings come from the uploaded payslips (same engine as Payroll & compensation); only when no department / person filter narrows the view
     let pay = null;
-    if (!scope.anyFilter) {
+    // a department filter alone can be applied to payroll too (the payslip carries its department); any other filter cannot
+    const fl = Object.entries(params.filters || {}).filter(([, v]) => v && v !== 'all');
+    const payDept = fl.length === 1 && fl[0][0] === 'department' ? fl[0][1] : null;
+    if (!scope.anyFilter || payDept) {
       try {
         const pRows = (await all("SELECT user_id, (data::jsonb - 'payslip_file_base64')::text AS data FROM entities WHERE type='Payroll'")).map(r => ({ ...JSON.parse(r.data), user_id: r.user_id }));
-        pay = buildPayrollAnalytics(pRows, ctx.employees.map(e => ({ ...e, user_id: e.user_id })), { mode: 'month' }, { batches: [] });
+        const payEmps = ctx.employees.map(e => ({ ...e, user_id: e.user_id }));
+        const payBatches = (await all("SELECT (data::jsonb - 'files')::text AS data FROM entities WHERE type='PayslipUploadBatch'")).map(r => JSON.parse(r.data));
+        const dept = payDept ? { department: payDept } : {};
+        pay = buildPayrollAnalytics(pRows, payEmps, { mode: 'month', ...dept }, { batches: [] });   // latest month with payslips — what the findings talk about
+        // the figures that go into the export follow the SELECTED period (month / financial year / any other range)
+        const pm = (d) => String(d).slice(0, 7);
+        const pp = period.preset === 'fy' ? { mode: 'fy', fy: Number(period.from.slice(0, 4)) } : ['daily', 'weekly', 'monthly'].includes(period.preset) ? { mode: 'month', month: pm(period.to) } : { mode: 'custom', from: pm(period.from), to: pm(period.to) };
+        const pe = buildPayrollAnalytics(pRows, payEmps, { ...pp, ...dept }, { batches: payBatches });
+        payrollForExport = pe.summary.records > 0 ? pe : { empty: true, label: pe.period.label, anyPayslips: pe.available_months.length > 0 };
         hr.payroll = pay.available_months.length ? { month: pay.summary.last_month.label, cost: pay.summary.last_month.cost, prevCost: pay.summary.last_month.prev_cost, momPct: pay.summary.mom_growth_pct, headcount: pay.summary.last_month.headcount, forecast: pay.forecast?.available ? pay.forecast.points[0] : null } : null;
       } catch (e) { console.warn('[mis] payroll findings skipped:', e.message); }
     }
@@ -1109,6 +1120,7 @@ export async function runAnalytics(params, user, { restrictUids = null, fresh = 
   if (period.elapsed) limitations.unshift(`The selected period has not finished: figures cover ${fmtD(from)} to ${fmtD(to)} (elapsed days only) and the comparison is cut to the same number of days.`);
 
   const registers = {
+    payroll_analytics: payrollForExport,
     regularisation: regD.rows, gatepass: gpD.rows, gatepass_exceptions: gpD.exceptions, leave: leaveD.rows, exceptions, leave_patterns: patterns,
     vacancies: cur.rc.rowsReq, visitors: vsD.rows, reimbursements: cur.rb.rows, reimbursement_issues: cur.rb.issues, visitor_issues: vsD.issues, data_quality: dq.flatMap(d => d.samples.map(s => ({ check: d.title, record: s, source: d.source }))),
     abnormalities: abnList, ...Object.fromEntries(ABN_DOMAINS.map(d => [`abn_domain_${slug(d)}`, abnList.filter(x => x.domain === d)])), ...Object.fromEntries(['Critical', 'High', 'Medium', 'Low'].map(s => [`abn_sev_${s}`, abnList.filter(x => x.sev === s)])),

@@ -10,6 +10,14 @@ const INR = '#,##0;[Red]-#,##0';
 
 export async function buildPayrollWorkbook(a) {
   const wb = new ExcelJS.Workbook(); wb.creator = 'Maxvolt One'; wb.created = new Date();
+  addPayrollSheets(wb, a);
+  return wb;
+}
+
+// The six payroll sheets, added to any workbook (the stand-alone payroll export and the Intelligent MIS export share them,
+// so the figures can never differ). `prefix` keeps the sheet names apart inside the MIS workbook.
+export function addPayrollSheets(wb, a, prefix = '') {
+  const nm = (n) => `${prefix}${n}`.slice(0, 31);
   const title = (ws, text, sub, cols) => {
     ws.mergeCells(1, 1, 1, cols); ws.mergeCells(2, 1, 2, cols);
     Object.assign(ws.getCell(1, 1), { value: text, font: { name: FONT, bold: true, size: 15, color: { argb: 'FFFFFFFF' } }, fill: solid(NAVY), alignment: { vertical: 'middle', indent: 1 } });
@@ -24,7 +32,7 @@ export async function buildPayrollWorkbook(a) {
   const cmpP = a.comparison.previous, cmpY = a.comparison.year_ago, s = a.summary;
 
   // Summary
-  const ws0 = wb.addWorksheet('Summary', { views: [{ showGridLines: false }], properties: { tabColor: { argb: NAVY } } });
+  const ws0 = wb.addWorksheet(nm('Summary'), { views: [{ showGridLines: false }], properties: { tabColor: { argb: NAVY } } });
   ws0.columns = [{ width: 38 }, { width: 18 }, { width: 18 }, { width: 14 }, { width: 18 }, { width: 14 }];
   title(ws0, `Payroll & compensation — ${a.period.label}`, sub, 6);
   ws0.addRow([]);
@@ -45,7 +53,7 @@ export async function buildPayrollWorkbook(a) {
   for (const i of a.insights) { ws0.mergeCells(r0, 1, r0, 6); Object.assign(ws0.getCell(r0, 1), { value: (i.level === 'warn' ? '⚠ ' : '• ') + i.text, font: { name: FONT, size: 10.5 }, alignment: { wrapText: true, vertical: 'top' } }); ws0.getRow(r0).height = 32; r0++; }
 
   // Departments
-  const wd = wb.addWorksheet('Departments', { properties: { tabColor: { argb: BLUE } } });
+  const wd = wb.addWorksheet(nm('Departments'), { properties: { tabColor: { argb: BLUE } } });
   const dh = ['Department', 'Headcount', 'Gross salary', 'Net salary', 'Employer contributions', 'Total payroll cost', 'Avg gross / employee', 'Share of cost %', 'Previous cost', 'Variance', 'Variance %', 'Year-ago variance %'];
   title(wd, `Department-wise payroll cost — ${a.period.label}`, sub, dh.length); wd.addRow([]); head(wd.addRow(dh));
   body(wd, 5, a.departments.map(d => [d.department, d.headcount, d.gross, d.net, d.employer, d.cost, d.avg_gross, d.share_pct, d.prev_cost, d.variance, d.variance_pct, d.yoy_variance_pct]), [null, '0', INR, INR, INR, INR, INR, '0.0', INR, INR, '0.0', '0.0']);
@@ -53,7 +61,7 @@ export async function buildPayrollWorkbook(a) {
   wd.views = [{ state: 'frozen', ySplit: 4, showGridLines: false }];
 
   // Trend
-  const wt = wb.addWorksheet('Monthly trend', { properties: { tabColor: { argb: 'FF5B9BD5' } } });
+  const wt = wb.addWorksheet(nm('Monthly trend'), { properties: { tabColor: { argb: 'FF5B9BD5' } } });
   const th = ['Month', 'Headcount', 'Gross salary', 'Net salary', 'Employee deductions', 'Employer contributions', 'Total payroll cost', 'Avg gross / employee', 'Cost change vs previous month %'];
   title(wt, 'Monthly payroll trend', sub, th.length); wt.addRow([]); head(wt.addRow(th));
   body(wt, 5, a.trend.filter(t => t.has_data).map(t => [t.label, t.headcount, t.gross, t.net, t.deductions, t.employer, t.cost, t.avg_gross, t.mom_pct]), [null, '0', INR, INR, INR, INR, INR, INR, '0.0']);
@@ -61,14 +69,14 @@ export async function buildPayrollWorkbook(a) {
   wt.views = [{ state: 'frozen', ySplit: 4, showGridLines: false }];
 
   // Year on year
-  const wy = wb.addWorksheet('Year on year', { properties: { tabColor: { argb: 'FF5B9BD5' } } });
+  const wy = wb.addWorksheet(nm('Year on year'), { properties: { tabColor: { argb: 'FF5B9BD5' } } });
   const yh = ['Period', 'Headcount', 'Total payroll cost', 'Gross salary', 'Net salary', 'Avg gross / employee', 'Cost growth %', 'Headcount growth %', 'Avg salary growth %'];
   title(wy, a.period.mode === 'month' ? 'Same month, every year' : 'Financial years', sub, yh.length); wy.addRow([]); head(wy.addRow(yh));
   body(wy, 5, a.yoy_table.map(r => [r.label, r.headcount, r.cost, r.gross, r.net, r.avg_gross, r.growth_pct, r.headcount_growth_pct, r.avg_growth_pct]), [null, '0', INR, INR, INR, INR, '0.0', '0.0', '0.0']);
   [18, 11, 17, 16, 16, 16, 13, 16, 16].forEach((w, i) => { wy.getColumn(i + 1).width = w; });
 
   // Movements
-  const wm = wb.addWorksheet('Employee movements', { properties: { tabColor: { argb: 'FFB45309' } } });
+  const wm = wb.addWorksheet(nm('Employee movements'), { properties: { tabColor: { argb: 'FFB45309' } } });
   const mh = ['Movement', 'Code', 'Employee', 'Department', `Gross ${a.movements.base_label || 'previous'}`, `Gross ${a.movements.label || 'current'}`, 'Change', 'Change %'];
   title(wm, `Employee cost movements — ${a.movements.label} vs ${a.movements.base_label}`, `Joiners, exits, increments, decreases and significant changes (±10% and ₹2,000 or more). ${sub}`, mh.length); wm.addRow([]); head(wm.addRow(mh));
   const mv = a.movements, mrows = [];
@@ -82,10 +90,9 @@ export async function buildPayrollWorkbook(a) {
   wm.views = [{ state: 'frozen', ySplit: 4, showGridLines: false }]; if (mrows.length) wm.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: mh.length } };
 
   // Data review
-  const wq = wb.addWorksheet('Data review', { properties: { tabColor: { argb: 'FFC0392B' } } });
+  const wq = wb.addWorksheet(nm('Data review'), { properties: { tabColor: { argb: 'FFC0392B' } } });
   const qh = ['Month', 'Code', 'Employee', 'Department', 'Gross', 'Net', 'Corrected', 'Issues'];
   title(wq, 'Payslip records to review', `${a.data_quality.flagged_count} flagged of ${a.data_quality.records} records in ${a.period.label}. ${a.data_quality.missing_payslips.count} active employee(s) have no payslip for ${a.data_quality.missing_payslips.month}.`, qh.length); wq.addRow([]); head(wq.addRow(qh));
   body(wq, 5, a.data_quality.flagged.map(f => [f.label, f.code, f.name, f.department, f.gross, f.net, f.corrected ? 'Yes' : '', [...f.issues, ...f.warnings].join('; ')]), [null, null, null, null, INR, INR, null, null]);
   [12, 12, 26, 22, 14, 14, 11, 80].forEach((w, i) => { wq.getColumn(i + 1).width = w; });
-  return wb;
 }
