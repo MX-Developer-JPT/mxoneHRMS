@@ -7,6 +7,7 @@ import RecruiterDashboard from '../components/dashboard/RecruiterDashboard';
 import FrontDeskDashboard from '../components/dashboard/FrontDeskDashboard';
 import LdTrainerDashboard from '../components/dashboard/LdTrainerDashboard';
 import AnnouncementsPanel from '../components/dashboard/AnnouncementsPanel';
+import DiwaliTheme from '../components/festive/DiwaliTheme';   // temporary festive dressing; switches itself off by date
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
@@ -31,6 +32,7 @@ export default function Dashboard() {
   // Announcements come first on every role's dashboard.
   return (
     <>
+      <DiwaliTheme />
       <AnnouncementsPanel user={user} width={wide ? 'max-w-7xl' : 'max-w-6xl'} />
       {body}
     </>
