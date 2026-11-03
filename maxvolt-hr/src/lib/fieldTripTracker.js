@@ -79,20 +79,35 @@ async function getCapacitor() {
 // (logFieldPoints) re-derives distance from scratch against the trip's real
 // last-stored point, so this is a pre-filter for upload volume, not the
 // authoritative distance calculation.
-function handleFix(lat, lng, accuracy, timeMs) {
+let lastFix = null;      // newest usable fix, used for the liveness heartbeat
+function handleFix(lat, lng, accuracy, timeMs, speed) {
   liveAccuracy = accuracy != null ? Math.round(accuracy) : null;
   notify();
-  if (accuracy != null && accuracy > 60) return; // poor fix — never contributes distance
+  // The server (utils/fieldTrip.js) is the one place that decides what counts as distance — accuracy gate, jump
+  // rejection, parked-GPS-wander and corner handling. The phone only drops hopeless fixes and exact repeats, and
+  // sends the reported speed so the server can tell "standing still" from "moving slowly".
+  if (accuracy != null && accuracy > 100) return;
   const q = { lat, lng, acc: accuracy || 0, t: new Date(timeMs || Date.now()).toISOString() };
+  if (Number.isFinite(speed) && speed >= 0) q.sp = Math.round(speed * 10) / 10;
+  lastFix = q;
   const prev = buffer[buffer.length - 1];
   if (prev) {
     const R = 6371000, la1 = prev.lat * Math.PI / 180, la2 = q.lat * Math.PI / 180;
     const dLa = la2 - la1, dLo = (q.lng - prev.lng) * Math.PI / 180;
     const dM = 2 * R * Math.asin(Math.sqrt(Math.sin(dLa / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLo / 2) ** 2));
-    if (dM < Math.max(15, Math.min(50, (prev.acc + q.acc) / 2))) return; // below GPS noise floor
+    if (dM < 4) return; // an exact repeat
   }
   buffer.push(q);
   persistBuffer();
+}
+
+// Standing still produces no new points, so once a minute tell the server where the phone is (liveness only —
+// the server never adds a heartbeat to the trail or the distance).
+let lastBeatAt = 0;
+function heartbeatIfIdle() {
+  if (buffer.length || !lastFix || Date.now() - lastBeatAt < 55000) return;
+  lastBeatAt = Date.now();
+  buffer.push({ ...lastFix, t: new Date().toISOString(), hb: true });
 }
 
 export async function startTracking(tripId, initialKm = 0) {
@@ -126,12 +141,12 @@ export async function startTracking(tripId, initialKm = 0) {
           backgroundMessage: 'Recording your travel distance for this field trip.',
           requestPermissions: true,
           stale: false,
-          distanceFilter: 15, // matches the GPS noise-floor threshold above
+          distanceFilter: 8, // dense fixes so corners and slow city driving keep their shape; the server filters noise
         },
         (location, error) => {
           if (error) { console.warn('[fieldTripTracker] native watcher error:', error.code, error.message); return; }
           if (!location) return;
-          handleFix(location.latitude, location.longitude, location.accuracy, location.time);
+          handleFix(location.latitude, location.longitude, location.accuracy, location.time, location.speed);
         }
       );
       flushTimer = setInterval(flushNow, 20000);
@@ -149,7 +164,7 @@ export async function startTracking(tripId, initialKm = 0) {
   if ('wakeLock' in navigator) navigator.wakeLock.request('screen').then(wl => { wakeLock = wl; }).catch(() => {});
 
   watchId = navigator.geolocation.watchPosition(
-    (pos) => handleFix(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, pos.timestamp),
+    (pos) => handleFix(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, pos.timestamp, pos.coords.speed),
     () => {},
     { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
   );
@@ -158,6 +173,7 @@ export async function startTracking(tripId, initialKm = 0) {
 }
 
 export async function flushNow() {
+  heartbeatIfIdle();
   if (!buffer.length || !currentTripId || flushing) return null;
   flushing = true;
   const tripId = currentTripId;
@@ -191,6 +207,7 @@ export async function stopTracking() {
   if (flushTimer) { clearInterval(flushTimer); flushTimer = null; }
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   buffer = [];
+  lastFix = null;
   currentTripId = null;
   persistBuffer();
   window.removeEventListener('online', onWake);

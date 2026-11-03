@@ -4823,48 +4823,9 @@ router.post('/:name', async (req, res) => {
       const ft = JSON.parse(ftRow.data);
       if (ft.status !== 'active') return res.json({ success: false, error: 'Trip is not active' });
 
-      const havKm = (a, b) => {
-        const R = 6371, dLat = (b.lat - a.lat) * Math.PI / 180, dLng = (b.lng - a.lng) * Math.PI / 180;
-        const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-        return 2 * R * Math.asin(Math.sqrt(s));
-      };
-      // Filter jitter/jumps, accumulate distance from the last stored point
-      let last = ft.points.length ? ft.points[ft.points.length - 1] : null;
-      let addedKm = 0;
-      const clean = [];
-      // Oldest first, and never re-apply a point at/before the last stored one —
-      // a retried upload (response lost) must not double-count distance.
-      const sortedPts = [...points].sort((a, b) => new Date(a?.t || 0) - new Date(b?.t || 0));
-      for (const pt of sortedPts) {
-        const q = { lat: Number(pt.lat), lng: Number(pt.lng), t: pt.t || new Date().toISOString(), acc: Number(pt.acc || 0) };
-        if (!isFinite(q.lat) || !isFinite(q.lng)) continue;
-        if (last && pt.t && new Date(q.t) <= new Date(last.t)) continue;
-        if (q.acc > 60) continue;                                    // poor GPS fix — don't let it add distance
-        if (last) {
-          const dKm = havKm(last, q);
-          const dtH = Math.max((new Date(q.t) - new Date(last.t)) / 3600000, 1 / 3600);
-          // Movement must exceed combined GPS uncertainty — kills stationary drift
-          // (parked at a client site, points wobble ±acc without real travel)
-          const minMoveM = Math.max(15, Math.min(50, (last.acc + q.acc) / 2));
-          if (dKm * 1000 < minMoveM) continue;
-          if (dKm / dtH > 120) continue;                             // > 120 km/h — GPS jump
-          addedKm += dKm;
-        }
-        clean.push(q);
-        last = q;
-      }
-      // Keep the trail bounded: up to 6,000 points (a point every ~15-50 m, so a ~150 km route keeps its real shape);
-      // beyond that only the older part is thinned, never the recent stretch.
-      let allPts = [...ft.points, ...clean];
-      if (allPts.length > 6000) allPts = allPts.filter((_, i) => i % 2 === 0 || i >= allPts.length - 2000);
-      // Live position: the newest usable fix, kept even when it adds no distance (parked at a client site) so a
-      // stationary employee still shows as "here, a minute ago" on the live map.
-      let livePos = ft.last_pos || null;
-      for (const pt of sortedPts) {
-        const lat = Number(pt?.lat), lng = Number(pt?.lng), acc = Number(pt?.acc || 0), t = pt?.t || new Date().toISOString();
-        if (isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && acc <= 200 && (!livePos || new Date(t) >= new Date(livePos.t))) livePos = { lat, lng, acc, t };
-      }
-      const upd = { ...ft, points: allPts, last_pos: livePos, point_count: (ft.point_count || 0) + clean.length, distance_km: Math.round(((ft.distance_km || 0) + addedKm) * 100) / 100, last_point_at: new Date().toISOString() };
+      // All filtering / distance rules live in utils/fieldTrip.js (tested with simulated trips).
+      const { processPoints } = await import('../utils/fieldTrip.js');
+      const { trip: upd } = processPoints(ft, points);
       await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
       return res.json({ success: true, distance_km: upd.distance_km, points_stored: upd.point_count });
     }
@@ -4888,6 +4849,7 @@ router.post('/:name', async (req, res) => {
     case 'getFieldTrips': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const rates = await getFieldRates();
+      const { tripQuality: tripQualityFn } = await import('../utils/fieldTrip.js');
       const isMgmtUser = await hasRole(cu, MGR_ROLES);
       const isTeamManager = !isMgmtUser && await hasRole(cu, ['manager']);
       let rows;
@@ -4907,7 +4869,7 @@ router.post('/:name', async (req, res) => {
       const trips = rows.map(r => {
         const d = JSON.parse(r.data);
         const { points, ...rest } = d;
-        return { ...rest, employee: empBy[r.user_id] || {}, trail_points: (points || []).length };
+        return { ...rest, employee: empBy[r.user_id] || {}, trail_points: (points || []).length, quality: tripQualityFn(d) };
       });
       return res.json({ success: true, trips, rates, is_hr: isMgmtUser, can_manage: isMgmtUser || isTeamManager });
     }
@@ -4943,7 +4905,7 @@ router.post('/:name', async (req, res) => {
       const ttOk = ttRow.user_id === cu.id || await hasRole(cu, MGR_ROLES) || (await hasRole(cu, ['manager']) && (await getVisibleUserIds(cu)).includes(ttRow.user_id));
       if (!ttOk) return res.status(403).json({ error: 'Access denied' });
       const tt = JSON.parse(ttRow.data);
-      return res.json({ success: true, trip: { id: tt.id, date: tt.date, status: tt.status, start_time: tt.start_time, end_time: tt.end_time || null, distance_km: tt.distance_km || 0, purpose: tt.purpose || '', vehicle_type: tt.vehicle_type }, points: (tt.points || []).map(x => ({ lat: x.lat, lng: x.lng, t: x.t })), last_pos: tt.last_pos || null });
+      return res.json({ success: true, trip: { id: tt.id, date: tt.date, status: tt.status, start_time: tt.start_time, end_time: tt.end_time || null, distance_km: tt.distance_km || 0, purpose: tt.purpose || '', vehicle_type: tt.vehicle_type }, points: (tt.points || []).map(x => ({ lat: x.lat, lng: x.lng, t: x.t, g: x.g ? 1 : undefined })), last_pos: tt.last_pos || null, quality: (await import('../utils/fieldTrip.js')).tripQuality(tt), stats: tt.stats || null });
     }
 
     case 'setFieldRate': {

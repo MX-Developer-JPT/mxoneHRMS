@@ -403,7 +403,9 @@ export default function FieldDuty() {
                         {t.source === 'od_attendance' && <Badge className="bg-indigo-100 text-indigo-700 text-[10px] mr-1.5 align-middle">AUTO · OD</Badge>}
                         {t.purpose || '—'}
                       </td>
-                      <td className="px-4 py-2.5 text-right font-medium">{fmtKm(t.distance_km)}</td>
+                      <td className="px-4 py-2.5 text-right font-medium">{fmtKm(t.distance_km)}
+                        {t.quality && t.quality.level !== 'none' && t.quality.level !== 'legacy' && <p title={`${t.quality.gap_count} signal gap(s) covering about ${t.quality.gap_km} km are drawn as straight lines; ${t.quality.weak_fix_pct}% of GPS fixes were too weak to use`} className={`text-[10px] font-normal ${t.quality.level === 'good' ? 'text-green-600' : t.quality.level === 'fair' ? 'text-amber-600' : 'text-red-600'}`}>{t.quality.label}{t.quality.gap_km > 0 ? ` · ${t.quality.gap_km} km est.` : ''}</p>}
+                      </td>
                       <td className="px-4 py-2.5 text-right text-gray-700">{t.claimed ? fmt(t.claim_amount) : rate > 0 ? fmt((t.distance_km || 0) * rate + (t.toll_parking_amount || 0)) : '—'}</td>
                       <td className="px-4 py-2.5 text-center">
                         {t.status === 'active' ? <Badge className="bg-orange-100 text-orange-700">LIVE</Badge>
@@ -442,6 +444,7 @@ export default function FieldDuty() {
             : routeData.error ? <p className="text-sm text-red-600 py-6">{routeData.error}</p>
             : <div className="space-y-2">
                 <RouteMap points={routeData.points} lastPos={routeData.last_pos} />
+                {routeData.quality && routeData.quality.gap_count > 0 && <p className="text-xs rounded-md bg-amber-50 border border-amber-200 text-amber-800 p-2">GPS signal was lost {routeData.quality.gap_count} time(s). About {routeData.quality.gap_km} km of this route is a straight line across the gap, so the real road distance there may be longer.</p>}
                 <p className="text-xs text-gray-500">{fmtKm(routeData.trip.distance_km)} · {routeData.points.length} recorded points{routeData.trip.status === 'active' ? ' · live, refreshing every 20 seconds' : ''}. Green = start, red = {routeData.trip.status === 'active' ? 'latest position' : 'last recorded position'}.</p>
               </div>}
         </DialogContent>
