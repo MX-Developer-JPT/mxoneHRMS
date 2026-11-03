@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { safeDate, safeTime } from '@/lib/dateUtils';
-import { generateVisitorPassImage, downloadBlob, shareOrDownloadPass } from '@/lib/visitorPass';
+import { generateVisitorPassImage, downloadPass, sharePass } from '@/lib/visitorPass';
 import { toast } from 'sonner';
 import {
   UserPlus, Users, Check, X, ChevronsUpDown, Car, MapPin, Clock,
@@ -166,15 +166,25 @@ export default function MyVisitors() {
     setQrVisitor(null); setPassImageUrl(null); setPassBlob(null);
   };
 
-  const handleDownloadPass = () => {
-    if (!passBlob || !qrVisitor) return;
-    downloadBlob(passBlob, `Visitor_Pass_${qrVisitor.visitor_name.replace(/\s+/g, '_')}.png`);
+  const [passBusy, setPassBusy] = useState(false);
+  const handleDownloadPass = async () => {
+    if (!passBlob || !qrVisitor || passBusy) return;
+    setPassBusy(true);
+    try {
+      const r = await downloadPass(passBlob, `Visitor_Pass_${qrVisitor.visitor_name.replace(/\s+/g, '_')}.png`);
+      if (r === 'opened') toast.info('The pass opened in your browser — it downloads there (or press and hold the image to save it)');
+    } catch (e) { toast.error(e.message || 'Could not download the pass'); }
+    setPassBusy(false);
   };
 
   const handleSharePass = async () => {
-    if (!passBlob || !qrVisitor) return;
-    const result = await shareOrDownloadPass(passBlob, `Visitor_Pass_${qrVisitor.visitor_name.replace(/\s+/g, '_')}.png`, `Visitor Pass — ${qrVisitor.visitor_name}`);
-    if (result === 'downloaded') toast.info('Sharing not supported here — pass downloaded instead');
+    if (!passBlob || !qrVisitor || passBusy) return;
+    setPassBusy(true);
+    try {
+      const r = await sharePass(passBlob, `Visitor_Pass_${qrVisitor.visitor_name.replace(/\s+/g, '_')}.png`, `Visitor Pass — ${qrVisitor.visitor_name}`);
+      if (r === 'whatsapp') toast.info('Link copied — choose a contact in WhatsApp to send the pass');
+    } catch (e) { toast.error(e.message || 'Could not share the pass'); }
+    setPassBusy(false);
   };
 
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
@@ -410,10 +420,10 @@ export default function MyVisitors() {
               )}
             </div>
             <div className="flex gap-2 justify-center">
-              <Button size="sm" disabled={!passBlob} onClick={handleDownloadPass} className="bg-blue-600 hover:bg-blue-700">
+              <Button size="sm" disabled={!passBlob || passBusy} onClick={handleDownloadPass} className="bg-blue-600 hover:bg-blue-700">
                 <Download className="w-3.5 h-3.5 mr-1.5" /> Download
               </Button>
-              <Button size="sm" variant="outline" disabled={!passBlob} onClick={handleSharePass}>
+              <Button size="sm" variant="outline" disabled={!passBlob || passBusy} onClick={handleSharePass}>
                 <Share2 className="w-3.5 h-3.5 mr-1.5" /> Share
               </Button>
             </div>

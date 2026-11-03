@@ -176,6 +176,63 @@ export async function generateVisitorPassImage(visitor, location) {
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/png', 0.95));
 }
 
+// ── phones ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Inside the installed app (a Capacitor WebView) a blob: link with the download attribute does nothing, and the file-sharing
+// Web Share API is usually missing. So there the pass image is stored on the server (a plain image link, hard to guess) and
+// the link is handed to the phone's own browser to save, or shared as a link (system share sheet, else WhatsApp).
+async function isNativeApp() {
+  try { const { Capacitor } = await import('@capacitor/core'); return !!Capacitor.isNativePlatform(); } catch { return false; }
+}
+async function openExternal(url) {
+  if (await isNativeApp()) {
+    try { const { Browser } = await import('@capacitor/browser'); await Browser.open({ url }); return true; } catch { /* older app build without the plugin */ }
+  }
+  const w = window.open(url, '_blank');
+  if (!w) { window.location.href = url; }
+  return true;
+}
+const hosted = new WeakMap();
+async function hostPass(blob, filename) {
+  if (hosted.has(blob)) return hosted.get(blob);
+  const { base44 } = await import('@/api/base44Client');
+  const res = await base44.integrations.Core.UploadFile({ file: new File([blob], filename, { type: blob.type || 'image/png' }) });
+  const url = res?.file_url;
+  if (!url) throw new Error('The pass could not be prepared. Check your connection and try again.');
+  const abs = /^https?:/i.test(url) ? url : `${window.location.origin}${url.startsWith('/') ? '' : '/'}${url}`;   // the phone browser needs a full address
+  hosted.set(blob, abs);
+  return abs;
+}
+const withDownload = (url) => url + (url.includes('?') ? '&' : '?') + 'download=1';
+
+// Save the pass. Desktop / phone browsers download the image directly; the installed app opens a download link in the phone browser.
+export async function downloadPass(blob, filename) {
+  if (await isNativeApp()) {
+    const url = await hostPass(blob, filename);
+    await openExternal(withDownload(url));
+    return 'opened';
+  }
+  downloadBlob(blob, filename);
+  return 'downloaded';
+}
+
+// Share the pass: the image itself where the platform allows it, otherwise a link to the image (system share sheet, then WhatsApp).
+export async function sharePass(blob, filename, title) {
+  const file = new File([blob], filename, { type: blob.type || 'image/png' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: title || 'Visitor Pass' }); return 'shared'; }
+    catch (e) { if (e.name === 'AbortError') return 'cancelled'; /* otherwise fall through to a link */ }
+  }
+  const url = await hostPass(blob, filename);
+  const text = `${title || 'Visitor Pass'} — show this at the gate: ${url}`;
+  if (navigator.share) {
+    try { await navigator.share({ title: title || 'Visitor Pass', text, url }); return 'shared'; }
+    catch (e) { if (e.name === 'AbortError') return 'cancelled'; }
+  }
+  try { await navigator.clipboard?.writeText(url); } catch { /* clipboard not available */ }
+  await openExternal(`https://wa.me/?text=${encodeURIComponent(text)}`);
+  return 'whatsapp';
+}
+
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

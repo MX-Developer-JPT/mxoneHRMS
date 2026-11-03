@@ -140,6 +140,8 @@ router.post('/', memUpload.single('file'), async (req, res) => {
 // R2-backed files redirect to a short-lived signed URL (bucket stays private);
 // DB-backed files are streamed directly.
 router.get('/file/:id', async (req, res) => {
+  // ?download=1 asks the browser to save the file instead of showing it (used by the phone app's "Download" for visitor passes)
+  const dispo = req.query.download ? 'attachment' : 'inline';
   try {
     const id = String(req.params.id).replace(/\.[^.]+$/, '');
     const row = await one("SELECT filename, mime, data, storage, r2_key FROM files WHERE id=$1", [id]);
@@ -162,7 +164,7 @@ router.get('/file/:id', async (req, res) => {
         const obj = await getFromBucket(row.r2_key);
         res.setHeader('Content-Type', row.mime || obj.ContentType || 'application/octet-stream');
         if (obj.ContentLength != null) res.setHeader('Content-Length', obj.ContentLength);
-        res.setHeader('Content-Disposition', `inline; filename="${(row.filename || 'file').replace(/[^ -~]|"/g, '')}"`);
+        res.setHeader('Content-Disposition', `${dispo}; filename="${(row.filename || 'file').replace(/[^ -~]|"/g, '')}"`);
         res.setHeader('Cache-Control', 'private, max-age=86400');
         obj.Body.on('error', () => res.destroy());
         return obj.Body.pipe(res);
@@ -180,7 +182,7 @@ router.get('/file/:id', async (req, res) => {
 
     // DB-stored bytes
     res.setHeader('Content-Type', row.mime || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `inline; filename="${(row.filename || 'file').replace(/"/g, '')}"`);
+    res.setHeader('Content-Disposition', `${dispo}; filename="${(row.filename || 'file').replace(/"/g, '')}"`);
     res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     return res.send(row.data);
   } catch (err) {
