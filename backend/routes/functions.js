@@ -4853,9 +4853,10 @@ router.post('/:name', async (req, res) => {
         clean.push(q);
         last = q;
       }
-      // Keep the trail bounded: store up to 2,000 points (thin older ones beyond that)
+      // Keep the trail bounded: up to 6,000 points (a point every ~15-50 m, so a ~150 km route keeps its real shape);
+      // beyond that only the older part is thinned, never the recent stretch.
       let allPts = [...ft.points, ...clean];
-      if (allPts.length > 2000) allPts = allPts.filter((_, i) => i % 2 === 0 || i >= allPts.length - 500);
+      if (allPts.length > 6000) allPts = allPts.filter((_, i) => i % 2 === 0 || i >= allPts.length - 2000);
       // Live position: the newest usable fix, kept even when it adds no distance (parked at a client site) so a
       // stationary employee still shows as "here, a minute ago" on the live map.
       let livePos = ft.last_pos || null;

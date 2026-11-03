@@ -52,6 +52,7 @@ export default function FieldDuty() {
   const [liveSel, setLiveSel] = useState(null);
   const [liveLoading, setLiveLoading] = useState(false);
   const [fences, setFences] = useState([]);
+  const [liveTrail, setLiveTrail] = useState([]);   // the selected employee's route so far
 
   useEffect(() => {
     if (!routeFor) { setRouteData(null); return undefined; }
@@ -83,6 +84,20 @@ export default function FieldDuty() {
     const t = setInterval(pull, 20000);
     return () => { dead = true; clearInterval(t); };
   }, [liveOpen]);
+
+  // The route the selected employee has actually travelled so far (every recorded GPS point), refreshed with the live pull.
+  useEffect(() => {
+    const person = livePeople.find(p => p.trip_id === liveSel);
+    if (!liveOpen || !person) { setLiveTrail([]); return undefined; }
+    let dead = false;
+    (async () => {
+      try {
+        const r = await base44.functions.invoke('getFieldTripTrail', { trip_id: liveSel }); const d = r.data || r;
+        if (!dead && d.success) setLiveTrail(d.points || []);
+      } catch { /* keep the previous trail */ }
+    })();
+    return () => { dead = true; };
+  }, [liveOpen, liveSel, livePeople]);
 
   const [rateDialog, setRateDialog] = useState(false);
   const [new2w, setNew2w] = useState('');
@@ -294,11 +309,11 @@ export default function FieldDuty() {
           <CardContent className="py-4 space-y-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div><h2 className="text-base font-semibold text-gray-700 flex items-center gap-2"><Navigation className="w-4 h-4 text-green-600" />Live field map</h2>
-                <p className="text-xs text-gray-500">Shows employees with a Field Duty trip in progress, refreshed every 20 seconds. Location is recorded only while a trip is running. Grey = no recent signal.</p></div>
+                <p className="text-xs text-gray-500">Shows employees with a Field Duty trip in progress, refreshed every 20 seconds. Location is recorded only while a trip is running. Grey = no recent signal. Select a person to see the route they have travelled.</p></div>
               {liveLoading && <RefreshCw className="w-4 h-4 animate-spin text-gray-400" />}
             </div>
             <div className="grid lg:grid-cols-3 gap-3">
-              <div className="lg:col-span-2"><LiveMap people={livePeople} fences={fences} selected={liveSel} onSelect={setLiveSel} /></div>
+              <div className="lg:col-span-2"><LiveMap people={livePeople} fences={fences} selected={liveSel} onSelect={setLiveSel} trail={liveTrail} /></div>
               <div className="space-y-2 max-h-[460px] overflow-y-auto">
                 {livePeople.length === 0 && <p className="text-sm text-gray-400 text-center py-8">Nobody is on a field trip right now.</p>}
                 {livePeople.map(p => (

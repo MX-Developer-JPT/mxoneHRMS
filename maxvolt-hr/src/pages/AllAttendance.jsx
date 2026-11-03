@@ -17,6 +17,7 @@ import { toast } from 'sonner';
 import MobileSelect from '@/components/MobileSelect';
 import AttendanceDetailsDialog from '@/components/attendance/AttendanceDetailsDialog';
 import BiometricSyncStatus from '@/components/attendance/BiometricSyncStatus';
+import { PlacesMap } from '@/components/maps/GeoMaps';
 import { resolveHierarchy } from '@/lib/hierarchy';
 
 const STATUS_COLORS = {
@@ -70,6 +71,7 @@ export default function AllAttendance() {
   const [deptFilter, setDeptFilter] = useState('all');
   const [methodFilter, setMethodFilter] = useState('all');
   const [locationFilter, setLocationFilter] = useState('all');
+  const [placesMap, setPlacesMap] = useState(null); // { title, entries: [{ id, name, kind, lat, lng, time, address, accuracy, selfie }] }
   const [locations, setLocations] = useState([]); // AppLocation rows, each optionally carrying biometric_devices[]
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [collapsedDepts, setCollapsedDepts] = useState({});
@@ -252,6 +254,29 @@ export default function AllAttendance() {
     const device = String(record?.device_id || '').trim().toUpperCase();
     if (!device) return null;
     return deviceLocationMap.get(device) || null;
+  };
+
+  // Selfie attendance carries the phone's GPS position at check-in and check-out; turn a day's record into map entries.
+  const selfieEntries = (r) => {
+    const name = r._emp?.display_name || r._emp?._user?.full_name || 'Employee';
+    const out = [];
+    for (const [kind, loc, time, selfie, src] of [['Check-in', r.check_in_location, r.check_in_time, r.check_in_selfie_url, getCheckInMethod(r)], ['Check-out', r.check_out_location, r.check_out_time, r.check_out_selfie_url, getCheckOutMethod(r)]]) {
+      if (loc?.latitude == null || loc?.longitude == null || !Number.isFinite(Number(loc.latitude))) continue;
+      if (src?.key && src.key !== 'selfie' && !selfie) continue;
+      out.push({ id: `${r.user_id || name}:${kind}`, name, kind, lat: Number(loc.latitude), lng: Number(loc.longitude), time: time ? safeTime(time) : '', address: loc.location_address || loc.address || '', accuracy: loc.accuracy, selfie });
+    }
+    return out;
+  };
+  const officeFences = useMemo(() => locations.filter(l => l.is_active !== false && l.latitude != null && Number(l.geofence_radius) > 0).map(l => ({ id: l.id, name: l.name, latitude: l.latitude, longitude: l.longitude, radius_m: l.geofence_radius })), [locations]);
+  const nearestOffice = (lat, lng) => {
+    let best = null;
+    for (const f of officeFences) {
+      const R = 6371000, dLat = (f.latitude - lat) * Math.PI / 180, dLng = (f.longitude - lng) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(f.latitude * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+      const d = 2 * R * Math.asin(Math.sqrt(a));
+      if (!best || d < best.d) best = { d, name: f.name, inside: d <= Number(f.radius_m) };
+    }
+    return best;
   };
 
   const filtered = useMemo(() => {
@@ -439,6 +464,32 @@ export default function AllAttendance() {
     }
   };
 
+  const placesDialog = (
+    <Dialog open={!!placesMap} onOpenChange={(o) => !o && setPlacesMap(null)}>
+      <DialogContent className="max-w-4xl max-h-[92vh] overflow-y-auto">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><MapPin className="w-5 h-5 text-blue-600" />{placesMap?.title}</DialogTitle></DialogHeader>
+        {placesMap && (
+          <div className="space-y-3">
+            <PlacesMap fences={officeFences} markers={placesMap.entries.map(e => ({ id: e.id, lat: e.lat, lng: e.lng, color: e.kind === 'Check-in' ? '#16a34a' : '#dc2626', label: `${e.name} · ${e.kind}${e.time ? ' ' + e.time : ''}` }))} />
+            <p className="text-xs text-gray-500"><span className="inline-block w-2.5 h-2.5 rounded-full bg-green-600 mr-1" />Check-in <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-600 ml-3 mr-1" />Check-out · blue circles are office geofences</p>
+            <div className="max-h-56 overflow-y-auto divide-y rounded-lg border">
+              {placesMap.entries.map(e => { const near = nearestOffice(e.lat, e.lng); return (
+                <div key={e.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                  {e.selfie ? <img src={e.selfie} alt="" className="w-9 h-9 rounded-full object-cover border" /> : <Camera className="w-5 h-5 text-gray-300" />}
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-800 truncate">{e.name} <span className={e.kind === 'Check-in' ? 'text-green-700' : 'text-red-700'}>· {e.kind}{e.time ? ` ${e.time}` : ''}</span></p>
+                    <p className="text-xs text-gray-500 truncate">{e.address || `${e.lat.toFixed(5)}, ${e.lng.toFixed(5)}`}{e.accuracy != null ? ` · ±${Math.round(e.accuracy)}m` : ''}</p>
+                  </div>
+                  {near && <span className={`text-[11px] px-2 py-0.5 rounded-full whitespace-nowrap ${near.inside ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-800'}`}>{near.inside ? `Inside ${near.name}` : `${near.d >= 1000 ? (near.d / 1000).toFixed(1) + ' km' : Math.round(near.d) + ' m'} from ${near.name}`}</span>}
+                  <a href={`https://www.google.com/maps?q=${e.lat},${e.lng}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 underline whitespace-nowrap">Open in Maps</a>
+                </div>); })}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+
   if (loading) return (
     <div className="flex items-center justify-center h-screen">
       <RefreshCw className="animate-spin w-6 h-6 text-blue-500 mr-2" /> Loading attendance...
@@ -447,6 +498,7 @@ export default function AllAttendance() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-6">
+      {placesDialog}
       <div className="max-w-7xl mx-auto space-y-5">
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -461,6 +513,10 @@ export default function AllAttendance() {
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => navigate('/AttendanceReports')} title="View Attendance Analytics">
               <BarChart3 className="w-4 h-4 mr-1" /> Analytics
+            </Button>
+            <Button variant="outline" size="sm" title="Show where selfie check-ins / check-outs were made, on a map (uses the filters below)"
+              onClick={() => { const entries = filtered.flatMap(selfieEntries); if (!entries.length) { toast.info('No selfie attendance with a location in the current list'); return; } setPlacesMap({ title: `Selfie attendance map - ${entries.length} location${entries.length > 1 ? 's' : ''}`, entries }); }}>
+              <MapPin className="w-4 h-4 mr-1" /> Selfie Map
             </Button>
             <BiometricSyncStatus />
             {canAdminister && (<>
@@ -836,10 +892,12 @@ export default function AllAttendance() {
                                 const selfieUrl = record.check_in_selfie_url || record.check_out_selfie_url;
                                 const loc = record.check_in_location || record.check_out_location;
                                 const locLabel = loc?.location_address || loc?.address || (loc?.latitude != null ? `${Number(loc.latitude).toFixed(4)}, ${Number(loc.longitude).toFixed(4)}` : '');
+                                const entries = selfieEntries(record);
                                 return (
                                   <span
-                                    title={locLabel ? `Selfie — ${locLabel}` : 'Selfie'}
-                                    className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200"
+                                    title={locLabel ? `Selfie — ${locLabel} (click to see on map)` : 'Selfie'}
+                                    onClick={entries.length ? (e) => { e.stopPropagation(); setPlacesMap({ title: record._emp?.display_name || 'Selfie attendance', entries }); } : undefined}
+                                    className={`inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 ${entries.length ? 'cursor-pointer hover:bg-blue-100' : ''}`}
                                   >
                                     {selfieUrl ? (
                                       <img src={selfieUrl} alt="Selfie" className="w-4 h-4 rounded-full object-cover border border-blue-300" />

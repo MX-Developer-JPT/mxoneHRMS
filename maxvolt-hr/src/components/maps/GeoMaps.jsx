@@ -112,7 +112,8 @@ export function RouteMap({ points = [], lastPos, fences = [], height = 360 }) {
 }
 
 // Everyone on an active trip right now. Grey = no recent fix (phone offline / app closed).
-export function LiveMap({ people = [], fences = [], selected, onSelect, height = 460 }) {
+export function LiveMap({ people = [], fences = [], selected, onSelect, trail = [], height = 460 }) {
+  const trailLine = trail.filter(p => ok(p.lat) && ok(p.lng)).map(p => [Number(p.lat), Number(p.lng)]);
   const placed = people.filter(p => p.position);
   const pts = placed.map(p => [p.position.lat, p.position.lng]);
   const sel = placed.find(p => p.trip_id === selected);
@@ -122,11 +123,32 @@ export function LiveMap({ people = [], fences = [], selected, onSelect, height =
         <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
         <Resize />
         <Fences fences={fences} />
-        {sel ? <FitTo points={[[sel.position.lat, sel.position.lng]]} max={16} /> : pts.length > 0 && <FitTo points={pts} />}
+        {sel ? <FitTo points={trailLine.length > 1 ? trailLine : [[sel.position.lat, sel.position.lng]]} max={16} /> : pts.length > 0 && <FitTo points={pts} />}
+        {trailLine.length > 1 && <Polyline positions={trailLine} pathOptions={{ color: '#ea580c', weight: 4, opacity: 0.85 }} />}
+        {trailLine.length > 0 && <Marker position={trailLine[0]} icon={dot('#16a34a', 14)}><Tooltip>Trip start</Tooltip></Marker>}
         {placed.map(p => (
           <Marker key={p.trip_id} position={[p.position.lat, p.position.lng]} icon={dot(p.stale ? '#6b7280' : '#16a34a', p.trip_id === selected ? 24 : 18)} eventHandlers={{ click: () => onSelect?.(p.trip_id) }}>
             <Tooltip direction="top" offset={[0, -8]}>{p.employee?.name || 'Employee'} · {p.age_minutes == null ? 'no fix' : p.age_minutes < 1 ? 'just now' : `${p.age_minutes} min ago`}</Tooltip>
           </Marker>
+        ))}
+      </MapContainer>
+    </div>
+  );
+}
+
+// Pins for check-in / check-out places (selfie attendance). markers: [{ id, lat, lng, color, label }]
+export function PlacesMap({ markers = [], fences = [], height = 420 }) {
+  const pts = markers.filter(m => ok(m.lat) && ok(m.lng)).map(m => [Number(m.lat), Number(m.lng)]);
+  const fencePts = fences.filter(f => ok(f.latitude) && ok(f.longitude)).map(f => [Number(f.latitude), Number(f.longitude)]);
+  return (
+    <div className="rounded-lg overflow-hidden border" style={{ height }}>
+      <MapContainer center={pts[0] || fencePts[0] || INDIA} zoom={pts.length ? 15 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
+        <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
+        <Resize />
+        <Fences fences={fences} />
+        {pts.length > 0 && <FitTo points={pts.length === 1 ? [...pts, ...fencePts.slice(0, 1)] : pts} max={17} />}
+        {markers.filter(m => ok(m.lat) && ok(m.lng)).map(m => (
+          <Marker key={m.id} position={[Number(m.lat), Number(m.lng)]} icon={dot(m.color || '#2563eb', 18)}><Tooltip direction="top" offset={[0, -8]}>{m.label}</Tooltip></Marker>
         ))}
       </MapContainer>
     </div>
