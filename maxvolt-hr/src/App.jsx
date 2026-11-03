@@ -53,6 +53,7 @@ const TermsOfService = lazy(() => import('./pages/TermsOfService'));
 const DeleteAccountRequest = lazy(() => import('./pages/DeleteAccountRequest'));
 const Support = lazy(() => import('./pages/Support'));
 const CareersPage = lazy(() => import('./pages/CareersPage'));
+const KioskApp = lazy(() => import('./pages/KioskApp'));   // visitor kiosk: own sign-in, no app shell
 const OfferAcceptPage = lazy(() => import('./pages/OfferAcceptPage'));
 const CandidateDocumentPortal = lazy(() => import('./pages/CandidateDocumentPortal'));
 const ApplicationStatusPage = lazy(() => import('./pages/ApplicationStatusPage'));
@@ -680,6 +681,7 @@ function App() {
           {/* Public routes - no login required. Shared Suspense boundary —
               these are lazy-loaded (see the imports above) since most users
               never visit any of them in a session. */}
+          <Route path="/kiosk" element={<Suspense fallback={<PageLoader />}><KioskApp /></Suspense>} />
           <Route path="/PrivacyPolicy" element={<Suspense fallback={<PageLoader />}><PrivacyPolicy /></Suspense>} />
           <Route path="/TermsOfService" element={<Suspense fallback={<PageLoader />}><TermsOfService /></Suspense>} />
           <Route path="/DeleteAccountRequest" element={<Suspense fallback={<PageLoader />}><DeleteAccountRequest /></Suspense>} />

@@ -9,7 +9,7 @@ export default function AiStatusBanner() {
   // cards, job board, offer/application links, payslip view…) — a logged-out
   // visitor has no use for the app's internal AI status, and the call is
   // unauthenticated there so it always "failed" and showed a scary banner.
-  const isPublicPage = /^\/(PublicBusinessCard|PublicJobBoard|ApplyForJob|careers?|offer-accept|candidate-documents|application-status|payslip-view|login|register|forgot-password|reset-password)/i.test(window.location.pathname);
+  const isPublicPage = /^\/(kiosk|PublicBusinessCard|PublicJobBoard|ApplyForJob|careers?|offer-accept|candidate-documents|application-status|payslip-view|login|register|forgot-password|reset-password)/i.test(window.location.pathname);
   let signedIn = false;
   try { signedIn = !!localStorage.getItem('base44_access_token'); } catch { /* storage unavailable */ }
   const enabled = signedIn && !isPublicPage;

@@ -34,6 +34,7 @@ import notificationsRouter  from './routes/notifications.js';
 import pushRouter           from './routes/push.js';
 import payslipUploadRouter  from './routes/payslipUpload.js';
 import salaryRevisionRouter from './routes/salaryRevision.js';
+import { kioskRouter, kioskAdminRouter } from './routes/kiosk.js';
 import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, sendPreShiftReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 import { closeUnreturnedGatePasses, closeStaleGatePassRequests } from './cron/gatePassAutomation.js';
@@ -286,6 +287,8 @@ app.use('/api/notifications',   notificationsRouter);
 app.use('/api/push',            pushRouter);
 app.use('/api/payslip-upload',  payslipUploadRouter);
 app.use('/api/salary-revision', salaryRevisionRouter);
+app.use('/api/kiosk',          kioskRouter);        // visitor kiosk device (own credentials + token, location-pinned)
+app.use('/api/kiosk-admin',    kioskAdminRouter);   // Admin Panel -> Kiosks
 
 // Production: serve built React frontend
 if (process.env.NODE_ENV === 'production') {
