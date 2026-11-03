@@ -4834,7 +4834,14 @@ router.post('/:name', async (req, res) => {
       // Keep the trail bounded: store up to 2,000 points (thin older ones beyond that)
       let allPts = [...ft.points, ...clean];
       if (allPts.length > 2000) allPts = allPts.filter((_, i) => i % 2 === 0 || i >= allPts.length - 500);
-      const upd = { ...ft, points: allPts, point_count: (ft.point_count || 0) + clean.length, distance_km: Math.round(((ft.distance_km || 0) + addedKm) * 100) / 100, last_point_at: new Date().toISOString() };
+      // Live position: the newest usable fix, kept even when it adds no distance (parked at a client site) so a
+      // stationary employee still shows as "here, a minute ago" on the live map.
+      let livePos = ft.last_pos || null;
+      for (const pt of sortedPts) {
+        const lat = Number(pt?.lat), lng = Number(pt?.lng), acc = Number(pt?.acc || 0), t = pt?.t || new Date().toISOString();
+        if (isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && acc <= 200 && (!livePos || new Date(t) >= new Date(livePos.t))) livePos = { lat, lng, acc, t };
+      }
+      const upd = { ...ft, points: allPts, last_pos: livePos, point_count: (ft.point_count || 0) + clean.length, distance_km: Math.round(((ft.distance_km || 0) + addedKm) * 100) / 100, last_point_at: new Date().toISOString() };
       await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
       return res.json({ success: true, distance_km: upd.distance_km, points_stored: upd.point_count });
     }
@@ -4880,6 +4887,40 @@ router.post('/:name', async (req, res) => {
         return { ...rest, employee: empBy[r.user_id] || {}, trail_points: (points || []).length };
       });
       return res.json({ success: true, trips, rates, is_hr: isMgmtUser, can_manage: isMgmtUser || isTeamManager });
+    }
+
+    // Who may see a field employee's location: the employee, HR/admin/management, or their manager chain.
+    // Location is only ever recorded while a Field Duty trip (or auto Outduty trip) is active.
+    case 'getFieldLive': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const flMgmt = await hasRole(cu, MGR_ROLES);
+      const flMgr = !flMgmt && await hasRole(cu, ['manager']);
+      if (!flMgmt && !flMgr) return res.status(403).json({ error: 'Managers and HR only' });
+      const flTeam = flMgmt ? null : await getVisibleUserIds(cu);
+      const flRows = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'");
+      const flEmp = {};
+      for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee'")) { const d = JSON.parse(r.data); flEmp[r.user_id] = { name: d.display_name || 'Employee', code: d.employee_code || '', department: d.department || '' }; }
+      const flNow = Date.now();
+      const people = flRows.filter(r => flMgmt || flTeam.includes(r.user_id)).map(r => {
+        const d = JSON.parse(r.data); const pos = d.last_pos || (d.points || []).slice(-1)[0] || null;
+        const ageMin = pos ? Math.max(0, Math.round((flNow - new Date(pos.t).getTime()) / 60000)) : null;
+        return {
+          trip_id: d.id, user_id: r.user_id, employee: flEmp[r.user_id] || {}, vehicle_type: d.vehicle_type, purpose: d.purpose || '',
+          start_time: d.start_time, distance_km: d.distance_km || 0, source: d.source || '',
+          position: pos ? { lat: pos.lat, lng: pos.lng, acc: pos.acc || 0, t: pos.t } : null, age_minutes: ageMin, stale: ageMin == null || ageMin > 10,
+        };
+      }).sort((a, b) => String(a.employee.name).localeCompare(String(b.employee.name)));
+      return res.json({ success: true, people, server_time: new Date().toISOString() });
+    }
+
+    case 'getFieldTripTrail': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const ttRow = await one("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND id=$1", [p.trip_id]);
+      if (!ttRow) return res.json({ success: false, error: 'Trip not found' });
+      const ttOk = ttRow.user_id === cu.id || await hasRole(cu, MGR_ROLES) || (await hasRole(cu, ['manager']) && (await getVisibleUserIds(cu)).includes(ttRow.user_id));
+      if (!ttOk) return res.status(403).json({ error: 'Access denied' });
+      const tt = JSON.parse(ttRow.data);
+      return res.json({ success: true, trip: { id: tt.id, date: tt.date, status: tt.status, start_time: tt.start_time, end_time: tt.end_time || null, distance_km: tt.distance_km || 0, purpose: tt.purpose || '', vehicle_type: tt.vehicle_type }, points: (tt.points || []).map(x => ({ lat: x.lat, lng: x.lng, t: x.t })), last_pos: tt.last_pos || null });
     }
 
     case 'setFieldRate': {

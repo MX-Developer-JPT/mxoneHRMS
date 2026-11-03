@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Plus, Edit2, Trash2, MapPin, Loader2, Download, Users, ChevronDown, UserCog, AlertCircle, Building2, Search, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { OfficePickerMap } from '@/components/maps/GeoMaps';
 import { Switch } from "@/components/ui/switch";
 import { useAuth } from '@/lib/AuthContext';
 
@@ -555,6 +556,15 @@ export default function LocationMaster() {
                   <div><Label className="text-xs">Latitude</Label><Input type="number" step="any" value={form.latitude} onChange={e => setForm({...form, latitude: e.target.value})} placeholder="28.6692" /></div>
                   <div><Label className="text-xs">Longitude</Label><Input type="number" step="any" value={form.longitude} onChange={e => setForm({...form, longitude: e.target.value})} placeholder="77.4538" /></div>
                   <div><Label className="text-xs">Radius (m)</Label><Input type="number" value={form.geofence_radius} onChange={e => setForm({...form, geofence_radius: e.target.value})} placeholder="200" /></div>
+                </div>
+                <OfficePickerMap
+                  latitude={form.latitude} longitude={form.longitude} radius={form.geofence_radius} excludeId={editingId}
+                  otherFences={locations.filter(l => l.latitude != null && l.geofence_radius).map(l => ({ id: l.id, name: l.name, latitude: l.latitude, longitude: l.longitude, radius_m: l.geofence_radius }))}
+                  onChange={(lat, lng) => setForm(f => ({ ...f, latitude: String(lat), longitude: String(lng), geofence_radius: f.geofence_radius || '200' }))}
+                />
+                <div className="flex items-center gap-3">
+                  <Label className="text-xs whitespace-nowrap">Radius: {form.geofence_radius || 0} m</Label>
+                  <input type="range" min={30} max={1500} step={10} className="flex-1" value={Number(form.geofence_radius) || 200} onChange={e => setForm({ ...form, geofence_radius: e.target.value })} />
                 </div>
                 <p className="text-xs text-muted-foreground">Employees assigned to this location (Work Location on the employee record) get auto check-in/out when they enter/leave this circle with the app open.</p>
               </div>
