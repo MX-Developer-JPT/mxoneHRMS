@@ -4,9 +4,9 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 // Map pieces for geofencing: the office-circle picker (Location Master), a trip route viewer and the live field map.
-// OpenStreetMap tiles — no account or API key; fine for internal, low-volume use.
+// OpenStreetMap tiles (no key). The site sends a Referrer-Policy of no-referrer, which OSM rejects with 403 — so tiles and searches explicitly send the origin. For heavy use switch to a keyed tile provider (MapTiler, Stadia).
 
-const TILES = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+const TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 const ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 const INDIA = [22.5, 79];
 
@@ -59,7 +59,7 @@ export function OfficePickerMap({ latitude, longitude, radius, onChange, otherFe
   const search = async (e) => {
     e?.preventDefault(); if (!q.trim()) return; setSearching(true); setMsg('');
     try {
-      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q.trim())}`, { headers: { Accept: 'application/json' } });
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q.trim())}`, { headers: { Accept: 'application/json' }, referrerPolicy: 'origin' });
       const j = await r.json();
       if (j[0]) { const lat = Number(j[0].lat), lng = Number(j[0].lon); set(lat, lng); setJump([lat, lng]); } else setMsg('Place not found — try a fuller address or click the map.');
     } catch { setMsg('Search is unavailable right now — click the map instead.'); }
@@ -74,7 +74,7 @@ export function OfficePickerMap({ latitude, longitude, radius, onChange, otherFe
       {msg && <p className="text-xs text-amber-700">{msg}</p>}
       <div className="rounded-lg overflow-hidden border" style={{ height }}>
         <MapContainer center={pos || INDIA} zoom={pos ? 17 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
-          <TileLayer url={TILES} attribution={ATTR} maxZoom={19} />
+          <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
           <Resize />
           <ClickToSet onPick={set} />
           <Fences fences={otherFences} exclude={excludeId} />
@@ -99,7 +99,7 @@ export function RouteMap({ points = [], lastPos, fences = [], height = 360 }) {
   return (
     <div className="rounded-lg overflow-hidden border" style={{ height }}>
       <MapContainer center={all[0] || INDIA} zoom={all.length ? 14 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
-        <TileLayer url={TILES} attribution={ATTR} maxZoom={19} />
+        <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
         <Resize />
         <Fences fences={fences} />
         {all.length > 0 && <FitTo points={all} />}
@@ -119,7 +119,7 @@ export function LiveMap({ people = [], fences = [], selected, onSelect, height =
   return (
     <div className="rounded-lg overflow-hidden border" style={{ height }}>
       <MapContainer center={pts[0] || INDIA} zoom={pts.length ? 13 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
-        <TileLayer url={TILES} attribution={ATTR} maxZoom={19} />
+        <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
         <Resize />
         <Fences fences={fences} />
         {sel ? <FitTo points={[[sel.position.lat, sel.position.lng]]} max={16} /> : pts.length > 0 && <FitTo points={pts} />}
