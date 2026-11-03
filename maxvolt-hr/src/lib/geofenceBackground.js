@@ -374,7 +374,7 @@ async function startNativeWatcher(Capacitor, interactive) {
 export async function pullNativeDiag() {
   try {
     const C = await getCapacitor();
-    if (!C?.isNativePlatform() || C.getPlatform() !== 'android') return;
+    if (!C?.isNativePlatform()) return;
     const r = await nativePlugin().getHeadlessDiag();
     const lines = String(r?.log || '').split(String.fromCharCode(10)).filter(Boolean);
     emit({ nativeDiag: lines.slice(-20) });
@@ -382,7 +382,6 @@ export async function pullNativeDiag() {
 }
 
 async function persistHeadless(Capacitor) {
-  if (Capacitor.getPlatform() !== 'android') return;
   const BG = nativePlugin();
   // The native tracker keeps its own long-lived, geofence-only token so it keeps working when the app is not opened for weeks.
   // Falls back to the normal login token if the server can't issue one (older server / offline).
@@ -454,7 +453,7 @@ async function stopEngineInternals() {
 // Logout: stop tracking and drop everything stored for this employee.
 export async function stopBackgroundGeofence() {
   const Capacitor = await getCapacitor();
-  if (Capacitor?.getPlatform() === 'android') {
+  if (Capacitor?.isNativePlatform()) {
     try { await nativePlugin().clearHeadlessState(); } catch { /* best-effort */ }
   }
   await stopEngineInternals();

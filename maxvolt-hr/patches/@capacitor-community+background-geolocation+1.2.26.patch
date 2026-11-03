@@ -766,7 +766,7 @@ index fafbb86..98b7f54 100644
  }
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
 new file mode 100644
-index 0000000..a94c494 100644
+index 0000000..a94c494
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
 @@ -0,0 +1,47 @@
@@ -819,7 +819,7 @@ index 0000000..a94c494 100644
 +}
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java
 new file mode 100644
-index 0000000..2926c3d 100644
+index 0000000..2926c3d
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java
 @@ -0,0 +1,205 @@
@@ -1026,5 +1026,310 @@ index 0000000..2926c3d 100644
 +            }
 +        }
 +        return null;
++    }
++}
+diff --git a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Plugin.m b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Plugin.m
+index 1fc97ca..fb01cdf 100644
+--- a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Plugin.m
++++ b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Plugin.m
+@@ -5,4 +5,7 @@ CAP_PLUGIN(BackgroundGeolocation, "BackgroundGeolocation",
+     CAP_PLUGIN_METHOD(addWatcher, CAPPluginReturnCallback);
+     CAP_PLUGIN_METHOD(removeWatcher, CAPPluginReturnPromise);
+     CAP_PLUGIN_METHOD(openSettings, CAPPluginReturnPromise);
++    CAP_PLUGIN_METHOD(persistHeadlessState, CAPPluginReturnPromise);
++    CAP_PLUGIN_METHOD(clearHeadlessState, CAPPluginReturnPromise);
++    CAP_PLUGIN_METHOD(getHeadlessDiag, CAPPluginReturnPromise);
+ )
+diff --git a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/Plugin.swift b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/Plugin.swift
+index d4a5965..e520e55 100644
+--- a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/Plugin.swift
++++ b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/Plugin.swift
+@@ -75,11 +75,40 @@ public class BackgroundGeolocation: CAPPlugin,
+     public let pluginMethods: [CAPPluginMethod] = [
+         CAPPluginMethod(name: "addWatcher", returnType: CAPPluginReturnCallback),
+         CAPPluginMethod(name: "removeWatcher", returnType: CAPPluginReturnPromise),
+-        CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise)
++        CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
++        CAPPluginMethod(name: "persistHeadlessState", returnType: CAPPluginReturnPromise),
++        CAPPluginMethod(name: "clearHeadlessState", returnType: CAPPluginReturnPromise),
++        CAPPluginMethod(name: "getHeadlessDiag", returnType: CAPPluginReturnPromise)
+     ]
+ 
+     @objc public override func load() {
+         UIDevice.current.isBatteryMonitoringEnabled = true
++        // OS region monitoring (see RegionMonitor.swift): also re-attaches after a background relaunch.
++        DispatchQueue.main.async { RegionMonitor.shared.start() }
++    }
++
++    // Saves the office fences + a geofence-only login so iOS region events can be reported with the app closed.
++    @objc func persistHeadlessState(_ call: CAPPluginCall) {
++        guard let token = call.getString("token"),
++              let fencesJson = call.getString("fencesJson"),
++              let apiBase = call.getString("apiBase") else {
++            return call.reject("token, fencesJson, and apiBase are required.")
++        }
++        DispatchQueue.main.async {
++            RegionMonitor.shared.persist(token: token, fencesJson: fencesJson, apiBase: apiBase)
++            call.resolve()
++        }
++    }
++
++    @objc func clearHeadlessState(_ call: CAPPluginCall) {
++        DispatchQueue.main.async {
++            RegionMonitor.shared.clear()
++            call.resolve()
++        }
++    }
++
++    @objc func getHeadlessDiag(_ call: CAPPluginCall) {
++        call.resolve(["log": RegionMonitor.shared.diagText()])
+     }
+ 
+     @objc func addWatcher(_ call: CAPPluginCall) {
+diff --git a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift
+new file mode 100644
+index 0000000..3a0ba7b
+--- /dev/null
++++ b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift
+@@ -0,0 +1,241 @@
++import Foundation
++import CoreLocation
++import UIKit
++
++// Operating-system level geofencing for iOS (CLCircularRegion monitoring).
++//
++// The JS geofence engine and the plugin's continuous location watcher only run while the app process is alive.
++// iOS region monitoring is owned by the OS instead: when the phone crosses an office boundary iOS WAKES (or
++// relaunches) the app in the background — even after the app was swiped away or the phone rebooted — and
++// delivers didEnterRegion / didExitRegion. This class turns those into the same idempotent server call the app
++// and the Android native code use (nativeGeofenceEvent), with no JS and no UI.
++//
++// Fences + a long-lived geofence-only device token are saved by the JS side through persistHeadlessState().
++// Needs "Always" location permission (the app already asks for it) and Background Modes > Location.
++final class RegionMonitor: NSObject, CLLocationManagerDelegate {
++    static let shared = RegionMonitor()
++
++    private let manager = CLLocationManager()
++    private let defaults = UserDefaults.standard
++    private let prefix = "mvgeo:"
++    private let kToken = "mv_geo_token"
++    private let kFences = "mv_geo_fences"
++    private let kApi = "mv_geo_api"
++    private let kActive = "mv_geo_active"
++    private let kInside = "mv_geo_inside"
++    private let kDiag = "mv_geo_diag"
++
++    private override init() {
++        super.init()
++        manager.delegate = self
++    }
++
++    /// Called when the plugin loads. On a background relaunch caused by a region event this is what re-attaches
++    /// the delegate so the pending event is delivered.
++    func start() {
++        manager.delegate = self
++        if defaults.bool(forKey: kActive) { register() }
++    }
++
++    func persist(token: String, fencesJson: String, apiBase: String) {
++        defaults.set(token, forKey: kToken)
++        defaults.set(fencesJson, forKey: kFences)
++        defaults.set(apiBase, forKey: kApi)
++        defaults.set(true, forKey: kActive)
++        register()
++    }
++
++    func clear() {
++        defaults.set(false, forKey: kActive)
++        defaults.removeObject(forKey: kToken)
++        defaults.removeObject(forKey: kInside)
++        for region in manager.monitoredRegions where region.identifier.hasPrefix(prefix) {
++            manager.stopMonitoring(for: region)
++        }
++        diag("tracking cleared (logout)")
++    }
++
++    func diagText() -> String { return defaults.string(forKey: kDiag) ?? "" }
++
++    private func diag(_ line: String) {
++        let f = DateFormatter()
++        f.dateFormat = "HH:mm:ss"
++        var lines = (defaults.string(forKey: kDiag) ?? "").split(separator: "\n").map(String.init)
++        lines.append(f.string(from: Date()) + " " + line)
++        if lines.count > 30 { lines = Array(lines.suffix(30)) }
++        defaults.set(lines.joined(separator: "\n"), forKey: kDiag)
++    }
++
++    private func number(_ v: Any?) -> Double? {
++        if let n = v as? NSNumber { return n.doubleValue }
++        if let s = v as? String { return Double(s) }
++        return nil
++    }
++
++    private func fences() -> [[String: Any]] {
++        guard let s = defaults.string(forKey: kFences),
++              let d = s.data(using: .utf8),
++              let arr = (try? JSONSerialization.jsonObject(with: d)) as? [[String: Any]] else { return [] }
++        return arr
++    }
++
++    private func register() {
++        guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
++            diag("region monitoring is not available on this device")
++            return
++        }
++        if CLLocationManager.authorizationStatus() != .authorizedAlways {
++            diag("WARNING: 'Always' location is not granted — iOS will not wake the app on boundary crossings")
++        }
++        for region in manager.monitoredRegions where region.identifier.hasPrefix(prefix) {
++            manager.stopMonitoring(for: region)
++        }
++        var count = 0
++        // iOS monitors at most 20 regions per app.
++        for f in fences().prefix(20) {
++            guard let id = f["id"] as? String,
++                  let lat = number(f["latitude"]),
++                  let lng = number(f["longitude"]),
++                  let rad = number(f["radius_m"]) else { continue }
++            // iOS cannot reliably detect crossings of very small circles.
++            let radius = min(max(rad, 100), manager.maximumRegionMonitoringDistance)
++            let region = CLCircularRegion(
++                center: CLLocationCoordinate2D(latitude: lat, longitude: lng),
++                radius: radius,
++                identifier: prefix + id
++            )
++            region.notifyOnEntry = true
++            region.notifyOnExit = true
++            manager.startMonitoring(for: region)
++            // Tells us whether the phone is ALREADY inside (e.g. registered while standing in the office).
++            manager.requestState(for: region)
++            count += 1
++        }
++        diag("OS region monitoring registered (\(count) fence(s))")
++    }
++
++    // MARK: CLLocationManagerDelegate
++
++    func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
++        handle(enter: true, region: region)
++    }
++
++    func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
++        handle(enter: false, region: region)
++    }
++
++    func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
++        guard region.identifier.hasPrefix(prefix) else { return }
++        var inside = (defaults.dictionary(forKey: kInside) as? [String: Bool]) ?? [:]
++        let isInside = (state == .inside)
++        let was = inside[region.identifier] ?? false
++        if isInside && !was {
++            // Already inside when monitoring was registered: record the arrival (the server ignores repeats).
++            handle(enter: true, region: region)
++        } else if !isInside && was {
++            inside[region.identifier] = false
++            defaults.set(inside, forKey: kInside)
++        }
++    }
++
++    func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
++        diag("region monitoring failed: \(error.localizedDescription)")
++    }
++
++    // MARK: Event delivery
++
++    private func handle(enter: Bool, region: CLRegion) {
++        guard region.identifier.hasPrefix(prefix) else { return }
++        let fenceId = String(region.identifier.dropFirst(prefix.count))
++        guard let token = defaults.string(forKey: kToken), !token.isEmpty,
++              let api = defaults.string(forKey: kApi),
++              let fence = fences().first(where: { ($0["id"] as? String) == fenceId }) else {
++            diag("OS region event ignored: no saved login/fences")
++            return
++        }
++        var inside = (defaults.dictionary(forKey: kInside) as? [String: Bool]) ?? [:]
++        inside[region.identifier] = enter
++        defaults.set(inside, forKey: kInside)
++
++        let name = (fence["name"] as? String) ?? ""
++        diag("OS region \(enter ? "ENTER" : "EXIT") \(name)")
++        let here = manager.location
++
++        // The app may have only a few seconds in the background: ask iOS for more time to finish the request.
++        var task: UIBackgroundTaskIdentifier = .invalid
++        task = UIApplication.shared.beginBackgroundTask(withName: "mv-geofence") {
++            UIApplication.shared.endBackgroundTask(task)
++            task = .invalid
++        }
++        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
++            self?.deliver(enter: enter, fence: fence, name: name, api: api, token: token, here: here)
++            DispatchQueue.main.async {
++                if task != .invalid {
++                    UIApplication.shared.endBackgroundTask(task)
++                    task = .invalid
++                }
++            }
++        }
++    }
++
++    private func deliver(enter: Bool, fence: [String: Any], name: String, api: String, token: String, here: CLLocation?) {
++        if !enter {
++            // Only auto-close a session this geofence opened — never a manual / biometric / WFH one.
++            let state = post(api + "/api/functions/getMyGeofence", token: token, body: [:])
++            let att = state?["attendance_today"] as? [String: Any]
++            let inProgress = (att?["is_in_progress"] as? Bool) ?? false
++            let byGeofence = (att?["open_session_by_geofence"] as? Bool) ?? false
++            if !inProgress || !byGeofence {
++                diag("  exit skipped (no geofence-opened session is open)")
++                return
++            }
++        }
++        let iso = ISO8601DateFormatter()
++        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        iso.timeZone = TimeZone(identifier: "UTC")
++        let lat = here?.coordinate.latitude ?? (number(fence["latitude"]) ?? 0)
++        let lng = here?.coordinate.longitude ?? (number(fence["longitude"]) ?? 0)
++        var body: [String: Any] = [
++            "event": enter ? "enter" : "exit",
++            "latitude": lat,
++            "longitude": lng,
++            "occurred_at": iso.string(from: Date()),
++            "location_name": name,
++            "is_mock": false,
++            "device_id": "ios-os-geofence",
++            "source": "native_ios",
++        ]
++        if let acc = here?.horizontalAccuracy, acc >= 0 { body["accuracy"] = acc }
++        let resp = post(api + "/api/functions/nativeGeofenceEvent", token: token, body: body)
++        if let resp = resp {
++            let action = (resp["action"] as? String) ?? (resp["reason"] as? String) ?? ""
++            diag("  server: \(action)")
++        } else {
++            diag("  server: NO RESPONSE (will retry on next crossing)")
++        }
++    }
++
++    /// Minimal blocking POST (runs off the main thread); returns the JSON object or nil. Retries once.
++    private func post(_ url: String, token: String, body: [String: Any]) -> [String: Any]? {
++        guard let u = URL(string: url) else { return nil }
++        for attempt in 0..<2 {
++            var req = URLRequest(url: u, timeoutInterval: 15)
++            req.httpMethod = "POST"
++            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
++            req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
++            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
++            let sem = DispatchSemaphore(value: 0)
++            var result: [String: Any]? = nil
++            URLSession.shared.dataTask(with: req) { data, resp, _ in
++                if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode), let data = data {
++                    result = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:]
++                }
++                sem.signal()
++            }.resume()
++            _ = sem.wait(timeout: .now() + 20)
++            if let r = result { return r }
++            if attempt == 0 { Thread.sleep(forTimeInterval: 1.5) }
++        }
++        return nil
 +    }
 +}

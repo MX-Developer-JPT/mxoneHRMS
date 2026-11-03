@@ -4319,7 +4319,7 @@ router.post('/:name', async (req, res) => {
       }
       // The native background paths post the instant it happens, with the PHONE's clock — which
       // anyone can change. For those, the server's own clock is the only time that counts.
-      if (/^(android-os-geofence|capacitor-background-geolocation-headless)/.test(String(device_id || ''))) evUtc = Date.now();
+      if (/^(android-os-geofence|ios-os-geofence|capacitor-background-geolocation-headless)/.test(String(device_id || ''))) evUtc = Date.now();
       const evIST = new Date(evUtc + 5.5 * 3600000); // store-IST-digits convention
       const evDate = evIST.toISOString().slice(0, 10);
 
