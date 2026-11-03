@@ -19,7 +19,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import {
   parseInvitationCode, last10, cleanText, istNowIso, istNowMs, validateVisit, publicVisit, safePhotoUrl, idReference, ID_TYPES,
-  durationToDeparture, makeLimiter, generatePassword, summariseByLocation, MESSAGES,
+  durationToDeparture, groupFields, makeLimiter, generatePassword, summariseByLocation, MESSAGES,
 } from '../utils/kiosk.js';
 
 // A different secret from user tokens: verifying a user token here, or a kiosk token in auth.js, always fails.
@@ -31,7 +31,7 @@ const CLAIM_MINUTES = 90;          // a walk-in who was approved while waiting c
 const loginLimiter = makeLimiter(8, 15 * 60 * 1000);        // per IP + username
 const codeFailLimiter = makeLimiter(10, 10 * 60 * 1000);    // wrong invitation codes per kiosk
 const codeTryLimiter = makeLimiter(40, 60 * 1000);          // any invitation lookup per kiosk
-const walkinLimiter = makeLimiter(12, 60 * 60 * 1000);      // walk-in submissions per kiosk
+const walkinLimiter = makeLimiter(40, 60 * 60 * 1000);      // walk-in submissions per kiosk
 const hostSearchLimiter = makeLimiter(60, 60 * 1000);       // employee searches per kiosk
 
 const clientIp = (req) => String(req.ip || req.headers['x-forwarded-for'] || '').slice(0, 64);
@@ -236,7 +236,7 @@ kioskRouter.post('/checkin', async (req, res) => {
     const r = await q("UPDATE entities SET status='checked_in', data=$1, updated_at=NOW()::TEXT WHERE id=$2 AND type='Visitor' AND status='approved'", [JSON.stringify(upd), v.id]);
     if (!r.rowCount) { await writeLog(kiosk, 'check_in', { visitor_id: v.id, result: 'checked_in', detail: 'duplicate prevented', ip }); return res.json({ success: false, code: 'checked_in', error: MESSAGES.checked_in }); }
     await writeLog(kiosk, 'check_in', { visitor_id: v.id, result: 'ok', detail: v.source === 'walk_in' ? 'walk-in' : 'invited', ip });
-    await notify(v.host_user_id, { title: 'Your Visitor Has Arrived', message: `${v.visitor_name}${v.company ? ` (${v.company})` : ''} has checked in at the ${v.location_name} kiosk.`, type: 'info', link: '/MyVisitors' });
+    await notify(v.host_user_id, { title: 'Your Visitor Has Arrived', message: `${v.visitor_name}${(v.visitor_count || 1) > 1 ? ` + ${v.visitor_count - 1} more` : ''}${v.company ? ` (${v.company})` : ''} has checked in at the ${v.location_name} kiosk.`, type: 'info', link: '/MyVisitors' });
     return res.json({ success: true, message: 'Check-in Successful! Your host has been notified. Please wait for further instructions.', host_name: v.host_name });
   } catch (e) { console.error('[kiosk/checkin]', e.message); return res.status(500).json({ error: 'Something went wrong' }); }
 });
@@ -294,6 +294,11 @@ kioskRouter.post('/walkin', async (req, res) => {
     if (purpose.length < 3) return fail('Please tell us the purpose of your visit.');
     if (!hostId) return fail('Please choose the person you are visiting.');
     if (b.declaration !== true) return fail('Please accept the visitor guidelines to continue.');
+    const grp = groupFields(b.visitor_count, b.companion_names, { requireNames: true });
+    if (grp.error) return fail(grp.error);
+    const hasVehicle = b.has_vehicle === true;
+    const vehicle = cleanText(b.vehicle_number, 20).toUpperCase();
+    if (hasVehicle && vehicle.length < 4) return fail('Please enter your vehicle number.');
     const photo = safePhotoUrl(b.photo_url);
     if (!photo && b.photo_skipped !== true) return fail('Please take your photograph to continue.');
 
@@ -327,16 +332,16 @@ kioskRouter.post('/walkin', async (req, res) => {
       source: 'walk_in', source_kiosk_id: kiosk.id, source_kiosk_name: kiosk.name, source_kiosk_code: kiosk.kiosk_code,
       location_name: kiosk.location_name,
       expected_arrival: new Date(nowMs).toISOString(), expected_departure: durationToDeparture(b.duration_minutes, nowMs),
-      vehicle_number: cleanText(b.vehicle_number, 20).toUpperCase(), photo_url: photo,
+      vehicle_number: hasVehicle ? vehicle : '', photo_url: photo, ...grp,
       id_proof_reference: idReference(b.id_type, b.id_number),
       declaration_accepted_at: istNowIso(),
       status: 'pending_approval',
     };
     await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Visitor',$2,'pending_approval',$3)", [id, host.user_id, JSON.stringify(data)]);
     await writeLog(kiosk, 'walkin_register', { visitor_id: id, result: 'pending_approval', detail: `host ${host.name}`, ip });
-    await notify(host.user_id, { title: 'Visitor Waiting at Gate', message: `${name}${company ? ` from ${company}` : ''} is at the ${kiosk.location_name} kiosk to meet you — please approve or reject.`, type: 'info', link: '/MyVisitors' });
+    await notify(host.user_id, { title: 'Visitor Waiting at Gate', message: `${name}${grp.visitor_count > 1 ? ` + ${grp.visitor_count - 1} more` : ''}${company ? ` from ${company}` : ''}${hasVehicle ? ` (vehicle ${vehicle})` : ''} is at the ${kiosk.location_name} kiosk to meet you — please approve or reject.`, type: 'info', link: '/MyVisitors' });
     for (const gid of await gateAdminIdsFor(kiosk.location_name)) {
-      if (gid !== host.user_id) await notify(gid, { title: 'New Visitor Request', message: `${name}${company ? ` (${company})` : ''} registered at the ${kiosk.location_name} kiosk to meet ${host.name} — awaiting approval.`, type: 'info', link: '/VisitorManagement' });
+      if (gid !== host.user_id) await notify(gid, { title: 'New Visitor Request', message: `${name}${grp.visitor_count > 1 ? ` + ${grp.visitor_count - 1} more` : ''}${company ? ` (${company})` : ''} registered at the ${kiosk.location_name} kiosk to meet ${host.name} — awaiting approval.`, type: 'info', link: '/VisitorManagement' });
     }
     return res.json({
       success: true, status: 'pending_approval', visitor_id: id, host_name: host.name,

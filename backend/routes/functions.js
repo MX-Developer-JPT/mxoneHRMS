@@ -19639,6 +19639,8 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       const { visitor_name, mobile_number, visitor_email, company, visitor_category, purpose,
         expected_arrival, expected_departure, host_user_id: cviHostId,
         location_name: cviLocation, vehicle_number, meeting_location, special_instructions } = p;
+      const { groupFields: cviGroupFn } = await import('../utils/kiosk.js');
+      const cviGroup = cviGroupFn(p.visitor_count, p.companion_names);
       if (!visitor_name || !mobile_number || !purpose || !expected_arrival) {
         return res.json({ success: false, error: 'Visitor name, mobile number, purpose and expected arrival are required' });
       }
@@ -19674,6 +19676,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         location_name: cviLocation,
         expected_arrival, expected_departure: expected_departure || null,
         vehicle_number: vehicle_number || '', meeting_location: meeting_location || '', special_instructions: special_instructions || '',
+        ...cviGroup,
         status: selfHosted ? 'approved' : 'pending_approval',
         qr_code: selfHosted ? uuidv4() : null,
         ...(selfHosted ? { approved_by: cu.id, approved_by_name: cu.full_name, approved_at: cviNow } : {}),
@@ -19695,6 +19698,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
       const { visitor_name, mobile_number, visitor_email, company, visitor_category, purpose,
         host_user_id: rwvHostId, location_name: rwvLocation, vehicle_number, photo_url: rwvPhoto } = p;
+      const rwvGroup = (await import('../utils/kiosk.js')).groupFields(p.visitor_count, p.companion_names);
       if (!visitor_name || !mobile_number || !purpose || !rwvHostId) {
         return res.json({ success: false, error: 'Visitor name, mobile number, purpose and the employee to meet are required' });
       }
@@ -19720,6 +19724,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         // unlike the plain-UTC audit timestamps (approved_at etc.) below.
         expected_arrival: new Date(Date.now() + 5.5 * 3600000).toISOString(), expected_departure: null,
         vehicle_number: vehicle_number || '', photo_url: rwvPhoto || '',
+        ...rwvGroup,
         status: 'pending_approval',
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Visitor',$2,'pending_approval',$3)", [rwvId, rwvHostId, JSON.stringify(rwvData)]);
@@ -19894,7 +19899,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         ['Expected Arrival / Registered', 22], ['Expected Departure', 22], ['Status', 18],
         ['Approved / Rejected By', 22], ['Approval Time', 22], ['Approval Note', 28],
         ['Check-In Time', 22], ['Checked-In By (Gate Admin)', 26], ['Check-Out Time', 22], ['Checked-Out By (Gate Admin)', 26], ['Duration (min)', 14],
-        ['Vehicle No.', 16], ['ID Proof Reference', 22], ['Meeting Location', 20], ['Special Instructions', 30], ['Photo', 40],
+        ['Vehicle No.', 16], ['No. of Visitors', 12], ['Other Visitors', 28], ['ID Proof Reference', 22], ['Meeting Location', 20], ['Special Instructions', 30], ['Photo', 40],
       ];
       wsV.columns = cols.map(([header, width]) => ({ header, width }));
       const hdr = wsV.getRow(1);
@@ -19909,7 +19914,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
           evFmt(v.expected_arrival), evFmt(v.expected_departure), evStatusLabel[v.status] || v.status || '',
           decided || '', evFmt(v.approved_at || v.rejected_at), v.rejection_reason || '',
           evFmt(v.check_in_time), v.check_in_by_name || '', evFmt(v.check_out_time), v.check_out_by_name || '', evMins(v.check_in_time, v.check_out_time),
-          v.vehicle_number || '', v.id_proof_reference || '', v.meeting_location || '', v.special_instructions || '', v.photo_url || '',
+          v.vehicle_number || '', v.visitor_count || 1, (v.companion_names || []).join(', '), v.id_proof_reference || '', v.meeting_location || '', v.special_instructions || '', v.photo_url || '',
         ]);
         row.eachCell(c => { c.font = { size: 9 }; c.alignment = { vertical: 'top', wrapText: true }; c.border = { bottom: { style: 'hair', color: { argb: 'FFD1D5DB' } } }; });
         const photoCell = row.getCell(cols.length);

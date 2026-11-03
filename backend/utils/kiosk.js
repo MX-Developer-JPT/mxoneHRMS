@@ -88,7 +88,7 @@ export function publicVisit(v) {
   return {
     id: v.id, visitor_name: v.visitor_name, company: v.company || '', host_name: v.host_name || '', purpose: v.purpose || '',
     mobile_masked: maskMobile(v.mobile_number), expected_arrival: v.expected_arrival || null, status: v.status,
-    location_name: v.location_name, has_photo: !!v.photo_url,
+    location_name: v.location_name, has_photo: !!v.photo_url, visitor_count: v.visitor_count || 1, companion_names: v.companion_names || [], vehicle_number: v.vehicle_number || '',
   };
 }
 
@@ -96,6 +96,15 @@ export function publicVisit(v) {
 export function safePhotoUrl(u) {
   const s = String(u || '').trim();
   return /^(https?:\/\/[^/]+)?\/api\/upload\/file\/[0-9a-f-]{36}(\.[a-z0-9]{2,5})?$/i.test(s) ? s : '';
+}
+
+// A single entry can cover several people: visitor_count includes the named visitor; companion_names are the others.
+export function groupFields(count, names, { requireNames = false } = {}) {
+  const n = Math.floor(Number(count));
+  const visitor_count = Number.isFinite(n) ? Math.min(20, Math.max(1, n)) : 1;
+  const list = (Array.isArray(names) ? names : []).map(x => cleanText(x, 80)).filter(Boolean).slice(0, visitor_count - 1);
+  if (requireNames && list.length < visitor_count - 1) return { error: `Please enter the name of each of the ${visitor_count - 1} other visitor${visitor_count > 2 ? 's' : ''}.` };
+  return { visitor_count, companion_names: list };
 }
 
 export const ID_TYPES = ['Aadhaar', 'Driving Licence', 'Voter ID', 'Passport', 'PAN', 'Company ID', 'Other'];

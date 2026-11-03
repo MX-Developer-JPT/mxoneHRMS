@@ -39,7 +39,7 @@ const CATEGORIES = [
 const emptyForm = {
   visitor_name: '', mobile_number: '', visitor_email: '', company: '', visitor_category: 'guest', purpose: '',
   expected_arrival: '', expected_departure: '', host_user_id: '', location_name: '', vehicle_number: '',
-  meeting_location: '', special_instructions: '',
+  meeting_location: '', special_instructions: '', visitor_count: 1, companions_text: '',
 };
 
 export default function MyVisitors() {
@@ -96,7 +96,7 @@ export default function MyVisitors() {
     }
     setSubmitting(true);
     try {
-      const res = await base44.functions.invoke('createVisitorInvite', form);
+      const res = await base44.functions.invoke('createVisitorInvite', { ...form, companion_names: String(form.companions_text || '').split('\n').map(x => x.trim()).filter(Boolean) });
       const d = res.data || res;
       if (!d.success) { toast.error(d.error || 'Failed to create invite'); return; }
       toast.success(d.visitor.status === 'approved' ? 'Visitor invited — QR pass ready' : 'Invite sent — awaiting host approval');
@@ -309,6 +309,16 @@ export default function MyVisitors() {
                     </Popover>
                   </div>
                   <div>
+                    <Label>Number of visitors (this entry)</Label>
+                    <Input type="number" min={1} max={20} value={form.visitor_count} onChange={e => setForm({ ...form, visitor_count: Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 1)) })} />
+                  </div>
+                  {form.visitor_count > 1 && (
+                    <div className="sm:col-span-2">
+                      <Label>Names of the other {form.visitor_count - 1} visitor(s) — one per line</Label>
+                      <textarea className="w-full min-h-[70px] rounded-md border bg-background px-3 py-2 text-sm" value={form.companions_text} onChange={e => setForm({ ...form, companions_text: e.target.value })} />
+                    </div>
+                  )}
+                  <div>
                     <Label>Vehicle Number</Label>
                     <Input value={form.vehicle_number} onChange={e => setForm({ ...form, vehicle_number: e.target.value })} />
                   </div>
@@ -362,6 +372,7 @@ export default function MyVisitors() {
                           <span className="inline-flex items-center gap-1"><Phone className="w-3 h-3" />{v.mobile_number}</span>
                           {v.visitor_email && <span className="inline-flex items-center gap-1"><Mail className="w-3 h-3" />{v.visitor_email}</span>}
                           <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3" />{safeDate(v.expected_arrival, 'dd MMM, h:mm a')}</span>
+                          {(v.visitor_count || 1) > 1 && <span className="inline-flex items-center gap-1"><Users className="w-3 h-3" />{v.visitor_count} people</span>}
                           {v.vehicle_number && <span className="inline-flex items-center gap-1"><Car className="w-3 h-3" />{v.vehicle_number}</span>}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">{v.purpose}{tab === 'mine' ? ` · Host: ${v.host_name}` : ` · Invited by: ${v.created_by_name}`}</p>

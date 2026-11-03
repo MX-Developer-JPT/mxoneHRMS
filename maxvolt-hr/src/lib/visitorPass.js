@@ -128,6 +128,7 @@ export async function generateVisitorPassImage(visitor, location) {
   ctx.fillText(visitor.expected_departure ? safeTime(visitor.expected_departure) : 'Not specified', col2X, rowY + 28);
   y = rowY + 60;
 
+  if ((visitor.visitor_count || 1) > 1) { field('Visitors', `${visitor.visitor_count} people`); }
   if (visitor.vehicle_number) { field('Vehicle Number', visitor.vehicle_number); }
 
   // Divider

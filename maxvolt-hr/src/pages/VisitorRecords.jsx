@@ -294,6 +294,8 @@ export default function VisitorRecords() {
                 <Field label="Purpose">{selected.purpose}</Field>
                 <Field label="Meeting location">{selected.meeting_location}</Field>
                 <Field label="Registered by">{selected.created_by_name}</Field>
+                <Field label="Number of visitors">{selected.visitor_count || 1}</Field>
+                <Field label="Other visitors">{(selected.companion_names || []).join(', ')}</Field>
                 <Field label="Vehicle number">{selected.vehicle_number}</Field>
                 <Field label="Special instructions">{selected.special_instructions}</Field>
                 <Field label="ID proof reference">{selected.id_proof_reference}</Field>

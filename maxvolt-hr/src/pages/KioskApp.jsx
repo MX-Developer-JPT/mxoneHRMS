@@ -335,7 +335,7 @@ function ConfirmScreen({ flow, goHome, setFlow, go }) {
     <div className="min-h-screen px-8 py-8 max-w-4xl mx-auto space-y-6">
       <TopBar title="Please confirm your details" onBack={goHome} onHome={goHome} />
       <div className="rounded-3xl bg-white border-2 border-slate-200 p-8 grid sm:grid-cols-2 gap-x-8 gap-y-5">
-        {[['Name', v.visitor_name], ['Company', v.company || '—'], ['You are meeting', v.host_name], ['Purpose', v.purpose || '—'], ['Mobile', v.mobile_masked]].map(([k, val]) => (
+        {[['Name', v.visitor_name], ['Company', v.company || '—'], ['You are meeting', v.host_name], ['Purpose', v.purpose || '—'], ['Mobile', v.mobile_masked], ['People', (v.visitor_count || 1) > 1 ? `${v.visitor_count}${v.companion_names?.length ? ` (with ${v.companion_names.join(', ')})` : ''}` : '1'], ...(v.vehicle_number ? [['Vehicle', v.vehicle_number]] : [])].map(([k, val]) => (
           <div key={k}><div className="text-base text-slate-400 font-medium">{k}</div><div className="text-2xl font-semibold text-slate-900 break-words">{val}</div></div>
         ))}
       </div>
@@ -401,7 +401,15 @@ function HostPicker({ value, onChange }) {
   );
 }
 
-const emptyWalk = { visitor_name: '', mobile_number: '', visitor_email: '', company: '', visitor_category: 'guest', purpose: '', duration_minutes: 0, vehicle_number: '', id_type: '', id_number: '' };
+const emptyWalk = { visitor_name: '', mobile_number: '', visitor_email: '', company: '', visitor_category: 'guest', purpose: '', duration_minutes: 0, vehicle_number: '', has_vehicle: false, visitor_count: 1, companion_names: [], id_type: '', id_number: '' };
+
+const Stepper = ({ value, onChange, min = 1, max = 20 }) => (
+  <div className="inline-flex items-center gap-4">
+    <button type="button" onClick={() => onChange(Math.max(min, value - 1))} className="h-14 w-14 rounded-full bg-white border-2 border-slate-300 text-3xl font-semibold active:bg-slate-100" aria-label="Fewer">−</button>
+    <span className="text-4xl font-bold w-14 text-center tabular-nums">{value}</span>
+    <button type="button" onClick={() => onChange(Math.min(max, value + 1))} className="h-14 w-14 rounded-full bg-white border-2 border-slate-300 text-3xl font-semibold active:bg-slate-100" aria-label="More">+</button>
+  </div>
+);
 
 function WalkInScreen({ goHome, setFlow, go }) {
   const [step, setStep] = useState(1); const [f, setF] = useState(emptyWalk); const [host, setHost] = useState(null);
@@ -412,8 +420,8 @@ function WalkInScreen({ goHome, setFlow, go }) {
   const mobileOk = /^[6-9]\d{9}$/.test(f.mobile_number.replace(/\D/g, '').slice(-10)) && f.mobile_number.replace(/\D/g, '').length >= 10;
   const emailOk = !f.visitor_email || /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(f.visitor_email);
   const can = {
-    1: f.visitor_name.trim().length >= 2 && mobileOk && emailOk,
-    2: !!host && f.purpose.trim().length >= 3,
+    1: f.visitor_name.trim().length >= 2 && mobileOk && emailOk && f.companion_names.slice(0, f.visitor_count - 1).every(x => x.trim().length >= 2) && f.companion_names.length >= f.visitor_count - 1,
+    2: !!host && f.purpose.trim().length >= 3 && (!f.has_vehicle || f.vehicle_number.trim().length >= 4),
     3: !!photo || noCam,
     4: ok,
   }[step];
@@ -421,9 +429,9 @@ function WalkInScreen({ goHome, setFlow, go }) {
     setBusy(true); setErr('');
     try {
       let photo_url = ''; if (photo?.blob) photo_url = await uploadPhoto(photo.blob);
-      const r = await kapi('/walkin', { method: 'POST', body: { ...f, host_user_id: host.id, photo_url, photo_skipped: noCam && !photo_url, declaration: ok } });
+      const r = await kapi('/walkin', { method: 'POST', body: { ...f, companion_names: f.companion_names.slice(0, f.visitor_count - 1), host_user_id: host.id, photo_url, photo_skipped: noCam && !photo_url, declaration: ok } });
       if (r.data?.success) {
-        setFlow({ result: { kind: 'walkin', message: r.data.message, host: r.data.host_name, name: f.visitor_name, claim: r.data.claim, visit: { visitor_name: f.visitor_name, company: f.company, host_name: r.data.host_name, purpose: f.purpose, mobile_masked: 'XXXXXX' + f.mobile_number.replace(/\D/g, '').slice(-4), has_photo: !!photo_url } } });
+        setFlow({ result: { kind: 'walkin', message: r.data.message, host: r.data.host_name, name: f.visitor_name, claim: r.data.claim, visit: { visitor_name: f.visitor_name, company: f.company, host_name: r.data.host_name, purpose: f.purpose, mobile_masked: 'XXXXXX' + f.mobile_number.replace(/\D/g, '').slice(-4), has_photo: !!photo_url, visitor_count: f.visitor_count, companion_names: f.companion_names, vehicle_number: f.has_vehicle ? f.vehicle_number.toUpperCase() : '' } } });
         go('done'); return;
       }
       setErr(r.data?.error || 'Your registration could not be submitted.');
@@ -442,6 +450,12 @@ function WalkInScreen({ goHome, setFlow, go }) {
           <Field label="Mobile number" required hint={f.mobile_number && !mobileOk ? 'Enter a valid 10-digit mobile number' : ''}><input className={inputCls} inputMode="tel" value={f.mobile_number} onChange={set('mobile_number')} autoComplete="off" maxLength={16} /></Field>
           <Field label="Email (optional)" hint={!emailOk ? 'That email does not look right' : ''}><input className={inputCls} type="email" value={f.visitor_email} onChange={set('visitor_email')} autoCapitalize="none" autoComplete="off" maxLength={120} /></Field>
           <Field label="Company / organisation"><input className={inputCls} value={f.company} onChange={set('company')} autoComplete="off" maxLength={100} /></Field>
+          <div className="sm:col-span-2 rounded-3xl bg-white border-2 border-slate-200 p-6 space-y-4">
+            <div className="flex items-center justify-between gap-4 flex-wrap"><div><div className="text-xl font-semibold text-slate-800">How many people are visiting?</div><div className="text-base text-slate-500">Including you. One registration covers everyone in your group.</div></div>
+              <Stepper value={f.visitor_count} onChange={(n) => setF(p => ({ ...p, visitor_count: n, companion_names: Array.from({ length: n - 1 }, (_, i) => p.companion_names[i] || '') }))} /></div>
+            {f.visitor_count > 1 && <div className="grid sm:grid-cols-2 gap-4">{Array.from({ length: f.visitor_count - 1 }, (_, i) => (
+              <Field key={i} label={`Visitor ${i + 2} — full name`} required><input className={inputCls} value={f.companion_names[i] || ''} maxLength={80} autoComplete="off" onChange={e => setF(p => { const c = [...p.companion_names]; c[i] = e.target.value; return { ...p, companion_names: c }; })} /></Field>))}</div>}
+          </div>
           <div className="sm:col-span-2"><div className="text-base font-medium text-slate-600 mb-2">I am a</div>
             <div className="flex flex-wrap gap-3">{CATEGORIES.map(([k, l]) => <button key={k} onClick={() => setF(p => ({ ...p, visitor_category: k }))} className={`h-14 px-6 rounded-full text-lg font-medium border-2 ${f.visitor_category === k ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}>{l}</button>)}</div></div>
         </div>
@@ -452,7 +466,9 @@ function WalkInScreen({ goHome, setFlow, go }) {
           <Field label="Purpose of visit" required><input className={inputCls} value={f.purpose} onChange={set('purpose')} autoComplete="off" maxLength={200} placeholder="e.g. Product demo, interview, delivery" /></Field>
           <div><div className="text-base font-medium text-slate-600 mb-2">Expected duration</div>
             <div className="flex flex-wrap gap-3">{DURATIONS.map(([m, l]) => <button key={m} onClick={() => setF(p => ({ ...p, duration_minutes: m }))} className={`h-14 px-6 rounded-full text-lg font-medium border-2 ${f.duration_minutes === m ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}>{l}</button>)}</div></div>
-          <Field label="Vehicle number (optional)"><input className={`${inputCls} uppercase`} value={f.vehicle_number} onChange={set('vehicle_number')} autoComplete="off" maxLength={20} /></Field>
+          <div><div className="text-base font-medium text-slate-600 mb-2">Are you coming with a vehicle?</div>
+            <div className="flex gap-3">{[[false, 'No vehicle'], [true, 'Yes, I have a vehicle']].map(([k, l]) => <button key={String(k)} onClick={() => setF(p => ({ ...p, has_vehicle: k, vehicle_number: k ? p.vehicle_number : '' }))} className={`h-14 px-6 rounded-full text-lg font-medium border-2 ${f.has_vehicle === k ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}>{l}</button>)}</div>
+            {f.has_vehicle && <div className="mt-4"><Field label="Vehicle number" required><input className={`${inputCls} uppercase`} value={f.vehicle_number} onChange={set('vehicle_number')} autoComplete="off" maxLength={20} placeholder="e.g. MP09AB1234" /></Field></div>}</div>
         </div>
       )}
       {step === 3 && (
@@ -467,7 +483,7 @@ function WalkInScreen({ goHome, setFlow, go }) {
       {step === 4 && (
         <div className="space-y-6">
           <div className="rounded-3xl bg-white border-2 border-slate-200 p-8 grid sm:grid-cols-2 gap-x-8 gap-y-5">
-            {[['Name', f.visitor_name], ['Mobile', f.mobile_number], ['Company', f.company || '—'], ['Meeting', host?.name], ['Purpose', f.purpose]].map(([k, v]) => <div key={k}><div className="text-base text-slate-400 font-medium">{k}</div><div className="text-2xl font-semibold text-slate-900 break-words">{v}</div></div>)}
+            {[['Name', f.visitor_name], ['Mobile', f.mobile_number], ['Company', f.company || '—'], ['Meeting', host?.name], ['Purpose', f.purpose], ['People', f.visitor_count > 1 ? `${f.visitor_count} (with ${f.companion_names.join(', ')})` : '1'], ['Vehicle', f.has_vehicle ? f.vehicle_number.toUpperCase() : 'None']].map(([k, v]) => <div key={k}><div className="text-base text-slate-400 font-medium">{k}</div><div className="text-2xl font-semibold text-slate-900 break-words">{v}</div></div>)}
           </div>
           <GuidelinesBox accepted={ok} onChange={setOk} />
         </div>

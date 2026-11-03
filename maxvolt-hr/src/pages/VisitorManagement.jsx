@@ -60,7 +60,7 @@ const istDate = (s) => { if (!s) return null; const d = new Date(String(s).repla
 const istNow = () => istDate(nowIST());
 const todayStr = () => nowIST().slice(0, 10);
 
-const emptyWalkIn = { visitor_name: '', mobile_number: '', visitor_email: '', company: '', visitor_category: 'guest', purpose: '', host_user_id: '', location_name: '', vehicle_number: '' };
+const emptyWalkIn = { visitor_name: '', mobile_number: '', visitor_email: '', company: '', visitor_category: 'guest', purpose: '', host_user_id: '', location_name: '', vehicle_number: '', visitor_count: 1, companions_text: '' };
 
 export default function VisitorManagement() {
   const [user, setUser] = useState(null);
@@ -178,7 +178,7 @@ export default function VisitorManagement() {
         const up = await base44.integrations.Core.UploadFile({ file: walkInPhoto });
         photo_url = up.file_url;
       }
-      const res = await base44.functions.invoke('registerWalkInVisitor', { ...walkInForm, photo_url });
+      const res = await base44.functions.invoke('registerWalkInVisitor', { ...walkInForm, companion_names: String(walkInForm.companions_text || '').split('\n').map(x => x.trim()).filter(Boolean), photo_url });
       const d = res.data || res;
       if (!d.success) { toast.error(d.error || 'Failed to register visitor'); return; }
       toast.success('Walk-in registered — approval request sent to host');
@@ -345,6 +345,7 @@ export default function VisitorManagement() {
             {v.company && <span className="inline-flex items-center gap-1"><Building2 className="w-3 h-3" />{v.company}</span>}
             <span className="inline-flex items-center gap-1"><Phone className="w-3 h-3" />{v.mobile_number}</span>
             <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3" />{safeDate(v.expected_arrival, 'dd MMM, h:mm a')}</span>
+            {(v.visitor_count || 1) > 1 && <span className="inline-flex items-center gap-1"><Users className="w-3 h-3" />{v.visitor_count} people</span>}
             {v.vehicle_number && <span className="inline-flex items-center gap-1"><Car className="w-3 h-3" />{v.vehicle_number}</span>}
           </p>
           <p className="text-xs text-gray-500 mt-0.5">{v.purpose} · Host: {v.host_name}{v.source === 'walk_in' ? ' · Walk-in' : ''}</p>
@@ -516,6 +517,8 @@ export default function VisitorManagement() {
                   <SelectContent>{CATEGORIES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
+              <div><Label>Number of visitors (this entry)</Label><Input type="number" min={1} max={20} value={walkInForm.visitor_count} onChange={e => setWalkInForm({ ...walkInForm, visitor_count: Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 1)) })} /></div>
+              {walkInForm.visitor_count > 1 && <div className="col-span-2"><Label>Names of the other {walkInForm.visitor_count - 1} visitor(s) — one per line</Label><textarea className="w-full min-h-[70px] rounded-md border bg-background px-3 py-2 text-sm" value={walkInForm.companions_text} onChange={e => setWalkInForm({ ...walkInForm, companions_text: e.target.value })} /></div>}
               <div><Label>Vehicle Number</Label><Input value={walkInForm.vehicle_number} onChange={e => setWalkInForm({ ...walkInForm, vehicle_number: e.target.value })} /></div>
             </div>
             <div><Label>Purpose *</Label><Input value={walkInForm.purpose} onChange={e => setWalkInForm({ ...walkInForm, purpose: e.target.value })} required /></div>

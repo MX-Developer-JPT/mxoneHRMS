@@ -1,6 +1,6 @@
 // Visitor kiosk — pure rule tests. Run: node backend/tests/kiosk.test.mjs
 import assert from 'node:assert/strict';
-import { parseInvitationCode, validateVisit, publicVisit, safePhotoUrl, idReference, last10, maskMobile, makeLimiter, summariseByLocation, durationToDeparture, cleanText } from '../utils/kiosk.js';
+import { parseInvitationCode, validateVisit, publicVisit, safePhotoUrl, idReference, last10, maskMobile, makeLimiter, summariseByLocation, durationToDeparture, cleanText, groupFields } from '../utils/kiosk.js';
 let n = 0; const t = (name, fn) => { fn(); n++; console.log('ok  ', name); };
 
 const QR = '11111111-2222-3333-4444-555555555555';
@@ -70,6 +70,13 @@ t('location report counts every status, per location', () => {
   const d = rows.find(r => r.location === 'Duhai');
   assert.deepEqual([d.total, d.walk_in, d.invited, d.pending, d.approved, d.rejected, d.inside, d.checked_out, d.via_kiosk], [5, 2, 3, 1, 3, 1, 1, 1, 2]);
   assert.equal(rows.find(r => r.location === 'Corporate Office').cancelled, 1);
+});
+
+t('group entries: count is 1-20, names trimmed, kiosk can demand every name', () => {
+  assert.deepEqual(groupFields(undefined, undefined), { visitor_count: 1, companion_names: [] });
+  assert.equal(groupFields(99, []).visitor_count, 20); assert.equal(groupFields(-3, []).visitor_count, 1);
+  assert.deepEqual(groupFields(3, [' Raj ', '', 'Sita', 'Extra']), { visitor_count: 3, companion_names: ['Raj', 'Sita'] });
+  assert.match(groupFields(3, ['Raj'], { requireNames: true }).error, /2 other visitors/); assert.equal(groupFields(2, ['Raj'], { requireNames: true }).error, undefined);
 });
 
 console.log(`\n${n} kiosk rule checks passed`);
