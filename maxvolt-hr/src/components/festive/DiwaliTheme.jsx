@@ -22,10 +22,10 @@ function useFireworks(ref, enabled) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const resize = () => { w = window.innerWidth; h = window.innerHeight; canvas.width = w * dpr; canvas.height = h * dpr; canvas.style.width = w + 'px'; canvas.style.height = h + 'px'; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); };
     resize(); window.addEventListener('resize', resize);
-    const MAX_SPARKS = w < 700 ? 420 : 900;
+    const MAX_SPARKS = w < 700 ? 320 : 900;
     const rnd = (a, b) => a + Math.random() * (b - a), pick = (a) => a[(Math.random() * a.length) | 0];
     const burst = (x, y, pal, kind) => {
-      const n = kind === 'ring' ? 46 : kind === 'willow' ? 60 : 70;
+      const n = Math.round((kind === 'ring' ? 46 : kind === 'willow' ? 60 : 70) * (w < 700 ? 0.65 : 1));
       for (let i = 0; i < n && sparks.length < MAX_SPARKS; i++) {
         const a = kind === 'ring' ? (i / n) * Math.PI * 2 : Math.random() * Math.PI * 2;
         const sp = kind === 'ring' ? 3.2 : rnd(1, kind === 'willow' ? 3.2 : 4.6);
@@ -41,7 +41,7 @@ function useFireworks(ref, enabled) {
       if (document.hidden) { last = t; return; }
       const dt = Math.min(2, (t - last) / 16.7 || 1); last = t;
       ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.fillRect(0, 0, w, h); ctx.globalCompositeOperation = 'lighter';
-      if (t > nextLaunch) { launch(); nextLaunch = t + rnd(900, 2300); }
+      if (t > nextLaunch) { launch(); nextLaunch = t + rnd(900, 2300) * (w < 700 ? 1.4 : 1); }
       if (t > nextFountain) { fountain(); nextFountain = t + rnd(6000, 11000); }
       for (let i = rockets.length - 1; i >= 0; i--) {
         const r = rockets[i]; r.x += r.vx * dt; r.y += r.vy * dt; r.vy *= 0.985;
@@ -89,7 +89,7 @@ export default function DiwaliTheme() {
   if (!festiveActive()) return null;
   const turnOff = () => { try { localStorage.setItem(OFF_KEY, '1'); } catch { /* private mode */ } setOff(true); };
   if (off) return (
-    <button onClick={() => { try { localStorage.removeItem(OFF_KEY); } catch { /* */ } setOff(false); }} className="fixed bottom-3 left-3 z-40 text-[11px] rounded-full bg-white/90 border border-amber-300 text-amber-800 px-2.5 py-1 shadow hover:bg-amber-50" aria-label="Turn the Diwali theme back on"><Sparkles className="inline w-3 h-3 mr-1" />Diwali theme</button>
+    <button onClick={() => { try { localStorage.removeItem(OFF_KEY); } catch { /* */ } setOff(false); }} className="fixed bottom-[calc(72px+env(safe-area-inset-bottom))] md:bottom-3 left-3 z-40 text-[11px] rounded-full bg-white/90 border border-amber-300 text-amber-800 px-2.5 py-1 shadow hover:bg-amber-50" aria-label="Turn the Diwali theme back on"><Sparkles className="inline w-3 h-3 mr-1" />Diwali theme</button>
   );
 
   return (
@@ -101,6 +101,10 @@ export default function DiwaliTheme() {
         @keyframes dw-banner { 0% { transform: translateY(-110%); } 100% { transform: translateY(0); } }
         @keyframes dw-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
         .dw-flame { transform-origin: 32px 22px; animation: dw-flame 1.3s ease-in-out infinite; }
+        .dw-bulb { width: 6px; height: 9px; }
+        .dw-bulb.dw-hi { margin-top: 4px; } .dw-bulb.dw-lo { margin-top: 11px; }
+        .dw-strand { height: 30px; } .dw-strand svg { height: 30px; }
+        @media (min-width: 768px) { .dw-bulb { width: 9px; height: 12px; } .dw-bulb.dw-hi { margin-top: 8px; } .dw-bulb.dw-lo { margin-top: 16px; } .dw-strand, .dw-strand svg { height: 48px; } }
         @media (prefers-reduced-motion: reduce) { .dw-flame, .dw-bulb, .dw-lantern, .dw-banner { animation: none !important; } }
       `}</style>
 
@@ -108,26 +112,26 @@ export default function DiwaliTheme() {
       <canvas ref={canvasRef} aria-hidden="true" className="fixed inset-0 z-30 pointer-events-none" />
 
       {/* string of lights */}
-      <div aria-hidden="true" className="fixed top-0 left-0 right-0 z-40 pointer-events-none h-12 overflow-hidden">
+      <div aria-hidden="true" className="dw-strand fixed top-0 left-0 right-0 z-40 pointer-events-none overflow-hidden" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
         <svg width="100%" height="48" viewBox="0 0 1300 48" preserveAspectRatio="none" className="absolute inset-0">
           <path d="M0 6 Q 50 30 100 8 T 200 8 T 300 8 T 400 8 T 500 8 T 600 8 T 700 8 T 800 8 T 900 8 T 1000 8 T 1100 8 T 1200 8 T 1300 8" stroke="#5b3a14" strokeWidth="1.5" fill="none" />
         </svg>
         <div className="absolute inset-x-0 top-0 flex justify-between px-1">
           {bulbs.map(b => (
-            <span key={b.i} className="dw-bulb block rounded-full" style={{ width: 9, height: 12, marginTop: b.i % 2 ? 16 : 8, background: b.c, boxShadow: `0 0 10px 3px ${b.c}99`, animation: `dw-twinkle ${1.1 + (b.i % 4) * 0.3}s ease-in-out ${b.d}s infinite` }} />
+            <span key={b.i} className={`dw-bulb block rounded-full ${b.i % 2 ? 'dw-lo' : 'dw-hi'}`} style={{ background: b.c, boxShadow: `0 0 8px 2px ${b.c}99`, animation: `dw-twinkle ${1.1 + (b.i % 4) * 0.3}s ease-in-out ${b.d}s infinite` }} />
           ))}
         </div>
       </div>
 
-      {/* greeting ribbon */}
-      <div className="dw-banner fixed top-9 left-1/2 -translate-x-1/2 z-40 pointer-events-none" style={{ animation: 'dw-banner .9s cubic-bezier(.2,.8,.2,1) both' }}>
-        <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-amber-300/80 bg-gradient-to-r from-amber-50 via-white to-amber-50 px-4 py-1.5 shadow-lg shadow-amber-200/60">
+      {/* greeting ribbon — in the page flow on phones (never on top of content), floating under the lights on larger screens */}
+      <div className="relative z-40 flex justify-center pointer-events-none px-2 pt-7 md:fixed md:inset-x-0 md:top-9 md:pt-0">
+        <div className="dw-banner pointer-events-auto flex items-center gap-1.5 md:gap-2 rounded-full border border-amber-300/80 bg-gradient-to-r from-amber-50 via-white to-amber-50 px-2.5 py-1 md:px-4 md:py-1.5 shadow-lg shadow-amber-200/60 max-w-full" style={{ animation: 'dw-banner .9s cubic-bezier(.2,.8,.2,1) both' }}>
           <Diya size={26} />
           <div className="leading-tight text-center">
-            <div className="text-sm sm:text-base font-extrabold tracking-wide bg-clip-text text-transparent" style={{ backgroundImage: 'linear-gradient(90deg,#b45309,#f59e0b,#dc2626,#f59e0b,#b45309)', backgroundSize: '200% 100%', animation: 'dw-shimmer 4s linear infinite' }}>{FESTIVE.greeting} 🪔</div>
+            <div className="text-xs md:text-base font-extrabold tracking-wide whitespace-nowrap bg-clip-text text-transparent" style={{ backgroundImage: 'linear-gradient(90deg,#b45309,#f59e0b,#dc2626,#f59e0b,#b45309)', backgroundSize: '200% 100%', animation: 'dw-shimmer 4s linear infinite' }}>{FESTIVE.greeting} 🪔</div>
             <div className="hidden sm:block text-[10px] text-amber-900/70">{FESTIVE.sub}</div>
           </div>
-          <Diya size={26} delay={0.4} />
+          <Diya size={26} delay={0.4} className="hidden md:block" />
           <button onClick={turnOff} className="ml-1 rounded-full p-0.5 text-amber-800/60 hover:text-amber-900 hover:bg-amber-100" aria-label="Turn off the Diwali theme" title="Turn off the Diwali theme"><X className="w-3.5 h-3.5" /></button>
         </div>
       </div>
@@ -136,13 +140,13 @@ export default function DiwaliTheme() {
       {!reduced && (
         <div aria-hidden="true" className="fixed inset-0 z-30 pointer-events-none overflow-hidden">
           {lanterns.map(l => (
-            <span key={l.i} className="dw-lantern absolute bottom-0 rounded-b-xl rounded-t-md" style={{ left: `${l.left}%`, width: l.size, height: l.size * 1.25, background: 'radial-gradient(circle at 50% 70%, #ffe29a, #ff9f1c 60%, #d62828)', boxShadow: '0 0 18px 6px rgba(255,170,40,.55)', opacity: 0, animation: `dw-rise ${l.dur}s linear ${l.delay}s infinite` }} />
+            <span key={l.i} className={`dw-lantern absolute bottom-0 rounded-b-xl rounded-t-md ${l.i >= 4 ? 'hidden md:block' : ''}`} style={{ left: `${l.left}%`, width: l.size, height: l.size * 1.25, background: 'radial-gradient(circle at 50% 70%, #ffe29a, #ff9f1c 60%, #d62828)', boxShadow: '0 0 18px 6px rgba(255,170,40,.55)', opacity: 0, animation: `dw-rise ${l.dur}s linear ${l.delay}s infinite` }} />
           ))}
         </div>
       )}
 
       {/* lamps along the bottom corners */}
-      <div aria-hidden="true" className="fixed bottom-14 md:bottom-0 left-0 right-0 z-30 pointer-events-none flex items-end justify-between px-2 sm:px-6 pb-1">
+      <div aria-hidden="true" className="fixed bottom-[calc(66px+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 z-30 pointer-events-none flex items-end justify-between px-1 md:px-6 pb-1 scale-[.72] md:scale-100 origin-bottom">
         <div className="flex items-end gap-1 sm:gap-3"><Diya size={44} /><Diya size={58} delay={0.3} /><Diya size={44} delay={0.7} className="hidden sm:block" /></div>
         <div className="flex items-end gap-1 sm:gap-3"><Diya size={44} delay={0.5} className="hidden sm:block" /><Diya size={58} delay={0.9} /><Diya size={44} delay={0.2} /></div>
       </div>
