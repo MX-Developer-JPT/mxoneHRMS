@@ -9,6 +9,7 @@ import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
+import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -1041,6 +1042,17 @@ async function hasRole(cu, roles) {
   } catch { return false; }
 }
 const HR_ROLES = ['hr', 'admin'];
+
+// Background geofencing runs natively on the phone with no JS and no signed-in session, so it carries its own
+// long-lived "device token". It is signed with a DIFFERENT secret and is only honoured by the two geofence
+// functions below — a stolen one cannot open the rest of the app (the entities/auth routes never accept it).
+const GEO_SECRET = createHash('sha256').update('maxvolt-geofence-device:' + JWT_SECRET).digest('hex');
+const GEO_DEVICE_FNS = new Set(['nativeGeofenceEvent', 'getMyGeofence']);
+const getGeoDeviceUser = (req) => {
+  const t = req.headers.authorization?.replace('Bearer ', '');
+  if (!t) return null;
+  try { const d = jwt.verify(t, GEO_SECRET); return d.scope === 'geofence' && d.id ? { id: d.id, email: d.email, device: true } : null; } catch { return null; }
+};
 
 // Some Attendance rows can legitimately exist in duplicate for the same
 // (user_id, date) — the well-known code-map mismatch case (JSON user_id
@@ -2445,7 +2457,8 @@ function computeRegime(regime, { grossSalary, hraExemption = 0, chapterVIA = 0, 
 router.post('/:name', async (req, res) => {
   const { name } = req.params;
   const p = req.body || {};
-  const cu = getUser(req);
+  let cu = getUser(req);
+  if (!cu && GEO_DEVICE_FNS.has(name)) cu = getGeoDeviceUser(req);
 
   try {
   // Learning & Development module (routes/ld.js) — every ld_* function
@@ -4111,6 +4124,15 @@ router.post('/:name', async (req, res) => {
     }
 
     /* ── Native geofencing (Android wrapper): fence config + enter/exit events ── */
+    // A year-long token the phone's native tracker keeps for itself, so background geofencing keeps working
+    // even if the employee does not open the app for more than the 30-day login period.
+    case 'issueGeofenceDeviceToken': {
+      if (!cu || cu.device) return res.status(401).json({ error: 'Unauthorized' });
+      const gtUser = await one('SELECT id, email FROM users WHERE id=$1', [cu.id]);
+      if (!gtUser) return res.status(401).json({ error: 'Unauthorized' });
+      return res.json({ success: true, token: jwt.sign({ id: gtUser.id, email: gtUser.email, scope: 'geofence' }, GEO_SECRET, { expiresIn: '365d' }), expires_in_days: 365 });
+    }
+
     case 'getMyGeofence': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const gfEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);

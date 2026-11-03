@@ -384,8 +384,19 @@ export async function pullNativeDiag() {
 async function persistHeadless(Capacitor) {
   if (Capacitor.getPlatform() !== 'android') return;
   const BG = nativePlugin();
+  // The native tracker keeps its own long-lived, geofence-only token so it keeps working when the app is not opened for weeks.
+  // Falls back to the normal login token if the server can't issue one (older server / offline).
+  let token = '';
+  try {
+    const cached = JSON.parse(localStorage.getItem('geo_device_token_v1') || 'null');
+    if (cached?.token && cached.uid === userId && Date.now() - cached.at < 90 * 86400000) token = cached.token;
+    else {
+      const r = await base44.functions.invoke('issueGeofenceDeviceToken', {}); const d = r?.data || r;
+      if (d?.success && d.token) { token = d.token; localStorage.setItem('geo_device_token_v1', JSON.stringify({ token, uid: userId, at: Date.now() })); }
+    }
+  } catch { /* use the login token below */ }
   await BG.persistHeadlessState({
-    token: localStorage.getItem('base44_access_token') || '',
+    token: token || localStorage.getItem('base44_access_token') || '',
     fencesJson: JSON.stringify(fences),
     apiBase: window.location.origin,
   });
@@ -449,7 +460,7 @@ export async function stopBackgroundGeofence() {
   await stopEngineInternals();
   if (flushRetry) { clearTimeout(flushRetry); flushRetry = null; }
   try { localStorage.removeItem(PERSIST_KEY); } catch { /* */ }
-  fences = []; believedIn = null; geofenceOwned = false; currentFenceId = null; lastFix = null; userId = null;
+  fences = []; believedIn = null; geofenceOwned = false; currentFenceId = null; lastFix = null; userId = null; try { localStorage.removeItem('geo_device_token_v1'); } catch { /* storage unavailable */ }
   emit({ status: 'idle', liveState: 'idle', distance: null, radius: null, fenceName: null, accuracy: null, lastFixAt: null, believedIn: null, pending: 0, fences: [] });
 }
 
