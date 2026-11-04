@@ -268,7 +268,9 @@ export function buildSessions(rawPunches) {
     punch_count:    deduped.length,
     is_in_progress,
     check_in_time,
-    check_out_time,
+    // While a session is open the day has no "last out" yet — an earlier session's check-out must not make the day read as
+    // finished (dashboards show "Day Complete" / half day) once the employee starts the next session.
+    check_out_time: is_in_progress ? null : check_out_time,
     working_hours: Math.round(total_working_minutes / 60 * 100) / 100,
     break_hours:   Math.round(total_break_minutes   / 60 * 100) / 100,
   };

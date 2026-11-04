@@ -19,6 +19,16 @@ export default function EmployeeDashboard({ user }) {
 
   useEffect(() => { loadData().catch(e => { console.error('EmployeeDashboard:', e.message); setLoading(false); }); }, []);
 
+  // Keep today's attendance live: a new session started on the phone (geofence / selfie) or by a biometric punch shows up
+  // here without a manual refresh — every 30 s while the page is visible, and the moment the app / tab comes back.
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === 'visible') loadData().catch(() => {}); };
+    const t = setInterval(refresh, 30000);
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', refresh); window.removeEventListener('focus', refresh); };
+  }, []);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     try { await loadData(); } catch (e) { console.error('EmployeeDashboard refresh:', e.message); }
@@ -92,7 +102,8 @@ export default function EmployeeDashboard({ user }) {
     const hasInsurance = employeeRecord?.insurance?.has_insurance || employeeRecord?.insurance_policies?.length > 0;
 
     setData({
-      todayAtt: todayAtt[0] || null,
+      // a day can hold more than one row (an old absent beside the real one): show the one that matters
+      todayAtt: todayAtt.find(a => a.is_in_progress || a.status === 'in_progress') || todayAtt.find(a => a.status !== 'absent' && a.check_in_time) || todayAtt[0] || null,
       presentDays, absentDays, leaveDays,
       uniqueAttCount: uniqueAtt.length,
       monthlyAtt,
@@ -118,8 +129,13 @@ export default function EmployeeDashboard({ user }) {
   if (!data) return <div className="p-8 text-center text-gray-400">Could not load dashboard data. Please refresh.</div>;
 
   const att = data.todayAtt;
+  // A day with several sessions: while the latest one is open the day is "in progress", whatever an earlier session's
+  // check-out said (that session on its own may have read half day / short attendance — it re-evaluates when this one closes).
+  const inProgress = !!(att?.is_in_progress || att?.status === 'in_progress');
   const checkedIn  = att?.check_in_time;
-  const checkedOut = att?.check_out_time;
+  const checkedOut = att?.check_out_time && !inProgress;
+  const DAY_LABEL = { present: 'Present', late: 'Present (late)', half_day: 'Half Day', short_attendance: 'Short Attendance', work_from_home: 'Work From Home', on_duty: 'On Duty', leave: 'Leave', absent: 'Absent' };
+  const sessionsToday = Number(att?.session_count) || (checkedIn ? 1 : 0);
 
   const leaveStatusColor = {
     pending:   'bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300',
@@ -153,7 +169,7 @@ export default function EmployeeDashboard({ user }) {
     ? 'text-blue-600 dark:text-blue-400'
     : 'text-amber-500 dark:text-amber-400';
 
-  const attStatus = checkedIn && !checkedOut ? '✅ Checked In' : checkedOut ? '🏁 Day Complete' : '⚠️ Not Marked Yet';
+  const attStatus = checkedIn && !checkedOut ? (sessionsToday > 1 ? `✅ Checked In · Session ${sessionsToday}` : '✅ Checked In') : checkedOut ? '🏁 Day Complete' : '⚠️ Not Marked Yet';
 
   return (
     <div className="p-4 md:p-6">
@@ -187,6 +203,8 @@ export default function EmployeeDashboard({ user }) {
                   {checkedOut && <span>Out: <strong className="text-foreground">{safeTime(att.check_out_time)}</strong></span>}
                   {att?.working_hours > 0 && <span>Hours: <strong className="text-foreground">{att.working_hours.toFixed(1)}h</strong></span>}
                 </div>
+                {inProgress && sessionsToday > 1 && <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">Working now · your day's status is worked out when you check out (so far {Number(att.working_hours || 0).toFixed(1)} h in earlier sessions).</p>}
+                {checkedOut && DAY_LABEL[att.status] && <p className="text-xs text-muted-foreground mt-1">Today counts as <strong className="text-foreground">{DAY_LABEL[att.status]}</strong>{sessionsToday > 1 ? ` · ${sessionsToday} sessions` : ''}</p>}
               </div>
             </div>
             {!checkedIn && (
