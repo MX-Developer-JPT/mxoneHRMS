@@ -99,7 +99,8 @@ t('garbage input is ignored; future-dated fixes are ignored', () => {
 t('quality labels: good drive, weak trip, no data, legacy trip', () => {
   const good = run(drive([[0, 0], [5000, 0]], 10, 4).fixes); assert.equal(tripQuality(good).level, 'good');
   assert.equal(tripQuality(trip()).level, 'none');
-  assert.equal(tripQuality({ points: [{}, {}, {}], distance_km: 3 }).level, 'legacy');
+  const legacySparse = { points: [{ lat: 28.6, lng: 77.2, t: '2026-11-03T05:00:00Z' }, { lat: 28.7, lng: 77.3, t: '2026-11-03T09:00:00Z' }], distance_km: 14 };
+  assert.equal(tripQuality(legacySparse).level, 'poor'); assert.ok(tripQuality(legacySparse).gap_km > 10);
   const weak = { points: [{}, {}, {}, {}], distance_km: 10, stats: { accepted: 4, rej_accuracy: 20, rej_jump: 0, rej_still: 0, gap_count: 2, gap_km: 4 } };
   assert.equal(tripQuality(weak).level, 'poor');
 });

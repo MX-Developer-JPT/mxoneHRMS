@@ -86,12 +86,26 @@ export function processPoints(ft, incoming, nowMs = Date.now()) {
   };
 }
 
+// Trips recorded before the accuracy checks have no stats: work the gaps out from the stored points.
+function legacyQuality(ft) {
+  const pts = [...(ft.points || [])].sort((a, b) => new Date(a.t) - new Date(b.t));
+  let gapKm = 0, gaps = 0, totalKm = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const d = havM(pts[i - 1], pts[i]) / 1000; totalKm += d;
+    if ((new Date(pts[i].t) - new Date(pts[i - 1].t)) / 1000 > FT.GAP_SECONDS && d * 1000 > FT.GAP_MIN_M) { gaps++; gapKm += d; }
+  }
+  gapKm = Math.round(gapKm * 100) / 100;
+  const share = totalKm > 0 ? gapKm / totalKm : 0;
+  const level = pts.length < 5 || share > 0.2 ? 'poor' : share > 0.05 ? 'fair' : 'good';
+  return { label: { good: 'GPS good', fair: 'GPS fair', poor: 'GPS weak' }[level], level, gap_km: gapKm, gap_count: gaps, weak_fix_pct: 0, legacy: true };
+}
+
 // A plain-language reliability label for a recorded trip, shown to managers next to the distance.
 export function tripQuality(ft) {
   const st = ft.stats;
   const n = (ft.points || []).length;
   if (!n) return { label: 'No GPS data', level: 'none', gap_km: 0, gap_count: 0 };
-  if (!st) return { label: 'Recorded before accuracy checks', level: 'legacy', gap_km: 0, gap_count: 0 };
+  if (!st) return legacyQuality(ft);
   const dist = Math.max(ft.distance_km || 0, 0.001);
   const gapShare = st.gap_km / dist;
   const seen = st.accepted + st.rej_accuracy;

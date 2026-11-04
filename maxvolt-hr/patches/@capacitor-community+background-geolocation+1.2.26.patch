@@ -53,7 +53,7 @@ index 9e65984..fbac81f 100644
  </manifest>
    
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
-index a92fcf9..21d94ba 100644
+index a92fcf9..6410a56 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocation.java
 @@ -12,12 +12,14 @@ import android.content.Context;
@@ -105,7 +105,7 @@ index a92fcf9..21d94ba 100644
          if (call.getBoolean("stale", false)) {
              fetchLastLocation(call);
          }
-@@ -181,6 +203,87 @@ public class BackgroundGeolocation extends Plugin {
+@@ -181,6 +203,127 @@ public class BackgroundGeolocation extends Plugin {
          }
      }
  
@@ -182,6 +182,46 @@ index a92fcf9..21d94ba 100644
 +        call.resolve(ret);
 +    }
 +
++    // ── Field Duty trip recording (see TripRecorder) ──
++    // While a trip is active every fix the location service receives is saved and uploaded natively, so the trail does
++    // not depend on the web page being alive.
++    @PluginMethod()
++    public void startTripRecording(PluginCall call) {
++        String tripId = call.getString("tripId");
++        String token = call.getString("token");
++        String apiBase = call.getString("apiBase");
++        if (tripId == null || token == null || apiBase == null) {
++            call.reject("tripId, token and apiBase are required.");
++            return;
++        }
++        TripRecorder.start(getContext(), tripId, token, apiBase);
++        call.resolve();
++    }
++
++    // Uploads what is queued (waits up to ~25 s) — called before a trip is ended so no fixes are lost.
++    @PluginMethod()
++    public void flushTripRecording(final PluginCall call) {
++        new Thread(new Runnable() {
++            public void run() {
++                boolean ok = TripRecorder.flush(getContext());
++                JSObject ret = TripRecorder.stateAsJs(getContext());
++                ret.put("ok", ok);
++                call.resolve(ret);
++            }
++        }).start();
++    }
++
++    @PluginMethod()
++    public void stopTripRecording(PluginCall call) {
++        TripRecorder.deactivate(getContext());
++        call.resolve();
++    }
++
++    @PluginMethod()
++    public void getTripRecordingState(PluginCall call) {
++        call.resolve(TripRecorder.stateAsJs(getContext()));
++    }
++
 +    // On-device log written by the native service (see BackgroundGeolocationService.diagLog).
 +    @PluginMethod()
 +    public void getHeadlessDiag(PluginCall call) {
@@ -193,7 +233,7 @@ index a92fcf9..21d94ba 100644
      @PluginMethod()
      public void removeWatcher(PluginCall call) {
          String callbackId = call.getString("id");
-@@ -196,6 +299,45 @@ public class BackgroundGeolocation extends Plugin {
+@@ -196,6 +339,45 @@ public class BackgroundGeolocation extends Plugin {
          call.resolve();
      }
  
@@ -239,7 +279,7 @@ index a92fcf9..21d94ba 100644
      @PluginMethod()
      public void openSettings(PluginCall call) {
          Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-@@ -324,6 +466,7 @@ public class BackgroundGeolocation extends Plugin {
+@@ -324,6 +506,7 @@ public class BackgroundGeolocation extends Plugin {
      @Override
      protected void handleOnResume() {
          if (service != null) {
@@ -247,7 +287,7 @@ index a92fcf9..21d94ba 100644
              if (stoppedWithoutPermissions && getPermissionState("location") == PermissionState.GRANTED) {
                  service.onPermissionsGranted();
              }
-@@ -334,6 +477,7 @@ public class BackgroundGeolocation extends Plugin {
+@@ -334,6 +517,7 @@ public class BackgroundGeolocation extends Plugin {
      @Override
      protected void handleOnPause() {
          stoppedWithoutPermissions = getPermissionState("location") != PermissionState.GRANTED;
@@ -256,7 +296,7 @@ index a92fcf9..21d94ba 100644
      }
  
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..98b7f54 100644
+index fafbb86..1c73ad4 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -428,7 +468,16 @@ index fafbb86..98b7f54 100644
              FusedLocationProviderClient client = LocationServices.getFusedLocationProviderClient(
                      BackgroundGeolocationService.this
              );
-@@ -168,8 +278,335 @@ public class BackgroundGeolocationService extends Service {
+@@ -90,6 +200,8 @@ public class BackgroundGeolocationService extends Service {
+                 @Override
+                 public void onLocationResult(LocationResult locationResult) {
+                     Location location = locationResult.getLastLocation();
++                    // Field Duty trip: record + upload natively, whether or not the web page is alive to receive this.
++                    TripRecorder.onFix(getApplicationContext(), location);
+                     Intent intent = new Intent(ACTION_BROADCAST);
+                     intent.putExtra("location", location);
+                     intent.putExtra("id", id);
+@@ -168,8 +280,338 @@ public class BackgroundGeolocationService extends Service {
              }
          }
  
@@ -458,10 +507,12 @@ index fafbb86..98b7f54 100644
 +        if (headlessActive) { diag("headless already active"); return; }
 +        if (!watchers.isEmpty() && !backgroundHandoff) return;
 +        SharedPreferences prefs = getSharedPreferences(HEADLESS_PREFS, MODE_PRIVATE);
-+        if (!prefs.getBoolean(PREF_TRACKING_ACTIVE, false)) { diag("headless NOT started: tracking_active=false (JS never persisted state)"); return; }
-+        String token = prefs.getString(PREF_AUTH_TOKEN, null);
-+        String fencesJson = prefs.getString(PREF_FENCES_JSON, null);
-+        String apiBase = prefs.getString(PREF_API_BASE, null);
++        // Headless mode also runs for a Field Duty trip alone (an employee who has no geofence set up).
++        final boolean tripOnly = !prefs.getBoolean(PREF_TRACKING_ACTIVE, false) && TripRecorder.isActive(this);
++        if (!prefs.getBoolean(PREF_TRACKING_ACTIVE, false) && !tripOnly) { diag("headless NOT started: tracking_active=false (JS never persisted state)"); return; }
++        String token = tripOnly ? TripRecorder.token(this) : prefs.getString(PREF_AUTH_TOKEN, null);
++        String fencesJson = tripOnly ? "[]" : prefs.getString(PREF_FENCES_JSON, null);
++        String apiBase = tripOnly ? TripRecorder.apiBase(this) : prefs.getString(PREF_API_BASE, null);
 +        if (token == null || token.isEmpty() || fencesJson == null || apiBase == null) { diag("headless NOT started: missing token/fences/apiBase (token=" + (token != null && !token.isEmpty()) + ")"); return; }
 +        diag("headless STARTED (api=" + apiBase + ")");
 +        headlessFixCount = 0;
@@ -484,6 +535,7 @@ index fafbb86..98b7f54 100644
 +            public void onLocationResult(LocationResult locationResult) {
 +                Location location = locationResult.getLastLocation();
 +                if (location != null) {
++                    TripRecorder.onFix(getApplicationContext(), location);
 +                    handleHeadlessLocation(location, token, fencesJson, apiBase);
 +                }
 +            }
@@ -1028,23 +1080,257 @@ index 0000000..2926c3d
 +        return null;
 +    }
 +}
+diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java
+new file mode 100644
+index 0000000..4bcf020
+--- /dev/null
++++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java
+@@ -0,0 +1,224 @@
++package com.equimaps.capacitor_background_geolocation;
++
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.location.Location;
++
++import org.json.JSONArray;
++import org.json.JSONObject;
++
++import java.io.ByteArrayOutputStream;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.nio.charset.StandardCharsets;
++import java.text.SimpleDateFormat;
++import java.util.Date;
++import java.util.Locale;
++import java.util.TimeZone;
++
++// Field Duty trip recording that does NOT depend on the web page (JS) being alive.
++//
++// The JS tracker only receives fixes while the WebView is running; with the screen locked, another app in front or
++// the app swiped away, whole stretches of a trip were never recorded (and were later bridged by straight lines).
++// While a trip is active, every fix the location service receives is written to disk here and uploaded to the same
++// endpoint the app uses (logFieldPoints) from native code, retried until the server accepts it. The server remains
++// the one place that filters noise / computes distance, and it ignores points it already has, so JS and native
++// uploading the same fixes is harmless.
++final class TripRecorder {
++    static final String PREFS = "maxvolt_trip_recorder";
++    private static final String K_ACTIVE = "active";
++    private static final String K_TRIP = "trip_id";
++    private static final String K_TOKEN = "token";
++    private static final String K_API = "api_base";
++    private static final String K_QUEUE = "queue";
++    private static final String K_LAST_OK = "last_ok";
++    private static final String K_LAST_ERR = "last_err";
++    private static final int MAX_QUEUE = 6000;
++    private static final int BATCH = 300;
++    private static final long UPLOAD_EVERY_MS = 20000;
++
++    private static final Object LOCK = new Object();
++    private static boolean uploading = false;
++    private static long lastAttempt = 0;
++
++    private TripRecorder() {}
++
++    private static SharedPreferences prefs(Context c) {
++        return c.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
++    }
++
++    static boolean isActive(Context c) {
++        return prefs(c).getBoolean(K_ACTIVE, false);
++    }
++
++    static String token(Context c) { return prefs(c).getString(K_TOKEN, null); }
++    static String apiBase(Context c) { return prefs(c).getString(K_API, null); }
++
++    static void start(Context c, String tripId, String token, String apiBase) {
++        synchronized (LOCK) {
++            SharedPreferences p = prefs(c);
++            boolean sameTrip = tripId.equals(p.getString(K_TRIP, ""));
++            SharedPreferences.Editor e = p.edit()
++                    .putBoolean(K_ACTIVE, true)
++                    .putString(K_TRIP, tripId)
++                    .putString(K_TOKEN, token)
++                    .putString(K_API, apiBase);
++            if (!sameTrip) e.putString(K_QUEUE, "[]");
++            e.apply();
++        }
++        BackgroundGeolocationService.diagLog(c, "trip recording ON (native)");
++    }
++
++    static void deactivate(Context c) {
++        synchronized (LOCK) {
++            prefs(c).edit().putBoolean(K_ACTIVE, false).putString(K_QUEUE, "[]").remove(K_TOKEN).apply();
++        }
++        BackgroundGeolocationService.diagLog(c, "trip recording OFF");
++    }
++
++    static int queued(Context c) {
++        try { return new JSONArray(prefs(c).getString(K_QUEUE, "[]")).length(); } catch (Exception e) { return 0; }
++    }
++
++    static JSONObject state(Context c) {
++        JSONObject o = new JSONObject();
++        try {
++            SharedPreferences p = prefs(c);
++            o.put("active", p.getBoolean(K_ACTIVE, false));
++            o.put("queued", queued(c));
++            o.put("last_ok", p.getLong(K_LAST_OK, 0));
++            o.put("last_error", p.getString(K_LAST_ERR, ""));
++        } catch (Exception ignored) {}
++        return o;
++    }
++
++    static com.getcapacitor.JSObject stateAsJs(Context c) {
++        com.getcapacitor.JSObject o = new com.getcapacitor.JSObject();
++        try {
++            SharedPreferences p = prefs(c);
++            o.put("active", p.getBoolean(K_ACTIVE, false));
++            o.put("queued", queued(c));
++            o.put("last_ok", p.getLong(K_LAST_OK, 0));
++            o.put("last_error", p.getString(K_LAST_ERR, ""));
++        } catch (Exception ignored) {}
++        return o;
++    }
++
++    /** Called for every fix the location service receives (from the JS-driven watcher and from headless mode). */
++    static void onFix(final Context c, Location l) {
++        if (l == null || !isActive(c)) return;
++        if (l.hasAccuracy() && l.getAccuracy() > 100) return;
++        try {
++            SimpleDateFormat iso = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
++            iso.setTimeZone(TimeZone.getTimeZone("UTC"));
++            JSONObject pt = new JSONObject();
++            pt.put("lat", l.getLatitude());
++            pt.put("lng", l.getLongitude());
++            pt.put("acc", l.hasAccuracy() ? (double) l.getAccuracy() : 0.0);
++            pt.put("t", iso.format(new Date(l.getTime() > 0 ? l.getTime() : System.currentTimeMillis())));
++            if (l.hasSpeed()) pt.put("sp", (double) l.getSpeed());
++            synchronized (LOCK) {
++                SharedPreferences p = prefs(c);
++                JSONArray q = new JSONArray(p.getString(K_QUEUE, "[]"));
++                if (q.length() >= MAX_QUEUE) {
++                    JSONArray trimmed = new JSONArray();
++                    for (int i = q.length() / 2; i < q.length(); i++) trimmed.put(q.get(i));
++                    q = trimmed;
++                }
++                q.put(pt);
++                p.edit().putString(K_QUEUE, q.toString()).apply();
++            }
++        } catch (Exception e) {
++            return;
++        }
++        if (System.currentTimeMillis() - lastAttempt >= UPLOAD_EVERY_MS) {
++            new Thread(new Runnable() { public void run() { flush(c); } }).start();
++        }
++    }
++
++    /** Uploads everything queued (blocking). Safe to call from any thread; one upload at a time. */
++    static boolean flush(Context c) {
++        synchronized (LOCK) {
++            if (uploading) return false;
++            uploading = true;
++        }
++        lastAttempt = System.currentTimeMillis();
++        try {
++            for (int round = 0; round < 40; round++) {
++                String tripId, token, api;
++                JSONArray batch = new JSONArray();
++                int total;
++                synchronized (LOCK) {
++                    SharedPreferences p = prefs(c);
++                    if (!p.getBoolean(K_ACTIVE, false)) return true;
++                    tripId = p.getString(K_TRIP, null); token = p.getString(K_TOKEN, null); api = p.getString(K_API, null);
++                    JSONArray q = new JSONArray(p.getString(K_QUEUE, "[]"));
++                    total = q.length();
++                    for (int i = 0; i < total && i < BATCH; i++) batch.put(q.get(i));
++                }
++                if (batch.length() == 0) return true;
++                if (tripId == null || token == null || api == null) return false;
++                JSONObject body = new JSONObject();
++                body.put("trip_id", tripId);
++                body.put("points", batch);
++                String resp = post(api + "/api/functions/logFieldPoints", token, body.toString());
++                if (resp == null) { prefs(c).edit().putString(K_LAST_ERR, "no response").apply(); return false; }
++                JSONObject r = new JSONObject(resp);
++                if (!r.optBoolean("success", false)) {
++                    String err = r.optString("error", "rejected");
++                    prefs(c).edit().putString(K_LAST_ERR, err).apply();
++                    if (err.toLowerCase(Locale.ROOT).contains("not found") || err.toLowerCase(Locale.ROOT).contains("not active")) {
++                        BackgroundGeolocationService.diagLog(c, "trip recording: server says trip is over (" + err + ") — stopping");
++                        deactivate(c);
++                    }
++                    return false;
++                }
++                synchronized (LOCK) {
++                    SharedPreferences p = prefs(c);
++                    JSONArray q = new JSONArray(p.getString(K_QUEUE, "[]"));
++                    JSONArray rest = new JSONArray();
++                    for (int i = batch.length(); i < q.length(); i++) rest.put(q.get(i));
++                    p.edit().putString(K_QUEUE, rest.toString()).putLong(K_LAST_OK, System.currentTimeMillis()).putString(K_LAST_ERR, "").apply();
++                }
++                if (total <= BATCH) return true;
++            }
++            return true;
++        } catch (Exception e) {
++            try { prefs(c).edit().putString(K_LAST_ERR, String.valueOf(e)).apply(); } catch (Exception ignored) {}
++            return false;
++        } finally {
++            synchronized (LOCK) { uploading = false; }
++        }
++    }
++
++    private static String post(String url, String token, String json) {
++        for (int attempt = 0; attempt < 2; attempt++) {
++            HttpURLConnection conn = null;
++            try {
++                conn = (HttpURLConnection) new URL(url).openConnection();
++                conn.setRequestMethod("POST");
++                conn.setRequestProperty("Content-Type", "application/json");
++                conn.setRequestProperty("Authorization", "Bearer " + token);
++                conn.setConnectTimeout(15000);
++                conn.setReadTimeout(20000);
++                conn.setDoOutput(true);
++                try (OutputStream os = conn.getOutputStream()) { os.write(json.getBytes(StandardCharsets.UTF_8)); }
++                int code = conn.getResponseCode();
++                if (code < 200 || code >= 300) { Thread.sleep(1500); continue; }
++                InputStream is = conn.getInputStream();
++                ByteArrayOutputStream bos = new ByteArrayOutputStream();
++                byte[] buf = new byte[2048];
++                int n;
++                while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
++                return bos.toString("UTF-8");
++            } catch (Exception e) {
++                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
++            } finally {
++                if (conn != null) conn.disconnect();
++            }
++        }
++        return null;
++    }
++}
 diff --git a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Plugin.m b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Plugin.m
-index 1fc97ca..fb01cdf 100644
+index 1fc97ca..98f11a3 100644
 --- a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Plugin.m
 +++ b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Plugin.m
-@@ -5,4 +5,7 @@ CAP_PLUGIN(BackgroundGeolocation, "BackgroundGeolocation",
+@@ -5,4 +5,11 @@ CAP_PLUGIN(BackgroundGeolocation, "BackgroundGeolocation",
      CAP_PLUGIN_METHOD(addWatcher, CAPPluginReturnCallback);
      CAP_PLUGIN_METHOD(removeWatcher, CAPPluginReturnPromise);
      CAP_PLUGIN_METHOD(openSettings, CAPPluginReturnPromise);
 +    CAP_PLUGIN_METHOD(persistHeadlessState, CAPPluginReturnPromise);
 +    CAP_PLUGIN_METHOD(clearHeadlessState, CAPPluginReturnPromise);
 +    CAP_PLUGIN_METHOD(getHeadlessDiag, CAPPluginReturnPromise);
++    CAP_PLUGIN_METHOD(startTripRecording, CAPPluginReturnPromise);
++    CAP_PLUGIN_METHOD(flushTripRecording, CAPPluginReturnPromise);
++    CAP_PLUGIN_METHOD(stopTripRecording, CAPPluginReturnPromise);
++    CAP_PLUGIN_METHOD(getTripRecordingState, CAPPluginReturnPromise);
  )
 diff --git a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/Plugin.swift b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/Plugin.swift
-index d4a5965..e520e55 100644
+index d4a5965..c3ef69a 100644
 --- a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/Plugin.swift
 +++ b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/Plugin.swift
-@@ -75,11 +75,40 @@ public class BackgroundGeolocation: CAPPlugin,
+@@ -75,11 +75,73 @@ public class BackgroundGeolocation: CAPPlugin,
      public let pluginMethods: [CAPPluginMethod] = [
          CAPPluginMethod(name: "addWatcher", returnType: CAPPluginReturnCallback),
          CAPPluginMethod(name: "removeWatcher", returnType: CAPPluginReturnPromise),
@@ -1052,7 +1338,11 @@ index d4a5965..e520e55 100644
 +        CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
 +        CAPPluginMethod(name: "persistHeadlessState", returnType: CAPPluginReturnPromise),
 +        CAPPluginMethod(name: "clearHeadlessState", returnType: CAPPluginReturnPromise),
-+        CAPPluginMethod(name: "getHeadlessDiag", returnType: CAPPluginReturnPromise)
++        CAPPluginMethod(name: "getHeadlessDiag", returnType: CAPPluginReturnPromise),
++        CAPPluginMethod(name: "startTripRecording", returnType: CAPPluginReturnPromise),
++        CAPPluginMethod(name: "flushTripRecording", returnType: CAPPluginReturnPromise),
++        CAPPluginMethod(name: "stopTripRecording", returnType: CAPPluginReturnPromise),
++        CAPPluginMethod(name: "getTripRecordingState", returnType: CAPPluginReturnPromise)
      ]
  
      @objc public override func load() {
@@ -1083,9 +1373,47 @@ index d4a5965..e520e55 100644
 +
 +    @objc func getHeadlessDiag(_ call: CAPPluginCall) {
 +        call.resolve(["log": RegionMonitor.shared.diagText()])
++    }
++
++    // Field Duty trip recording (see TripRecorder.swift): fixes are saved and uploaded natively while a trip is active.
++    @objc func startTripRecording(_ call: CAPPluginCall) {
++        guard let tripId = call.getString("tripId"),
++              let token = call.getString("token"),
++              let apiBase = call.getString("apiBase") else {
++            return call.reject("tripId, token and apiBase are required.")
++        }
++        TripRecorder.shared.start(tripId: tripId, token: token, apiBase: apiBase)
++        call.resolve()
++    }
++
++    @objc func flushTripRecording(_ call: CAPPluginCall) {
++        DispatchQueue.global(qos: .userInitiated).async {
++            let ok = TripRecorder.shared.flush()
++            var state = TripRecorder.shared.state()
++            state["ok"] = ok
++            call.resolve(state)
++        }
++    }
++
++    @objc func stopTripRecording(_ call: CAPPluginCall) {
++        TripRecorder.shared.stop()
++        call.resolve()
++    }
++
++    @objc func getTripRecordingState(_ call: CAPPluginCall) {
++        call.resolve(TripRecorder.shared.state())
      }
  
      @objc func addWatcher(_ call: CAPPluginCall) {
+@@ -211,6 +273,8 @@ public class BackgroundGeolocation: CAPPlugin,
+         didUpdateLocations locations: [CLLocation]
+     ) {
+         if let location = locations.last {
++            // Field Duty trip: record + upload natively, whether or not the web page is alive to receive this.
++            for loc in locations { TripRecorder.shared.onFix(loc) }
+             if let watcher = self.watchers.first(
+                 where: { $0.locationManager == manager }
+             ) {
 diff --git a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift
 new file mode 100644
 index 0000000..3a0ba7b
@@ -1327,6 +1655,171 @@ index 0000000..3a0ba7b
 +                sem.signal()
 +            }.resume()
 +            _ = sem.wait(timeout: .now() + 20)
++            if let r = result { return r }
++            if attempt == 0 { Thread.sleep(forTimeInterval: 1.5) }
++        }
++        return nil
++    }
++}
+diff --git a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/TripRecorder.swift b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/TripRecorder.swift
+new file mode 100644
+index 0000000..7c527fc
+--- /dev/null
++++ b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/TripRecorder.swift
+@@ -0,0 +1,159 @@
++import Foundation
++import CoreLocation
++import UIKit
++
++// Field Duty trip recording that does not depend on the web page (JS) being alive — see TripRecorder.java.
++// Every fix the location watcher receives while a trip is active is saved to disk and uploaded to logFieldPoints
++// from native code, retried until the server accepts it. The server filters noise and ignores points it already has.
++final class TripRecorder {
++    static let shared = TripRecorder()
++
++    private let defaults = UserDefaults.standard
++    private let kActive = "mv_trip_active"
++    private let kTrip = "mv_trip_id"
++    private let kToken = "mv_trip_token"
++    private let kApi = "mv_trip_api"
++    private let kQueue = "mv_trip_queue"
++    private let kLastOk = "mv_trip_last_ok"
++    private let kLastErr = "mv_trip_last_err"
++    private let lock = NSLock()
++    private var uploading = false
++    private var lastAttempt = Date.distantPast
++    private let maxQueue = 6000
++    private let batchSize = 300
++
++    private init() {}
++
++    var isActive: Bool { return defaults.bool(forKey: kActive) }
++
++    func start(tripId: String, token: String, apiBase: String) {
++        lock.lock(); defer { lock.unlock() }
++        let same = (defaults.string(forKey: kTrip) == tripId)
++        defaults.set(true, forKey: kActive)
++        defaults.set(tripId, forKey: kTrip)
++        defaults.set(token, forKey: kToken)
++        defaults.set(apiBase, forKey: kApi)
++        if !same { defaults.set([[String: Any]](), forKey: kQueue) }
++    }
++
++    func stop() {
++        lock.lock(); defer { lock.unlock() }
++        defaults.set(false, forKey: kActive)
++        defaults.set([[String: Any]](), forKey: kQueue)
++        defaults.removeObject(forKey: kToken)
++    }
++
++    func state() -> [String: Any] {
++        let q = (defaults.array(forKey: kQueue) as? [[String: Any]]) ?? []
++        return [
++            "active": isActive,
++            "queued": q.count,
++            "last_ok": defaults.double(forKey: kLastOk),
++            "last_error": defaults.string(forKey: kLastErr) ?? "",
++        ]
++    }
++
++    /// Called for every location the watcher receives.
++    func onFix(_ location: CLLocation) {
++        guard isActive else { return }
++        if location.horizontalAccuracy < 0 || location.horizontalAccuracy > 100 { return }
++        let iso = ISO8601DateFormatter()
++        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        iso.timeZone = TimeZone(identifier: "UTC")
++        var pt: [String: Any] = [
++            "lat": location.coordinate.latitude,
++            "lng": location.coordinate.longitude,
++            "acc": location.horizontalAccuracy,
++            "t": iso.string(from: location.timestamp),
++        ]
++        if location.speed >= 0 { pt["sp"] = location.speed }
++        lock.lock()
++        var q = (defaults.array(forKey: kQueue) as? [[String: Any]]) ?? []
++        if q.count >= maxQueue { q = Array(q.suffix(maxQueue / 2)) }
++        q.append(pt)
++        defaults.set(q, forKey: kQueue)
++        lock.unlock()
++        if Date().timeIntervalSince(lastAttempt) >= 20 {
++            DispatchQueue.global(qos: .utility).async { [weak self] in _ = self?.flush() }
++        }
++    }
++
++    /// Uploads everything queued (blocking; call off the main thread). Returns true when nothing is left to send.
++    @discardableResult
++    func flush() -> Bool {
++        lock.lock()
++        if uploading { lock.unlock(); return false }
++        uploading = true
++        lock.unlock()
++        lastAttempt = Date()
++        defer { lock.lock(); uploading = false; lock.unlock() }
++
++        // Ask iOS for extra time so an upload that starts just as the app is suspended can finish.
++        var task: UIBackgroundTaskIdentifier = .invalid
++        DispatchQueue.main.sync {
++            task = UIApplication.shared.beginBackgroundTask(withName: "mv-trip-upload") {
++                UIApplication.shared.endBackgroundTask(task)
++                task = .invalid
++            }
++        }
++        defer {
++            DispatchQueue.main.async {
++                if task != .invalid { UIApplication.shared.endBackgroundTask(task); task = .invalid }
++            }
++        }
++
++        for _ in 0..<40 {
++            guard isActive,
++                  let tripId = defaults.string(forKey: kTrip),
++                  let token = defaults.string(forKey: kToken),
++                  let api = defaults.string(forKey: kApi) else { return true }
++            lock.lock()
++            let q = (defaults.array(forKey: kQueue) as? [[String: Any]]) ?? []
++            lock.unlock()
++            if q.isEmpty { return true }
++            let batch = Array(q.prefix(batchSize))
++            guard let resp = post(api + "/api/functions/logFieldPoints", token: token, body: ["trip_id": tripId, "points": batch]) else {
++                defaults.set("no response", forKey: kLastErr)
++                return false
++            }
++            if (resp["success"] as? Bool) != true {
++                let err = (resp["error"] as? String) ?? "rejected"
++                defaults.set(err, forKey: kLastErr)
++                let low = err.lowercased()
++                if low.contains("not found") || low.contains("not active") { stop() }
++                return false
++            }
++            lock.lock()
++            let cur = (defaults.array(forKey: kQueue) as? [[String: Any]]) ?? []
++            defaults.set(Array(cur.dropFirst(batch.count)), forKey: kQueue)
++            lock.unlock()
++            defaults.set(Date().timeIntervalSince1970 * 1000, forKey: kLastOk)
++            defaults.set("", forKey: kLastErr)
++            if q.count <= batchSize { return true }
++        }
++        return true
++    }
++
++    private func post(_ url: String, token: String, body: [String: Any]) -> [String: Any]? {
++        guard let u = URL(string: url) else { return nil }
++        for attempt in 0..<2 {
++            var req = URLRequest(url: u, timeoutInterval: 20)
++            req.httpMethod = "POST"
++            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
++            req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
++            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
++            let sem = DispatchSemaphore(value: 0)
++            var result: [String: Any]? = nil
++            URLSession.shared.dataTask(with: req) { data, resp, _ in
++                if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode), let data = data {
++                    result = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:]
++                }
++                sem.signal()
++            }.resume()
++            _ = sem.wait(timeout: .now() + 25)
 +            if let r = result { return r }
 +            if attempt == 0 { Thread.sleep(forTimeInterval: 1.5) }
 +        }

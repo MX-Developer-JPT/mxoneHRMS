@@ -26,10 +26,12 @@
 // fallback for plain browser/PWA use, where no native background plugin is
 // available at all.
 import { base44 } from '@/api/base44Client';
+import { getGeoDeviceToken } from '@/lib/geoDeviceToken';
 
 let watchId = null;          // web navigator.geolocation watch id
 let nativeWatcherId = null;  // BackgroundGeolocation watcher id (native app only)
 let usingNative = false;
+let nativeRecording = false;   // the phone's native code is also recording + uploading this trip (works with the app closed)
 let flushTimer = null;
 let buffer = [];
 let currentTripId = null;
@@ -149,6 +151,13 @@ export async function startTracking(tripId, initialKm = 0) {
           handleFix(location.latitude, location.longitude, location.accuracy, location.time, location.speed);
         }
       );
+      // Native recording: the location service saves and uploads every fix itself, so a locked screen, another app in
+      // front or a swiped-away app no longer leaves holes in the route.
+      try {
+        const token = await getGeoDeviceToken();
+        await BackgroundGeolocation.startTripRecording({ tripId, token, apiBase: window.location.origin });
+        nativeRecording = true;
+      } catch (e) { nativeRecording = false; console.warn('[fieldTripTracker] native trip recording not available (older app build):', e?.message); }
       flushTimer = setInterval(flushNow, 20000);
       return;
     } catch (e) {
@@ -172,7 +181,16 @@ export async function startTracking(tripId, initialKm = 0) {
   flushTimer = setInterval(flushNow, 20000);
 }
 
+async function flushNative() {
+  if (!nativeRecording) return;
+  try {
+    const { registerPlugin } = await import('@capacitor/core');
+    await registerPlugin('BackgroundGeolocation').flushTripRecording();
+  } catch { /* the next tick retries */ }
+}
+
 export async function flushNow() {
+  await flushNative();   // let the phone's own queue reach the server first (before a trip is ended, too)
   heartbeatIfIdle();
   if (!buffer.length || !currentTripId || flushing) return null;
   flushing = true;
@@ -199,10 +217,12 @@ export async function stopTracking() {
     try {
       const { registerPlugin } = await import('@capacitor/core');
       const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
+      if (nativeRecording) { try { await BackgroundGeolocation.stopTripRecording(); } catch { /* best-effort */ } }
       await BackgroundGeolocation.removeWatcher({ id: nativeWatcherId });
     } catch { /* best-effort */ }
     nativeWatcherId = null;
   }
+  nativeRecording = false;
   usingNative = false;
   if (flushTimer) { clearInterval(flushTimer); flushTimer = null; }
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }

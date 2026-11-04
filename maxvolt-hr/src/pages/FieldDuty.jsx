@@ -404,11 +404,13 @@ export default function FieldDuty() {
                         {t.purpose || '—'}
                       </td>
                       <td className="px-4 py-2.5 text-right font-medium">{fmtKm(t.distance_km)}
-                        {t.quality && t.quality.level !== 'none' && t.quality.level !== 'legacy' && <p title={`${t.quality.gap_count} signal gap(s) covering about ${t.quality.gap_km} km are drawn as straight lines; ${t.quality.weak_fix_pct}% of GPS fixes were too weak to use`} className={`text-[10px] font-normal ${t.quality.level === 'good' ? 'text-green-600' : t.quality.level === 'fair' ? 'text-amber-600' : 'text-red-600'}`}>{t.quality.label}{t.quality.gap_km > 0 ? ` · ${t.quality.gap_km} km est.` : ''}</p>}
+                        {t.quality && t.quality.level !== 'none' && <p title={`${t.quality.gap_count} signal gap(s) covering about ${t.quality.gap_km} km are drawn as straight lines; ${t.quality.weak_fix_pct}% of GPS fixes were too weak to use`} className={`text-[10px] font-normal ${t.quality.level === 'good' ? 'text-green-600' : t.quality.level === 'fair' ? 'text-amber-600' : 'text-red-600'}`}>{t.quality.label}{t.quality.gap_km > 0 ? ` · ${t.quality.gap_km} km est.` : ''}</p>}
                       </td>
                       <td className="px-4 py-2.5 text-right text-gray-700">{t.claimed ? fmt(t.claim_amount) : rate > 0 ? fmt((t.distance_km || 0) * rate + (t.toll_parking_amount || 0)) : '—'}</td>
                       <td className="px-4 py-2.5 text-center">
-                        {t.status === 'active' ? <Badge className="bg-orange-100 text-orange-700">LIVE</Badge>
+                        {t.status === 'active' && Date.now() - Date.parse(t.last_point_at || t.start_time) > 18 * 3600000
+                          ? <div className="space-y-1"><Badge className="bg-gray-100 text-gray-600">NEVER ENDED</Badge>{canManage && <button className="block mx-auto text-[11px] text-red-600 underline" onClick={async () => { if (!window.confirm('Close this trip at its last recorded moment?')) return; const r = await base44.functions.invoke('closeFieldTrip', { trip_id: t.id }); const d = r.data || r; if (d.success) { toast.success('Trip closed'); load(); } else toast.error(d.error || 'Could not close'); }}>Close</button>}</div>
+                          : t.status === 'active' ? <Badge className="bg-orange-100 text-orange-700">LIVE</Badge>
                           : t.claimed ? <Badge className="bg-green-100 text-green-700"><CheckCircle2 className="w-3 h-3 mr-1" />CLAIMED</Badge>
                           : <Badge variant="outline">COMPLETED</Badge>}
                       </td>

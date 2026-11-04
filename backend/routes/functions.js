@@ -1047,7 +1047,7 @@ const HR_ROLES = ['hr', 'admin'];
 // long-lived "device token". It is signed with a DIFFERENT secret and is only honoured by the two geofence
 // functions below — a stolen one cannot open the rest of the app (the entities/auth routes never accept it).
 const GEO_SECRET = createHash('sha256').update('maxvolt-geofence-device:' + JWT_SECRET).digest('hex');
-const GEO_DEVICE_FNS = new Set(['nativeGeofenceEvent', 'getMyGeofence']);
+const GEO_DEVICE_FNS = new Set(['nativeGeofenceEvent', 'getMyGeofence', 'logFieldPoints']);   // logFieldPoints: native trip recording
 const getGeoDeviceUser = (req) => {
   const t = req.headers.authorization?.replace('Bearer ', '');
   if (!t) return null;
@@ -4801,8 +4801,14 @@ router.post('/:name', async (req, res) => {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { vehicle_type, gate_pass_id } = p;
       if (!['2_wheeler', '4_wheeler'].includes(vehicle_type)) return res.json({ success: false, error: 'vehicle_type must be 2_wheeler or 4_wheeler' });
-      const active = await one("SELECT id FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [cu.id]);
-      if (active) return res.json({ success: false, error: 'You already have an active field trip — end it first', code: 'ALREADY_ACTIVE' });
+      const active = await one("SELECT id,data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [cu.id]);
+      if (active) {
+        // A trip nobody ended (phone off, forgot) must not block the next one: anything quiet for 18 h is closed at its last recorded moment.
+        const old = JSON.parse(active.data); const lastAt = Date.parse(old.last_point_at || old.start_time);
+        if (Date.now() - lastAt > 18 * 3600000) {
+          await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...old, status: 'completed', end_time: new Date(lastAt).toISOString(), auto_closed: true, auto_closed_reason: 'No activity for 18 hours' }), active.id]);
+        } else return res.json({ success: false, error: 'You already have an active field trip — end it first', code: 'ALREADY_ACTIVE' });
+      }
       const ftId = uuidv4();
       const ft = {
         id: ftId, user_id: cu.id, date: new Date().toISOString().slice(0, 10),
@@ -4876,6 +4882,20 @@ router.post('/:name', async (req, res) => {
 
     // Who may see a field employee's location: the employee, HR/admin/management, or their manager chain.
     // Location is only ever recorded while a Field Duty trip (or auto Outduty trip) is active.
+    // HR/management (or the employee's manager) closes a trip that was never ended; it ends at its last recorded moment.
+    case 'closeFieldTrip': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const cfRow = await one("SELECT id,user_id,data FROM entities WHERE type='FieldTrip' AND id=$1", [p.trip_id]);
+      if (!cfRow) return res.json({ success: false, error: 'Trip not found' });
+      const cfOk = await hasRole(cu, MGR_ROLES) || (await hasRole(cu, ['manager']) && (await getVisibleUserIds(cu)).includes(cfRow.user_id));
+      if (!cfOk) return res.status(403).json({ error: 'Access denied' });
+      const cf = JSON.parse(cfRow.data);
+      if (cf.status !== 'active') return res.json({ success: false, error: 'Trip is not active' });
+      const cfEnd = new Date(Date.parse(cf.last_point_at || cf.start_time)).toISOString();
+      await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...cf, status: 'completed', end_time: cfEnd, auto_closed: true, auto_closed_reason: `Closed by ${cu.email || cu.id}`, closed_by: cu.id }), cfRow.id]);
+      return res.json({ success: true });
+    }
+
     case 'getFieldLive': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const flMgmt = await hasRole(cu, MGR_ROLES);
