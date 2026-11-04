@@ -10,7 +10,7 @@ import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeave
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createHash } from 'crypto';
-import { publicFence as geoPublicFence, rectBounds as geoRectBounds, signedDistanceM as geoSignedDistanceM } from '../utils/geofenceShape.js';
+import { publicFence as geoPublicFence, isShaped as geoIsShaped, signedDistanceM as geoSignedDistanceM } from '../utils/geofenceShape.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -4362,7 +4362,7 @@ router.post('/:name', async (req, res) => {
           || (ngLocs.length === 1 ? ngLocs[0] : null);
       }
 
-      if (event === 'enter' && Number(accuracy) > 150) return res.json({ success: false, error: 'GPS accuracy too low to confirm entry', code: 'LOW_ACCURACY' });
+      if (event === 'enter' && Number(accuracy) > 80) return res.json({ success: false, error: 'GPS accuracy too low to confirm entry', code: 'LOW_ACCURACY' });
       // Defense-in-depth: an 'enter' with coordinates must plausibly be inside the resolved fence
       if (event === 'enter' && ngFence && isFinite(Number(latitude)) && isFinite(Number(longitude))) {
         const dist = haversineM(Number(latitude), Number(longitude), Number(ngFence.latitude), Number(ngFence.longitude));
@@ -4371,7 +4371,7 @@ router.post('/:name', async (req, res) => {
       }
       // Rectangle offices: the drawn boundary decides. An enter from a position outside the rectangle is refused; an exit
       // from a position clearly still inside it is ignored (an early/coarse trigger), never closing the day.
-      if (ngFence && geoRectBounds(ngFence) && isFinite(Number(latitude)) && isFinite(Number(longitude))) {
+      if (ngFence && geoIsShaped(ngFence) && isFinite(Number(latitude)) && isFinite(Number(longitude))) {
         const sd = geoSignedDistanceM(ngFence, Number(latitude), Number(longitude));
         const slack = Math.min(60, Math.max(20, Number(accuracy || 0) * 0.75));
         if (event === 'enter' && sd > slack) return res.json({ success: false, error: `Reported position is ${Math.round(sd)}m outside the ${ngFence.name} boundary`, code: 'OUTSIDE_FENCE' });

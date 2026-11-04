@@ -27,12 +27,12 @@ import { signedDistanceM } from '@/lib/geofenceShape';
 
 const PERSIST_KEY = 'geo_engine_v2';
 const DEFAULT_CFG = {
-  max_accuracy_m: 100,         // fixes less accurate than this never drive a transition
-  enter_confirmations: 1,      // immediate: the first reliable inside fix checks in
+  max_accuracy_m: 60,          // fixes less accurate than this never drive a transition
+  enter_confirmations: 2,      // two reliable fixes inside before a check-in (one stray fix near the edge is not an arrival)
   enter_min_seconds: 0,
-  enter_timer_seconds: 2,
-  exit_confirmations: 1,       // immediate: the first reliable outside fix checks out
-  exit_dwell_seconds: 0,
+  enter_timer_seconds: 6,      // a stationary phone confirms on this timer instead of waiting for another fix
+  exit_confirmations: 2,       // two reliable fixes outside before a check-out
+  exit_dwell_seconds: 8,
   exit_buffer_m: 15,           // small hysteresis vs. enter at radius
   strong_exit_m: 60,          // clearly gone (radius + this): no dwell needed, still 2 fixes
   stale_fix_seconds: 180,      // no fix this long => display "Location Unavailable"

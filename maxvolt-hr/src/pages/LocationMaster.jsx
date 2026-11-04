@@ -10,8 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Plus, Edit2, Trash2, MapPin, Loader2, Download, Users, ChevronDown, UserCog, AlertCircle, Building2, Search, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { OfficePickerMap, RectangleEditorMap } from '@/components/maps/GeoMaps';
-import { rectBounds, rectRotation, rectSizeM, circleFieldsForRect, fenceOf } from '@/lib/geofenceShape';
+import { OfficePickerMap, AreaEditorMap } from '@/components/maps/GeoMaps';
+import { polyVertices, rectBounds, rectCorners, polyAreaM2, circleFieldsForPoly, fenceOf } from '@/lib/geofenceShape';
 import { Switch } from "@/components/ui/switch";
 import { useAuth } from '@/lib/AuthContext';
 
@@ -28,9 +28,8 @@ export default function LocationMaster() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: '', address: '', city: '', state: '', is_active: true, latitude: '', longitude: '', geofence_radius: '', biometric_devices: '' });
   const [capturing, setCapturing] = useState(false);
-  const [shape, setShape] = useState('circle');   // 'circle' | 'rectangle' — how this office's boundary is defined
-  const [rect, setRect] = useState(null);         // { north, south, east, west } when drawn as a rectangle
-  const [rectRot, setRectRot] = useState(0);       // degrees the rectangle is turned (clockwise from north)
+  const [shape, setShape] = useState('circle');   // 'circle' | 'area' — how this office's boundary is defined
+  const [poly, setPoly] = useState(null);         // [[lat, lng], …] corners when drawn as an area
 
   const captureCurrentLocation = () => {
     if (!navigator.geolocation) { toast.error('Geolocation not supported on this device'); return; }
@@ -194,15 +193,16 @@ export default function LocationMaster() {
 
   const openNew = () => {
     setEditingId(null);
-    setShape('circle'); setRect(null); setRectRot(0);
+    setShape('circle'); setPoly(null);
     setForm({ name: '', address: '', city: '', state: '', is_active: true, latitude: '', longitude: '', geofence_radius: '', biometric_devices: '' });
     setShowDialog(true);
   };
 
   const openEdit = (loc) => {
     setEditingId(loc.id);
-    const rb = rectBounds(loc);
-    setShape(rb ? 'rectangle' : 'circle'); setRect(rb); setRectRot(rb ? rectRotation(loc) : 0);
+    // a drawn area opens as its corner list (a rectangle saved earlier becomes four corners)
+    const pv = polyVertices(loc) || (rectBounds(loc) ? rectCorners(loc) : null);
+    setShape(pv ? 'area' : 'circle'); setPoly(pv);
     setForm({
       name: loc.name || '', address: loc.address || '', city: loc.city || '', state: loc.state || '', is_active: loc.is_active !== false,
       latitude: loc.latitude != null ? String(loc.latitude) : '', longitude: loc.longitude != null ? String(loc.longitude) : '',
@@ -219,14 +219,14 @@ export default function LocationMaster() {
     let radius = form.geofence_radius !== '' ? Number(form.geofence_radius) : null;
     let centreLat = lat, centreLng = lng;
     let shapeFields = { geofence_shape: 'circle', geofence_bounds: null, geofence_rotation: 0 };
-    if (shape === 'rectangle') {
-      if (!rect) { toast.error('Draw the office rectangle on the map first (or switch back to Circle)'); return; }
-      const sz = rectSizeM(rect);
-      if (sz.width < 30 || sz.height < 30) { toast.error('The rectangle is too small — each side must be at least 30 m'); return; }
-      if (sz.width > 5000 || sz.height > 5000) { toast.error('The rectangle is too large — each side must be under 5 km'); return; }
-      const c = circleFieldsForRect(rect);   // centre + circumscribed circle are stored too, so everything coarse keeps working
+    if (shape === 'area') {
+      if (!poly) { toast.error('Draw the office area on the map first (or switch back to Circle)'); return; }
+      const area = polyAreaM2(poly);
+      if (area < 900) { toast.error('The area is too small — it must cover at least 900 m² (about 30 m × 30 m)'); return; }
+      const c = circleFieldsForPoly(poly);   // centre + enclosing circle are stored too, so everything coarse keeps working
+      if (c.geofence_radius > 5000) { toast.error('The area is too large — keep it within about 5 km across'); return; }
       centreLat = c.latitude; centreLng = c.longitude; radius = c.geofence_radius;
-      shapeFields = { geofence_shape: 'rectangle', geofence_bounds: rect, geofence_rotation: rectRot };
+      shapeFields = { geofence_shape: 'polygon', geofence_vertices: poly, geofence_bounds: null, geofence_rotation: 0 };
     } else if ((centreLat != null || centreLng != null || radius != null) && (centreLat == null || centreLng == null || !radius)) {
       toast.error('For geofencing, set latitude, longitude AND radius together');
       return;
@@ -320,7 +320,7 @@ export default function LocationMaster() {
                             </div>
                             <div>
                               <p className="font-semibold text-foreground flex items-center gap-2">{loc.name}
-                                {loc.latitude != null && loc.geofence_radius ? <Badge className="bg-blue-100 text-blue-700 text-[10px]">{rectBounds(loc) ? 'GEOFENCE · DRAWN AREA' : `GEOFENCE ${loc.geofence_radius}m`}</Badge> : null}
+                                {loc.latitude != null && loc.geofence_radius ? <Badge className="bg-blue-100 text-blue-700 text-[10px]">{(rectBounds(loc) || polyVertices(loc)) ? 'GEOFENCE · DRAWN AREA' : `GEOFENCE ${loc.geofence_radius}m`}</Badge> : null}
                               </p>
                               <p className="text-sm text-muted-foreground">{[loc.address, loc.city, loc.state].filter(Boolean).join(', ') || '—'}</p>
                               <p className="text-xs text-muted-foreground mt-0.5">{empCount} employee(s)</p>
@@ -570,13 +570,13 @@ export default function LocationMaster() {
                   </Button>
                 </div>
                 <div className="flex gap-2">
-                  {[['circle', 'Circle (radius)'], ['rectangle', 'Rectangle (draw on map)']].map(([k, l]) => (
+                  {[['circle', 'Circle (radius)'], ['area', 'Area (draw on map)']].map(([k, l]) => (
                     <button key={k} type="button" onClick={() => setShape(k)} className={`h-8 px-3 rounded-md border text-sm ${shape === k ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>{l}</button>
                   ))}
                 </div>
-                {shape === 'rectangle' ? (
-                  <RectangleEditorMap
-                    bounds={rect} rotation={rectRot} onChange={(b, r) => { setRect(b); setRectRot(r || 0); }} excludeId={editingId}
+                {shape === 'area' ? (
+                  <AreaEditorMap
+                    vertices={poly} onChange={setPoly} excludeId={editingId}
                     otherFences={locations.filter(l => l.latitude != null && l.geofence_radius).map(fenceOf)}
                   />
                 ) : (<>
