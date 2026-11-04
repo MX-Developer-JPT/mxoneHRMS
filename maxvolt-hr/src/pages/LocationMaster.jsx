@@ -11,7 +11,7 @@ import { Plus, Edit2, Trash2, MapPin, Loader2, Download, Users, ChevronDown, Use
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { OfficePickerMap, RectangleEditorMap } from '@/components/maps/GeoMaps';
-import { rectBounds, rectSizeM, circleFieldsForRect, fenceOf } from '@/lib/geofenceShape';
+import { rectBounds, rectRotation, rectSizeM, circleFieldsForRect, fenceOf } from '@/lib/geofenceShape';
 import { Switch } from "@/components/ui/switch";
 import { useAuth } from '@/lib/AuthContext';
 
@@ -30,6 +30,7 @@ export default function LocationMaster() {
   const [capturing, setCapturing] = useState(false);
   const [shape, setShape] = useState('circle');   // 'circle' | 'rectangle' — how this office's boundary is defined
   const [rect, setRect] = useState(null);         // { north, south, east, west } when drawn as a rectangle
+  const [rectRot, setRectRot] = useState(0);       // degrees the rectangle is turned (clockwise from north)
 
   const captureCurrentLocation = () => {
     if (!navigator.geolocation) { toast.error('Geolocation not supported on this device'); return; }
@@ -193,7 +194,7 @@ export default function LocationMaster() {
 
   const openNew = () => {
     setEditingId(null);
-    setShape('circle'); setRect(null);
+    setShape('circle'); setRect(null); setRectRot(0);
     setForm({ name: '', address: '', city: '', state: '', is_active: true, latitude: '', longitude: '', geofence_radius: '', biometric_devices: '' });
     setShowDialog(true);
   };
@@ -201,7 +202,7 @@ export default function LocationMaster() {
   const openEdit = (loc) => {
     setEditingId(loc.id);
     const rb = rectBounds(loc);
-    setShape(rb ? 'rectangle' : 'circle'); setRect(rb);
+    setShape(rb ? 'rectangle' : 'circle'); setRect(rb); setRectRot(rb ? rectRotation(loc) : 0);
     setForm({
       name: loc.name || '', address: loc.address || '', city: loc.city || '', state: loc.state || '', is_active: loc.is_active !== false,
       latitude: loc.latitude != null ? String(loc.latitude) : '', longitude: loc.longitude != null ? String(loc.longitude) : '',
@@ -217,7 +218,7 @@ export default function LocationMaster() {
     const lng = form.longitude !== '' ? Number(form.longitude) : null;
     let radius = form.geofence_radius !== '' ? Number(form.geofence_radius) : null;
     let centreLat = lat, centreLng = lng;
-    let shapeFields = { geofence_shape: 'circle', geofence_bounds: null };
+    let shapeFields = { geofence_shape: 'circle', geofence_bounds: null, geofence_rotation: 0 };
     if (shape === 'rectangle') {
       if (!rect) { toast.error('Draw the office rectangle on the map first (or switch back to Circle)'); return; }
       const sz = rectSizeM(rect);
@@ -225,7 +226,7 @@ export default function LocationMaster() {
       if (sz.width > 5000 || sz.height > 5000) { toast.error('The rectangle is too large — each side must be under 5 km'); return; }
       const c = circleFieldsForRect(rect);   // centre + circumscribed circle are stored too, so everything coarse keeps working
       centreLat = c.latitude; centreLng = c.longitude; radius = c.geofence_radius;
-      shapeFields = { geofence_shape: 'rectangle', geofence_bounds: rect };
+      shapeFields = { geofence_shape: 'rectangle', geofence_bounds: rect, geofence_rotation: rectRot };
     } else if ((centreLat != null || centreLng != null || radius != null) && (centreLat == null || centreLng == null || !radius)) {
       toast.error('For geofencing, set latitude, longitude AND radius together');
       return;
@@ -575,7 +576,7 @@ export default function LocationMaster() {
                 </div>
                 {shape === 'rectangle' ? (
                   <RectangleEditorMap
-                    bounds={rect} onChange={setRect} excludeId={editingId}
+                    bounds={rect} rotation={rectRot} onChange={(b, r) => { setRect(b); setRectRot(r || 0); }} excludeId={editingId}
                     otherFences={locations.filter(l => l.latitude != null && l.geofence_radius).map(fenceOf)}
                   />
                 ) : (<>

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, Circle, Rectangle, Marker, Polyline, Tooltip, useMap, useMapEvents } from 'react-leaflet';
-import { rectSizeM } from '@/lib/geofenceShape';
+import { MapContainer, TileLayer, Circle, Polygon, Marker, Polyline, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { rectSizeM, rectCorners } from '@/lib/geofenceShape';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -47,9 +47,9 @@ function ClickToSet({ onPick }) { useMapEvents({ click: (e) => onPick(e.latlng.l
 const Fences = ({ fences = [], exclude }) => fences.filter(f => f.id !== exclude && ok(f.latitude) && ok(f.longitude) && Number(f.radius_m) > 0).map(f => (
   f.shape === 'rectangle' && f.bounds
     ? (
-      <Rectangle key={f.id || f.name} bounds={[[f.bounds.south, f.bounds.west], [f.bounds.north, f.bounds.east]]} pathOptions={{ color: '#2563eb', weight: 1.5, fillOpacity: 0.08 }}>
+      <Polygon key={f.id || f.name} positions={rectCorners(f)} pathOptions={{ color: '#2563eb', weight: 1.5, fillOpacity: 0.08 }}>
         <Tooltip sticky>{f.name} · drawn boundary</Tooltip>
-      </Rectangle>
+      </Polygon>
     )
     : (
       <Circle key={f.id || f.name} center={[Number(f.latitude), Number(f.longitude)]} radius={Number(f.radius_m)} pathOptions={{ color: '#2563eb', weight: 1.5, fillOpacity: 0.08 }}>
@@ -176,15 +176,25 @@ const boundsFrom = (a, b) => ({
 });
 const r6 = (n) => Math.round(n * 1e6) / 1e6;
 
-export function RectangleEditorMap({ bounds, onChange, otherFences = [], excludeId, height = 300 }) {
+const M_LAT = 111195;
+// keep an angle in [-90, 90): a rectangle looks the same every 180 degrees
+const normRot = (d) => ((((d + 90) % 180) + 180) % 180) - 90;
+const frameOf = (b, rotDeg) => {
+  const cLat = (b.north + b.south) / 2, cLng = (b.east + b.west) / 2, lonM = M_LAT * Math.cos(cLat * Math.PI / 180), r = rotDeg * Math.PI / 180;
+  return { cLat, cLng, lonM, hw: (b.east - b.west) / 2 * lonM, hh: (b.north - b.south) / 2 * M_LAT, c: Math.cos(r), s: Math.sin(r) };
+};
+const toLocal = (g, ll) => { const x = (ll.lng - g.cLng) * g.lonM, y = (ll.lat - g.cLat) * M_LAT; return { x: x * g.c - y * g.s, y: x * g.s + y * g.c }; };
+const toWorld = (g, p) => ({ lat: g.cLat + (-p.x * g.s + p.y * g.c) / M_LAT, lng: g.cLng + (p.x * g.c + p.y * g.s) / g.lonM });
+
+export function RectangleEditorMap({ bounds, rotation = 0, onChange, otherFences = [], excludeId, height = 320 }) {
   const [drawing, setDrawing] = useState(!bounds);
   const [first, setFirst] = useState(null);
   const [hover, setHover] = useState(null);
   const [q, setQ] = useState(''); const [searching, setSearching] = useState(false); const [msg, setMsg] = useState(''); const [jump, setJump] = useState(null);
-  const [initialFit] = useState(() => (bounds ? [[bounds.south, bounds.west], [bounds.north, bounds.east]] : null));
+  const [initialFit] = useState(() => (bounds ? rectCorners({ shape: 'rectangle', bounds, rotation }) : null));
 
-  const finish = (b) => { onChange({ north: r6(b.north), south: r6(b.south), east: r6(b.east), west: r6(b.west) }); setDrawing(false); setFirst(null); setHover(null); };
-  const corner = (ll) => { if (!first) setFirst(ll); else finish(boundsFrom(first, ll)); };
+  const finish = (b, rot = rotation) => { onChange({ north: r6(b.north), south: r6(b.south), east: r6(b.east), west: r6(b.west) }, normRot(rot)); setDrawing(false); setFirst(null); setHover(null); };
+  const corner = (ll) => { if (!first) setFirst(ll); else finish(boundsFrom(first, ll), 0); };
 
   const search = async (e) => {
     e?.preventDefault(); if (!q.trim()) return; setSearching(true); setMsg('');
@@ -198,20 +208,33 @@ export function RectangleEditorMap({ bounds, onChange, otherFences = [], exclude
 
   const live = first && hover ? boundsFrom(first, hover) : null;
   const shown = live || bounds;
+  const shownRot = live ? 0 : rotation;
   const size = shown ? rectSizeM(shown) : null;
-  const corners = bounds ? [
-    { k: 'nw', lat: bounds.north, lng: bounds.west }, { k: 'ne', lat: bounds.north, lng: bounds.east },
-    { k: 'se', lat: bounds.south, lng: bounds.east }, { k: 'sw', lat: bounds.south, lng: bounds.west },
-  ] : [];
-  const opposite = { nw: 'se', ne: 'sw', se: 'nw', sw: 'ne' };
-  const dragCorner = (k, ll) => {
-    const o = corners.find(c => c.k === opposite[k]);
-    finish(boundsFrom(ll, o));
+  const poly = shown ? rectCorners({ shape: 'rectangle', bounds: shown, rotation: shownRot }) : null;
+
+  // frame of the saved rectangle, used by the drag handles
+  const g = bounds ? frameOf(bounds, rotation) : null;
+  const cornerDefs = [['nw', -1, 1], ['ne', 1, 1], ['se', 1, -1], ['sw', -1, -1]];
+  const cornerPos = g ? cornerDefs.map(([k, sx, sy]) => ({ k, sx, sy, ...toWorld(g, { x: sx * g.hw, y: sy * g.hh }) })) : [];
+  const dragCorner = (sx, sy, ll) => {
+    const p = toLocal(g, ll), o = { x: -sx * g.hw, y: -sy * g.hh };
+    const centre = toWorld(g, { x: (p.x + o.x) / 2, y: (p.y + o.y) / 2 });
+    const hw = Math.max(5, Math.abs(p.x - o.x) / 2), hh = Math.max(5, Math.abs(p.y - o.y) / 2);
+    const lonM = M_LAT * Math.cos(centre.lat * Math.PI / 180);
+    finish({ north: centre.lat + hh / M_LAT, south: centre.lat - hh / M_LAT, east: centre.lng + hw / lonM, west: centre.lng - hw / lonM });
   };
-  const centre = bounds ? { lat: (bounds.north + bounds.south) / 2, lng: (bounds.east + bounds.west) / 2 } : null;
-  const moveAll = (ll) => {
-    const dLat = ll.lat - centre.lat, dLng = ll.lng - centre.lng;
+  const movePin = (ll) => {
+    const dLat = ll.lat - g.cLat, dLng = ll.lng - g.cLng;
     finish({ north: bounds.north + dLat, south: bounds.south + dLat, east: bounds.east + dLng, west: bounds.west + dLng });
+  };
+  // the round handle beyond the top edge: drag it around the centre to turn the rectangle
+  const handleLocal = g ? { x: 0, y: g.hh + Math.max(20, g.hh * 0.3) } : null;
+  const handlePos = g ? toWorld(g, handleLocal) : null;
+  const dragTurn = (ll) => {
+    const x = (ll.lng - g.cLng) * g.lonM, y = (ll.lat - g.cLat) * M_LAT;
+    let deg = Math.round(Math.atan2(x, y) * 180 / Math.PI);
+    if (Math.abs(normRot(deg)) <= 3) deg = 0;                       // snap back to square with the map
+    finish(bounds, deg);
   };
 
   return (
@@ -223,27 +246,36 @@ export function RectangleEditorMap({ bounds, onChange, otherFences = [], exclude
       {msg && <p className="text-xs text-amber-700">{msg}</p>}
       <div className="flex items-center gap-2 flex-wrap">
         <button type="button" onClick={() => { setDrawing(true); setFirst(null); }} className={`h-8 px-3 rounded-md border text-sm ${drawing ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>{bounds ? 'Redraw rectangle' : 'Draw rectangle'}</button>
-        {bounds && <button type="button" onClick={() => { onChange(null); setDrawing(true); setFirst(null); }} className="h-8 px-3 rounded-md border text-sm hover:bg-muted">Clear</button>}
+        {bounds && <button type="button" onClick={() => { onChange(null, 0); setDrawing(true); setFirst(null); }} className="h-8 px-3 rounded-md border text-sm hover:bg-muted">Clear</button>}
         <span className="text-xs text-muted-foreground">
-          {drawing ? (first ? 'Now tap the opposite corner.' : 'Zoom in to your office (or use Find), then tap one corner of the area.') : size ? `${Math.round(size.width)} m × ${Math.round(size.height)} m — drag a corner to resize, the pin to move.` : ''}
+          {drawing ? (first ? 'Now tap the opposite corner.' : 'Zoom in to your office (or use Find), then tap one corner of the area.') : size ? `${Math.round(size.width)} m × ${Math.round(size.height)} m — drag a white corner to resize, the pin to move, the round handle (or the slider) to turn it.` : ''}
         </span>
       </div>
       <div className="rounded-lg overflow-hidden border" style={{ height, cursor: drawing ? 'crosshair' : undefined }}>
-        <MapContainer center={initialFit ? [(initialFit[0][0] + initialFit[1][0]) / 2, (initialFit[0][1] + initialFit[1][1]) / 2] : INDIA} zoom={initialFit ? 17 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
+        <MapContainer center={initialFit ? initialFit[0] : INDIA} zoom={initialFit ? 17 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
           <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
           <Resize />
           <CornerClicks active={drawing} onCorner={corner} onMove={setHover} />
           <Fences fences={otherFences} exclude={excludeId} />
           {initialFit && <FitTo points={initialFit} max={18} />}
           {jump && <FitTo points={[jump]} max={17} />}
-          {shown && <Rectangle bounds={[[shown.south, shown.west], [shown.north, shown.east]]} pathOptions={{ color: '#dc2626', weight: 2, fillOpacity: 0.18, dashArray: live ? '6 6' : undefined }} />}
+          {poly && <Polygon positions={poly} pathOptions={{ color: '#dc2626', weight: 2, fillOpacity: 0.18, dashArray: live ? '6 6' : undefined }} />}
           {first && <Marker position={first} icon={dot('#dc2626', 14)} />}
-          {!drawing && bounds && corners.map(c => (
-            <Marker key={c.k} position={[c.lat, c.lng]} icon={dot('#ffffff', 16)} draggable eventHandlers={{ dragend: (e) => dragCorner(c.k, e.target.getLatLng()) }} />
+          {!drawing && bounds && cornerPos.map(c => (
+            <Marker key={c.k} position={[c.lat, c.lng]} icon={dot('#ffffff', 16)} draggable eventHandlers={{ dragend: (e) => dragCorner(c.sx, c.sy, e.target.getLatLng()) }} />
           ))}
-          {!drawing && centre && <Marker position={[centre.lat, centre.lng]} icon={pinIcon} draggable eventHandlers={{ dragend: (e) => moveAll(e.target.getLatLng()) }} />}
+          {!drawing && g && <Marker position={[g.cLat, g.cLng]} icon={pinIcon} draggable eventHandlers={{ dragend: (e) => movePin(e.target.getLatLng()) }} />}
+          {!drawing && handlePos && <Polyline positions={[[g.cLat, g.cLng], [handlePos.lat, handlePos.lng]]} pathOptions={{ color: '#dc2626', weight: 1, dashArray: '3 4' }} />}
+          {!drawing && handlePos && <Marker position={[handlePos.lat, handlePos.lng]} icon={dot('#f59e0b', 18)} draggable eventHandlers={{ dragend: (e) => dragTurn(e.target.getLatLng()) }}><Tooltip>Drag to turn</Tooltip></Marker>}
         </MapContainer>
       </div>
+      {bounds && (
+        <div className="flex items-center gap-3">
+          <label className="text-xs whitespace-nowrap">Angle: {Math.round(rotation)}°</label>
+          <input type="range" min={-90} max={89} step={1} className="flex-1" value={Math.round(rotation)} onChange={e => finish(bounds, Number(e.target.value))} />
+          <button type="button" onClick={() => finish(bounds, 0)} className="h-7 px-2 rounded-md border text-xs hover:bg-muted">Reset</button>
+        </div>
+      )}
       <p className="text-xs text-muted-foreground">Blue shapes are other offices. Employees are checked in when they enter this outline and checked out when they leave it.</p>
     </div>
   );

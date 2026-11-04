@@ -296,7 +296,7 @@ index a92fcf9..6410a56 100644
      }
  
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..c31d5e2 100644
+index fafbb86..02fd987 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -477,7 +477,7 @@ index fafbb86..c31d5e2 100644
                      Intent intent = new Intent(ACTION_BROADCAST);
                      intent.putExtra("location", location);
                      intent.putExtra("id", id);
-@@ -168,8 +280,349 @@ public class BackgroundGeolocationService extends Service {
+@@ -168,8 +280,355 @@ public class BackgroundGeolocationService extends Service {
              }
          }
  
@@ -729,11 +729,17 @@ index fafbb86..c31d5e2 100644
 +            if (b != null) {
 +                double n = b.getDouble("north"), s = b.getDouble("south"), e = b.getDouble("east"), w = b.getDouble("west");
 +                double latM = 111195.0;
-+                double lonM = latM * Math.cos(Math.toRadians(lat));
-+                double dx = lon < w ? (w - lon) * lonM : (lon > e ? (lon - e) * lonM : 0);
-+                double dy = lat < s ? (s - lat) * latM : (lat > n ? (lat - n) * latM : 0);
-+                if (dx > 0 || dy > 0) return Math.hypot(dx, dy);
-+                return -Math.min(Math.min((lon - w) * lonM, (e - lon) * lonM), Math.min((lat - s) * latM, (n - lat) * latM));
++                double cLat = (n + s) / 2, cLng = (e + w) / 2;
++                double lonM = latM * Math.cos(Math.toRadians(cLat));
++                double hw = (e - w) / 2 * lonM, hh = (n - s) / 2 * latM;
++                // The rectangle may be turned (degrees clockwise from north, about its centre): look at the point in its own frame.
++                double rot = Math.toRadians(f.optDouble("rotation", 0));
++                double x = (lon - cLng) * lonM, y = (lat - cLat) * latM;
++                double x0 = x * Math.cos(rot) - y * Math.sin(rot);
++                double y0 = x * Math.sin(rot) + y * Math.cos(rot);
++                double dx = Math.abs(x0) - hw, dy = Math.abs(y0) - hh;
++                if (dx > 0 || dy > 0) return Math.hypot(Math.max(dx, 0), Math.max(dy, 0));
++                return Math.max(dx, dy);
 +            }
 +            return distanceMetres(lat, lon, f.getDouble("latitude"), f.getDouble("longitude")) - f.getDouble("radius_m");
 +        } catch (Exception ex) {
@@ -1458,10 +1464,10 @@ index d4a5965..c3ef69a 100644
              ) {
 diff --git a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift
 new file mode 100644
-index 0000000..ef9f6ff
+index 0000000..6efe22e
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,289 @@
 +import Foundation
 +import CoreLocation
 +import UIKit
@@ -1541,11 +1547,17 @@ index 0000000..ef9f6ff
 +        if (f["shape"] as? String) == "rectangle", let b = f["bounds"] as? [String: Any],
 +           let n = number(b["north"]), let s = number(b["south"]), let e = number(b["east"]), let w = number(b["west"]) {
 +            let latM = 111195.0
-+            let lonM = latM * cos(lat * Double.pi / 180)
-+            let dx = lng < w ? (w - lng) * lonM : (lng > e ? (lng - e) * lonM : 0)
-+            let dy = lat < s ? (s - lat) * latM : (lat > n ? (lat - n) * latM : 0)
-+            if dx > 0 || dy > 0 { return (dx * dx + dy * dy).squareRoot() }
-+            return -min(min((lng - w) * lonM, (e - lng) * lonM), min((lat - s) * latM, (n - lat) * latM))
++            let cLat = (n + s) / 2, cLng = (e + w) / 2
++            let lonM = latM * cos(cLat * Double.pi / 180)
++            let hw = (e - w) / 2 * lonM, hh = (n - s) / 2 * latM
++            // The rectangle may be turned (degrees clockwise from north, about its centre): look at the point in its own frame.
++            let rot = (number(f["rotation"]) ?? 0) * Double.pi / 180
++            let x = (lng - cLng) * lonM, y = (lat - cLat) * latM
++            let x0 = x * cos(rot) - y * sin(rot)
++            let y0 = x * sin(rot) + y * cos(rot)
++            let dx = abs(x0) - hw, dy = abs(y0) - hh
++            if dx > 0 || dy > 0 { return (max(dx, 0) * max(dx, 0) + max(dy, 0) * max(dy, 0)).squareRoot() }
++            return max(dx, dy)
 +        }
 +        guard let clat = number(f["latitude"]), let clng = number(f["longitude"]), let r = number(f["radius_m"]) else { return Double.greatestFiniteMagnitude }
 +        return CLLocation(latitude: lat, longitude: lng).distance(from: CLLocation(latitude: clat, longitude: clng)) - r

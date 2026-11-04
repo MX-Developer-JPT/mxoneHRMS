@@ -34,19 +34,44 @@ export function circleFieldsForRect(b) {
   };
 }
 
-// Metres to the fence edge: negative inside, positive outside. `f` may be a stored location or a server fence ({ radius_m, shape, bounds }).
-export function signedDistanceM(f, lat, lng) {
+// A rectangle may be turned (geofence_rotation, degrees clockwise from north, about its centre) to follow a road or a
+// building line. bounds always describe the UNTURNED box around the centre.
+export function rectRotation(f) {
+  const r = Number(f?.geofence_rotation ?? f?.rotation);
+  return Number.isFinite(r) ? ((((r + 90) % 180) + 180) % 180) - 90 : 0;
+}
+
+function rectFrame(f) {
   const b = rectBounds(f);
-  if (!b) return havM(Number(f.latitude), Number(f.longitude), lat, lng) - Number(f.radius_m ?? f.geofence_radius);
-  const lonM = M_PER_DEG_LAT * Math.cos(lat * Math.PI / 180);
-  const dx = lng < b.west ? (b.west - lng) * lonM : lng > b.east ? (lng - b.east) * lonM : 0;
-  const dy = lat < b.south ? (b.south - lat) * M_PER_DEG_LAT : lat > b.north ? (lat - b.north) * M_PER_DEG_LAT : 0;
-  if (dx > 0 || dy > 0) return Math.hypot(dx, dy);
-  return -Math.min((lng - b.west) * lonM, (b.east - lng) * lonM, (lat - b.south) * M_PER_DEG_LAT, (b.north - lat) * M_PER_DEG_LAT);
+  if (!b) return null;
+  const cLat = (b.north + b.south) / 2, cLng = (b.east + b.west) / 2, lonM = M_PER_DEG_LAT * Math.cos(cLat * Math.PI / 180);
+  const rot = rectRotation(f) * Math.PI / 180;
+  return { cLat, cLng, lonM, hw: (b.east - b.west) / 2 * lonM, hh: (b.north - b.south) / 2 * M_PER_DEG_LAT, cos: Math.cos(rot), sin: Math.sin(rot) };
+}
+
+// The four corners of the (possibly turned) rectangle as [lat, lng].
+export function rectCorners(f) {
+  const g = rectFrame(f);
+  if (!g) return null;
+  return [[-1, 1], [1, 1], [1, -1], [-1, -1]].map(([sx, sy]) => {
+    const x0 = sx * g.hw, y0 = sy * g.hh;
+    return [g.cLat + (-x0 * g.sin + y0 * g.cos) / M_PER_DEG_LAT, g.cLng + (x0 * g.cos + y0 * g.sin) / g.lonM];
+  });
+}
+
+// Metres from a point to the fence edge: NEGATIVE inside, 0 on the edge, POSITIVE outside. Works for circles, rectangles and turned rectangles.
+export function signedDistanceM(f, lat, lng) {
+  const g = rectFrame(f);
+  if (!g) return havM(Number(f.latitude), Number(f.longitude), lat, lng) - Number(f.geofence_radius ?? f.radius_m);
+  const x = (lng - g.cLng) * g.lonM, y = (lat - g.cLat) * M_PER_DEG_LAT;
+  const x0 = x * g.cos - y * g.sin, y0 = x * g.sin + y * g.cos;     // the point in the rectangle's own frame
+  const dx = Math.abs(x0) - g.hw, dy = Math.abs(y0) - g.hh;
+  if (dx > 0 || dy > 0) return Math.hypot(Math.max(dx, 0), Math.max(dy, 0));
+  return Math.max(dx, dy);
 }
 
 // A stored AppLocation as the map components draw it.
 export function fenceOf(l) {
   const b = rectBounds(l);
-  return { id: l.id, name: l.name, latitude: l.latitude, longitude: l.longitude, radius_m: l.geofence_radius, ...(b ? { shape: 'rectangle', bounds: b } : {}) };
+  return { id: l.id, name: l.name, latitude: l.latitude, longitude: l.longitude, radius_m: l.geofence_radius, ...(b ? { shape: 'rectangle', bounds: b, rotation: rectRotation(l) } : {}) };
 }
