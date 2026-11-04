@@ -76,6 +76,16 @@ async function hasLeaveCoveringDate(userId, date) {
   );
   return !!row;
 }
+// A day can end up with two Attendance rows (an old auto-marked "absent" plus the corrected one an admin/HR saved, e.g. when
+// the old row's user_id column was empty). The corrected day wins: no "you were absent" nag while ANY other record for the
+// same person and date says something other than absent.
+async function hasNonAbsentRecordForDay(userId, date, exceptRowId) {
+  const row = await one(
+    "SELECT id FROM entities WHERE type='Attendance' AND (user_id=$1 OR data::jsonb->>'user_id'=$1) AND data::jsonb->>'date'=$2 AND id<>$3 AND COALESCE(data::jsonb->>'status','')<>'absent' LIMIT 1",
+    [userId, date, exceptRowId || '']
+  );
+  return !!row;
+}
 async function hasRegularisationCoveringDate(userId, date) {
   const row = await one(
     "SELECT id FROM entities WHERE type='AttendanceRegularisation' AND user_id=$1 AND data::jsonb->>'attendance_date'=$2 LIMIT 1",
@@ -89,14 +99,17 @@ export async function sendAbsentLeaveReminders() {
   const today = istDateString(0);
   const since = istDateString(-LOOKBACK_DAYS);
   const rows = await all(
-    "SELECT user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'status'='absent' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' < $2",
+    "SELECT id,user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'status'='absent' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' < $2",
     [since, today]
   );
   let reminded = 0, escalated = 0;
   const empCache = {};
   for (const row of rows) {
     const d = JSON.parse(row.data);
-    if (d.regularised) continue;
+    if (d.regularised || d.superseded_by) continue;
+    row.user_id = row.user_id || d.user_id;
+    if (!row.user_id) continue;
+    if (await hasNonAbsentRecordForDay(row.user_id, d.date, row.id)) continue;   // the day was corrected (admin / HR / regularisation)
     if (await hasLeaveCoveringDate(row.user_id, d.date)) continue;
 
     if (!(row.user_id in empCache)) {

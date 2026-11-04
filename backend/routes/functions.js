@@ -4707,7 +4707,10 @@ router.post('/:name', async (req, res) => {
         if (asShiftRow) asShift = JSON.parse(asShiftRow.data);
       }
 
-      const asAttRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [asUserId, asDate]);
+      // Find the day's record by the DB column OR the user_id inside the record — an older auto-marked row can have an empty
+      // column, and missing it made this save INSERT a second row, leaving the old "absent" alive next to the corrected day.
+      const asAllRows = await all("SELECT id,data FROM entities WHERE type='Attendance' AND (user_id=$1 OR data::jsonb->>'user_id'=$1) AND data::jsonb->>'date'=$2 ORDER BY created_at", [asUserId, asDate]);
+      const asAttRow = asAllRows.find(r => JSON.parse(r.data).status !== 'absent') || asAllRows[0] || null;
       const asAtt = asAttRow ? JSON.parse(asAttRow.data) : null;
 
       let asSessionData, asStatusResult;
@@ -4765,6 +4768,13 @@ router.post('/:name', async (req, res) => {
       };
       if (asAttRow) await run("UPDATE entities SET data=$1, status=$2 WHERE id=$3", [JSON.stringify(asAttData), asFinalStatus, asAttRow.id]);
       else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [asId, asUserId, asFinalStatus, JSON.stringify(asAttData)]);
+      // Any other row for the same day (a stale auto-absent) is retired: kept for history, never nags or counts again.
+      for (const dup of asAllRows) {
+        if (dup.id === asId) continue;
+        const dd = JSON.parse(dup.data);
+        if (dd.superseded_by) continue;
+        await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...dd, superseded_by: asId, superseded_at: new Date().toISOString() }), dup.id]);
+      }
 
       return res.json({ success: true, attendance: asAttData });
     }
