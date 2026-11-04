@@ -10,7 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Plus, Edit2, Trash2, MapPin, Loader2, Download, Users, ChevronDown, UserCog, AlertCircle, Building2, Search, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { OfficePickerMap } from '@/components/maps/GeoMaps';
+import { OfficePickerMap, RectangleEditorMap } from '@/components/maps/GeoMaps';
+import { rectBounds, rectSizeM, circleFieldsForRect, fenceOf } from '@/lib/geofenceShape';
 import { Switch } from "@/components/ui/switch";
 import { useAuth } from '@/lib/AuthContext';
 
@@ -27,6 +28,8 @@ export default function LocationMaster() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: '', address: '', city: '', state: '', is_active: true, latitude: '', longitude: '', geofence_radius: '', biometric_devices: '' });
   const [capturing, setCapturing] = useState(false);
+  const [shape, setShape] = useState('circle');   // 'circle' | 'rectangle' — how this office's boundary is defined
+  const [rect, setRect] = useState(null);         // { north, south, east, west } when drawn as a rectangle
 
   const captureCurrentLocation = () => {
     if (!navigator.geolocation) { toast.error('Geolocation not supported on this device'); return; }
@@ -190,12 +193,15 @@ export default function LocationMaster() {
 
   const openNew = () => {
     setEditingId(null);
+    setShape('circle'); setRect(null);
     setForm({ name: '', address: '', city: '', state: '', is_active: true, latitude: '', longitude: '', geofence_radius: '', biometric_devices: '' });
     setShowDialog(true);
   };
 
   const openEdit = (loc) => {
     setEditingId(loc.id);
+    const rb = rectBounds(loc);
+    setShape(rb ? 'rectangle' : 'circle'); setRect(rb);
     setForm({
       name: loc.name || '', address: loc.address || '', city: loc.city || '', state: loc.state || '', is_active: loc.is_active !== false,
       latitude: loc.latitude != null ? String(loc.latitude) : '', longitude: loc.longitude != null ? String(loc.longitude) : '',
@@ -209,13 +215,23 @@ export default function LocationMaster() {
     if (!form.name.trim()) { toast.error('Location name is required'); return; }
     const lat = form.latitude !== '' ? Number(form.latitude) : null;
     const lng = form.longitude !== '' ? Number(form.longitude) : null;
-    const radius = form.geofence_radius !== '' ? Number(form.geofence_radius) : null;
-    if ((lat != null || lng != null || radius != null) && (lat == null || lng == null || !radius)) {
+    let radius = form.geofence_radius !== '' ? Number(form.geofence_radius) : null;
+    let centreLat = lat, centreLng = lng;
+    let shapeFields = { geofence_shape: 'circle', geofence_bounds: null };
+    if (shape === 'rectangle') {
+      if (!rect) { toast.error('Draw the office rectangle on the map first (or switch back to Circle)'); return; }
+      const sz = rectSizeM(rect);
+      if (sz.width < 30 || sz.height < 30) { toast.error('The rectangle is too small — each side must be at least 30 m'); return; }
+      if (sz.width > 5000 || sz.height > 5000) { toast.error('The rectangle is too large — each side must be under 5 km'); return; }
+      const c = circleFieldsForRect(rect);   // centre + circumscribed circle are stored too, so everything coarse keeps working
+      centreLat = c.latitude; centreLng = c.longitude; radius = c.geofence_radius;
+      shapeFields = { geofence_shape: 'rectangle', geofence_bounds: rect };
+    } else if ((centreLat != null || centreLng != null || radius != null) && (centreLat == null || centreLng == null || !radius)) {
       toast.error('For geofencing, set latitude, longitude AND radius together');
       return;
     }
     const biometricDevices = form.biometric_devices.split(',').map(d => d.trim()).filter(Boolean);
-    const payload = { ...form, latitude: lat, longitude: lng, geofence_radius: radius, biometric_devices: biometricDevices };
+    const payload = { ...form, latitude: centreLat, longitude: centreLng, geofence_radius: radius, ...shapeFields, biometric_devices: biometricDevices };
     setSaving(true);
     try {
       if (editingId) {
@@ -303,7 +319,7 @@ export default function LocationMaster() {
                             </div>
                             <div>
                               <p className="font-semibold text-foreground flex items-center gap-2">{loc.name}
-                                {loc.latitude != null && loc.geofence_radius ? <Badge className="bg-blue-100 text-blue-700 text-[10px]">GEOFENCE {loc.geofence_radius}m</Badge> : null}
+                                {loc.latitude != null && loc.geofence_radius ? <Badge className="bg-blue-100 text-blue-700 text-[10px]">{rectBounds(loc) ? 'GEOFENCE · DRAWN AREA' : `GEOFENCE ${loc.geofence_radius}m`}</Badge> : null}
                               </p>
                               <p className="text-sm text-muted-foreground">{[loc.address, loc.city, loc.state].filter(Boolean).join(', ') || '—'}</p>
                               <p className="text-xs text-muted-foreground mt-0.5">{empCount} employee(s)</p>
@@ -552,6 +568,17 @@ export default function LocationMaster() {
                     Use my current location
                   </Button>
                 </div>
+                <div className="flex gap-2">
+                  {[['circle', 'Circle (radius)'], ['rectangle', 'Rectangle (draw on map)']].map(([k, l]) => (
+                    <button key={k} type="button" onClick={() => setShape(k)} className={`h-8 px-3 rounded-md border text-sm ${shape === k ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>{l}</button>
+                  ))}
+                </div>
+                {shape === 'rectangle' ? (
+                  <RectangleEditorMap
+                    bounds={rect} onChange={setRect} excludeId={editingId}
+                    otherFences={locations.filter(l => l.latitude != null && l.geofence_radius).map(fenceOf)}
+                  />
+                ) : (<>
                 <div className="grid grid-cols-3 gap-3">
                   <div><Label className="text-xs">Latitude</Label><Input type="number" step="any" value={form.latitude} onChange={e => setForm({...form, latitude: e.target.value})} placeholder="28.6692" /></div>
                   <div><Label className="text-xs">Longitude</Label><Input type="number" step="any" value={form.longitude} onChange={e => setForm({...form, longitude: e.target.value})} placeholder="77.4538" /></div>
@@ -559,13 +586,14 @@ export default function LocationMaster() {
                 </div>
                 <OfficePickerMap
                   latitude={form.latitude} longitude={form.longitude} radius={form.geofence_radius} excludeId={editingId}
-                  otherFences={locations.filter(l => l.latitude != null && l.geofence_radius).map(l => ({ id: l.id, name: l.name, latitude: l.latitude, longitude: l.longitude, radius_m: l.geofence_radius }))}
+                  otherFences={locations.filter(l => l.latitude != null && l.geofence_radius).map(fenceOf)}
                   onChange={(lat, lng) => setForm(f => ({ ...f, latitude: String(lat), longitude: String(lng), geofence_radius: f.geofence_radius || '200' }))}
                 />
                 <div className="flex items-center gap-3">
                   <Label className="text-xs whitespace-nowrap">Radius: {form.geofence_radius || 0} m</Label>
                   <input type="range" min={30} max={1500} step={10} className="flex-1" value={Number(form.geofence_radius) || 200} onChange={e => setForm({ ...form, geofence_radius: e.target.value })} />
                 </div>
+                </>)}
                 <p className="text-xs text-muted-foreground">Employees assigned to this location (Work Location on the employee record) get auto check-in/out when they enter/leave this circle with the app open.</p>
               </div>
               {/* Biometric device mapping — All Attendance's Location filter

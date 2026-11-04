@@ -10,6 +10,7 @@ import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeave
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createHash } from 'crypto';
+import { publicFence as geoPublicFence, rectBounds as geoRectBounds, signedDistanceM as geoSignedDistanceM } from '../utils/geofenceShape.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -4151,8 +4152,8 @@ router.post('/:name', async (req, res) => {
         // (Employee.geofence_eligible) — the client uses this to auto-start
         // tracking with no employee-facing on/off control.
         geofence_eligible: !!gfEmp.geofence_eligible,
-        fence: assigned ? { id: assigned.id, name: assigned.name, latitude: Number(assigned.latitude), longitude: Number(assigned.longitude), radius_m: Number(assigned.geofence_radius) } : null,
-        all_fences: gfLocs.map(l => ({ id: l.id, name: l.name, latitude: Number(l.latitude), longitude: Number(l.longitude), radius_m: Number(l.geofence_radius) })),
+        fence: assigned ? geoPublicFence(assigned) : null,   // rectangles also carry shape / bounds / inscribed_m
+        all_fences: gfLocs.map(geoPublicFence),
         attendance_today: gfAtt
           ? {
               checked_in: !!gfAtt.check_in_time, checked_out: !!gfAtt.check_out_time,
@@ -4367,6 +4368,14 @@ router.post('/:name', async (req, res) => {
         const dist = haversineM(Number(latitude), Number(longitude), Number(ngFence.latitude), Number(ngFence.longitude));
         const allowed = Number(ngFence.geofence_radius) + Number(accuracy || 0) + 200;
         if (dist > allowed) return res.json({ success: false, error: `Reported position is ${Math.round(dist)}m from ${ngFence.name} (allowed ${Math.round(allowed)}m)`, code: 'OUTSIDE_FENCE' });
+      }
+      // Rectangle offices: the drawn boundary decides. An enter from a position outside the rectangle is refused; an exit
+      // from a position clearly still inside it is ignored (an early/coarse trigger), never closing the day.
+      if (ngFence && geoRectBounds(ngFence) && isFinite(Number(latitude)) && isFinite(Number(longitude))) {
+        const sd = geoSignedDistanceM(ngFence, Number(latitude), Number(longitude));
+        const slack = Math.min(60, Math.max(20, Number(accuracy || 0) * 0.75));
+        if (event === 'enter' && sd > slack) return res.json({ success: false, error: `Reported position is ${Math.round(sd)}m outside the ${ngFence.name} boundary`, code: 'OUTSIDE_FENCE' });
+        if (event === 'exit' && sd < -Math.max(30, Number(accuracy || 0) * 1.5)) return res.json({ success: true, action: 'ignored', reason: 'still_inside_boundary' });
       }
 
       let ngShiftForDate = { start_time: '09:00', end_time: '18:00' };

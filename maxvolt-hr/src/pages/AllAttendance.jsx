@@ -18,6 +18,7 @@ import MobileSelect from '@/components/MobileSelect';
 import AttendanceDetailsDialog from '@/components/attendance/AttendanceDetailsDialog';
 import BiometricSyncStatus from '@/components/attendance/BiometricSyncStatus';
 import { PlacesMap } from '@/components/maps/GeoMaps';
+import { fenceOf, signedDistanceM } from '@/lib/geofenceShape';
 import { resolveHierarchy } from '@/lib/hierarchy';
 
 const STATUS_COLORS = {
@@ -267,14 +268,12 @@ export default function AllAttendance() {
     }
     return out;
   };
-  const officeFences = useMemo(() => locations.filter(l => l.is_active !== false && l.latitude != null && Number(l.geofence_radius) > 0).map(l => ({ id: l.id, name: l.name, latitude: l.latitude, longitude: l.longitude, radius_m: l.geofence_radius })), [locations]);
+  const officeFences = useMemo(() => locations.filter(l => l.is_active !== false && l.latitude != null && Number(l.geofence_radius) > 0).map(fenceOf), [locations]);
   const nearestOffice = (lat, lng) => {
     let best = null;
     for (const f of officeFences) {
-      const R = 6371000, dLat = (f.latitude - lat) * Math.PI / 180, dLng = (f.longitude - lng) * Math.PI / 180;
-      const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(f.latitude * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-      const d = 2 * R * Math.asin(Math.sqrt(a));
-      if (!best || d < best.d) best = { d, name: f.name, inside: d <= Number(f.radius_m) };
+      const sd = signedDistanceM(f, lat, lng);   // negative inside; works for circles and drawn rectangles
+      if (!best || sd < best.sd) best = { sd, d: Math.max(0, sd), name: f.name, inside: sd <= 0 };
     }
     return best;
   };

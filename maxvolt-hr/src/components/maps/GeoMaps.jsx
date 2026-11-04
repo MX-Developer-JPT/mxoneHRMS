@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, Circle, Marker, Polyline, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Circle, Rectangle, Marker, Polyline, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { rectSizeM } from '@/lib/geofenceShape';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -44,9 +45,17 @@ function KeepVisible({ pos }) {
 function ClickToSet({ onPick }) { useMapEvents({ click: (e) => onPick(e.latlng.lat, e.latlng.lng) }); return null; }
 
 const Fences = ({ fences = [], exclude }) => fences.filter(f => f.id !== exclude && ok(f.latitude) && ok(f.longitude) && Number(f.radius_m) > 0).map(f => (
-  <Circle key={f.id || f.name} center={[Number(f.latitude), Number(f.longitude)]} radius={Number(f.radius_m)} pathOptions={{ color: '#2563eb', weight: 1.5, fillOpacity: 0.08 }}>
-    <Tooltip sticky>{f.name} · {f.radius_m} m</Tooltip>
-  </Circle>
+  f.shape === 'rectangle' && f.bounds
+    ? (
+      <Rectangle key={f.id || f.name} bounds={[[f.bounds.south, f.bounds.west], [f.bounds.north, f.bounds.east]]} pathOptions={{ color: '#2563eb', weight: 1.5, fillOpacity: 0.08 }}>
+        <Tooltip sticky>{f.name} · drawn boundary</Tooltip>
+      </Rectangle>
+    )
+    : (
+      <Circle key={f.id || f.name} center={[Number(f.latitude), Number(f.longitude)]} radius={Number(f.radius_m)} pathOptions={{ color: '#2563eb', weight: 1.5, fillOpacity: 0.08 }}>
+        <Tooltip sticky>{f.name} · {f.radius_m} m</Tooltip>
+      </Circle>
+    )
 ));
 
 // Click the map or drag the pin to place the office; the circle shows exactly what the geofence will cover.
@@ -151,6 +160,91 @@ export function PlacesMap({ markers = [], fences = [], height = 420 }) {
           <Marker key={m.id} position={[Number(m.lat), Number(m.lng)]} icon={dot(m.color || '#2563eb', 18)}><Tooltip direction="top" offset={[0, -8]}>{m.label}</Tooltip></Marker>
         ))}
       </MapContainer>
+    </div>
+  );
+}
+
+// Draw the office boundary as a rectangle: tap two opposite corners (works with a finger as well as a mouse), then drag the
+// corner handles to adjust or the centre pin to move the whole outline. onChange receives { north, south, east, west } or null.
+function CornerClicks({ active, onCorner, onMove }) {
+  useMapEvents({ click: (e) => active && onCorner(e.latlng), mousemove: (e) => active && onMove?.(e.latlng) });
+  return null;
+}
+
+const boundsFrom = (a, b) => ({
+  north: Math.max(a.lat, b.lat), south: Math.min(a.lat, b.lat), east: Math.max(a.lng, b.lng), west: Math.min(a.lng, b.lng),
+});
+const r6 = (n) => Math.round(n * 1e6) / 1e6;
+
+export function RectangleEditorMap({ bounds, onChange, otherFences = [], excludeId, height = 300 }) {
+  const [drawing, setDrawing] = useState(!bounds);
+  const [first, setFirst] = useState(null);
+  const [hover, setHover] = useState(null);
+  const [q, setQ] = useState(''); const [searching, setSearching] = useState(false); const [msg, setMsg] = useState(''); const [jump, setJump] = useState(null);
+  const [initialFit] = useState(() => (bounds ? [[bounds.south, bounds.west], [bounds.north, bounds.east]] : null));
+
+  const finish = (b) => { onChange({ north: r6(b.north), south: r6(b.south), east: r6(b.east), west: r6(b.west) }); setDrawing(false); setFirst(null); setHover(null); };
+  const corner = (ll) => { if (!first) setFirst(ll); else finish(boundsFrom(first, ll)); };
+
+  const search = async (e) => {
+    e?.preventDefault(); if (!q.trim()) return; setSearching(true); setMsg('');
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q.trim())}`, { headers: { Accept: 'application/json' }, referrerPolicy: 'origin' });
+      const j = await r.json();
+      if (j[0]) setJump([Number(j[0].lat), Number(j[0].lon)]); else setMsg('Place not found — try a fuller address or move the map by hand.');
+    } catch { setMsg('Search is unavailable right now — move the map by hand.'); }
+    setSearching(false);
+  };
+
+  const live = first && hover ? boundsFrom(first, hover) : null;
+  const shown = live || bounds;
+  const size = shown ? rectSizeM(shown) : null;
+  const corners = bounds ? [
+    { k: 'nw', lat: bounds.north, lng: bounds.west }, { k: 'ne', lat: bounds.north, lng: bounds.east },
+    { k: 'se', lat: bounds.south, lng: bounds.east }, { k: 'sw', lat: bounds.south, lng: bounds.west },
+  ] : [];
+  const opposite = { nw: 'se', ne: 'sw', se: 'nw', sw: 'ne' };
+  const dragCorner = (k, ll) => {
+    const o = corners.find(c => c.k === opposite[k]);
+    finish(boundsFrom(ll, o));
+  };
+  const centre = bounds ? { lat: (bounds.north + bounds.south) / 2, lng: (bounds.east + bounds.west) / 2 } : null;
+  const moveAll = (ll) => {
+    const dLat = ll.lat - centre.lat, dLng = ll.lng - centre.lng;
+    finish({ north: bounds.north + dLat, south: bounds.south + dLat, east: bounds.east + dLng, west: bounds.west + dLng });
+  };
+
+  return (
+    <div className="space-y-2">
+      <form onSubmit={search} className="flex gap-2">
+        <input className="flex-1 h-8 rounded-md border bg-background px-2 text-sm" placeholder="Search a place or address…" value={q} onChange={e => setQ(e.target.value)} />
+        <button type="submit" disabled={searching} className="h-8 px-3 rounded-md border text-sm hover:bg-muted">{searching ? '…' : 'Find'}</button>
+      </form>
+      {msg && <p className="text-xs text-amber-700">{msg}</p>}
+      <div className="flex items-center gap-2 flex-wrap">
+        <button type="button" onClick={() => { setDrawing(true); setFirst(null); }} className={`h-8 px-3 rounded-md border text-sm ${drawing ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>{bounds ? 'Redraw rectangle' : 'Draw rectangle'}</button>
+        {bounds && <button type="button" onClick={() => { onChange(null); setDrawing(true); setFirst(null); }} className="h-8 px-3 rounded-md border text-sm hover:bg-muted">Clear</button>}
+        <span className="text-xs text-muted-foreground">
+          {drawing ? (first ? 'Now tap the opposite corner.' : 'Zoom in to your office (or use Find), then tap one corner of the area.') : size ? `${Math.round(size.width)} m × ${Math.round(size.height)} m — drag a corner to resize, the pin to move.` : ''}
+        </span>
+      </div>
+      <div className="rounded-lg overflow-hidden border" style={{ height, cursor: drawing ? 'crosshair' : undefined }}>
+        <MapContainer center={initialFit ? [(initialFit[0][0] + initialFit[1][0]) / 2, (initialFit[0][1] + initialFit[1][1]) / 2] : INDIA} zoom={initialFit ? 17 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
+          <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
+          <Resize />
+          <CornerClicks active={drawing} onCorner={corner} onMove={setHover} />
+          <Fences fences={otherFences} exclude={excludeId} />
+          {initialFit && <FitTo points={initialFit} max={18} />}
+          {jump && <FitTo points={[jump]} max={17} />}
+          {shown && <Rectangle bounds={[[shown.south, shown.west], [shown.north, shown.east]]} pathOptions={{ color: '#dc2626', weight: 2, fillOpacity: 0.18, dashArray: live ? '6 6' : undefined }} />}
+          {first && <Marker position={first} icon={dot('#dc2626', 14)} />}
+          {!drawing && bounds && corners.map(c => (
+            <Marker key={c.k} position={[c.lat, c.lng]} icon={dot('#ffffff', 16)} draggable eventHandlers={{ dragend: (e) => dragCorner(c.k, e.target.getLatLng()) }} />
+          ))}
+          {!drawing && centre && <Marker position={[centre.lat, centre.lng]} icon={pinIcon} draggable eventHandlers={{ dragend: (e) => moveAll(e.target.getLatLng()) }} />}
+        </MapContainer>
+      </div>
+      <p className="text-xs text-muted-foreground">Blue shapes are other offices. Employees are checked in when they enter this outline and checked out when they leave it.</p>
     </div>
   );
 }

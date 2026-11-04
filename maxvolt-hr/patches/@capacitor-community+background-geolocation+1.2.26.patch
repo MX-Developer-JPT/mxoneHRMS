@@ -296,7 +296,7 @@ index a92fcf9..6410a56 100644
      }
  
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..1c73ad4 100644
+index fafbb86..c31d5e2 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -477,7 +477,7 @@ index fafbb86..1c73ad4 100644
                      Intent intent = new Intent(ACTION_BROADCAST);
                      intent.putExtra("location", location);
                      intent.putExtra("id", id);
-@@ -168,8 +280,338 @@ public class BackgroundGeolocationService extends Service {
+@@ -168,8 +280,349 @@ public class BackgroundGeolocationService extends Service {
              }
          }
  
@@ -670,12 +670,9 @@ index fafbb86..1c73ad4 100644
 +            double bestDist = Double.MAX_VALUE;
 +            for (int i = 0; i < fences.length(); i++) {
 +                JSONObject f = fences.getJSONObject(i);
-+                double d = distanceMetres(
-+                        location.getLatitude(), location.getLongitude(),
-+                        f.getDouble("latitude"), f.getDouble("longitude")
-+                );
-+                double radius = f.getDouble("radius_m");
-+                if (d <= radius && d < bestDist) { best = f; bestDist = d; }
++                // Metres to the fence edge (negative inside) — a circle or a rectangle drawn on the map.
++                double sd = signedDistance(f, location.getLatitude(), location.getLongitude());
++                if (sd <= 0 && sd < bestDist) { best = f; bestDist = sd; }
 +            }
 +
 +            if (best != null) {
@@ -707,26 +704,40 @@ index fafbb86..1c73ad4 100644
 +                double nearestDist = Double.MAX_VALUE;
 +                for (int i = 0; i < fences.length(); i++) {
 +                    JSONObject f = fences.getJSONObject(i);
-+                    double fd = distanceMetres(
-+                            location.getLatitude(), location.getLongitude(),
-+                            f.getDouble("latitude"), f.getDouble("longitude")
-+                    );
++                    double fd = signedDistance(f, location.getLatitude(), location.getLongitude());
 +                    if (fd < nearestDist) { nearestDist = fd; cur = f; }
 +                }
 +            }
 +            if (cur == null) return;
 +
-+            double d = distanceMetres(
-+                    location.getLatitude(), location.getLongitude(),
-+                    cur.getDouble("latitude"), cur.getDouble("longitude")
-+            );
-+            boolean wellOutside = d > cur.getDouble("radius_m") + 15; // immediate exit, small hysteresis
++            double sdCur = signedDistance(cur, location.getLatitude(), location.getLongitude());
++            boolean wellOutside = sdCur > 15; // beyond the boundary (circle edge or drawn rectangle): immediate exit, small hysteresis
 +            if (wellOutside) {
 +                postGeofenceEvent("exit", location, cur, token, apiBase);
 +                headlessCurrentFenceId = null;
 +            }
 +        } catch (Exception e) {
 +            Logger.error("Headless geofence match failed", e);
++        }
++    }
++
++    // Metres from a point to the fence edge: negative inside, positive outside. A fence is a circle
++    // (latitude / longitude / radius_m) or a rectangle drawn on the map (shape "rectangle" + bounds north/south/east/west).
++    static double signedDistance(JSONObject f, double lat, double lon) {
++        try {
++            JSONObject b = "rectangle".equals(f.optString("shape")) ? f.optJSONObject("bounds") : null;
++            if (b != null) {
++                double n = b.getDouble("north"), s = b.getDouble("south"), e = b.getDouble("east"), w = b.getDouble("west");
++                double latM = 111195.0;
++                double lonM = latM * Math.cos(Math.toRadians(lat));
++                double dx = lon < w ? (w - lon) * lonM : (lon > e ? (lon - e) * lonM : 0);
++                double dy = lat < s ? (s - lat) * latM : (lat > n ? (lat - n) * latM : 0);
++                if (dx > 0 || dy > 0) return Math.hypot(dx, dy);
++                return -Math.min(Math.min((lon - w) * lonM, (e - lon) * lonM), Math.min((lat - s) * latM, (n - lat) * latM));
++            }
++            return distanceMetres(lat, lon, f.getDouble("latitude"), f.getDouble("longitude")) - f.getDouble("radius_m");
++        } catch (Exception ex) {
++            return Double.MAX_VALUE;
 +        }
 +    }
 +
@@ -871,10 +882,10 @@ index 0000000..a94c494
 +}
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java
 new file mode 100644
-index 0000000..2926c3d
+index 0000000..2d71c9b
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,236 @@
 +package com.equimaps.capacitor_background_geolocation;
 +
 +import android.Manifest;
@@ -947,6 +958,27 @@ index 0000000..2926c3d
 +            List<Geofence> list = new ArrayList<>();
 +            for (int i = 0; i < fences.length() && i < 90; i++) {
 +                JSONObject f = fences.getJSONObject(i);
++                if ("rectangle".equals(f.optString("shape")) && f.optJSONObject("bounds") != null) {
++                    // A drawn rectangle: Android only watches circles, so use two. The circle INSIDE the rectangle reports ENTER
++                    // (arrival is then certain); the circle AROUND it reports EXIT (departure is then certain). The exact
++                    // rectangle is re-checked in handle() and by the server.
++                    float inner = (float) Math.max(100.0, f.optDouble("inscribed_m", 100.0));
++                    list.add(new Geofence.Builder()
++                            .setRequestId(f.getString("id") + "#in")
++                            .setCircularRegion(f.getDouble("latitude"), f.getDouble("longitude"), inner)
++                            .setExpirationDuration(Geofence.NEVER_EXPIRE)
++                            .setNotificationResponsiveness(5000)
++                            .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER)
++                            .build());
++                    list.add(new Geofence.Builder()
++                            .setRequestId(f.getString("id") + "#out")
++                            .setCircularRegion(f.getDouble("latitude"), f.getDouble("longitude"), (float) f.getDouble("radius_m"))
++                            .setExpirationDuration(Geofence.NEVER_EXPIRE)
++                            .setNotificationResponsiveness(5000)
++                            .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_EXIT)
++                            .build());
++                    continue;
++                }
 +                list.add(new Geofence.Builder()
 +                        .setRequestId(f.getString("id"))
 +                        .setCircularRegion(f.getDouble("latitude"), f.getDouble("longitude"), (float) f.getDouble("radius_m"))
@@ -1011,6 +1043,8 @@ index 0000000..2926c3d
 +            BackgroundGeolocationService.diagLog(ctx, "OS geofence event ignored: no saved login/fences");
 +            return;
 +        }
++        // Rectangle offices register as "<id>#in" / "<id>#out" (see register()).
++        if (fenceId.endsWith("#in") || fenceId.endsWith("#out")) fenceId = fenceId.substring(0, fenceId.lastIndexOf('#'));
 +        JSONObject fence = null;
 +        JSONArray fences = new JSONArray(fencesJson);
 +        for (int i = 0; i < fences.length(); i++) {
@@ -1018,6 +1052,14 @@ index 0000000..2926c3d
 +        }
 +        if (fence == null) return;
 +        boolean enter = transition == Geofence.GEOFENCE_TRANSITION_ENTER;
++        if (enter && loc != null && "rectangle".equals(fence.optString("shape"))) {
++            // The inner circle can be larger than a narrow rectangle: only count an arrival that is really inside the outline.
++            double slack = Math.min(60.0, Math.max(20.0, (loc.hasAccuracy() ? loc.getAccuracy() : 0) * 0.75));
++            if (BackgroundGeolocationService.signedDistance(fence, loc.getLatitude(), loc.getLongitude()) > slack) {
++                BackgroundGeolocationService.diagLog(ctx, "OS geofence ENTER ignored: still outside the drawn boundary of " + fence.optString("name"));
++                return;
++            }
++        }
 +        BackgroundGeolocationService.diagLog(ctx, "OS geofence " + (enter ? "ENTER" : "EXIT") + " " + fence.optString("name"));
 +
 +        if (!enter) {
@@ -1416,10 +1458,10 @@ index d4a5965..c3ef69a 100644
              ) {
 diff --git a/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift
 new file mode 100644
-index 0000000..3a0ba7b
+index 0000000..ef9f6ff
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/ios/Plugin/Swift/RegionMonitor.swift
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,283 @@
 +import Foundation
 +import CoreLocation
 +import UIKit
@@ -1494,6 +1536,21 @@ index 0000000..3a0ba7b
 +        return nil
 +    }
 +
++    /// Metres from a point to the fence edge: negative inside, positive outside — a circle or a drawn rectangle.
++    private func signedDistance(_ f: [String: Any], lat: Double, lng: Double) -> Double {
++        if (f["shape"] as? String) == "rectangle", let b = f["bounds"] as? [String: Any],
++           let n = number(b["north"]), let s = number(b["south"]), let e = number(b["east"]), let w = number(b["west"]) {
++            let latM = 111195.0
++            let lonM = latM * cos(lat * Double.pi / 180)
++            let dx = lng < w ? (w - lng) * lonM : (lng > e ? (lng - e) * lonM : 0)
++            let dy = lat < s ? (s - lat) * latM : (lat > n ? (lat - n) * latM : 0)
++            if dx > 0 || dy > 0 { return (dx * dx + dy * dy).squareRoot() }
++            return -min(min((lng - w) * lonM, (e - lng) * lonM), min((lat - s) * latM, (n - lat) * latM))
++        }
++        guard let clat = number(f["latitude"]), let clng = number(f["longitude"]), let r = number(f["radius_m"]) else { return Double.greatestFiniteMagnitude }
++        return CLLocation(latitude: lat, longitude: lng).distance(from: CLLocation(latitude: clat, longitude: clng)) - r
++    }
++
 +    private func fences() -> [[String: Any]] {
 +        guard let s = defaults.string(forKey: kFences),
 +              let d = s.data(using: .utf8),
@@ -1519,10 +1576,26 @@ index 0000000..3a0ba7b
 +                  let lat = number(f["latitude"]),
 +                  let lng = number(f["longitude"]),
 +                  let rad = number(f["radius_m"]) else { continue }
++            let centre = CLLocationCoordinate2D(latitude: lat, longitude: lng)
++            if (f["shape"] as? String) == "rectangle", f["bounds"] is [String: Any] {
++                // A drawn rectangle: iOS only watches circles, so use two. The circle INSIDE the rectangle reports arrival,
++                // the circle AROUND it reports departure; the exact outline is re-checked in handle() and by the server.
++                let inner = min(max(number(f["inscribed_m"]) ?? 100, 100), manager.maximumRegionMonitoringDistance)
++                let outer = min(max(rad, 100), manager.maximumRegionMonitoringDistance)
++                let rin = CLCircularRegion(center: centre, radius: inner, identifier: prefix + id + ":in")
++                rin.notifyOnEntry = true; rin.notifyOnExit = false
++                let rout = CLCircularRegion(center: centre, radius: outer, identifier: prefix + id + ":out")
++                rout.notifyOnEntry = false; rout.notifyOnExit = true
++                manager.startMonitoring(for: rin)
++                manager.startMonitoring(for: rout)
++                manager.requestState(for: rin)   // already inside when registered?
++                count += 1
++                continue
++            }
 +            // iOS cannot reliably detect crossings of very small circles.
 +            let radius = min(max(rad, 100), manager.maximumRegionMonitoringDistance)
 +            let region = CLCircularRegion(
-+                center: CLLocationCoordinate2D(latitude: lat, longitude: lng),
++                center: centre,
 +                radius: radius,
 +                identifier: prefix + id
 +            )
@@ -1548,6 +1621,7 @@ index 0000000..3a0ba7b
 +
 +    func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
 +        guard region.identifier.hasPrefix(prefix) else { return }
++        if region.identifier.hasSuffix(":out") { return }   // the outer circle of a rectangle only reports departures
 +        var inside = (defaults.dictionary(forKey: kInside) as? [String: Bool]) ?? [:]
 +        let isInside = (state == .inside)
 +        let was = inside[region.identifier] ?? false
@@ -1568,7 +1642,9 @@ index 0000000..3a0ba7b
 +
 +    private func handle(enter: Bool, region: CLRegion) {
 +        guard region.identifier.hasPrefix(prefix) else { return }
-+        let fenceId = String(region.identifier.dropFirst(prefix.count))
++        var fenceId = String(region.identifier.dropFirst(prefix.count))
++        // Rectangle offices are watched through "<id>:in" (arrival) and "<id>:out" (departure) circles.
++        if fenceId.hasSuffix(":in") || fenceId.hasSuffix(":out") { fenceId = String(fenceId[..<fenceId.lastIndex(of: ":")!]) }
 +        guard let token = defaults.string(forKey: kToken), !token.isEmpty,
 +              let api = defaults.string(forKey: kApi),
 +              let fence = fences().first(where: { ($0["id"] as? String) == fenceId }) else {
@@ -1580,8 +1656,16 @@ index 0000000..3a0ba7b
 +        defaults.set(inside, forKey: kInside)
 +
 +        let name = (fence["name"] as? String) ?? ""
-+        diag("OS region \(enter ? "ENTER" : "EXIT") \(name)")
 +        let here = manager.location
++        if enter, (fence["shape"] as? String) == "rectangle", let h = here {
++            // The inner circle can be larger than a narrow rectangle: only count an arrival that is really inside the outline.
++            let slack = min(60.0, max(20.0, (h.horizontalAccuracy > 0 ? h.horizontalAccuracy : 0) * 0.75))
++            if signedDistance(fence, lat: h.coordinate.latitude, lng: h.coordinate.longitude) > slack {
++                diag("OS region ENTER ignored: still outside the drawn boundary of \(name)")
++                return
++            }
++        }
++        diag("OS region \(enter ? "ENTER" : "EXIT") \(name)")
 +
 +        // The app may have only a few seconds in the background: ask iOS for more time to finish the request.
 +        var task: UIBackgroundTaskIdentifier = .invalid

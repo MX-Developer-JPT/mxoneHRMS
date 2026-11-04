@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { RouteMap, LiveMap } from '@/components/maps/GeoMaps';
+import { fenceOf } from '@/lib/geofenceShape';
 import { subscribe as subscribeTracker, startTracking, stopTracking, flushNow } from '@/lib/fieldTripTracker';
 
 const fmtKm = (n) => `${(n || 0).toFixed(2)} km`;
@@ -80,7 +81,7 @@ export default function FieldDuty() {
       if (!dead) setLiveLoading(false);
     };
     pull();
-    base44.entities.AppLocation.list().then(ls => { if (!dead) setFences((ls || []).filter(l => l.is_active !== false && l.latitude != null && Number(l.geofence_radius) > 0).map(l => ({ id: l.id, name: l.name, latitude: l.latitude, longitude: l.longitude, radius_m: l.geofence_radius }))); }).catch(() => {});
+    base44.entities.AppLocation.list().then(ls => { if (!dead) setFences((ls || []).filter(l => l.is_active !== false && l.latitude != null && Number(l.geofence_radius) > 0).map(fenceOf)); }).catch(() => {});
     const t = setInterval(pull, 20000);
     return () => { dead = true; clearInterval(t); };
   }, [liveOpen]);

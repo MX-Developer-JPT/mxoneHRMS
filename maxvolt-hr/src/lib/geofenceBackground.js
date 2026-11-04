@@ -23,6 +23,7 @@ import { useSyncExternalStore } from 'react';
 import { toast } from 'sonner';
 import { registerPlugin } from '@capacitor/core';
 import { base44 } from '@/api/base44Client';
+import { signedDistanceM } from '@/lib/geofenceShape';
 
 const PERSIST_KEY = 'geo_engine_v2';
 const DEFAULT_CFG = {
@@ -515,12 +516,14 @@ function tick() {
 
 // ── fix handling ──
 function nearestFence(fix) {
-  let best = null, bd = Infinity;
+  // Nearest by distance to the fence EDGE (negative = inside), for circles and drawn rectangles alike.
+  let best = null, bs = Infinity;
   for (const f of fences) {
-    const d = dist(fix.latitude, fix.longitude, Number(f.latitude), Number(f.longitude));
-    if (d < bd) { best = f; bd = d; }
+    const sd = signedDistanceM(f, fix.latitude, fix.longitude);
+    if (sd < bs) { best = f; bs = sd; }
   }
-  return best ? { fence: best, d: bd } : null;
+  // d keeps its old meaning for the on-screen readout: equivalent distance from the centre of a circle of this radius.
+  return best ? { fence: best, sd: bs, d: bs + Number(best.radius_m) } : null;
 }
 
 function onFix(fix, { replay = false } = {}) {
@@ -529,7 +532,7 @@ function onFix(fix, { replay = false } = {}) {
   const near = nearestFence(fix);
   if (!near) return;
   const weak = !(fix.accuracy <= cfg.max_accuracy_m);
-  const inside = near.d <= Number(near.fence.radius_m);
+  const inside = near.sd <= 0;
   emit({
     distance: Math.round(near.d), radius: Number(near.fence.radius_m), fenceName: near.fence.name,
     accuracy: Math.round(fix.accuracy || 0), lastFixAt: replay ? snapshot.lastFixAt : Date.now(),
@@ -547,8 +550,8 @@ function evaluate(fix, { fromTimer = false } = {}) {
     // Best fence the fix is confidently inside (half the accuracy margin as guard).
     let enterFence = null, ed = Infinity;
     for (const f of fences) {
-      const d = dist(fix.latitude, fix.longitude, Number(f.latitude), Number(f.longitude));
-      if (d + acc * 0.25 <= Number(f.radius_m) && d < ed) { enterFence = f; ed = d; }
+      const sd = signedDistanceM(f, fix.latitude, fix.longitude);
+      if (sd + acc * 0.25 <= 0 && sd < ed) { enterFence = f; ed = sd; }
     }
     if (!enterFence) { enterTrack = null; clearConfirm(); return; }
     if (!enterTrack || enterTrack.fenceId !== enterFence.id) enterTrack = { n: 0, firstAt: fix.time, fenceId: enterFence.id, fix };
@@ -572,11 +575,10 @@ function evaluate(fix, { fromTimer = false } = {}) {
   if (!geofenceOwned) { exitTrack = null; clearConfirm(); return; } // never auto-close a manual/biometric/WFH session
   const cur = (currentFenceId && fences.find(f => f.id === currentFenceId)) || (nearestFence(fix)?.fence);
   if (!cur) return;
-  const d = dist(fix.latitude, fix.longitude, Number(cur.latitude), Number(cur.longitude));
-  const radius = Number(cur.radius_m);
-  const outside = d - acc * 0.25 > radius + cfg.exit_buffer_m;
+  const sd = signedDistanceM(cur, fix.latitude, fix.longitude);   // metres beyond the boundary (circle or drawn rectangle)
+  const outside = sd - acc * 0.25 > cfg.exit_buffer_m;
   if (!outside) { exitTrack = null; clearConfirm(); return; }
-  const strong = d - acc > radius + cfg.strong_exit_m;
+  const strong = sd - acc > cfg.strong_exit_m;
   if (!exitTrack) exitTrack = { n: 0, strongN: 0, firstAt: fix.time, fix };
   if (!fromTimer) { exitTrack.n++; if (strong) exitTrack.strongN++; }
   exitTrack.last = fix;
