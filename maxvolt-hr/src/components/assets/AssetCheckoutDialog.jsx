@@ -6,7 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { PenLine, Loader2, CheckCircle2 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { format } from 'date-fns';
+import { fmtDate } from '@/lib/assetDates';
 import { toast } from 'sonner';
 
 export default function AssetCheckoutDialog({ open, onOpenChange, asset, employee, user, onCheckedOut }) {
@@ -166,7 +167,7 @@ export default function AssetCheckoutDialog({ open, onOpenChange, asset, employe
               </p>
               {asset.return_date && (
                 <p className="text-muted-foreground">
-                  Return by: <span className="font-medium">{format(parseISO(asset.return_date), 'dd MMMM yyyy')}</span>
+                  Return by: <span className="font-medium">{fmtDate(asset.return_date, 'dd MMMM yyyy')}</span>
                 </p>
               )}
             </div>

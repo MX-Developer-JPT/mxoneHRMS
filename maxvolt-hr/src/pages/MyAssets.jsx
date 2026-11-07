@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Loader2, Laptop, Monitor, Smartphone, Keyboard, Mouse, Headphones, Printer, Router, HardDrive, Usb, Cable, Package, Download, AlertTriangle, Clock, PrinterIcon, PenLine } from 'lucide-react';
-import { format, parseISO, isBefore } from 'date-fns';
-import { toast } from 'sonner';
+import { format } from 'date-fns';
+import { fmtDate, isPastDate } from '@/lib/assetDates';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
 import AssetCheckoutDialog from '@/components/assets/AssetCheckoutDialog';
 
@@ -68,8 +68,8 @@ export default function MyAssets() {
     const empCode = employee?.employee_code || '—';
     const empDept = employee?.department || '—';
     const empDesg = employee?.designation || '—';
-    const empDOJ = employee?.date_of_joining ? format(parseISO(employee.date_of_joining), 'dd MMMM yyyy') : '—';
-    const empDOB = employee?.date_of_birth ? format(parseISO(employee.date_of_birth), 'dd MMMM yyyy') : '—';
+    const empDOJ = employee?.date_of_joining ? fmtDate(employee.date_of_joining, 'dd MMMM yyyy') : '—';
+    const empDOB = employee?.date_of_birth ? fmtDate(employee.date_of_birth, 'dd MMMM yyyy') : '—';
     const plural = assetList.length > 1;
 
     const assetRows = assetList.map(asset => {
@@ -83,8 +83,8 @@ export default function MyAssets() {
           <td style="padding:5px 10px;border:1px solid #ddd;">${asset.serial_number || '—'}</td>
           <td style="padding:5px 10px;border:1px solid #ddd;">${asset.condition?.toUpperCase()}</td>
           <td style="padding:5px 10px;border:1px solid #ddd;">${asset.is_temporary ? '<span style="color:#e87722;font-weight:600;">⏳ Temporary</span>' : 'Permanent'}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.assignment_date ? format(parseISO(asset.assignment_date), 'dd MMM yyyy') : '—'}</td>
-          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.return_date ? format(parseISO(asset.return_date), 'dd MMM yyyy') : 'Open-ended'}</td>
+          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.assignment_date ? fmtDate(asset.assignment_date, 'dd MMM yyyy') : '—'}</td>
+          <td style="padding:5px 10px;border:1px solid #ddd;">${asset.return_date ? fmtDate(asset.return_date, 'dd MMM yyyy') : 'Open-ended'}</td>
         </tr>`;
     }).join('');
 
@@ -95,7 +95,7 @@ export default function MyAssets() {
       ? `<img src="${sigAsset.signature_url}" style="height:50px;max-width:150px;object-fit:contain;margin:0 auto 4px;display:block;" />`
       : `<div style="border-top:1px solid #333;width:130px;margin-bottom:4px;"></div>`;
     const signedNote = sigAsset?.signed_at
-      ? `<p style="color:#888;font-size:9px;">Signed ${format(parseISO(sigAsset.signed_at), 'dd MMM yyyy, hh:mm a')}</p>` : '';
+      ? `<p style="color:#888;font-size:9px;">Signed ${fmtDate(sigAsset.signed_at, 'dd MMM yyyy, hh:mm a')}</p>` : '';
 
     return `
       <div style="margin-bottom:20px;">
@@ -214,7 +214,7 @@ export default function MyAssets() {
           <div className="grid gap-4">
             {assets.map(asset => {
               const Icon = getTypeIcon(asset.asset_type_id);
-              const isOverdue = asset.return_date && isBefore(parseISO(asset.return_date), new Date());
+              const isOverdue = asset.return_date && isPastDate(asset.return_date);
               return (
                 <Card key={asset.id}>
                   <CardContent className="p-5">
@@ -235,11 +235,11 @@ export default function MyAssets() {
                             <p><span className="font-medium text-foreground">Type:</span> {getTypeName(asset.asset_type_id)}</p>
                             {asset.model_number && <p><span className="font-medium text-foreground">Model:</span> {asset.model_number}</p>}
                             {asset.serial_number && <p><span className="font-medium text-foreground">Serial No:</span> {asset.serial_number}</p>}
-                            <p><span className="font-medium text-foreground">Condition:</span> <Badge variant="outline" className="text-xs capitalize">{asset.condition}</Badge></p>
-                            <p><span className="font-medium text-foreground">Assigned:</span> {asset.assignment_date ? format(parseISO(asset.assignment_date), 'dd MMMM yyyy') : '—'}</p>
+                            <div><span className="font-medium text-foreground">Condition:</span> <Badge variant="outline" className="text-xs capitalize">{asset.condition}</Badge></div>
+                            <p><span className="font-medium text-foreground">Assigned:</span> {asset.assignment_date ? fmtDate(asset.assignment_date, 'dd MMMM yyyy') : '—'}</p>
                             {asset.return_date && (
                               <p className={isOverdue ? 'text-red-600 font-medium' : ''}>
-                                <span className="font-medium text-foreground">Return by:</span> {format(parseISO(asset.return_date), 'dd MMMM yyyy')}
+                                <span className="font-medium text-foreground">Return by:</span> {fmtDate(asset.return_date, 'dd MMMM yyyy')}
                                 {isOverdue && ' (Overdue)'}
                               </p>
                             )}

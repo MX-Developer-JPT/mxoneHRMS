@@ -215,6 +215,7 @@ const userClient = {
   },
 };
 
+/** @type {Record<string, any>} Any entity name (base44.entities.Asset, .Employee, …) resolves to a client at runtime. */
 const entities = new Proxy({}, {
   get(_target, type) {
     if (String(type) === 'User') return userClient;

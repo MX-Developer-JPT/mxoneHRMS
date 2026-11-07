@@ -5,15 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, Plus, Edit2, Trash2, Laptop, Monitor, Smartphone, Keyboard, Mouse, Headphones, Printer, Router, HardDrive, Usb, Cable, Search, CheckCircle2, AlertTriangle, Download, Package, Boxes, Tags, ArrowLeft, UserCheck, UserX, RotateCcw, Clock, FileText, PrinterIcon, Wrench, IndianRupee, Upload, FileSpreadsheet, ChevronsUpDown, Check, Tv, Camera, Car, Phone, Wind, Flame, ScanLine, Server, Network, Tablet, Cpu, Wifi, Coffee, BookOpen, Hammer } from 'lucide-react';
+import { Loader2, Plus, Edit2, Trash2, Laptop, Monitor, Smartphone, Keyboard, Mouse, Headphones, Printer, Router, HardDrive, Usb, Cable, Search, CheckCircle2, AlertTriangle, Download, Package, Boxes, Tags, ArrowLeft, UserCheck, UserX, RotateCcw, Clock, FileText, PrinterIcon, Wrench, Upload, FileSpreadsheet, ChevronsUpDown, Check, Tv, Camera, Car, Phone, Wind, Flame, ScanLine, Server, Network, Tablet, Cpu, Wifi, Coffee, BookOpen, Hammer } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { toast } from 'sonner';
-import { format, isAfter, isBefore, addDays, parseISO } from 'date-fns';
+import { format } from 'date-fns';
+import { fmtDate, isPastDate } from '@/lib/assetDates';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
 import AssetActivityLog from '@/components/assets/AssetActivityLog';
 
@@ -100,7 +100,6 @@ export default function AssetTracking() {
   const [operatorUserIds, setOperatorUserIds] = useState(new Set());
   const [filterStatus, setFilterStatus] = useState('all');
   const [selectedTypeId, setSelectedTypeId] = useState(null);
-  const [activeTab, setActiveTab] = useState('inventory');
   const [showAssetDialog, setShowAssetDialog] = useState(false);
   const [showTypeDialog, setShowTypeDialog] = useState(false);
   const [editingAsset, setEditingAsset] = useState(null);
@@ -131,6 +130,7 @@ export default function AssetTracking() {
     assigned_to_user_id: '', assignment_date: '', return_date: '',
     condition: 'good', purchase_date: '', purchase_cost: '',
     warranty_expiry: '', status: 'available', notes: '',
+    asset_id: '', is_temporary: false, temporary_reason: '',
   });
   const [typeForm, setTypeForm] = useState({ name: '', code: '', icon: 'other', description: '' });
   const [showImportDialog, setShowImportDialog] = useState(false);
@@ -227,7 +227,7 @@ export default function AssetTracking() {
     assigned: assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status)).length,
     available: assets.filter(a => a.status === 'available').length,
     underRepair: assets.filter(a => a.status === 'under_repair').length,
-    overdueReturns: assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.return_date && isBefore(parseISO(a.return_date), new Date())).length,
+    overdueReturns: assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.return_date && isPastDate(a.return_date)).length,
   }), [assets]);
 
   // --- Asset Type Management ---
@@ -256,7 +256,7 @@ export default function AssetTracking() {
       }
       setShowTypeDialog(false);
       loadData();
-    } catch (err) { toast.error('Error saving asset type'); }
+    } catch { toast.error('Error saving asset type'); }
     setSaving(false);
   };
 
@@ -267,9 +267,11 @@ export default function AssetTracking() {
       return;
     }
     if (!confirm(`Delete asset type "${type.name}"?`)) return;
-    await base44.entities.AssetType.delete(type.id);
-    toast.success('Asset type deleted');
-    loadData();
+    try {
+      await base44.entities.AssetType.delete(type.id);
+      toast.success('Asset type deleted');
+      loadData();
+    } catch { toast.error('Could not delete the asset type'); }
   };
 
   // --- Asset Management ---
@@ -286,9 +288,9 @@ export default function AssetTracking() {
 
   const openNewAsset = (typeId) => {
     setEditingAsset(null);
-    const type = assetTypes.find(t => t.id === typeId);
     const autoId = typeId ? generateAssetId(typeId) : '';
     setAssetForm({
+      asset_id: autoId,
       asset_name: '', asset_type_id: typeId || '', serial_number: '', model_number: '',
       specification: '', accessories: '',
       assigned_to_user_id: '', assignment_date: '', return_date: '',
@@ -303,6 +305,7 @@ export default function AssetTracking() {
   const openEditAsset = (asset) => {
     setEditingAsset(asset);
     setAssetForm({
+      asset_id: asset.asset_id || '',
       asset_name: asset.asset_name || '', asset_type_id: asset.asset_type_id || '',
       serial_number: asset.serial_number || '', model_number: asset.model_number || '',
       specification: asset.specification || '', accessories: asset.accessories || '',
@@ -338,7 +341,14 @@ export default function AssetTracking() {
       if (!editingAsset && !data.asset_id) {
         data.asset_id = generateAssetId(data.asset_type_id);
       }
-      if (data.assigned_to_user_id) data.status = 'assigned';
+      data.asset_id = String(data.asset_id || '').trim();
+      if (data.asset_id && assets.some(a => a.id !== editingAsset?.id && String(a.asset_id || '').toLowerCase() === data.asset_id.toLowerCase())) {
+        toast.error(`Asset ID ${data.asset_id} is already used by another asset`);
+        setSaving(false);
+        return;
+      }
+      // 'signed' is a sub-state of 'assigned' (the employee acknowledged the hand-over): editing other details must not undo it.
+      if (data.assigned_to_user_id) data.status = (editingAsset?.status === 'signed' && editingAsset.assigned_to_user_id === data.assigned_to_user_id) ? 'signed' : 'assigned';
       else if (!editingAsset || assetForm.status === 'available') data.status = 'available';
 
       if (editingAsset) {
@@ -350,15 +360,17 @@ export default function AssetTracking() {
       }
       setShowAssetDialog(false);
       loadData();
-    } catch (err) { toast.error('Error saving asset'); }
+    } catch { toast.error('Error saving asset'); }
     setSaving(false);
   };
 
   const handleDeleteAsset = async (id, name) => {
     if (!confirm(`Delete asset "${name}"?`)) return;
-    await base44.entities.Asset.delete(id);
-    toast.success('Asset deleted');
-    loadData();
+    try {
+      await base44.entities.Asset.delete(id);
+      toast.success('Asset deleted');
+      loadData();
+    } catch { toast.error('Could not delete the asset'); }
   };
 
   const handleAssignEmployee = async (asset, userId) => {
@@ -373,7 +385,7 @@ export default function AssetTracking() {
       });
       toast.success(`Asset assigned to ${name}`);
       loadData();
-    } catch (err) { toast.error('Error assigning asset'); }
+    } catch { toast.error('Error assigning asset'); }
   };
 
   const openReturnDialog = (asset) => {
@@ -400,7 +412,7 @@ export default function AssetTracking() {
       toast.success(`${returningAsset.asset_name} returned successfully`);
       setShowReturnDialog(false);
       loadData();
-    } catch (err) { toast.error('Error returning asset'); }
+    } catch { toast.error('Error returning asset'); }
     setSaving(false);
   };
 
@@ -415,7 +427,7 @@ export default function AssetTracking() {
       });
       toast.success('Asset unassigned');
       loadData();
-    } catch (err) { toast.error('Error unassigning asset'); }
+    } catch { toast.error('Error unassigning asset'); }
   };
 
   // --- Bulk Selection ---
@@ -454,7 +466,7 @@ export default function AssetTracking() {
       openLetterheadPrintWindow(`Assets Handover - ${emp.display_name}`, buildAssetLetterContent(emp, updatedAssets), '', false);
       clearBulkSelection();
       loadData();
-    } catch (err) { toast.error('Error assigning assets'); }
+    } catch { toast.error('Error assigning assets'); }
     setBulkAssigning(false);
   };
 
@@ -648,7 +660,7 @@ export default function AssetTracking() {
       }
       setShowMaintenanceDialog(false);
       loadData();
-    } catch (err) { toast.error('Error saving maintenance log'); }
+    } catch { toast.error('Error saving maintenance log'); }
     setSaving(false);
   };
 
@@ -657,12 +669,6 @@ export default function AssetTracking() {
     await base44.entities.MaintenanceLog.delete(logId);
     toast.success('Maintenance log deleted');
     loadData();
-  };
-
-  const getMaintenanceLogsForAsset = (assetId) => {
-    return maintenanceLogs.filter(l => l.asset_id === assetId).sort((a, b) =>
-      (b.service_date || '').localeCompare(a.service_date || '')
-    );
   };
 
   const maintenanceTypeColors = {
@@ -749,10 +755,10 @@ export default function AssetTracking() {
   const sheetCategoryHint = (sheetName) => sheetName.replace(/^\s*(owned|rented)\s+/i, '').trim() || sheetName;
 
   const excelSerialToDate = (v) => {
-    if (v instanceof Date) return isNaN(v) ? '' : v.toISOString().slice(0, 10);
+    if (v instanceof Date) return isNaN(v.getTime()) ? '' : v.toISOString().slice(0, 10);
     if (typeof v === 'number' && v > 20000 && v < 60000) {
       const d = new Date(Date.UTC(1899, 11, 30) + v * 86400000);
-      return isNaN(d) ? '' : d.toISOString().slice(0, 10);
+      return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
     }
     return String(v || '').trim();
   };
@@ -895,6 +901,7 @@ export default function AssetTracking() {
 
           for (let i = 0; i < row.quantity; i++) {
             const data = {
+              asset_id: '',
               asset_name: row.quantity > 1 ? `${baseName} (${i + 1}/${row.quantity})` : baseName,
               asset_type_id: type.id,
               asset_type_name: type.name,
@@ -1044,11 +1051,11 @@ export default function AssetTracking() {
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
-                {assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.return_date && isBefore(parseISO(a.return_date), new Date())).slice(0, 5).map(a => (
+                {assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.return_date && isPastDate(a.return_date)).slice(0, 5).map(a => (
                   <div key={a.id} className="flex items-center justify-between gap-2 flex-wrap text-sm bg-white dark:bg-gray-800 rounded p-2 border">
                     <span className="font-medium min-w-0 break-words">{a.asset_id} — {a.asset_name}</span>
                     <span className="text-gray-500 min-w-0 break-words">{getEmployeeName(a.assigned_to_user_id)}</span>
-                    <Badge className="bg-red-100 text-red-800 shrink-0">Due: {format(parseISO(a.return_date), 'dd MMM yyyy')}</Badge>
+                    <Badge className="bg-red-100 text-red-800 shrink-0">Due: {fmtDate(a.return_date, 'dd MMM yyyy')}</Badge>
                   </div>
                 ))}
               </div>
@@ -1282,7 +1289,7 @@ export default function AssetTracking() {
                 {filteredAssets.map(asset => {
                   const emp = getEmployee(asset.assigned_to_user_id);
                   const Icon = getTypeIcon(assetTypes.find(t => t.id === asset.asset_type_id)?.icon);
-                  const isOverdue = ACTIVE_ASSIGNMENT_STATUSES.includes(asset.status) && asset.return_date && isBefore(parseISO(asset.return_date), new Date());
+                  const isOverdue = ACTIVE_ASSIGNMENT_STATUSES.includes(asset.status) && asset.return_date && isPastDate(asset.return_date);
                   return (
                     <div key={asset.id} className="flex flex-wrap items-center justify-between border rounded-lg p-3 hover:bg-muted/30 transition-colors gap-2">
                       <div className="flex items-center gap-3">
@@ -1302,11 +1309,11 @@ export default function AssetTracking() {
                             {asset.serial_number && <> · SN: {asset.serial_number}</>}
                           </p>
                           {emp && (
-                            <p className="text-xs text-muted-foreground">
+                            <div className="text-xs text-muted-foreground">
                               Assigned: <span className="font-medium">{emp.display_name}</span> ({emp.employee_code})
-                              {asset.assignment_date && <> · Since {format(parseISO(asset.assignment_date), 'dd MMM yyyy')}</>}
+                              {asset.assignment_date && <> · Since {fmtDate(asset.assignment_date, 'dd MMM yyyy')}</>}
                               {isOverdue && <Badge className="ml-1 bg-red-100 text-red-700 text-[10px]">Overdue</Badge>}
-                            </p>
+                            </div>
                           )}
                         </div>
                       </div>
@@ -1399,8 +1406,8 @@ export default function AssetTracking() {
                             {log.warranty_covered && <Badge className="bg-teal-100 text-teal-800 text-[10px]">Warranty</Badge>}
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            {log.service_date && <span>{format(parseISO(log.service_date), 'dd MMM yyyy')}</span>}
-                            {log.completion_date && <span> → {format(parseISO(log.completion_date), 'dd MMM yyyy')}</span>}
+                            {log.service_date && <span>{fmtDate(log.service_date, 'dd MMM yyyy')}</span>}
+                            {log.completion_date && <span> → {fmtDate(log.completion_date, 'dd MMM yyyy')}</span>}
                             {log.vendor_name && <span> · {log.vendor_name}</span>}
                             {log.cost > 0 && <span className="font-semibold text-foreground"> · ₹{log.cost.toLocaleString('en-IN')}</span>}
                           </p>

@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint . --quiet",
+    "types:ui": "node scripts/gen-ui-types.mjs",
+    "typecheck": "tsc -p jsconfig.json --noEmit",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc -p ./jsconfig.json",
     "preview": "vite preview",

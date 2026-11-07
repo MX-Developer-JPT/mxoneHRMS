@@ -2,7 +2,7 @@ import React from 'react';
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Clock, UserCheck, RotateCcw, Wrench, FileText, Package, History, ArrowRight } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { fmtDate } from '@/lib/assetDates';
 
 const FIELD_ICONS = {
   created: Package,
@@ -62,7 +62,7 @@ export default function AssetActivityLog({ logs }) {
                       </>
                     )}
                     <span className="text-xs text-muted-foreground ml-auto">
-                      {log.created_date ? format(parseISO(log.created_date), 'dd MMM yyyy, hh:mm a') : ''}
+                      {log.created_date ? fmtDate(log.created_date, 'dd MMM yyyy, hh:mm a') : ''}
                     </span>
                   </div>
                   <p className="mt-0.5 text-xs text-muted-foreground">{log.notes}</p>
