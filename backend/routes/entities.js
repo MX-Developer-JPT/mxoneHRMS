@@ -1504,6 +1504,21 @@ router.delete('/:type/:id', async (req, res) => {
     }
   }
 
+  // Holidays shape attendance, leave and payroll for everyone — keep a permanent record of who removed which one and when,
+  // so a holiday that "disappears" can always be traced (and restored from old_data).
+  if (type === 'Holiday') {
+    try {
+      const hRow = await one('SELECT data FROM entities WHERE type=$1 AND id=$2', [type, id]);
+      if (hRow) {
+        const h = JSON.parse(hRow.data); const auditId = uuidv4();
+        await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AuditLog',$2,'active',$3)", [auditId, cu.id, JSON.stringify({
+          id: auditId, entity_type: 'Holiday', entity_id: id, changed_by: cu.id, changed_by_email: cu.email || '', change_type: 'delete',
+          summary: `Holiday "${h.name}" (${String(h.date).slice(0, 10)}) deleted`, old_data: h, timestamp: new Date().toISOString(),
+        })]);
+      }
+    } catch (e) { console.error('[entities] holiday delete audit failed:', e.message); }
+  }
+
   const result = await run('DELETE FROM entities WHERE type=$1 AND id=$2', [type, id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   cacheInvalidate(type);

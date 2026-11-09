@@ -107,6 +107,7 @@ export default function HolidayCalendar() {
   const [showSaturdayPanel, setShowSaturdayPanel] = useState(false);
   const [satLocation, setSatLocation] = useState('All');
   const [satTogglingOn, setSatTogglingOn] = useState(false);
+  const [savingHoliday, setSavingHoliday] = useState(false);   // blocks a double-click from creating the same holiday twice
   // workingDayOverrides: { 'yyyy-MM-dd': { working: bool, location: str } }
   const [workingDayOverrides, setWorkingDayOverrides] = useState(() => {
     try { return JSON.parse(localStorage.getItem('workingDayOverrides') || '{}'); } catch { return {}; }
@@ -202,6 +203,10 @@ export default function HolidayCalendar() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (savingHoliday) return;
+    const dup = holidays.find(h => h.id !== editingHoliday?.id && String(h.date).slice(0, 10) === formData.date && String(h.name || '').trim().toLowerCase() === String(formData.name || '').trim().toLowerCase());
+    if (dup) { toast.error(`"${dup.name}" is already on ${formData.date}`); return; }
+    setSavingHoliday(true);
     try {
       const holidayData = {
         ...formData,
@@ -222,6 +227,7 @@ export default function HolidayCalendar() {
     } catch (error) {
       toast.error('Failed to save holiday');
     }
+    setSavingHoliday(false);
   };
 
   const handleDelete = async (id) => {
@@ -414,7 +420,7 @@ export default function HolidayCalendar() {
                   </div>
                   <div className="flex gap-3 justify-end">
                     <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
-                    <Button type="submit">{editingHoliday ? 'Update' : 'Create'}</Button>
+                    <Button type="submit" disabled={savingHoliday}>{savingHoliday ? "Saving…" : editingHoliday ? "Update" : "Create"}</Button>
                   </div>
                 </form>
               </DialogContent>
