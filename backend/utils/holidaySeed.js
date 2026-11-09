@@ -1,7 +1,9 @@
 // One-time sync of the 2026 holiday calendar to the official "Holiday List 2026".
-// Runs on server start, applies once (guarded by a MigrationFlag row), upserts
-// every listed holiday by date and removes any other 2026 holiday. The removed
-// rows are kept inside the flag row so nothing is unrecoverable.
+// Runs on server start and applies ONCE (guarded by a MigrationFlag row). The first run (Oct 2026) also removed every
+// 2026 holiday that was not on the list — the removed rows are kept inside the flag row. That deletion is now switched
+// off for good (REMOVE_OTHER_HOLIDAYS = false): if this ever runs again (flag lost, restored database, new environment)
+// it only ADDS missing official holidays and never deletes or overwrites what HR has configured.
+const REMOVE_OTHER_HOLIDAYS = false;
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 
@@ -35,7 +37,7 @@ export async function syncHolidayList2026() {
   for (const r of existing) {
     const date = String(r.d.date).slice(0, 10);
     if (wanted.has(date) && !byDate.has(date)) byDate.set(date, r);
-    else { removed.push(r.d); await run("DELETE FROM entities WHERE id=$1", [r.id]); } // not on the list, or a duplicate date
+    else if (REMOVE_OTHER_HOLIDAYS) { removed.push(r.d); await run("DELETE FROM entities WHERE id=$1", [r.id]); } // not on the list, or a duplicate date
   }
 
   let created = 0, updated = 0;
@@ -46,8 +48,8 @@ export async function syncHolidayList2026() {
     };
     const cur = byDate.get(date);
     if (cur) {
-      await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...cur.d, ...data, id: cur.id }), cur.id]);
-      updated++;
+      // an existing holiday on an official date is left exactly as HR configured it
+      if (REMOVE_OTHER_HOLIDAYS) { await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...cur.d, ...data, id: cur.id }), cur.id]); updated++; }
     } else {
       const id = uuidv4();
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Holiday',NULL,'active',$2)", [id, JSON.stringify({ ...data, id })]);
