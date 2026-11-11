@@ -83,6 +83,7 @@ const SalaryRevisionLetters = lazy(() => import('./pages/SalaryRevisionLetters')
 const Payslips = lazy(() => import('./pages/Payslips'));
 const Performance = lazy(() => import('./pages/Performance'));
 const PerformanceManagement = lazy(() => import('./pages/PerformanceManagement'));
+const Appraisal = lazy(() => import('./pages/Appraisal'));
 const Profile = lazy(() => import('./pages/Profile'));
 const Recruitment = lazy(() => import('./pages/Recruitment'));
 const Reimbursements = lazy(() => import('./pages/Reimbursements'));
@@ -170,6 +171,7 @@ export const PAGES = {
     "Payslips": Payslips,
     "Performance": Performance,
     "PerformanceManagement": PerformanceManagement,
+    "Appraisal": Appraisal,
     "Profile": Profile,
     "Recruitment": Recruitment,
     "Reimbursements": Reimbursements,

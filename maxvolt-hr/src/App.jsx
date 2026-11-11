@@ -92,6 +92,7 @@ const AskMax = lazy(() => import('./pages/AskMax'));
 import { pushSupported, getPushState, enablePush } from '@/utils/pwa';
 const ComplianceDashboard = lazy(() => import('./pages/ComplianceDashboard'));
 const PerformanceManagement = lazy(() => import('./pages/PerformanceManagement'));
+const Appraisal = lazy(() => import('./pages/Appraisal'));
 const ImportEmployees = lazy(() => import('./pages/ImportEmployees'));
 const PIPManagement = lazy(() => import('./pages/PIPManagement'));
 const PMSConfiguration = lazy(() => import('./pages/PMSConfiguration'));
@@ -567,6 +568,11 @@ const AuthenticatedApp = () => {
       <Route path="/GateAdminProfile" element={
         <LayoutWrapper currentPageName="GateAdminProfile">
           <GateAdminProfile />
+        </LayoutWrapper>
+      } />
+      <Route path="/Appraisal" element={
+        <LayoutWrapper currentPageName="Appraisal">
+          <Appraisal />
         </LayoutWrapper>
       } />
       <Route path="/PerformanceManagement" element={
