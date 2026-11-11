@@ -78,6 +78,9 @@ export default function LeaveManagement() {
   const [importingHistory, setImportingHistory] = useState(false);
   const [musterMonth, setMusterMonth] = useState(String(new Date().getMonth() + 1));
   const [exportingMuster, setExportingMuster] = useState(false);
+  const [exportingRequests, setExportingRequests] = useState(false);
+  const [reqFrom, setReqFrom] = useState('');
+  const [reqTo, setReqTo] = useState('');
   const [historyImportResult, setHistoryImportResult] = useState(null);
   const [expandedHistoryUser, setExpandedHistoryUser] = useState(null);
   const historyFileInputRef = useRef(null);
@@ -384,6 +387,21 @@ export default function LeaveManagement() {
     e.target.value = '';
   };
 
+  // Leave Requests → Excel (HR / admin). Uses the filters on this tab (status, leave type, search) plus an optional date range.
+  const downloadLeaveRequests = async () => {
+    setExportingRequests(true);
+    try {
+      const res = await base44.functions.invoke('exportLeaveRequests', { status: filterStatus, policy_code: filterPolicy, search, from: reqFrom || undefined, to: reqTo || undefined });
+      const d = res.data || res;
+      if (!d.success) { toast.error(d.error || 'Leave requests export failed'); setExportingRequests(false); return; }
+      const bytes = Uint8Array.from(atob(d.base64), c => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const a = document.createElement('a'); a.href = url; a.download = d.filename; a.click(); URL.revokeObjectURL(url);
+      toast.success(`Exported ${d.total} leave request${d.total === 1 ? '' : 's'} — ${d.by_status.approved} approved, ${d.by_status.pending} pending, ${d.by_status.rejected} rejected`);
+    } catch (e) { toast.error('Leave requests export error: ' + e.message); }
+    setExportingRequests(false);
+  };
+
   const downloadLeaveMuster = async () => {
     setExportingMuster(true);
     try {
@@ -397,7 +415,7 @@ export default function LeaveManagement() {
       const a = document.createElement('a');
       a.href = url; a.download = d.filename; a.click();
       URL.revokeObjectURL(url);
-      toast.success(`Leave muster exported — ${d.total_employees} employees, ${d.total_leave_days} leave days`);
+      toast.success(`Leave muster exported — ${d.total_employees} employees, ${d.total_leave_days} approved leave days${d.pending_leave_days ? `, ${d.pending_leave_days} pending approval` : ''}${d.rejected_leave_days ? `, ${d.rejected_leave_days} rejected` : ''}`);
     } catch (e) { toast.error('Leave muster export error: ' + e.message); }
     setExportingMuster(false);
   };
@@ -783,6 +801,20 @@ export default function LeaveManagement() {
                   {leavePolicies.map(p => <SelectItem key={p.id} value={p.code}>{p.code} – {p.name}</SelectItem>)}
                 </SelectContent>
               </Select>
+              {isHR && (
+                <>
+                  <div className="flex items-center gap-1 text-xs text-gray-500">
+                    <span>Leave from</span>
+                    <Input type="date" value={reqFrom} onChange={e => setReqFrom(e.target.value)} className="h-9 w-36" />
+                    <span>to</span>
+                    <Input type="date" value={reqTo} onChange={e => setReqTo(e.target.value)} className="h-9 w-36" />
+                  </div>
+                  <Button size="sm" variant="outline" onClick={downloadLeaveRequests} disabled={exportingRequests} title="Download the requests below (current filters and dates) as a colour-coded Excel file">
+                    {exportingRequests ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}
+                    Export to Excel
+                  </Button>
+                </>
+              )}
             </div>
 
             {/* Leave Requests */}

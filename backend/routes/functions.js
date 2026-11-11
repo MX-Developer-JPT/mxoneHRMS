@@ -6795,8 +6795,11 @@ router.post('/:name', async (req, res) => {
     }
 
     // Leave History Muster: which employee used which leave on which day.
-    // Expands every APPROVED leave request into one row per leave day (week-offs
-    // and holidays inside a range are skipped — they are not charged either).
+    // Expands every leave request — approved, still pending, or rejected — into one row per leave day (week-offs
+    // and holidays inside a range are skipped — they are not charged either). The status is highlighted everywhere:
+    // approved = solid colour, pending = hatched + amber, rejected = grey + struck through. Only APPROVED days are counted
+    // in the totals; pending days are totalled separately; rejected days are shown but never counted. (Cancelled = withdrawn
+    // by the employee, so left out.)
     // Sheets: Leave Muster (employee x day grid, month only), Leave Details
     // (one row per employee per leave day), Summary (days per leave type).
     case 'exportLeaveHistoryMuster': {
@@ -6823,7 +6826,7 @@ router.post('/:name', async (req, res) => {
         return Array.isArray(sh?.days) && sh.days.length ? sh.days : lhFallbackDays;
       };
 
-      const lhLeaves = parseEntities(await all("SELECT data FROM entities WHERE type='Leave' AND status='approved'"))
+      const lhLeaves = parseEntities(await all("SELECT data FROM entities WHERE type='Leave' AND status IN ('approved','pending','rejected')"))
         .filter(l => l.start_date && l.end_date && !l.is_wfh && l.leave_type !== 'work_from_home' && String(l.end_date).slice(0,10) >= lhStart && String(l.start_date).slice(0,10) <= lhEnd);
 
       const lhDays = []; // one entry per employee per leave day
@@ -6842,12 +6845,16 @@ router.post('/:name', async (req, res) => {
           lhDays.push({
             user_id: l.user_id, code: emp.employee_code || '', name: emp.display_name || l.employee_name || '', dept: emp.department || '', desig: emp.designation || '',
             date: ds, leaveCode: code, leaveName: name, half: !!l.half_day, days: l.half_day ? 0.5 : 1,
-            applied: `${from}${to !== from ? ' to ' + to : ''}`, reason: l.reason || '', approver: l.approved_by_name || '', approvedOn: l.approved_date ? String(l.approved_date).slice(0,10) : '',
+            applied: `${from}${to !== from ? ' to ' + to : ''}`, reason: l.reason || '', approver: l.approved_by_name || l.rejected_by_name || '', approvedOn: (l.approved_date || l.rejected_at) ? String(l.approved_date || l.rejected_at).slice(0,10) : '',
+            status: l.status === 'pending' ? 'pending' : l.status === 'rejected' ? 'rejected' : 'approved',
+            counted: l.status === 'approved' ? (l.half_day ? 0.5 : 1) : 0, pendingDays: l.status === 'pending' ? (l.half_day ? 0.5 : 1) : 0,
           });
         }
       }
       lhDays.sort((a, b) => (a.dept||'').localeCompare(b.dept||'') || (a.name||'').localeCompare(b.name||'') || a.date.localeCompare(b.date));
 
+      const lhStatusLabel = { approved: 'Approved', pending: 'Pending approval', rejected: 'Rejected' };
+      const lhStatusRank = { approved: 3, pending: 2, rejected: 1 };
       const lhTypes = [...new Set(lhDays.map(r => r.leaveCode))].sort();
       const lhPalette = ['3B82F6','10B981','F59E0B','EC4899','8B5CF6','14B8A6','EF4444','84CC16','F97316','6366F1'];
       const lhColor = {}; lhTypes.forEach((t, i) => { lhColor[t] = lhPalette[i % lhPalette.length]; });
@@ -6867,18 +6874,29 @@ router.post('/:name', async (req, res) => {
         Object.assign(ws.getCell(2, 1), { font: F(false, '374151', 9), fill: Fl('EEF2F7'), alignment: lft }); ws.getRow(2).height = 28;
       };
       const head = (row) => row.eachCell(c => Object.assign(c, { font: F(true, 'FFFFFF', 9), fill: Fl('2D5986'), alignment: ctr, border: Bd() }));
-      const legend = 'Leave codes — ' + (lhTypes.map(t => `${t} = ${lhTypeName[t]}`).join('   ') || 'none') + '   |   ½CL = half-day of that leave type (counts 0.5 day)   |   Week-offs and holidays inside a leave are not counted';
+      const legend = 'Leave codes — ' + (lhTypes.map(t => `${t} = ${lhTypeName[t]}`).join('   ') || 'none') + '   |   ½CL = half-day of that leave type (counts 0.5 day)   |   Solid colour = APPROVED   ·   Hatched, code followed by ? = PENDING approval   ·   Grey, struck through, code followed by ✗ = REJECTED (not counted)   |   Totals count approved days; pending days are shown separately   |   Week-offs and holidays inside a leave are not counted';
+      const AMBER = 'FEF3C7', REDSOFT = 'FEE2E2', GREENSOFT = 'DCFCE7';
+      const statusCellStyle = (r) => r.status === 'approved'
+        ? { fill: Fl(lhColor[r.leaveCode]), font: F(true, 'FFFFFF', 8) }
+        : r.status === 'pending'
+          ? { fill: { type: 'pattern', pattern: 'lightUp', fgColor: { argb: 'FF' + lhColor[r.leaveCode] }, bgColor: { argb: 'FFFEF3C7' } }, font: F(true, '78350F', 8) }
+          : { fill: Fl('E5E7EB'), font: { ...F(true, 'B91C1C', 8), strike: true } };
 
       // ── Sheet 1: month grid ──
       if (lhM) {
         const dim = new Date(lhY, lhM, 0).getDate();
         const INFO = 4, byEmp = new Map();
-        for (const r of lhDays) { if (!byEmp.has(r.user_id)) byEmp.set(r.user_id, { r, cells: {} }); byEmp.get(r.user_id).cells[parseInt(r.date.slice(8))] = r; }
+        for (const r of lhDays) {
+          if (!byEmp.has(r.user_id)) byEmp.set(r.user_id, { r, cells: {}, list: [] });
+          byEmp.get(r.user_id).list.push(r);
+          const cells = byEmp.get(r.user_id).cells, dayNo = parseInt(r.date.slice(8));
+          if (!cells[dayNo] || lhStatusRank[r.status] > lhStatusRank[cells[dayNo].status]) cells[dayNo] = r;   // approved beats pending beats rejected
+        }
         const ws = wbL.addWorksheet('Leave Muster', { views: [{ state: 'frozen', xSplit: INFO, ySplit: 4 }] });
-        const cols = INFO + dim + lhTypes.length + 1;
+        const cols = INFO + dim + lhTypes.length + 2;   // …leave types, Approved Days, Pending Days
         title(ws, `Leave History Muster — ${lhPeriod}`, legend, cols);
         ws.addRow([]);
-        const hdr = ws.addRow(['Code', 'Employee Name', 'Department', 'Designation', ...Array.from({ length: dim }, (_, i) => i + 1), ...lhTypes, 'Total Days']);
+        const hdr = ws.addRow(['Code', 'Employee Name', 'Department', 'Designation', ...Array.from({ length: dim }, (_, i) => i + 1), ...lhTypes, 'Approved Days', 'Pending Days']);
         ws.getRow(3).height = 4; // spacer
         head(hdr); hdr.height = 22;
         // day-of-week sub header colouring for Sundays
@@ -6886,66 +6904,227 @@ router.post('/:name', async (req, res) => {
           if (new Date(lhY, lhM - 1, d).getDay() === 0) hdr.getCell(INFO + d).fill = Fl('7F1D1D');
         }
         const rowsE = [...byEmp.values()];
-        rowsE.forEach(({ r, cells }, idx) => {
-          const tot = {}; let all = 0;
-          for (const c of Object.values(cells)) { tot[c.leaveCode] = (tot[c.leaveCode] || 0) + c.days; all += c.days; }
-          const dr = ws.addRow([r.code, r.name, r.dept, r.desig, ...Array.from({ length: dim }, (_, i) => { const c = cells[i + 1]; return c ? (c.half ? '½' + c.leaveCode : c.leaveCode) : ''; }), ...lhTypes.map(t => tot[t] || ''), all]);
+        rowsE.forEach(({ r, cells, list }, idx) => {
+          // totals use every request (a pending request that overlaps an approved day still counts as pending)
+          const tot = {}; let all = 0, pend = 0;
+          for (const c of list) { if (c.status === 'approved') { tot[c.leaveCode] = (tot[c.leaveCode] || 0) + c.days; all += c.days; } else if (c.status === 'pending') pend += c.days; }
+          const mark = (c) => (c.half ? '½' : '') + c.leaveCode + (c.status === 'pending' ? ' ?' : c.status === 'rejected' ? ' ✗' : '');
+          const dr = ws.addRow([r.code, r.name, r.dept, r.desig, ...Array.from({ length: dim }, (_, i) => { const c = cells[i + 1]; return c ? mark(c) : ''; }), ...lhTypes.map(t => tot[t] || ''), all || '', pend || '']);
           const bg = idx % 2 ? 'F8FAFC' : 'FFFFFF';
           dr.height = 16;
           for (let c = 1; c <= cols; c++) Object.assign(dr.getCell(c), { font: F(c === 2, '374151', 9), fill: Fl(bg), alignment: c <= INFO && c !== 2 && c !== 3 && c !== 4 ? ctr : (c <= INFO ? lft : ctr), border: Bd() });
           for (let d = 1; d <= dim; d++) {
             const c = cells[d]; if (!c) continue;
             const cell = dr.getCell(INFO + d);
-            cell.fill = Fl(lhColor[c.leaveCode]); cell.font = F(true, 'FFFFFF', 8);
-            cell.note = `${c.leaveName}${c.half ? ' (Half Day)' : ''}\nApplied: ${c.applied}${c.reason ? '\nReason: ' + c.reason : ''}${c.approver ? '\nApproved by: ' + c.approver : ''}`;
+            const sty = statusCellStyle(c); cell.fill = sty.fill; cell.font = sty.font;
+            cell.note = `${lhStatusLabel[c.status].toUpperCase()} — ${c.leaveName}${c.half ? ' (Half Day)' : ''}\nApplied: ${c.applied}${c.reason ? '\nReason: ' + c.reason : ''}${c.approver ? `\n${c.status === 'rejected' ? 'Rejected' : 'Approved'} by: ` + c.approver : ''}`;
           }
-          dr.getCell(cols).font = F(true, NAVY, 9);
+          dr.getCell(cols - 1).font = F(true, NAVY, 9);
+          if (pend) Object.assign(dr.getCell(cols), { font: F(true, '78350F', 9), fill: Fl(AMBER) });
         });
-        if (!rowsE.length) { const er = ws.addRow(['No approved leave in this month']); ws.mergeCells(er.number, 1, er.number, cols); er.getCell(1).alignment = ctr; er.getCell(1).font = F(false, '6B7280', 10); }
+        if (!rowsE.length) { const er = ws.addRow(['No leave in this month']); ws.mergeCells(er.number, 1, er.number, cols); er.getCell(1).alignment = ctr; er.getCell(1).font = F(false, '6B7280', 10); }
         ws.getColumn(1).width = 11; ws.getColumn(2).width = 26; ws.getColumn(3).width = 18; ws.getColumn(4).width = 20;
         for (let d = 1; d <= dim; d++) ws.getColumn(INFO + d).width = 5;
         lhTypes.forEach((_, i) => { ws.getColumn(INFO + dim + 1 + i).width = 7; });
-        ws.getColumn(cols).width = 11;
+        ws.getColumn(cols - 1).width = 13; ws.getColumn(cols).width = 13;
       }
 
       // ── Sheet 2: one row per employee per leave day ──
       const wd = wbL.addWorksheet('Leave Details', { views: [{ state: 'frozen', ySplit: 4 }] });
-      const dHeads = ['#', 'Employee Code', 'Employee Name', 'Department', 'Designation', 'Date', 'Day', 'Leave Type', 'Leave Name', 'Full / Half Day', 'Days Used', 'Applied Range', 'Reason', 'Approved By', 'Approved On'];
+      const dHeads = ['#', 'Employee Code', 'Employee Name', 'Department', 'Designation', 'Date', 'Day', 'Leave Type', 'Leave Name', 'Full / Half Day', 'Status', 'Days Used', 'Applied Range', 'Reason', 'Decided By', 'Decided On'];
       title(wd, `Leave Details — ${lhPeriod}`, 'One row per employee per leave day. ' + legend, dHeads.length);
       wd.addRow([]); wd.getRow(3).height = 4;
       const dh = wd.addRow(dHeads); head(dh); dh.height = 22;
       lhDays.forEach((r, i) => {
-        const dr = wd.addRow([i + 1, r.code, r.name, r.dept, r.desig, r.date.split('-').reverse().join('-'), lhWeekday[new Date(r.date + 'T00:00:00Z').getUTCDay()], r.leaveCode, r.leaveName, r.half ? 'Half Day' : 'Full Day', r.days, r.applied, r.reason, r.approver, r.approvedOn]);
-        const bg = i % 2 ? 'F8FAFC' : 'FFFFFF';
-        dr.eachCell((c, n) => Object.assign(c, { font: F(n === 3, '374151', 9), fill: Fl(bg), alignment: [3,4,5,9,12,13].includes(n) ? lft : ctr, border: Bd() }));
+        const dr = wd.addRow([i + 1, r.code, r.name, r.dept, r.desig, r.date.split('-').reverse().join('-'), lhWeekday[new Date(r.date + 'T00:00:00Z').getUTCDay()], r.leaveCode, r.leaveName, r.half ? 'Half Day' : 'Full Day', lhStatusLabel[r.status], r.days, r.applied, r.reason, r.approver, r.approvedOn]);
+        // the whole row carries the status: pending = amber, rejected = soft red (and struck through); approved keeps the zebra rows
+        const bg = r.status === 'pending' ? AMBER : r.status === 'rejected' ? REDSOFT : (i % 2 ? 'F8FAFC' : 'FFFFFF');
+        dr.eachCell((c, n) => Object.assign(c, { font: { ...F(n === 3, r.status === 'rejected' ? '991B1B' : '374151', 9), strike: r.status === 'rejected' }, fill: Fl(bg), alignment: [3,4,5,9,13,14].includes(n) ? lft : ctr, border: Bd() }));
         Object.assign(dr.getCell(8), { fill: Fl(lhColor[r.leaveCode]), font: F(true, 'FFFFFF', 9) });
+        Object.assign(dr.getCell(11), r.status === 'approved' ? { fill: Fl('16A34A'), font: F(true, 'FFFFFF', 9) } : r.status === 'pending' ? { fill: Fl('F59E0B'), font: F(true, '3F2D00', 9) } : { fill: Fl('DC2626'), font: F(true, 'FFFFFF', 9) });
       });
-      [5, 13, 24, 18, 20, 12, 11, 11, 20, 12, 9, 22, 34, 20, 12].forEach((w, i) => { wd.getColumn(i + 1).width = w; });
+      [5, 13, 24, 18, 20, 12, 11, 11, 20, 12, 16, 9, 22, 34, 20, 12].forEach((w, i) => { wd.getColumn(i + 1).width = w; });
       wd.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: dHeads.length } };
 
       // ── Sheet 3: summary per employee per leave type ──
       const wsum = wbL.addWorksheet('Summary', { views: [{ state: 'frozen', ySplit: 4 }] });
-      const sHeads = ['Employee Code', 'Employee Name', 'Department', ...lhTypes.map(t => `${t} (days)`), 'Total Days'];
+      const sHeads = ['Employee Code', 'Employee Name', 'Department', ...lhTypes.map(t => `${t} (approved days)`), 'Approved Days', 'Pending Days'];
       title(wsum, `Leave Summary — ${lhPeriod}`, legend, sHeads.length);
       wsum.addRow([]); wsum.getRow(3).height = 4;
       const sh2 = wsum.addRow(sHeads); head(sh2); sh2.height = 22;
       const sumBy = new Map();
-      for (const r of lhDays) { if (!sumBy.has(r.user_id)) sumBy.set(r.user_id, { r, tot: {}, all: 0 }); const o = sumBy.get(r.user_id); o.tot[r.leaveCode] = (o.tot[r.leaveCode] || 0) + r.days; o.all += r.days; }
+      for (const r of lhDays) {
+        if (!sumBy.has(r.user_id)) sumBy.set(r.user_id, { r, tot: {}, all: 0, pend: 0 });
+        const o = sumBy.get(r.user_id);
+        if (r.status === 'approved') { o.tot[r.leaveCode] = (o.tot[r.leaveCode] || 0) + r.days; o.all += r.days; } else if (r.status === 'pending') o.pend += r.days;
+      }
       let sIdx = 0;
-      for (const { r, tot, all } of sumBy.values()) {
-        const dr = wsum.addRow([r.code, r.name, r.dept, ...lhTypes.map(t => tot[t] || ''), all]);
+      for (const { r, tot, all, pend } of sumBy.values()) {
+        const dr = wsum.addRow([r.code, r.name, r.dept, ...lhTypes.map(t => tot[t] || ''), all || '', pend || '']);
         const bg = sIdx++ % 2 ? 'F8FAFC' : 'FFFFFF';
-        dr.eachCell((c, n) => Object.assign(c, { font: F(n === 2 || n === sHeads.length, '374151', 9), fill: Fl(bg), alignment: n >= 2 && n <= 3 ? lft : ctr, border: Bd() }));
+        dr.eachCell((c, n) => Object.assign(c, { font: F(n === 2 || n >= sHeads.length - 1, '374151', 9), fill: Fl(bg), alignment: n >= 2 && n <= 3 ? lft : ctr, border: Bd() }));
+        if (pend) Object.assign(dr.getCell(sHeads.length), { fill: Fl(AMBER), font: F(true, '78350F', 9) });
       }
       if (sumBy.size) {
         const last = wsum.lastRow.number;
-        const tr = wsum.addRow(['TOTAL', '', '', ...lhTypes.map((_, i) => ({ formula: `SUM(${wsum.getColumn(4 + i).letter}5:${wsum.getColumn(4 + i).letter}${last})` })), { formula: `SUM(${wsum.getColumn(sHeads.length).letter}5:${wsum.getColumn(sHeads.length).letter}${last})` }]);
+        const colSum = (idx) => ({ formula: `SUM(${wsum.getColumn(idx).letter}5:${wsum.getColumn(idx).letter}${last})` });
+        const tr = wsum.addRow(['TOTAL', '', '', ...lhTypes.map((_, i) => colSum(4 + i)), colSum(sHeads.length - 1), colSum(sHeads.length)]);
         tr.eachCell(c => Object.assign(c, { font: F(true, 'FFFFFF', 9), fill: Fl(NAVY), alignment: ctr, border: Bd() }));
       }
-      [13, 26, 18, ...lhTypes.map(() => 11), 12].forEach((w, i) => { wsum.getColumn(i + 1).width = w; });
+      [13, 26, 18, ...lhTypes.map(() => 13), 13, 13].forEach((w, i) => { wsum.getColumn(i + 1).width = w; });
 
       const lhBuf = await wbL.xlsx.writeBuffer();
-      return res.json({ success: true, base64: Buffer.from(lhBuf).toString('base64'), filename: `Leave_History_Muster_${lhPeriod.replace(' ', '_')}.xlsx`, total_employees: sumBy.size, total_leave_days: lhDays.reduce((a, r) => a + r.days, 0), total_records: lhDays.length });
+      return res.json({ success: true, base64: Buffer.from(lhBuf).toString('base64'), filename: `Leave_History_Muster_${lhPeriod.replace(' ', '_')}.xlsx`, total_employees: sumBy.size, total_leave_days: lhDays.reduce((a, r) => a + r.counted, 0), pending_leave_days: lhDays.reduce((a, r) => a + r.pendingDays, 0), rejected_leave_days: lhDays.filter(r => r.status === 'rejected').reduce((a, r) => a + r.days, 0), total_records: lhDays.length });
+    }
+
+    // Leave Requests export (HR / admin): one row per leave request with colour-coded status, approval stage, turnaround and
+    // how long a pending request has been waiting. Filters mirror the Leave Requests tab (status, leave type, department,
+    // search) plus an optional date range (requests whose leave overlaps it).
+    case 'exportLeaveRequests': {
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR/Admin access required' });
+      const lrStatus = ['pending', 'approved', 'rejected', 'cancelled'].includes(p.status) ? p.status : 'all';
+      const lrCode = p.policy_code && p.policy_code !== 'all' ? String(p.policy_code).toUpperCase() : '';
+      const lrDept = p.department && p.department !== 'all' ? String(p.department) : '';
+      const lrSearch = String(p.search || '').trim().toLowerCase();
+      const lrFrom = /^\d{4}-\d{2}-\d{2}$/.test(p.from || '') ? p.from : '', lrTo = /^\d{4}-\d{2}-\d{2}$/.test(p.to || '') ? p.to : '';
+
+      const lrEmps = {}; parseEntities(await all("SELECT data FROM entities WHERE type='Employee'")).forEach(e => { if (e.user_id) lrEmps[e.user_id] = e; });
+      const lrPols = {}; parseEntities(await all("SELECT data FROM entities WHERE type='LeavePolicy'")).forEach(lp => { lrPols[lp.id] = lp; });
+      const lrNow = Date.now();
+      const D10 = (v) => (v ? String(v).slice(0, 10) : '');
+      const dmy = (v) => (D10(v) ? D10(v).split('-').reverse().join('-') : '');
+      const dayDiff = (a, b) => Math.max(0, Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000 * 10) / 10);
+
+      let lrRows = parseEntities(await all("SELECT data FROM entities WHERE type='Leave'")).filter(l => l.start_date && l.end_date).map(l => {
+        const emp = lrEmps[l.user_id] || {}; const pol = lrPols[l.leave_policy_id] || {};
+        const isWfh = !!l.is_wfh || l.leave_type === 'work_from_home';
+        const code = isWfh ? 'WFH' : String(pol.code || l.leave_policy_code || l.leave_type || 'L').toUpperCase();
+        const hist = Array.isArray(l.approval_history) ? l.approval_history : [];
+        const lastDecision = [...hist].reverse().find(h => h && (h.action === 'approved' || h.action === 'rejected'));
+        const decidedOn = l.status === 'rejected' ? (l.rejected_at || lastDecision?.at) : l.status === 'approved' ? (l.approved_date || lastDecision?.at) : l.status === 'cancelled' ? (l.cancelled_at || l.updated_at) : '';
+        const appliedOn = l.applied_on || l.created_date || l.created_at || '';
+        const status = ['pending', 'approved', 'rejected', 'cancelled'].includes(l.status) ? l.status : 'pending';
+        return {
+          raw: l, status, code, name: pol.name || l.leave_policy_name || (isWfh ? 'Work From Home' : l.leave_type) || code,
+          empCode: emp.employee_code || '', empName: emp.display_name || l.employee_name || '', dept: emp.department || '', desig: emp.designation || '',
+          appliedOn, from: D10(l.start_date), to: D10(l.end_date), days: Number(l.total_days) || (l.half_day ? 0.5 : 1), half: !!l.half_day,
+          level: Number(l.current_approval_level) || 1, approvals: hist.filter(h => h && h.action === 'approved').length,
+          decidedBy: status === 'rejected' ? (l.rejected_by_name || lastDecision?.by_name || '') : status === 'approved' ? (l.approved_by_name || lastDecision?.by_name || '') : status === 'cancelled' ? (l.cancelled_by_name || '') : '',
+          decidedOn, note: status === 'rejected' ? (l.rejection_reason || '') : (l.approval_note || ''),
+          waiting: status === 'pending' && appliedOn ? dayDiff(appliedOn, lrNow) : '', turnaround: ['approved', 'rejected'].includes(status) && appliedOn && decidedOn ? dayDiff(appliedOn, decidedOn) : '',
+        };
+      });
+      lrRows = lrRows.filter(r => {
+        if (lrStatus !== 'all' && r.status !== lrStatus) return false;
+        if (lrCode && r.code !== lrCode) return false;
+        if (lrDept && r.dept !== lrDept) return false;
+        if (lrFrom && r.to < lrFrom) return false;
+        if (lrTo && r.from > lrTo) return false;
+        if (lrSearch && ![r.empName, r.empCode, r.dept, r.raw.reason].some(x => String(x || '').toLowerCase().includes(lrSearch))) return false;
+        return true;
+      }).sort((a, b) => String(b.appliedOn).localeCompare(String(a.appliedOn)) || a.empName.localeCompare(b.empName));
+
+      const ExcelJSr = await import('exceljs');
+      const wbR = new ExcelJSr.default.Workbook();
+      const F = (bold, color = '1F2937', size = 9) => ({ name: 'Calibri', bold, size, color: { argb: 'FF' + color } });
+      const Fl = (c) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + c } });
+      const Bd = () => ({ top: { style: 'thin', color: { argb: 'FFD1D5DB' } }, left: { style: 'thin', color: { argb: 'FFD1D5DB' } }, bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } }, right: { style: 'thin', color: { argb: 'FFD1D5DB' } } });
+      const ctr = { horizontal: 'center', vertical: 'middle', wrapText: true }, lft = { horizontal: 'left', vertical: 'middle', wrapText: true };
+      const NAVY = '1A3C5E';
+      const ST = {
+        approved: { label: 'Approved', fill: '16A34A', font: 'FFFFFF', tint: 'F0FDF4' },
+        pending: { label: 'Pending', fill: 'F59E0B', font: '3F2D00', tint: 'FFFBEB' },
+        rejected: { label: 'Rejected', fill: 'DC2626', font: 'FFFFFF', tint: 'FEF2F2' },
+        cancelled: { label: 'Cancelled', fill: '9CA3AF', font: 'FFFFFF', tint: 'F3F4F6' },
+      };
+      const palette = ['3B82F6', '10B981', '8B5CF6', 'EC4899', '14B8A6', 'F97316', '6366F1', '84CC16', '0EA5E9', 'D946EF'];
+      const codes = [...new Set(lrRows.map(r => r.code))].sort(); const codeColor = {}; codes.forEach((c, i) => { codeColor[c] = palette[i % palette.length]; });
+      const filterText = [`Status: ${lrStatus === 'all' ? 'All' : ST[lrStatus].label}`, `Leave type: ${lrCode || 'All'}`, `Department: ${lrDept || 'All'}`, lrFrom || lrTo ? `Leave dates: ${lrFrom ? dmy(lrFrom) : '…'} to ${lrTo ? dmy(lrTo) : '…'}` : 'Leave dates: all', lrSearch ? `Search: "${p.search}"` : ''].filter(Boolean).join('   |   ');
+      const generated = `Generated ${new Date(Date.now() + 5.5 * 3600000).toISOString().replace('T', ' ').slice(0, 16)} IST by ${cu.email || cu.id}`;
+      const banner = (ws, text, sub, cols) => {
+        ws.addRow([text]); ws.mergeCells(1, 1, 1, cols); Object.assign(ws.getCell(1, 1), { font: F(true, 'FFFFFF', 14), fill: Fl(NAVY), alignment: ctr }); ws.getRow(1).height = 28;
+        ws.addRow([sub]); ws.mergeCells(2, 1, 2, cols); Object.assign(ws.getCell(2, 1), { font: F(false, '374151', 9), fill: Fl('EEF2F7'), alignment: lft }); ws.getRow(2).height = 30;
+      };
+      const head = (row) => row.eachCell(c => Object.assign(c, { font: F(true, 'FFFFFF', 9), fill: Fl('2D5986'), alignment: ctr, border: Bd() }));
+      const legendText = 'Colour key — Status: green = Approved, amber = Pending, red = Rejected, grey = Cancelled  |  Days: orange = long leave (5+ days), blue = half day  |  Waiting (pending only): amber = 1–3 days, red = more than 3 days';
+
+      // ── Sheet 1: Leave Requests ──
+      const wsq = wbR.addWorksheet('Leave Requests', { views: [{ state: 'frozen', xSplit: 4, ySplit: 4 }], pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
+      const heads = ['#', 'Applied On', 'Emp Code', 'Employee', 'Department', 'Designation', 'Leave Type', 'Leave Name', 'From', 'To', 'Days', 'Half Day', 'Status', 'Approval Stage', 'Decided By', 'Decided On', 'Turnaround (days)', 'Waiting (days)', 'Reason', 'Decision Note / Rejection Reason', 'Contact During Leave', 'Attachment'];
+      banner(wsq, `Leave Requests — ${lrRows.length} request${lrRows.length === 1 ? '' : 's'}`, `${filterText}\n${generated}   |   ${legendText}`, heads.length);
+      wsq.addRow([]); wsq.getRow(3).height = 4;
+      const hr0 = wsq.addRow(heads); head(hr0); hr0.height = 30;
+      lrRows.forEach((r, i) => {
+        const st = ST[r.status];
+        const stage = r.status === 'pending' ? `Level ${r.level} — awaiting approval${r.approvals ? ` (${r.approvals} done)` : ''}` : r.status === 'approved' ? `Completed${r.approvals ? ` (${r.approvals} level${r.approvals > 1 ? 's' : ''})` : ''}` : r.status === 'rejected' ? 'Rejected' : 'Withdrawn by employee';
+        const row = wsq.addRow([i + 1, dmy(r.appliedOn), r.empCode, r.empName, r.dept, r.desig, r.code, r.name, dmy(r.from), dmy(r.to), r.days, r.half ? 'Yes' : 'No', st.label, stage, r.decidedBy, dmy(r.decidedOn), r.turnaround, r.waiting, r.raw.reason || '', r.note, r.raw.contact_during_leave || '', '']);
+        const base = r.status === 'approved' ? (i % 2 ? 'F8FAFC' : 'FFFFFF') : st.tint;
+        row.height = 18;
+        row.eachCell({ includeEmpty: true }, (c, n) => Object.assign(c, { font: { ...F(n === 4, r.status === 'cancelled' ? '6B7280' : '374151', 9), strike: r.status === 'cancelled' && [8, 11].includes(n) }, fill: Fl(base), alignment: [4, 5, 6, 8, 14, 19, 20, 21].includes(n) ? lft : ctr, border: Bd() }));
+        Object.assign(row.getCell(7), { fill: Fl(codeColor[r.code]), font: F(true, 'FFFFFF', 9) });
+        Object.assign(row.getCell(13), { fill: Fl(st.fill), font: F(true, st.font, 9) });
+        if (r.days >= 5) Object.assign(row.getCell(11), { fill: Fl('FFEDD5'), font: F(true, '9A3412', 9) });
+        else if (r.half) Object.assign(row.getCell(11), { fill: Fl('DBEAFE'), font: F(true, '1E40AF', 9) });
+        if (r.status === 'pending' && r.waiting !== '') Object.assign(row.getCell(18), r.waiting > 3 ? { fill: Fl('FEE2E2'), font: F(true, 'B91C1C', 9) } : r.waiting >= 1 ? { fill: Fl('FEF3C7'), font: F(true, '92400E', 9) } : {});
+        if (r.raw.attachment_url && /^https?:\/\//i.test(r.raw.attachment_url)) Object.assign(row.getCell(22), { value: { text: 'Open', hyperlink: r.raw.attachment_url }, font: { ...F(false, '2563EB', 9), underline: true } });
+      });
+      if (!lrRows.length) { const er = wsq.addRow(['No leave requests match these filters']); wsq.mergeCells(er.number, 1, er.number, heads.length); Object.assign(er.getCell(1), { alignment: ctr, font: F(false, '6B7280', 10) }); }
+      [5, 12, 11, 24, 18, 20, 9, 20, 12, 12, 7, 8, 11, 26, 20, 12, 11, 10, 34, 34, 18, 11].forEach((w, i) => { wsq.getColumn(i + 1).width = w; });
+      if (lrRows.length) wsq.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: heads.length } };
+
+      // ── Sheet 2: Summary ──
+      const wsS = wbR.addWorksheet('Summary', { views: [{ showGridLines: false }] });
+      banner(wsS, 'Leave Requests — Summary', `${filterText}\n${generated}`, 7);
+      wsS.addRow([]);
+      const secHead = (t) => { const r = wsS.addRow([t]); wsS.mergeCells(r.number, 1, r.number, 7); Object.assign(r.getCell(1), { font: F(true, 'FFFFFF', 10), fill: Fl('2D5986'), alignment: lft }); r.height = 20; };
+      secHead('By status');
+      const sh = wsS.addRow(['Status', 'Requests', 'Days']); head(sh);
+      for (const k of ['approved', 'pending', 'rejected', 'cancelled']) {
+        const rs = lrRows.filter(r => r.status === k); const r = wsS.addRow([ST[k].label, rs.length, rs.reduce((a, x) => a + x.days, 0)]);
+        r.eachCell(c => Object.assign(c, { font: F(false, '374151', 10), alignment: ctr, border: Bd() })); Object.assign(r.getCell(1), { fill: Fl(ST[k].fill), font: F(true, ST[k].font, 10) });
+      }
+      const tr = wsS.addRow(['Total', lrRows.length, lrRows.reduce((a, x) => a + x.days, 0)]); tr.eachCell(c => Object.assign(c, { font: F(true, 'FFFFFF', 10), fill: Fl(NAVY), alignment: ctr, border: Bd() }));
+      wsS.addRow([]);
+      secHead('By leave type');
+      const th = wsS.addRow(['Leave Type', 'Approved days', 'Pending days', 'Rejected days', 'Cancelled days', 'Requests']); head(th);
+      for (const c of codes) {
+        const rs = lrRows.filter(r => r.code === c); const sum = (k) => rs.filter(r => r.status === k).reduce((a, x) => a + x.days, 0);
+        const r = wsS.addRow([c, sum('approved'), sum('pending'), sum('rejected'), sum('cancelled'), rs.length]);
+        r.eachCell(cc => Object.assign(cc, { font: F(false, '374151', 10), alignment: ctr, border: Bd() })); Object.assign(r.getCell(1), { fill: Fl(codeColor[c]), font: F(true, 'FFFFFF', 10) });
+        if (sum('pending')) Object.assign(r.getCell(3), { fill: Fl('FEF3C7'), font: F(true, '92400E', 10) });
+      }
+      wsS.addRow([]);
+      secHead('By department');
+      const dh = wsS.addRow(['Department', 'Approved', 'Pending', 'Rejected', 'Cancelled', 'Total requests', 'Approved days']); head(dh);
+      const depts = [...new Set(lrRows.map(r => r.dept || '—'))].sort();
+      for (const d of depts) {
+        const rs = lrRows.filter(r => (r.dept || '—') === d); const cnt = (k) => rs.filter(r => r.status === k).length;
+        const r = wsS.addRow([d, cnt('approved'), cnt('pending'), cnt('rejected'), cnt('cancelled'), rs.length, rs.filter(x => x.status === 'approved').reduce((a, x) => a + x.days, 0)]);
+        r.eachCell(cc => Object.assign(cc, { font: F(false, '374151', 10), alignment: ctr, border: Bd() })); r.getCell(1).alignment = lft;
+        if (cnt('pending')) Object.assign(r.getCell(3), { fill: Fl('FEF3C7'), font: F(true, '92400E', 10) });
+        if (cnt('rejected')) Object.assign(r.getCell(4), { fill: Fl('FEE2E2'), font: F(true, '991B1B', 10) });
+      }
+      [26, 15, 15, 15, 15, 15, 15].forEach((w, i) => { wsS.getColumn(i + 1).width = w; });
+
+      // ── Sheet 3: By Employee ──
+      const wsE = wbR.addWorksheet('By Employee', { views: [{ state: 'frozen', ySplit: 4 }] });
+      const eh = ['Emp Code', 'Employee', 'Department', 'Requests', 'Approved days', 'Pending days', 'Rejected days', 'Cancelled days', 'Oldest pending (days)'];
+      banner(wsE, 'Leave Requests — By Employee', `${filterText}\n${generated}   |   Orange = 10+ approved days in the period; amber/red = pending requests waiting`, eh.length);
+      wsE.addRow([]); wsE.getRow(3).height = 4; const ehr = wsE.addRow(eh); head(ehr); ehr.height = 24;
+      const byE = new Map(); for (const r of lrRows) { const k = r.raw.user_id || r.empName; if (!byE.has(k)) byE.set(k, []); byE.get(k).push(r); }
+      [...byE.values()].sort((a, b) => a[0].empName.localeCompare(b[0].empName)).forEach((rs, i) => {
+        const sum = (k) => rs.filter(r => r.status === k).reduce((a, x) => a + x.days, 0); const oldest = Math.max(0, ...rs.filter(r => r.status === 'pending' && r.waiting !== '').map(r => r.waiting));
+        const r = wsE.addRow([rs[0].empCode, rs[0].empName, rs[0].dept, rs.length, sum('approved'), sum('pending'), sum('rejected'), sum('cancelled'), oldest || '']);
+        r.eachCell(c => Object.assign(c, { font: F(false, '374151', 9), fill: Fl(i % 2 ? 'F8FAFC' : 'FFFFFF'), alignment: ctr, border: Bd() })); [2, 3].forEach(n => { r.getCell(n).alignment = lft; }); r.getCell(2).font = F(true, '374151', 9);
+        if (sum('approved') >= 10) Object.assign(r.getCell(5), { fill: Fl('FFEDD5'), font: F(true, '9A3412', 9) });
+        if (sum('pending')) Object.assign(r.getCell(6), { fill: Fl('FEF3C7'), font: F(true, '92400E', 9) });
+        if (oldest > 3) Object.assign(r.getCell(9), { fill: Fl('FEE2E2'), font: F(true, 'B91C1C', 9) });
+      });
+      [11, 26, 20, 10, 13, 13, 13, 14, 16].forEach((w, i) => { wsE.getColumn(i + 1).width = w; });
+
+      const lrBuf = await wbR.xlsx.writeBuffer();
+      const lrStamp = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      return res.json({ success: true, base64: Buffer.from(lrBuf).toString('base64'), filename: `Leave_Requests_${lrStamp}.xlsx`, total: lrRows.length, by_status: Object.fromEntries(['approved', 'pending', 'rejected', 'cancelled'].map(k => [k, lrRows.filter(r => r.status === k).length])) });
     }
 
     // Swipe-detail register: one row per employee per calendar day, showing
