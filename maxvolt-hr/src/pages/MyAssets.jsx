@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2, Laptop, Monitor, Smartphone, Keyboard, Mouse, Headphones, Printer, Router, HardDrive, Usb, Cable, Package, Download, AlertTriangle, Clock, PrinterIcon, PenLine } from 'lucide-react';
 import { format } from 'date-fns';
 import { fmtDate, isPastDate } from '@/lib/assetDates';
-import { openLetterheadPrintWindow } from '../utils/letterhead';
+import { openLetterheadPrintWindow, fitOnOnePage } from '../utils/letterhead';
 import AssetCheckoutDialog from '@/components/assets/AssetCheckoutDialog';
 
 const TYPE_ICONS = {
@@ -177,12 +177,12 @@ export default function MyAssets() {
   };
 
   const handlePrintLetter = (asset) => {
-    openLetterheadPrintWindow(`Asset Letter - ${asset.asset_name}`, buildAssetLetterContent([asset]), '', false);
+    openLetterheadPrintWindow(`Asset Letter - ${asset.asset_name}`, fitOnOnePage(buildAssetLetterContent([asset])), '', false);
   };
 
   const handlePrintAllMyAssets = () => {
     if (assets.length === 0) return;
-    openLetterheadPrintWindow(`Asset Letter - All Assets`, buildAssetLetterContent(assets), '', false);
+    openLetterheadPrintWindow(`Asset Letter - All Assets`, fitOnOnePage(buildAssetLetterContent(assets)), '', false);
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin" /></div>;

@@ -14,7 +14,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { fmtDate, isPastDate } from '@/lib/assetDates';
-import { openLetterheadPrintWindow } from '../utils/letterhead';
+import { openLetterheadPrintWindow, fitOnOnePage } from '../utils/letterhead';
 import AssetActivityLog from '@/components/assets/AssetActivityLog';
 
 const TYPE_ICONS = {
@@ -463,7 +463,7 @@ export default function AssetTracking() {
       toast.success(`${selectedAssets.length} asset(s) assigned to ${emp.display_name}`);
       // Print combined letterhead
       const updatedAssets = selectedAssets.map(a => ({ ...a, assigned_to_user_id: bulkEmployeeId, status: 'assigned', assignment_date: today }));
-      openLetterheadPrintWindow(`Assets Handover - ${emp.display_name}`, buildAssetLetterContent(emp, updatedAssets), '', false);
+      openLetterheadPrintWindow(`Assets Handover - ${emp.display_name}`, fitOnOnePage(buildAssetLetterContent(emp, updatedAssets)), '', false);
       clearBulkSelection();
       loadData();
     } catch { toast.error('Error assigning assets'); }
@@ -487,19 +487,16 @@ export default function AssetTracking() {
     const assetRows = assetList.map(asset => {
       const typeName = asset.asset_type_name || getTypeName(asset.asset_type_id);
       const serialBlock = [
-        `Device Name – ${asset.asset_name || '—'}`,
-        asset.specification ? asset.specification : null,
-        `Device ID – ${asset.asset_id || '—'}`,
-        `Model Number – ${asset.model_number || '—'}`,
-        `Serial Number – ${asset.serial_number || '—'}`,
-      ].filter(Boolean).join('<br>');
+        `<strong>${asset.asset_name || '—'}</strong>${asset.specification ? ` — ${asset.specification}` : ''}`,
+        `Device ID – ${asset.asset_id || '—'} &nbsp;·&nbsp; Model – ${asset.model_number || '—'} &nbsp;·&nbsp; Serial – ${asset.serial_number || '—'}`,
+      ].join('<br>');
       return `
         <tr>
-          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;">${serialBlock}</td>
-          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;text-align:center;">1</td>
-          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;">${typeName}</td>
-          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;">${asset.accessories || '—'}</td>
-          <td style="padding:6px 10px;border:1px solid #ccc;vertical-align:top;">${asset.notes || '—'}</td>
+          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;">${serialBlock}</td>
+          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;text-align:center;">1</td>
+          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;">${typeName}</td>
+          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;">${asset.accessories || '—'}</td>
+          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;">${asset.notes || '—'}</td>
         </tr>`;
     }).join('');
 
@@ -511,92 +508,92 @@ export default function AssetTracking() {
       : '';
 
     return `
-      <h1 style="font-size:22px;font-weight:bold;text-align:center;margin:0 0 18px;">Assets Handover</h1>
+      <h1 style="font-size:20px;font-weight:bold;text-align:center;margin:0 0 8px;">Assets Handover</h1>
 
-      <p style="font-size:11px;margin-bottom:14px;">${format(new Date(), 'd-MMM-yyyy')}</p>
+      <p style="font-size:10.5px;margin:0 0 6px;">${format(new Date(), 'd-MMM-yyyy')}</p>
 
-      <p style="font-size:11px;margin-bottom:2px;"><strong>Dear ${salutation} ${empName}</strong></p>
-      <p style="font-size:11px;font-weight:bold;margin-bottom:12px;">Subject: Assets Handover Letter</p>
+      <p style="font-size:10.5px;margin:0 0 1px;"><strong>Dear ${salutation} ${empName}</strong></p>
+      <p style="font-size:10.5px;font-weight:bold;margin:0 0 6px;">Subject: Assets Handover Letter</p>
 
-      <p style="font-size:11px;margin-bottom:12px;line-height:1.6;">
+      <p style="font-size:10.5px;margin:0 0 6px;line-height:1.45;">
         I hope this letter finds you in good health and high spirits. We are pleased to inform you that, as part of your role with
         <strong>"MAXVOLT ENERGY INDUSTRIES LIMITED"</strong>, you are entrusted with company assets, mentioned in this letter, to support you
         in your responsibilities. It is crucial for both your professional success and the company's operational efficiency that these
         assets are managed responsibly.
       </p>
 
-      <p style="font-size:11px;margin-bottom:14px;line-height:1.6;">
+      <p style="font-size:10.5px;margin:0 0 8px;line-height:1.45;">
         Following asset${plural ? 's have' : ' has'} been handed-over to <strong>${salutation} ${empName}</strong> "${empDesg}" -${empDept}- for official
         use purpose only. The sole ownership will remain with <strong>"Maxvolt Energy Industries Limited"</strong>
       </p>
 
-      <table style="width:100%;border-collapse:collapse;font-size:10.5px;margin-bottom:16px;">
+      <table style="width:100%;border-collapse:collapse;font-size:10px;margin-bottom:8px;">
         <thead>
           <tr style="background:#f8fafc;">
-            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Serial No.</th>
-            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Quantity</th>
-            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Item</th>
-            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Accessories</th>
-            <th style="padding:6px 10px;border:1px solid #ccc;text-align:left;">Remarks</th>
+            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Serial No.</th>
+            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Quantity</th>
+            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Item</th>
+            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Accessories</th>
+            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Remarks</th>
           </tr>
         </thead>
         <tbody>${assetRows}</tbody>
       </table>
 
-      <p style="font-size:11px;margin-bottom:10px;line-height:1.6;">
+      <p style="font-size:10.5px;margin:0 0 5px;line-height:1.45;">
         The following rules and guidelines are provided to ensure a smooth asset handover process and to outline the responsibilities
         associated with the care and use of these assets:
       </p>
 
-      <ol style="font-size:10.5px;margin:0 0 14px;padding-left:18px;line-height:1.6;">
-        <li style="font-weight:bold;margin-bottom:4px;">Condition and Inspection:
-          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+      <ol style="font-size:10px;margin:0 0 8px;padding-left:16px;line-height:1.4;column-count:2;column-gap:10mm;">
+        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Condition and Inspection:
+          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
             <li>Upon receiving the assets, please inspect them carefully to ensure they are in proper working condition.</li>
             <li>Report any discrepancies or issues promptly to the HR Department.</li>
           </ul>
         </li>
-        <li style="font-weight:bold;margin-bottom:4px;">Documentation:
-          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Documentation:
+          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
             <li>Sign the Asset Handover Form attached to this letter, acknowledging receipt of the specified assets.</li>
             <li>Keep a copy of the signed form for your records.</li>
           </ul>
         </li>
-        <li style="font-weight:bold;margin-bottom:4px;">Use and Care:
-          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Use and Care:
+          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
             <li>Use the provided assets exclusively for work-related purposes.</li>
             <li>Exercise caution to prevent damage or loss.</li>
             <li>Report any loss, damage, or malfunction immediately to the HR - Department</li>
           </ul>
         </li>
-        <li style="font-weight:bold;margin-bottom:4px;">Security and Confidentiality:
-          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Security and Confidentiality:
+          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
             <li>Safeguard assets and information stored on them to maintain the confidentiality and security of company data.</li>
           </ul>
         </li>
-        <li style="font-weight:bold;margin-bottom:4px;">Return of Assets:
-          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Return of Assets:
+          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
             <li>Return the assets promptly upon termination of your employment or upon request by the company.</li>
           </ul>
         </li>
-        <li style="font-weight:bold;margin-bottom:4px;">Penalties for Non-Compliance:
-          <ul style="font-weight:normal;margin:2px 0 8px;padding-left:18px;">
+        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Penalties for Non-Compliance:
+          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
             <li>Failure to adhere to the guidelines may result in disciplinary action, including but not limited to verbal/written warnings, suspension, or termination.</li>
             <li>Any intentional damage or misuse may result in financial penalties to cover repair or replacement costs.</li>
           </ul>
         </li>
-        <li style="font-weight:bold;">Contact Person:
+        <li style="font-weight:bold;break-inside:avoid;">Contact Person:
           <ul style="font-weight:normal;margin:2px 0 0;padding-left:18px;">
             <li>For any questions or concerns regarding the assets, please contact HR – Department/HOD.</li>
           </ul>
         </li>
       </ol>
 
-      <p style="font-size:11px;margin-bottom:28px;line-height:1.6;">
+      <p style="font-size:10.5px;margin:0 0 12px;line-height:1.45;">
         We trust that you will handle these assets with the utmost care and responsibility. Your cooperation in adhering to these
         guidelines is essential to maintaining a smooth and effective workflow.
       </p>
 
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;font-size:11px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;font-size:10.5px;break-inside:avoid;">
         <div>
           <p style="margin-bottom:6px;">Sincerely,</p>
           <p style="margin:0;">Issue by</p>
@@ -684,7 +681,7 @@ export default function AssetTracking() {
   const handlePrintLetter = (asset) => {
     const emp = getEmployee(asset.assigned_to_user_id);
     if (!emp) { toast.error('Employee record not found'); return; }
-    openLetterheadPrintWindow(`Assets Handover - ${asset.asset_name}`, buildAssetLetterContent(emp, [asset]), '', false);
+    openLetterheadPrintWindow(`Assets Handover - ${asset.asset_name}`, fitOnOnePage(buildAssetLetterContent(emp, [asset])), '', false);
   };
 
   // --- Bulk Import ---
@@ -1000,7 +997,7 @@ export default function AssetTracking() {
     if (!emp) { toast.error('Employee record not found'); return; }
     const empAssets = assets.filter(a => a.assigned_to_user_id === userId && ACTIVE_ASSIGNMENT_STATUSES.includes(a.status));
     if (empAssets.length === 0) { toast.error('No assets assigned to this employee'); return; }
-    openLetterheadPrintWindow(`Assets Handover - ${emp.display_name}`, buildAssetLetterContent(emp, empAssets), '', false);
+    openLetterheadPrintWindow(`Assets Handover - ${emp.display_name}`, fitOnOnePage(buildAssetLetterContent(emp, empAssets)), '', false);
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin" /></div>;

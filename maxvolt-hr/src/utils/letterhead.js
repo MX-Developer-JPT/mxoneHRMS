@@ -62,6 +62,33 @@ export function letterheadStyles() {
   `;
 }
 
+/**
+ * Forces a letter onto ONE A4 page. Wrap the body (not the letterhead) in this: the artwork leaves a fixed blank band between
+ * header and footer, so the content is measured against that band and shrunk (CSS zoom, never below 50%) until it fits —
+ * whatever the number of assets or the length of the remarks. Re-measures when images (stamp, signature) finish loading and
+ * right before printing, so the print preview and the printed page agree.
+ */
+export function fitOnOnePage(innerHtml) {
+  const bandMm = 297 - HEAD_SPACE_MM - FOOT_SPACE_MM - 3;   // 3 mm breathing room above the footer artwork
+  return `<div id="lh-fit">${innerHtml}</div>
+<script>
+(function () {
+  var MAX = ${bandMm} * 96 / 25.4;
+  function fit() {
+    var el = document.getElementById('lh-fit'); if (!el) return;
+    el.style.zoom = 1;
+    var h = el.getBoundingClientRect().height;
+    if (h > MAX) el.style.zoom = Math.max(0.5, MAX / h).toFixed(3);
+  }
+  fit();
+  window.addEventListener('load', fit);
+  window.addEventListener('beforeprint', fit);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+  setTimeout(fit, 300); setTimeout(fit, 1200);
+})();
+</script>`;
+}
+
 export function letterheadHeader() {
   return `<div class="lh-bg"><img src="${BG_URL}" alt="" /></div>`;
 }
