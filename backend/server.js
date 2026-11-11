@@ -411,6 +411,12 @@ cron.schedule('30 7 * * *', async () => {
   catch (err) { console.error('[ld-tick] failed:', err.message); }
 }, { timezone: 'Asia/Kolkata' });
 
+// ── Performance appraisal reminders — 9:30 AM IST: self / manager / meeting / HR deadlines (once per person per deadline per day-offset)
+cron.schedule('30 9 * * *', async () => {
+  try { const { sendAppraisalReminders } = await import('./routes/appraisal.js'); await sendAppraisalReminders(); }
+  catch (err) { console.error('[appraisal-reminders] failed:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
+
 // ── Working-day leave grants — 3:00 AM IST (after the 2 AM attendance close) ──
 // CL +1 / 40 working days, SL +1 / 40 (manager tier and above), EL +1 / 20 (after probation), counted from 1 Oct 2026.
 cron.schedule('0 3 * * *', async () => {

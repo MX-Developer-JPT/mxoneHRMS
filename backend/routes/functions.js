@@ -2467,6 +2467,11 @@ router.post('/:name', async (req, res) => {
     const { handleLd } = await import('./ld.js');
     return await handleLd(name, p, cu, res);
   }
+  // Performance Management & Appraisal (routes/appraisal.js) — every ap_* function
+  if (name.startsWith('ap_')) {
+    const { handleAppraisal } = await import('./appraisal.js');
+    return await handleAppraisal(name, p, cu, res);
+  }
   // Invite-only onboarding (routes/onboarding.js) — every ob_* function
   if (name.startsWith('ob_')) {
     const { handleOnboarding } = await import('./onboarding.js');
