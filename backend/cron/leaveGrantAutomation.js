@@ -97,6 +97,7 @@ export async function runLeaveGrants({ upTo = istDate(-1) } = {}) {
         if (ds < begin) { d.last_processed = ds; continue; }
         const rows = att[emp.user_id]?.[ds] || [];
         const credit = rows.length ? Math.max(...rows.map(dayCredit)) : 1;
+        const pending = [];
         out.days_processed++;
         if (credit > 0) {
           for (const [code, rule] of Object.entries(GRANT_RULES)) {
@@ -110,15 +111,24 @@ export async function runLeaveGrants({ upTo = istDate(-1) } = {}) {
               const used = (d.grants_by_year[year] ||= {});
               const cap = policies[code].total_days || Infinity;
               if ((used[code] || 0) + rule.grant > cap) continue; // annual policy cap reached
-              await creditBalance(emp.user_id, policies[code], year, rule.grant);
               used[code] = (used[code] || 0) + rule.grant;
               d.log.push({ date: ds, code, days: rule.grant });
-              out.grants++;
-              await notify(emp.user_id, `${code} credited`, `${rule.grant} day of ${policies[code].name || code} was credited for completing ${rule.every} working days.`);
+              pending.push({ code, year, days: rule.grant, every: rule.every });
             }
           }
         }
         d.last_processed = ds; changed = true;
+        if (pending.length) {
+          // State first, credit second: a crash in between can at worst miss one credit (visible in `log`), never double-credit it on the next run.
+          if (d.log.length > 200) d.log = d.log.slice(-200);
+          if (st.id) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(d), st.id]);
+          else { await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveGrantState',$2,'active',$3)", [d.id, emp.user_id, JSON.stringify(d)]); st.id = d.id; }
+          for (const g of pending) {
+            await creditBalance(emp.user_id, policies[g.code], g.year, g.days);
+            out.grants++;
+            await notify(emp.user_id, `${g.code} credited`, `${g.days} day of ${policies[g.code].name || g.code} was credited for completing ${g.every} working days.`);
+          }
+        }
       }
       if (changed || !st.id) {
         if (d.log.length > 200) d.log = d.log.slice(-200);
