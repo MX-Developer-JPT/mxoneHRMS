@@ -57,6 +57,8 @@ export default function AllAttendance() {
   const [searchParams] = useSearchParams();
   const forceOrgScope = searchParams.get('scope') === 'org';
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [canExportLocations, setCanExportLocations] = useState(false);   // HR / admin / management only
+  const [exportingLoc, setExportingLoc] = useState(false);
   const [canAdminister, setCanAdminister] = useState(false);   // HR / admin only: Mark Absent and Repair Sessions change records and are refused for everyone else
   const [isTeamScoped, setIsTeamScoped] = useState(false); // drives the page title only — actual filtering happens in loadData
   const [attendanceMap, setAttendanceMap] = useState({});
@@ -156,6 +158,7 @@ export default function AllAttendance() {
       const userRole = currentUser.custom_role || currentUser.role;
       setIsTeamScoped(['manager', 'management'].includes(userRole) && !forceOrgScope);
       setCanAdminister(['hr', 'admin'].includes(userRole));
+      setCanExportLocations(['hr', 'admin', 'management'].includes(userRole));
 
       const [empRecords, usersResp, attendanceResp, deptRecords] = await Promise.all([
         // 5000, not the 500 several other pages use — this is the org-wide
@@ -384,6 +387,24 @@ export default function AllAttendance() {
     } catch (e) { toast.error('Muster export error: ' + e.message); }
   };
 
+  // HR / admin / management: every check-in / check-out location for the day (or the whole month) with a map link per point.
+  const exportLocations = async (scope) => {
+    const [yr, mo] = date.split('-').map(Number);
+    const from = scope === 'month' ? `${yr}-${String(mo).padStart(2, '0')}-01` : date;
+    const to = scope === 'month' ? `${yr}-${String(mo).padStart(2, '0')}-${String(new Date(yr, mo, 0).getDate()).padStart(2, '0')}` : date;
+    setExportingLoc(true);
+    try {
+      toast.info('Preparing location export…');
+      const res = await base44.functions.invoke('exportAttendanceLocations', { from, to });
+      if (!res.data?.success) { toast.error(res.data?.error || 'Location export failed'); return; }
+      const bytes = Uint8Array.from(atob(res.data.base64), c => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const a = document.createElement('a'); a.href = url; a.download = res.data.filename; a.click(); URL.revokeObjectURL(url);
+      toast.success(`${res.data.records} record(s) exported, ${res.data.map_links} map link(s)`);
+    } catch (e) { toast.error('Location export error: ' + e.message); }
+    finally { setExportingLoc(false); }
+  };
+
   const exportDetailedReport = async () => {
     const [yr, mo] = date.split('-').map(Number);
     try {
@@ -535,6 +556,14 @@ export default function AllAttendance() {
             <Button variant="outline" size="sm" onClick={exportSwipeDetails} disabled={exportingSwipe} title="Export first check-in/last check-out, method (biometric/selfie/geofence) and locations for every day of the month">
               {exportingSwipe ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Fingerprint className="w-4 h-4 mr-1" />} Swipe Details
             </Button>
+            {canExportLocations && (<>
+              <Button variant="outline" size="sm" onClick={() => exportLocations('day')} disabled={exportingLoc} title="Download every check-in / check-out location for the selected date, each with a link to the exact point on the map">
+                {exportingLoc ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />} Locations
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => exportLocations('month')} disabled={exportingLoc} title="Same, for the whole month of the selected date">
+                <MapPin className="w-4 h-4 mr-1" /> Locations (month)
+              </Button>
+            </>)}
             <div className="flex items-center gap-1.5">
               {silentRefreshing && <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" title="Refreshing…" />}
               {!silentRefreshing && lastRefreshed && (
