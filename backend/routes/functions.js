@@ -5953,7 +5953,8 @@ router.post('/:name', async (req, res) => {
       const emps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
       const byUser = Object.fromEntries(emps.map(e => [e.user_id, e]));
       const rows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [from, to]));
-      const fmtT = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }); };
+      // The app stores IST wall-clock digits with a 'Z' suffix (the display layer drops the Z), so read the digits as-is: UTC formatting, NOT Asia/Kolkata (that would add 5h30).
+      const fmtT = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('en-IN', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: true }); };
       const num = (v) => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
       const locOf = (loc) => {
         if (!loc || typeof loc === 'string') return { addr: typeof loc === 'string' ? loc : '', lat: null, lng: null, acc: null };
