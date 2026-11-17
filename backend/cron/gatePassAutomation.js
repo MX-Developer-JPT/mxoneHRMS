@@ -10,27 +10,15 @@
 // own activePasses filter), so left unattended they'd otherwise sit in an
 // employee's Active Passes list indefinitely.
 //
-// Per-outing-type closing rule (mirrors GateAdminDashboard.jsx's own
-// calculateLOP exactly, fed the employee's shift-end time as the return
-// time — i.e. this produces the same result a gate admin manually clicking
-// "Mark Returned" at that exact moment would have gotten):
-//   - official_outing / travelling_to_another_office: status -> returned,
-//                                       present, 0 LOP always
-//   - unofficial_outing / early_leave / short_break: duration-based — back
-//                                       within 3h of departure -> returned,
-//                                       present, 0 LOP; longer -> returned,
-//                                       half_day, 0.5 LOP (auto-closing at
-//                                       shift end is always >3h after
-//                                       departure, so this path always lands
-//                                       on the half_day/0.5 LOP outcome —
-//                                       the 3h no-LOP case only happens via
-//                                       a gate admin manually marking the
-//                                       employee back in sooner)
-//   - half_day: never expected to return that day — status -> auto_closed
-//               (NOT 'returned'), attendance still closed out as half_day
+// Closing rule for a pass still 'departed' at shift end (all attendance rules live in attendancelog.js applyGatePassOuting):
+//   - official_outing / travelling_to_another_office: full day PRESENT, whatever the check-out time
+//   - half_day: attendance was already marked half day at departure (departure = check-out)
+//   - unofficial_outing / short_break / early_leave: the DEPARTURE time is used as the check-out and the day is graded by
+//     hours actually worked (present / half day / short attendance) - never absent
+// The pass becomes 'auto_closed' with NO return time: the employee never came back, so none is invented.
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
-import { shiftEndDateTime } from '../routes/attendancelog.js';
+import { shiftEndDateTime, applyGatePassOuting, isOfficialOuting } from '../routes/attendancelog.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
@@ -51,21 +39,6 @@ async function getShiftForEmployee(emp, defaultShift) {
     if (row) return JSON.parse(row.data);
   }
   return defaultShift;
-}
-
-// Exact mirror of GateAdminDashboard.jsx's calculateLOP — kept in sync
-// deliberately rather than shared, since one lives in frontend bundle scope
-// and the other here; if the frontend rule changes, update both.
-function calculateLOP(outingType, departureTime, returnTime) {
-  if (outingType === 'official_outing' || outingType === 'travelling_to_another_office') return { lopDays: 0, status: 'present' };
-  // unofficial_outing, half_day, short_break, early_leave: duration-based —
-  // back within 3 hours = no deduction, longer = half day LOP. Previously
-  // only short_break got this treatment; every other non-official type
-  // deducted a flat half day regardless of actual duration.
-  if (!returnTime || !departureTime) return { lopDays: 0.5, status: 'half_day' };
-  const durationHrs = (new Date(returnTime) - new Date(departureTime)) / 3600000;
-  if (durationHrs <= 3) return { lopDays: 0, status: 'present' };
-  return { lopDays: 0.5, status: 'half_day' };
 }
 
 async function getHrAdminUserIds() {
@@ -108,33 +81,33 @@ export async function closeUnreturnedGatePasses() {
 
     const outingType = pass.outing_type;
     const isHalfDayType = outingType === 'half_day';
-    const lop = calculateLOP(outingType, pass.departure_time, isHalfDayType ? null : nowISO);
+    const official = isOfficialOuting(outingType);
 
+    // Attendance consequence (all rules live in attendancelog.js applyGatePassOuting):
+    //  - official / travelling: full day PRESENT whatever the check-out;
+    //  - half day: already marked at departure (departure = check-out);
+    //  - unofficial / short break / early leave: the DEPARTURE time becomes the check-out and the day is graded by hours
+    //    actually worked (present / half day / short attendance) - never absent.
+    let att = null;
+    try { att = isHalfDayType ? null : await applyGatePassOuting(pass, 'autoclose'); } catch (e) { console.error('[gatepass-auto-close] attendance update failed:', e.message); }
+    const resultStatus = official ? 'present' : (att?.status || (isHalfDayType ? 'half_day' : 'short_attendance'));
+    const lopDays = resultStatus === 'half_day' ? 0.5 : 0;
+
+    // The pass is closed WITHOUT a return time - the employee never came back, so no "returned" time is invented.
     const updatedPass = {
       ...pass,
-      status: isHalfDayType ? 'auto_closed' : 'returned',
-      return_time: isHalfDayType ? pass.return_time : nowISO,
-      lop_deduction_days: lop.lopDays,
+      status: 'auto_closed',
+      lop_deduction_days: lopDays,
       auto_closed: true,
+      auto_closed_at: nowISO,
       auto_closed_reason: isHalfDayType
-        ? 'Half-day outing — auto-closed at shift end (no return expected)'
-        : `No return recorded by shift end — auto-closed as ${lop.status.replace(/_/g, ' ')}`,
+        ? 'Half-day outing - auto-closed at shift end (no return expected)'
+        : official
+          ? 'Did not return by shift end - official outing, day counted as full present'
+          : `Did not return by shift end - departure time used as check-out, day marked ${resultStatus.replace(/_/g, ' ')}`,
     };
     await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [updatedPass.status, JSON.stringify(updatedPass), row.id]);
-
-    // Mirror GateAdminDashboard.jsx's markReturn attendance side-effect.
-    const passDate = pass.request_date || today;
-    const attNote = `Gate pass: ${outingType || 'outing'} — auto-closed at shift end, ${lop.lopDays > 0 ? 'LOP deducted' : 'no LOP'}`;
-    const existingAtt = await one("SELECT id, data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [pass.employee_user_id, passDate]);
-    if (existingAtt) {
-      const attData = JSON.parse(existingAtt.data);
-      const updatedAtt = { ...attData, status: lop.status, lop_applicable: lop.lopDays > 0, lop_deduction_days: lop.lopDays, notes: attNote };
-      await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [lop.status, JSON.stringify(updatedAtt), existingAtt.id]);
-    } else {
-      const attId = uuidv4();
-      const attData = { id: attId, user_id: pass.employee_user_id, date: passDate, status: lop.status, lop_applicable: lop.lopDays > 0, lop_deduction_days: lop.lopDays, notes: attNote, auto_marked: true };
-      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,$3,$4)", [attId, pass.employee_user_id, lop.status, JSON.stringify(attData)]);
-    }
+    const lop = { status: resultStatus, lopDays };
 
     // Notify HR/admin, the reporting manager, and the employee — same
     // "who gets told about an automated attendance event" pattern as the
@@ -148,7 +121,9 @@ export async function closeUnreturnedGatePasses() {
       const title = 'Gate Pass Auto-Closed';
       const message = isHalfDayType
         ? `${empName}'s half-day gate pass was auto-closed at shift end.`
-        : `${empName} did not return by shift end — gate pass auto-closed as ${lop.status.replace(/_/g, ' ')}${lop.lopDays > 0 ? ` (${lop.lopDays} day LOP)` : ''}.`;
+        : official
+          ? `${empName} did not return by shift end — official outing, auto-closed and counted as a full present day.`
+          : `${empName} did not return by shift end — gate pass auto-closed; departure time used as check-out, day marked ${lop.status.replace(/_/g, ' ')}.`;
       for (const uid of recipients) {
         const nid = uuidv4();
         await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [nid, uid, title, message, 'warning', '/GatePassRequest']);
@@ -197,6 +172,7 @@ export async function closeStaleGatePassRequests() {
     const stShift = await getShiftForEmployee(emp, defaultShift);
     if (Date.now() + IST_OFFSET_MS < shiftEndDateTime(pass.request_date, { ...defaultShift, ...stShift }).getTime()) continue;
     const wasPending = pass.status === 'pending_approval';
+    if (pass.status === 'approved' && isOfficialOuting(pass.outing_type)) { try { await applyGatePassOuting(pass, 'approved_unused'); } catch (e) { console.error('[gatepass-stale-close] official attendance failed:', e.message); } }
 
     const updatedPass = {
       ...pass,

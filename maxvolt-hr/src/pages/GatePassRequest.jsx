@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { format } from 'date-fns';
-import { safeDate } from '@/lib/dateUtils';
+import { safeDate, nowIST } from '@/lib/dateUtils';
 import { LogOut, LogIn, Clock, CheckCircle2, XCircle, AlertCircle, Plus, History, Car, Bike, Route, MapPin } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
@@ -124,6 +124,7 @@ export default function GatePassRequest() {
       reason: form.reason,
       expected_return_time: form.expected_return_time || null,
       request_date: format(new Date(), 'yyyy-MM-dd'),
+      requested_at: nowIST(),
       status: 'pending_approval',
       manager_approval_status: 'pending',
       manager_user_id: emp?.reporting_manager_id || null,

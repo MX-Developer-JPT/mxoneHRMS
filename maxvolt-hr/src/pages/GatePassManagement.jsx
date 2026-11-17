@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
 import { safeDate, nowIST } from '@/lib/dateUtils';
+import GatePassTimeline, { requestedAt } from '@/components/gatepass/GatePassTimeline';
 import { Search, LogOut, LogIn, User, Clock, History, CheckCircle2, XCircle, FileClock, MapPin, Download, Loader2, ChevronLeft, ChevronRight, CalendarDays } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 import { toast } from 'sonner';
@@ -411,7 +412,7 @@ export default function GatePassManagement() {
                               : `Departed from ${pass.current_location}`}
                           </p>
                         )}
-                        <p className="text-xs text-gray-400">{safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}</p>
+                        <p className="text-xs text-gray-400">{safeDate(requestedAt(pass), 'dd MMM yyyy, hh:mm a')}</p>
                       </div>
                       <div className="flex items-center gap-4 flex-wrap">
                         {pass.departure_time && (
@@ -455,22 +456,6 @@ export default function GatePassManagement() {
           </DialogHeader>
           {selected && (() => {
             const approver = employees[selected.manager_user_id]?.display_name || users[selected.manager_user_id]?.full_name;
-            // One row per lifecycle step, in order, each with its own
-            // timestamp — only steps that have actually happened are shown.
-            const steps = [
-              { label: 'Requested', time: selected.created_date, icon: FileClock, color: 'text-gray-600' },
-              selected.manager_approval_date && {
-                label: selected.manager_approval_status === 'rejected' ? 'Rejected' : 'Approved',
-                time: selected.manager_approval_date,
-                by: approver,
-                note: selected.manager_comment,
-                icon: selected.manager_approval_status === 'rejected' ? XCircle : CheckCircle2,
-                color: selected.manager_approval_status === 'rejected' ? 'text-red-600' : 'text-blue-600',
-              },
-              selected.departure_time && { label: 'Departed', time: selected.departure_time, icon: LogOut, color: 'text-orange-600' },
-              selected.return_time && { label: 'Returned', time: selected.return_time, icon: LogIn, color: 'text-green-600' },
-            ].filter(Boolean);
-
             return (
               <div className="space-y-3 text-sm">
                 <div className="bg-gray-50 rounded-lg p-4 space-y-2">
@@ -495,31 +480,7 @@ export default function GatePassManagement() {
                   <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
                 </div>
 
-                <div className="bg-gray-50 rounded-lg p-4 space-y-3">
-                  <p className="font-semibold text-gray-700">Timeline</p>
-                  {steps.map((step, i) => (
-                    <div key={i} className="flex items-start gap-2">
-                      <step.icon className={`w-4 h-4 mt-0.5 flex-shrink-0 ${step.color}`} />
-                      <div>
-                        <p className={`font-medium ${step.color}`}>
-                          {step.label}
-                          {step.by && <span className="font-normal text-gray-500"> by {step.by}</span>}
-                        </p>
-                        <p className="text-xs text-gray-500">{safeDate(step.time, 'dd MMM yyyy, hh:mm a')}</p>
-                        {step.note && <p className="text-xs italic text-gray-500 mt-0.5">"{step.note}"</p>}
-                      </div>
-                    </div>
-                  ))}
-                  {selected.departure_time && selected.return_time && (
-                    <p className="text-xs text-gray-500 flex items-center gap-1 pl-6">
-                      <Clock className="w-3.5 h-3.5" />
-                      Duration: {Math.round((new Date(selected.return_time) - new Date(selected.departure_time)) / 60000)} minutes
-                    </p>
-                  )}
-                  {selected.gate_admin_notes && (
-                    <p className="text-xs text-gray-500 pl-6"><span className="font-medium">Gate Notes:</span> {selected.gate_admin_notes}</p>
-                  )}
-                </div>
+                <GatePassTimeline pass={selected} approverName={approver} departedBy={selected.departed_by_name} returnedBy={selected.returned_by_name} />
 
                 {isHR && selected.status === 'pending_approval' && (
                   <div className="space-y-3">

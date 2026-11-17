@@ -1,4 +1,5 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import GatePassTimeline, { requestedAt } from '@/components/gatepass/GatePassTimeline';
+import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -214,7 +215,7 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                           <p className="text-xs text-blue-600 mt-0.5 truncate">From {pass.current_location}</p>
                         )}
                         <p className="text-xs text-gray-400 mt-0.5">
-                          {safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}
+                          {safeDate(requestedAt(pass), 'dd MMM yyyy, hh:mm a')}
                           {emp && showEmployeeName && ` · ${emp.department}`}
                         </p>
                       </div>
@@ -269,56 +270,13 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                 )}
                 <p><span className="font-medium">Reason:</span> {selected.reason || '—'}</p>
                 <p><span className="font-medium">Date:</span> {safeDate(selected.request_date || selected.created_date, 'dd MMM yyyy')}</p>
-                <p><span className="font-medium">Requested On:</span> {safeDate(selected.created_date, 'dd MMM yyyy, hh:mm a')}</p>
                 {selected.expected_return_time && (
                   <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
                 )}
                 <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
               </div>
 
-              <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-                <p className="font-semibold text-gray-700">Manager Action</p>
-                <p><span className="font-medium">Decision:</span> <span className="capitalize">{selected.manager_approval_status || 'pending'}</span></p>
-                <p>
-                  <span className="font-medium">{selected.manager_approval_status === 'pending' ? 'Pending With' : 'Approver'}:</span>{' '}
-                  {employees[selected.manager_user_id]?.display_name || users[selected.manager_user_id]?.full_name || 'Reporting Manager'}
-                </p>
-                {selected.manager_approval_date && (
-                  <p><span className="font-medium">At:</span> {safeDate(selected.manager_approval_date, 'dd MMM yyyy, hh:mm a')}</p>
-                )}
-                <p><span className="font-medium">Comment:</span> {selected.manager_comment || '—'}</p>
-              </div>
-
-              {(selected.departure_time || selected.return_time) && (
-                <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-                  <p className="font-semibold text-gray-700">Gate Record</p>
-                  {selected.departure_time && (
-                    <p className="text-orange-700 flex items-center gap-1">
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span className="font-medium">Departed:</span> {safeDate(selected.departure_time, 'dd MMM yyyy, hh:mm a')}
-                    </p>
-                  )}
-                  {selected.return_time && (
-                    <p className="text-green-700 flex items-center gap-1">
-                      <LogIn className="w-3.5 h-3.5" />
-                      <span className="font-medium">Returned:</span> {safeDate(selected.return_time, 'dd MMM yyyy, hh:mm a')}
-                    </p>
-                  )}
-                  {selected.departure_time && selected.return_time && (
-                    <p className="text-gray-600 flex items-center gap-1">
-                      <Clock className="w-3.5 h-3.5" />
-                      <span className="font-medium">Total Duration:</span>{' '}
-                      {Math.round((new Date(selected.return_time) - new Date(selected.departure_time)) / 60000)} minutes
-                    </p>
-                  )}
-                  {selected.gate_admin_notes && (
-                    <p><span className="font-medium">Gate Notes:</span> {selected.gate_admin_notes}</p>
-                  )}
-                  {selected.auto_closed && (
-                    <p className="text-purple-700"><span className="font-medium">Auto-Closed:</span> {selected.auto_closed_reason}</p>
-                  )}
-                </div>
-              )}
+              <GatePassTimeline pass={selected} approverName={employees[selected.manager_user_id]?.display_name || users[selected.manager_user_id]?.full_name || 'Reporting manager'} departedBy={selected.departed_by_name} returnedBy={selected.returned_by_name} />
               {selected.status === 'auto_closed' && !selected.departure_time && (
                 <div className="bg-purple-50 rounded-lg p-4 space-y-1">
                   <p className="font-semibold text-purple-700">Auto-Closed</p>

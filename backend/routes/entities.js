@@ -5,7 +5,7 @@ import { one, all, run, withTransaction } from '../db.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { sendPushToUser } from '../utils/push.js';
 import { JWT_SECRET } from './auth.js';
-import { applyGatePassHalfDay, clearGatePassHalfDay } from './attendancelog.js';
+import { applyGatePassHalfDay, clearGatePassHalfDay, applyGatePassOuting } from './attendancelog.js';
 import { isRoasterPolicy, roasterErrors } from '../utils/roaster.js';
 import { loadRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
@@ -323,7 +323,7 @@ const APPROVAL_SCOPED_TYPES = new Set(['GatePass', 'Reimbursement', 'AttendanceR
 // employee's gate pass to "departed"/"returned" directly.
 const GATE_LOG_TRANSITIONS = new Set(['departed', 'returned']);
 // Fields only an approver / the gate admin / the auto-close job may write on a gate pass.
-const GATE_PASS_DECISION_FIELDS = ['manager_approval_date', 'manager_comment', 'departure_time', 'return_time', 'gate_admin_notes', 'auto_closed', 'auto_closed_reason'];
+const GATE_PASS_DECISION_FIELDS = ['departed_by_name', 'returned_by_name', 'manager_approval_date', 'manager_comment', 'departure_time', 'return_time', 'gate_admin_notes', 'auto_closed', 'auto_closed_reason'];
 // Except for GatePass, every one of these approval-scoped types must clear
 // the reporting manager's own approval before HR/management can act — only
 // admin retains a blanket override. An employee with no reporting manager
@@ -1421,7 +1421,7 @@ router.patch('/:type/:id', async (req, res) => {
         const outingLabel = outingLabels[updated.outing_type] || updated.outing_type || 'outing';
         // Half-day outing: departure = check-out, and the day is a half-day present (see applyGatePassHalfDay).
         try {
-          if (req.body.status === 'departed') await applyGatePassHalfDay(updated);
+          if (req.body.status === 'departed') { await applyGatePassHalfDay(updated); await applyGatePassOuting(updated, 'departed'); }   // official / travelling -> full day present
           else await clearGatePassHalfDay(updated);
         } catch (he) { console.error('[gatepass] half-day attendance update failed:', he.message); }
         if (req.body.status === 'departed') {

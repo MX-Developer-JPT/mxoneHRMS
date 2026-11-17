@@ -412,7 +412,8 @@ export function computeStatusFromSessions(sessionData, shift, effectiveShiftHour
     status = 'in_progress';
   } else if (total_working_minutes > 0) {
     const wh = total_working_minutes / 60;
-    if (wh < shiftHours / 2)    status = 'short_attendance';
+    if (wh >= 8.5)                  status = 'present';   // 8.5+ working hours is always a full present day, whatever the shift length
+    else if (wh < shiftHours / 2)   status = 'short_attendance';
     else if (wh < shiftHours * 0.9) status = 'half_day';
     else status = 'present';
   } else {
@@ -435,7 +436,8 @@ export function computeStatusFromSessions(sessionData, shift, effectiveShiftHour
     if (overnight && firstInMins !== null && firstInMins <= shiftEnd) firstInMins += 24 * 60;
     if (firstInMins !== null && firstInMins > shiftStart + grace) {
       late_minutes = firstInMins - shiftStart - grace;
-      if (status === 'present') status = 'late';
+      // Came late but still completed 8.5 working hours or more -> a normal PRESENT day (the late minutes stay recorded).
+      if (status === 'present' && !(total_working_minutes >= 8.5 * 60)) status = 'late';
     }
   }
 
@@ -515,6 +517,82 @@ export async function clearGatePassHalfDay(pass) {
     await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...d, gate_pass_half_day: false, lop_applicable: false, lop_deduction_days: 0 }), r.id]);
   }
   return { action: 'cleared' };
+}
+
+// -- Gate pass outings -> attendance ---------------------------------------------------------------------------------------
+//  * official_outing / travelling_to_another_office: full day PRESENT, whatever the check-out time (flag gate_pass_official).
+//  * unofficial_outing / short_break / early_leave that never returned by shift end: the DEPARTURE time becomes the check-out
+//    and the day is graded by hours actually worked (present / half day / short attendance), never absent.
+//  * half_day: handled by applyGatePassHalfDay.
+const OFFICIAL_OUTINGS = new Set(['official_outing', 'travelling_to_another_office']);
+export const isOfficialOuting = (t) => OFFICIAL_OUTINGS.has(t);
+
+async function loadPassContext(pass, anchorIso) {
+  const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [pass.employee_user_id]);
+  const emp = empRow ? JSON.parse(empRow.data) : {};
+  const shift = await getShift(emp);
+  const anchor = anchorIso || `${pass.request_date}T12:00:00.000Z`;
+  const { date, row } = await resolveAttendanceRow(pass.employee_user_id, anchor, pass.request_date || String(anchor).slice(0, 10), shift);
+  return { emp, shift, date, row };
+}
+
+export async function applyGatePassOuting(pass, stage) {
+  if (!pass || !pass.employee_user_id) return null;
+  const type = pass.outing_type;
+  if (isOfficialOuting(type)) {
+    if (stage === 'approved_unused') {
+      // Approved but the gate admin never recorded the departure: only count the day if the employee was actually in.
+      const ctx = await loadPassContext(pass);
+      if (!ctx.row || !JSON.parse(ctx.row.data).check_in_time) return { action: 'skipped_no_checkin' };
+    }
+    const dep = pass.departure_time ? String(pass.departure_time).trim().replace(' ', 'T') : null;
+    const { emp, date, row } = await loadPassContext(pass, dep && !isNaN(new Date(dep).getTime()) ? dep : null);
+    const note = `Gate pass: ${type === 'official_outing' ? 'official outing' : 'travelling to another office'} - full day present`;
+    const flags = { gate_pass_official: true, gate_pass_id: pass.id, lop_applicable: false, lop_deduction_days: 0, notes: note };
+    if (!row) {
+      const id = uuidv4();
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'present',$3)", [id, pass.employee_user_id, JSON.stringify({ id, user_id: pass.employee_user_id, date, status: 'present', source: 'gate_pass', employee_code: emp?.employee_code, auto_marked: true, ...flags })]);
+      return { action: 'created_present', id };
+    }
+    const data = JSON.parse(row.data);
+    if (data.regularised || data.admin_marked || data.status === 'leave' || (data.leave_id && !data.leave_half_day) || ['work_from_home', 'on_duty'].includes(data.status)) return { action: 'skipped_frozen' };
+    const upd = { ...data, ...flags, status: 'present', early_departure: false, early_departure_minutes: 0 };
+    await run("UPDATE entities SET status='present', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
+    return { action: 'marked_present', id: row.id };
+  }
+
+  if (stage === 'autoclose' && type !== 'half_day') {
+    const dep = String(pass.departure_time || '').trim().replace(' ', 'T');
+    if (!dep || isNaN(new Date(dep).getTime())) return null;
+    const { emp, shift, date, row } = await loadPassContext(pass, dep);
+    const flags = { gate_pass_departure_checkout: true, gate_pass_id: pass.id, gate_pass_departure: dep, notes: `Gate pass: ${String(type || 'outing').replace(/_/g, ' ')} - did not return; departure time used as check-out` };
+    if (!row) {
+      // Never checked in: nothing worked is on record - short attendance (not absent) so HR can regularise it.
+      const id = uuidv4();
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Attendance',$2,'short_attendance',$3)", [id, pass.employee_user_id, JSON.stringify({ id, user_id: pass.employee_user_id, date, status: 'short_attendance', source: 'gate_pass', employee_code: emp?.employee_code, auto_marked: true, ...flags })]);
+      return { action: 'created_short', status: 'short_attendance', id };
+    }
+    const data = JSON.parse(row.data);
+    if (data.regularised || data.admin_marked || data.status === 'leave' || (data.leave_id && !data.leave_half_day)) return { action: 'skipped_frozen' };
+    let punches = Array.isArray(data.raw_punches) ? [...data.raw_punches] : [];
+    if (!punches.length && data.check_in_time) { punches.push({ time: data.check_in_time, device_direction: 'IN' }); if (data.check_out_time) punches.push({ time: data.check_out_time, device_direction: 'OUT' }); }
+    let sd = buildSessions(punches); let injected = false;
+    if (sd.is_in_progress) {
+      const lastMs = Math.max(...sd.raw_punches.map(p => new Date(p.time).getTime()));
+      if (new Date(dep).getTime() > lastMs) {
+        const next = buildSessions([...punches, { time: dep, device_direction: 'OUT' }]);
+        if (!next.is_in_progress) { sd = next; injected = true; }
+      }
+      if (!injected) sd = closeTrailingOpenSession(punches);
+    }
+    const halfDayHours = await getHalfDayOverrideHours(date, shift);
+    const result = applyDeclaredStatus({ ...data, ...flags }, computeStatusFromSessions(sd, shift, halfDayHours));
+    const upd = { ...data, ...sd, ...result, ...flags, check_out_source: injected || !data.check_out_source ? 'gate_pass' : data.check_out_source,
+      lop_applicable: result.status === 'half_day', lop_deduction_days: result.status === 'half_day' ? 0.5 : 0 };
+    await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [upd.status, JSON.stringify(upd), row.id]);
+    return { action: injected ? 'checked_out_at_departure' : 'closed', status: upd.status, id: row.id };
+  }
+  return null;
 }
 
 // Punches are read-modify-write on one Attendance row per employee/day, so two
@@ -992,6 +1070,16 @@ export function applyDeclaredStatus(existing, result) {
   // Leaving was approved, so there is no early-departure penalty; WFH/OD (declared above) still win.
   if (existing?.gate_pass_half_day && r !== 'wfh' && r !== 'od') {
     return { ...result, status: 'half_day', early_departure_minutes: 0, early_departure: false };
+  }
+  // OFFICIAL OUTING / TRAVELLING TO ANOTHER OFFICE (gate pass): the employee was working for the company, so the day is a
+  // FULL present day whatever the check-out time is - even with no check-out at shift end (applyGatePassOuting sets the flag).
+  if (existing?.gate_pass_official && r !== 'wfh' && r !== 'od' && result.status !== 'leave') {
+    return { ...result, status: 'present', early_departure_minutes: 0, early_departure: false };
+  }
+  // Unofficial outing / short break / early leave that never came back: the departure time was used as the check-out, so the
+  // status follows the hours actually worked (present / half day / short attendance) - never absent.
+  if (existing?.gate_pass_departure_checkout && r !== 'wfh' && r !== 'od' && result.status === 'absent') {
+    return { ...result, status: 'short_attendance' };
   }
   if (r !== 'wfh' && r !== 'od') return result;
   return {

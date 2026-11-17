@@ -258,7 +258,7 @@ export async function closeUnfinishedSessions(targetDate) {
     const halfDayHours = await getHalfDayOverrideHours(date, shift);
 
     const sessionData = closeTrailingOpenSession(rawPunches);
-    const statusResult = computeStatusFromSessions(sessionData, shift, halfDayHours);
+    const statusResult = applyDeclaredStatus(d, computeStatusFromSessions(sessionData, shift, halfDayHours));   // gate pass flags (official outing = present) survive the auto-close
     // A WFH/OD day the employee forgot to check out of must stay WFH/OD —
     // not silently revert to whatever present/late/half-day the raw punch
     // timeline alone computes to.
@@ -340,7 +340,7 @@ export async function closeStaleOpenSessions() {
     const halfDayHours = await getHalfDayOverrideHours(d.date, shift);
 
     const sessionData = closeTrailingOpenSession(rawPunches);
-    const statusResult = computeStatusFromSessions(sessionData, shift, halfDayHours);
+    const statusResult = applyDeclaredStatus(d, computeStatusFromSessions(sessionData, shift, halfDayHours));   // gate pass flags survive the auto-close
     // Preserve WFH/OD however it was set — via the employee's own selfie
     // flow (selfie_reason) or an admin manually pinning the status in the
     // Manual Attendance editor (d.status) — so a day left "in progress"

@@ -132,6 +132,7 @@ export default function GateAdminDashboard() {
       await base44.entities.GatePass.update(selected.id, {
         departure_time: nowIST(),
         status: 'departed',
+        departed_by_name: user?.full_name || user?.display_name || '',
         gate_admin_notes: notes,
       });
       setSelected(null);
@@ -159,6 +160,7 @@ export default function GateAdminDashboard() {
       await base44.entities.GatePass.update(selected.id, {
         return_time: nowISO,
         status: 'returned',
+        returned_by_name: user?.full_name || user?.display_name || '',
         gate_admin_notes: notes,
         lop_deduction_days: lop.lopDays,
       });
