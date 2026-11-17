@@ -2472,6 +2472,11 @@ router.post('/:name', async (req, res) => {
     const { handleAppraisal } = await import('./appraisal.js');
     return await handleAppraisal(name, p, cu, res);
   }
+  // Asset handover letters & asset specifications (routes/assetLetters.js) — every al_* function
+  if (name.startsWith('al_')) {
+    const { handleAssetLetters } = await import('./assetLetters.js');
+    return await handleAssetLetters(name, p, cu, res);
+  }
   // Invite-only onboarding (routes/onboarding.js) — every ob_* function
   if (name.startsWith('ob_')) {
     const { handleOnboarding } = await import('./onboarding.js');

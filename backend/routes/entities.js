@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { assetProblem, cleanSpecs } from '../utils/assetSpecs.js';
+import { auditAssetChange } from '../utils/assetAudit.js';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
 import { one, all, run, withTransaction } from '../db.js';
@@ -754,7 +756,17 @@ function buildOrderLimit(sort, limit) {
 /* ── LIST  GET /api/entities/:type ───────────────────── */
 // Survey answers and the survey access log are reachable ONLY through the ps_* functions (routes/pulse.js), which
 // enforce HR-only access, anonymity and small-group rules. The generic entity API must never list them.
-const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them
+// Asset specifications: only the fields of the asset's category survive, and IMEI / serial / registration numbers must be unique
+// across all assets (checked whenever a value is new or changed, so an old duplicate never blocks an unrelated edit).
+async function assetValidation(data, current) {
+  const typeRow = data.asset_type_id ? await one("SELECT data FROM entities WHERE type='AssetType' AND id=$1", [data.asset_type_id]) : null;
+  const atype = typeRow ? JSON.parse(typeRow.data) : null;
+  if (data.specs !== undefined) data.specs = cleanSpecs(data.specs, atype);
+  const others = (await all("SELECT data FROM entities WHERE type='Asset' AND id<>$1", [data.id || ''])).map(r => { try { return JSON.parse(r.data); } catch { return null; } }).filter(Boolean);
+  return { atype, problem: assetProblem(data, current, atype, others) };
+}
+
+const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them
 router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
 
 router.get('/:type', async (req, res) => {
@@ -931,6 +943,13 @@ router.post('/:type', async (req, res) => {
     }
   }
 
+  let assetAtype = null;
+  if (type === 'Asset') {
+    const v = await assetValidation(data, null);
+    if (v.problem) return res.status(400).json({ error: v.problem });
+    assetAtype = v.atype;
+  }
+
   let row;
   if (type === 'AttendanceRegularisation' || type === 'Leave') {
     // These two have a read-then-write quota/balance check that a bare
@@ -977,6 +996,8 @@ router.post('/:type', async (req, res) => {
     );
     row = await one('SELECT * FROM entities WHERE id=$1', [id]);
   }
+
+  if (type === 'Asset') auditAssetChange(cu, null, data, assetAtype).catch(() => {});
 
   // Post-creation hook: notify reporting manager (fire and forget)
   (async () => {
@@ -1209,11 +1230,20 @@ router.patch('/:type/:id', async (req, res) => {
     if (!(await checkLeaveBalanceSufficiency(res, type, updated))) return;
   }
 
+  let patchedAssetType = null;
+  if (type === 'Asset') {
+    const v = await assetValidation(updated, current);
+    if (v.problem) return res.status(400).json({ error: v.problem });
+    patchedAssetType = v.atype;
+  }
+
   await run(
     `UPDATE entities SET data=$1, user_id=$2, status=$3, is_active=$4, updated_at=NOW()::TEXT WHERE id=$5`,
     [JSON.stringify(updated), updated.user_id ?? row.user_id, updated.status ?? row.status,
      updated.is_active !== false ? 1 : 0, id]
   );
+
+  if (type === 'Asset') auditAssetChange(cu, current, updated, patchedAssetType).catch(() => {});
 
   // History for the Intelligent MIS: department moves, requisition closure, candidate stage changes (never blocks the save).
   if (['Employee', 'JobRequisition', 'Candidate'].includes(type)) {

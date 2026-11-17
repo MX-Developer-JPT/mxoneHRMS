@@ -14,8 +14,11 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { fmtDate, isPastDate } from '@/lib/assetDates';
-import { openLetterheadPrintWindow, fitOnOnePage } from '../utils/letterhead';
 import AssetActivityLog from '@/components/assets/AssetActivityLog';
+import AssetLetterDialog from '@/components/assets/AssetLetterDialog';
+import AssetLettersHistory from '@/components/assets/AssetLettersHistory';
+import { AssetSpecFields, CustomFieldsEditor, specValue } from '@/components/assets/AssetSpecFields';
+import { al } from '@/lib/assetLetters';
 
 const TYPE_ICONS = {
   laptop: Laptop, monitor: Monitor, smartphone: Smartphone, keyboard: Keyboard,
@@ -130,9 +133,14 @@ export default function AssetTracking() {
     assigned_to_user_id: '', assignment_date: '', return_date: '',
     condition: 'good', purchase_date: '', purchase_cost: '',
     warranty_expiry: '', status: 'available', notes: '',
-    asset_id: '', is_temporary: false, temporary_reason: '',
+    asset_id: '', is_temporary: false, temporary_reason: '', specs: {},
   });
-  const [typeForm, setTypeForm] = useState({ name: '', code: '', icon: 'other', description: '' });
+  const [typeForm, setTypeForm] = useState({ name: '', code: '', icon: 'other', description: '', spec_category: '', custom_fields: [] });
+  const [schemas, setSchemas] = useState({ categories: {}, types: {} });   // specification schema per asset type (from the server)
+  const [letters, setLetters] = useState([]);
+  const [lettersLoading, setLettersLoading] = useState(false);
+  const [showLetters, setShowLetters] = useState(false);
+  const [letterDlg, setLetterDlg] = useState(null);   // { employee, assets, preselect, letter }
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -159,8 +167,15 @@ export default function AssetTracking() {
       setMaintenanceLogs(logsData);
       setActivityLogs(activityData);
     } catch (err) { console.error(err); }
+    loadSpecsAndLetters();
     setLoading(false);
   };
+
+  const loadSpecsAndLetters = async () => {
+    try { const d = await al('al_schemas'); setSchemas({ categories: d.categories || {}, types: d.types || {} }); } catch (e) { console.error('al_schemas', e); }
+    try { const d = await al('al_list'); setLetters(d.letters || []); } catch (e) { console.error('al_list', e); }
+  };
+  const reloadLetters = async () => { setLettersLoading(true); try { const d = await al('al_list'); setLetters(d.letters || []); } catch { /* keep the old list */ } setLettersLoading(false); };
 
   const getEmployeeName = (userId) => {
     if (!userId) return '—';
@@ -215,6 +230,7 @@ export default function AssetTracking() {
       const matchSearch = !s || a.asset_name?.toLowerCase().includes(s) ||
         a.asset_id?.toLowerCase().includes(s) || a.serial_number?.toLowerCase().includes(s) ||
         a.model_number?.toLowerCase().includes(s) ||
+        String(a.specs?.imei_1 || '').includes(s) || String(a.specs?.imei_2 || '').includes(s) ||
         getEmployeeName(a.assigned_to_user_id).toLowerCase().includes(s);
       const matchStatus = filterStatus === 'all' || a.status === filterStatus;
       const matchType = !selectedTypeId || a.asset_type_id === selectedTypeId;
@@ -233,18 +249,19 @@ export default function AssetTracking() {
   // --- Asset Type Management ---
   const openNewType = () => {
     setEditingType(null);
-    setTypeForm({ name: '', code: '', icon: 'other', description: '' });
+    setTypeForm({ name: '', code: '', icon: 'other', description: '', spec_category: '', custom_fields: [] });
     setShowTypeDialog(true);
   };
 
   const openEditType = (type) => {
     setEditingType(type);
-    setTypeForm({ name: type.name, code: type.code, icon: type.icon || 'other', description: type.description || '' });
+    setTypeForm({ name: type.name, code: type.code, icon: type.icon || 'other', description: type.description || '', spec_category: type.spec_category || '', custom_fields: type.custom_fields || [] });
     setShowTypeDialog(true);
   };
 
   const handleSaveType = async () => {
     if (!typeForm.name.trim() || !typeForm.code.trim()) { toast.error('Name and code are required'); return; }
+    if ((typeForm.custom_fields || []).some(f => !String(f.label || '').trim())) { toast.error('Give every custom field a name (or remove it)'); return; }
     setSaving(true);
     try {
       if (editingType) {
@@ -296,7 +313,7 @@ export default function AssetTracking() {
       assigned_to_user_id: '', assignment_date: '', return_date: '',
       condition: 'good', purchase_date: '', purchase_cost: '',
       warranty_expiry: '', status: 'available', notes: '',
-      is_temporary: false, temporary_reason: '',
+      is_temporary: false, temporary_reason: '', specs: {},
     });
     setSelectedTypeId(typeId || null);
     setShowAssetDialog(true);
@@ -314,6 +331,7 @@ export default function AssetTracking() {
       purchase_date: asset.purchase_date || '', purchase_cost: asset.purchase_cost || '',
       warranty_expiry: asset.warranty_expiry || '', status: asset.status || 'available', notes: asset.notes || '',
       is_temporary: asset.is_temporary || false, temporary_reason: asset.temporary_reason || '',
+      specs: { ...(asset.specs || {}) },
     });
     setShowAssetDialog(true);
   };
@@ -328,13 +346,20 @@ export default function AssetTracking() {
   };
 
   const handleSaveAsset = async () => {
-    if (!assetForm.asset_name.trim()) { toast.error('Asset name is required'); return; }
     if (!assetForm.asset_type_id) { toast.error('Asset type is required'); return; }
+    const schema = schemas.types[assetForm.asset_type_id];
+    // The name defaults to "Brand Model" when left blank, so a phone or laptop needs no double typing.
+    const autoName = [assetForm.specs?.brand || assetForm.specs?.make, assetForm.specs?.model_name || assetForm.specs?.vehicle_model || assetForm.specs?.item_description].filter(Boolean).join(' ').trim();
+    const finalName = (assetForm.asset_name || '').trim() || autoName;
+    if (!finalName) { toast.error('Asset name is required'); return; }
+    const missing = (schema?.fields || []).filter(f => f.required && !String(specValue(assetForm, f)).trim());
+    if (!editingAsset && missing.length) { toast.error(`${missing[0].label} is required${missing.length > 1 ? ` (and ${missing.length - 1} more)` : ''}`); return; }
     setSaving(true);
     try {
       const type = assetTypes.find(t => t.id === assetForm.asset_type_id);
       const data = {
         ...assetForm,
+        asset_name: finalName,
         purchase_cost: parseFloat(assetForm.purchase_cost) || 0,
         asset_type_name: type?.name || '',
       };
@@ -351,16 +376,21 @@ export default function AssetTracking() {
       if (data.assigned_to_user_id) data.status = (editingAsset?.status === 'signed' && editingAsset.assigned_to_user_id === data.assigned_to_user_id) ? 'signed' : 'assigned';
       else if (!editingAsset || assetForm.status === 'available') data.status = 'available';
 
+      let savedId = editingAsset?.id;
       if (editingAsset) {
         await base44.entities.Asset.update(editingAsset.id, data);
         toast.success('Asset updated');
       } else {
-        await base44.entities.Asset.create(data);
+        const created = await base44.entities.Asset.create(data);
+        savedId = created?.id;
         toast.success('Asset added');
       }
       setShowAssetDialog(false);
-      loadData();
-    } catch { toast.error('Error saving asset'); }
+      await loadData();
+      // Registered / assigned in one go: offer the handover letter straight away.
+      const newlyAssigned = data.assigned_to_user_id && data.assigned_to_user_id !== '__common__' && data.assigned_to_user_id !== editingAsset?.assigned_to_user_id;
+      if (newlyAssigned && savedId) openLetterFor(data.assigned_to_user_id, [savedId], [{ ...data, id: savedId }]);
+    } catch (e) { toast.error(e?.message && e.message !== 'Not Found' ? e.message : 'Error saving asset'); }
     setSaving(false);
   };
 
@@ -384,7 +414,8 @@ export default function AssetTracking() {
         assignment_date: format(new Date(), 'yyyy-MM-dd'),
       });
       toast.success(`Asset assigned to ${name}`);
-      loadData();
+      await loadData();
+      if (!isCommon) openLetterFor(userId, [asset.id], [{ ...asset, assigned_to_user_id: userId, status: 'assigned', assignment_date: format(new Date(), 'yyyy-MM-dd') }]);
     } catch { toast.error('Error assigning asset'); }
   };
 
@@ -461,151 +492,28 @@ export default function AssetTracking() {
         base44.entities.Asset.update(a.id, { assigned_to_user_id: bulkEmployeeId, status: 'assigned', assignment_date: today })
       ));
       toast.success(`${selectedAssets.length} asset(s) assigned to ${emp.display_name}`);
-      // Print combined letterhead
       const updatedAssets = selectedAssets.map(a => ({ ...a, assigned_to_user_id: bulkEmployeeId, status: 'assigned', assignment_date: today }));
-      openLetterheadPrintWindow(`Assets Handover - ${emp.display_name}`, fitOnOnePage(buildAssetLetterContent(emp, updatedAssets)), '', false);
+      const empId = bulkEmployeeId;
       clearBulkSelection();
-      loadData();
+      await loadData();
+      openLetterFor(empId, updatedAssets.map(a => a.id), updatedAssets);
     } catch { toast.error('Error assigning assets'); }
     setBulkAssigning(false);
   };
 
-  // Matches the official "Assets Handover" letter format exactly (company
-  // template — logo/footer chrome comes from the shared letterhead, this
-  // supplies the body: date, salutation, subject, the two intro paragraphs,
-  // an asset table with Serial No./Quantity/Item/Accessories/Remarks
-  // columns, the seven numbered guideline sections, and the Issue by/
-  // Received by signature block).
-  const buildAssetLetterContent = (emp, assetList) => {
-    const empName = emp?.display_name || '—';
-    const empDept = emp?.department || '—';
-    const empDesg = emp?.designation || '—';
-    const salutation = (emp?.gender || '').toLowerCase() === 'female' ? 'Ms.' : 'Mr.';
-    const plural = assetList.length > 1;
-    const stampUrl = (typeof window !== 'undefined' ? window.location.origin : '') + '/company-stamp.png';
-
-    const assetRows = assetList.map(asset => {
-      const typeName = asset.asset_type_name || getTypeName(asset.asset_type_id);
-      const serialBlock = [
-        `<strong>${asset.asset_name || '—'}</strong>${asset.specification ? ` — ${asset.specification}` : ''}`,
-        `Device ID – ${asset.asset_id || '—'} &nbsp;·&nbsp; Model – ${asset.model_number || '—'} &nbsp;·&nbsp; Serial – ${asset.serial_number || '—'}`,
-      ].join('<br>');
-      return `
-        <tr>
-          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;">${serialBlock}</td>
-          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;text-align:center;">1</td>
-          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;">${typeName}</td>
-          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;">${asset.accessories || '—'}</td>
-          <td style="padding:3px 7px;border:1px solid #ccc;vertical-align:top;">${asset.notes || '—'}</td>
-        </tr>`;
-    }).join('');
-
-    // Show the employee's actual captured signature once they've digitally
-    // signed & acknowledged (AssetCheckoutDialog) instead of a blank line.
-    const sigAsset = assetList.find(a => a.signature_url);
-    const receivedSignature = sigAsset
-      ? `<img src="${sigAsset.signature_url}" style="height:44px;max-width:150px;object-fit:contain;margin:0 auto 4px;display:block;" />`
-      : '';
-
-    return `
-      <h1 style="font-size:20px;font-weight:bold;text-align:center;margin:0 0 8px;">Assets Handover</h1>
-
-      <p style="font-size:10.5px;margin:0 0 6px;">${format(new Date(), 'd-MMM-yyyy')}</p>
-
-      <p style="font-size:10.5px;margin:0 0 1px;"><strong>Dear ${salutation} ${empName}</strong></p>
-      <p style="font-size:10.5px;font-weight:bold;margin:0 0 6px;">Subject: Assets Handover Letter</p>
-
-      <p style="font-size:10.5px;margin:0 0 6px;line-height:1.45;">
-        I hope this letter finds you in good health and high spirits. We are pleased to inform you that, as part of your role with
-        <strong>"MAXVOLT ENERGY INDUSTRIES LIMITED"</strong>, you are entrusted with company assets, mentioned in this letter, to support you
-        in your responsibilities. It is crucial for both your professional success and the company's operational efficiency that these
-        assets are managed responsibly.
-      </p>
-
-      <p style="font-size:10.5px;margin:0 0 8px;line-height:1.45;">
-        Following asset${plural ? 's have' : ' has'} been handed-over to <strong>${salutation} ${empName}</strong> "${empDesg}" -${empDept}- for official
-        use purpose only. The sole ownership will remain with <strong>"Maxvolt Energy Industries Limited"</strong>
-      </p>
-
-      <table style="width:100%;border-collapse:collapse;font-size:10px;margin-bottom:8px;">
-        <thead>
-          <tr style="background:#f8fafc;">
-            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Serial No.</th>
-            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Quantity</th>
-            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Item</th>
-            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Accessories</th>
-            <th style="padding:3px 7px;border:1px solid #ccc;text-align:left;">Remarks</th>
-          </tr>
-        </thead>
-        <tbody>${assetRows}</tbody>
-      </table>
-
-      <p style="font-size:10.5px;margin:0 0 5px;line-height:1.45;">
-        The following rules and guidelines are provided to ensure a smooth asset handover process and to outline the responsibilities
-        associated with the care and use of these assets:
-      </p>
-
-      <ol style="font-size:10px;margin:0 0 8px;padding-left:16px;line-height:1.4;column-count:2;column-gap:10mm;">
-        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Condition and Inspection:
-          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
-            <li>Upon receiving the assets, please inspect them carefully to ensure they are in proper working condition.</li>
-            <li>Report any discrepancies or issues promptly to the HR Department.</li>
-          </ul>
-        </li>
-        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Documentation:
-          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
-            <li>Sign the Asset Handover Form attached to this letter, acknowledging receipt of the specified assets.</li>
-            <li>Keep a copy of the signed form for your records.</li>
-          </ul>
-        </li>
-        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Use and Care:
-          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
-            <li>Use the provided assets exclusively for work-related purposes.</li>
-            <li>Exercise caution to prevent damage or loss.</li>
-            <li>Report any loss, damage, or malfunction immediately to the HR - Department</li>
-          </ul>
-        </li>
-        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Security and Confidentiality:
-          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
-            <li>Safeguard assets and information stored on them to maintain the confidentiality and security of company data.</li>
-          </ul>
-        </li>
-        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Return of Assets:
-          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
-            <li>Return the assets promptly upon termination of your employment or upon request by the company.</li>
-          </ul>
-        </li>
-        <li style="font-weight:bold;margin-bottom:3px;break-inside:avoid;">Penalties for Non-Compliance:
-          <ul style="font-weight:normal;margin:1px 0 5px;padding-left:14px;">
-            <li>Failure to adhere to the guidelines may result in disciplinary action, including but not limited to verbal/written warnings, suspension, or termination.</li>
-            <li>Any intentional damage or misuse may result in financial penalties to cover repair or replacement costs.</li>
-          </ul>
-        </li>
-        <li style="font-weight:bold;break-inside:avoid;">Contact Person:
-          <ul style="font-weight:normal;margin:2px 0 0;padding-left:18px;">
-            <li>For any questions or concerns regarding the assets, please contact HR – Department/HOD.</li>
-          </ul>
-        </li>
-      </ol>
-
-      <p style="font-size:10.5px;margin:0 0 12px;line-height:1.45;">
-        We trust that you will handle these assets with the utmost care and responsibility. Your cooperation in adhering to these
-        guidelines is essential to maintaining a smooth and effective workflow.
-      </p>
-
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;font-size:10.5px;break-inside:avoid;">
-        <div>
-          <p style="margin-bottom:6px;">Sincerely,</p>
-          <p style="margin:0;">Issue by</p>
-          <img src="${stampUrl}" style="width:84px;opacity:0.85;display:block;margin:-28px 0 -30px 6px;" onerror="this.style.display='none'" />
-          <p style="font-weight:600;">HR Manager</p>
-        </div>
-        <div style="text-align:center;">
-          <p style="margin-bottom:6px;">Received by</p>
-          ${receivedSignature}
-          <p style="font-weight:600;">${salutation} ${empName}</p>
-        </div>
-      </div>`;
+  // Opens the letter dialog for an employee. `justAssigned` covers assets whose assignment was saved a moment ago (state not yet refreshed).
+  const openLetterFor = (userId, preselect, justAssigned = []) => {
+    const emp = getEmployee(userId);
+    if (!emp) { toast.error('Employee record not found'); return; }
+    const byId = new Map();
+    assets.filter(a => a.assigned_to_user_id === userId && ACTIVE_ASSIGNMENT_STATUSES.includes(a.status)).forEach(a => byId.set(a.id, a));
+    justAssigned.forEach(a => byId.set(a.id, { ...(byId.get(a.id) || {}), ...a }));
+    const list = [...byId.values()];
+    if (!list.length) { toast.error('No assets assigned to this employee'); return; }
+    const want = [...preselect].sort().join('|');
+    // The exact same set of assets already has an up-to-date letter on record: open that one instead of numbering a duplicate.
+    const existing = letters.find(l => l.user_id === userId && l.status !== 'superseded' && !l.outdated && [...(l.asset_ids || [])].sort().join('|') === want);
+    setLetterDlg({ employee: { user_id: userId, display_name: emp.display_name, employee_code: emp.employee_code }, assets: list, preselect, letter: existing || null });
   };
 
   // --- Maintenance Log Management ---
@@ -678,11 +586,7 @@ export default function AssetTracking() {
     completed: 'bg-green-100 text-green-800', cancelled: 'bg-gray-100 text-gray-800',
   };
 
-  const handlePrintLetter = (asset) => {
-    const emp = getEmployee(asset.assigned_to_user_id);
-    if (!emp) { toast.error('Employee record not found'); return; }
-    openLetterheadPrintWindow(`Assets Handover - ${asset.asset_name}`, fitOnOnePage(buildAssetLetterContent(emp, [asset])), '', false);
-  };
+  const handlePrintLetter = (asset) => openLetterFor(asset.assigned_to_user_id, [asset.id]);
 
   // --- Bulk Import ---
   // Parses arbitrary multi-sheet asset registers (e.g. the real "IT Assets
@@ -993,11 +897,8 @@ export default function AssetTracking() {
   };
 
   const handlePrintAllForEmployee = (userId) => {
-    const emp = getEmployee(userId);
-    if (!emp) { toast.error('Employee record not found'); return; }
     const empAssets = assets.filter(a => a.assigned_to_user_id === userId && ACTIVE_ASSIGNMENT_STATUSES.includes(a.status));
-    if (empAssets.length === 0) { toast.error('No assets assigned to this employee'); return; }
-    openLetterheadPrintWindow(`Assets Handover - ${emp.display_name}`, fitOnOnePage(buildAssetLetterContent(emp, empAssets)), '', false);
+    openLetterFor(userId, empAssets.map(a => a.id));
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin" /></div>;
@@ -1015,6 +916,7 @@ export default function AssetTracking() {
             <Button variant="outline" onClick={handleExportAvailable}><Download className="w-4 h-4 mr-2" />Available</Button>
             <Button variant="outline" onClick={handleExportAssigned}><Download className="w-4 h-4 mr-2" />Assigned</Button>
             <Button variant="outline" onClick={() => setShowImportDialog(true)}><Upload className="w-4 h-4 mr-2" />Import</Button>
+            <Button variant="outline" onClick={() => { setShowLetters(true); reloadLetters(); }}><FileText className="w-4 h-4 mr-2" />Letters{letters.some(l => l.outdated) && <Badge className="ml-1.5 bg-amber-100 text-amber-800 text-[10px]">{letters.filter(l => l.outdated).length}</Badge>}</Button>
             <Button variant="outline" onClick={openNewType}><Tags className="w-4 h-4 mr-2" />Types</Button>
             <Button onClick={() => openNewAsset(null)}><Plus className="w-4 h-4 mr-2" />Add Asset</Button>
           </div>
@@ -1428,9 +1330,21 @@ export default function AssetTracking() {
         <AssetActivityLog logs={activityLogs} />
       </div>
 
+      {letterDlg && (
+        <AssetLetterDialog open employee={letterDlg.employee} assets={letterDlg.assets} preselect={letterDlg.preselect} letter={letterDlg.letter}
+          onClose={() => setLetterDlg(null)} onChanged={reloadLetters} />
+      )}
+      <AssetLettersHistory open={showLetters} onClose={() => setShowLetters(false)} letters={letters} loading={lettersLoading} refreshKey={reloadLetters}
+        onOpen={(l) => {
+          const emp = getEmployee(l.user_id);
+          const list = assets.filter(a => a.assigned_to_user_id === l.user_id && ACTIVE_ASSIGNMENT_STATUSES.includes(a.status));
+          setShowLetters(false);
+          setLetterDlg({ employee: { user_id: l.user_id, display_name: emp?.display_name || l.employee_name, employee_code: emp?.employee_code || l.employee_code }, assets: list, preselect: l.asset_ids || [], letter: l });
+        }} />
+
       {/* Asset Dialog */}
       <Dialog open={showAssetDialog} onOpenChange={setShowAssetDialog}>
-        <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editingAsset ? 'Edit Asset' : 'Add New Asset'}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
@@ -1452,22 +1366,16 @@ export default function AssetTracking() {
                 )}
               </div>
               <div>
-                <Label>Asset Name/Model *</Label>
-                <Input value={assetForm.asset_name} onChange={e => setAssetForm({...assetForm, asset_name: e.target.value})} placeholder="e.g., Dell Latitude 5540" />
+                <Label>Asset Name / Model</Label>
+                <Input value={assetForm.asset_name} onChange={e => setAssetForm({...assetForm, asset_name: e.target.value})} placeholder="Leave blank to use Brand + Model" />
               </div>
               <div><Label>Asset ID</Label><Input value={assetForm.asset_id} onChange={e => setAssetForm({...assetForm, asset_id: e.target.value})} placeholder="Auto-generated" /></div>
-              <div><Label>Model Number</Label><Input value={assetForm.model_number} onChange={e => setAssetForm({...assetForm, model_number: e.target.value})} placeholder="e.g., P127F" /></div>
-              <div><Label>Serial Number</Label><Input value={assetForm.serial_number} onChange={e => setAssetForm({...assetForm, serial_number: e.target.value})} /></div>
-              <div><Label>Specification</Label><Input value={assetForm.specification} onChange={e => setAssetForm({...assetForm, specification: e.target.value})} placeholder="e.g., i5-1245U, 16GB RAM" /></div>
-              <div><Label>Accessories</Label><Input value={assetForm.accessories} onChange={e => setAssetForm({...assetForm, accessories: e.target.value})} placeholder="e.g., Adaptor, mouse, bag" /></div>
-              <div><Label>Condition</Label>
-                <Select value={assetForm.condition} onValueChange={v => setAssetForm({...assetForm, condition: v})}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {['new','good','fair','poor','damaged'].map(c => <SelectItem key={c} value={c}>{c.toUpperCase()}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
+              {schemas.types[assetForm.asset_type_id]
+                ? <AssetSpecFields schema={schemas.types[assetForm.asset_type_id]} form={assetForm} setForm={setAssetForm} />
+                : <p className="col-span-2 text-xs text-muted-foreground">Choose the asset type to enter its specifications (IMEI, processor, RAM, serial number…).</p>}
+              {assetForm.specification && (
+                <div className="col-span-2"><Label>Specification (earlier free-text entry)</Label><Input value={assetForm.specification} onChange={e => setAssetForm({...assetForm, specification: e.target.value})} /></div>
+              )}
               <div><Label>Assign To</Label>
                 <Popover open={assetDialogEmpOpen} onOpenChange={setAssetDialogEmpOpen}>
                   <PopoverTrigger asChild>
@@ -1513,9 +1421,7 @@ export default function AssetTracking() {
                   <Input className="flex-1" placeholder="Reason (e.g., original under repair)" value={assetForm.temporary_reason || ''} onChange={e => setAssetForm({...assetForm, temporary_reason: e.target.value})} />
                 )}
               </div>
-              <div><Label>Purchase Date</Label><Input type="date" value={assetForm.purchase_date} onChange={e => setAssetForm({...assetForm, purchase_date: e.target.value})} /></div>
               <div><Label>Purchase Cost (₹)</Label><Input type="number" value={assetForm.purchase_cost} onChange={e => setAssetForm({...assetForm, purchase_cost: e.target.value})} /></div>
-              <div><Label>Warranty Expiry</Label><Input type="date" value={assetForm.warranty_expiry} onChange={e => setAssetForm({...assetForm, warranty_expiry: e.target.value})} /></div>
             </div>
             <div><Label>Notes</Label><Textarea value={assetForm.notes} onChange={e => setAssetForm({...assetForm, notes: e.target.value})} rows={2} /></div>
             <Button onClick={handleSaveAsset} disabled={saving} className="w-full">
@@ -1676,7 +1582,7 @@ export default function AssetTracking() {
 
       {/* Asset Type Dialog */}
       <Dialog open={showTypeDialog} onOpenChange={setShowTypeDialog}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editingType ? 'Edit Asset Type' : 'Create Asset Type'}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div><Label>Name *</Label><Input value={typeForm.name} onChange={e => setTypeForm({...typeForm, name: e.target.value})} placeholder="e.g., Laptop" /></div>
@@ -1703,6 +1609,21 @@ export default function AssetTracking() {
               </div>
             </div>
             <div><Label>Description</Label><Textarea value={typeForm.description} onChange={e => setTypeForm({...typeForm, description: e.target.value})} rows={2} /></div>
+            <div>
+              <Label>Specification template</Label>
+              <Select value={typeForm.spec_category || 'auto'} onValueChange={v => setTypeForm({...typeForm, spec_category: v === 'auto' ? '' : v})}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Detect from the type name</SelectItem>
+                  {Object.entries(schemas.categories).map(([k, c]) => <SelectItem key={k} value={k}>{c.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">Decides which fields (IMEI, processor, RAM, screen size…) are asked for when adding an asset of this type and printed on its handover letter.</p>
+            </div>
+            <div>
+              <Label>Custom fields</Label>
+              <div className="mt-1"><CustomFieldsEditor fields={typeForm.custom_fields} onChange={v => setTypeForm({...typeForm, custom_fields: v})} /></div>
+            </div>
             <div className="flex gap-2">
               <Button onClick={handleSaveType} disabled={saving} className="flex-1">
                 {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}

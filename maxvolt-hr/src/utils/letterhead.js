@@ -100,7 +100,11 @@ export function letterheadFooter() {
 /**
  * Returns the full letterhead HTML string without opening any window.
  */
-export function buildLetterheadHtml(title, contentHtml, extraStyles = '') {
+export function buildLetterheadHtml(title, contentHtml, extraStyles = '', opts = {}) {
+  // opts.letterhead === false -> the SAME page geometry (so the text sits exactly where it would on the letterhead) but no
+  // artwork: for printing on the company's pre-printed letterhead paper. opts.toolbar === false hides the Print bar.
+  const plain = opts.letterhead === false;
+  const noArt = plain ? '.lh-bg { display: none !important; } .lh-sheet::before, .lh-sheet::after { display: none !important; }' : '';
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -108,11 +112,12 @@ export function buildLetterheadHtml(title, contentHtml, extraStyles = '') {
   <title>${title}</title>
   <style>
     ${letterheadStyles()}
+    ${noArt}
     ${extraStyles}
   </style>
 </head>
 <body>
-${letterheadHeader()}
+${plain ? '' : letterheadHeader()}
 <div class="lh-sheet">
   <table class="lh-page">
     <thead><tr><td><div class="lh-head-space"></div></td></tr></thead>
@@ -120,9 +125,9 @@ ${letterheadHeader()}
     <tfoot><tr><td><div class="lh-foot-space"></div></td></tr></tfoot>
   </table>
 </div>
-<div class="no-print" style="text-align:center;padding:14px;background:#f9fafb;border-top:1px solid #e5e7eb;">
+${opts.toolbar === false ? '' : `<div class="no-print" style="text-align:center;padding:14px;background:#f9fafb;border-top:1px solid #e5e7eb;">
   <button onclick="window.print()" style="background:#111;color:#fcd116;padding:9px 28px;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-weight:bold;">🖨️ Print / Save as PDF</button>
-</div>
+</div>`}
 </body>
 </html>`;
 }
