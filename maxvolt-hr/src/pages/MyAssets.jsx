@@ -8,6 +8,9 @@ import { format } from 'date-fns';
 import { fmtDate, isPastDate } from '@/lib/assetDates';
 import { openLetterheadPrintWindow, fitOnOnePage } from '../utils/letterhead';
 import AssetCheckoutDialog from '@/components/assets/AssetCheckoutDialog';
+import AssetLetterDialog from '@/components/assets/AssetLetterDialog';
+import { al, letterState, LETTER_STATUS } from '@/lib/assetLetters';
+import { FileText } from 'lucide-react';
 
 const TYPE_ICONS = {
   laptop: Laptop, monitor: Monitor, smartphone: Smartphone, keyboard: Keyboard,
@@ -33,7 +36,9 @@ export default function MyAssets() {
   const [checkoutAsset, setCheckoutAsset] = useState(null);
   const [showCheckout, setShowCheckout] = useState(false);
 
-  useEffect(() => { loadData(); }, []);
+  const [myLetters, setMyLetters] = useState([]);
+  const [openLetter, setOpenLetter] = useState(null);
+  useEffect(() => { loadData(); al('al_list').then(d => setMyLetters((d.letters || []).filter(l => l.status !== 'superseded'))).catch(() => {}); }, []);
 
   const loadData = async () => {
     try {
@@ -202,6 +207,20 @@ export default function MyAssets() {
           )}
         </div>
 
+        {myLetters.length > 0 && (
+          <Card>
+            <CardContent className="p-4 space-y-2">
+              <p className="font-semibold text-sm flex items-center gap-2"><FileText className="w-4 h-4" /> My handover letters</p>
+              {myLetters.map(l => { const st = letterState(l); return (
+                <div key={l.id} className="flex flex-wrap items-center justify-between gap-2 border rounded-lg p-2.5 text-sm">
+                  <div><span className="font-mono text-xs">{l.ref_no}</span> <Badge className={`${LETTER_STATUS[st].cls} text-[10px]`}>{LETTER_STATUS[st].label}</Badge>
+                    <p className="text-xs text-muted-foreground">{(l.asset_names || []).join(', ')} · issued {fmtDate(l.issue_date, 'dd MMM yyyy')}</p></div>
+                  <Button size="sm" variant="outline" onClick={() => setOpenLetter(l)}>View / Print</Button>
+                </div>); })}
+            </CardContent>
+          </Card>
+        )}
+
         {assets.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center text-muted-foreground">
@@ -266,6 +285,8 @@ export default function MyAssets() {
           </div>
         )}
       </div>
+
+      {openLetter && <AssetLetterDialog open employee={{ user_id: openLetter.user_id, display_name: openLetter.employee_name }} letter={openLetter} canManage={false} onClose={() => setOpenLetter(null)} />}
 
       <AssetCheckoutDialog
         open={showCheckout}
