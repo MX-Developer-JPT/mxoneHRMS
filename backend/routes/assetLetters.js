@@ -17,8 +17,8 @@ import { allSchemas, resolveSchema, specFingerprint } from '../utils/assetSpecs.
 import { buildModel, buildPdf as renderLetterPdf } from '../utils/assetLetterDoc.js';
 import { logAssetActivity, auditLog } from '../utils/assetAudit.js';
 
-const MANAGE = ['hr', 'admin'];
-const VIEW_ALL = ['hr', 'admin', 'management'];
+const MANAGE = ['hr', 'admin', 'front_desk_admin'];
+const VIEW_ALL = ['hr', 'admin', 'management', 'front_desk_admin'];
 const fail = (res, error, code = 400) => res.status(code).json({ success: false, error });
 const jparse = (s) => { try { return JSON.parse(s); } catch { return null; } };
 const istNow = () => new Date(Date.now() + 5.5 * 3600 * 1000);
@@ -90,7 +90,7 @@ const HANDLERS = {
   },
 
   async al_generate({ p, cx, res }) {
-    if (!MANAGE.includes(cx.role)) return fail(res, 'Only HR or admin can generate asset letters', 403);
+    if (!MANAGE.includes(cx.role)) return fail(res, 'Only HR, admin or front desk admin can generate asset letters', 403);
     const userId = String(p.user_id || '');
     const ids = [...new Set((Array.isArray(p.asset_ids) ? p.asset_ids : []).map(String))];
     if (!userId || !ids.length) return fail(res, 'Choose the employee and at least one asset.');

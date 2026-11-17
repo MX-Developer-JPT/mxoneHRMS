@@ -870,7 +870,7 @@ export default function Layout({ children, currentPageName }) {
   if (!isGateAdmin && !menuGroups.some(g => g.items.some(i => i.page === 'FeedbackSystem'))) {
     menuGroups = [...menuGroups, { label: 'Feedback', items: [{ name: '360° Feedback', icon: MessageSquare, page: 'FeedbackSystem' }] }];
   }
-  if ((isITDept || isAdminDept) && !isHR) {
+  if ((isITDept || isAdminDept || isFrontDesk) && !isHR) {
     menuGroups = [...menuGroups, { label: isITDept ? 'IT' : 'Assets', items: [{ name: 'Asset Tracking', icon: Laptop, page: 'AssetTracking' }] }];
   }
   // Managers, top management, and HR already have 'Exit Management' baked

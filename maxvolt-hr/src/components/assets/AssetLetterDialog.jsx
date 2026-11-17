@@ -113,7 +113,7 @@ export default function AssetLetterDialog({ open, onClose, employee, assets = []
             <Button onClick={() => generate(null)} disabled={busy === 'gen' || !canManage || picked.size === 0} className="w-full sm:w-auto">
               {busy === 'gen' ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileText className="w-4 h-4 mr-2" />} Generate letter &amp; preview
             </Button>
-            {!canManage && <p className="text-xs text-muted-foreground">Only HR / admin can generate letters.</p>}
+            {!canManage && <p className="text-xs text-muted-foreground">Only HR, admin or front desk admin can generate letters.</p>}
           </div>
         )}
 
