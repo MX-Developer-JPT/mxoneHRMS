@@ -228,34 +228,36 @@ function KioskLogin({ onDone, notice }) {
 
 /* ── home ─────────────────────────────────────────────────────────────────── */
 
-function HomeScreen({ kiosk, now, go }) {
+export function HomeScreen({ kiosk, now, go }) {
   const date = now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' });
   const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+  // Sized from the SCREEN HEIGHT (vh units) so everything - clock, welcome, both tiles and the check-out button - always fits
+  // one screen on any tablet (landscape or portrait) with no scrolling and nothing cut off at the bottom.
   return (
-    <div className="min-h-screen flex flex-col px-8 py-8 max-w-6xl mx-auto">
-      <header className="flex items-start justify-between gap-6">
-        <img src="/maxvolt-logo-letterhead.png" alt="MaxVolt Energy" className="h-28 w-28 object-contain mix-blend-multiply -my-2" />
+    <div className="h-[100dvh] flex flex-col px-[3vw] py-[2.5vh] max-w-6xl mx-auto overflow-hidden">
+      <header className="flex items-start justify-between gap-6 shrink-0">
+        <img src="/maxvolt-logo-letterhead.png" alt="MaxVolt Energy" className="h-[13vh] w-[13vh] object-contain mix-blend-multiply -my-1" />
         <div className="text-right">
-          <div className="text-5xl font-bold text-slate-900 tabular-nums">{time}</div>
-          <div className="text-xl text-slate-500 mt-1">{date}</div>
+          <div className="text-[6vh] leading-none font-bold text-slate-900 tabular-nums">{time}</div>
+          <div className="text-[2.4vh] text-slate-500 mt-[1vh]">{date}</div>
         </div>
       </header>
-      <div className="text-center mt-10 sm:mt-14">
-        <h1 className="text-5xl sm:text-6xl font-bold text-slate-900">Welcome to MaxVolt Energy</h1>
-        <div className="inline-flex items-center gap-2 mt-5 px-6 py-2.5 rounded-full bg-amber-100 text-amber-900 text-2xl font-semibold"><MapPin className="w-6 h-6" />{kiosk.location_name}</div>
+      <div className="text-center mt-[2vh] shrink-0">
+        <h1 className="text-[min(7vh,7vw)] leading-tight font-bold text-slate-900">Welcome to MaxVolt Energy</h1>
+        <div className="inline-flex items-center gap-2 mt-[1.8vh] px-6 py-[1vh] rounded-full bg-amber-100 text-amber-900 text-[3vh] font-semibold"><MapPin className="w-[3.4vh] h-[3.4vh]" />{kiosk.location_name}</div>
       </div>
-      <div className="grid md:grid-cols-2 gap-6 mt-10 sm:mt-14 flex-1 content-start">
-        <button onClick={() => go('invite')} className="text-left rounded-[2rem] bg-slate-900 text-white p-10 min-h-[260px] flex flex-col justify-between active:scale-[0.98] transition-transform shadow-xl">
-          <QrCode className="w-20 h-20 text-amber-400" />
-          <div><div className="text-4xl font-bold">I Have an Invitation</div><p className="text-xl text-slate-300 mt-3 leading-snug">Already have a visitor invitation? Check in using your invitation pass.</p></div>
+      <div className="grid md:grid-cols-2 gap-[2.5vh] md:gap-[2.5vw] mt-[3vh] flex-1 min-h-0">
+        <button onClick={() => go('invite')} className="text-left rounded-[3vh] bg-slate-900 text-white p-[3.2vh] min-h-0 flex flex-col justify-between active:scale-[0.98] transition-transform shadow-xl">
+          <QrCode className="w-[9vh] h-[9vh] text-amber-400 shrink-0" />
+          <div><div className="text-[min(4.6vh,5vw)] leading-tight font-bold">I Have an Invitation</div><p className="text-[2.5vh] text-slate-300 mt-[1vh] leading-snug">Already have a visitor invitation? Check in using your invitation pass.</p></div>
         </button>
-        <button onClick={() => go('walkin')} className="text-left rounded-[2rem] bg-amber-400 text-slate-900 p-10 min-h-[260px] flex flex-col justify-between active:scale-[0.98] transition-transform shadow-xl">
-          <UserPlus className="w-20 h-20" />
-          <div><div className="text-4xl font-bold">Walk-in Visitor Registration</div><p className="text-xl text-slate-800 mt-3 leading-snug">Visiting without a prior invitation? Register your details to request entry.</p></div>
+        <button onClick={() => go('walkin')} className="text-left rounded-[3vh] bg-amber-400 text-slate-900 p-[3.2vh] min-h-0 flex flex-col justify-between active:scale-[0.98] transition-transform shadow-xl">
+          <UserPlus className="w-[9vh] h-[9vh] shrink-0" />
+          <div><div className="text-[min(4.6vh,5vw)] leading-tight font-bold">Walk-in Visitor Registration</div><p className="text-[2.5vh] text-slate-800 mt-[1vh] leading-snug">Visiting without a prior invitation? Register your details to request entry.</p></div>
         </button>
       </div>
-      <footer className="flex justify-center mt-8">
-        <button onClick={() => go('checkout')} className="h-16 px-8 rounded-full bg-white border-2 border-slate-300 text-xl font-medium text-slate-700 flex items-center gap-3 active:bg-slate-100"><LogOut className="w-6 h-6" />Leaving? Check out here</button>
+      <footer className="flex justify-center mt-[2.5vh] shrink-0">
+        <button onClick={() => go('checkout')} className="h-[8vh] px-[3vh] rounded-full bg-white border-2 border-slate-300 text-[2.8vh] font-medium text-slate-700 flex items-center gap-3 active:bg-slate-100"><LogOut className="w-[3.2vh] h-[3.2vh]" />Leaving? Check out here</button>
       </footer>
     </div>
   );
