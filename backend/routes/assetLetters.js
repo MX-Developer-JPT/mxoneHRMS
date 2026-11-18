@@ -25,7 +25,10 @@ const istNow = () => new Date(Date.now() + 5.5 * 3600 * 1000);
 const istToday = () => istNow().toISOString().slice(0, 10);
 
 // ── storage ──
-async function roleOf(cu) { if (!cu) return null; const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]); return u ? (u.custom_role || u.role) : null; }
+// A user's role may sit in `role` or in `custom_role` (an employee given the front-desk role keeps role='user'), so a permission
+// is granted when EITHER matches — the same rule hasRole() uses everywhere else in functions.js.
+async function rolesOf(cu) { if (!cu) return []; const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]); return u ? [u.role, u.custom_role].filter(Boolean) : []; }
+const hasAny = (cx, list) => cx.roles.some(r => list.includes(r));
 async function nameOfUser(id) {
   const e = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [id]).catch(() => null);
   const d = e ? jparse(e.data) : null;
@@ -90,7 +93,7 @@ const HANDLERS = {
   },
 
   async al_generate({ p, cx, res }) {
-    if (!MANAGE.includes(cx.role)) return fail(res, 'Only HR, admin or front desk admin can generate asset letters', 403);
+    if (!hasAny(cx, MANAGE)) return fail(res, 'Only HR, admin or front desk admin can generate asset letters', 403);
     const userId = String(p.user_id || '');
     const ids = [...new Set((Array.isArray(p.asset_ids) ? p.asset_ids : []).map(String))];
     if (!userId || !ids.length) return fail(res, 'Choose the employee and at least one asset.');
@@ -140,7 +143,7 @@ const HANDLERS = {
   },
 
   async al_list({ p, cx, res }) {
-    const viewAll = VIEW_ALL.includes(cx.role);
+    const viewAll = hasAny(cx, VIEW_ALL);
     let rows = await allLetters();
     if (!viewAll) rows = rows.filter(l => l.user_id === cx.cu.id);
     else if (p.user_id) rows = rows.filter(l => l.user_id === p.user_id);
@@ -149,20 +152,20 @@ const HANDLERS = {
     rows = rows.slice(0, Math.min(Number(p.limit) || 500, 1000));
     const ids = [...new Set(rows.flatMap(l => l.asset_ids || []))];
     const amap = await loadAssetsByIds(ids); const types = await loadTypes();
-    return res.json({ success: true, letters: rows.map(l => summarise(l, amap, types)), can_manage: MANAGE.includes(cx.role) });
+    return res.json({ success: true, letters: rows.map(l => summarise(l, amap, types)), can_manage: hasAny(cx, MANAGE) });
   },
 
   async al_get({ p, cx, res }) {
     const l = await loadLetter(p.id);
     if (!l) return fail(res, 'Letter not found', 404);
-    if (!VIEW_ALL.includes(cx.role) && l.user_id !== cx.cu.id) return fail(res, 'You do not have access to this letter', 403);
+    if (!hasAny(cx, VIEW_ALL) && l.user_id !== cx.cu.id) return fail(res, 'You do not have access to this letter', 403);
     return res.json({ success: true, letter: await present(l, await loadTypes()) });
   },
 
   async al_pdf({ p, cx, res }) {
     const l = await loadLetter(p.id);
     if (!l) return fail(res, 'Letter not found', 404);
-    if (!VIEW_ALL.includes(cx.role) && l.user_id !== cx.cu.id) return fail(res, 'You do not have access to this letter', 403);
+    if (!hasAny(cx, VIEW_ALL) && l.user_id !== cx.cu.id) return fail(res, 'You do not have access to this letter', 403);
     const withLetterhead = p.letterhead !== false;
     const fx = await import('./functions.js');
     const buf = await renderLetterPdf(l.model, withLetterhead, { renderPdf: fx.renderPdf, letterheadBg: fx.getLetterheadBgDataUrl(), stamp: fx.getStampDataUrl(), margins: fx.LETTERHEAD_MARGINS });
@@ -174,7 +177,7 @@ const HANDLERS = {
   async al_event({ p, cx, res }) {
     const l = await loadLetter(p.id);
     if (!l) return fail(res, 'Letter not found', 404);
-    if (!VIEW_ALL.includes(cx.role) && l.user_id !== cx.cu.id) return fail(res, 'You do not have access to this letter', 403);
+    if (!hasAny(cx, VIEW_ALL) && l.user_id !== cx.cu.id) return fail(res, 'You do not have access to this letter', 403);
     const action = ['print', 'preview'].includes(p.action) ? p.action : null;
     if (!action) return fail(res, 'Unknown event');
     await recordEvent(l, cx, action, p.variant === 'without_letterhead' ? 'without_letterhead' : 'with_letterhead');
@@ -198,10 +201,10 @@ async function present(l, types) {
 
 export async function handleAssetLetters(name, p, cu, res) {
   if (!cu) return fail(res, 'Unauthorized', 401);
-  const role = await roleOf(cu);
-  if (!role) return fail(res, 'Unauthorized', 401);
+  const roles = await rolesOf(cu);
+  if (!roles.length) return fail(res, 'Unauthorized', 401);
   const H = HANDLERS[name];
   if (!H) return fail(res, `Unknown function ${name}`, 404);
-  try { return await H({ p: p || {}, cx: { cu, role }, res }); }
+  try { return await H({ p: p || {}, cx: { cu, roles }, res }); }
   catch (e) { console.error(`[assetLetters/${name}]`, e); if (!res.headersSent) return fail(res, e.message || 'Something went wrong', 500); }
 }
