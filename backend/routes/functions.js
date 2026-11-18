@@ -2708,7 +2708,7 @@ router.post('/:name', async (req, res) => {
       // Employee's reporting_manager_id and makes sure whoever is someone's
       // reporting manager holds at least 'manager' role, so team-scoped
       // visibility/approval actually works for them.
-      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      if (!(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'HR/Admin access required' });
       const keepIds = new Set(Array.isArray(p.keep_management_user_ids) ? p.keep_management_user_ids : []);
 
       const mgmtUsers = await all("SELECT id, role, custom_role FROM users WHERE role='management' OR custom_role='management'");
@@ -2748,7 +2748,7 @@ router.post('/:name', async (req, res) => {
       // (getScopedUserIds, canAccessEmployee) and the manager dashboard key
       // off reporting_manager_id only, so those employees are invisible to
       // their manager until this is backfilled.
-      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      if (!(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'HR/Admin access required' });
       const rows = await all(`
         SELECT id, data FROM entities
         WHERE type='Employee' AND status='active'
@@ -20348,7 +20348,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
        OWN assignment (so VisitorManagement.jsx can show "you manage: X, Y"
        and pre-fill the walk-in form's location when there's exactly one). ── */
     case 'setGateAdminLocations': {
-      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      if (!(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'HR/Admin access required' });
       const { user_id: sglUserId, locations: sglLocations } = p;
       if (!sglUserId) return res.json({ success: false, error: 'user_id is required' });
       // Explicit null means "clear the restriction" (back to unrestricted —
@@ -20374,7 +20374,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     case 'getGateAdminLocations': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const targetId = p.user_id || cu.id;
-      if (targetId !== cu.id && !(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      if (targetId !== cu.id && !(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'Admin access required' });
       const locations = await getGateAdminAssignedLocations(targetId);
       return res.json({ success: true, locations }); // null = unconfigured/unrestricted
     }

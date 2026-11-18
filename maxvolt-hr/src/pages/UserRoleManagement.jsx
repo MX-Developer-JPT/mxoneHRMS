@@ -40,6 +40,8 @@ export default function UserRoleManagement() {
   // those for an HR editor instead of letting them hit a confusing 403 on
   // save.
   const isAdmin = currentUser?.role === 'admin' || currentUser?.custom_role === 'admin';
+  // HR now has the whole page, including the org-wide tools. Only granting the 'admin' role itself stays admin-only.
+  const isHrOrAdmin = isAdmin || currentUser?.role === 'hr' || currentUser?.custom_role === 'hr';
   const [users, setUsers] = useState([]);
   const [filteredUsers, setFilteredUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -303,11 +305,11 @@ export default function UserRoleManagement() {
     }
   };
 
-  if (currentUser?.role !== 'admin') {
+  if (!isHrOrAdmin) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
         <Shield className="w-10 h-10 mb-3 opacity-40" />
-        <p>Admin role required to access User Role Management.</p>
+        <p>HR or admin role required to access User Role Management.</p>
       </div>
     );
   }
@@ -382,7 +384,7 @@ export default function UserRoleManagement() {
         </div>
 
         {/* One-time data repair — admin-only server-side (backfillReportingManagerIds) */}
-        {isAdmin && (
+        {isHrOrAdmin && (
         <Card className="mb-6 border-amber-200 bg-amber-50">
           <CardContent className="pt-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-start gap-3">
@@ -510,7 +512,7 @@ export default function UserRoleManagement() {
           {/* Admin-only server-side (bulkConvertManagementToManager) — an
               org-wide "who keeps unrestricted top-level access" sweep, not
               routine day-to-day role management. */}
-          {isAdmin && (
+          {isHrOrAdmin && (
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
