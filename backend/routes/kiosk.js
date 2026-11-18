@@ -24,7 +24,6 @@ import {
 
 // A different secret from user tokens: verifying a user token here, or a kiosk token in auth.js, always fails.
 const KIOSK_SECRET = createHash('sha256').update('maxvolt-kiosk:' + JWT_SECRET).digest('hex');
-const SESSION_HOURS = 12;          // sliding: the kiosk's heartbeat keeps refreshing it; an unplugged kiosk signs itself out
 const TICKET_MINUTES = 10;         // from "code accepted" to "check-in pressed"
 const CLAIM_MINUTES = 90;          // a walk-in who was approved while waiting can still check in from the kiosk
 
@@ -78,7 +77,9 @@ async function gateAdminIdsFor(locationName) {
 const publicKiosk = (k) => ({ id: k.id, kiosk_code: k.kiosk_code, name: k.name, location_name: k.location_name });
 const adminKiosk = (k) => { const { password_hash, ...rest } = k; return rest; };
 
-const signSession = (k) => jwt.sign({ typ: 'kiosk', kid: k.id, sv: k.session_version || 1 }, KIOSK_SECRET, { expiresIn: `${SESSION_HOURS}h` });
+// Kiosk sessions never expire by time (an unattended tablet must stay signed in); they end only when an administrator signs the
+// kiosk out, resets its password, deactivates it or changes its location (session_version / is_active are checked on every request).
+const signSession = (k) => jwt.sign({ typ: 'kiosk', kid: k.id, sv: k.session_version || 1 }, KIOSK_SECRET);
 const signTicket = (k, visitorId, intent, minutes) => jwt.sign({ typ: 'ticket', kid: k.id, vid: visitorId, intent }, KIOSK_SECRET, { expiresIn: `${minutes}m` });
 
 async function loadKioskRow(id) {

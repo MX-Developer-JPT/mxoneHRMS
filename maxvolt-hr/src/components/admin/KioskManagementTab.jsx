@@ -41,10 +41,11 @@ function Stat({ label, value, tone = '' }) {
 
 function KioskForm({ open, onClose, kiosk, locations, onSaved, onCreated }) {
   const editing = !!kiosk;
-  const [f, setF] = useState({ name: '', username: '', location_name: '', device_id: '' });
+  const [f, setF] = useState({ name: '', username: '', location_name: '', device_id: '', password: '' });
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (open) setF(kiosk ? { name: kiosk.name, username: kiosk.username, location_name: kiosk.location_name, device_id: kiosk.device_id || '' } : { name: '', username: '', location_name: '', device_id: '' }); }, [open, kiosk]);
+  useEffect(() => { if (open) setF(kiosk ? { name: kiosk.name, username: kiosk.username, location_name: kiosk.location_name, device_id: kiosk.device_id || '', password: '' } : { name: '', username: '', location_name: '', device_id: '', password: '' }); }, [open, kiosk]);
   const save = async () => {
+    if (!editing && f.password && f.password.length < 10) { toast.error('Password must be at least 10 characters'); return; }
     setBusy(true);
     try {
       const r = editing ? await kfetch(`/${kiosk.id}`, { method: 'PATCH', body: f }) : await kfetch('', { method: 'POST', body: f });
@@ -70,12 +71,35 @@ function KioskForm({ open, onClose, kiosk, locations, onSaved, onCreated }) {
           {locChanged && <p className="text-xs rounded-md bg-amber-50 border border-amber-200 text-amber-800 p-2">Changing the location signs this kiosk out immediately. It must be signed in again and will then serve {f.location_name}.</p>}
           <div><Label>Username</Label><Input value={f.username} onChange={e => setF({ ...f, username: e.target.value.toLowerCase() })} placeholder="duhai-reception" autoCapitalize="none" /></div>
           <div><Label>Device identification (optional)</Label><Input value={f.device_id} onChange={e => setF({ ...f, device_id: e.target.value })} placeholder="e.g. Tablet TAB-01, serial or asset tag" /></div>
-          {!editing && <p className="text-xs text-muted-foreground">A strong password is generated and shown once after you create the kiosk.</p>}
+          {!editing && <div><Label>Kiosk password (optional)</Label><Input value={f.password} onChange={e => setF({ ...f, password: e.target.value })} placeholder="Leave blank to generate a strong one" autoComplete="off" /><p className="text-xs text-muted-foreground mt-1">At least 10 characters. The kiosk stays signed in until you sign it out or change its password.</p></div>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button onClick={save} disabled={busy || !f.name || !f.username || !f.location_name}>{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{editing ? 'Save' : 'Create kiosk'}</Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ResetDialog({ kiosk, onClose, onDone }) {
+  const [pw, setPw] = useState(''); const [busy, setBusy] = useState(false);
+  useEffect(() => { setPw(''); }, [kiosk]);
+  if (!kiosk) return null;
+  const go = async () => {
+    if (pw && pw.length < 10) { toast.error('Password must be at least 10 characters'); return; }
+    setBusy(true);
+    try { const r = await kfetch(`/${kiosk.id}/reset-credentials`, { method: 'POST', body: pw ? { password: pw } : {} }); onDone(r); }
+    catch (e) { toast.error(e.message); }
+    setBusy(false);
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-[440px]">
+        <DialogHeader><DialogTitle>Set password for {kiosk.name}</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">The current password stops working and the device is signed out. Type your own password (at least 10 characters) or leave it blank to generate one.</p>
+        <Input value={pw} onChange={e => setPw(e.target.value)} placeholder="Custom password (optional)" autoComplete="off" />
+        <DialogFooter><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={go} disabled={busy}>{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{pw ? 'Set password' : 'Generate new password'}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -184,14 +208,15 @@ export default function KioskManagementTab() {
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
 
+  const [resetFor, setResetFor] = useState(null);
   const act = async (k, what) => {
+    if (what === 'reset') { setResetFor(k); return; }
     const text = { toggle: k.is_active ? `Deactivate ${k.name}? It is signed out immediately and cannot be used until reactivated.` : null, revoke: `Sign ${k.name} out everywhere? The device will need the kiosk password again.`, reset: `Reset the password for ${k.name}? The current password stops working and the device is signed out.` }[what];
     if (text && !window.confirm(text)) return;
     setBusy(k.id + what);
     try {
       if (what === 'toggle') { await kfetch(`/${k.id}`, { method: 'PATCH', body: { is_active: !k.is_active } }); toast.success(k.is_active ? 'Kiosk deactivated' : 'Kiosk activated'); }
       if (what === 'revoke') { await kfetch(`/${k.id}/revoke-sessions`, { method: 'POST' }); toast.success('Kiosk signed out'); }
-      if (what === 'reset') { const r = await kfetch(`/${k.id}/reset-credentials`, { method: 'POST', body: {} }); setCreds({ kiosk: r.kiosk, password: r.password }); }
       await load();
     } catch (e) { toast.error(e.message); }
     setBusy('');
@@ -241,6 +266,7 @@ export default function KioskManagementTab() {
       {view === 'logs' && <LogsPanel kiosks={kiosks} initialKiosk={logFor} key={logFor} />}
       {view === 'report' && <ReportPanel locations={locations} />}
 
+      <ResetDialog kiosk={resetFor} onClose={() => setResetFor(null)} onDone={(r) => { setResetFor(null); setCreds({ kiosk: r.kiosk, password: r.password }); load(); }} />
       <KioskForm open={form.open} kiosk={form.kiosk} locations={locations} onClose={() => setForm({ open: false, kiosk: null })} onSaved={load} onCreated={(r) => { setCreds({ kiosk: r.kiosk, password: r.password }); load(); }} />
       <CredentialDialog data={creds} onClose={() => setCreds(null)} />
     </div>
