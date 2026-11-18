@@ -16353,6 +16353,73 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.status(result.httpStatus || 200).json(result.body);
     }
 
+    // Admin Panel -> Leave Cancellation: lists approved leaves (newest first) so HR / admin can pick one to cancel.
+    case 'listApprovedLeaves': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      if (!(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'HR or admin access required' });
+      const since = new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10);
+      const rows = (await all("SELECT data FROM entities WHERE type='Leave' AND data::jsonb->>'status' IN ('approved','cancelled') AND COALESCE(data::jsonb->>'end_date','') >= $1", [since])).map(r => JSON.parse(r.data)).filter(l => l.status === 'approved' || l.cancelled_after_approval);
+      const emps = {}; for (const r of await all("SELECT user_id, data FROM entities WHERE type='Employee'")) { try { emps[r.user_id] = JSON.parse(r.data); } catch { /* skip */ } }
+      const pols = {}; for (const r of await all("SELECT data FROM entities WHERE type='LeavePolicy'")) { try { const d = JSON.parse(r.data); pols[d.id] = d; } catch { /* skip */ } }
+      const out = rows.map(l => ({ id: l.id, user_id: l.user_id, employee_name: emps[l.user_id]?.display_name || l.employee_name || '', employee_code: emps[l.user_id]?.employee_code || '', department: emps[l.user_id]?.department || '',
+        leave_type: pols[l.leave_policy_id]?.name || l.leave_type || '', start_date: l.start_date, end_date: l.end_date, total_days: l.total_days, half_day: !!l.half_day, is_wfh: !!(l.is_wfh || l.leave_type === 'work_from_home'), reason: l.reason || '',
+        status: l.status, approved_by_name: l.approved_by_name || '', cancelled_by_name: l.cancelled_by_name || '', cancelled_at: l.cancelled_at || '', cancel_reason: l.cancel_reason || '' }))
+        .sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)));
+      return res.json({ success: true, leaves: out });
+    }
+
+    // Cancels an APPROVED leave: the days go back to the employee's balance, the leave marking on the attendance calendar is
+    // removed, the employee is told, and the leave stays on record as 'cancelled' with who cancelled it and why.
+    case 'cancelApprovedLeave': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      if (!(await hasRole(cu, ['admin', 'hr']))) return res.status(403).json({ error: 'HR or admin access required' });
+      const reason = String(p.reason || '').trim();
+      if (!p.leave_id) return res.status(400).json({ error: 'leave_id required' });
+      if (reason.length < 3) return res.json({ success: false, error: 'Please give a reason for the cancellation.' });
+      const lrow = await one("SELECT id,data FROM entities WHERE type='Leave' AND id=$1", [p.leave_id]);
+      if (!lrow) return res.json({ success: false, error: 'Leave not found' });
+      const lv = JSON.parse(lrow.data);
+      if (lv.status !== 'approved') return res.json({ success: false, error: `Only an approved leave can be cancelled - this one is ${lv.status}.` });
+      const nowIso = new Date().toISOString();
+      const byName = cu.full_name || 'Admin';
+      const isWfh = !!(lv.is_wfh || lv.leave_type === 'work_from_home');
+      const upd = { ...lv, status: 'cancelled', cancelled_after_approval: true, cancelled_by: cu.id, cancelled_by_name: byName, cancelled_at: nowIso, cancel_reason: reason,
+        approval_history: [...(lv.approval_history || []), { action: 'cancelled_after_approval', by: cu.id, by_name: byName, at: nowIso, note: reason }] };
+      await run("UPDATE entities SET data=$1,status='cancelled',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), lrow.id]);
+      cacheInvalidate('Leave');
+      let balanceRestored = 0;
+      if (!isWfh && lv.leave_policy_id && lv.total_days) {
+        try {
+          const balYear = new Date(lv.start_date).getFullYear();
+          const balRows = await all("SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1", [lv.user_id]);
+          const hit = balRows.map(r => ({ id: r.id, d: JSON.parse(r.data) })).find(b => b.d.leave_policy_id === lv.leave_policy_id && b.d.year === balYear);
+          if (hit) {
+            const days = Number(lv.total_days) || 0;
+            const nb = { ...hit.d, used: Math.max((hit.d.used || 0) - days, 0), available: (hit.d.available || 0) + days };
+            await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(nb), hit.id]);
+            balanceRestored = days;
+          }
+        } catch (e) { console.error('[cancelApprovedLeave] balance restore failed:', e.message); }
+      }
+      // Take the leave off the attendance calendar: a day with no real punches loses its record; a day with punches keeps them.
+      let daysCleared = 0;
+      try {
+        const attRows = await all("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'leave_id'=$2", [lv.user_id, lv.id]);
+        for (const r of attRows) {
+          const a = JSON.parse(r.data);
+          if (!a.check_in_time) { await run("DELETE FROM entities WHERE id=$1", [r.id]); daysCleared++; continue; }
+          const rest = { ...a }; delete rest.leave_id; delete rest.leave_half_day; delete rest.leave_policy_name; delete rest.leave_policy_code;
+          const mins = rest.total_working_minutes || Math.round((rest.working_hours || 0) * 60);
+          const st = rest.is_in_progress ? 'in_progress' : (computeStatusFromSessions({ total_working_minutes: mins, is_in_progress: false, check_in_time: rest.check_in_time, check_out_time: rest.check_out_time }, { start_time: '09:00', end_time: '18:00', working_hours: 9 })?.status || 'present');
+          await run("UPDATE entities SET status=$1,data=$2,updated_at=NOW()::TEXT WHERE id=$3", [st, JSON.stringify({ ...rest, status: st, leave_cancelled_review: true }), r.id]);
+          daysCleared++;
+        }
+      } catch (e) { console.error('[cancelApprovedLeave] attendance cleanup failed:', e.message); }
+      await notify(lv.user_id, { title: isWfh ? 'WFH Cancelled' : 'Approved Leave Cancelled', message: `Your approved ${isWfh ? 'work from home' : 'leave'} (${lv.start_date} - ${lv.end_date}) was cancelled by ${byName}: ${reason}${balanceRestored ? ` ${balanceRestored} day(s) were returned to your balance.` : ''}`, type: 'warning', link: '/leave' });
+      try { await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AuditLog',$2,'active',$3)", [uuidv4(), cu.id, JSON.stringify({ entity_type: 'Leave', entity_id: lv.id, changed_by: cu.id, change_type: 'cancel_approved', timestamp: nowIso, employee_user_id: lv.user_id, start_date: lv.start_date, end_date: lv.end_date, total_days: lv.total_days, reason })]); } catch { /* audit is best-effort */ }
+      return res.json({ success: true, balance_restored: balanceRestored, attendance_days_cleared: daysCleared });
+    }
+
     case 'submitProbationReview': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { employee_user_id: sprEmpUid, action: sprAction, extended_until: sprExtUntil, manager_scores: sprScores, manager_comments: sprMgrComments } = p;
