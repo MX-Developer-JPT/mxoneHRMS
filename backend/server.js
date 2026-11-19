@@ -395,6 +395,18 @@ cron.schedule('0 0 * * *', misJob('daily'), { timezone: 'Asia/Kolkata' });
 cron.schedule('10 0 * * 1', misJob('weekly'), { timezone: 'Asia/Kolkata' });
 cron.schedule('10 0 1 * *', misJob('monthly'), { timezone: 'Asia/Kolkata' });
 
+// ── One-time repair: days already corrected by a regularisation must not carry the early-departure flag or the
+// "auto-closed" note produced by the original wrong punches. Idempotent; runs shortly after boot. ──
+setTimeout(async () => {
+  try {
+    const { run } = await import('./db.js');
+    const r = await run(`UPDATE entities SET data = ((data::jsonb || '{"early_departure":false,"early_departure_minutes":0}'::jsonb) - 'auto_closed' - 'auto_closed_reason' - 'auto_closed_at')::text, updated_at = NOW()::TEXT
+      WHERE type='Attendance' AND data::jsonb->>'regularised'='true'
+        AND (data::jsonb->>'early_departure'='true' OR COALESCE(NULLIF(data::jsonb->>'early_departure_minutes',''),'0')::numeric > 0 OR data::jsonb ? 'auto_closed_reason')`);
+    if (r.rowCount) console.log(`[attendance-repair] cleared stale early-departure / auto-close flags on ${r.rowCount} regularised day(s)`);
+  } catch (err) { console.error('[attendance-repair] failed:', err.message); }
+}, 150 * 1000);
+
 // ── Left employees: disable their login once the exit date arrives — 12:10 AM IST, plus once shortly after boot. ──
 startDisabledRefresh();
 cron.schedule('10 0 * * *', () => { runAccountDisable().catch(err => console.error('[account-access] failed:', err.message)); }, { timezone: 'Asia/Kolkata' });

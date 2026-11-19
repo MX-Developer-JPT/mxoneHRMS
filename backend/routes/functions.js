@@ -10812,7 +10812,12 @@ router.post('/:name', async (req, res) => {
               regularisation_id,
               check_in_time:  finalCheckIn,
               check_out_time: finalCheckOut,
+              // The times were corrected, so what the ORIGINAL (wrong) punches produced no longer applies: no early-departure
+              // flag and no "auto-closed" note. A corrected check-in likewise clears the late-arrival flag.
+              early_departure: false, early_departure_minutes: 0,
+              ...(reg.requested_check_in ? { late_arrival: false, late_minutes: 0 } : {}),
             };
+            delete updAtt.auto_closed; delete updAtt.auto_closed_reason; delete updAtt.auto_closed_at;
             // Also repairs the DB user_id column when the row was only
             // found via its JSON field (see comment above) — otherwise the
             // very next lookup for this same row (getAllAttendance,
