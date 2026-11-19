@@ -10,6 +10,7 @@ import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeave
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { createHash } from 'crypto';
+import { disableIfDue, reenableAccount } from '../utils/accountAccess.js';
 import { publicFence as geoPublicFence, isShaped as geoIsShaped, signedDistanceM as geoSignedDistanceM } from '../utils/geofenceShape.js';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
@@ -16156,6 +16157,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       await run("UPDATE entities SET data=$1,status='completed',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecUpd), cecRow.id]);
       const cecEmpRow = await one("SELECT id FROM entities WHERE type='Employee' AND user_id=$1", [cecExit.user_id]);
       if (cecEmpRow) await run("UPDATE entities SET data=jsonb_set(jsonb_set(data::jsonb,'{status}','\"resigned\"'),'{exit_date}',$1::jsonb)::text,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecExit.last_working_date || null), cecEmpRow.id]);
+      await disableIfDue(cecExit.user_id).catch(e => console.error('[closeExitCase] account disable failed:', e.message));
       await notify(cecExit.user_id, { title: 'Exit Process Completed', message: 'Your exit process has been completed. Your relieving and experience letters will be shared shortly.', type: 'success', link: '/my-exit' });
       return res.json({ success: true });
     }
@@ -16184,6 +16186,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         exit_reason: melReason || '', exit_marked_by: cu.id, exit_marked_by_name: cu.full_name, exit_marked_at: melNow,
       };
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(melUpd), melType, melRow.id]);
+      await disableIfDue(melUserId).catch(e => console.error('[markEmployeeAsLeft] account disable failed:', e.message));
       return res.json({ success: true });
     }
 
@@ -16200,6 +16203,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (!rleRow) return res.json({ success: false, error: 'Employee record not found' });
       const rleEmp = JSON.parse(rleRow.data);
       if (!['resigned', 'terminated', 'retired'].includes(rleEmp.status)) return res.json({ success: false, error: 'Employee is not currently archived' });
+      const rleAcc = await reenableAccount(rleUserId);
+      if (!rleAcc.ok) return res.json({ success: false, error: rleAcc.error });
       const rleUpd = { ...rleEmp, status: 'active', exit_date: null };
       await run("UPDATE entities SET data=$1,status='active',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(rleUpd), rleRow.id]);
       const rleUserRow = await one('SELECT full_name FROM users WHERE id=$1', [rleUserId]);

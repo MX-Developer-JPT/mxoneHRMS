@@ -18,6 +18,7 @@ import { JWT_SECRET as LD_JWT_SECRET } from './routes/auth.js';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
 import { spawn, execSync } from 'child_process';
+import { blockDisabledTokens, startDisabledRefresh, runAccountDisable } from './utils/accountAccess.js';
 import cron from 'node-cron';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -260,6 +261,8 @@ app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
   res.json({ id: _req.params.id, public_settings: { auth_required: true, google_auth_enabled: false }, app_name: 'Maxvolt One' });
 });
 
+// Tokens of disabled accounts (people who have left) stop working everywhere, immediately.
+app.use('/api', blockDisabledTokens);
 app.use('/api/auth',            authLimiter, authRouter);
 app.use('/api/onboarding-invite', authLimiter, onboardingInviteRouter);   // public: open the emailed invite link, set a password
 app.use('/api/entities',        entitiesRouter);
@@ -391,6 +394,11 @@ const misJob = (period) => async () => {
 cron.schedule('0 0 * * *', misJob('daily'), { timezone: 'Asia/Kolkata' });
 cron.schedule('10 0 * * 1', misJob('weekly'), { timezone: 'Asia/Kolkata' });
 cron.schedule('10 0 1 * *', misJob('monthly'), { timezone: 'Asia/Kolkata' });
+
+// ── Left employees: disable their login once the exit date arrives — 12:10 AM IST, plus once shortly after boot. ──
+startDisabledRefresh();
+cron.schedule('10 0 * * *', () => { runAccountDisable().catch(err => console.error('[account-access] failed:', err.message)); }, { timezone: 'Asia/Kolkata' });
+setTimeout(() => { runAccountDisable().catch(err => console.error('[account-access] boot sweep failed:', err.message)); }, 120 * 1000);
 
 // ── MIS history: nightly headcount / vacancy / offer snapshot (also detects department moves and candidate stage
 // changes made through any write path). 12:30 AM IST, plus a catch-up shortly after boot if today's is missing. ──

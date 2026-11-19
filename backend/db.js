@@ -154,6 +154,10 @@ async function initSchema() {
     -- not merely a disclosure the user can't act on.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_consent_given BOOLEAN DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_consent_at    TEXT;
+    -- A left employee's login is disabled (see utils/accountAccess.js): the e-mail moves to former_email so it can be used again.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at     TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_reason TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS former_email    TEXT;
   `);
 
   // files: support R2-backed rows (key reference instead of inline bytes)
