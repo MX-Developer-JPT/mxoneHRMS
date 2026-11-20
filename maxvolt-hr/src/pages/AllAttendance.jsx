@@ -417,6 +417,22 @@ export default function AllAttendance() {
     finally { setExportingLoc(false); }
   };
 
+  // Everyone who left short without a gate pass, for the month of the selected date (a manager gets their own team).
+  const exportLeftNoGatePass = async () => {
+    const [yr, mo] = date.split('-').map(Number);
+    const from = `${yr}-${String(mo).padStart(2, '0')}-01`;
+    const to = `${yr}-${String(mo).padStart(2, '0')}-${String(new Date(yr, mo, 0).getDate()).padStart(2, '0')}`;
+    try {
+      toast.info('Preparing the export…');
+      const res = await base44.functions.invoke('exportLeftWithoutGatePass', { from, to, team_only: isTeamScoped });
+      if (!res.data?.success) { toast.error(res.data?.error || 'Export failed'); return; }
+      const bytes = Uint8Array.from(atob(res.data.base64), c => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const a = document.createElement('a'); a.href = url; a.download = res.data.filename; a.click(); URL.revokeObjectURL(url);
+      toast.success(`${res.data.records} case(s) exported`);
+    } catch (e) { toast.error('Export error: ' + e.message); }
+  };
+
   const exportDetailedReport = async () => {
     const [yr, mo] = date.split('-').map(Number);
     try {
@@ -567,6 +583,9 @@ export default function AllAttendance() {
             </Button>
             <Button variant="outline" size="sm" onClick={exportSwipeDetails} disabled={exportingSwipe} title="Export first check-in/last check-out, method (biometric/selfie/geofence) and locations for every day of the month">
               {exportingSwipe ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Fingerprint className="w-4 h-4 mr-1" />} Swipe Details
+            </Button>
+            <Button variant="outline" size="sm" onClick={exportLeftNoGatePass} title="Download everyone who left short (short attendance / half day) without a gate pass, for the month of the selected date">
+              <AlertTriangle className="w-4 h-4 mr-1" /> Left w/o Gate Pass
             </Button>
             {canExportLocations && (<>
               <Button variant="outline" size="sm" onClick={() => exportLocations('day')} disabled={exportingLoc} title="Download every check-in / check-out location for the selected date, each with a link to the exact point on the map">
