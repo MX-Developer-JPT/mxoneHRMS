@@ -8714,7 +8714,37 @@ router.post('/:name', async (req, res) => {
         }
       }
 
-      return res.json({ records: Object.values(best), gate_passes: gatePasses });
+      // "Left without a gate pass": a day that ended SHORT (short attendance / half day because the working hours were not
+      // completed) with the last check-out at least LEFT_EARLY_MIN minutes before the shift's end and no gate pass for that day.
+      // Computed here from each record's own check-out and the employee's shift, so it covers every past day too (nothing has
+      // to be back-filled in the stored records). Leave-driven half days, regularised days (HR corrected them) and anyone who
+      // had a gate pass are never flagged; leaving 40 minutes early (still a full day) is below the threshold.
+      const LEFT_EARLY_MIN = 60;
+      const finalRecords = Object.values(best);
+      const dates = finalRecords.map(r => r.date).filter(Boolean).sort();
+      if (dates.length) {
+        const gpDays = new Set();
+        for (const r of await all("SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date' >= $1 AND data::jsonb->>'request_date' <= $2", [dates[0], dates[dates.length - 1]])) {
+          const g = JSON.parse(r.data);
+          if (g.employee_user_id && ['approved', 'departed', 'returned', 'auto_closed'].includes(g.status)) gpDays.add(`${g.employee_user_id}__${g.request_date}`);
+        }
+        const lwShifts = {}; let lwDefault = { start_time: '09:00', end_time: '18:00' };
+        for (const r of await all("SELECT data FROM entities WHERE type='Shift'")) { const sh = JSON.parse(r.data); lwShifts[sh.id] = sh; if (sh.is_default) lwDefault = sh; }
+        const lwEmp = {}; for (const r of await all("SELECT user_id, data FROM entities WHERE type='Employee'")) { try { lwEmp[r.user_id] = JSON.parse(r.data).shift_id; } catch { /* skip */ } }
+        for (const rec of finalRecords) {
+          if (!['half_day', 'short_attendance'].includes(rec.status)) continue;
+          if (rec.leave_id || rec.regularised || rec.is_in_progress || !rec.check_out_time || !rec.date) continue;
+          if (gpDays.has(`${rec.user_id}__${rec.date}`)) continue;
+          const shift = (lwEmp[rec.user_id] && lwShifts[lwEmp[rec.user_id]]) || lwDefault;
+          const out = Date.parse(String(rec.check_out_time).endsWith('Z') ? rec.check_out_time : rec.check_out_time + 'Z');
+          const end = shiftEndDateTime(rec.date, shift).getTime();
+          if (Number.isNaN(out)) continue;
+          const early = Math.round((end - out) / 60000);
+          if (early >= LEFT_EARLY_MIN) { rec.left_without_gate_pass = true; rec.left_early_minutes = early; rec.shift_end_time = shift.end_time || '18:00'; }
+        }
+      }
+
+      return res.json({ records: finalRecords, gate_passes: gatePasses });
     }
 
     case 'syncManagerRoles': {

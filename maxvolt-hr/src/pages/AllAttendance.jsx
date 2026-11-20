@@ -36,6 +36,16 @@ const STATUS_COLORS = {
 // everything else still falls back to the raw status.replace('_',' ').
 const STATUS_LABELS = { on_duty: 'OD', work_from_home: 'WFH' };
 
+// Times on attendance / gate-pass records are stored as IST clock digits: read them as written (no timezone shift).
+const clock12 = (iso) => {
+  const m = /T(\d{2}):(\d{2})/.exec(String(iso || ''));
+  if (!m) return '';
+  let h = Number(m[1]); const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return `${String(h).padStart(2, '0')}:${m[2]} ${ap}`;
+};
+const hhmm12 = (t) => clock12(`T${t || '18:00'}`);
+const earlyLabel = (mins) => (mins >= 60 ? `${Math.floor(mins / 60)}h${mins % 60 ? ` ${mins % 60}m` : ''}` : `${mins}m`);
+
 const GATE_PASS_OUTING_LABELS = {
   official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing',
   half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave',
@@ -284,6 +294,7 @@ export default function AllAttendance() {
   const filtered = useMemo(() => {
     return rows.filter(r => {
       if (statusFilter === 'gate_pass') return !!r._gatePass;
+      if (statusFilter === 'left_no_gp') return !!r.left_without_gate_pass;
       if (statusFilter === 'half_day_leave') return isHalfDayLeave(r);
       const displayStatus = getDisplayStatus(r);
       if (statusFilter !== 'all' && displayStatus !== statusFilter) return false;
@@ -329,6 +340,7 @@ export default function AllAttendance() {
     earlyOut: rows.filter(r => r.early_departure || r.early_departure_minutes > 0).length,
     totalHours: rows.reduce((s, r) => s + (r.working_hours || 0), 0),
     gatePass: rows.filter(r => r._gatePass).length,
+    leftNoGp: rows.filter(r => r.left_without_gate_pass).length,
     currentlyOut: rows.filter(r => r._gatePass?.is_out).length,
   }), [rows]);
 
@@ -607,6 +619,7 @@ export default function AllAttendance() {
             { label: 'Late', value: stats.late, color: 'text-orange-600' },
             { label: 'Early Out', value: stats.earlyOut, color: 'text-amber-600' },
             { label: 'On Gate Pass', value: stats.gatePass, color: 'text-orange-600', filter: 'gate_pass' },
+            { label: 'Left w/o Gate Pass', value: stats.leftNoGp, color: 'text-red-600', filter: 'left_no_gp' },
           ].map(s => (
             <Card
               key={s.label}
@@ -647,6 +660,7 @@ export default function AllAttendance() {
                 { value: 'on_duty', label: 'OD (Outduty)' },
                 { value: 'work_from_home', label: 'WFH' },
                 { value: 'gate_pass', label: 'On Gate Pass' },
+                { value: 'left_no_gp', label: 'Left without Gate Pass' },
               ]} />
               <MobileSelect value={deptFilter} onValueChange={setDeptFilter} label="Department" className="w-[160px]" options={[
                 { value: 'all', label: 'All Departments' },
@@ -810,7 +824,7 @@ export default function AllAttendance() {
                       return (
                         <div
                           key={record.id}
-                          className={`grid grid-cols-1 sm:grid-cols-[minmax(160px,240px)_1fr] gap-3 p-3 rounded-lg border bg-white hover:shadow-sm transition-shadow ${!record._virtual ? 'cursor-pointer' : ''}`}
+                          className={`grid grid-cols-1 sm:grid-cols-[minmax(160px,240px)_1fr] gap-3 p-3 rounded-lg border ${record.left_without_gate_pass ? 'bg-red-50 border-red-300' : 'bg-white'} hover:shadow-sm transition-shadow ${!record._virtual ? 'cursor-pointer' : ''}`}
                           onClick={() => !record._virtual && setSelectedRecord(record)}
                         >
                           {/* Name column — a hard grid track, not a flex sibling, so it can
@@ -980,6 +994,18 @@ export default function AllAttendance() {
                                 {record._gatePass.is_out ? '🚪 Out' : 'Gate Pass'}
                                 {(GATE_PASS_OUTING_LABELS[record._gatePass.outing_type] || record._gatePass.outing_type) &&
                                   ` — ${GATE_PASS_OUTING_LABELS[record._gatePass.outing_type] || record._gatePass.outing_type}`}
+                              </Badge>
+                            )}
+                            {record._gatePass && (record._gatePass.departure_time || record._gatePass.return_time) && (
+                              <span className="inline-flex items-center gap-1 text-xs font-medium text-sky-900 bg-sky-50 border border-sky-200 rounded px-1.5 py-0.5" title="Gate pass movement">
+                                🚪 Out {record._gatePass.departure_time ? clock12(record._gatePass.departure_time) : '—'}
+                                {' · '}
+                                {record._gatePass.return_time ? `Back ${clock12(record._gatePass.return_time)}` : (record._gatePass.is_out ? 'not back yet' : 'did not return')}
+                              </span>
+                            )}
+                            {record.left_without_gate_pass && (
+                              <Badge className="text-xs border bg-red-100 text-red-800 border-red-300" title={`Last check-out ${clock12(record.check_out_time)}; shift ends ${hhmm12(record.shift_end_time)}. No gate pass was taken.`}>
+                                ⚠ Left without gate pass — out {clock12(record.check_out_time)}, {earlyLabel(record.left_early_minutes)} before shift end
                               </Badge>
                             )}
                             {record.regularised && (
