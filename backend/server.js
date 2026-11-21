@@ -407,6 +407,12 @@ setTimeout(async () => {
   } catch (err) { console.error('[attendance-repair] failed:', err.message); }
 }, 150 * 1000);
 
+// ── Manpower requisitions: target-date and pending-approval reminders — 9:40 AM IST ──
+cron.schedule('40 9 * * *', async () => {
+  try { const { sendMrfReminders } = await import('./cron/mrfReminders.js'); await sendMrfReminders(); }
+  catch (err) { console.error('[mrf-reminders] failed:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
+
 // ── Left employees: disable their login once the exit date arrives — 12:10 AM IST, plus once shortly after boot. ──
 startDisabledRefresh();
 cron.schedule('10 0 * * *', () => { runAccountDisable().catch(err => console.error('[account-access] failed:', err.message)); }, { timezone: 'Asia/Kolkata' });

@@ -134,6 +134,7 @@ const managementMenuGroups = [
     { name: 'Recruitment Analytics',    icon: BarChart3,       page: 'RecruitmentAnalytics' },
   ]},
   { label: 'Recruitment', items: [
+    { name: 'Manpower Requisition (MRF)', icon: Briefcase, page: 'ManpowerRequisitions' },
     { name: 'Job Requisitions',         icon: Briefcase,       page: 'JobRequisitions' },
     { name: 'Candidates',               icon: UserPlus,        page: 'Recruitment' },
     { name: 'Interviews',               icon: Calendar,        page: 'InterviewManagement' },
@@ -195,6 +196,7 @@ const managerMenuGroups = [
   ]},
   { label: 'My Team', items: [
     { name: 'My Team',                  icon: Users,           page: 'Employees' },
+    { name: 'Manpower Requisition (MRF)', icon: Briefcase,    page: 'ManpowerRequisitions' },
     { name: 'Team Attendance',          icon: BarChart3,       page: 'AllAttendance' },
     { name: 'Leave Approvals',          icon: FileText,        page: 'LeaveManagement' },
     { name: 'Regularisation Approvals', icon: Clock,           page: 'RegularisationApproval' },
@@ -311,6 +313,7 @@ const hrMenuGroups = [
     { name: 'Payroll Settings',        icon: Settings,        page: 'PayrollSettings' },
   ]},
   { label: 'Recruitment', items: [
+    { name: 'Manpower Requisition (MRF)', icon: Briefcase, page: 'ManpowerRequisitions' },
     { name: 'Job Requisitions',        icon: Briefcase,       page: 'JobRequisitions' },
     { name: 'Candidates',              icon: UserPlus,        page: 'Recruitment' },
     { name: 'Interviews',              icon: Calendar,        page: 'InterviewManagement' },
@@ -396,6 +399,7 @@ const recruiterMenuGroups = [
     { name: 'Pulse Surveys',            icon: ClipboardList,   page: 'PulseSurveys' },
   ]},
   { label: 'Recruitment', items: [
+    { name: 'Manpower Requisition (MRF)', icon: Briefcase, page: 'ManpowerRequisitions' },
     { name: 'Job Requisitions',         icon: Briefcase,       page: 'JobRequisitions' },
     { name: 'Candidates',               icon: UserPlus,        page: 'Recruitment' },
     { name: 'Interviews',               icon: Calendar,        page: 'InterviewManagement' },

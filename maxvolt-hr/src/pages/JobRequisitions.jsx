@@ -439,7 +439,8 @@ Return ONLY the job description content as plain text with clear section headers
     e.target.value = '';
   };
 
-  const filtered = requisitions.filter(r => {
+  // Requisitions raised through the new Manpower Requisition (MRF) workflow live on their own page.
+  const filtered = requisitions.filter(r => r.mrf_version !== 2).filter(r => {
     if (filterStatus !== 'all' && r.status !== filterStatus) return false;
     if (filterDept !== 'all' && r.department !== filterDept) return false;
     if (search.trim()) {
@@ -492,12 +493,14 @@ Return ONLY the job description content as plain text with clear section headers
               </>
             )}
             {canCreate && (
-              <Button onClick={() => setShowForm(true)} className="bg-blue-600 hover:bg-blue-700">
-                <Plus className="w-4 h-4 mr-2" /> New Requisition
+              <Button asChild className="bg-blue-600 hover:bg-blue-700">
+                <Link to="/ManpowerRequisitions"><Plus className="w-4 h-4 mr-2" /> New Requisition (MRF)</Link>
               </Button>
             )}
           </div>
         </div>
+
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">New requisitions now use the <Link to="/ManpowerRequisitions" className="underline font-medium">Manpower Requisition (MRF) workflow</Link> — the Hiring Manager approves the Job Description and HR publishes. This page keeps the earlier requisitions.</div>
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

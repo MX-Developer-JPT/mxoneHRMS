@@ -67,6 +67,7 @@ const Helpdesk = lazy(() => import('./pages/Helpdesk'));
 const HolidayCalendar = lazy(() => import('./pages/HolidayCalendar'));
 const InterviewManagement = lazy(() => import('./pages/InterviewManagement'));
 const JobRequisitions = lazy(() => import('./pages/JobRequisitions'));
+const ManpowerRequisitions = lazy(() => import('./pages/ManpowerRequisitions'));
 const Leave = lazy(() => import('./pages/Leave'));
 const LeaveManagement = lazy(() => import('./pages/LeaveManagement'));
 const LoanManagement = lazy(() => import('./pages/LoanManagement'));
@@ -155,6 +156,7 @@ export const PAGES = {
     "HolidayCalendar": HolidayCalendar,
     "InterviewManagement": InterviewManagement,
     "JobRequisitions": JobRequisitions,
+    "ManpowerRequisitions": ManpowerRequisitions,
     "Leave": Leave,
     "LeaveManagement": LeaveManagement,
     "LoanManagement": LoanManagement,
