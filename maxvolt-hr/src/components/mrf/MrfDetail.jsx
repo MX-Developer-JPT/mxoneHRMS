@@ -7,6 +7,7 @@ import { Loader2, Check, X, Undo2, Send, Pause, Play, CheckCircle2, Ban, Calenda
 import { toast } from 'sonner';
 import { mrf, statusOf, PRIORITY_CLS, STAGES, stageIndex, fmt, labelOf } from '@/lib/mrf';
 import JdPanel, { JdText } from './JdPanel';
+import { SearchSelect } from './Pickers';
 
 const CHANNELS = ['Careers page', 'LinkedIn', 'Naukri', 'Indeed', 'Employee referral', 'Campus / placement cell'];
 
@@ -35,6 +36,7 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
   const [reason, setReason] = useState('');
   const [pub, setPub] = useState(null);          // publish dialog state
   const [extend, setExtend] = useState(null);
+  const [reassign, setReassign] = useState(null);   // { hms, to, reason }
 
   const load = async () => { try { const d = await mrf('mrf_get', { id }); setRec(d.requisition); } catch (e) { toast.error(e.message); onClose(); } };
   useEffect(() => { if (id) { setRec(null); load(); } }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -51,7 +53,9 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
   const L = (kind, v) => labelOf(masters, kind, v);
   const status = rec?.status;
   const jdPerms = { can_generate: !!p.can_generate_jd, can_edit: !!p.can_edit_jd };
-  const needAsk = (title, needsReason, run, label = 'Confirm') => { setReason(''); setAsk({ title, needsReason, run, label }); };
+  const needAsk = (title, needsReason, run, label = 'Confirm', placeholder) => { setReason(''); setAsk({ title, needsReason, run, label, placeholder }); };
+  const openReassign = async () => { try { const d = await mrf('mrf_hiring_managers', { department: rec.department }); setReassign({ hms: d.managers || [], to: '', reason: '' }); } catch (e) { toast.error(e.message); } };
+  const openVacancies = Math.max(0, (Number(rec?.number_of_positions) || 1) - (Number(rec?.positions_filled) || 0));
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -76,7 +80,7 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
               <div className="rounded-lg border p-3 space-y-1">
                 <p className="text-xs font-bold uppercase text-muted-foreground mb-1">Requisition</p>
                 <Row k="Department" v={rec.department} /><Row k="Type" v={L('requisition_type', rec.requisition_type)} /><Row k="Tier" v={rec.position_tier === 'other_custom' ? rec.position_tier_custom : L('position_tier', rec.position_tier)} />
-                <Row k="Vacancies" v={rec.number_of_positions} /><Row k="Employment" v={L('employment_type', rec.employment_type)} /><Row k="Raised by" v={rec.requested_by_name} />
+                <Row k="Vacancies" v={`${rec.number_of_positions}${rec.positions_filled ? ` (${rec.positions_filled} filled)` : ''}`} /><Row k="Applications received" v={rec.applications || ''} /><Row k="Employment" v={L('employment_type', rec.employment_type)} /><Row k="Raised by" v={rec.requested_by_name} />
                 <Row k="Hiring Manager" v={rec.hiring_manager_name} /><Row k="Reports to" v={rec.reports_to_name} /><Row k="Date" v={fmt(rec.requisition_date)} />
                 <Row k="Replacing" v={rec.replaced_employee_name ? `${rec.replaced_employee_name}${rec.replaced_employee_code ? ` (${rec.replaced_employee_code})` : ''} — ${rec.replacement_reason || ''}` : ''} />
               </div>
@@ -115,6 +119,7 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
 
             {/* actions */}
             <div className="flex flex-wrap gap-2 border-t pt-3">
+              {p.can_reassign_hm && <Button variant="outline" onClick={openReassign}>Change Hiring Manager</Button>}
               {p.can_edit_details && <Button variant="outline" onClick={() => onEdit?.(rec)}><Pencil className="w-4 h-4 mr-1.5" />Edit details{status === 'changes_requested' ? ' & resubmit' : ''}</Button>}
               {p.can_decide && (
                 <>
@@ -136,7 +141,9 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
               {p.publisher && status === 'on_hold' && <Button variant="outline" onClick={() => act('resume', () => mrf('mrf_status', { id, to: 'resume' }), 'Resumed')}><Play className="w-4 h-4 mr-1.5" />Resume</Button>}
               {p.publisher && ['published', 'on_hold', 'pending_hr_publication'].includes(status) && (
                 <>
-                  <Button variant="outline" className="text-emerald-700" onClick={() => needAsk('Mark this requisition as filled', false, (r) => mrf('mrf_status', { id, to: 'filled', reason: r }), 'Mark filled')}><CheckCircle2 className="w-4 h-4 mr-1.5" />Filled</Button>
+                  <Button variant="outline" className="text-emerald-700" onClick={() => (rec.number_of_positions > 1
+                    ? needAsk(`How many of the ${openVacancies} open positions were filled?`, true, (r) => mrf('mrf_status', { id, to: 'filled', count: Number(r) || 0 }), 'Save', 'Number filled (e.g. 1)')
+                    : needAsk('Mark this requisition as filled', false, (r) => mrf('mrf_status', { id, to: 'filled', reason: r }), 'Mark filled'))}><CheckCircle2 className="w-4 h-4 mr-1.5" />Filled</Button>
                   <Button variant="outline" onClick={() => needAsk('Close this requisition without filling', false, (r) => mrf('mrf_status', { id, to: 'closed', reason: r }), 'Close')}>Close</Button>
                   <Button variant="outline" onClick={() => setExtend({ date: rec.target_hire_date || '', note: '' })}><CalendarClock className="w-4 h-4 mr-1.5" />Target date</Button>
                 </>
@@ -162,7 +169,7 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
         <Dialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)}>
           <DialogContent className="max-w-md">
             <DialogHeader><DialogTitle>{ask?.title}</DialogTitle></DialogHeader>
-            <Input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder={ask?.needsReason ? 'Reason / comment (required)' : 'Note (optional)'} />
+            <Input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder={ask?.placeholder || (ask?.needsReason ? 'Reason / comment (required)' : 'Note (optional)')} />
             <DialogFooter>
               <Button variant="outline" onClick={() => setAsk(null)}>Back</Button>
               <Button disabled={!!busy || (ask?.needsReason && reason.trim().length < 3)} onClick={async () => { const a = ask; setAsk(null); await act('ask', () => a.run(reason.trim()), 'Done'); }}>{ask?.label}</Button>
@@ -188,6 +195,21 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
               <Button variant="outline" onClick={() => act('save_unpub', () => mrf('mrf_hr_action', { id, action: 'save_unpublished', channels: pub.channels, notes: pub.notes }), 'Saved without publishing').then(() => setPub(null))}>Save unpublished</Button>
               <Button disabled={!!busy || !pub?.channels.length} onClick={async () => { const x = pub; setPub(null); await act('publish', () => mrf('mrf_hr_action', { id, action: 'publish', channels: x.channels, application_deadline: x.deadline, notes: x.notes }), 'Published'); }}>Publish</Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!reassign} onOpenChange={(o) => !o && setReassign(null)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader><DialogTitle>Change Hiring Manager</DialogTitle></DialogHeader>
+            {reassign && (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">Only possible before the Job Description is approved. The new Hiring Manager must belong to {rec?.department}.</p>
+                <SearchSelect value={reassign.to} onChange={(v) => setReassign({ ...reassign, to: v })} placeholder="Select the new Hiring Manager"
+                  options={reassign.hms.filter((m) => m.user_id !== rec?.hiring_manager_id).map((m) => ({ value: m.user_id, label: m.name, sub: m.designation, badge: m.is_head ? 'Dept head' : m.direct_reports > 0 ? 'Manager' : '' }))} />
+                <Input placeholder="Reason (required)" value={reassign.reason} onChange={(e) => setReassign({ ...reassign, reason: e.target.value })} />
+              </div>
+            )}
+            <DialogFooter><Button disabled={!reassign?.to || (reassign?.reason || '').trim().length < 3} onClick={async () => { const x = reassign; setReassign(null); await act('reassign', () => mrf('mrf_reassign_hm', { id, hiring_manager_id: x.to, reason: x.reason }), 'Hiring Manager changed'); }}>Change</Button></DialogFooter>
           </DialogContent>
         </Dialog>
 

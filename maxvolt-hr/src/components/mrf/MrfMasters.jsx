@@ -16,27 +16,31 @@ export default function MrfMasters({ onChanged }) {
   const [meta, setMeta] = useState({ min: '', max: '' });
   const [edit, setEdit] = useState(null);       // { id, label }
   const [busy, setBusy] = useState(false);
+  const [filter, setFilter] = useState('');
 
   const load = async () => { try { const d = await mrf('mrf_master_list'); setMasters(d.masters); setLabels(d.labels); } catch (e) { toast.error(e.message); } };
   useEffect(() => { load(); }, []);
   const apply = async (fn, ok) => { setBusy(true); try { const d = await fn(); setMasters(d.masters); onChanged?.(); if (ok) toast.success(ok); } catch (e) { toast.error(e.message); } setBusy(false); };
   if (!masters) return <div className="py-10 flex justify-center"><Loader2 className="w-5 h-5 animate-spin" /></div>;
-  const rows = masters[kind] || [];
+  const allRows = masters[kind] || [];
+  const rows = allRows;
+  const shownRows = filter.trim() ? allRows.filter((r) => r.label.toLowerCase().includes(filter.trim().toLowerCase())) : allRows;
   const move = (i, d) => { const ids = rows.map((r) => r.id); const j = i + d; if (j < 0 || j >= ids.length) return; [ids[i], ids[j]] = [ids[j], ids[i]]; apply(() => mrf('mrf_master_reorder', { kind, ids })); };
 
   return (
     <div className="space-y-4 max-w-3xl">
       <p className="text-sm text-muted-foreground">These lists feed the requisition form. Add, rename, deactivate or reorder entries — changes apply immediately. Deactivated entries stay on old requisitions but disappear from new forms.</p>
-      <select className={selectCls + ' max-w-xs'} value={kind} onChange={(e) => { setKind(e.target.value); setEdit(null); }}>
+      <select className={selectCls + ' max-w-xs'} value={kind} onChange={(e) => { setKind(e.target.value); setEdit(null); setFilter(''); }}>
         {Object.entries(labels).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
       </select>
+      {allRows.length > 15 && <Input className="max-w-xs" placeholder={`Search ${allRows.length} entries…`} value={filter} onChange={(e) => setFilter(e.target.value)} />}
       <div className="flex flex-wrap gap-2">
         <Input className="max-w-xs" placeholder={`Add to ${labels[kind] || ''}`} value={newLabel} onChange={(e) => setNewLabel(e.target.value)} />
         {kind === 'experience_range' && <><Input className="w-24" type="number" placeholder="Min yrs" value={meta.min} onChange={(e) => setMeta({ ...meta, min: e.target.value })} /><Input className="w-24" type="number" placeholder="Max yrs" value={meta.max} onChange={(e) => setMeta({ ...meta, max: e.target.value })} /></>}
         <Button disabled={busy || !newLabel.trim()} onClick={() => apply(() => mrf('mrf_master_save', { kind, label: newLabel, meta: kind === 'experience_range' ? meta : undefined }), 'Added').then(() => { setNewLabel(''); setMeta({ min: '', max: '' }); })}><Plus className="w-4 h-4 mr-1.5" />Add</Button>
       </div>
       <div className="border rounded-lg divide-y">
-        {rows.map((r, i) => (
+        {shownRows.map((r) => { const i = allRows.indexOf(r); return (
           <div key={r.id} className={`flex items-center gap-2 p-2 text-sm ${r.is_active === false ? 'opacity-50' : ''}`}>
             <span className="w-6 text-xs text-muted-foreground">{i + 1}</span>
             {edit?.id === r.id ? (
@@ -56,9 +60,9 @@ export default function MrfMasters({ onChanged }) {
               </>
             )}
           </div>
-        ))}
+        ); })}
       </div>
-      <p className="text-xs text-muted-foreground">Departments, work locations and designations come from their own masters (Department Management, Location Master, employee records) — they are not duplicated here.</p>
+      <p className="text-xs text-muted-foreground">Departments and work locations come from their own masters (Department Management, Location Master) — they are not duplicated here. Designations typed on a requisition are added to the Designations list automatically.</p>
     </div>
   );
 }

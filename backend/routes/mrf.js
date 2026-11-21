@@ -67,6 +67,19 @@ async function loadMasters(includeInactive = false) {
   return out;
 }
 
+async function rememberDesignation(name) {
+  const t = String(name || '').trim(); if (!t) return;
+  const rows = (await all("SELECT id, data FROM entities WHERE type=$1", [MT])).map((r) => ({ id: r.id, d: jparse(r.data) })).filter((x) => x.d?.kind === 'designation');
+  if (rows.some((x) => String(x.d.label).toLowerCase() === t.toLowerCase())) return;
+  const id = uuidv4(); const order = Math.max(0, ...rows.map((x) => x.d.order || 0)) + 1;
+  await run("INSERT INTO entities(id,type,status,is_active,data) VALUES($1,$2,'active',1,$3)", [id, MT, JSON.stringify({ id, kind: 'designation', value: t.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 60) || id.slice(0, 8), label: t, order, is_active: true, custom: true })]);
+}
+async function applicationCounts() {
+  const out = {};
+  for (const r of await all("SELECT data FROM entities WHERE type='Candidate'")) { const c = jparse(r.data); const k = c?.requisition_id || c?.job_id; if (k) out[k] = (out[k] || 0) + 1; }
+  return out;
+}
+
 // ── audit, notifications ──
 function addAudit(rec, cx, action, detail = '', extra = {}) {
   rec.audit = [...(rec.audit || []), { at: nowIso(), by: cx.cu.id, by_name: cx.name, role: cx.roles[0] || '', action, detail, ...extra }].slice(-500);
@@ -174,7 +187,9 @@ const H = {
     const P = await people();
     const deps = (await all("SELECT data FROM entities WHERE type='Department'")).map((r) => jparse(r.data)).filter(Boolean).map((d) => ({ name: d.name, code: d.code, head_user_id: d.head_user_id || '' })).sort((a, b) => a.name.localeCompare(b.name));
     const locations = (await all("SELECT data FROM entities WHERE type='AppLocation'")).map((r) => jparse(r.data)).filter((l) => l && l.is_active !== false).map((l) => ({ name: l.name, city: l.city || '', state: l.state || '' }));
-    const designations = [...new Set([...P.emps.filter((e) => e.designation).map((e) => String(e.designation).trim()), ...(await allV2()).map((r) => r.designation).filter(Boolean)])].sort((a, b) => a.localeCompare(b));
+    const desigSeen = new Map();
+    for (const d of [...(masters.designation || []).map((m) => m.label), ...P.emps.map((e) => e.designation), ...(await allV2()).map((r) => r.designation)]) { const t = String(d || '').trim(); if (t && t !== 'Other / Custom' && !desigSeen.has(t.toLowerCase())) desigSeen.set(t.toLowerCase(), t); }
+    const designations = [...desigSeen.values()].sort((a, b) => a.localeCompare(b));
     const me = P.empBy[cx.cu.id] || {};
     const creatorOnlyManager = hasAny(cx, ['manager']) && !hasAny(cx, ['hr', 'admin', 'management']);
     return res.json({ success: true, masters, departments: deps, locations, designations,
@@ -283,6 +298,7 @@ const H = {
     if (!String(rec.jd_current_text || '').trim()) problems.push('Generate the Job Description before submitting');
     if (problems.length) return res.json({ success: false, error: problems[0], errors: problems });
     const bad = await checkHiringManager(rec.department, rec.hiring_manager_id, P); if (bad) return fail(res, bad);
+    await rememberDesignation(rec.designation);
     rec.status = 'pending_hm_approval'; rec.submitted_at = nowIso(); rec.jd_status = 'draft'; rec.changes_request = null;
     addAudit(rec, cx, 'submitted', `Submitted for Hiring Manager approval (${P.name(rec.hiring_manager_id)})`);
     await save(rec, cx.cu.id);
@@ -430,13 +446,36 @@ const H = {
     const P = await people(); const before = rec.status;
     if (to === 'on_hold') { if (!['published', 'pending_hr_publication'].includes(rec.status)) return fail(res, 'Only an approved or published requisition can be put on hold.'); rec.status_before_hold = rec.status; rec.status = 'on_hold'; rec.is_published = false; }
     else if (to === 'resume') { if (rec.status !== 'on_hold') return fail(res, 'This requisition is not on hold.'); rec.status = rec.status_before_hold === 'published' ? 'published' : 'pending_hr_publication'; rec.is_published = rec.status === 'published'; }
-    else if (to === 'filled' || to === 'closed') { if (!['published', 'on_hold', 'pending_hr_publication'].includes(rec.status)) return fail(res, 'This requisition cannot be closed now.'); rec.status = 'closed'; rec.closed_reason = to; rec.closed_at = nowIso(); rec.is_published = false; }
+    else if (to === 'filled' && Number(rec.number_of_positions) > 1 && !p.all) {
+      if (!['published', 'on_hold', 'pending_hr_publication'].includes(rec.status)) return fail(res, 'This requisition cannot be closed now.');
+      const n = Math.floor(Number(p.count) || 0); const left = (Number(rec.number_of_positions) || 1) - (Number(rec.positions_filled) || 0);
+      if (n < 1 || n > left) return fail(res, `Enter how many positions were filled (1 to ${left}).`);
+      rec.positions_filled = (Number(rec.positions_filled) || 0) + n;
+      if (rec.positions_filled >= Number(rec.number_of_positions)) { rec.status = 'closed'; rec.closed_reason = 'filled'; rec.closed_at = nowIso(); rec.is_published = false; }
+    }
+    else if (to === 'filled' || to === 'closed') { if (!['published', 'on_hold', 'pending_hr_publication'].includes(rec.status)) return fail(res, 'This requisition cannot be closed now.'); rec.status = 'closed'; rec.closed_reason = to; rec.closed_at = nowIso(); rec.is_published = false; if (to === 'filled') rec.positions_filled = Number(rec.number_of_positions) || 1; }
     else if (to === 'cancelled') { if (['closed', 'cancelled', 'rejected'].includes(rec.status)) return fail(res, 'This requisition is already finished.'); if (!reason) return fail(res, 'Give a reason for cancelling.'); rec.status = 'cancelled'; rec.cancelled_at = nowIso(); rec.cancel_reason = reason; rec.is_published = false; }
     else return fail(res, 'Unknown status');
-    addAudit(rec, cx, `status_${to}`, `${before} → ${rec.status}${reason ? ' — ' + reason : ''}`);
+    addAudit(rec, cx, `status_${to}`, `${before} → ${rec.status}${to === 'filled' ? ` (${rec.positions_filled || 0}/${rec.number_of_positions} filled)` : ''}${reason ? ' — ' + reason : ''}`);
     await save(rec, cx.cu.id);
-    const word = { on_hold: 'put on hold', resume: 'resumed', filled: 'marked as filled', closed: 'closed', cancelled: 'cancelled' }[to];
+    const word = { on_hold: 'put on hold', resume: 'resumed', filled: rec.status === 'closed' ? 'marked as filled' : `updated — ${rec.positions_filled} of ${rec.number_of_positions} positions filled`, closed: 'closed', cancelled: 'cancelled' }[to];
     await notify([rec.requested_by, rec.hiring_manager_id, ...(to === 'cancelled' ? await hrAudience() : [])], { title: `Requisition ${word}`, message: `${label(rec)} was ${word} by ${cx.name}${reason ? ': ' + reason : '.'}`, type: to === 'filled' ? 'success' : 'info' });
+    return res.json({ success: true, requisition: hydrate(rec, P) });
+  },
+
+  // The named Hiring Manager left or moved: HR / admin / management can name another one while the JD is not yet approved.
+  async mrf_reassign_hm({ p, cx, res }) {
+    if (!hasAny(cx, ['hr', 'admin', 'management'])) return fail(res, 'Only HR, admin or management can change the Hiring Manager.', 403);
+    const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
+    if (!['draft', 'changes_requested', 'pending_hm_approval'].includes(rec.status)) return fail(res, 'The Job Description is already approved — the Hiring Manager can no longer be changed.');
+    const P = await people(); const bad = await checkHiringManager(rec.department, p.hiring_manager_id, P); if (bad) return fail(res, bad);
+    const reason = String(p.reason || '').trim(); if (reason.length < 3) return fail(res, 'Give a reason for the change.');
+    const old = rec.hiring_manager_id; rec.hiring_manager_id = p.hiring_manager_id; if (!rec.reports_to_user_id || rec.reports_to_user_id === old) rec.reports_to_user_id = p.hiring_manager_id;
+    rec.hiring_manager_name = P.name(p.hiring_manager_id);
+    addAudit(rec, cx, 'hiring_manager_changed', `${P.name(old) || '—'} → ${P.name(p.hiring_manager_id)} — ${reason}`);
+    await save(rec, cx.cu.id);
+    await notify([p.hiring_manager_id], { title: rec.status === 'pending_hm_approval' ? 'Job Description needs your approval' : 'You are now the Hiring Manager', message: `${cx.name} named you Hiring Manager for ${label(rec)}.`, type: 'warning' });
+    await notify([old, rec.requested_by], { title: 'Hiring Manager changed', message: `${label(rec)}: new Hiring Manager is ${P.name(p.hiring_manager_id)}.`, email: false });
     return res.json({ success: true, requisition: hydrate(rec, P) });
   },
 
@@ -454,12 +493,14 @@ const H = {
     if (!canSee(rec, cx)) return fail(res, 'You do not have access to this requisition', 403);
     const P = await people();
     const out = hydrate(rec, P);
+    out.applications = (await applicationCounts())[rec.id] || 0;
     out.permissions = {
       creator: isCreator(rec, cx), hiring_manager: isHm(rec, cx), publisher: hasAny(cx, PUBLISH_ROLES), hr: hasAny(cx, HR),
       can_edit_details: isCreator(rec, cx) && M.JD_EDITABLE_BY_CREATOR.includes(rec.status),
       can_edit_jd: isHm(rec, cx) && !['closed', 'cancelled', 'rejected'].includes(rec.status),
       can_generate_jd: (isHm(rec, cx) || (isCreator(rec, cx) && M.JD_EDITABLE_BY_CREATOR.includes(rec.status))) && !['closed', 'cancelled', 'rejected'].includes(rec.status),
       can_decide: isHm(rec, cx) && rec.status === 'pending_hm_approval',
+      can_reassign_hm: hasAny(cx, ['hr', 'admin', 'management']) && ['draft', 'changes_requested', 'pending_hm_approval'].includes(rec.status),
     };
     return res.json({ success: true, requisition: out });
   },
@@ -483,6 +524,7 @@ const H = {
     const open = rows.filter((r) => ['pending_hm_approval', 'changes_requested', 'pending_hr_publication', 'published', 'on_hold'].includes(r.status));
     const overdue = rows.filter((r) => r.target_hire_date && r.target_hire_date < today && ['pending_hm_approval', 'changes_requested', 'pending_hr_publication', 'published', 'on_hold'].includes(r.status));
     const group = (key, valueOf = (r) => r[key]) => { const m = {}; for (const r of rows) { const k = valueOf(r) || '—'; m[k] = (m[k] || 0) + (Number(r.number_of_positions) || 1); } return Object.entries(m).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value); };
+    const apps = await applicationCounts();
     const masters = await loadMasters(true);
     const lab = (kind, v) => (masters[kind] || []).find((m) => m.value === v)?.label || v;
     const age = (r) => Math.round(days(r.requisition_date, today) ?? 0);
@@ -490,8 +532,13 @@ const H = {
     const pendingByHm = {}; for (const r of rows.filter((x) => x.status === 'pending_hm_approval')) pendingByHm[r.hiring_manager_id] = (pendingByHm[r.hiring_manager_id] || 0) + 1;
     const closedFilled = rows.filter((r) => r.closed_reason === 'filled' && r.closed_at && r.target_hire_date);
     return res.json({ success: true,
-      counts: { total: rows.length, draft: count(['draft']), pending_jd_approval: count(['pending_hm_approval', 'changes_requested']), approved: count(['pending_hr_publication', 'published', 'on_hold', 'closed']) - rows.filter((r) => r.status === 'closed' && !r.approved_jd).length, pending_hr_publication: count(['pending_hr_publication']), published: count(['published']), active_hiring: count(['published']),
-        filled: rows.filter((r) => r.closed_reason === 'filled').length, on_hold: count(['on_hold']), cancelled: count(['cancelled', 'rejected']), overdue: overdue.length },
+      counts: { total: rows.length, draft: count(['draft']), pending_jd_approval: count(['pending_hm_approval', 'changes_requested']),
+        approved: rows.filter((r) => !!r.approved_jd || (r.status === 'closed' && !!r.hm_approved_at)).length,
+        pending_hr_publication: count(['pending_hr_publication']), published: count(['published']),
+        active_hiring: rows.filter((r) => r.status === 'published' && (apps[r.id] || 0) > 0).length,
+        filled: rows.filter((r) => r.closed_reason === 'filled').length, positions_filled: rows.reduce((sum, r) => sum + (Number(r.positions_filled) || 0), 0),
+        vacancies_open: open.reduce((sum, r) => sum + Math.max(0, (Number(r.number_of_positions) || 1) - (Number(r.positions_filled) || 0)), 0),
+        on_hold: count(['on_hold']), cancelled: count(['cancelled', 'rejected']), overdue: overdue.length },
       analytics: {
         by_department: group('department'), by_tier: group('position_tier', (r) => (r.position_tier === 'other_custom' ? r.position_tier_custom : lab('position_tier', r.position_tier))),
         new_vs_replacement: group('requisition_type', (r) => lab('requisition_type', r.requisition_type)),
@@ -499,7 +546,7 @@ const H = {
         target_vs_actual_days: avg(closedFilled.map((r) => days(r.target_hire_date, r.closed_at.slice(0, 10)))), ageing: buckets,
         pending_by_hiring_manager: Object.entries(pendingByHm).map(([id, value]) => ({ name: P.name(id) || id, value })).sort((a, b) => b.value - a.value),
       },
-      requisitions: rows.map((r) => ({ ...summary(r, P), age_days: age(r), overdue: overdue.includes(r) })).sort((a, b) => String(b.requisition_date).localeCompare(String(a.requisition_date))).slice(0, 500) });
+      requisitions: rows.map((r) => ({ ...summary(r, P), age_days: age(r), overdue: overdue.includes(r), applications: apps[r.id] || 0 })).sort((a, b) => String(b.requisition_date).localeCompare(String(a.requisition_date))).slice(0, 500) });
   },
 };
 

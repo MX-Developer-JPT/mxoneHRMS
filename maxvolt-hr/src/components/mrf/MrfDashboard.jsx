@@ -9,7 +9,7 @@ import { mrf, statusOf, PRIORITY_CLS, fmt, labelOf } from '@/lib/mrf';
 import { selectCls } from './Pickers';
 
 const CARDS = [['total', 'Total'], ['draft', 'Draft'], ['pending_jd_approval', 'Pending JD approval'], ['approved', 'Approved'], ['pending_hr_publication', 'Pending HR publication'], ['published', 'Published'],
-  ['active_hiring', 'Active hiring'], ['filled', 'Filled'], ['on_hold', 'On hold'], ['cancelled', 'Cancelled / rejected'], ['overdue', 'Overdue']];
+  ['active_hiring', 'Active hiring (has applications)'], ['filled', 'Filled requisitions'], ['positions_filled', 'Positions filled'], ['vacancies_open', 'Open vacancies'], ['on_hold', 'On hold'], ['cancelled', 'Cancelled / rejected'], ['overdue', 'Overdue']];
 
 function Bars({ title, rows, unit = '', empty = 'No data yet' }) {
   const max = Math.max(1, ...(rows || []).map((r) => r.value));
@@ -86,7 +86,7 @@ export default function MrfDashboard({ options, onOpen }) {
                     <span className="font-mono text-xs text-muted-foreground">{r.requisition_id}</span><span className="font-medium">{r.designation}</span>
                     <Badge className={st.cls}>{st.label}</Badge><Badge className={PRIORITY_CLS[r.priority] || ''}>{labelOf(masters, 'priority', r.priority)}</Badge>
                     {r.overdue && <Badge className="bg-red-100 text-red-700">Overdue</Badge>}
-                    <span className="text-xs text-muted-foreground ml-auto">{r.department} · HM {r.hiring_manager_name || '—'} · target {r.target_hire_date ? fmt(r.target_hire_date) : '—'} · {r.age_days}d old</span>
+                    <span className="text-xs text-muted-foreground ml-auto">{r.applications ? `${r.applications} application${r.applications > 1 ? 's' : ''} · ` : ''}{r.department} · HM {r.hiring_manager_name || '—'} · target {r.target_hire_date ? fmt(r.target_hire_date) : '—'} · {r.age_days}d old</span>
                   </button>
                 ); })}
               </div>
