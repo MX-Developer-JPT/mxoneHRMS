@@ -2504,6 +2504,11 @@ router.post('/:name', async (req, res) => {
     const { handleAppraisal } = await import('./appraisal.js');
     return await handleAppraisal(name, p, cu, res);
   }
+  // Manpower Requisition Form (routes/mrf.js) — every mrf_* function
+  if (name.startsWith('mrf_')) {
+    const { handleMrf } = await import('./mrf.js');
+    return await handleMrf(name, p, cu, res);
+  }
   // Asset handover letters & asset specifications (routes/assetLetters.js) — every al_* function
   if (name.startsWith('al_')) {
     const { handleAssetLetters } = await import('./assetLetters.js');
@@ -13485,7 +13490,11 @@ ${contextBlock || 'No employee context available — answer from general policy 
     case 'getPublishedJob': {
       const jobId = p.job_id || p.jobId;
       const row = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [jobId]);
-      return res.json(row ? { job: JSON.parse(row.data) } : { job: null });
+      if (!row) return res.json({ job: null });
+      const { publicJob } = await import('./mrf.js');
+      const gj = JSON.parse(row.data);
+      if (gj.mrf_version === 2 && !(gj.is_published && gj.status === 'published')) return res.json({ job: null });
+      return res.json({ job: publicJob(gj) });
     }
 
     // Public careers page (maxone.maxvoltenergy.com/career) — deliberately
@@ -13503,12 +13512,14 @@ ${contextBlock || 'No employee context available — answer from general policy 
     case 'getPublishedJobs': {
       const rows = await all("SELECT data FROM entities WHERE type='JobRequisition'");
       const todayStr = new Date().toISOString().slice(0, 10);
+      const { publicJob } = await import('./mrf.js');
       const jobs = rows.map(r => JSON.parse(r.data)).filter(j => {
+        if (j.mrf_version === 2) return j.is_published === true && j.status === 'published' && (!j.application_deadline || j.application_deadline.slice(0, 10) >= todayStr);
         const isPublished = j.is_published === true || j.status === 'published' || j.status === 'approved';
         const notExpired = !j.application_deadline || j.application_deadline.slice(0, 10) >= todayStr;
         const notClosed = !['closed', 'cancelled', 'rejected', 'hr_rejected', 'manager_rejected'].includes(j.status);
         return isPublished && notExpired && notClosed;
-      }).sort((a, b) => new Date(b.published_date || 0) - new Date(a.published_date || 0));
+      }).sort((a, b) => new Date(b.published_date || 0) - new Date(a.published_date || 0)).map(publicJob);
       return res.json({ success: true, jobs });
     }
 

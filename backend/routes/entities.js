@@ -176,6 +176,17 @@ async function autoPromoteReportingManager(managerId) {
   } catch (e) { console.error('[entities] autoPromoteReportingManager failed:', e.message); }
 }
 
+// New-style manpower requisitions (mrf_version 2) carry CTC, notes and an audit trail: only HR / admin / management / recruiters, the
+// person who raised it and its Hiring Manager may read them. Older requisitions are unchanged.
+async function filterMrfRows(data, cu, type) {
+  if (type !== 'JobRequisition') return data;
+  const role = await getEffectiveRole(cu);
+  let roles = [role];
+  try { const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]); roles = [u?.role, u?.custom_role]; } catch { /* use effective role only */ }
+  if (roles.some(r => ['hr', 'admin', 'management', 'recruiter'].includes(r))) return data;
+  return data.filter(d => d.mrf_version !== 2 || d.requested_by === cu.id || d.hiring_manager_id === cu.id);
+}
+
 async function filterSensitive(data, cu, type) {
   if (!SENSITIVE_TYPES.has(type)) return data;
   const role = await getEffectiveRole(cu);
@@ -766,7 +777,7 @@ async function assetValidation(data, current) {
   return { atype, problem: assetProblem(data, current, atype, others) };
 }
 
-const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them
+const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them
 router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
 
 router.get('/:type', async (req, res) => {
@@ -790,6 +801,7 @@ router.get('/:type', async (req, res) => {
 
   if (type === 'Attendance') data = dedupAttendanceRows(data);
   data = await filterSensitive(data, cu, type);
+  data = await filterMrfRows(data, cu, type);
   res.json(data);
 });
 
@@ -855,6 +867,7 @@ router.post('/:type/filter', async (req, res) => {
     if (limit) data = data.slice(0, parseInt(limit, 10));
   }
   data = await filterSensitive(data, cu, type);
+  data = await filterMrfRows(data, cu, type);
   res.json(data);
 });
 
@@ -867,6 +880,7 @@ router.get('/:type/:id', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Not found' });
   const data = parseRow(row);
   if (!(await canAccessSensitive(cu, type, data.user_id))) return res.status(403).json({ error: 'Access denied' });
+  if (type === 'JobRequisition' && data.mrf_version === 2 && (await filterMrfRows([data], cu, type)).length === 0) return res.status(403).json({ error: 'Access denied' });
   res.json(data);
 });
 
@@ -879,6 +893,7 @@ router.post('/:type', async (req, res) => {
   const body = req.body;
   const id = body.id || uuidv4();
   const data = { ...body, id };
+  if (type === 'JobRequisition') { for (const k of ['mrf_version', 'approved_jd', 'jd_versions', 'audit', 'requisition_id', 'hm_approved_at']) delete data[k]; }
   if (type === 'Announcement') {
     const problem = announcementProblem(data);
     if (problem) return res.status(400).json({ error: problem });
@@ -1139,6 +1154,10 @@ router.patch('/:type/:id', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Not found' });
 
   const current = JSON.parse(row.data);
+  if (type === 'JobRequisition') {
+    if (current.mrf_version === 2) return res.status(403).json({ error: 'This requisition follows the manpower requisition workflow — change it from the requisition screen.' });
+    delete req.body.mrf_version;
+  }
   if (!(await checkApprovalAuthorization(req, res, type, current, req.body.status))) return;
 
   if (type === 'GatePass') {
@@ -1523,6 +1542,10 @@ router.delete('/:type/:id', async (req, res) => {
   // (see reserveLeaveBalance) — the row (and the days it reserved) is about
   // to disappear entirely, so without this the reservation would be lost
   // for good, permanently understating the employee's real available balance.
+  if (type === 'JobRequisition') {
+    const jr = await one('SELECT data FROM entities WHERE type=$1 AND id=$2', [type, id]);
+    if (jr && JSON.parse(jr.data).mrf_version === 2) return res.status(403).json({ error: 'Requisitions are kept for audit — cancel it from the requisition screen instead of deleting it.' });
+  }
   if (type === 'Leave') {
     const lvRow = await one('SELECT data FROM entities WHERE type=$1 AND id=$2', [type, id]);
     const lv = lvRow ? JSON.parse(lvRow.data) : null;
