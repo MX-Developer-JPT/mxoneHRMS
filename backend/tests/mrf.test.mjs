@@ -37,4 +37,8 @@ t('workflow, ids and the legacy mirror', () => {
   assert.equal(nextReqId(['MRF-2026-0007', 'MRF-2025-0099'], 2026), 'MRF-2026-0008');
   assert.equal(legacyMirror({ designation: 'X', ctc_min: 100, ctc_max: 200 }).salary_range_max, 0); assert.equal(legacyMirror({ designation: 'X', ctc_min: 10, ctc_max: 20, ctc_frequency: 'monthly', disclose_ctc: true }).salary_range_max, 240);
 });
+t('the designation master is large, unique and includes the common roles', () => {
+  const d = DEFAULT_MASTERS.designation; assert.ok(d.length > 400); assert.equal(new Set(d.map(x => x.value)).size, d.length);
+  for (const l of ['Software Developer', 'Battery Design Engineer', 'Plant Head', 'Territory Manager', 'Chief Executive Officer', 'Accounts Executive', 'Other / Custom']) assert.ok(d.some(x => x.label === l), l);
+});
 console.log(`\n${n} tests passed`);
