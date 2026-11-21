@@ -23,6 +23,7 @@ import ProbationConfirmationTab from '@/components/admin/ProbationConfirmationTa
 import CompOffAdminTab from '@/components/admin/CompOffAdminTab';
 import KioskManagementTab from '@/components/admin/KioskManagementTab';
 import LeaveCancelTab from '@/components/admin/LeaveCancelTab';
+import BulkMarkPresentTab from '@/components/admin/BulkMarkPresentTab';
 
 const TOKEN_KEY = 'base44_access_token';
 const API = (path) => `/api/admin${path}`;
@@ -2827,6 +2828,7 @@ export default function AdminPanel() {
     { id: 'confirmation', label: 'Probation & Confirmation', icon: CheckCircle2 },
     { id: 'compoff',    label: 'Comp-Off Requests',  icon: CalendarClock },
     { id: 'leavecancel', label: 'Leave Cancellation', icon: CalendarClock },
+    { id: 'bulkpresent', label: 'Bulk Mark Present', icon: CheckCircle2 },
     { id: 'kiosks',     label: 'Kiosk Management',   icon: Fingerprint },
     { id: 'att_import', label: 'Attendance Import',  icon: Download },
     { id: 'att_manual', label: 'Manual Attendance',  icon: CalendarClock },
@@ -2877,6 +2879,7 @@ export default function AdminPanel() {
       {tab === 'confirmation' && <ProbationConfirmationTab />}
       {tab === 'compoff'    && <CompOffAdminTab />}
       {tab === 'leavecancel' && <LeaveCancelTab />}
+      {tab === 'bulkpresent' && <BulkMarkPresentTab />}
       {tab === 'kiosks'     && <KioskManagementTab />}
       {tab === 'att_import' && <AttendanceImportTab />}
       {tab === 'att_manual' && <ManualAttendanceTab />}

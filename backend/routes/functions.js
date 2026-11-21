@@ -6034,6 +6034,96 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, base64: Buffer.from(bufG).toString('base64'), filename: `Left_Without_Gate_Pass_${from}${to !== from ? '_to_' + to : ''}.xlsx`, records: flagged.length });
     }
 
+    // Admin Panel -> Bulk Mark Present. For one date, marks everyone who HAS an attendance record that day as a full-day present.
+    // Scope (what counts as "has a record"): people with a check-in; optionally also records without one (e.g. auto-absent rows).
+    // A person with no genuine check-out gets it set to their own shift end. Leave days are never touched. Every run is saved as a
+    // batch holding the original rows, so it can be undone from the same screen. dry_run only reports what would change.
+    case 'bulkMarkPresent': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const bmDate = String(p.date || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(bmDate)) return res.json({ success: false, error: 'Choose a date' });
+      if (bmDate > new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10)) return res.json({ success: false, error: 'You cannot mark a future date' });
+      const bmReason = String(p.reason || '').trim();
+      const bmApply = p.dry_run === false;
+      if (bmApply && bmReason.length < 5) return res.json({ success: false, error: 'Give a reason (at least 5 characters) — it is recorded on every corrected day.' });
+      const bmRows = (await all("SELECT id, user_id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' = $1", [bmDate])).map(r => ({ id: r.id, col_user: r.user_id, d: JSON.parse(r.data) }));
+      const bmEmp = {}; for (const r of await all("SELECT user_id, data FROM entities WHERE type='Employee'")) { try { bmEmp[r.user_id] = JSON.parse(r.data); } catch { /* skip */ } }
+      const bmShifts = {}; let bmDefault = { start_time: '09:00', end_time: '18:00' };
+      for (const r of await all("SELECT data FROM entities WHERE type='Shift'")) { const sh = JSON.parse(r.data); bmShifts[sh.id] = sh; if (sh.is_default) bmDefault = sh; }
+      const bmBy = {}; for (const r of bmRows) { const u = r.d.user_id || r.col_user; if (u) (bmBy[u] ||= []).push(r); }
+      const plan = []; const skipped = [];
+      for (const [u, list] of Object.entries(bmBy)) {
+        const emp = bmEmp[u] || {}; const who = { user_id: u, name: emp.display_name || u, code: emp.employee_code || '', department: emp.department || '' };
+        // one row per person: the one that carries the check-in, else the first
+        const withIn = list.filter(r => r.d.check_in_time).sort((a, b) => String(a.d.check_in_time).localeCompare(String(b.d.check_in_time)));
+        const row = withIn[0] || list[0]; const d = row.d;
+        if (list.some(r => r.d.leave_id)) { skipped.push({ ...who, reason: 'On leave', status: d.status }); continue; }
+        if (!d.check_in_time && !p.include_no_checkin) { skipped.push({ ...who, reason: 'No check-in', status: d.status }); continue; }
+        if (d.status === 'present' && !d.auto_closed && d.check_out_time && d.check_in_time && !d.late_minutes && !d.early_departure) { skipped.push({ ...who, reason: 'Already a normal present day', status: d.status }); continue; }
+        const shift = (emp.shift_id && bmShifts[emp.shift_id]) || bmDefault;
+        let outIso = null; let setOut = false;
+        const genuineOut = d.check_out_time && !d.auto_closed && !d.is_in_progress && String(d.check_out_time) > String(d.check_in_time || '');
+        if (d.check_in_time && !genuineOut) {
+          outIso = shiftEndDateTime(bmDate, shift).toISOString();
+          if (outIso <= String(d.check_in_time)) { skipped.push({ ...who, reason: 'Checked in at or after shift end', status: d.status }); continue; }
+          setOut = true;
+        }
+        plan.push({ row, ...who, was: d.status, check_in: d.check_in_time || null, check_out: d.check_out_time || null, new_out: setOut ? outIso : null, late_minutes: d.late_minutes || 0, no_checkin: !d.check_in_time });
+      }
+      const summary = {
+        date: bmDate, records: bmRows.length, people: Object.keys(bmBy).length, to_mark: plan.length, skipped: skipped.length,
+        by_status: plan.reduce((m, x) => { m[x.was || 'unknown'] = (m[x.was || 'unknown'] || 0) + 1; return m; }, {}),
+        skipped_by_reason: skipped.reduce((m, x) => { m[x.reason] = (m[x.reason] || 0) + 1; return m; }, {}),
+        checkout_will_be_set: plan.filter(x => x.new_out).length, without_checkin: plan.filter(x => x.no_checkin).length,
+      };
+      const brief = (x) => ({ user_id: x.user_id, name: x.name, code: x.code, department: x.department, was: x.was, check_in: x.check_in, check_out: x.check_out, new_check_out: x.new_out, late_minutes: x.late_minutes });
+      if (!bmApply) return res.json({ success: true, dry_run: true, ...summary, people_to_mark: plan.map(brief), people_skipped: skipped.slice(0, 300) });
+
+      const batchId = uuidv4(); const stamp = new Date().toISOString();
+      // the originals are saved FIRST, so the change can always be undone
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AttendanceBulkBatch',$2,'applied',$3)", [batchId, cu.id, JSON.stringify({ id: batchId, kind: 'bulk_mark_present', date: bmDate, reason: bmReason, by: cu.id, by_name: cu.full_name || cu.email || '', at: stamp, include_no_checkin: !!p.include_no_checkin, summary, rows: plan.map(x => ({ id: x.row.id, before: x.row.d, col_user: x.row.col_user })), undone: false })]);
+      let done = 0;
+      for (const x of plan) {
+        const d = x.row.d;
+        const punches = d.check_in_time ? [{ time: d.check_in_time, device_direction: 'IN' }, ...(x.new_out ? [{ time: x.new_out, device_direction: 'OUT' }] : (d.check_out_time ? [{ time: d.check_out_time, device_direction: 'OUT' }] : []))] : [];
+        const sd = punches.length ? buildSessions(punches) : {};
+        const upd = { ...d, ...sd, status: 'present', admin_marked: true, is_in_progress: false, early_departure: false, early_departure_minutes: 0,
+          ...(d.check_in_time ? { check_in_time: d.check_in_time, check_out_time: x.new_out || d.check_out_time } : {}),
+          bulk_marked: { batch_id: batchId, date: bmDate, reason: bmReason, by: cu.id, by_name: cu.full_name || cu.email || '', at: stamp, original_status: d.status || null, original_check_out_time: d.check_out_time || null } };
+        delete upd.auto_closed; delete upd.auto_closed_reason; delete upd.auto_closed_at;
+        await run("UPDATE entities SET status='present', data=$1, user_id=$2, updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(upd), x.user_id, x.row.id]);
+        done++;
+      }
+      try { await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AuditLog',$2,'active',$3)", [uuidv4(), cu.id, JSON.stringify({ entity_type: 'Attendance', entity_id: bmDate, changed_by: cu.id, change_type: 'bulk_mark_present', timestamp: stamp, batch_id: batchId, count: done, reason: bmReason })]); } catch { /* audit is best-effort */ }
+      return res.json({ success: true, applied: true, batch_id: batchId, ...summary, marked: done });
+    }
+
+    case 'listBulkAttendanceBatches': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const rows = (await all("SELECT data FROM entities WHERE type='AttendanceBulkBatch' ORDER BY created_at DESC LIMIT 50")).map(r => { const b = JSON.parse(r.data); return { id: b.id, date: b.date, reason: b.reason, by_name: b.by_name, at: b.at, count: (b.rows || []).length, include_no_checkin: b.include_no_checkin, undone: !!b.undone, undone_at: b.undone_at || null, undone_by_name: b.undone_by_name || '' }; });
+      return res.json({ success: true, batches: rows });
+    }
+
+    case 'undoBulkAttendanceBatch': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const ub = await one("SELECT id, data FROM entities WHERE type='AttendanceBulkBatch' AND id=$1", [p.batch_id]);
+      if (!ub) return res.json({ success: false, error: 'Batch not found' });
+      const batch = JSON.parse(ub.data);
+      if (batch.undone) return res.json({ success: false, error: 'This batch was already undone' });
+      let restored = 0, changedSince = 0;
+      for (const r of batch.rows || []) {
+        const cur = await one("SELECT data FROM entities WHERE id=$1", [r.id]);
+        if (!cur) continue;
+        const c = JSON.parse(cur.data);
+        if (c.bulk_marked?.batch_id !== batch.id) { changedSince++; continue; }   // edited again after this batch (e.g. a regularisation): leave that newer change alone
+        await run("UPDATE entities SET status=$1, data=$2, user_id=$3, updated_at=NOW()::TEXT WHERE id=$4", [r.before.status || 'present', JSON.stringify(r.before), r.col_user ?? r.before.user_id ?? null, r.id]);
+        restored++;
+      }
+      batch.undone = true; batch.undone_at = new Date().toISOString(); batch.undone_by = cu.id; batch.undone_by_name = cu.full_name || cu.email || '';
+      await run("UPDATE entities SET data=$1, status='undone', updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(batch), ub.id]);
+      return res.json({ success: true, restored, left_unchanged: changedSince });
+    }
+
     case 'exportAttendanceLocations': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR, admin or management access required' });
       const ymd = /^\d{4}-\d{2}-\d{2}$/;
