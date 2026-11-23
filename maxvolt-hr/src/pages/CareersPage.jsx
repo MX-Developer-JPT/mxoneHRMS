@@ -95,6 +95,7 @@ function PlainJd({ plain }) {
 }
 
 // ── presentation helpers: one clean look for every job, whatever format its description was written in ──
+const nice = (t) => { const x = String(t || '').trim(); return x.length > 3 && x === x.toUpperCase() && /[A-Z]/.test(x) ? titleCase(x) : x; };
 const inr = (n) => Number(n).toLocaleString('en-IN');
 const tidyExperience = (e) => String(e || '').replace(/\s*,\s*$/, '').trim();
 const SECTION_NAMES = ['about the role', 'key responsibilities', 'responsibilities', 'key deliverables', 'required qualifications', 'qualifications', 'technical / functional skills', 'required skills', 'preferred skills', 'key competencies', 'reporting structure', 'additional requirements', 'what we offer', 'about maxvolt energy', 'about us', 'benefits', 'perks'];
@@ -420,9 +421,9 @@ function JobDetailPage({ jobId, onBack }) {
   try { document.title = `${job.position_title} — Careers at Maxvolt Energy`; } catch { /* ignore */ }
   const empLabel = { full_time: 'Full-time', part_time: 'Part-time', contract: 'Contract', intern: 'Internship' }[job.employment_type] || job.employment_type;
   const details = [
-    ['Position', job.position_title, Briefcase], ['Department', job.department, Building2], ['Location', [job.location, arrangementLabel(job.work_arrangement)].filter(Boolean).join(' · '), MapPin],
+    ['Position', job.position_title, Briefcase], ['Department', nice(job.department), Building2], ['Location', [job.location, arrangementLabel(job.work_arrangement)].filter(Boolean).join(' · '), MapPin],
     ['Employment type', empLabel, Clock], ['Experience required', tidyExperience(job.experience_required), Clock], ['Number of positions', job.number_of_positions, Users],
-    ['Salary range', ctcText(job), IndianRupee], ['Reports to', job.reports_to_designation, Users],
+    ['Salary range', ctcText(job), IndianRupee], ['Reports to', nice(job.reports_to_designation), Users],
   ].filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== '');
 
   return (
@@ -434,7 +435,7 @@ function JobDetailPage({ jobId, onBack }) {
             <div className="min-w-0">
               <h1 className="text-2xl font-bold text-gray-900">{job.position_title}</h1>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mt-2">
-                {job.department && <span className="flex items-center gap-1"><Building2 className="w-3.5 h-3.5" />{job.department}</span>}
+                {job.department && <span className="flex items-center gap-1"><Building2 className="w-3.5 h-3.5" />{nice(job.department)}</span>}
                 {job.location && <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{job.location}</span>}
                 {tidyExperience(job.experience_required) && <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{tidyExperience(job.experience_required)}</span>}
                 {job.number_of_positions && <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" />{job.number_of_positions} {Number(job.number_of_positions) === 1 ? 'opening' : 'openings'}</span>}
