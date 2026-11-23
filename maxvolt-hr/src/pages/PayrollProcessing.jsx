@@ -31,16 +31,16 @@ function dayWeight(status) {
 
 // Calculate one employee's payroll from their salary structure + attendance.
 // If is_manual_override, all amounts are 0 — HR fills them in the preview.
-function calcFromStructure(structure, presentDays, bonusAmount, loanDeduction) {
+function calcFromStructure(structure, presentDays, bonusAmount, loanDeduction, carLease = 0) {
   if (structure.is_manual_override) {
     return {
       basic_salary: 0, hra: 0, conveyance: 0,
       performance_bonus: 0, special_allowance: 0, other_allowances: 0,
       gross_salary: 0,
       pf_contribution: 0, esi_contribution: 0,
-      deductions: { pf: 0, esi: 0, professional_tax: 0, loan: loanDeduction },
-      total_deductions: loanDeduction,
-      net_salary: -loanDeduction,
+      deductions: { pf: 0, esi: 0, professional_tax: 0, loan: loanDeduction, car_lease: carLease },
+      total_deductions: loanDeduction + carLease,
+      net_salary: -(loanDeduction + carLease),
       working_days: WORKING_DAYS,
       present_days: 0,
     };
@@ -54,13 +54,13 @@ function calcFromStructure(structure, presentDays, bonusAmount, loanDeduction) {
   const pfEmp  = Math.round((structure.pf_contribution     || 0) * ratio);
   const esiEmp = Math.round((structure.esi_contribution    || 0) * ratio);
   const gross  = basic + hra + conv + perf;
-  const totalDed = pfEmp + esiEmp + loanDeduction;
+  const totalDed = pfEmp + esiEmp + loanDeduction + carLease;
   return {
     basic_salary: basic, hra, conveyance: conv,
     performance_bonus: perf, special_allowance: 0, other_allowances: 0,
     gross_salary: gross,
     pf_contribution: pfEmp, esi_contribution: esiEmp,
-    deductions: { pf: pfEmp, esi: esiEmp, professional_tax: 0, loan: loanDeduction },
+    deductions: { pf: pfEmp, esi: esiEmp, professional_tax: 0, loan: loanDeduction, car_lease: carLease },
     total_deductions: totalDed,
     net_salary: gross - totalDed,
     working_days: WORKING_DAYS,
@@ -76,13 +76,14 @@ function recompute(row) {
   const esiEmp = row.esi_contribution || 0;
   const loan   = row.deductions?.loan || 0;
   const pt     = row.deductions?.professional_tax || 0;
-  const totalDed = pfEmp + esiEmp + loan + pt;
+  const carLease = row.deductions?.car_lease || 0;
+  const totalDed = pfEmp + esiEmp + loan + pt + carLease;
   return {
     ...row,
     gross_salary: gross,
     total_deductions: totalDed,
     net_salary: gross - totalDed,
-    deductions: { pf: pfEmp, esi: esiEmp, professional_tax: pt, loan },
+    deductions: { pf: pfEmp, esi: esiEmp, professional_tax: pt, loan, car_lease: carLease },
   };
 }
 
@@ -158,7 +159,9 @@ export default function PayrollProcessing() {
         const empBonus    = bonuses.find(b => b.user_id === employee.id);
         const bonusAmt    = empBonus?.amount || 0;
 
-        const computed = calcFromStructure(structure, presentDays, bonusAmt, loanDed);
+        const ym = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+        const leaseOn = Number(structure.car_lease_deduction) > 0 && (!structure.car_lease_from || ym >= structure.car_lease_from.slice(0, 7)) && (!structure.car_lease_to || ym <= structure.car_lease_to.slice(0, 7));
+        const computed = calcFromStructure(structure, presentDays, bonusAmt, loanDed, leaseOn ? Math.round(Number(structure.car_lease_deduction)) : 0);
 
         calculated.push({
           user_id:             employee.id,

@@ -33,7 +33,7 @@ const pct = (cur, prev) => (prev ? r2(((cur - prev) / prev) * 100) : null);
 export function normalizeRow(p, emp) {
   const d = p.deductions || {};
   const gross = n0(p.gross_salary), net = n0(p.net_salary);
-  const dedItems = { pf: n0(d.pf), esi: n0(d.esi), professional_tax: n0(d.professional_tax), tds: n0(d.tds), loan: n0(d.loan), lop: n0(d.lop) + n0(p.loss_of_pay_amount), other: n0(d.other) };
+  const dedItems = { pf: n0(d.pf), esi: n0(d.esi), professional_tax: n0(d.professional_tax), tds: n0(d.tds), loan: n0(d.loan), car_lease: n0(d.car_lease), lop: n0(d.lop) + n0(p.loss_of_pay_amount), other: n0(d.other) };
   const dedSum = Object.values(dedItems).reduce((a, b) => a + b, 0);
   const totalDed = n0(p.total_deductions) || dedSum;
   const empContribs = p.employer_contributions || {};

@@ -520,6 +520,25 @@ async function buildLetterPdf(label, ref, htmlContent, extraImages = {}) {
 /* ── PDF generation helper (salary structure) ──────────────
    Uses pdfmake with bundled Roboto fonts (supports ₹ symbol).
    Returns a Promise<Buffer> of the generated PDF bytes.        */
+/**
+ * Car lease deduction for a payroll month. The salary structure carries car_lease_deduction (₹ per month) and optionally
+ * car_lease_from / car_lease_to ("YYYY-MM"; blank = open ended). Returns whole rupees, 0 when it does not apply.
+ */
+function carLeaseFor(ss, month, year) {
+  const amt = Math.round(Number(ss?.car_lease_deduction) || 0);
+  if (amt <= 0) return 0;
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  const from = String(ss.car_lease_from || '').slice(0, 7), to = String(ss.car_lease_to || '').slice(0, 7);
+  if (from && ym < from) return 0;
+  if (to && ym > to) return 0;
+  return amt;
+}
+/** The car lease fields a new salary structure must inherit from the one it replaces. */
+function carLeaseCarry(prev) {
+  if (!prev || !(Number(prev.car_lease_deduction) > 0)) return {};
+  return { car_lease_deduction: prev.car_lease_deduction, car_lease_from: prev.car_lease_from || '', car_lease_to: prev.car_lease_to || '', car_lease_note: prev.car_lease_note || '' };
+}
+
 function buildSalaryStructurePdf({ candidateName, employeeCode, designation, department, dateOfJoining, effectiveFrom, annualCTC, sal }) {
   return new Promise((resolve, reject) => {
     try {
@@ -5517,11 +5536,14 @@ router.post('/:name', async (req, res) => {
         }
         loanDed = Math.round(loanDed);
 
+        // ── Car lease: a fixed monthly amount from the salary structure, within its from/to months (not pro-rated for LOP) ──
+        const carLeaseDed = carLeaseFor(ss, m_int, y_int);
+
         // ── Reimbursements: non-taxable pass-through, added after deductions ──
         const _empReimbs = _reimbByUser[emp.user_id] || [];
         const reimbAmt = Math.round(_empReimbs.reduce((s, c) => s + Number(c.amount || 0), 0));
 
-        const totalDed = pf + esi + lopAmount + tds + loanDed;
+        const totalDed = pf + esi + lopAmount + tds + loanDed + carLeaseDed;
         const net = Math.max(0, gross - totalDed) + reimbAmt;
 
         const id = uuidv4();
@@ -5534,7 +5556,7 @@ router.post('/:name', async (req, res) => {
           id, user_id: emp.user_id, month: m_int, year: y_int,
           basic_salary: basic, hra, conveyance: conv, special_allowance: spec,
           gross_salary: gross,
-          deductions: { pf, esi, lop: lopAmount, tds, loan: loanDed },
+          deductions: { pf, esi, lop: lopAmount, tds, loan: loanDed, ...(carLeaseDed > 0 ? { car_lease: carLeaseDed } : {}) },
           employer_contributions: { pf: empPF, esi: empESI },
           reimbursement_amount: reimbAmt,
           reimbursement_ids: _empReimbs.map(c => c.rowId),
@@ -5911,6 +5933,7 @@ router.post('/:name', async (req, res) => {
           approved_by: approved_by || null,
           revision_reason: 'Imported from Salary Structure Excel',
           source: 'excel_import',
+          ...carLeaseCarry(JSON.parse((await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1", [emp._userId]))?.data || 'null')),
         };
 
         await run(
@@ -7919,6 +7942,7 @@ router.post('/:name', async (req, res) => {
         // EMPLOYEE DEDUCTIONS (3)
         { h:'PF (Emp 12%)', k:'pfEmp',     w:12 },
         { h:'ESI (Emp 0.75%)',k:'esiEmp',  w:14 },
+        { h:'Car Lease Ded.',k:'carLease', w:13 },
         { h:'Total Deduct.',k:'totalDed',  w:13 },
         // NET PAY (1)
         { h:'Net Take-Home',k:'net',       w:14 },
@@ -7931,7 +7955,7 @@ router.post('/:name', async (req, res) => {
         { label:'EMPLOYEE DETAILS', cols:6, bg:'1A3C5E' },
         { label:'CTC SUMMARY',      cols:2, bg:'1565C0' },
         { label:'EARNINGS',         cols:6, bg:'1B5E20' },
-        { label:'EMPLOYEE DEDUCTIONS', cols:3, bg:'B71C1C' },
+        { label:'EMPLOYEE DEDUCTIONS', cols:4, bg:'B71C1C' },
         { label:'NET PAY',          cols:1, bg:'F57F17' },
         { label:'EMPLOYER CONTRIBUTIONS', cols:3, bg:'4A148C' },
       ];
@@ -7966,7 +7990,7 @@ router.post('/:name', async (req, res) => {
       });
 
       // Data rows
-      const totals = { annCTC:0, monCTC:0, basic:0, hra:0, conv:0, special:0, bonus:0, gross:0, pfEmp:0, esiEmp:0, totalDed:0, net:0, pfEmpr:0, esiEmpr:0, totalEmpr:0 };
+      const totals = { annCTC:0, monCTC:0, basic:0, hra:0, conv:0, special:0, bonus:0, gross:0, pfEmp:0, esiEmp:0, carLease:0, totalDed:0, net:0, pfEmpr:0, esiEmpr:0, totalEmpr:0 };
       sorted.forEach((emp, idx) => {
         const ss = ssMap[emp.user_id] || {};
         const annCTC = ss.ctc || 0;
@@ -7979,19 +8003,20 @@ router.post('/:name', async (req, res) => {
         const gross  = basic + hra + conv + special;
         const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, 15000) * 0.12);
         const esiEmp = ss.esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
-        const totalDed = pfEmp + esiEmp;
+        const carLease = Math.round(Number(ss.car_lease_deduction) || 0);
+        const totalDed = pfEmp + esiEmp + carLease;
         const net    = Math.max(0, gross - totalDed);
         const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, 15000) * 0.13);
         const esiEmpr= ss.employer_esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
         const totalEmpr = pfEmpr + esiEmpr;
 
-        const rowVals = { annCTC, monCTC, basic, hra, conv, special, bonus, gross, pfEmp, esiEmp, totalDed, net, pfEmpr, esiEmpr, totalEmpr };
+        const rowVals = { annCTC, monCTC, basic, hra, conv, special, bonus, gross, pfEmp, esiEmp, carLease, totalDed, net, pfEmpr, esiEmpr, totalEmpr };
         for (const k of Object.keys(totals)) totals[k] += rowVals[k] || 0;
 
         const isAlt = idx % 2 === 1;
         const row = [
           idx+1, emp.employee_code||'', emp.display_name||'', emp.department||'', emp.designation||'', ss.effective_from||'',
-          annCTC, monCTC, basic, hra, conv, special, bonus, gross, pfEmp, esiEmp, totalDed, net, pfEmpr, esiEmpr, totalEmpr,
+          annCTC, monCTC, basic, hra, conv, special, bonus, gross, pfEmp, esiEmp, carLease, totalDed, net, pfEmpr, esiEmpr, totalEmpr,
         ];
         const wsRow = ws.getRow(5 + idx);
         wsRow.height = 18;
@@ -8002,13 +8027,13 @@ router.post('/:name', async (req, res) => {
           cell.border = bd();
           cell.font = fnt(false, '222222', 9);
           if (isAlt) cell.fill = fl(C.altRow);
-          const isNum = ['annCTC','monCTC','basic','hra','conv','special','bonus','gross','pfEmp','esiEmp','totalDed','net','pfEmpr','esiEmpr','totalEmpr'].includes(key);
+          const isNum = ['annCTC','monCTC','basic','hra','conv','special','bonus','gross','pfEmp','esiEmp','carLease','totalDed','net','pfEmpr','esiEmpr','totalEmpr'].includes(key);
           if (ci < 6) cell.alignment = ci < 2 ? ctr : lft;
           if (isNum) { cell.numFmt = '#,##0'; cell.alignment = rgt; }
           // Section colouring
           if (['annCTC','monCTC'].includes(key))         cell.fill = fl(C.ctcBg);
           else if (['basic','hra','conv','special','bonus','gross'].includes(key)) cell.fill = fl(C.earnBg);
-          else if (['pfEmp','esiEmp','totalDed'].includes(key)) cell.fill = fl(C.dedBg);
+          else if (['pfEmp','esiEmp','carLease','totalDed'].includes(key)) cell.fill = fl(C.dedBg);
           else if (key === 'net')                         cell.fill = fl(C.netBg);
           else if (['pfEmpr','esiEmpr','totalEmpr'].includes(key)) cell.fill = fl(C.emprBg);
         });
@@ -8018,7 +8043,7 @@ router.post('/:name', async (req, res) => {
       const totRow = ws.addRow(['', 'TOTAL', '', '', '', '',
         Math.round(totals.annCTC), Math.round(totals.monCTC),
         Math.round(totals.basic), Math.round(totals.hra), Math.round(totals.conv), Math.round(totals.special), Math.round(totals.bonus), Math.round(totals.gross),
-        Math.round(totals.pfEmp), Math.round(totals.esiEmp), Math.round(totals.totalDed),
+        Math.round(totals.pfEmp), Math.round(totals.esiEmp), Math.round(totals.carLease), Math.round(totals.totalDed),
         Math.round(totals.net),
         Math.round(totals.pfEmpr), Math.round(totals.esiEmpr), Math.round(totals.totalEmpr),
       ]);
@@ -13116,6 +13141,7 @@ Structure: date (plain paragraph), ref (small, right-aligned), salutation, title
         approved_by: cu.id,
         revision_reason: `${letterType ? `${letterType} — ` : ''}${reason}`,
         source: 'letter_generator',
+        ...carLeaseCarry(JSON.parse((await one("SELECT data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1", [targetUid]))?.data || 'null')),
       };
 
       await run(
@@ -18163,7 +18189,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         const oldTDS = pd.deductions?.tds || 0;
         if (newTDS !== oldTDS || !pd.tax_regime) {
           const newDed = { ...pd.deductions, tds: newTDS };
-          const dedSum = (newDed.pf||0)+(newDed.esi||0)+(newDed.lop||0)+(newDed.loan||0)+newTDS;
+          const dedSum = (newDed.pf||0)+(newDed.esi||0)+(newDed.lop||0)+(newDed.loan||0)+(newDed.car_lease||0)+newTDS;
           const upd = { ...pd, deductions: newDed, total_deductions: dedSum, net_salary: Math.max(0, (pd.gross_salary||0) - dedSum) + (pd.reimbursement_amount||0), tax_regime: bReg, tds_integrated_at: new Date().toISOString(), tds_integrated_by: cu?.id };
           dbUpdates.push(run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), pr.id]));
           updated++;
@@ -18184,7 +18210,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       const ovOld = ovPd.deductions?.tds || 0;
       const ovNew = Math.round(tds_amount);
       const ovDed = { ...ovPd.deductions, tds: ovNew };
-      const ovDedSum = (ovDed.pf||0)+(ovDed.esi||0)+(ovDed.lop||0)+(ovDed.loan||0)+ovNew;
+      const ovDedSum = (ovDed.pf||0)+(ovDed.esi||0)+(ovDed.lop||0)+(ovDed.loan||0)+(ovDed.car_lease||0)+ovNew;
       const ovNet = Math.max(0, (ovPd.gross_salary||0) - ovDedSum) + (ovPd.reimbursement_amount||0);
       const ovUpd = { ...ovPd, deductions: ovDed, total_deductions: ovDedSum, net_salary: ovNet, tds_override: true, tds_override_amount: ovNew, tds_override_reason: reason || '', tds_overridden_by: cu?.id, tds_overridden_at: new Date().toISOString() };
       await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(ovUpd), ovRow.id]);
@@ -20815,6 +20841,7 @@ function buildPayslipHtml(payroll, emp, deptName) {
     ['Professional Tax',    payroll.deductions?.pt       || payroll.deductions?.professional_tax || 0],
     ['TDS',                 payroll.deductions?.tds      || 0],
     ['Loan Deduction',      payroll.deductions?.loan     || 0],
+    ['Car Lease Deduction', payroll.deductions?.car_lease || 0],
     ['LOP Deduction',       payroll.loss_of_pay_amount   || 0],
   ].filter(([,v]) => v > 0);
 

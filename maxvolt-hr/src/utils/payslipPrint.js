@@ -91,10 +91,11 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const tdsDeduction = deductions.tds || 0;
   // deductions.loan = frontend payroll; deductions.loan_emi = legacy key
   const loanEmi      = deductions.loan || deductions.loan_emi || 0;
+  const carLease     = deductions.car_lease || 0;
   const reimbAmount  = payroll.reimbursement_amount || 0;
 
   // Net = Gross Earned − PF − ESI (± TDS/Loan) + Reimbursements; LOP NOT a deduction line
-  const totalDeductions = pfDeduction + esiDeduction + tdsDeduction + loanEmi;
+  const totalDeductions = pfDeduction + esiDeduction + tdsDeduction + loanEmi + carLease;
   const netSalary = grossSalary - totalDeductions + reimbAmount;
 
   // Employer contributions (CTC components — not deducted from employee salary)
@@ -212,6 +213,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
               ${esiDeduction > 0 ? dedRow('ESI (Employee 0.75%)', esiDeduction) : ''}
               ${tdsDeduction ? dedRow('Income Tax (TDS)', tdsDeduction) : ''}
               ${loanEmi ? dedRow('Loan EMI', loanEmi) : ''}
+              ${carLease ? dedRow('Car Lease', carLease) : ''}
             </tbody>
             <tfoot>
               <tr style="background:#fef2f2;font-weight:bold;">

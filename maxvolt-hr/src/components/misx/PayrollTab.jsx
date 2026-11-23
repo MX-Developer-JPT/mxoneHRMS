@@ -253,7 +253,7 @@ export default function PayrollTab({ canCorrect }) {
 }
 
 const FIELDS = [['gross_salary', 'Gross salary'], ['basic_salary', 'Basic'], ['hra', 'HRA'], ['conveyance', 'Conveyance'], ['special_allowance', 'Other allowances'], ['incentive', 'Incentive'], ['overtime', 'Overtime'], ['bonus', 'Bonus']];
-const DED = [['pf', 'PF'], ['esi', 'ESI'], ['professional_tax', 'Professional tax'], ['tds', 'TDS / income tax'], ['loan', 'Loan / advance'], ['lop', 'LOP deduction'], ['other', 'Other deductions']];
+const DED = [['pf', 'PF'], ['esi', 'ESI'], ['professional_tax', 'Professional tax'], ['tds', 'TDS / income tax'], ['loan', 'Loan / advance'], ['car_lease', 'Car lease'], ['lop', 'LOP deduction'], ['other', 'Other deductions']];
 const EMP = [['pf', 'Employer PF'], ['esi', 'Employer ESI'], ['other', 'Other employer']];
 
 function CorrectDialog({ id, onClose, onSaved }) {

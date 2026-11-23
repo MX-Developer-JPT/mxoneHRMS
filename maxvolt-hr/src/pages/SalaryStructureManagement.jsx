@@ -243,6 +243,8 @@ export default function SalaryStructureManagement() {
   const [computed, setComputed] = useState(null);
 
   const [medicalContrib, setMedicalContrib] = useState(0);
+  // Car lease: a fixed monthly deduction from net salary, between two optional months
+  const [carLease, setCarLease] = useState({ amount: '', from: '', to: '', note: '' });
 
   // Manual overrides (monthly values)
   const [overrides, setOverrides] = useState({
@@ -354,6 +356,7 @@ export default function SalaryStructureManagement() {
     setComputed(null);
     setUseOverrides(false);
     setMedicalContrib(0);
+    setCarLease({ amount: '', from: '', to: '', note: '' });
     setOverrides({ basic_salary: '', hra: '', conveyance: '', performance_bonus: '', pf_contribution: '', esi_contribution: '', employer_pf_contribution: '', employer_esi_contribution: '' });
     setShowDialog(true);
   };
@@ -367,6 +370,7 @@ export default function SalaryStructureManagement() {
     setCtc(structure.ctc?.toString() || '');
     setReimbursements(structure.other_allowances || {});
     setMedicalContrib(structure.medical_contribution ?? 0);
+    setCarLease({ amount: structure.car_lease_deduction || '', from: (structure.car_lease_from || '').slice(0, 7), to: (structure.car_lease_to || '').slice(0, 7), note: structure.car_lease_note || '' });
     setUseOverrides(true);
     setOverrides({
       basic_salary: structure.basic_salary || '',
@@ -518,6 +522,10 @@ export default function SalaryStructureManagement() {
         esi_contribution: vals.esi_contribution,
         employer_esi_contribution: vals.employer_esi_contribution,
         medical_contribution: vals.medical_contribution ?? 0,
+        car_lease_deduction: Math.max(0, parseFloat(carLease.amount) || 0),
+        car_lease_from: carLease.from || '',
+        car_lease_to: carLease.to || '',
+        car_lease_note: (carLease.note || '').trim(),
         status: 'active',
         approved_by: user.id,
         revision_reason: revisionReason || (editingStructure ? 'Salary revision' : 'Initial setup')
@@ -622,7 +630,7 @@ export default function SalaryStructureManagement() {
                 const grossM = basicM + hraM + convM + medM + ltaM + saM;
                 const pfM = structure.pf_contribution || 0;
                 const esiM = structure.esi_contribution || 0;
-                const netM = grossM - pfM - esiM;
+                const netM = grossM - pfM - esiM - (Number(structure.car_lease_deduction) || 0);
 
                 return (
                   <div key={structure.id} className="border rounded-xl overflow-hidden">
@@ -827,6 +835,32 @@ export default function SalaryStructureManagement() {
                 </TabsContent>
 
                 <TabsContent value="deductions" className="space-y-4 pt-2">
+                  {/* Car lease deduction — only for employees who have one */}
+                  <div className="p-4 border border-amber-200 bg-amber-50 rounded-lg space-y-3">
+                    <div>
+                      <p className="text-sm font-semibold">Car lease deduction</p>
+                      <p className="text-xs text-gray-600">A fixed amount taken from net salary every month (not reduced for loss of pay). Leave the amount empty if this employee has no car lease.</p>
+                    </div>
+                    <div className="grid md:grid-cols-4 gap-3">
+                      <div>
+                        <label className="text-xs text-gray-600">Amount / month (₹)</label>
+                        <input type="number" min="0" className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-sm" value={carLease.amount} onChange={e => setCarLease(c => ({ ...c, amount: e.target.value }))} placeholder="e.g. 25000" />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-600">From month (optional)</label>
+                        <input type="month" className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-sm" value={carLease.from} onChange={e => setCarLease(c => ({ ...c, from: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-600">Until month (optional)</label>
+                        <input type="month" className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-sm" value={carLease.to} min={carLease.from || undefined} onChange={e => setCarLease(c => ({ ...c, to: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-600">Vehicle / reference (optional)</label>
+                        <input type="text" maxLength={80} className="mt-1 h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-sm" value={carLease.note} onChange={e => setCarLease(c => ({ ...c, note: e.target.value }))} placeholder="e.g. Hyundai Creta, lease #123" />
+                      </div>
+                    </div>
+                    {parseFloat(carLease.amount) > 0 && <p className="text-xs text-amber-800">₹{Number(carLease.amount).toLocaleString('en-IN')} will be deducted each month{carLease.from ? ` from ${carLease.from}` : ''}{carLease.to ? ` until ${carLease.to}` : ' with no end month'}.</p>}
+                  </div>
                   {useOverrides ? (
                     <div className="grid md:grid-cols-3 gap-4">
                       <ComponentField label="PF (Employee 12%) / month" value={overrides.pf_contribution} onChange={v => setOverrides(p => ({ ...p, pf_contribution: v }))} />

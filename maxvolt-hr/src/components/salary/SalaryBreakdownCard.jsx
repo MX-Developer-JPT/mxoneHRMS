@@ -42,7 +42,8 @@ export default function SalaryBreakdownCard({ structure, employee, onPrint }) {
   const otherDed = typeof structure.deductions === 'object' && structure.deductions
     ? Object.values(structure.deductions).reduce((s, v) => s + (parseFloat(v) || 0), 0)
     : 0;
-  const totalDeductions = employeePF + employeeESI + otherDed;
+  const carLease = Number(structure.car_lease_deduction) || 0;
+  const totalDeductions = employeePF + employeeESI + otherDed + carLease;
   const netMonthly = grossMonthly - totalDeductions;
 
   const employerPF = structure.employer_pf_contribution || 0;
@@ -113,6 +114,7 @@ export default function SalaryBreakdownCard({ structure, employee, onPrint }) {
               <SectionHeader label="Employee Deductions" color="bg-red-500" />
               <Row label="PF (Employee Contribution - 12%)" monthly={employeePF} annual={employeePF * 12} />
               {employeeESI > 0 && <Row label="ESI (Employee - 0.75%)" monthly={employeeESI} annual={employeeESI * 12} />}
+              {carLease > 0 && <Row label={`Car Lease${structure.car_lease_note ? ' — ' + structure.car_lease_note : ''}`} monthly={carLease} annual={carLease * 12} />}
               <Row label="Total Deductions" monthly={totalDeductions} annual={totalDeductions * 12} highlight />
 
               <SectionHeader label="Employer Contributions" color="bg-blue-500" />

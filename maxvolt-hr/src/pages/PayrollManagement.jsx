@@ -125,7 +125,7 @@ export default function PayrollManagement() {
           gross_salary: payroll.gross_salary || 0,
           pf_deduction: deductions.pf || 0,
           tds: deductions.tds || 0,
-          other_deductions: (deductions.loan || deductions.loan_emi || 0) + (deductions.esi || 0),
+          other_deductions: (deductions.loan || deductions.loan_emi || 0) + (deductions.esi || 0) + (deductions.car_lease || 0),
           total_deductions: totalDeductions,
           net_salary: payroll.net_salary || 0,
           status: 'paid',
@@ -192,7 +192,7 @@ export default function PayrollManagement() {
           conveyance: allowances.conveyance || 0, medical: allowances.medical || 0,
           special_allowance: allowances.special_allowance || 0, other_allowances: allowances.lta || 0,
           gross_salary: payroll.gross_salary || 0, pf_deduction: deductions.pf || 0,
-          tds: deductions.tds || 0, other_deductions: (deductions.loan || deductions.loan_emi || 0) + (deductions.esi || 0),
+          tds: deductions.tds || 0, other_deductions: (deductions.loan || deductions.loan_emi || 0) + (deductions.esi || 0) + (deductions.car_lease || 0),
           total_deductions: totalDeductions, net_salary: payroll.net_salary || 0,
           status: 'paid', payment_date: paymentDate, payment_method: 'bank_transfer',
           notes: `Payroll ID: ${payroll.id}`
