@@ -30,7 +30,19 @@ const appUrl = () => process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
 
 // ── storage ──
 async function load(id) { if (!id) return null; const r = await one("SELECT data FROM entities WHERE type=$1 AND id=$2", [T, id]); const d = r ? jparse(r.data) : null; return d && d.mrf_version === 2 ? d : null; }
+// MIS, the recruitment analytics and the older screens read these fields; keep them true to the new workflow:
+//   manager approval = the Hiring Manager approved the JD, HR approval = it was published, closed_date for time-to-fill.
+function syncLegacyFields(rec) {
+  rec.manager_approval_status = rec.approved_jd || rec.hm_approved_at ? 'approved' : rec.status === 'rejected' ? 'rejected' : 'pending';
+  if (rec.approved_jd) { rec.manager_approved_by = rec.approved_jd.approved_by; rec.manager_approved_date = rec.approved_jd.approved_at; }
+  rec.hr_approval_status = rec.published_date ? 'approved' : 'pending';
+  if (rec.published_date) { rec.hr_approved_by = rec.published_by || ''; rec.hr_approved_date = rec.published_date; rec.approved_date = rec.published_date; rec.approved_by = rec.published_by || ''; }
+  if (rec.status === 'closed' && rec.closed_at && !rec.closed_date) { rec.closed_date = rec.closed_at; rec.closed_date_source = 'recorded'; }
+  if (rec.status !== 'closed' && rec.closed_date && rec.closed_date_source === 'recorded') { delete rec.closed_date; delete rec.closed_date_source; }
+  return rec;
+}
 async function save(rec, userId = null) {
+  syncLegacyFields(rec);
   rec.updated_at = nowIso();
   const json = JSON.stringify(rec);
   const u = await run("UPDATE entities SET data=$1, status=$2, updated_at=NOW()::TEXT WHERE type=$3 AND id=$4", [json, rec.status, T, rec.id]);
