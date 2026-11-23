@@ -78,7 +78,8 @@ function summarise(l, assetMap, types) {
     id: l.id, ref_no: l.ref_no, version: l.version || 1, status: l.status, user_id: l.user_id, employee_name: l.employee_name, employee_code: l.employee_code,
     designation: l.designation, department: l.department, asset_ids: l.asset_ids, asset_codes: l.asset_codes, asset_names: l.asset_names, issue_date: l.issue_date, letter_date: l.letter_date,
     generated_at: l.generated_at, generated_by: l.generated_by, generated_by_name: l.generated_by_name, revises: l.revises || null, superseded_by: l.superseded_by || null,
-    outdated: l.status !== 'superseded' && outdated, outdated_reasons: l.status !== 'superseded' ? changed : [], acknowledged_at: allSigned ? acknowledged_at : null,
+    outdated: l.status !== 'superseded' && outdated, outdated_reasons: l.status !== 'superseded' ? changed : [], acknowledged_at: l.signature?.at || (allSigned ? acknowledged_at : null),
+    signed_by_name: l.signature?.signed_by_name || '', signed: !!l.signature,
     print_count: l.print_count || 0, download_count: l.download_count || 0, history: l.history || [],
   };
 }
@@ -168,10 +169,42 @@ const HANDLERS = {
     if (!hasAny(cx, VIEW_ALL) && l.user_id !== cx.cu.id) return fail(res, 'You do not have access to this letter', 403);
     const withLetterhead = p.letterhead !== false;
     const fx = await import('./functions.js');
-    const buf = await renderLetterPdf(l.model, withLetterhead, { renderPdf: fx.renderPdf, letterheadBg: fx.getLetterheadBgDataUrl(), stamp: fx.getStampDataUrl(), margins: fx.LETTERHEAD_MARGINS });
+    const buf = await renderLetterPdf(l.model, withLetterhead, { renderPdf: fx.renderPdf, letterheadBg: fx.getLetterheadBgDataUrl(), stamp: fx.getStampDataUrl(), margins: fx.LETTERHEAD_MARGINS, signature: l.signature || null });
     if (p.log !== false) await recordEvent(l, cx, 'download', withLetterhead ? 'with_letterhead' : 'without_letterhead');
     const safe = String(l.employee_name || 'Employee').replace(/[^A-Za-z0-9]+/g, '_');
     return res.json({ success: true, base64: buf.toString('base64'), filename: `Asset_Handover_${safe}_${String(l.ref_no).replace(/[^A-Za-z0-9-]+/g, '_')}${withLetterhead ? '' : '_no_letterhead'}.pdf` });
+  },
+
+  // The employee named in the letter signs it (drawn signature). It marks the letter acknowledged and every asset in it as signed.
+  async al_sign({ p, cx, res }) {
+    const l = await loadLetter(p.id);
+    if (!l) return fail(res, 'Letter not found', 404);
+    if (l.user_id !== cx.cu.id) return fail(res, 'Only the employee named in this letter can sign it.', 403);
+    if (l.status === 'superseded') return fail(res, 'This letter was replaced by a revised one — please sign the latest letter.');
+    if (l.signature) return fail(res, 'You have already signed this letter.');
+    if (p.agreed !== true) return fail(res, 'Please confirm that you agree to the terms of the letter.');
+    const img = String(p.signature || '');
+    if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(img) || img.length < 800) return fail(res, 'Please draw your signature.');
+    if (img.length > 400000) return fail(res, 'The signature image is too large — please sign again.');
+    const name = l.employee_name || await nameOfUser(cx.cu.id);
+    const at = new Date().toISOString();
+    l.signature = { data_url: img, signed_by: cx.cu.id, signed_by_name: name, at, ip: String(p.ip || '').slice(0, 60) };
+    l.acknowledged_at = at;
+    (l.history ||= []).push({ at, by: cx.cu.id, by_name: name, action: 'signed' });
+    await saveLetter(l);
+    let signedAssets = 0;
+    for (const id of l.asset_ids || []) {
+      const r = await one("SELECT id, data FROM entities WHERE type='Asset' AND id=$1", [id]);
+      const a = r ? jparse(r.data) : null;
+      if (!a || a.assigned_to_user_id !== cx.cu.id) continue;       // returned or moved since: nothing to sign for that one
+      const upd = { ...a, status: 'signed', signed_at: at, signed_by_name: name, notes: `${a.notes ? a.notes + '\n' : ''}✓ Digitally signed by ${name} on ${at.slice(0, 10)} (letter ${l.ref_no})` };
+      await run("UPDATE entities SET status='signed', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), r.id]);
+      await logAssetActivity({ asset_id: a.id, asset_name: a.asset_name, asset_identifier: a.asset_id, previous_status: a.status || 'assigned', new_status: 'signed', assigned_to_user_id: cx.cu.id, assigned_to_name: name, changed_by_user_id: cx.cu.id, changed_by_name: name, field_changed: 'checkout', new_value: 'Digitally signed & acknowledged', notes: `Handover letter ${l.ref_no} signed by the employee.` });
+      signedAssets++;
+    }
+    await auditLog('AssetLetter', l.id, cx.cu.id, 'sign', { ref_no: l.ref_no, assets_signed: signedAssets });
+    try { if (l.generated_by) await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,'success','/AssetTracking')", [uuidv4(), l.generated_by, 'Asset letter signed', `${name} signed handover letter ${l.ref_no}.`]); } catch { /* notification is best-effort */ }
+    return res.json({ success: true, signed_assets: signedAssets, letter: await present(l, await loadTypes()) });
   },
 
   async al_event({ p, cx, res }) {
@@ -196,7 +229,7 @@ async function recordEvent(l, cx, action, variant) {
 
 async function present(l, types) {
   const amap = await loadAssetsByIds(l.asset_ids || []);
-  return { ...summarise(l, amap, types), model: l.model };
+  return { ...summarise(l, amap, types), model: l.model, signature: l.signature ? { data_url: l.signature.data_url, signed_by_name: l.signature.signed_by_name, at: l.signature.at } : null };
 }
 
 export async function handleAssetLetters(name, p, cu, res) {

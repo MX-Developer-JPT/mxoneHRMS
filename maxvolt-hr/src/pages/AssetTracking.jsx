@@ -103,6 +103,8 @@ export default function AssetTracking() {
   const [operatorUserIds, setOperatorUserIds] = useState(new Set());
   const [filterStatus, setFilterStatus] = useState('all');
   const [selectedTypeId, setSelectedTypeId] = useState(null);
+  const [tab, setTab] = useState(() => { try { return new URLSearchParams(window.location.search).get('tab') || 'inventory'; } catch { return 'inventory'; } });
+  const goTab = (t) => { setTab(t); try { const u = new URL(window.location.href); u.searchParams.set('tab', t); window.history.replaceState({}, '', u); } catch { /* ignore */ } };
   const [showAssetDialog, setShowAssetDialog] = useState(false);
   const [showTypeDialog, setShowTypeDialog] = useState(false);
   const [editingAsset, setEditingAsset] = useState(null);
@@ -135,7 +137,7 @@ export default function AssetTracking() {
     warranty_expiry: '', status: 'available', notes: '',
     asset_id: '', is_temporary: false, temporary_reason: '', specs: {},
   });
-  const [typeForm, setTypeForm] = useState({ name: '', code: '', icon: 'other', description: '', spec_category: '', custom_fields: [] });
+  const [typeForm, setTypeForm] = useState({ name: '', code: '', icon: 'other', description: '', spec_category: '', custom_fields: [], is_common: false });
   const [schemas, setSchemas] = useState({ categories: {}, types: {} });   // specification schema per asset type (from the server)
   const [letters, setLetters] = useState([]);
   const [lettersLoading, setLettersLoading] = useState(false);
@@ -179,7 +181,7 @@ export default function AssetTracking() {
 
   const getEmployeeName = (userId) => {
     if (!userId) return '—';
-    if (userId === '__common__') return '📦 Common Asset';
+    if (userId === '__common__') return 'Common asset';
     return employees.find(e => e.user_id === userId)?.display_name || userId;
   };
 
@@ -249,13 +251,13 @@ export default function AssetTracking() {
   // --- Asset Type Management ---
   const openNewType = () => {
     setEditingType(null);
-    setTypeForm({ name: '', code: '', icon: 'other', description: '', spec_category: '', custom_fields: [] });
+    setTypeForm({ name: '', code: '', icon: 'other', description: '', spec_category: '', custom_fields: [], is_common: false });
     setShowTypeDialog(true);
   };
 
   const openEditType = (type) => {
     setEditingType(type);
-    setTypeForm({ name: type.name, code: type.code, icon: type.icon || 'other', description: type.description || '', spec_category: type.spec_category || '', custom_fields: type.custom_fields || [] });
+    setTypeForm({ name: type.name, code: type.code, icon: type.icon || 'other', description: type.description || '', spec_category: type.spec_category || '', custom_fields: type.custom_fields || [], is_common: !!type.is_common });
     setShowTypeDialog(true);
   };
 
@@ -310,7 +312,7 @@ export default function AssetTracking() {
       asset_id: autoId,
       asset_name: '', asset_type_id: typeId || '', serial_number: '', model_number: '',
       specification: '', accessories: '',
-      assigned_to_user_id: '', assignment_date: '', return_date: '',
+      assigned_to_user_id: '', assignment_date: '', return_date: '', common_location: '',
       condition: 'good', purchase_date: '', purchase_cost: '',
       warranty_expiry: '', status: 'available', notes: '',
       is_temporary: false, temporary_reason: '', specs: {},
@@ -331,7 +333,7 @@ export default function AssetTracking() {
       purchase_date: asset.purchase_date || '', purchase_cost: asset.purchase_cost || '',
       warranty_expiry: asset.warranty_expiry || '', status: asset.status || 'available', notes: asset.notes || '',
       is_temporary: asset.is_temporary || false, temporary_reason: asset.temporary_reason || '',
-      specs: { ...(asset.specs || {}) },
+      specs: { ...(asset.specs || {}) }, common_location: asset.common_location || '',
     });
     setShowAssetDialog(true);
   };
@@ -348,6 +350,8 @@ export default function AssetTracking() {
   const handleSaveAsset = async () => {
     if (!assetForm.asset_type_id) { toast.error('Asset type is required'); return; }
     const schema = schemas.types[assetForm.asset_type_id];
+    const isCommonType = !!assetTypes.find(t => t.id === assetForm.asset_type_id)?.is_common;
+    if (isCommonType && assetForm.status !== 'under_repair' && assetForm.status !== 'discarded' && !String(assetForm.common_location || '').trim() && assetForm.assigned_to_user_id === '__common__') { toast.error('Say where this common asset is assigned (e.g. Reception, Conference Room 2, Production Floor)'); return; }
     // The name defaults to "Brand Model" when left blank, so a phone or laptop needs no double typing.
     const autoName = [assetForm.specs?.brand || assetForm.specs?.make, assetForm.specs?.model_name || assetForm.specs?.vehicle_model || assetForm.specs?.item_description].filter(Boolean).join(' ').trim();
     const finalName = (assetForm.asset_name || '').trim() || autoName;
@@ -373,7 +377,13 @@ export default function AssetTracking() {
         return;
       }
       // 'signed' is a sub-state of 'assigned' (the employee acknowledged the hand-over): editing other details must not undo it.
-      if (data.assigned_to_user_id) data.status = (editingAsset?.status === 'signed' && editingAsset.assigned_to_user_id === data.assigned_to_user_id) ? 'signed' : 'assigned';
+      if (isCommonType) {
+        // a common asset belongs to a PLACE: no employee, no letter, no digital signature
+        const place = String(assetForm.common_location || '').trim();
+        data.common_location = place; data.assigned_to_user_id = place ? '__common__' : '';
+        if (data.status !== 'under_repair' && data.status !== 'discarded') data.status = place ? 'assigned' : 'available';
+      } else { data.common_location = ''; if (data.assigned_to_user_id === '__common__') data.assigned_to_user_id = ''; }
+      if (isCommonType) { /* status decided above */ } else if (data.assigned_to_user_id) data.status = (editingAsset?.status === 'signed' && editingAsset.assigned_to_user_id === data.assigned_to_user_id) ? 'signed' : 'assigned';
       else if (!editingAsset || assetForm.status === 'available') data.status = 'available';
 
       let savedId = editingAsset?.id;
@@ -419,6 +429,18 @@ export default function AssetTracking() {
     } catch { toast.error('Error assigning asset'); }
   };
 
+  // A common asset is assigned to a PLACE: ask where, and record it (no employee, no letter).
+  const handleAssignCommon = async (asset) => {
+    const place = window.prompt(`Where is "${asset.asset_name}" assigned?\n(e.g., Reception, Conference Room 2, Production Floor)`, asset.common_location || '');
+    if (place === null) return;
+    if (!place.trim()) { toast.error('Enter the location'); return; }
+    try {
+      await base44.entities.Asset.update(asset.id, { assigned_to_user_id: '__common__', common_location: place.trim(), status: 'assigned', assignment_date: format(new Date(), 'yyyy-MM-dd') });
+      toast.success(`${asset.asset_name} assigned to ${place.trim()}`);
+      loadData();
+    } catch { toast.error('Could not save the location'); }
+  };
+
   const openReturnDialog = (asset) => {
     setReturningAsset(asset);
     setReturnForm({ returned_condition: 'good', returned_date: format(new Date(), 'yyyy-MM-dd'), notes: '' });
@@ -455,6 +477,7 @@ export default function AssetTracking() {
         status: 'available',
         assignment_date: '',
         return_date: '',
+        common_location: '',
       });
       toast.success('Asset unassigned');
       loadData();
@@ -483,8 +506,9 @@ export default function AssetTracking() {
     if (bulkSelected.size === 0 || !bulkEmployeeId) return;
     const emp = getEmployee(bulkEmployeeId);
     if (!emp) { toast.error('Employee not found'); return; }
-    const selectedAssets = assets.filter(a => bulkSelected.has(a.id) && a.status === 'available');
-    if (selectedAssets.length === 0) { toast.error('No available assets selected'); return; }
+    const commonTypeIds = new Set(assetTypes.filter(t => t.is_common).map(t => t.id));
+    const selectedAssets = assets.filter(a => bulkSelected.has(a.id) && a.status === 'available' && !commonTypeIds.has(a.asset_type_id));
+    if (selectedAssets.length === 0) { toast.error(assets.some(a => bulkSelected.has(a.id) && commonTypeIds.has(a.asset_type_id)) ? 'Common assets are assigned to a place, not a person — use “Set location” on each' : 'No available assets selected'); return; }
     setBulkAssigning(true);
     try {
       const today = format(new Date(), 'yyyy-MM-dd');
@@ -925,18 +949,28 @@ export default function AssetTracking() {
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
-            { label: 'Total Assets', value: stats.total, icon: Boxes, color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-900/20' },
-            { label: 'Available', value: stats.available, icon: CheckCircle2, color: 'text-green-600', bg: 'bg-green-50 dark:bg-green-900/20' },
-            { label: 'Assigned', value: stats.assigned, icon: UserCheck, color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-900/20' },
-            { label: 'Under Repair', value: stats.underRepair, icon: AlertTriangle, color: 'text-yellow-600', bg: 'bg-yellow-50 dark:bg-yellow-900/20' },
+            { label: 'Total Assets', value: stats.total, icon: Boxes, color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-900/20', go: () => { setSelectedTypeId(null); setFilterStatus('all'); goTab('all'); } },
+            { label: 'Available', value: stats.available, icon: CheckCircle2, color: 'text-green-600', bg: 'bg-green-50 dark:bg-green-900/20', go: () => { setSelectedTypeId(null); setFilterStatus('available'); goTab('all'); } },
+            { label: 'Assigned', value: stats.assigned, icon: UserCheck, color: 'text-blue-600', bg: 'bg-blue-50 dark:bg-blue-900/20', go: () => goTab('assignments') },
+            { label: 'Under Repair', value: stats.underRepair, icon: AlertTriangle, color: 'text-yellow-600', bg: 'bg-yellow-50 dark:bg-yellow-900/20', go: () => { setSelectedTypeId(null); setFilterStatus('under_repair'); goTab('all'); } },
             { label: 'Overdue Returns', value: stats.overdueReturns, icon: AlertTriangle, color: 'text-red-600', bg: 'bg-red-50 dark:bg-red-900/20' },
           ].map(s => (
-            <Card key={s.label} className={`${s.bg} border-0`}>
+            <Card key={s.label} className={`${s.bg} border-0 ${s.go ? 'cursor-pointer hover:shadow-md transition-shadow' : ''}`} onClick={s.go}>
               <CardContent className="p-4 flex items-center gap-3">
                 <s.icon className={`w-5 h-5 ${s.color}`} />
                 <div><p className={`text-2xl font-bold ${s.color}`}>{s.value}</p><p className="text-xs text-muted-foreground">{s.label}</p></div>
               </CardContent>
             </Card>
+          ))}
+        </div>
+
+        {/* Sections: each job has its own easy-to-reach tab */}
+        <div className="flex gap-1 border-b overflow-x-auto" role="tablist" aria-label="Asset sections">
+          {[['inventory', 'Inventory', Boxes, `${assetTypes.length} types`], ['assignments', 'Employee assignments', UserCheck, `${new Set(assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.assigned_to_user_id && a.assigned_to_user_id !== '__common__').map(a => a.assigned_to_user_id)).size} employees`], ['all', 'All assets', Package, `${assets.length}`], ['maintenance', 'Maintenance & activity', Wrench, '']].map(([id, label, Icon, count]) => (
+            <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => goTab(id)}
+              className={`shrink-0 px-4 py-2.5 text-sm flex items-center gap-2 border-b-2 -mb-px transition-colors ${tab === id ? 'border-primary text-primary font-semibold' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+              <Icon className="w-4 h-4" />{label}{count && <span className="text-[11px] rounded-full bg-muted px-2 py-0.5 text-muted-foreground">{count}</span>}
+            </button>
           ))}
         </div>
 
@@ -963,7 +997,7 @@ export default function AssetTracking() {
         )}
 
         {/* Inventory grouped by type */}
-        <Card>
+        {tab === 'inventory' && (<Card>
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-lg">Inventory</CardTitle>
             <div className="relative mt-2">
@@ -993,7 +1027,7 @@ export default function AssetTracking() {
                 const group = groupedAssets[type.id] || { total: 0, available: 0, assigned: 0, underRepair: 0, assets: [] };
                 const Icon = getTypeIcon(type.icon);
                 return (
-                  <Card key={type.id} className="hover:shadow-md transition-shadow cursor-pointer border" onClick={() => { setSelectedTypeId(type.id); setFilterStatus('all'); setSearch(invSearch); }}>
+                  <Card key={type.id} className="hover:shadow-md transition-shadow cursor-pointer border" onClick={() => { setSelectedTypeId(type.id); setFilterStatus('all'); setSearch(invSearch); goTab('all'); }}>
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
@@ -1041,17 +1075,17 @@ export default function AssetTracking() {
               </Card>
             </div>
           </CardContent>
-        </Card>
+        </Card>)}
 
         {/* Employee-wise Asset Summary */}
-        {(() => {
+        {tab === 'assignments' && (() => {
           const empAssetMap = {};
           assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.assigned_to_user_id).forEach(a => {
             if (!empAssetMap[a.assigned_to_user_id]) empAssetMap[a.assigned_to_user_id] = [];
             empAssetMap[a.assigned_to_user_id].push(a);
           });
           const empEntries = Object.entries(empAssetMap);
-          if (empEntries.length === 0) return null;
+          if (empEntries.length === 0) return <Card><CardContent className="py-12 text-center text-muted-foreground">No assets are assigned to employees yet. Assign one from the All assets tab.</CardContent></Card>;
           return (
             <Card>
               <CardHeader className="pb-3">
@@ -1097,7 +1131,7 @@ export default function AssetTracking() {
         })()}
 
         {/* Asset list with filters */}
-        <Card>
+        {tab === 'all' && (<Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <CardTitle className="text-lg flex items-center gap-2">
@@ -1149,7 +1183,7 @@ export default function AssetTracking() {
                   <PopoverTrigger asChild>
                     <button type="button" className="flex items-center justify-between rounded-md border border-input bg-background px-2 py-1 text-xs h-8 w-48 hover:bg-accent">
                       <span className={bulkEmployeeId ? 'text-foreground truncate' : 'text-muted-foreground'}>
-                        {bulkEmployeeId === '__common__' ? '📦 Common Asset' : bulkEmployeeId ? (employees.find(e => e.user_id === bulkEmployeeId)?.display_name || bulkEmployeeId) : 'Pick employee...'}
+                        {bulkEmployeeId ? (employees.find(e => e.user_id === bulkEmployeeId)?.display_name || bulkEmployeeId) : 'Pick employee...'}
                       </span>
                       <ChevronsUpDown className="ml-1 h-3 w-3 shrink-0 opacity-50" />
                     </button>
@@ -1160,9 +1194,6 @@ export default function AssetTracking() {
                       <CommandList>
                         <CommandEmpty>No employee found.</CommandEmpty>
                         <CommandGroup>
-                          <CommandItem value="common asset" onSelect={() => { setBulkEmployeeId('__common__'); setBulkEmpOpen(false); }}>
-                            <Check className={`mr-2 h-4 w-4 ${bulkEmployeeId === '__common__' ? 'opacity-100' : 'opacity-0'}`} /> 📦 Common Asset
-                          </CommandItem>
                           {employees.filter(e => e.status === 'active' && !operatorUserIds.has(e.user_id)).map(e => (
                             <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { setBulkEmployeeId(e.user_id); setBulkEmpOpen(false); }}>
                               <Check className={`mr-2 h-4 w-4 ${bulkEmployeeId === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
@@ -1207,7 +1238,10 @@ export default function AssetTracking() {
                             {asset.model_number && <> · Model: {asset.model_number}</>}
                             {asset.serial_number && <> · SN: {asset.serial_number}</>}
                           </p>
-                          {emp && (
+                          {asset.assigned_to_user_id === '__common__' && (
+                            <div className="text-xs text-muted-foreground">📍 Common asset — assigned to <span className="font-medium">{asset.common_location || 'a shared area (location not set)'}</span></div>
+                          )}
+                          {emp && asset.assigned_to_user_id !== '__common__' && (
                             <div className="text-xs text-muted-foreground">
                               Assigned: <span className="font-medium">{emp.display_name}</span> ({emp.employee_code})
                               {asset.assignment_date && <> · Since {fmtDate(asset.assignment_date, 'dd MMM yyyy')}</>}
@@ -1220,7 +1254,12 @@ export default function AssetTracking() {
                         {asset.is_temporary && (
                           <Badge className="bg-orange-100 text-orange-700 text-[10px]"><Clock className="w-3 h-3 mr-0.5" />Temporary</Badge>
                         )}
-                        {ACTIVE_ASSIGNMENT_STATUSES.includes(asset.status) ? (
+                        {ACTIVE_ASSIGNMENT_STATUSES.includes(asset.status) && asset.assigned_to_user_id === '__common__' ? (
+                          <>
+                            <Button size="xs" variant="outline" className="h-7 text-xs" onClick={() => handleAssignCommon(asset)}>📍 Move</Button>
+                            <Button size="xs" variant="ghost" className="h-7 text-xs text-orange-600" onClick={() => handleUnassignAsset(asset)} title="Take back to stock"><UserX className="w-3 h-3" /></Button>
+                          </>
+                        ) : ACTIVE_ASSIGNMENT_STATUSES.includes(asset.status) ? (
                           <>
                             <Button size="xs" variant="outline" className="h-7 text-xs" onClick={() => handlePrintLetter(asset)}>
                               <Download className="w-3 h-3 mr-1" /> Letter
@@ -1232,6 +1271,8 @@ export default function AssetTracking() {
                               <UserX className="w-3 h-3" />
                             </Button>
                           </>
+                        ) : assetTypes.find(t => t.id === asset.asset_type_id)?.is_common ? (
+                          <Button size="xs" variant="outline" className="h-7 text-xs" onClick={() => handleAssignCommon(asset)}>📍 Set location</Button>
                         ) : (
                           <Popover open={!!assetAssignOpen[asset.id]} onOpenChange={open => setAssetAssignOpen(prev => ({ ...prev, [asset.id]: open }))}>
                             <PopoverTrigger asChild>
@@ -1246,9 +1287,6 @@ export default function AssetTracking() {
                                 <CommandList>
                                   <CommandEmpty>No employee found.</CommandEmpty>
                                   <CommandGroup>
-                                    <CommandItem value="common asset" onSelect={() => { handleAssignEmployee(asset, '__common__'); setAssetAssignOpen(prev => ({ ...prev, [asset.id]: false })); }}>
-                                      📦 Common Asset
-                                    </CommandItem>
                                     {employees.filter(e => e.status === 'active' && !operatorUserIds.has(e.user_id)).map(e => (
                                       <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { handleAssignEmployee(asset, e.user_id); setAssetAssignOpen(prev => ({ ...prev, [asset.id]: false })); }}>
                                         {e.display_name}
@@ -1269,9 +1307,10 @@ export default function AssetTracking() {
               </div>
             )}
           </CardContent>
-        </Card>
+        </Card>)}
 
         {/* Maintenance Log Section */}
+        {tab === 'maintenance' && (<>
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
@@ -1328,6 +1367,7 @@ export default function AssetTracking() {
 
         {/* Activity Log Section */}
         <AssetActivityLog logs={activityLogs} />
+        </>)}
       </div>
 
       {letterDlg && (
@@ -1376,12 +1416,19 @@ export default function AssetTracking() {
               {assetForm.specification && (
                 <div className="col-span-2"><Label>Specification (earlier free-text entry)</Label><Input value={assetForm.specification} onChange={e => setAssetForm({...assetForm, specification: e.target.value})} /></div>
               )}
-              <div><Label>Assign To</Label>
+              {assetTypes.find(t => t.id === assetForm.asset_type_id)?.is_common && (
+                <div className="col-span-2 rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+                  <Label>Where is this common asset assigned? *</Label>
+                  <Input className="mt-1" value={assetForm.common_location || ''} onChange={e => setAssetForm({...assetForm, common_location: e.target.value, assigned_to_user_id: e.target.value.trim() ? '__common__' : '', status: e.target.value.trim() ? 'assigned' : 'available'})} placeholder="e.g., Reception, Conference Room 2, Production Floor, Ghaziabad Plant" />
+                  <p className="text-xs text-muted-foreground mt-1">Common assets belong to a place, not a person — no handover letter or signature is needed.</p>
+                </div>
+              )}
+              {!assetTypes.find(t => t.id === assetForm.asset_type_id)?.is_common && <div><Label>Assign To</Label>
                 <Popover open={assetDialogEmpOpen} onOpenChange={setAssetDialogEmpOpen}>
                   <PopoverTrigger asChild>
                     <button type="button" className="mt-0.5 flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm h-9 hover:bg-accent">
                       <span className={assetForm.assigned_to_user_id ? 'text-foreground truncate' : 'text-muted-foreground'}>
-                        {assetForm.assigned_to_user_id === '__common__' ? '📦 Common Asset (Shared)' : assetForm.assigned_to_user_id ? (employees.find(e => e.user_id === assetForm.assigned_to_user_id)?.display_name || assetForm.assigned_to_user_id) : 'Unassigned'}
+                        {assetForm.assigned_to_user_id ? (employees.find(e => e.user_id === assetForm.assigned_to_user_id)?.display_name || assetForm.assigned_to_user_id) : 'Unassigned'}
                       </span>
                       <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </button>
@@ -1395,9 +1442,6 @@ export default function AssetTracking() {
                           <CommandItem value="unassigned" onSelect={() => { setAssetForm({...assetForm, assigned_to_user_id: '', status: 'available'}); setAssetDialogEmpOpen(false); }}>
                             <Check className={`mr-2 h-4 w-4 ${!assetForm.assigned_to_user_id ? 'opacity-100' : 'opacity-0'}`} /> Unassigned
                           </CommandItem>
-                          <CommandItem value="common asset shared" onSelect={() => { setAssetForm({...assetForm, assigned_to_user_id: '__common__', status: 'assigned'}); setAssetDialogEmpOpen(false); }}>
-                            <Check className={`mr-2 h-4 w-4 ${assetForm.assigned_to_user_id === '__common__' ? 'opacity-100' : 'opacity-0'}`} /> 📦 Common Asset (Shared)
-                          </CommandItem>
                           {employees.filter(e => e.status === 'active' && !operatorUserIds.has(e.user_id)).map(e => (
                             <CommandItem key={e.user_id} value={`${e.display_name || ''} ${e.employee_code || ''}`} onSelect={() => { setAssetForm({...assetForm, assigned_to_user_id: e.user_id, status: 'assigned'}); setAssetDialogEmpOpen(false); }}>
                               <Check className={`mr-2 h-4 w-4 ${assetForm.assigned_to_user_id === e.user_id ? 'opacity-100' : 'opacity-0'}`} />
@@ -1409,7 +1453,7 @@ export default function AssetTracking() {
                     </Command>
                   </PopoverContent>
                 </Popover>
-              </div>
+              </div>}
               <div><Label>Assignment Date</Label><Input type="date" value={assetForm.assignment_date} onChange={e => setAssetForm({...assetForm, assignment_date: e.target.value})} /></div>
               <div><Label>Return Date</Label><Input type="date" value={assetForm.return_date} onChange={e => setAssetForm({...assetForm, return_date: e.target.value})} /></div>
               <div className="col-span-2 flex items-center gap-3 pt-2">
@@ -1609,6 +1653,10 @@ export default function AssetTracking() {
               </div>
             </div>
             <div><Label>Description</Label><Textarea value={typeForm.description} onChange={e => setTypeForm({...typeForm, description: e.target.value})} rows={2} /></div>
+            <label className="flex items-start gap-2 text-sm rounded-lg border p-3 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={!!typeForm.is_common} onChange={e => setTypeForm({...typeForm, is_common: e.target.checked})} />
+              <span><span className="font-medium">Common asset type</span><br /><span className="text-xs text-muted-foreground">Shared assets (printer, projector, furniture…) are assigned to a place — you enter where — instead of an employee.</span></span>
+            </label>
             <div>
               <Label>Specification template</Label>
               <Select value={typeForm.spec_category || 'auto'} onValueChange={v => setTypeForm({...typeForm, spec_category: v === 'auto' ? '' : v})}>

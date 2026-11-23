@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, Printer, Download, FileText, RefreshCw, AlertTriangle, Eye } from 'lucide-react';
+import { Loader2, Printer, Download, FileText, RefreshCw, AlertTriangle, Eye, PenLine, ShieldCheck } from 'lucide-react';
+import SignaturePad from '@/components/SignaturePad';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { al, downloadLetterPdf, letterState, LETTER_STATUS } from '@/lib/assetLetters';
@@ -20,7 +21,7 @@ const PAGE_H = 1123;  // 297 mm
  *   preselect asset entity ids ticked when the dialog opens
  *   letter    an existing letter (summary) to open straight in preview; otherwise HR ticks assets and generates one
  */
-export default function AssetLetterDialog({ open, onClose, employee, assets = [], preselect = [], letter: openLetter = null, canManage = true, onChanged }) {
+export default function AssetLetterDialog({ open, onClose, employee, assets = [], preselect = [], letter: openLetter = null, canManage = true, viewerUserId = null, onChanged }) {
   const [picked, setPicked] = useState(new Set());
   const [issueDate, setIssueDate] = useState('');
   const [letter, setLetter] = useState(null);     // full letter incl. model
@@ -28,6 +29,8 @@ export default function AssetLetterDialog({ open, onClose, employee, assets = []
   const [busy, setBusy] = useState('');
   const [scale, setScale] = useState(1);
   const frameRef = useRef(null);
+  const sigRef = useRef(null);
+  const [agreed, setAgreed] = useState(false);
   const pendingPrint = useRef(false);
 
   useEffect(() => {
@@ -47,7 +50,21 @@ export default function AssetLetterDialog({ open, onClose, employee, assets = []
     return () => window.removeEventListener('resize', fit);
   }, [open, openLetter?.id]);
 
-  const doc = useMemo(() => (letter?.model ? assetLetterDocument(letter.model, mode === 'with') : ''), [letter, mode]);
+  const doc = useMemo(() => (letter?.model ? assetLetterDocument(letter.model, mode === 'with', { signature: letter.signature }) : ''), [letter, mode]);
+  const canSign = !!letter && !!viewerUserId && letter.user_id === viewerUserId && !letter.signed && letter.status !== 'superseded';
+
+  const sign = async () => {
+    if (sigRef.current?.isEmpty?.()) { toast.error('Please draw your signature'); return; }
+    if (!agreed) { toast.error('Please tick the box to agree'); return; }
+    setBusy('sign');
+    try {
+      const d = await al('al_sign', { id: letter.id, signature: sigRef.current.toDataURL(), agreed: true });
+      setLetter(d.letter); setAgreed(false);
+      toast.success('Signed — thank you. HR has been notified.');
+      onChanged?.();
+    } catch (e) { toast.error(e.message || 'Could not save your signature'); }
+    setBusy('');
+  };
   const state = letter ? letterState(letter) : null;
 
   const generate = async (revises) => {
@@ -151,6 +168,19 @@ export default function AssetLetterDialog({ open, onClose, employee, assets = []
               Both versions carry exactly the same letter — “without letterhead” leaves out only the logo, header and footer so it can be printed on the company’s pre-printed paper (text is placed to clear them). Issued by {letter.generated_by_name || '—'} on {letter.generated_at ? format(new Date(letter.generated_at), 'dd MMM yyyy, hh:mm a') : '—'}
               {letter.acknowledged_at ? ` · acknowledged by the employee ${format(new Date(letter.acknowledged_at), 'dd MMM yyyy')}` : ''}.
             </p>
+
+            {letter.signed && (
+              <p className="text-sm bg-green-50 border border-green-200 text-green-800 rounded-md p-2.5 flex items-center gap-2"><ShieldCheck className="w-4 h-4" /> Signed and acknowledged by {letter.signed_by_name} on {letter.acknowledged_at ? format(new Date(letter.acknowledged_at), 'dd MMM yyyy, hh:mm a') : '—'}.</p>
+            )}
+            {canSign && (
+              <div className="rounded-lg border-2 border-primary/30 bg-primary/5 p-3 space-y-2">
+                <p className="text-sm font-semibold flex items-center gap-2"><PenLine className="w-4 h-4" /> Sign to acknowledge receipt of these assets</p>
+                <p className="text-xs text-muted-foreground">Read the letter below, then sign with your finger or mouse. Your signature is attached to this letter and to each asset listed in it.</p>
+                <SignaturePad ref={sigRef} height={140} />
+                <label className="flex items-start gap-2 text-sm cursor-pointer"><input type="checkbox" className="mt-0.5" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />I have received the asset(s) listed in this letter in the condition stated and agree to the guidelines.</label>
+                <Button onClick={sign} disabled={busy === 'sign'}>{busy === 'sign' ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <PenLine className="w-4 h-4 mr-1.5" />}Sign &amp; acknowledge</Button>
+              </div>
+            )}
 
             <div className="bg-slate-200 rounded-lg p-2 sm:p-4 overflow-hidden flex justify-center">
               <div style={{ width: PAGE_W * scale, height: PAGE_H * scale }}>

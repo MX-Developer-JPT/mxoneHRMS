@@ -1429,7 +1429,7 @@ router.patch('/:type/:id', async (req, res) => {
           });
         }
       } else if (type === 'Asset') {
-        if (req.body.assigned_to_user_id && req.body.assigned_to_user_id !== current.assigned_to_user_id) {
+        if (req.body.assigned_to_user_id && req.body.assigned_to_user_id !== '__common__' && req.body.assigned_to_user_id !== current.assigned_to_user_id) {
           await notifyMany([req.body.assigned_to_user_id], {
             title: 'Asset Assigned to You',
             message: `${updated.asset_name || 'An asset'} (${updated.asset_id || ''}) has been assigned to you.`,

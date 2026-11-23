@@ -214,8 +214,9 @@ export default function MyAssets() {
               {myLetters.map(l => { const st = letterState(l); return (
                 <div key={l.id} className="flex flex-wrap items-center justify-between gap-2 border rounded-lg p-2.5 text-sm">
                   <div><span className="font-mono text-xs">{l.ref_no}</span> <Badge className={`${LETTER_STATUS[st].cls} text-[10px]`}>{LETTER_STATUS[st].label}</Badge>
+                    {st !== 'acknowledged' && <p className="text-xs font-medium text-amber-700">⏳ Waiting for your signature</p>}
                     <p className="text-xs text-muted-foreground">{(l.asset_names || []).join(', ')} · issued {fmtDate(l.issue_date, 'dd MMM yyyy')}</p></div>
-                  <Button size="sm" variant="outline" onClick={() => setOpenLetter(l)}>View / Print</Button>
+                  <Button size="sm" variant={st === 'acknowledged' ? 'outline' : 'default'} onClick={() => setOpenLetter(l)}>{st === 'acknowledged' ? 'View / Print' : 'Read & sign'}</Button>
                 </div>); })}
             </CardContent>
           </Card>
@@ -286,7 +287,7 @@ export default function MyAssets() {
         )}
       </div>
 
-      {openLetter && <AssetLetterDialog open employee={{ user_id: openLetter.user_id, display_name: openLetter.employee_name }} letter={openLetter} canManage={false} onClose={() => setOpenLetter(null)} />}
+      {openLetter && <AssetLetterDialog open employee={{ user_id: openLetter.user_id, display_name: openLetter.employee_name }} letter={openLetter} canManage={false} viewerUserId={user?.id} onClose={() => setOpenLetter(null)} onChanged={() => { al('al_list').then(d => setMyLetters((d.letters || []).filter(l => l.status !== 'superseded'))).catch(() => {}); loadData(); }} />}
 
       <AssetCheckoutDialog
         open={showCheckout}

@@ -104,6 +104,7 @@ export async function buildPdf(model, withLetterhead, chrome) {
   const half = Math.ceil(model.guidelines.length / 2);
   const gl = (g, i) => ({ stack: [{ text: `${i + 1}. ${g.title}`, bold: true, margin: [0, 2, 0, 0.5] }, { ul: g.points, margin: [8, 0, 0, 1] }] });
   const stampNode = stamp ? [{ image: 'stamp', width: 50, opacity: 0.85, margin: [0, -6, 0, -8] }] : [];
+  const sig = chrome.signature?.data_url;
   const content = [
     { text: model.title, fontSize: 15, bold: true, alignment: 'center', margin: [0, 0, 0, 3] },
     { columns: [{ text: `Ref. No.: ${model.ref_no}`, width: '*' }, { text: model.letter_date_label, alignment: 'right', width: 'auto' }], margin: [0, 0, 0, 4] },
@@ -119,13 +120,13 @@ export async function buildPdf(model, withLetterhead, chrome) {
     { text: model.acknowledgement, italics: true, fontSize: fs - 0.6, margin: [0, 0, 0, 3] },
     { columns: [
       { width: '*', stack: [{ text: 'Sincerely,    Issue by' }, ...stampNode, { text: model.signoff.issued_by, bold: true }] },
-      { width: 190, stack: [{ text: 'Received by' }, { text: ' ', margin: [0, 8, 0, 0] }, { text: model.signoff.received_by, bold: true }, { text: 'Signature & Date: ____________________', fontSize: fs - 0.6, margin: [0, 3, 0, 0] }], alignment: 'left' },
+      { width: 190, stack: [{ text: 'Received by' }, sig ? { image: 'empsig', width: 90, margin: [0, 2, 0, 0] } : { text: ' ', margin: [0, 8, 0, 0] }, { text: model.signoff.received_by, bold: true }, sig ? { text: `Digitally signed on ${String(chrome.signature.at).slice(0, 10)}`, fontSize: fs - 0.6, margin: [0, 2, 0, 0] } : { text: 'Signature & Date: ____________________', fontSize: fs - 0.6, margin: [0, 3, 0, 0] }], alignment: 'left' },
     ], unbreakable: true },
   ];
   const docDef = {
     pageSize: 'A4', pageMargins: [42, LETTERHEAD_MARGINS.top, 42, LETTERHEAD_MARGINS.bottom],
     defaultStyle: { font: 'Roboto', fontSize: fs, lineHeight: 1.1 },
-    content, images: stamp ? { stamp } : {},
+    content, images: { ...(stamp ? { stamp } : {}), ...(sig ? { empsig: sig } : {}) },
     background: bg ? (cp, ps) => ({ image: bg, absolutePosition: { x: 0, y: 0 }, width: ps.width, height: ps.height }) : undefined,
     info: { title: `${model.title} - ${model.employee.name} - ${model.ref_no}`, author: 'Maxvolt Energy Industries Limited' },
   };

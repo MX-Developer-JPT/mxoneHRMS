@@ -6,7 +6,7 @@ const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').
 const TD = 'padding:3px 7px;border:1px solid #ccc;vertical-align:top;';
 const lines = (rows) => rows.map(([k, v]) => `<div><span style="color:#555">${esc(k)} – </span>${esc(v)}</div>`).join('');
 
-export function assetLetterBody(m) {
+export function assetLetterBody(m, signature = null) {
   const stampUrl = (typeof window !== 'undefined' ? window.location.origin : '') + '/company-stamp.png';
   const rows = m.assets.map((a) => `
     <tr>
@@ -43,14 +43,15 @@ export function assetLetterBody(m) {
         <p style="font-weight:600;margin:0;">${esc(m.signoff.issued_by)}</p>
       </div>
       <div style="min-width:200px;">
-        <p style="margin:0 0 20px;">Received by</p>
+        <p style="margin:0 0 ${signature ? '2' : '20'}px;">Received by</p>
+        ${signature ? `<img src="${esc(signature.data_url)}" style="height:46px;max-width:170px;object-fit:contain;display:block;margin:0 0 2px;" />` : ''}
         <p style="font-weight:600;margin:0;">${esc(m.signoff.received_by)}</p>
-        <p style="font-size:9.5px;margin:3px 0 0;">Signature &amp; Date: ____________________</p>
+        <p style="font-size:9.5px;margin:3px 0 0;">${signature ? `Digitally signed on ${esc(String(signature.at).slice(0, 10))}` : 'Signature &amp; Date: ____________________'}</p>
       </div>
     </div>`;
 }
 
 /** The complete printable page. `withLetterhead` false leaves the artwork out and everything else identical. */
-export function assetLetterDocument(model, withLetterhead, { toolbar = false } = {}) {
-  return buildLetterheadHtml(`${model.title} - ${model.employee.name} - ${model.ref_no}`, fitOnOnePage(assetLetterBody(model)), '', { letterhead: withLetterhead, toolbar });
+export function assetLetterDocument(model, withLetterhead, { toolbar = false, signature = null } = {}) {
+  return buildLetterheadHtml(`${model.title} - ${model.employee.name} - ${model.ref_no}`, fitOnOnePage(assetLetterBody(model, signature)), '', { letterhead: withLetterhead, toolbar });
 }
