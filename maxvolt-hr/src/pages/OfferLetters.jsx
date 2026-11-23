@@ -198,6 +198,25 @@ function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) 
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [acceptLink, setAcceptLink] = useState('');
+  // The manpower requisition this candidate was hired against: fills the offer and shows the approved CTC range.
+  const [mrfReq, setMrfReq] = useState(null);
+  useEffect(() => {
+    const rid = candidate?.requisition_id || candidate?.job_id;
+    if (!rid) return undefined;
+    let live = true;
+    base44.entities.JobRequisition.get(rid).then((r) => {
+      if (!live || !r || r.mrf_version !== 2) return;
+      setMrfReq(r);
+      setForm((f) => ({
+        ...f,
+        designation: candidate?.designation || r.designation || f.designation,
+        department: candidate?.department || r.department || f.department,
+        location: candidate?.location || r.work_location || r.location || f.location,
+        reporting_to: candidate?.reporting_to || r.reports_to_name || r.hiring_manager_name || f.reporting_to,
+      }));
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [candidate?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [previewing, setPreviewing] = useState(false);
   const [deptOpen, setDeptOpen] = useState(false);
   const [overrideEnabled, setOverrideEnabled] = useState(false);
@@ -332,6 +351,19 @@ function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) 
         <strong>{candidate.full_name}</strong> ({candidate.email})
       </p>
 
+      {mrfReq && (() => {
+        const annual = (n) => (mrfReq.ctc_frequency === 'monthly' ? Number(n) * 12 : Number(n));
+        const lo = mrfReq.ctc_min != null ? annual(mrfReq.ctc_min) : null; const hi = mrfReq.ctc_max != null ? annual(mrfReq.ctc_max) : null;
+        const ctc = Number(form.annual_ctc) || 0;
+        const over = hi != null && ctc > hi; const under = lo != null && ctc > 0 && ctc < lo;
+        return (
+          <div className={`rounded-md border p-2.5 text-xs ${over ? 'border-red-300 bg-red-50 text-red-800' : 'border-blue-200 bg-blue-50 text-blue-900'}`}>
+            Hiring against <b>{mrfReq.requisition_id}</b> — {mrfReq.designation}, {mrfReq.department}. Hiring Manager: {mrfReq.hiring_manager_name}.
+            {lo != null || hi != null ? <> Approved CTC range: <b>₹{(lo ?? 0).toLocaleString('en-IN')} – ₹{(hi ?? lo ?? 0).toLocaleString('en-IN')}</b> a year.</> : ' No CTC range was set on the requisition.'}
+            {over && <> <b>This offer is above the approved range</b> — get the Hiring Manager / management agreement before sending.</>}{under && <> This offer is below the approved range.</>}
+          </div>
+        );
+      })()}
       <div className="grid md:grid-cols-2 gap-3">
         {[
           ['Joining Date *', 'joining_date', 'date'],

@@ -481,6 +481,16 @@ const H = {
     return res.json({ success: true, requisition: hydrate(rec, P) });
   },
 
+  // Where the hiring stands: candidates linked to this requisition, by stage.
+  async mrf_pipeline({ p, cx, res }) {
+    const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
+    if (!canSee(rec, cx)) return fail(res, 'You do not have access to this requisition', 403);
+    const STAGES = ['applied', 'screening', 'interview_scheduled', 'interviewed', 'selected', 'offered', 'offer_accepted', 'joined', 'rejected', 'offer_declined'];
+    const by = {}; let total = 0;
+    for (const r of await all("SELECT data FROM entities WHERE type='Candidate'")) { const c = jparse(r.data); if (!c || (c.requisition_id !== rec.id && c.job_id !== rec.id)) continue; total++; by[c.status || 'applied'] = (by[c.status || 'applied'] || 0) + 1; }
+    return res.json({ success: true, total, by_stage: STAGES.filter((k) => by[k]).map((k) => ({ stage: k, count: by[k] })), positions: Number(rec.number_of_positions) || 1, filled: Number(rec.positions_filled) || 0 });
+  },
+
   async mrf_extend_target({ p, cx, res }) {
     if (!hasAny(cx, PUBLISH_ROLES)) return fail(res, 'Only HR can change the target hiring date.', 403);
     const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
@@ -573,5 +583,24 @@ export function publicJob(j) {
     required_skills: j.required_skills, ai_job_description: j.ai_job_description, jd_status: j.jd_status, work_arrangement: j.work_arrangement,
     ...(j.disclose_ctc ? { salary_range_min: j.salary_range_min, salary_range_max: j.salary_range_max } : { salary_range_min: 0, salary_range_max: 0 }),
   };
+}
+/**
+ * Recruitment -> requisition: when a candidate is marked JOINED against a manpower requisition, count one filled position (once per
+ * candidate). When every vacancy is filled the requisition closes as filled and comes off the job portal.
+ */
+export async function mrfCandidateJoined(c, byUserId) {
+  const rid = c?.requisition_id || c?.job_id; if (!rid) return null;
+  const rec = await load(rid); if (!rec) return null;
+  if ((rec.counted_candidates || []).includes(c.id)) return null;
+  const sys = { cu: { id: byUserId || null }, name: 'Recruitment', roles: ['system'] };
+  rec.counted_candidates = [...(rec.counted_candidates || []), c.id];
+  const vacancies = Number(rec.number_of_positions) || 1;
+  rec.positions_filled = Math.min(vacancies, (Number(rec.positions_filled) || 0) + 1);
+  addAudit(rec, sys, 'candidate_joined', `${c.full_name || 'A candidate'} joined — ${rec.positions_filled} of ${vacancies} positions filled`);
+  const closing = rec.positions_filled >= vacancies && ['published', 'on_hold', 'pending_hr_publication'].includes(rec.status);
+  if (closing) { rec.status = 'closed'; rec.closed_reason = 'filled'; rec.closed_at = nowIso(); rec.is_published = false; addAudit(rec, sys, 'status_filled', 'All vacancies filled — requisition closed'); }
+  await save(rec, byUserId);
+  await notify([rec.requested_by, rec.hiring_manager_id, ...(closing ? await hrAudience() : [])], { title: closing ? 'Requisition filled' : 'A position was filled', message: `${c.full_name || 'A candidate'} joined for ${label(rec)} (${rec.positions_filled}/${vacancies}).${closing ? ' All vacancies are filled and the job is closed.' : ''}`, type: 'success', email: closing });
+  return { filled: rec.positions_filled, vacancies, closed: closing };
 }
 export const _test = { H, applyJd };

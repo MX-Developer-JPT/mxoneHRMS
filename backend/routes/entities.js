@@ -1263,6 +1263,8 @@ router.patch('/:type/:id', async (req, res) => {
   );
 
   if (type === 'Asset') auditAssetChange(cu, current, updated, patchedAssetType).catch(() => {});
+  // A candidate marked JOINED fills one position of their manpower requisition (counted once, closes the requisition when full).
+  if (type === 'Candidate' && req.body.status === 'joined' && current.status !== 'joined') import('./mrf.js').then(m => m.mrfCandidateJoined({ ...updated, id }, cu.id)).catch(e => console.warn('[mrf] join hook failed:', e.message));
 
   // History for the Intelligent MIS: department moves, requisition closure, candidate stage changes (never blocks the save).
   if (['Employee', 'JobRequisition', 'Candidate'].includes(type)) {

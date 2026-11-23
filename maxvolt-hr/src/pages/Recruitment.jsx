@@ -653,6 +653,10 @@ const RECO_ORDER = { 'Strongly Recommend': 0, 'Recommend': 1, 'Maybe': 2, 'Not R
 // JD they never actually applied for produced meaningless comparisons (e.g.
 // a Sales Executive applicant scored against an HR Manager requisition), so
 // every scoring entry point below is scoped through this.
+// A requisition candidates can be attached to: older ones once approved/published, MRF ones only while published or on hold.
+const isHiringActive = (j) => (j.mrf_version === 2 ? ['published', 'on_hold'].includes(j.status) : ['approved', 'published', 'on_hold'].includes(j.status));
+const reqLabel = (j) => `${j.requisition_id ? `${j.requisition_id} · ` : ''}${j.position_title || j.designation || 'Position'}${j.department ? ` · ${j.department}` : ''}${j.mrf_version === 2 ? ` · ${Math.max(0, (Number(j.number_of_positions) || 1) - (Number(j.positions_filled) || 0))} open` : ''}`;
+
 function candidateMatchesJd(candidate, jd) {
   if (!candidate || !jd) return false;
   if (candidate.requisition_id) return candidate.requisition_id === jd.id;
@@ -1077,12 +1081,12 @@ export default function Recruitment() {
                 </div>
                   <div>
                     <Label>Job Requisition (optional)</Label>
-                    <Select value={formData.requisition_id || ''} onValueChange={v => setFormData({ ...formData, requisition_id: v === '_none' ? '' : v })}>
+                    <Select value={formData.requisition_id || ''} onValueChange={v => { const j = jobRequisitions.find(x => x.id === v); setFormData({ ...formData, requisition_id: v === '_none' ? '' : v, ...(j && !formData.position_applied ? { position_applied: j.position_title } : {}) }); }}>
                       <SelectTrigger><SelectValue placeholder="Link to open position..." /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="_none">— No Requisition —</SelectItem>
-                        {jobRequisitions.filter(j => ['approved','published','on_hold'].includes(j.status)).map(j => (
-                          <SelectItem key={j.id} value={j.id}>{j.position_title} · {j.department}</SelectItem>
+                        {jobRequisitions.filter(isHiringActive).map(j => (
+                          <SelectItem key={j.id} value={j.id}>{reqLabel(j)}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -1157,8 +1161,8 @@ export default function Recruitment() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Positions</SelectItem>
-                    {jobRequisitions.map(j => (
-                      <SelectItem key={j.id} value={j.id}>{j.position_title}</SelectItem>
+                    {jobRequisitions.filter(j => isHiringActive(j) || j.id === filters.requisition).map(j => (
+                      <SelectItem key={j.id} value={j.id}>{reqLabel(j)}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -1234,10 +1238,10 @@ export default function Recruitment() {
                       <CommandList>
                         <CommandEmpty>No requisition found.</CommandEmpty>
                         <CommandGroup>
-                          {jobRequisitions.map(j => (
+                          {jobRequisitions.filter(isHiringActive).map(j => (
                             <CommandItem
                               key={j.id}
-                              value={`${j.position_title} ${j.department || ''}`}
+                              value={`${j.requisition_id || ''} ${j.position_title} ${j.department || ''}`}
                               onSelect={() => { handleJdChange(j.id); setJdSelectOpen(false); }}
                             >
                               <Check className={`mr-2 h-4 w-4 ${selectedJdId === j.id ? 'opacity-100' : 'opacity-0'}`} />

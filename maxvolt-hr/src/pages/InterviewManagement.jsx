@@ -333,7 +333,12 @@ export default function InterviewManagement() {
                               <CommandItem
                                 key={c.id}
                                 value={`${c.full_name} ${c.position_applied || ''}`}
-                                onSelect={() => { setFormData({ ...formData, candidate_id: c.id }); setCandOpen(false); }}
+                                onSelect={async () => {
+                                  setFormData(fd => ({ ...fd, candidate_id: c.id })); setCandOpen(false);
+                                  // default the interviewer to the Hiring Manager of the requisition this candidate applied for
+                                  const rid = c.requisition_id || c.job_id;
+                                  if (rid && !formData.interviewer_id) { try { const r = await base44.entities.JobRequisition.get(rid); if (r?.mrf_version === 2 && r.hiring_manager_id) setFormData(fd => (fd.interviewer_id ? fd : { ...fd, interviewer_id: r.hiring_manager_id })); } catch { /* no access or not found: leave it blank */ } }
+                                }}
                               >
                                 <Check className={`mr-2 h-4 w-4 ${formData.candidate_id === c.id ? 'opacity-100' : 'opacity-0'}`} />
                                 <div>

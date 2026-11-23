@@ -38,9 +38,10 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
   const [pub, setPub] = useState(null);          // publish dialog state
   const [extend, setExtend] = useState(null);
   const [reassign, setReassign] = useState(null);   // { hms, to, reason }
+  const [pipeline, setPipeline] = useState(null);
 
   const load = async () => { try { const d = await mrf('mrf_get', { id }); setRec(d.requisition); } catch (e) { toast.error(e.message); onClose(); } };
-  useEffect(() => { if (id) { setRec(null); load(); } }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (id) { setRec(null); setPipeline(null); load(); mrf('mrf_pipeline', { id }).then(setPipeline).catch(() => {}); } }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = async (key, fn, okMsg) => {
     setBusy(key);
@@ -104,6 +105,16 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
                 {rec.position_overview && <p>{rec.position_overview}</p>}{rec.purpose_of_hiring && <p><b>Purpose:</b> {rec.purpose_of_hiring}</p>}
                 {(rec.key_responsibilities || []).length > 0 && <ul className="list-disc pl-5">{rec.key_responsibilities.map((x) => <li key={x}>{x}</li>)}</ul>}
                 {rec.additional_notes && <p><b>Notes:</b> {rec.additional_notes}</p>}
+              </div>
+            )}
+
+            {['published', 'on_hold', 'closed'].includes(status) && pipeline && (
+              <div className="rounded-lg border p-3 text-sm flex flex-wrap items-center gap-x-4 gap-y-1">
+                <span className="font-semibold">Hiring pipeline</span>
+                <span>{pipeline.total} candidate{pipeline.total === 1 ? '' : 's'}</span>
+                {pipeline.by_stage.map((x) => <span key={x.stage} className="text-xs rounded-full bg-muted px-2 py-0.5">{x.stage.replace(/_/g, ' ')} {x.count}</span>)}
+                <span className="text-xs text-muted-foreground">{pipeline.filled} of {pipeline.positions} positions filled</span>
+                <a className="ml-auto text-primary underline text-xs" href={`/Recruitment?requisition=${rec.id}`}>View candidates →</a>
               </div>
             )}
 
