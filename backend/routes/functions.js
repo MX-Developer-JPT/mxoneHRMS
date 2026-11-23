@@ -19158,6 +19158,17 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
       });
     }
 
+    case 'exportRecruitmentMIS': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      const rmEnd = String(p.to || '').slice(0, 10) || new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      const rmStart = String(p.from || '').slice(0, 10) || new Date(new Date(rmEnd + 'T00:00:00Z').getTime() - 29 * 86400000).toISOString().slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(rmStart) || !/^\d{4}-\d{2}-\d{2}$/.test(rmEnd) || rmStart > rmEnd) return res.json({ success: false, error: 'Choose a valid date range' });
+      const { buildRecruitmentMisWorkbook } = await import('../utils/recruitmentMis.js');
+      const rmx = await buildRecruitmentMisWorkbook({ from: rmStart, to: rmEnd, department: p.department, requisition_id: p.requisition_id }, (await import('exceljs')).default);
+      console.log(`[audit] Recruitment MIS export by ${cu.id} for ${rmStart}..${rmEnd}`);
+      return res.json({ success: true, base64: Buffer.from(rmx.buffer).toString('base64'), filename: rmx.filename, counts: rmx.counts, title: `Recruitment MIS ${rmStart} to ${rmEnd}` });
+    }
+
     case 'getRecruitmentMIS': {
       if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { days = 180, department: misDept, requisition_id: misReqId } = p;

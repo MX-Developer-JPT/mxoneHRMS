@@ -9,7 +9,7 @@ const IST_MS = 5.5 * 3600000;
 const pj = (rows) => rows.map(r => { try { return { ...JSON.parse(r.data), _created: r.created_at ? String(r.created_at).slice(0, 10) : '' }; } catch { return null; } }).filter(Boolean);
 const istDate = (ms = Date.now()) => new Date(ms + IST_MS).toISOString().slice(0, 10);
 const addDays = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
-const fmtD = (d) => { if (!d) return ''; const [y, m, dd] = String(d).slice(0, 10).split('-'); return `${dd}-${m}-${y}`; };
+export const fmtD = (d) => { if (!d) return ''; const [y, m, dd] = String(d).slice(0, 10).split('-'); return `${dd}-${m}-${y}`; };
 const fmtT = (t) => {
   if (!t) return '';
   const d = new Date(String(t).replace(/Z$/, ''));
@@ -17,7 +17,7 @@ const fmtT = (t) => {
   const h = d.getHours() % 12 || 12;
   return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() >= 12 ? 'PM' : 'AM'}`;
 };
-const label = (s) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+export const label = (s) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
 export function resolveRange(period, anchor) {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(anchor || '')) ? anchor : istDate();
@@ -169,7 +169,7 @@ const font = (b = false, color = 'FF1F2937', size = 10) => ({ name: 'Calibri', b
 const fill = (c) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: c } });
 const border = () => ({ top: { style: 'thin', color: { argb: 'FFD1D5DB' } }, left: { style: 'thin', color: { argb: 'FFD1D5DB' } }, bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } }, right: { style: 'thin', color: { argb: 'FFD1D5DB' } } });
 
-function sheetWithTitle(wb, name, title, sub, cols) {
+export function sheetWithTitle(wb, name, title, sub, cols) {
   // Excel sheet names: ≤31 chars, no \ / ? * [ ] :, and unique ignoring case ("Management" vs "management",
   // two long names sharing a prefix, or a department literally called "Summary").
   const base = String(name).replace(/[\\\/?*[\]:]/g, ' ').trim().slice(0, 28) || 'Sheet';
@@ -185,7 +185,7 @@ function sheetWithTitle(wb, name, title, sub, cols) {
   ws.addRow([]); ws.getRow(3).height = 4;
   return ws;
 }
-function table(ws, heads, rows, widths, opts = {}) {
+export function table(ws, heads, rows, widths, opts = {}) {
   const h = ws.addRow(heads);
   h.eachCell(c => Object.assign(c, { font: font(true, 'FFFFFFFF', 10), fill: fill(BLUE), alignment: { horizontal: 'center', vertical: 'middle', wrapText: true }, border: border() }));
   h.height = 24;
@@ -203,7 +203,7 @@ function table(ws, heads, rows, widths, opts = {}) {
   widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   return h.number;
 }
-function section(ws, text) {
+export function section(ws, text) {
   ws.addRow([]);
   const r = ws.addRow([text]);
   r.getCell(1).font = font(true, NAVY, 12);

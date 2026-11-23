@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from 'sonner';
+import { downloadBase64 } from '@/lib/mis';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, Legend, FunnelChart, Funnel, LabelList,
@@ -11,7 +12,7 @@ import {
 import {
   Loader2, TrendingUp, Users, Briefcase, Target, CheckCircle2, Send,
   Clock, BarChart3, ArrowRight, ArrowDown, AlertTriangle, Star,
-  Building2, Filter, Calendar, UserCheck, Zap, Award, Sparkles, AlertOctagon, Info
+  Download, Building2, Filter, Calendar, UserCheck, Zap, Award, Sparkles, AlertOctagon, Info
 } from 'lucide-react';
 
 const INSIGHT_STYLES = {
@@ -101,6 +102,20 @@ export default function RecruitmentAnalytics() {
   const [data, setData]         = useState(null);
   const [days, setDays]         = useState('180');
   const [activeTab, setActiveTab] = useState('overview');
+  const istToday = () => new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+  const [xFrom, setXFrom] = useState(new Date(Date.now() + 5.5 * 3600000 - 29 * 86400000).toISOString().slice(0, 10));
+  const [xTo, setXTo] = useState(istToday());
+  const [xBusy, setXBusy] = useState(false);
+  const exportReport = async () => {
+    setXBusy(true);
+    try {
+      const res = await base44.functions.invoke('exportRecruitmentMIS', { from: xFrom, to: xTo });
+      const d = res?.data || res;
+      if (!d?.success) { toast.error(d?.error || 'Export failed'); }
+      else { downloadBase64(d.base64, d.filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); toast.success(`${d.title} downloaded`); }
+    } catch (e) { toast.error('Export failed: ' + e.message); }
+    setXBusy(false);
+  };
   const [insights, setInsights] = useState(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
 
@@ -193,6 +208,17 @@ export default function RecruitmentAnalytics() {
               <BarChart3 className="w-7 h-7 text-blue-600" />Recruitment MIS
             </h1>
             <p className="text-gray-500 text-sm mt-1">End-to-end hiring analytics — requisition to joining</p>
+          </div>
+          <div className="flex items-end gap-2 flex-wrap">
+            <label className="text-xs text-gray-500 flex flex-col gap-1">Report from
+              <input type="date" value={xFrom} max={xTo} onChange={e => setXFrom(e.target.value)} className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm" />
+            </label>
+            <label className="text-xs text-gray-500 flex flex-col gap-1">to
+              <input type="date" value={xTo} min={xFrom} max={istToday()} onChange={e => setXTo(e.target.value)} className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm" />
+            </label>
+            <button onClick={exportReport} disabled={xBusy} className="h-9 inline-flex items-center gap-2 rounded-md bg-green-600 px-3 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-60">
+              {xBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Download MIS report (Excel)
+            </button>
           </div>
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
