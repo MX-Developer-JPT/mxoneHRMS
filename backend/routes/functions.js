@@ -2235,7 +2235,7 @@ async function runLeaveAction(cu, leaveId, action, note) {
       return { httpStatus: 200, body: { success: true, status: 'level_approved', next_level: curLevel + 1, total_levels: totalLevels } };
     }
 
-    const upd = { ...lv, status: 'approved', approved_by: actorId, approved_by_name: actorName, approved_date: now, approval_note: note || '', approval_history: [...(lv.approval_history || []), { action: 'approved', by: actorId, by_name: actorName, at: now, note: note || '' }] };
+    const upd = { ...lv, status: 'approved', approved_by: actorId, approved_by_name: actorName, approved_date: now, approval_note: note || '', approval_history: [...(lv.approval_history || []), { level: curLevel, action: 'approved', by: actorId, by_name: actorName, at: now, note: note || '' }] };
     await run("UPDATE entities SET data=$1,status='approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
     const isWfh = lv.is_wfh || lv.leave_type === 'work_from_home';
     if (isWfh) {
@@ -2366,7 +2366,7 @@ async function runLeaveAction(cu, leaveId, action, note) {
   }
 
   if (action === 'reject') {
-    const upd = { ...lv, status: 'rejected', rejected_by: actorId, rejected_by_name: actorName, rejected_at: now, rejection_reason: note || '', approval_history: [...(lv.approval_history || []), { action: 'rejected', by: actorId, by_name: actorName, at: now, note: note || '' }] };
+    const upd = { ...lv, status: 'rejected', rejected_by: actorId, rejected_by_name: actorName, rejected_at: now, rejection_reason: note || '', approval_history: [...(lv.approval_history || []), { level: curLevel, action: 'rejected', by: actorId, by_name: actorName, at: now, note: note || '' }] };
     await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
     // Restores the days reserveLeaveBalance deducted at creation — correct
     // now that creation always reserves (previously this restored days that

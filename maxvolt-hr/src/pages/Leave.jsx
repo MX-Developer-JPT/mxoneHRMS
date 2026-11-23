@@ -1,4 +1,5 @@
 ﻿import React, { useState, useEffect } from 'react';
+import LeaveTimeline, { fmtIst } from '@/components/leave/LeaveTimeline';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -410,24 +411,10 @@ export default function Leave() {
                           {leave.half_day && <span className="ml-2 text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">Half Day</span>}
                         </p>
                         <p className="text-sm text-gray-500 mt-1">{leave.reason}</p>
-                        {leave.rejection_reason && (
-                          <div className="mt-2 p-2 bg-red-50 border border-red-100 rounded text-sm text-red-700">
-                            <strong>Rejected:</strong> {leave.rejection_reason}
-                          </div>
-                        )}
-                        {leave.approval_history?.length > 0 && (
-                          <div className="mt-2 space-y-1">
-                            {leave.approval_history.map((h, i) => (
-                              <p key={i} className="text-xs text-gray-500">
-                                ✓ {h.approver_name} ({h.level === 1 ? 'Manager' : 'HOD/HR'}) — {h.status} on {safeDate(h.timestamp, 'MMM d, yyyy')}
-                                {h.comments && ` — "${h.comments}"`}
-                              </p>
-                            ))}
-                          </div>
-                        )}
+                        <LeaveTimeline leave={leave} resolveApprover={(level) => (level === 1 ? 'your reporting manager' : 'HR / HOD')} />
                       </div>
                       <div className="flex flex-col items-end gap-2">
-                        <p className="text-xs text-gray-400">Applied {safeDate(leave.created_date, 'MMM d, yyyy')}</p>
+                        <p className="text-xs text-gray-400">Applied {fmtIst(leave.created_date)}</p>
                         {leave.status === 'pending' && (
                           <Button size="sm" variant="outline" className="text-red-600 border-red-200 hover:bg-red-50"
                             onClick={() => handleCancel(leave)}>

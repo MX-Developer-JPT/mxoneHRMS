@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import LeaveTimeline from '@/components/leave/LeaveTimeline';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -173,6 +174,19 @@ export default function LeaveManagement() {
   // isManagementInHierarchy on the backend. Computed once here and reused
   // per-leave below rather than resolving hierarchy on every call.
   const isManagementRole = user && (user.role === 'management' || user.custom_role === 'management');
+  // Who a leave is waiting on at a given approval level (the configured workflow step, else reporting manager then HR).
+  const approverNameFor = (leave) => (level) => {
+    const emp = employees.find(e => e.user_id === leave.user_id);
+    const mgr = employees.find(e => e.user_id === emp?.reporting_manager_id)?.display_name || 'Reporting manager';
+    if (leaveWorkflow) {
+      const step = leaveWorkflow.steps[level - 1];
+      if (!step) return 'HR';
+      if (step.approver_type === 'reporting_manager') return mgr;
+      if (step.approver_type === 'specific_user') return employees.find(e => e.user_id === step.specific_user_id)?.display_name || 'Named approver';
+      return step.approver_type === 'admin' ? 'Admin' : 'HR';
+    }
+    return level === 1 ? mgr : 'HR / HOD';
+  };
   const managementDownstreamIds = isManagementRole ? resolveHierarchy(user.id, employees).downstreamIds : null;
   const isMgmtScopedTo = (targetUserId) => !!managementDownstreamIds && managementDownstreamIds.has(targetUserId);
   // Direct OR indirect reporting manager of the leave's owner.
@@ -894,23 +908,8 @@ export default function LeaveManagement() {
                               </p>
                               <p className="text-sm text-gray-600">{leave.reason}</p>
 
-                              {/* Approval History */}
-                              {leave.approval_history?.length > 0 && (
-                                <div className="mt-1 space-y-0.5">
-                                  {leave.approval_history.map((h, i) => (
-                                    <p key={i} className="text-xs text-gray-500">
-                                      ✓ {h.approver_name} ({h.level === 1 ? 'Manager' : 'HOD/HR'}) — {h.status}
-                                      {h.comments && ` — "${h.comments}"`}
-                                    </p>
-                                  ))}
-                                </div>
-                              )}
+                              <LeaveTimeline leave={leave} applicantName={employees.find(e => e.user_id === leave.user_id)?.display_name} resolveApprover={approverNameFor(leave)} />
 
-                              {leave.rejection_reason && (
-                                <div className="p-2 bg-red-50 rounded text-sm text-red-700">
-                                  <strong>Rejected:</strong> {leave.rejection_reason}
-                                </div>
-                              )}
                             </div>
                           </div>
 

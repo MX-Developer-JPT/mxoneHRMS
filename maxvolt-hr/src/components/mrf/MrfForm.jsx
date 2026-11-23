@@ -142,10 +142,12 @@ export default function MrfForm({ open, onClose, options, initial, onSaved }) {
     if (f.position_tier === 'other_custom' && !f.position_tier_custom.trim()) m.push('position_tier_custom');
     if (f.requisition_type === 'replacement') { if (!f.replaced_employee_name.trim()) m.push('replaced_employee_name'); if (!f.replacement_reason.trim()) m.push('replacement_reason'); }
     if (!(Number(f.number_of_positions) >= 1)) m.push('number_of_positions');
-    if (!f.work_location.trim() && !f.work_city.trim() && !(f.is_remote && (f.remote_region || f.remote_region_detail))) m.push('work_location');
+    const remote = f.work_arrangement === 'remote';
+    if (remote && !f.remote_region_detail.trim()) m.push('remote_region_detail');
+    else if (!remote && !f.work_location.trim() && !f.work_city.trim()) m.push('work_location');
     setMissing(m);
     if (m.length) {
-      const names = Object.fromEntries(REQUIRED); names.work_location = 'Work location'; names.number_of_positions = 'Vacancies'; names.replaced_employee_name = 'Employee being replaced'; names.replacement_reason = 'Reason for replacement'; names.position_tier_custom = 'Custom tier';
+      const names = Object.fromEntries(REQUIRED); names.work_location = 'Work location'; names.remote_region_detail = 'Remote location'; names.number_of_positions = 'Vacancies'; names.replaced_employee_name = 'Employee being replaced'; names.replacement_reason = 'Reason for replacement'; names.position_tier_custom = 'Custom tier';
       toast.error(`Still needed: ${m.slice(0, 4).map((k) => names[k]).join(', ')}${m.length > 4 ? '…' : ''}`);
       setTimeout(() => document.querySelector('[data-bad="1"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
       return false;
@@ -254,9 +256,14 @@ export default function MrfForm({ open, onClose, options, initial, onSaved }) {
               </Field>
               {wrap('work_arrangement', <Field label="Work arrangement" required error={bad('work_arrangement')}>
                 <select className={selectCls} value={f.work_arrangement} onChange={(e) => setMany({ work_arrangement: e.target.value, is_remote: e.target.value === 'remote' })}><option value="">Select…</option>{opt('work_arrangement').map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></Field>)}
-              {wrap('work_location', <Field label="Work location" required error={bad('work_location')} hint="Pick an office or type any city, dealer location or project site.">
-                <SearchSelect value={f.work_location} allowCustom options={(options?.locations || []).map((l) => ({ value: l.name, label: l.name, sub: [l.city, l.state].filter(Boolean).join(', ') }))}
-                  onChange={(v) => { const l = (options?.locations || []).find((x) => x.name === v); setMany({ work_location: v, ...(l?.city ? { work_city: l.city } : {}), ...(l?.state ? { work_state: l.state } : {}) }); }} placeholder="Search or type a location" /></Field>)}
+              {f.work_arrangement === 'remote'
+                ? <>
+                    {wrap('remote_region_detail', <Field label="Remote location" required error={bad('remote_region_detail')} hint="Where can the person work from? e.g. Pan India, Maharashtra, Pune, Remote – UK."><Input {...inputP('remote_region_detail')} placeholder="Type the eligible location / region" /></Field>)}
+                    <Field label="Remote region type" hint="Optional."><select className={selectCls} value={f.remote_region} onChange={(e) => set('remote_region', e.target.value)}><option value="">Select…</option>{opt('remote_region').map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></Field>
+                  </>
+                : wrap('work_location', <Field label="Work location" required error={bad('work_location')} hint="Pick an office or type any city, dealer location or project site.">
+                    <SearchSelect value={f.work_location} allowCustom options={(options?.locations || []).map((l) => ({ value: l.name, label: l.name, sub: [l.city, l.state].filter(Boolean).join(', ') }))}
+                      onChange={(v) => { const l = (options?.locations || []).find((x) => x.name === v); setMany({ work_location: v, ...(l?.city ? { work_city: l.city } : {}), ...(l?.state ? { work_state: l.state } : {}) }); }} placeholder="Search or type a location" /></Field>)}
               <Field label="Target hiring date" hint="">
                 <Input type="date" {...inputP('target_hire_date')} className="max-w-[200px]" />
                 <p className={`text-xs mt-1.5 ${hint.state === 'aggressive' ? 'text-amber-700' : hint.state === 'extended' ? 'text-blue-700' : hint.state === 'ideal' ? 'text-green-700' : 'text-muted-foreground'}`}>{hint.state === 'aggressive' && <AlertTriangle className="w-3.5 h-3.5 inline mr-1" />}{hint.message}</p>
@@ -285,7 +292,6 @@ export default function MrfForm({ open, onClose, options, initial, onSaved }) {
                 <Field label="New joiner reports to" hint="Defaults to the Hiring Manager."><SearchSelect value={f.reports_to_user_id} options={empOptions} onChange={(v) => set('reports_to_user_id', v)} placeholder="Select" /></Field>
                 <Field label="Reason for hiring">{sel('hiring_reason', 'hiring_reason')}</Field>
                 <Field label="City"><Input {...inputP('work_city')} /></Field><Field label="State"><Input {...inputP('work_state')} /></Field>
-                {(f.is_remote || f.work_arrangement === 'remote') && <><Field label="Remote — eligible region">{sel('remote_region', 'remote_region')}</Field><Field label="Region details"><Input {...inputP('remote_region_detail')} /></Field></>}
                 <Field label="Budget approved?"><select className={selectCls} value={f.budget_approved ? 'yes' : 'no'} onChange={(e) => set('budget_approved', e.target.value === 'yes')}><option value="no">No</option><option value="yes">Yes</option></select></Field>
                 <Field label="Budget reference"><Input {...inputP('budget_reference')} /></Field>
                 <Field label="Expected joining timeline"><Input {...inputP('expected_joining_timeline')} placeholder="e.g., Within 30 days of offer" /></Field>

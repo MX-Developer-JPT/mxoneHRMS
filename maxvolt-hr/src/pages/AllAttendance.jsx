@@ -291,13 +291,25 @@ export default function AllAttendance() {
     return best;
   };
 
+  // One definition per card: the number on the card and the rows shown when it is clicked always agree.
+  const CARD_TESTS = {
+    present: r => ['present','late','on_duty','work_from_home','short_attendance','half_day'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off'].includes(r.status)),
+    absent: r => r.status === 'absent' || (!r.check_in_time && !r.status),
+    half_day: r => r.status === 'half_day' && !isHalfDayLeave(r),
+    half_day_leave: r => isHalfDayLeave(r),
+    leave: r => r.status === 'leave',
+    late: r => r.late_minutes > 0 || r.late_arrival_minutes > 0,
+    early_out: r => r.early_departure || r.early_departure_minutes > 0,
+    gate_pass: r => !!r._gatePass,
+    left_no_gp: r => !!r.left_without_gate_pass,
+  };
   const filtered = useMemo(() => {
     return rows.filter(r => {
-      if (statusFilter === 'gate_pass') return !!r._gatePass;
-      if (statusFilter === 'left_no_gp') return !!r.left_without_gate_pass;
-      if (statusFilter === 'half_day_leave') return isHalfDayLeave(r);
+      if (CARD_TESTS[statusFilter] && !CARD_TESTS[statusFilter](r)) return false;
+      if (CARD_TESTS[statusFilter]) { /* card filter handled above; continue with the other filters */ } else {
       const displayStatus = getDisplayStatus(r);
       if (statusFilter !== 'all' && displayStatus !== statusFilter) return false;
+      }
       if (deptFilter !== 'all' && r._emp?.department !== deptFilter) return false;
       if (methodFilter !== 'all' && getAttendanceMethod(r).key !== methodFilter) return false;
       if (locationFilter !== 'all') {
@@ -331,16 +343,16 @@ export default function AllAttendance() {
     // classifications of a present day (shown in their own cards below),
     // not separate exclusive buckets. Only a genuine absence, leave,
     // holiday, or week-off is NOT present.
-    present: rows.filter(r => ['present','late','on_duty','work_from_home','short_attendance','half_day'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off'].includes(r.status))).length,
-    absent: rows.filter(r => r.status === 'absent' || (!r.check_in_time && !r.status)).length,
-    halfDay: rows.filter(r => r.status === 'half_day' && !isHalfDayLeave(r)).length,
-    halfDayLeave: rows.filter(r => isHalfDayLeave(r)).length,
-    leave: rows.filter(r => r.status === 'leave').length,
-    late: rows.filter(r => r.late_minutes > 0 || r.late_arrival_minutes > 0).length,
-    earlyOut: rows.filter(r => r.early_departure || r.early_departure_minutes > 0).length,
+    present: rows.filter(CARD_TESTS.present).length,
+    absent: rows.filter(CARD_TESTS.absent).length,
+    halfDay: rows.filter(CARD_TESTS.half_day).length,
+    halfDayLeave: rows.filter(CARD_TESTS.half_day_leave).length,
+    leave: rows.filter(CARD_TESTS.leave).length,
+    late: rows.filter(CARD_TESTS.late).length,
+    earlyOut: rows.filter(CARD_TESTS.early_out).length,
     totalHours: rows.reduce((s, r) => s + (r.working_hours || 0), 0),
-    gatePass: rows.filter(r => r._gatePass).length,
-    leftNoGp: rows.filter(r => r.left_without_gate_pass).length,
+    gatePass: rows.filter(CARD_TESTS.gate_pass).length,
+    leftNoGp: rows.filter(CARD_TESTS.left_no_gp).length,
     currentlyOut: rows.filter(r => r._gatePass?.is_out).length,
   }), [rows]);
 
@@ -629,20 +641,22 @@ export default function AllAttendance() {
         {/* Stats */}
         <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
           {[
-            { label: 'Total', value: stats.total, color: 'text-gray-700' },
+            { label: 'Total', value: stats.total, color: 'text-gray-700', filter: 'all' },
             { label: 'Present', value: stats.present, color: 'text-green-600', filter: 'present' },
             { label: 'Absent', value: stats.absent, color: 'text-red-600', filter: 'absent' },
             { label: 'Half Day', value: stats.halfDay, color: 'text-yellow-600', filter: 'half_day' },
             { label: 'Half Day Leave', value: stats.halfDayLeave, color: 'text-indigo-600', filter: 'half_day_leave' },
             { label: 'On Leave', value: stats.leave, color: 'text-blue-600', filter: 'leave' },
-            { label: 'Late', value: stats.late, color: 'text-orange-600' },
-            { label: 'Early Out', value: stats.earlyOut, color: 'text-amber-600' },
+            { label: 'Late', value: stats.late, color: 'text-orange-600', filter: 'late' },
+            { label: 'Early Out', value: stats.earlyOut, color: 'text-amber-600', filter: 'early_out' },
             { label: 'On Gate Pass', value: stats.gatePass, color: 'text-orange-600', filter: 'gate_pass' },
             { label: 'Left w/o Gate Pass', value: stats.leftNoGp, color: 'text-red-600', filter: 'left_no_gp' },
           ].map(s => (
             <Card
               key={s.label}
               className={`cursor-pointer hover:shadow-md transition-shadow ${s.filter && statusFilter === s.filter ? 'ring-2 ring-blue-400' : ''}`}
+              role="button" tabIndex={0} title={s.filter === 'all' ? 'Show everyone' : `Show only: ${s.label}`}
+              onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && s.filter) { e.preventDefault(); setStatusFilter(statusFilter === s.filter ? 'all' : s.filter); } }}
               onClick={() => s.filter && setStatusFilter(statusFilter === s.filter ? 'all' : s.filter)}
             >
               <CardContent className="p-3 text-center">
@@ -678,6 +692,8 @@ export default function AllAttendance() {
                 { value: 'week_off', label: 'Week Off' },
                 { value: 'on_duty', label: 'OD (Outduty)' },
                 { value: 'work_from_home', label: 'WFH' },
+                { value: 'late', label: 'Late arrival' },
+                { value: 'early_out', label: 'Early out' },
                 { value: 'gate_pass', label: 'On Gate Pass' },
                 { value: 'left_no_gp', label: 'Left without Gate Pass' },
               ]} />
