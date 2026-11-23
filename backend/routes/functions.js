@@ -9,7 +9,7 @@ import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
-import { buildCriteria, scoreAgainst, analyseResumeText, detectSkills, rulesParse, noticeToDays, ctcToRupees, highestDegree } from '../utils/cvScreening.js';
+import { buildCriteria, scoreAgainst, scoreProfile, analyseResumeText, detectSkills, rulesParse, readReport, workHistory, noticeToDays, ctcToRupees, highestDegree } from '../utils/cvScreening.js';
 import { createHash } from 'crypto';
 import { disableIfDue, reenableAccount } from '../utils/accountAccess.js';
 import { publicFence as geoPublicFence, isShaped as geoIsShaped, signedDistanceM as geoSignedDistanceM } from '../utils/geofenceShape.js';
@@ -2073,6 +2073,102 @@ async function extractResumeText(fileUrl) {
   return { resumeText, extractionError };
 }
 
+// Screens one candidate against one requisition (see utils/cvScreening.js). Used by the single and the bulk scoring cases and by the
+// automatic screening of new applications. Never throws; returns { data } or { error }.
+async function screenCandidate({ candidate_id, job_requisition_id, aiOk = false, narrative = true, actorId = null }) {
+  const cRow  = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+  const jdRow = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [job_requisition_id]);
+  if (!cRow) return { error: 'Candidate not found' };
+  if (!jdRow) return { error: 'Requisition not found — pick the position to score against' };
+  let cand = JSON.parse(cRow.data);
+  const jd = JSON.parse(jdRow.data);
+
+  // The parsed CV: reuse it, or read the file now (with the AI when permitted, by rules otherwise).
+  let parsedResume = null; let readFailure = '';
+  if (cand.parsed_resume_id) {
+    const prRow = await one("SELECT data FROM entities WHERE type='ParsedResume' AND id=$1", [cand.parsed_resume_id]);
+    if (prRow) parsedResume = JSON.parse(prRow.data);
+  }
+  if (!parsedResume && cand.resume_url) {
+    const parseResult = await performResumeParse(candidate_id, cand.resume_url, cand, { useAI: aiOk });
+    if (parseResult.success) {
+      parsedResume = parseResult.parsedData;
+      const freshRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
+      if (freshRow) cand = JSON.parse(freshRow.data);
+    } else if (parseResult.error) readFailure = parseResult.error;
+  }
+  // an older parse has no stored text: read the file again so the score is grounded in the whole CV
+  if (parsedResume && !parsedResume.resume_text && cand.resume_url) {
+    const again = await extractResumeText(cand.resume_url);
+    if (again.resumeText) {
+      const rr = readReport(again.resumeText, { fileType: (String(cand.resume_url).split('?')[0].split('.').pop() || '').toLowerCase().slice(0, 5) });
+      parsedResume = { ...parsedResume, resume_text: again.resumeText.slice(0, 40000), read_report: rr, work_history: rr.career, skills_in_text: detectSkills(again.resumeText), extraction_method: 'file_text', extraction_note: again.extractionError || '' };
+      try { await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(parsedResume), parsedResume.id]); } catch { /* the score still uses the fresh text */ }
+    } else if (again.extractionError && !parsedResume.extraction_note) parsedResume = { ...parsedResume, extraction_note: again.extractionError };
+  }
+  const resumeText = parsedResume?.resume_text || '';
+  const resumeGrounded = !!resumeText && parsedResume?.extraction_method === 'file_text';
+
+  const expMasters = (await all("SELECT data FROM entities WHERE type='MrfMaster'")).map(r => JSON.parse(r.data)).filter(m => m.kind === 'experience_range');
+  const criteria = buildCriteria(jd, expMasters);
+  const pr = parsedResume || {};
+  const skills = [...(pr.primary_skills || []), ...(pr.secondary_skills || []), ...(pr.tools_and_platforms || []), ...(pr.skills_in_text || []), ...(Array.isArray(cand.skills) ? cand.skills : cand.skills ? [cand.skills] : [])];
+  const eduText = [pr.degree, pr.specialization, pr.university, cand.education, cand.highest_qualification].filter(Boolean).join(', ');
+  const years = pr.total_experience_years != null && Number.isFinite(Number(pr.total_experience_years)) ? Number(pr.total_experience_years) : (cand.experience_years !== '' && cand.experience_years != null && Number.isFinite(Number(cand.experience_years)) ? Number(cand.experience_years) : null);
+  const facts = {
+    skills, experienceYears: years, expectedCtc: ctcToRupees(cand.expected_ctc), noticeDays: noticeToDays(cand.notice_period ?? pr.notice_period_days),
+    education: eduText, degree: highestDegree(`${eduText} ${resumeText.slice(0, 6000)}`), city: cand.current_city || pr.current_location || '', openToRelocate: /relocat|open|anywhere/i.test(String(pr.preferred_location || '')),
+    companies: [pr.current_company || cand.current_company, ...(pr.previous_companies || [])].filter(Boolean), resumeText,
+  };
+  const result = scoreAgainst(criteria, facts);
+  result.resume_grounded = resumeGrounded;
+  result.method = aiOk ? 'rules+ai' : 'rules';
+  result.read_report = parsedResume?.read_report ? { words: parsedResume.read_report.words, roles_found: parsedResume.read_report.roles_found, completeness: parsedResume.read_report.completeness, sections: parsedResume.read_report.sections, career: parsedResume.read_report.career } : null;
+  result.criteria_snapshot = { title: criteria.title, must_skills: criteria.mustSkills, nice_skills: criteria.niceSkills, min_years: criteria.minYears, max_years: criteria.maxYears, ctc_max: criteria.ctcMax, qualifications: criteria.qualifications };
+  result.cv_flags = [
+    ...(parsedResume?.extraction_note ? [parsedResume.extraction_note] : []),
+    ...(!parsedResume && readFailure ? [`The CV could not be read: ${readFailure}`] : []),
+    ...((parsedResume?.read_report?.warnings || []).filter(w => w !== parsedResume?.extraction_note)),
+    ...(!cand.resume_url ? ['No CV on file — scored from the application form only'] : []),
+    ...((parsedResume?.contact_mismatch || []).map(m => `The ${m} on the CV differs from the one on the application`)),
+    ...(parsedResume?.experience_ai_value != null ? [`Experience taken from the CV's own dates (${parsedResume.total_experience_years} yrs); an automatic read gave ${parsedResume.experience_ai_value}`] : []),
+  ];
+
+  // Narrative + interview questions from the AI, grounded in the computed result (the AI cannot change the score).
+  if (aiOk && narrative && result.overall_score != null) {
+    try {
+      const narrative = await callAI(`You are an experienced recruiter. A CV screening engine has ALREADY scored this candidate; do not change the numbers. Write a short hiring note.
+
+ROLE: ${criteria.title} (${criteria.department})
+SCORE: ${result.overall_score}/100 — ${result.recommendation}
+CRITERIA: ${result.criteria.map(c => `${c.label} ${c.score}/100 (${c.detail})`).join('; ')}
+KNOCK-OUTS: ${result.knockouts.join('; ') || 'none'}
+MISSING MUST-HAVE SKILLS: ${result.missing_skills.join(', ') || 'none'}
+${resumeText ? `CV EXCERPT:\n"""\n${resumeText.slice(0, 3500)}\n"""` : 'No CV text available.'}
+
+Return ONLY JSON: {"summary":"2-3 sentences for the hiring manager","strengths":["up to 4"],"gaps":["up to 4"],"interview_questions":["5 specific questions probing the gaps and the strongest claims"]}`, { json: true, maxTokens: 900 });
+      if (narrative && typeof narrative === 'object') {
+        if (narrative.summary) result.summary = String(narrative.summary).slice(0, 800);
+        const merge = (a, b) => [...new Set([...(a || []), ...((Array.isArray(b) ? b : []).map(String))])].slice(0, 8);
+        result.strengths = merge(result.strengths, narrative.strengths); result.gaps = merge(result.gaps, narrative.gaps);
+        if (Array.isArray(narrative.interview_questions)) result.interview_questions = narrative.interview_questions.map(String).slice(0, 6);
+      }
+    } catch (e) { console.warn('[scoreCandidate] narrative failed:', e.message); }
+  }
+
+  try {
+    const scoredAt = new Date().toISOString();
+    const existingScore = await one("SELECT id FROM entities WHERE type='CandidateScore' AND data::jsonb->>'candidate_id'=$1 AND data::jsonb->>'job_requisition_id'=$2 LIMIT 1", [candidate_id, job_requisition_id]);
+    const scoreData = { ...result, candidate_id, job_requisition_id, scored_at: scoredAt, scored_by: actorId || null };
+    if (existingScore) { scoreData.id = existingScore.id; await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(scoreData), existingScore.id]); }
+    else { const scoreId = uuidv4(); scoreData.id = scoreId; await run("INSERT INTO entities(id,type,status,data) VALUES($1,'CandidateScore','active',$2)", [scoreId, JSON.stringify(scoreData)]); }
+    const updCand = { ...cand, ai_score: result.overall_score, ai_recommendation: result.recommendation, ai_scored_at: scoredAt, screening_knockouts: result.knockouts };
+    await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE type='Candidate' AND id=$2", [JSON.stringify(updCand), candidate_id]);
+  } catch (persistErr) { console.warn('[scoreCandidate] persist failed:', persistErr.message); }
+
+  return { data: result };
+}
+
 // Reads the candidate's actual resume file, has the AI extract structured
 // data GROUNDED IN THAT TEXT (not guessed from the application form), and
 // persists it as a ParsedResume entity linked via candidate.parsed_resume_id.
@@ -2086,7 +2182,8 @@ async function performResumeParse(candidate_id, resume_url, candData, { useAI = 
   const { resumeText, extractionError } = await extractResumeText(fileUrl);
   const extractionMethod = resumeText ? 'file_text' : 'form_inference';
 
-  const resumeExcerpt = resumeText.slice(0, 12000);
+  // a very long CV keeps its beginning and its end (references / latest roles); the rules read the whole text regardless
+  const resumeExcerpt = resumeText.length > 24000 ? `${resumeText.slice(0, 16000)}\n...\n${resumeText.slice(-8000)}` : resumeText;
   const jsonSchema = `{
   "resume_headline": "one-line professional headline",
   "professional_summary": "2-3 sentence professional summary",
@@ -2160,7 +2257,7 @@ ${jsonSchema}`;
   }
   // No AI (not permitted, down, or unreadable answer): still read what the CV text itself says, so screening is never blind.
   if (!parsed) {
-    if (!resumeText) return { success: false, error: aiError || 'No resume text could be read' };
+    if (!resumeText) return { success: false, error: extractionError || aiError || 'No resume text could be read' };
     parsed = rulesParse(resumeText, cand);
   }
   // Facts read straight from the CV text, used to check the AI's numbers and to ground the screening score.
@@ -2172,6 +2269,8 @@ ${jsonSchema}`;
       parsed.experience_ai_value = Number.isFinite(aiYears) ? aiYears : null; parsed.total_experience_years = cvFacts.experience_years; parsed.experience_source = 'cv_dates';
     }
     parsed.cv_contacts = cvFacts.contacts;
+    parsed.read_report = readReport(resumeText, { fileType: (fileUrl.split('?')[0].split('.').pop() || '').toLowerCase().slice(0, 5) });
+    parsed.work_history = parsed.read_report.career;
     const mism = [];
     if (cvFacts.contacts.email && cand.email && cvFacts.contacts.email !== String(cand.email).toLowerCase()) mism.push('email');
     if (cvFacts.contacts.phone && cand.phone && !String(cand.phone).replace(/\D/g, '').endsWith(cvFacts.contacts.phone)) mism.push('phone');
@@ -2191,7 +2290,7 @@ ${jsonSchema}`;
     extraction_note: extractionMethod === 'form_inference' ? extractionError : (extractionError || ''),
     parsed_by: aiError || !useAI ? 'rules' : 'ai',
     ...(aiError ? { ai_error: aiError } : {}),
-    resume_text: resumeText.slice(0, 20000),
+    resume_text: resumeText.slice(0, 40000),
     ...parsed,
   };
   await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ParsedResume',$2,'completed',$3)", [parsedId, candidate_id, JSON.stringify(parsedData)]);
@@ -11764,153 +11863,71 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, parsed_resume_id: result.parsedId, skills_extracted: result.skills_extracted, extraction_method: result.extraction_method });
     }
 
+    // "Score CV" on a candidate. If they applied against a requisition it is scored against THAT requisition's criteria (same engine as
+    // scoreCandidate); otherwise it scores the strength and completeness of the CV for the role they named. Numbers are computed, the AI only
+    // writes the note.
     case 'scoreAndSummariseCv': {
       if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
-      if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
-      const { candidate_id, position_applied, department, experience_years, current_company, current_ctc, expected_ctc, notice_period } = p;
-
-      // Same fix as scoreCandidate: ground this in the actual resume text
-      // when one is on file, instead of only ever looking at the handful of
-      // form fields the caller happened to pass in.
-      let parsedResume = null;
-      let cand = null;
-      if (candidate_id) {
-        const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
-        if (cRow) {
-          cand = JSON.parse(cRow.data);
-          if (cand.parsed_resume_id) {
-            const prRow = await one("SELECT data FROM entities WHERE type='ParsedResume' AND id=$1", [cand.parsed_resume_id]);
-            if (prRow) parsedResume = JSON.parse(prRow.data);
-          }
-          if (!parsedResume && cand.resume_url) {
-            const parseResult = await performResumeParse(candidate_id, cand.resume_url, cand);
-            if (parseResult.success) parsedResume = parseResult.parsedData;
-          }
-        }
-      }
-      const resumeGrounded = parsedResume?.extraction_method === 'file_text';
-      const skills = resumeGrounded ? [...(parsedResume.primary_skills || []), ...(parsedResume.secondary_skills || []), ...(parsedResume.tools_and_platforms || [])] : [];
-      const education = resumeGrounded ? [parsedResume.degree, parsedResume.specialization, parsedResume.university].filter(Boolean).join(', ') : '';
-
-      const prompt = `You are an expert HR recruiter. Analyse this candidate profile and provide a comprehensive CV score and summary.
-
-Position Applied: ${position_applied || 'General'}
-Department: ${department || 'Not specified'}
-Experience: ${(resumeGrounded && parsedResume.total_experience_years != null) ? parsedResume.total_experience_years : (experience_years || 0)} years
-Current Company: ${(resumeGrounded ? parsedResume.current_company : current_company) || 'Not specified'}
-Current CTC: ${current_ctc ? '₹' + current_ctc : 'Not specified'}
-Expected CTC: ${expected_ctc ? '₹' + expected_ctc : 'Not specified'}
-Notice Period: ${notice_period || 'Not specified'}
-${resumeGrounded ? `Skills: ${skills.length ? skills.join(', ') : 'Not specified'}
-Education: ${education || 'Not specified'}
-${parsedResume.professional_summary ? `Resume Summary: ${parsedResume.professional_summary}` : ''}` : `\nNote: ${candidate_id ? "This candidate's resume could not be read (no file on record, unsupported format, or extraction failure) — score conservatively off the application form only and flag this in the summary." : 'No candidate record was supplied — scoring off the given fields only.'}`}
-
-Return ONLY a valid JSON object (no markdown) with:
-{
-  "score": number (0-100, overall profile quality),
-  "recommendation": "Strongly Recommend" | "Recommend" | "Maybe" | "Not Recommend",
-  "summary": "2-3 sentence professional assessment",
-  "key_strengths": ["strength1", "strength2", "strength3"],
-  "areas_for_improvement": ["area1", "area2"],
-  "experience_assessment": "brief assessment of experience",
-  "compensation_analysis": "brief analysis of CTC expectations"
-}`;
-
-      let result;
-      try { result = await callAI(prompt, { json: true }); }
-      catch(e) { return res.json({ success:false, error:`AI failed: ${e.message}` }); }
-
-      if (!result) return res.json({ success:false, error:'AI returned invalid response' });
-      result.resume_grounded = resumeGrounded;
-      return res.json({ success:true, result });
-    }
-
-    // CV screening against a requisition. The NUMBER is computed by utils/cvScreening.js from the CV and the requisition's own criteria
-    // (must-have / nice-to-have skills, experience range, CTC budget, notice, qualification, location, industry) with knock-outs, so it
-    // is repeatable and explainable. The AI only reads messy CVs (when permitted) and writes the narrative + interview questions.
-    case 'scoreCandidate': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
       const aiOk = await requireAiConsent(cu);
-      const { candidate_id, job_requisition_id } = p;
-      const cRow  = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
-      const jdRow = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [job_requisition_id]);
+      const { candidate_id } = p;
+      const cRow = candidate_id ? await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]) : null;
       if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
-      if (!jdRow) return res.json({ success: false, error: 'Requisition not found — pick the position to score against' });
       let cand = JSON.parse(cRow.data);
-      const jd = JSON.parse(jdRow.data);
-
-      // The parsed CV: reuse it, or read the file now (with the AI when permitted, by rules otherwise).
+      const reqId = cand.requisition_id || cand.job_id;
+      const toLegacy = (d, extra = {}) => ({ score: d.overall_score, overall_score: d.overall_score, summary: d.summary, key_strengths: d.strengths || [], areas_for_improvement: d.gaps || [], recommendation: d.recommendation, resume_grounded: !!d.resume_grounded, criteria: d.criteria, knockouts: d.knockouts || [], cv_flags: d.cv_flags || [], interview_questions: d.interview_questions, method: d.method, scored_against: d.criteria_snapshot?.title || null, ...extra });
+      if (reqId && await one("SELECT id FROM entities WHERE type='JobRequisition' AND id=$1", [reqId])) {
+        const r = await screenCandidate({ candidate_id, job_requisition_id: reqId, aiOk, actorId: cu?.id });
+        if (r.error) return res.json({ success: false, error: r.error });
+        return res.json({ success: true, result: toLegacy(r.data, { experience_assessment: (r.data.criteria.find(c => c.key === 'experience') || {}).detail || '', compensation_analysis: (r.data.criteria.find(c => c.key === 'salary') || {}).detail || '' }) });
+      }
+      // no requisition: read the CV and score its strength
       let parsedResume = null;
-      if (cand.parsed_resume_id) {
-        const prRow = await one("SELECT data FROM entities WHERE type='ParsedResume' AND id=$1", [cand.parsed_resume_id]);
-        if (prRow) parsedResume = JSON.parse(prRow.data);
-      }
-      if (!parsedResume && cand.resume_url) {
-        const parseResult = await performResumeParse(candidate_id, cand.resume_url, cand, { useAI: aiOk });
-        if (parseResult.success) {
-          parsedResume = parseResult.parsedData;
-          const freshRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
-          if (freshRow) cand = JSON.parse(freshRow.data);
-        }
-      }
-      const resumeText = parsedResume?.resume_text || '';
-      const resumeGrounded = !!resumeText && parsedResume?.extraction_method === 'file_text';
-
-      const expMasters = (await all("SELECT data FROM entities WHERE type='MrfMaster'")).map(r => JSON.parse(r.data)).filter(m => m.kind === 'experience_range');
-      const criteria = buildCriteria(jd, expMasters);
+      if (cand.parsed_resume_id) { const prRow = await one("SELECT data FROM entities WHERE type='ParsedResume' AND id=$1", [cand.parsed_resume_id]); if (prRow) parsedResume = JSON.parse(prRow.data); }
+      if (!parsedResume && cand.resume_url) { const pr = await performResumeParse(candidate_id, cand.resume_url, cand, { useAI: aiOk }); if (pr.success) { parsedResume = pr.parsedData; const fr = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]); if (fr) cand = JSON.parse(fr.data); } }
       const pr = parsedResume || {};
-      const skills = [...(pr.primary_skills || []), ...(pr.secondary_skills || []), ...(pr.tools_and_platforms || []), ...(pr.skills_in_text || []), ...(Array.isArray(cand.skills) ? cand.skills : cand.skills ? [cand.skills] : [])];
+      let report = pr.read_report || null;
+      if (!report && pr.resume_text) report = readReport(pr.resume_text);
+      const skills = [...(pr.primary_skills || []), ...(pr.secondary_skills || []), ...(pr.tools_and_platforms || []), ...(pr.skills_in_text || []), ...(Array.isArray(cand.skills) ? cand.skills : [])].filter((x, i, a) => x && a.findIndex(y => String(y).toLowerCase() === String(x).toLowerCase()) === i);
       const eduText = [pr.degree, pr.specialization, pr.university, cand.education, cand.highest_qualification].filter(Boolean).join(', ');
       const years = pr.total_experience_years != null && Number.isFinite(Number(pr.total_experience_years)) ? Number(pr.total_experience_years) : (cand.experience_years !== '' && cand.experience_years != null && Number.isFinite(Number(cand.experience_years)) ? Number(cand.experience_years) : null);
-      const facts = {
-        skills, experienceYears: years, expectedCtc: ctcToRupees(cand.expected_ctc), noticeDays: noticeToDays(cand.notice_period ?? pr.notice_period_days),
-        education: eduText, degree: highestDegree(`${eduText} ${resumeText.slice(0, 6000)}`), city: cand.current_city || pr.current_location || '', openToRelocate: /relocat|open|anywhere/i.test(String(pr.preferred_location || '')),
-        companies: [pr.current_company || cand.current_company, ...(pr.previous_companies || [])].filter(Boolean), resumeText,
-      };
-      const result = scoreAgainst(criteria, facts);
-      result.resume_grounded = resumeGrounded;
-      result.method = aiOk ? 'rules+ai' : 'rules';
-      result.criteria_snapshot = { title: criteria.title, must_skills: criteria.mustSkills, nice_skills: criteria.niceSkills, min_years: criteria.minYears, max_years: criteria.maxYears, ctc_max: criteria.ctcMax, qualifications: criteria.qualifications };
-      result.cv_flags = [
-        ...(parsedResume?.extraction_note ? [parsedResume.extraction_note] : []),
-        ...(!cand.resume_url ? ['No CV on file — scored from the application form only'] : []),
-        ...((parsedResume?.contact_mismatch || []).map(m => `The ${m} on the CV differs from the one on the application`)),
-        ...(parsedResume?.experience_ai_value != null ? [`Experience taken from the CV's own dates (${parsedResume.total_experience_years} yrs); an automatic read gave ${parsedResume.experience_ai_value}`] : []),
-      ];
-
-      // Narrative + interview questions from the AI, grounded in the computed result (the AI cannot change the score).
-      if (aiOk && result.overall_score != null) {
+      const prof = scoreProfile({ experienceYears: years, skills, degree: highestDegree(`${eduText} ${(pr.resume_text || '').slice(0, 6000)}`), report, noticeDays: noticeToDays(cand.notice_period ?? pr.notice_period_days) });
+      const exp = ctcToRupees(cand.expected_ctc), cur = ctcToRupees(cand.current_ctc);
+      const compNote = exp ? `Expects ₹${exp.toLocaleString('en-IN')}${cur ? ` against a current ₹${cur.toLocaleString('en-IN')} (${Math.round(((exp - cur) / cur) * 100)}% hike)` : ''}` : 'No expected CTC stated';
+      const out = { ...prof, resume_grounded: !!pr.resume_text && pr.extraction_method === 'file_text', method: aiOk ? 'rules+ai' : 'rules', knockouts: [], summary: prof.overall_score == null ? 'Not enough information on the CV or form to score it.' : `${prof.overall_score}/100 — ${prof.recommendation}. Scored on the CV's completeness, experience, skills, education and notice period (no requisition to match against).`, cv_flags: [...(pr.extraction_note ? [pr.extraction_note] : []), ...(!cand.resume_url ? ['No CV on file — scored from the application form only'] : []), ...((pr.contact_mismatch || []).map(m => `The ${m} on the CV differs from the one on the application`))] };
+      if (aiOk && prof.overall_score != null) {
         try {
-          const narrative = await callAI(`You are an experienced recruiter. A CV screening engine has ALREADY scored this candidate; do not change the numbers. Write a short hiring note.
-
-ROLE: ${criteria.title} (${criteria.department})
-SCORE: ${result.overall_score}/100 — ${result.recommendation}
-CRITERIA: ${result.criteria.map(c => `${c.label} ${c.score}/100 (${c.detail})`).join('; ')}
-KNOCK-OUTS: ${result.knockouts.join('; ') || 'none'}
-MISSING MUST-HAVE SKILLS: ${result.missing_skills.join(', ') || 'none'}
-${resumeText ? `CV EXCERPT:\n"""\n${resumeText.slice(0, 3500)}\n"""` : 'No CV text available.'}
-
-Return ONLY JSON: {"summary":"2-3 sentences for the hiring manager","strengths":["up to 4"],"gaps":["up to 4"],"interview_questions":["5 specific questions probing the gaps and the strongest claims"]}`, { json: true, maxTokens: 900 });
-          if (narrative && typeof narrative === 'object') {
-            if (narrative.summary) result.summary = String(narrative.summary).slice(0, 800);
-            const merge = (a, b) => [...new Set([...(a || []), ...((Array.isArray(b) ? b : []).map(String))])].slice(0, 8);
-            result.strengths = merge(result.strengths, narrative.strengths); result.gaps = merge(result.gaps, narrative.gaps);
-            if (Array.isArray(narrative.interview_questions)) result.interview_questions = narrative.interview_questions.map(String).slice(0, 6);
-          }
-        } catch (e) { console.warn('[scoreCandidate] narrative failed:', e.message); }
+          const nar = await callAI(`You are an experienced recruiter. A CV screening engine already scored this candidate; do not change the numbers. Write a short note.\nAPPLIED FOR: ${cand.position_applied || 'not stated'} (${cand.department || ''})\nSCORE: ${prof.overall_score}/100\nCRITERIA: ${prof.criteria.map(c => `${c.label} ${c.score}/100 (${c.detail})`).join('; ')}\nCV EXCERPT:\n"""\n${String(pr.resume_text || '').slice(0, 3500)}\n"""\nReturn ONLY JSON: {"summary":"2-3 sentences","strengths":["up to 4"],"gaps":["up to 4"],"interview_questions":["5 specific questions"]}`, { json: true, maxTokens: 800 });
+          if (nar && typeof nar === 'object') { if (nar.summary) out.summary = String(nar.summary).slice(0, 800); out.strengths = [...new Set([...(out.strengths || []), ...(Array.isArray(nar.strengths) ? nar.strengths.map(String) : [])])].slice(0, 8); out.gaps = [...new Set([...(out.gaps || []), ...(Array.isArray(nar.gaps) ? nar.gaps.map(String) : [])])].slice(0, 8); if (Array.isArray(nar.interview_questions)) out.interview_questions = nar.interview_questions.map(String).slice(0, 6); }
+        } catch (e) { console.warn('[scoreAndSummariseCv] narrative failed:', e.message); }
       }
+      try { await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE type='Candidate' AND id=$2", [JSON.stringify({ ...cand, ai_score: out.overall_score, ai_recommendation: out.recommendation, ai_scored_at: new Date().toISOString() }), candidate_id]); } catch { /* the result is still returned */ }
+      return res.json({ success: true, result: toLegacy(out, { experience_assessment: years != null ? `${years} years of experience read from the CV` : 'Experience could not be determined', compensation_analysis: compNote }) });
+    }
 
-      try {
-        const scoredAt = new Date().toISOString();
-        const existingScore = await one("SELECT id FROM entities WHERE type='CandidateScore' AND data::jsonb->>'candidate_id'=$1 AND data::jsonb->>'job_requisition_id'=$2 LIMIT 1", [candidate_id, job_requisition_id]);
-        const scoreData = { ...result, candidate_id, job_requisition_id, scored_at: scoredAt, scored_by: cu?.id || null };
-        if (existingScore) { scoreData.id = existingScore.id; await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(scoreData), existingScore.id]); }
-        else { const scoreId = uuidv4(); scoreData.id = scoreId; await run("INSERT INTO entities(id,type,status,data) VALUES($1,'CandidateScore','active',$2)", [scoreId, JSON.stringify(scoreData)]); }
-        const updCand = { ...cand, ai_score: result.overall_score, ai_recommendation: result.recommendation, ai_scored_at: scoredAt, screening_knockouts: result.knockouts };
-        await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE type='Candidate' AND id=$2", [JSON.stringify(updCand), candidate_id]);
-      } catch (persistErr) { console.warn('[scoreCandidate] persist failed:', persistErr.message); }
+    case 'scoreCandidate': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+      const r = await screenCandidate({ candidate_id: p.candidate_id, job_requisition_id: p.job_requisition_id, aiOk: await requireAiConsent(cu), actorId: cu?.id });
+      if (r.error) return res.json({ success: false, error: r.error });
+      return res.json({ success: true, data: r.data });
+    }
 
-      return res.json({ success: true, data: result });
+    // Reads and scores EVERY candidate who applied for a requisition (parsing any CV not yet read), in one go.
+    case 'scoreAllCandidates': {
+      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+      const { job_requisition_id: sacJob } = p;
+      const jdRow = sacJob ? await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [sacJob]) : null;
+      if (!jdRow) return res.json({ success: false, error: 'Choose a requisition first' });
+      const jd = JSON.parse(jdRow.data);
+      const mine = (await all("SELECT id, data FROM entities WHERE type='Candidate'")).map(r => ({ id: r.id, d: JSON.parse(r.data) })).filter(({ d }) => d.requisition_id === sacJob || d.job_id === sacJob || (!d.requisition_id && !d.job_id && d.position_applied && jd.position_title && String(d.position_applied).trim().toLowerCase() === String(jd.position_title).trim().toLowerCase()));
+      const aiOk = await requireAiConsent(cu);
+      const list = mine.slice(0, 300); const out = { total: mine.length, scored: 0, failed: [], no_cv: 0, flagged: [] };
+      for (const { id, d } of list) {
+        const r = await screenCandidate({ candidate_id: id, job_requisition_id: sacJob, aiOk, narrative: list.length <= 12, actorId: cu?.id });
+        if (r.error) { out.failed.push({ id, name: d.full_name, error: r.error }); continue; }
+        out.scored++; if (!d.resume_url) out.no_cv++;
+        if (r.data.cv_flags?.length || r.data.knockouts?.length) out.flagged.push({ id, name: d.full_name, knockouts: r.data.knockouts, cv_flags: r.data.cv_flags });
+      }
+      return res.json({ success: true, ...out, truncated: mine.length > list.length });
     }
 
     /* ── Candidate reminders ─────────────────────────── */
@@ -13496,6 +13513,16 @@ ${contextBlock || 'No employee context available — answer from general policy 
         }
       }
 
+      // Only a job that is actually open can be applied to (the careers page hides closed ones, but the endpoint is public).
+      let appliedJob = null;
+      if (resolvedJobId) {
+        const jr = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [resolvedJobId]);
+        appliedJob = jr ? JSON.parse(jr.data) : null;
+        if (!appliedJob) return res.json({ success: false, error: 'This position could not be found.' });
+        const today = new Date().toISOString().slice(0, 10);
+        const open = appliedJob.mrf_version === 2 ? (appliedJob.is_published === true && appliedJob.status === 'published') : (appliedJob.is_published === true || ['published', 'approved'].includes(appliedJob.status)) && !['closed', 'cancelled', 'rejected', 'hr_rejected', 'manager_rejected'].includes(appliedJob.status);
+        if (!open || (appliedJob.application_deadline && String(appliedJob.application_deadline).slice(0, 10) < today)) return res.json({ success: false, error: 'This position is no longer accepting applications.' });
+      }
       const id = uuidv4();
       // A candidate had no way to check where their application stood short
       // of emailing HR — statusToken is a public, unguessable lookup key for
@@ -13506,8 +13533,9 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const d = {
         id,
         job_id: resolvedJobId,
-        position_applied: jobTitle,
-        department: jobDepartment,
+        requisition_id: resolvedJobId,
+        position_applied: appliedJob?.position_title || jobTitle,
+        department: appliedJob?.department || jobDepartment,
         ...(candidateData || {}),
         status: 'applied',
         applied_date: new Date().toISOString(),
@@ -13516,6 +13544,10 @@ ${contextBlock || 'No employee context available — answer from general policy 
       // CTC is stored as annual rupees; a bare "6" or "6.5" can only mean lakhs, so older pages / other callers cannot save ₹6
       for (const k of ['current_ctc', 'expected_ctc']) { const v = Number(d[k]); if (v > 0 && v < 1000) d[k] = Math.round(v * 100000); }
       await run("INSERT INTO entities(id,type,status,data) VALUES($1,'Candidate','applied',$2)", [id, JSON.stringify(d)]);
+
+      // Read and score the CV as soon as it arrives (rules only — the applicant has no account, and the AI read is triggered by the form).
+      // A few seconds' head start lets the form's own AI parse finish first; whichever has already read the CV is reused.
+      if (d.resume_url && resolvedJobId) setTimeout(() => { screenCandidate({ candidate_id: id, job_requisition_id: resolvedJobId, aiOk: false, narrative: false }).catch(e => console.warn('[auto-screen] failed:', e.message)); }, 45000);
 
       const appBase = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
       const statusLink = `${appBase}/application-status/${statusToken}`;

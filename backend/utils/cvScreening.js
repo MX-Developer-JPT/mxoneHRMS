@@ -55,33 +55,48 @@ const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8,
 const DATE = '(?:(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[a-z]*[\\s.,\'-]*(\\d{4}|\\d{2})|(\\d{1,2})[/.-](\\d{4})|(\\d{4}))';
 const RANGE = new RegExp(`${DATE}\\s*(?:-|–|—|to|till|until)\\s*(?:${DATE}|(present|current|till date|till now|date|now|ongoing|today))`, 'gi');
 const monthIndex = (y, m) => y * 12 + (m - 1);
-/** Total years of work experience from date ranges ("Jan 2019 – Present"), overlaps counted once. Returns null when no range is found. */
-export function experienceFromDates(text, now = new Date()) {
+function dateSpans(text, now = new Date()) {
   const t = String(text || '');
   const spans = []; let m;
   RANGE.lastIndex = 0;
+  const nowIdx = monthIndex(now.getFullYear(), now.getMonth() + 1);
   while ((m = RANGE.exec(t))) {
     const yv = (y) => { let n = Number(y); if (n < 100) n += n > 50 ? 1900 : 2000; return n; };
     const mo = (name) => MONTHS[String(name).toLowerCase().slice(0, 4)] || MONTHS[String(name).toLowerCase().slice(0, 3)] || 1;
     // groups: 1 month, 2 year | 3 mm, 4 yyyy | 5 yyyy  (start);  6-10 the same for the end;  11 "present"
     const start = m[1] ? monthIndex(yv(m[2]), mo(m[1])) : m[3] ? monthIndex(Number(m[4]), Number(m[3])) : monthIndex(Number(m[5]), 1);
     let end;
-    if (m[11]) end = monthIndex(now.getFullYear(), now.getMonth() + 1);
+    if (m[11]) end = nowIdx;
     else if (m[6]) end = monthIndex(yv(m[7]), mo(m[6]));
     else if (m[8]) end = monthIndex(Number(m[9]), Number(m[8]));
     else if (m[10]) end = monthIndex(Number(m[10]), 1);
     else continue;
-    const nowIdx = monthIndex(now.getFullYear(), now.getMonth() + 1);
-    if (start < 1990 * 12 || end < start || end > nowIdx + 1 || end - start > 45 * 12) continue;    // study ranges / typos / future dates are ignored
-    spans.push([start, Math.min(end, nowIdx) + (m[10] ? 0 : 1)]);     // a month-precise end counts that month; a bare year ends at the year boundary
+    if (start < 1990 * 12 || end < start || end > nowIdx + 1 || end - start > 45 * 12) continue;    // typos / future dates are ignored
+    spans.push([start, Math.min(end, nowIdx) + (m[10] ? 0 : 1), m.index]);   // a month-precise end counts that month; a bare year ends at the year boundary
   }
-  if (!spans.length) return null;
-  spans.sort((a, b) => a[0] - b[0]);
-  let total = 0; let [cs, ce] = spans[0];
-  for (const [s, e] of spans.slice(1)) { if (s <= ce) ce = Math.max(ce, e); else { total += ce - cs; cs = s; ce = e; } }
-  total += ce - cs;
-  return Math.round((total / 12) * 10) / 10;
+  return spans.sort((x, y) => x[0] - y[0]);
 }
+const mergeSpans = (spans) => {
+  const out = [];
+  for (const [st, en] of spans) { const last = out[out.length - 1]; if (last && st <= last[1]) last[1] = Math.max(last[1], en); else out.push([st, en]); }
+  return out;
+};
+/** Total years of work experience from date ranges ("Jan 2019 – Present"), overlaps counted once. Returns null when no range is found. */
+export function experienceFromDates(text, now = new Date()) {
+  const spans = dateSpans(text, now);
+  if (!spans.length) return null;
+  return Math.round((mergeSpans(spans).reduce((s, [a, b]) => s + (b - a), 0) / 12) * 10) / 10;
+}
+/** Career shape from the date ranges: how many roles, the average stay and the longest break between them. */
+export function workHistory(text, now = new Date()) {
+  const spans = dateSpans(text, now);
+  if (!spans.length) return { roles: 0, years: null, avg_tenure_months: null, longest_gap_months: 0, job_hopping: false };
+  const merged = mergeSpans(spans);
+  let gap = 0; for (let i = 1; i < merged.length; i++) gap = Math.max(gap, merged[i][0] - merged[i - 1][1]);
+  const avg = Math.round(spans.reduce((s, [a, b]) => s + (b - a), 0) / spans.length);
+  return { roles: spans.length, years: Math.round((merged.reduce((s, [a, b]) => s + (b - a), 0) / 12) * 10) / 10, avg_tenure_months: avg, longest_gap_months: gap, job_hopping: spans.length >= 4 && avg < 14 };
+}
+
 const DEGREES = [
   ['phd', /\b(ph\.?d|doctorate)\b/i, 6], ['master', /\b(m\.?tech|m\.?e\.?|mba|pgdm|m\.?sc|m\.?com|mca|m\.?a\.?|post.?graduate|master'?s?)\b/i, 5], ['ca', /\b(chartered accountant|c\.?a\.?|cma|icwa|cs)\b/i, 5],
   ['bachelor', /\b(b\.?tech|b\.?e\.?|bba|b\.?sc|b\.?com|bca|b\.?a\.?|graduate|bachelor'?s?)\b/i, 4], ['diploma', /\b(diploma|polytechnic)\b/i, 3], ['iti', /\b(iti|vocational)\b/i, 2], ['school', /\b(12th|hsc|intermediate|10th|ssc)\b/i, 1],
@@ -99,6 +114,25 @@ export function extractContacts(text) {
   const github = (t.match(/https?:\/\/(?:www\.)?github\.com\/[^\s)]+/i) || [])[0] || '';
   return { email: email.toLowerCase(), phone, linkedin, github };
 }
+const SECTION_RE = { experience: /\b(work experience|professional experience|employment( history)?|experience|career (summary|history))\b/i, education: /\b(education(al)?( qualifications?)?|academic|qualifications?)\b/i, skills: /\b(skills?|technical skills|core competenc(y|ies)|key skills|expertise)\b/i, projects: /\bprojects?\b/i, summary: /\b(summary|profile|objective|about me)\b/i, achievements: /\b(achievements?|accomplishments?|awards?)\b/i };
+/** How completely the CV was read, and what it is missing — shown to the recruiter so nothing is silently skipped. */
+export function readReport(text, { fileType = '', now = new Date() } = {}) {
+  const t = String(text || '');
+  const sections = Object.fromEntries(Object.entries(SECTION_RE).map(([k, re]) => [k, re.test(t)]));
+  const hist = workHistory(t, now); const contacts = extractContacts(t);
+  const words = (t.match(/\S+/g) || []).length;
+  const warnings = [];
+  if (words < 120) warnings.push('Very little text was readable — the CV may be a scanned image or mostly graphics');
+  if (!sections.experience && hist.roles === 0) warnings.push('No work-experience section or dated roles found');
+  if (!sections.education && !highestDegree(t)) warnings.push('No education details found');
+  if (!sections.skills) warnings.push('No skills section found — skills are matched from the whole text');
+  if (!contacts.email && !contacts.phone) warnings.push('No contact details found on the CV');
+  if (hist.longest_gap_months >= 9) warnings.push(`A ${hist.longest_gap_months}-month gap between roles`);
+  if (hist.job_hopping) warnings.push(`${hist.roles} roles with an average stay of about ${hist.avg_tenure_months} months`);
+  const completeness = Math.max(0, Math.min(100, Math.round((Object.values(sections).filter(Boolean).length / 6) * 40 + (hist.roles ? 20 : 0) + (contacts.email ? 10 : 0) + (contacts.phone ? 5 : 0) + (highestDegree(t) ? 10 : 0) + Math.min(15, words / 40))));
+  return { chars: t.length, words, file_type: fileType, sections, roles_found: hist.roles, career: hist, completeness, warnings };
+}
+
 /** Everything that can be read from the CV text without an AI. */
 export function analyseResumeText(text, { skills = [] } = {}) {
   const t = String(text || '');
@@ -256,4 +290,25 @@ export function rulesParse(text, cand = {}) {
     current_designation: null, current_company: cand.current_company || null, primary_skills: skills.slice(0, 12), secondary_skills: skills.slice(12, 24), tools_and_platforms: [], certifications: [],
     degree: deg, linkedin_url: a.contacts.linkedin || null, github_url: a.contacts.github || null, ats_score: null, parse_note: 'Read by rules only (no AI): skills are matched from a general list and experience from the dates in the CV.',
   };
+}
+
+/**
+ * Profile score when there is no requisition to compare against: how complete and substantial the CV is, and how it fits the role the
+ * candidate named. facts = { experienceYears, skills[], degree, report (readReport), noticeDays, expectedCtc, hasContacts }
+ */
+export function scoreProfile(f) {
+  const comps = []; const strengths = []; const gaps = [];
+  const rep = f.report;
+  if (rep) { comps.push({ key: 'completeness', label: 'CV completeness', weight: 25, score: rep.completeness, detail: `${Object.entries(rep.sections || {}).filter(([, v]) => v).map(([k]) => k).join(', ') || 'no clear sections'}; ${rep.roles_found || 0} dated role(s)` }); }
+  if (f.experienceYears != null) { const y = f.experienceYears; comps.push({ key: 'experience', label: 'Experience', weight: 25, score: clamp(Math.round(30 + Math.min(y, 10) * 7)), detail: `${y} years of experience` }); }
+  const n = (f.skills || []).length;
+  comps.push({ key: 'skills', label: 'Skills breadth', weight: 25, score: clamp(Math.round(Math.min(n, 12) / 12 * 100)), detail: n ? `${n} skills identified` : 'No skills identified' });
+  if (f.degree) comps.push({ key: 'education', label: 'Education', weight: 15, score: f.degree.rank >= 5 ? 95 : f.degree.rank === 4 ? 80 : f.degree.rank === 3 ? 65 : 50, detail: 'Highest qualification on the CV' });
+  if (f.noticeDays != null) comps.push({ key: 'notice', label: 'Notice period', weight: 10, score: f.noticeDays <= 15 ? 100 : f.noticeDays <= 30 ? 90 : f.noticeDays <= 60 ? 65 : 35, detail: f.noticeDays === 0 ? 'Immediate joiner' : `${f.noticeDays}-day notice` });
+  const tw = comps.reduce((s, c) => s + c.weight, 0);
+  const overall = tw ? Math.round(comps.reduce((s, c) => s + c.score * c.weight, 0) / tw) : null;
+  for (const c of comps) { if (c.score >= 80) strengths.push(`${c.label}: ${c.detail}`); else if (c.score < 50) gaps.push(`${c.label}: ${c.detail}`); }
+  for (const w of rep?.warnings || []) gaps.push(w);
+  const recommendation = overall == null ? 'Not enough information' : overall >= 80 ? 'Strongly Recommend' : overall >= 65 ? 'Recommend' : overall >= 45 ? 'Maybe' : 'Not Recommend';
+  return { overall_score: overall, recommendation, criteria: comps.map((c) => ({ key: c.key, label: c.label, weight: Math.round((c.weight / tw) * 100), score: c.score, detail: c.detail })), strengths, gaps };
 }

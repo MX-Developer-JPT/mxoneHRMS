@@ -1,6 +1,6 @@
 // CV screening engine. Run: node backend/tests/cvScreening.test.mjs
 import assert from 'node:assert/strict';
-import { normSkill, matchSkills, experienceFromDates, extractContacts, highestDegree, parseExperienceText, buildCriteria, noticeToDays, ctcToRupees, scoreAgainst } from '../utils/cvScreening.js';
+import { normSkill, matchSkills, experienceFromDates, extractContacts, highestDegree, parseExperienceText, buildCriteria, noticeToDays, ctcToRupees, scoreAgainst, readReport, workHistory, scoreProfile } from '../utils/cvScreening.js';
 import { DEFAULT_MASTERS } from '../utils/mrf.js';
 let n = 0; const t = (name, fn) => { fn(); n++; console.log('ok  ', name); };
 const NOW = new Date('2026-11-23T00:00:00Z');
@@ -51,5 +51,15 @@ t('the same input always gives the same score', () => {
 t('an over-qualified candidate is flagged but not rejected; a remote role ignores location', () => {
   const r = scoreAgainst(buildCriteria({ position_title: 'X', required_skills: ['A'], experience_required: '2-4 years', work_arrangement: 'remote' }), { skills: ['A'], experienceYears: 12, city: 'Delhi' });
   assert.equal(r.knockouts.length, 0); const e = r.criteria.find((x) => x.key === 'experience'); assert.ok(e.score < 100 && e.score >= 65); assert.equal(r.criteria.find((x) => x.key === 'location').score, 100);
+});
+t('the read report shows what was found, and warns about a thin or scanned CV', () => {
+  const cv = 'ANITA\nanita@x.com 9811122233\nSKILLS\nReact, Node.js\nEXPERIENCE\nEngineer, TechNova, Mar 2021 - Present\nDeveloper, Webhive, Jul 2019 - Feb 2021\nEDUCATION\nB.Tech 2019';
+  const r = readReport(cv); assert.ok(r.roles_found >= 2); assert.ok(r.completeness >= 50);
+  assert.ok(readReport('Resume').warnings.length >= 1); assert.ok(workHistory(cv));
+});
+t('a CV with no requisition is scored on its own strength', () => {
+  const strong = scoreProfile({ experienceYears: 6, skills: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'], degree: { rank: 5 }, noticeDays: 30, report: { completeness: 90 } });
+  const weak = scoreProfile({ experienceYears: 0, skills: [], report: { completeness: 20 } });
+  assert.ok(strong.overall_score > weak.overall_score); assert.ok(strong.criteria.length >= 3);
 });
 console.log(`\n${n} tests passed`);
