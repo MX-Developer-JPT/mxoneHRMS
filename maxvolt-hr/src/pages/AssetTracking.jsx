@@ -966,7 +966,7 @@ export default function AssetTracking() {
 
         {/* Sections: each job has its own easy-to-reach tab */}
         <div className="flex gap-1 border-b overflow-x-auto" role="tablist" aria-label="Asset sections">
-          {[['inventory', 'Inventory', Boxes, `${assetTypes.length} types`], ['assignments', 'Employee assignments', UserCheck, `${new Set(assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.assigned_to_user_id && a.assigned_to_user_id !== '__common__').map(a => a.assigned_to_user_id)).size} employees`], ['all', 'All assets', Package, `${assets.length}`], ['maintenance', 'Maintenance & activity', Wrench, '']].map(([id, label, Icon, count]) => (
+          {[['inventory', 'Inventory', Boxes, `${assetTypes.length} types`], ['assignments', 'Employee assignments', UserCheck, (() => { const n = new Set(assets.filter(a => ACTIVE_ASSIGNMENT_STATUSES.includes(a.status) && a.assigned_to_user_id && a.assigned_to_user_id !== '__common__').map(a => a.assigned_to_user_id)).size; return `${n} employee${n === 1 ? '' : 's'}`; })()], ['all', 'All assets', Package, `${assets.length}`], ['maintenance', 'Maintenance & activity', Wrench, '']].map(([id, label, Icon, count]) => (
             <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => goTab(id)}
               className={`shrink-0 px-4 py-2.5 text-sm flex items-center gap-2 border-b-2 -mb-px transition-colors ${tab === id ? 'border-primary text-primary font-semibold' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
               <Icon className="w-4 h-4" />{label}{count && <span className="text-[11px] rounded-full bg-muted px-2 py-0.5 text-muted-foreground">{count}</span>}
