@@ -167,7 +167,7 @@ export default function ConfirmationManagement() {
 
   // Management approval dialog
   const [mgmtDlg, setMgmtDlg]   = useState({ open: false, review: null });
-  const [mgmtForm, setMgmtForm] = useState({ final_action: 'confirmed', management_comments: '', extended_until: '' });
+  const [mgmtForm, setMgmtForm] = useState({ final_action: 'confirmed', management_comments: '', extended_until: '', last_working_date: '' });
   const [mgmtSaving, setMgmtSaving] = useState(false);
 
   // Detail view
@@ -321,7 +321,7 @@ export default function ConfirmationManagement() {
     setMgmtForm({
       final_action: review.action === 'confirm' ? 'confirmed' : review.action === 'extend' ? 'extended' : 'rejected',
       management_comments: '',
-      extended_until: review.extended_until || '',
+      extended_until: review.extended_until || '', last_working_date: '',
     });
     setMgmtDlg({ open: true, review });
   };
@@ -336,9 +336,10 @@ export default function ConfirmationManagement() {
         final_action: mgmtForm.final_action,
         management_comments: mgmtForm.management_comments,
         extended_until: mgmtForm.extended_until,
+        ...(mgmtForm.final_action === 'rejected' && mgmtForm.last_working_date ? { last_working_date: mgmtForm.last_working_date } : {}),
       });
       if (res.data?.success) {
-        toast.success('Decision recorded');
+        toast.success(res.data.exit_id ? `Not confirmed — exit process opened (last working day ${res.data.last_working_date})` : 'Decision recorded');
         setMgmtDlg({ open: false, review: null });
         loadAll();
       } else {
@@ -820,6 +821,16 @@ export default function ConfirmationManagement() {
                   <Input type="date" value={mgmtForm.extended_until}
                     onChange={e => setMgmtForm(f => ({ ...f, extended_until: e.target.value }))}
                     min={format(new Date(), 'yyyy-MM-dd')} />
+                </div>
+              )}
+              {mgmtForm.final_action === 'rejected' && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                  <p className="text-sm text-amber-900">The employee is <b>not terminated immediately</b>. An exit process opens (notice period, clearances, full &amp; final settlement) and the login is disabled when it completes.</p>
+                  <div>
+                    <Label className="text-sm font-semibold mb-1 block">Last working day (optional)</Label>
+                    <Input type="date" value={mgmtForm.last_working_date} min={format(new Date(), 'yyyy-MM-dd')} onChange={e => setMgmtForm(f => ({ ...f, last_working_date: e.target.value }))} className="max-w-[200px]" />
+                    <p className="text-xs text-amber-800 mt-1">Leave blank for the standard 30-day notice.</p>
+                  </div>
                 </div>
               )}
               <div>

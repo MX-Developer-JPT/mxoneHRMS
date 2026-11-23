@@ -101,12 +101,32 @@ function probationOutcome(emp, decision, { extendedUntil = '', note = '', byName
   const upd = { ...emp };
   if (decision === 'confirmed') { upd.employee_status = 'confirmation'; upd.confirmation_date = today; upd.employee_confirmation_date = today; }
   else if (decision === 'extended') { upd.employee_status = 'probation'; upd.probation_end_date = extendedUntil; if (note) upd.probation_extension_note = note; upd.confirmation_date = ''; upd.employee_confirmation_date = ''; }
-  else if (decision === 'rejected') { upd.employee_status = 'terminated'; upd.status = 'terminated'; upd.termination_date = today; upd.exit_date = today; upd.termination_reason = note || 'Probation not confirmed'; upd.exit_reason = upd.termination_reason; upd.exit_marked_by_name = byName; upd.exit_marked_at = new Date().toISOString(); }
+  else if (decision === 'rejected') { upd.employee_status = 'probation'; upd.probation_outcome = 'not_confirmed'; upd.probation_not_confirmed_date = today; upd.probation_not_confirmed_reason = note || 'Probation not confirmed'; upd.probation_not_confirmed_by = byName; }
   return upd;
+}
+// A not-confirmed probationer is NOT terminated on the spot: the normal exit process opens (notice period, clearances, F&F, letters) and
+// the account is disabled when that exit completes. Returns the exit case (an already-open one is reused).
+const PROBATION_NOTICE_DAYS = 30;
+async function openProbationExit(userId, actor, note, lwd) {
+  const existing = await one("SELECT id, data FROM entities WHERE type='Exit' AND user_id=$1 AND data::jsonb->>'status' NOT IN ('withdrawn','cancelled','manager_rejected','hr_rejected','completed')", [userId]);
+  if (existing) return { exit_id: existing.id, last_working_date: JSON.parse(existing.data).last_working_date, reused: true };
+  const now = new Date().toISOString();
+  const lastDay = ymdOk(lwd) && lwd >= istTodayStr() ? lwd : new Date(Date.now() + 5.5 * 3600 * 1000 + PROBATION_NOTICE_DAYS * 86400000).toISOString().slice(0, 10);
+  const id = uuidv4();
+  const data = {
+    id, user_id: userId, exit_type: 'termination', reason_category: 'probation_not_confirmed', resignation_date: istTodayStr(), last_working_date: lastDay, proposed_last_day: lastDay,
+    hr_notes: note || 'Probation not confirmed', status: 'in_notice', initiated_by_hr: true, hr_actioned_by: actor?.id || null, hr_actioned_at: now, notice_period_days: PROBATION_NOTICE_DAYS,
+    approval_stages: [{ stage: 'manager', status: 'approved', actor_name: 'Probation review', timestamp: now }, { stage: 'hr', status: 'approved', actor_id: actor?.id || null, actor_name: actor?.full_name || 'Management', timestamp: now }],
+    clearance_checklist: await makeDefaultClearanceChecklist(), assets: DEFAULT_EXIT_ASSETS.map((a, i) => ({ ...a, id: `asset_${i}` })), kt_items: [], exit_interview: null, hr_exit_interview: null,
+    exit_interview_completed: false, hr_interview_completed: false, fnf_data: null, fnf_calculated: false, no_dues_generated: false,
+    access_deactivated: false, relieving_letter_generated: false, experience_letter_generated: false,
+    audit_log: [{ actor_id: actor?.id || null, actor_name: actor?.full_name || 'Management', action: 'Exit opened — probation not confirmed', comment: note || '', timestamp: now }],
+  };
+  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Exit',$2,'in_notice',$3)", [id, userId, JSON.stringify(data)]);
+  return { exit_id: id, last_working_date: lastDay, reused: false };
 }
 async function saveEmployeeAfterProbation(row, upd) {
   await run("UPDATE entities SET data=$1, status=$2, updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(upd), upd.status || row.status, row.id]);
-  if (upd.status === 'terminated') { try { await disableIfDue(upd.user_id || row.user_id); } catch (e) { console.warn('[probation] account disable failed:', e.message); } }
 }
 
 /* ── Shared: render a pdfmake docDef to a Buffer ── */
@@ -16746,13 +16766,19 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const pmaEmp = JSON.parse(pmaEmpRow.data);
         await saveEmployeeAfterProbation({ ...pmaEmpRow, user_id: pmaRev.user_id }, probationOutcome({ ...pmaEmp, user_id: pmaEmp.user_id || pmaRev.user_id }, pmaFinalAction, { extendedUntil: pmaExtDate, note: pmaMgmtComments || '', byName: pmaMgmtName }));
       }
-      const pmaEmpMsgs = { confirmed: 'Congratulations! Your probation period is complete and your employment has been confirmed.', extended: `Your probation period has been extended to ${pmaExtUntil || pmaRev.extended_until}.`, rejected: 'Your probation review has concluded. Please contact HR for further information.' };
+      let pmaExit = null;
+      if (pmaFinalAction === 'rejected') {
+        pmaExit = await openProbationExit(pmaRev.user_id, cu, pmaMgmtComments || 'Probation not confirmed', p.last_working_date);
+        await run("UPDATE entities SET data=jsonb_set(data::jsonb,'{exit_id}',to_jsonb($1::text))::text WHERE id=$2", [pmaExit.exit_id, pmaRow.id]);
+        for (const hr of await all("SELECT id FROM users WHERE role IN ('hr','admin') OR custom_role IN ('hr','admin')")) await notify(hr.id, { title: 'Exit opened — probation not confirmed', message: `${pmaRev.employee_name}'s probation was not confirmed. An exit case is open (last working day ${pmaExit.last_working_date}); complete clearance and F&F.`, type: 'warning', link: '/exit-management' });
+      }
+      const pmaEmpMsgs = { confirmed: 'Congratulations! Your probation period is complete and your employment has been confirmed.', extended: `Your probation period has been extended to ${pmaExtUntil || pmaRev.extended_until}.`, rejected: `Your probation was not confirmed. A notice period applies and your exit process has started${pmaExit ? ' — your last working day is ' + pmaExit.last_working_date : ''}. Please open My Exit for the steps to complete.` };
       await notify(pmaRev.user_id, { title: 'Probation Decision', message: pmaEmpMsgs[pmaFinalAction] || 'Your probation status has been updated.', type: pmaFinalAction === 'confirmed' ? 'success' : pmaFinalAction === 'rejected' ? 'error' : 'info', link: '/ConfirmationManagement' });
       if (pmaRev.manager_id) {
         const pmaMgrMsgs = { confirmed: `${pmaRev.employee_name}'s probation has been confirmed by management.`, extended: `${pmaRev.employee_name}'s probation has been extended by management.`, rejected: `${pmaRev.employee_name}'s probation review has resulted in rejection by management.` };
         await notify(pmaRev.manager_id, { title: 'Probation Review Result', message: pmaMgrMsgs[pmaFinalAction] || `${pmaRev.employee_name}'s probation status has been updated.`, type: 'info', link: '/ConfirmationManagement' });
       }
-      return res.json({ success: true, final_action: pmaFinalAction });
+      return res.json({ success: true, final_action: pmaFinalAction, ...(pmaExit ? { exit_id: pmaExit.exit_id, last_working_date: pmaExit.last_working_date } : {}) });
     }
 
     case 'hrInitiateConfirmation': {
@@ -16939,7 +16965,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const pbEmp = JSON.parse(pbRow.data);
       const pbUpd = probationOutcome({ ...pbEmp, user_id: pbEmp.user_id || pbUid }, pbDecision, { extendedUntil: pbEnd, note: pbNote || '', byName: cu?.full_name || 'HR' });
       await saveEmployeeAfterProbation({ ...pbRow, user_id: pbUid }, pbUpd);
-      const pbMsg = { confirm: 'Congratulations! Your probation is complete and employment is confirmed.', extend: `Your probation period has been extended to ${pbEnd}.`, terminate: 'Your probation was not cleared and your employment has ended.' };
+      const pbExit = pbDecision === 'rejected' ? await openProbationExit(pbUid, cu, pbNote || 'Probation not confirmed', p.last_working_date) : null;
+      const pbMsg = { confirm: 'Congratulations! Your probation is complete and employment is confirmed.', extend: `Your probation period has been extended to ${pbEnd}.`, terminate: `Your probation was not confirmed. Your exit process has started${pbExit ? ' — your last working day is ' + pbExit.last_working_date : ''}.` };
       await notify(pbUid, { title: 'Probation Status Update', message: pbMsg[pbAction], type: pbAction === 'confirm' ? 'success' : 'info', link: '/dashboard' });
       return res.json({ success: true, action: pbAction, status: pbUpd.employee_status });
     }
