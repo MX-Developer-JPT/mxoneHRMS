@@ -91,6 +91,24 @@ async function flagLeftWithoutGatePass(records) {
   return records;
 }
 
+// ── Probation confirmation: one place that says what each decision does to the employee record ──
+// Canonical states: probation -> (confirmed) employee_status 'confirmation' + confirmation dates; (extended) stays 'probation' with a later
+// end date; (not confirmed) the employee is terminated (status + exit date, so the exit rules — login disabled, left-employee list — apply).
+const istTodayStr = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+const ymdOk = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+function probationOutcome(emp, decision, { extendedUntil = '', note = '', byName = '' } = {}) {
+  const today = istTodayStr();
+  const upd = { ...emp };
+  if (decision === 'confirmed') { upd.employee_status = 'confirmation'; upd.confirmation_date = today; upd.employee_confirmation_date = today; }
+  else if (decision === 'extended') { upd.employee_status = 'probation'; upd.probation_end_date = extendedUntil; if (note) upd.probation_extension_note = note; upd.confirmation_date = ''; upd.employee_confirmation_date = ''; }
+  else if (decision === 'rejected') { upd.employee_status = 'terminated'; upd.status = 'terminated'; upd.termination_date = today; upd.exit_date = today; upd.termination_reason = note || 'Probation not confirmed'; upd.exit_reason = upd.termination_reason; upd.exit_marked_by_name = byName; upd.exit_marked_at = new Date().toISOString(); }
+  return upd;
+}
+async function saveEmployeeAfterProbation(row, upd) {
+  await run("UPDATE entities SET data=$1, status=$2, updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(upd), upd.status || row.status, row.id]);
+  if (upd.status === 'terminated') { try { await disableIfDue(upd.user_id || row.user_id); } catch (e) { console.warn('[probation] account disable failed:', e.message); } }
+}
+
 /* ── Shared: render a pdfmake docDef to a Buffer ── */
 function renderPdf(docDef) {
   return new Promise((resolve, reject) => {
@@ -15209,10 +15227,12 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'updateEmployeeConfirmation': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { user_id, confirmation_date } = p;
+      if (!ymdOk(confirmation_date) || confirmation_date > istTodayStr()) return res.json({ success: false, error: 'Give a valid confirmation date (not in the future).' });
       const eRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [user_id]);
       if (eRow) {
-        const d = { ...JSON.parse(eRow.data), employee_status:'confirmation', confirmation_date };
+        const d = { ...JSON.parse(eRow.data), employee_status:'confirmation', confirmation_date, employee_confirmation_date: confirmation_date };
         await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(d), eRow.id]);
       }
       return res.json({ success:true });
@@ -16620,6 +16640,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const sprEmpRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [sprEmpUid]);
       if (!sprEmpRow) return res.json({ success: false, error: 'Employee not found' });
       const sprEmp = JSON.parse(sprEmpRow.data);
+      if (!['confirm', 'extend', 'reject'].includes(sprAction)) return res.json({ success: false, error: 'Choose confirm, extend or not confirm.' });
+      if (sprAction === 'extend' && !(ymdOk(sprExtUntil) && sprExtUntil > istTodayStr())) return res.json({ success: false, error: 'Give an extension date in the future.' });
+      if (['resigned', 'terminated', 'retired'].includes(sprEmp.status)) return res.json({ success: false, error: 'This employee has already left.' });
+      if (sprEmp.employee_status !== 'probation' && String(sprEmp.confirmation_date || sprEmp.employee_confirmation_date || '').slice(0, 10)) return res.json({ success: false, error: 'This employee is already confirmed.' });
       const sprEmpUser = await one("SELECT full_name FROM users WHERE id=$1", [sprEmpUid]);
       const sprEmpName = sprEmpUser?.full_name || sprEmp.display_name || 'Employee';
       const sprMgrId = cu?.id;
@@ -16639,7 +16663,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         created_at: new Date().toISOString(), updated_at: new Date().toISOString()
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ProbationReview',$2,'manager_submitted',$3)", [sprId, sprEmpUid, JSON.stringify(sprData)]);
-      const sprHrRows = await all("SELECT id FROM users WHERE role IN ('admin','hr')");
+      const sprHrRows = await all("SELECT id FROM users WHERE role IN ('admin','hr') OR custom_role IN ('admin','hr')");
       for (const sprHr of sprHrRows) {
         const sprNid = uuidv4();
         await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [sprNid, sprHr.id, 'Probation Review Submitted', `${sprEmpName}'s probation review submitted by ${sprMgrName}.`, 'probation', '/admin-panel']);
@@ -16680,6 +16704,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const phrRow = await one("SELECT id,data FROM entities WHERE type='ProbationReview' AND id=$1", [phrRevId]);
       if (!phrRow) return res.json({ success: false, error: 'Review not found' });
       const phrRev = JSON.parse(phrRow.data);
+      if (phrRev.status !== 'manager_submitted') return res.json({ success: false, error: `This review is ${String(phrRev.status).replace(/_/g, ' ')} — HR can only review one that the manager has just submitted.` });
+      if (!['approve', 'reject'].includes(phrAction)) return res.json({ success: false, error: 'Choose approve or reject.' });
+      if (phrAction === 'reject' && !String(phrComments || '').trim()) return res.json({ success: false, error: 'Tell the manager why the review is being sent back.' });
       const phrHrId = cu?.id;
       const phrHrName = cu?.full_name || 'HR';
       if (phrAction === 'reject') {
@@ -16705,19 +16732,19 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const pmaRow = await one("SELECT id,data FROM entities WHERE type='ProbationReview' AND id=$1", [pmaRevId]);
       if (!pmaRow) return res.json({ success: false, error: 'Review not found' });
       const pmaRev = JSON.parse(pmaRow.data);
+      if (pmaRev.status !== 'hr_approved') return res.json({ success: false, error: `This review is ${String(pmaRev.status).replace(/_/g, ' ')} — management decides only after HR has approved it.` });
+      if (!['confirmed', 'extended', 'rejected'].includes(pmaFinalAction)) return res.json({ success: false, error: 'Choose confirm, extend or reject.' });
+      const pmaExtDate = pmaExtUntil || pmaRev.extended_until;
+      if (pmaFinalAction === 'extended' && !(ymdOk(pmaExtDate) && pmaExtDate > istTodayStr())) return res.json({ success: false, error: 'Give an extension date in the future.' });
       const pmaMgmtId = cu?.id;
       const pmaMgmtName = cu?.full_name || 'Management';
-      const pmaToday = new Date().toISOString().slice(0,10);
-      const pmaUpd = { ...pmaRev, final_action: pmaFinalAction, status: pmaFinalAction, management_comments: pmaMgmtComments || '', management_reviewed_by: pmaMgmtId, management_reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      const pmaToday = istTodayStr();
+      const pmaUpd = { ...pmaRev, final_action: pmaFinalAction, status: pmaFinalAction, management_comments: pmaMgmtComments || '', management_reviewed_by: pmaMgmtId, management_reviewed_at: new Date().toISOString(), extended_until: pmaFinalAction === 'extended' ? pmaExtDate : pmaRev.extended_until, updated_at: new Date().toISOString() };
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(pmaUpd), pmaFinalAction, pmaRow.id]);
       const pmaEmpRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [pmaRev.user_id]);
       if (pmaEmpRow) {
         const pmaEmp = JSON.parse(pmaEmpRow.data);
-        const pmaEmpUpd = { ...pmaEmp };
-        if (pmaFinalAction === 'confirmed') { pmaEmpUpd.employee_status = 'active'; pmaEmpUpd.confirmation_date = pmaToday; }
-        else if (pmaFinalAction === 'extended') { pmaEmpUpd.employee_status = 'probation'; pmaEmpUpd.probation_end_date = pmaExtUntil || pmaRev.extended_until; }
-        else if (pmaFinalAction === 'rejected') { pmaEmpUpd.employee_status = 'terminated'; pmaEmpUpd.termination_date = pmaToday; pmaEmpUpd.termination_reason = 'Probation not confirmed'; }
-        await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(pmaEmpUpd), pmaEmpRow.id]);
+        await saveEmployeeAfterProbation({ ...pmaEmpRow, user_id: pmaRev.user_id }, probationOutcome({ ...pmaEmp, user_id: pmaEmp.user_id || pmaRev.user_id }, pmaFinalAction, { extendedUntil: pmaExtDate, note: pmaMgmtComments || '', byName: pmaMgmtName }));
       }
       const pmaEmpMsgs = { confirmed: 'Congratulations! Your probation period is complete and your employment has been confirmed.', extended: `Your probation period has been extended to ${pmaExtUntil || pmaRev.extended_until}.`, rejected: 'Your probation review has concluded. Please contact HR for further information.' };
       await notify(pmaRev.user_id, { title: 'Probation Decision', message: pmaEmpMsgs[pmaFinalAction] || 'Your probation status has been updated.', type: pmaFinalAction === 'confirmed' ? 'success' : pmaFinalAction === 'rejected' ? 'error' : 'info', link: '/ConfirmationManagement' });
@@ -16734,6 +16761,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const hicEmpRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [hicEmpUid]);
       if (!hicEmpRow) return res.json({ success: false, error: 'Employee not found' });
       const hicEmp = JSON.parse(hicEmpRow.data);
+      if (!['confirm', 'extend', 'reject'].includes(hicAction)) return res.json({ success: false, error: 'Choose confirm, extend or not confirm.' });
+      if (hicAction === 'extend' && !(ymdOk(hicExtUntil) && hicExtUntil > istTodayStr())) return res.json({ success: false, error: 'Give an extension date in the future.' });
+      if (['resigned', 'terminated', 'retired'].includes(hicEmp.status)) return res.json({ success: false, error: 'This employee has already left.' });
+      if (hicEmp.employee_status !== 'probation' && String(hicEmp.confirmation_date || hicEmp.employee_confirmation_date || '').slice(0, 10)) return res.json({ success: false, error: 'This employee is already confirmed.' });
       const hicEmpUser = await one("SELECT full_name FROM users WHERE id=$1", [hicEmpUid]);
       const hicEmpName = hicEmpUser?.full_name || hicEmp.display_name || 'Employee';
       const hicExisting = await one("SELECT id FROM entities WHERE type='ProbationReview' AND user_id=$1 AND (data::jsonb->>'status'='manager_submitted' OR data::jsonb->>'status'='hr_approved')", [hicEmpUid]);
@@ -16898,18 +16929,18 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'processProbationAction': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
       const { user_id: pbUid, action: pbAction, probation_end_date: pbEnd, note: pbNote } = p;
+      const pbDecision = { confirm: 'confirmed', extend: 'extended', terminate: 'rejected' }[pbAction];
+      if (!pbDecision) return res.json({ success: false, error: 'Unknown action' });
+      if (pbDecision === 'extended' && !(ymdOk(pbEnd) && pbEnd > istTodayStr())) return res.json({ success: false, error: 'Give an extension date in the future.' });
       const pbRow = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [pbUid]);
       if (!pbRow) return res.json({ success: false, error: 'Employee not found' });
       const pbEmp = JSON.parse(pbRow.data);
-      const pbUpd = { ...pbEmp };
-      if (pbAction === 'confirm') { pbUpd.employee_status = 'active'; pbUpd.confirmation_date = new Date().toISOString().slice(0,10); }
-      else if (pbAction === 'extend') { pbUpd.employee_status = 'probation'; pbUpd.probation_end_date = pbEnd; pbUpd.probation_extension_note = pbNote; }
-      else if (pbAction === 'terminate') { pbUpd.employee_status = 'terminated'; pbUpd.termination_date = new Date().toISOString().slice(0,10); pbUpd.termination_reason = pbNote||'Probation not cleared'; }
-      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(pbUpd), pbRow.id]);
-      const pbMsg = { confirm: 'Congratulations! Your probation is complete and employment is confirmed.', extend: `Your probation period has been extended to ${pbEnd}.`, terminate: 'Your probation review has resulted in termination. Please contact HR.' };
-      const pbNid = uuidv4();
-      await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [pbNid, pbUid, 'Probation Status Update', pbMsg[pbAction]||'Your probation status was updated.', 'probation', '/profile']);
+      const pbUpd = probationOutcome({ ...pbEmp, user_id: pbEmp.user_id || pbUid }, pbDecision, { extendedUntil: pbEnd, note: pbNote || '', byName: cu?.full_name || 'HR' });
+      await saveEmployeeAfterProbation({ ...pbRow, user_id: pbUid }, pbUpd);
+      const pbMsg = { confirm: 'Congratulations! Your probation is complete and employment is confirmed.', extend: `Your probation period has been extended to ${pbEnd}.`, terminate: 'Your probation was not cleared and your employment has ended.' };
+      await notify(pbUid, { title: 'Probation Status Update', message: pbMsg[pbAction], type: pbAction === 'confirm' ? 'success' : 'info', link: '/dashboard' });
       return res.json({ success: true, action: pbAction, status: pbUpd.employee_status });
     }
 
