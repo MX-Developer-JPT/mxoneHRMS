@@ -120,7 +120,8 @@ function printSalaryStructure(structure, emp) {
   const grossM = basicM + hraM + convM;
   const pfM = structure.pf_contribution || 0;
   const esiM = structure.esi_contribution || 0;
-  const totalDed = pfM + esiM;
+  const carLeaseM = Number(structure.car_lease_deduction) || 0;
+  const totalDed = pfM + esiM + carLeaseM;
   const netM = grossM - totalDed;
 
   const L = (v) => v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -175,6 +176,7 @@ function printSalaryStructure(structure, emp) {
           <tr><td colspan="3" style="padding:5px 10px;font-size:11px;font-weight:bold;text-decoration:underline;border:1px solid #ccc;">Deduction</td></tr>
           ${row('PF Employee Contribution (12% on Basic, max ₹15,000)', pfM, pfM * 12)}
           ${esiM > 0 ? row('ESI Employee Contribution (0.75% on Basic)', esiM, esiM * 12) : ''}
+          ${carLeaseM > 0 ? row('Car Lease Deduction' + (structure.car_lease_note ? ' (' + String(structure.car_lease_note).replace(/[<>&]/g, '') + ')' : ''), carLeaseM, carLeaseM * 12) : ''}
           <tr style="background:#d9d9d9;font-weight:bold;">
             <td style="padding:6px 10px;font-size:11px;border:1px solid #ccc;">Total Deduction (B)</td>
             <td style="padding:6px 10px;text-align:right;font-size:11px;border:1px solid #ccc;">${L(totalDed * 12)}</td>
