@@ -59,6 +59,41 @@ function parseJdFields(jd) {
   return { fields, body: rest.join('\n').trim() };
 }
 
+// Job descriptions written through the Manpower Requisition workflow are plain text: section titles in CAPITALS on their own line
+// and "•" bullets. Older ones are Markdown. This reads the new format; anything else falls back to the Markdown path.
+const PLAIN_HEAD = /^[A-Z0-9 /&()'’.,-]{3,60}$/;
+const PLAIN_META = ['JOB TITLE', 'DEPARTMENT', 'POSITION TIER', 'JOB LOCATION', 'EMPLOYMENT TYPE', 'EXPERIENCE REQUIRED', 'COMPENSATION RANGE'];
+function parsePlainJd(text) {
+  const blocks = String(text || '').split(/\n{2,}/).map(b => b.trim()).filter(Boolean).map(b => {
+    const [first, ...rest] = b.split('\n');
+    return PLAIN_HEAD.test(first.trim()) && first.trim() === first.trim().toUpperCase() ? { head: first.trim(), lines: rest.map(l => l.trim()).filter(Boolean) } : null;
+  });
+  if (blocks.filter(Boolean).length < 3 || blocks.some(b => !b)) return null;
+  return { meta: blocks.filter(b => PLAIN_META.includes(b.head)), body: blocks.filter(b => !PLAIN_META.includes(b.head)) };
+}
+const aboutOf = (plain) => plain?.body.find(b => b.head === 'ABOUT THE ROLE')?.lines.join(' ') || '';
+const ctcText = (job) => (job.salary_range_min > 0 ? `₹${Number(job.salary_range_min).toLocaleString('en-IN')} – ₹${Number(job.salary_range_max || job.salary_range_min).toLocaleString('en-IN')} per annum` : '');
+const arrangementLabel = (a) => ({ on_site: 'On-site', hybrid: 'Hybrid', remote: 'Remote' }[a] || '');
+const daysAgo = (iso) => { const d = Date.parse(iso || ''); return Number.isNaN(d) ? null : Math.max(0, Math.floor((Date.now() - d) / 86400000)); };
+const closesInDays = (iso) => { if (!iso) return null; const d = Date.parse(String(iso).slice(0, 10) + 'T23:59:59'); return Number.isNaN(d) ? null : Math.ceil((d - Date.now()) / 86400000); };
+
+function PlainJd({ plain }) {
+  return (
+    <div className="space-y-5">
+      {plain.body.map((sec, i) => {
+        const bullets = sec.lines.filter(l => l.startsWith('•')); const prose = sec.lines.filter(l => !l.startsWith('•'));
+        return (
+          <div key={i}>
+            <h3 className="text-sm font-bold tracking-wide text-gray-900 border-l-4 border-orange-400 pl-2 mb-2">{sec.head.charAt(0) + sec.head.slice(1).toLowerCase()}</h3>
+            {prose.map((l, j) => <p key={j} className="leading-relaxed text-gray-700 mb-2">{l}</p>)}
+            {bullets.length > 0 && <ul className="ml-5 list-disc space-y-1 text-gray-700">{bullets.map((l, j) => <li key={j} className="leading-relaxed">{l.replace(/^•\s*/, '')}</li>)}</ul>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const jdMarkdownComponents = {
   p:      ({ children }) => <p className="my-2.5 leading-relaxed text-gray-700">{children}</p>,
   ul:     ({ children }) => <ul className="my-2.5 ml-5 list-disc space-y-1 text-gray-700">{children}</ul>,
@@ -121,14 +156,20 @@ function Hero() {
 function JobListPage({ jobs, loading, onSelect }) {
   const [search, setSearch] = useState('');
   const [filterDept, setFilterDept] = useState('all');
+  const [filterLoc, setFilterLoc] = useState('all');
+  const [filterType, setFilterType] = useState('all');
   const depts = [...new Set(jobs.map(j => j.department).filter(Boolean))];
+  const locs = [...new Set(jobs.map(j => j.location).filter(Boolean))];
+  const types = [...new Set(jobs.map(j => j.employment_type).filter(Boolean))];
 
   const filtered = jobs.filter(j => {
     const q = search.toLowerCase();
-    const matchSearch = !q || j.position_title?.toLowerCase().includes(q) || j.department?.toLowerCase().includes(q);
+    const matchSearch = !q || [j.position_title, j.department, j.location, ...(j.required_skills || [])].filter(Boolean).join(' ').toLowerCase().includes(q);
     const matchDept = filterDept === 'all' || j.department === filterDept;
-    return matchSearch && matchDept;
-  });
+    const matchLoc = filterLoc === 'all' || j.location === filterLoc;
+    const matchType = filterType === 'all' || j.employment_type === filterType;
+    return matchSearch && matchDept && matchLoc && matchType;
+  }).sort((a, b) => String(b.published_date || '').localeCompare(String(a.published_date || '')));
 
   const empTypeLabel = t => ({ full_time: 'Full Time', part_time: 'Part Time', contract: 'Contract', intern: 'Internship' }[t] || t);
 
@@ -145,16 +186,10 @@ function JobListPage({ jobs, loading, onSelect }) {
           <Input className="pl-9" placeholder="Search positions..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Button size="sm" variant={filterDept === 'all' ? 'default' : 'outline'}
-            onClick={() => setFilterDept('all')} className={filterDept === 'all' ? 'bg-orange-500 hover:bg-orange-600' : ''}>
-            All
-          </Button>
-          {depts.map(d => (
-            <Button key={d} size="sm" variant={filterDept === d ? 'default' : 'outline'}
-              onClick={() => setFilterDept(d)} className={filterDept === d ? 'bg-orange-500 hover:bg-orange-600' : ''}>
-              {d}
-            </Button>
-          ))}
+          <select aria-label="Department" className="h-9 rounded-md border bg-white px-2 text-sm" value={filterDept} onChange={e => setFilterDept(e.target.value)}><option value="all">All departments</option>{depts.map(d => <option key={d} value={d}>{d}</option>)}</select>
+          <select aria-label="Location" className="h-9 rounded-md border bg-white px-2 text-sm" value={filterLoc} onChange={e => setFilterLoc(e.target.value)}><option value="all">All locations</option>{locs.map(d => <option key={d} value={d}>{d}</option>)}</select>
+          <select aria-label="Job type" className="h-9 rounded-md border bg-white px-2 text-sm" value={filterType} onChange={e => setFilterType(e.target.value)}><option value="all">All job types</option>{types.map(d => <option key={d} value={d}>{empTypeLabel(d)}</option>)}</select>
+          {(filterDept !== 'all' || filterLoc !== 'all' || filterType !== 'all' || search) && <Button size="sm" variant="ghost" onClick={() => { setFilterDept('all'); setFilterLoc('all'); setFilterType('all'); setSearch(''); }}>Clear</Button>}
         </div>
       </div>
 
@@ -172,8 +207,10 @@ function JobListPage({ jobs, loading, onSelect }) {
         <div className="space-y-4">
           {filtered.map(job => {
             const rawJd = job.ai_job_description || job.job_description || '';
-            const { fields: jdFields, body: jdBody } = parseJdFields(rawJd);
-            const salaryField = jdFields.find(f => /salary/i.test(f.label));
+            const plain = parsePlainJd(rawJd);
+            const { fields: jdFields, body: jdBody } = plain ? { fields: [], body: aboutOf(plain) } : parseJdFields(rawJd);
+            const salaryField = plain ? (ctcText(job) ? { value: ctcText(job) } : null) : jdFields.find(f => /salary/i.test(f.label));
+            const posted = daysAgo(job.published_date); const closing = closesInDays(job.application_deadline);
             return (
             <Card key={job.id} className="group hover:shadow-lg hover:border-orange-200 transition-all cursor-pointer border-gray-200" onClick={() => onSelect(job.id)}>
               <CardContent className="p-6">
@@ -182,6 +219,9 @@ function JobListPage({ jobs, loading, onSelect }) {
                     <div className="flex flex-wrap items-center gap-2 mb-2">
                       <h2 className="text-lg font-bold text-gray-900 group-hover:text-orange-600 transition-colors">{job.position_title}</h2>
                       {job.employment_type && <Badge className="bg-orange-100 text-orange-700 border-0">{empTypeLabel(job.employment_type)}</Badge>}
+                      {arrangementLabel(job.work_arrangement) && <Badge variant="outline">{arrangementLabel(job.work_arrangement)}</Badge>}
+                      {posted !== null && posted <= 7 && <Badge className="bg-green-100 text-green-700 border-0">New</Badge>}
+                      {closing !== null && closing >= 0 && closing <= 7 && <Badge className="bg-red-100 text-red-700 border-0">Closing in {closing === 0 ? 'today' : `${closing} day${closing > 1 ? 's' : ''}`}</Badge>}
                     </div>
                     <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm text-gray-500 mb-3">
                       {job.department && <span className="flex items-center gap-1"><Building2 className="w-3.5 h-3.5" />{job.department}</span>}
@@ -191,7 +231,7 @@ function JobListPage({ jobs, loading, onSelect }) {
                       {salaryField && <span className="flex items-center gap-1 font-medium text-gray-700"><IndianRupee className="w-3.5 h-3.5" />{salaryField.value}</span>}
                     </div>
                     {jdBody && (
-                      <p className="text-sm text-gray-600 line-clamp-2">{stripMarkdown(jdBody).slice(0, 200)}</p>
+                      <p className="text-sm text-gray-600 line-clamp-2">{stripMarkdown(jdBody).slice(0, 220)}</p>
                     )}
                     {job.required_skills?.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-3">
@@ -328,7 +368,20 @@ function JobDetailPage({ jobId, onBack }) {
   );
 
   const jd = job.ai_job_description || job.job_description || '';
-  const { fields: jdFields, body: jdBody } = parseJdFields(jd);
+  const plainJd = parsePlainJd(jd);
+  const { fields: jdFields, body: jdBody } = plainJd ? { fields: plainJd.meta.filter(m => m.head !== 'JOB TITLE' && !(m.head === 'COMPENSATION RANGE' && ctcText(job))).map(m => ({ label: m.head.charAt(0) + m.head.slice(1).toLowerCase(), value: m.lines.join(' ') })), body: '' } : parseJdFields(jd);
+  const shareUrl = typeof window !== 'undefined' ? `${window.location.origin}/career/${job.id}` : '';
+  const copyLink = () => { try { navigator.clipboard.writeText(shareUrl); toast.success('Job link copied'); } catch { toast.error('Could not copy the link'); } };
+  const jsonLd = {
+    '@context': 'https://schema.org', '@type': 'JobPosting', title: job.position_title, description: (plainJd ? aboutOf(plainJd) : stripMarkdown(jdBody)).slice(0, 4000) || job.position_title,
+    datePosted: job.published_date ? String(job.published_date).slice(0, 10) : undefined, validThrough: job.application_deadline ? String(job.application_deadline).slice(0, 10) : undefined,
+    employmentType: ({ full_time: 'FULL_TIME', part_time: 'PART_TIME', contract: 'CONTRACTOR', intern: 'INTERN', internship: 'INTERN' })[job.employment_type] || undefined,
+    hiringOrganization: { '@type': 'Organization', name: 'MaxVolt Energy Industries Limited', sameAs: 'https://maxvoltenergy.com' },
+    jobLocation: job.location ? { '@type': 'Place', address: { '@type': 'PostalAddress', addressLocality: job.location, addressCountry: 'IN' } } : undefined,
+    jobLocationType: job.work_arrangement === 'remote' ? 'TELECOMMUTE' : undefined, skills: (job.required_skills || []).join(', ') || undefined,
+    baseSalary: job.salary_range_min > 0 ? { '@type': 'MonetaryAmount', currency: 'INR', value: { '@type': 'QuantitativeValue', minValue: job.salary_range_min, maxValue: job.salary_range_max || job.salary_range_min, unitText: 'YEAR' } } : undefined,
+  };
+  try { document.title = `${job.position_title} — Careers at Maxvolt Energy`; } catch { /* ignore */ }
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
@@ -345,10 +398,21 @@ function JobDetailPage({ jobId, onBack }) {
                 {job.number_of_positions && <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" />{job.number_of_positions} opening(s)</span>}
               </div>
             </div>
-            {job.employment_type && <Badge className="bg-orange-100 text-orange-700 border-0 text-sm">
-              {{ full_time: 'Full Time', part_time: 'Part Time', contract: 'Contract', intern: 'Internship' }[job.employment_type] || job.employment_type}
-            </Badge>}
+            <div className="flex flex-wrap gap-2">
+              {job.employment_type && <Badge className="bg-orange-100 text-orange-700 border-0 text-sm">
+                {{ full_time: 'Full Time', part_time: 'Part Time', contract: 'Contract', intern: 'Internship' }[job.employment_type] || job.employment_type}
+              </Badge>}
+              {arrangementLabel(job.work_arrangement) && <Badge variant="outline" className="text-sm">{arrangementLabel(job.work_arrangement)}</Badge>}
+            </div>
           </div>
+          {ctcText(job) && <p className="text-sm font-semibold text-gray-800 flex items-center gap-1"><IndianRupee className="w-4 h-4" />{ctcText(job)}</p>}
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <Button size="sm" variant="outline" onClick={copyLink}>Copy link</Button>
+            <a className="inline-flex" href={`https://wa.me/?text=${encodeURIComponent(`${job.position_title} at Maxvolt Energy — ${shareUrl}`)}`} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="outline" type="button">Share on WhatsApp</Button></a>
+            <a className="inline-flex" href={`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="outline" type="button">Share on LinkedIn</Button></a>
+            <a href="#apply"><Button size="sm" className="bg-orange-500 hover:bg-orange-600" type="button">Apply now</Button></a>
+          </div>
+          <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
           {job.required_skills?.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {job.required_skills.map((s, i) => <Badge key={i} variant="outline" className="text-xs">{s}</Badge>)}
@@ -387,8 +451,12 @@ function JobDetailPage({ jobId, onBack }) {
         </Card>
       )}
 
+      {plainJd && (
+        <Card><CardContent className="p-6"><PlainJd plain={plainJd} /></CardContent></Card>
+      )}
+
       {/* Job Description narrative — responsibilities, requirements, etc. */}
-      {jdBody && (
+      {!plainJd && jdBody && (
         <Card>
           <CardContent className="p-6">
             <h2 className="text-lg font-bold text-gray-900 mb-2">About This Role</h2>
@@ -400,7 +468,7 @@ function JobDetailPage({ jobId, onBack }) {
       )}
 
       {/* Application Form */}
-      <Card>
+      <Card id="apply">
         <CardContent className="p-6">
           <h2 className="text-lg font-bold text-gray-900 mb-6">Apply for This Position</h2>
           <form onSubmit={handleSubmit} className="space-y-5">
