@@ -80,14 +80,41 @@ export default function CandidateScoreCard({ scoreData, jobTitle }) {
           )}
 
           {/* Score Breakdown */}
-          <div className="space-y-1.5">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Score Breakdown</p>
-            <ScoreBar label="Skills Match" score={scoreData.skills_score} weight={35} />
-            <ScoreBar label="Experience" score={scoreData.experience_score} weight={25} />
-            <ScoreBar label="Salary Fit" score={scoreData.salary_score} weight={15} />
-            <ScoreBar label="Notice Period" score={scoreData.notice_score} weight={10} />
-            <ScoreBar label="Education" score={scoreData.education_score} weight={15} />
-          </div>
+          {Array.isArray(scoreData.criteria) && scoreData.criteria.length > 0 ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Score breakdown</p>
+                <span className="text-[10px] text-gray-400">calculated from the CV and the requisition — {scoreData.method === 'rules+ai' ? 'AI wrote the notes' : 'no AI used'}{scoreData.confidence ? ` · confidence ${scoreData.confidence}` : ''}</span>
+              </div>
+              {scoreData.criteria.map((c) => (
+                <div key={c.key}>
+                  <ScoreBar label={c.label} score={c.score} weight={c.weight} />
+                  <p className="text-[11px] text-gray-500 pl-[7.5rem]">{c.detail}</p>
+                </div>
+              ))}
+              <p className="text-[10px] text-gray-400">Facts the CV or form did not state are left out and the other weights share the total — they are never scored as zero.</p>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Score Breakdown</p>
+              <ScoreBar label="Skills Match" score={scoreData.skills_score ?? 0} weight={35} />
+              <ScoreBar label="Experience" score={scoreData.experience_score} weight={25} />
+              <ScoreBar label="Salary Fit" score={scoreData.salary_score} weight={15} />
+              <ScoreBar label="Notice Period" score={scoreData.notice_score} weight={10} />
+              <ScoreBar label="Education" score={scoreData.education_score} weight={15} />
+            </div>
+          )}
+          {scoreData.knockouts?.length > 0 && (
+            <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+              <p className="font-semibold">Knock-out criteria not met (score capped at 49)</p>
+              <ul className="list-disc pl-4">{scoreData.knockouts.map((k, i) => <li key={i}>{k}</li>)}</ul>
+            </div>
+          )}
+          {scoreData.cv_flags?.length > 0 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+              <ul className="list-disc pl-4">{scoreData.cv_flags.map((k, i) => <li key={i}>{k}</li>)}</ul>
+            </div>
+          )}
 
           {/* Skills */}
           <div className="grid grid-cols-1 gap-2">
@@ -152,6 +179,12 @@ export default function CandidateScoreCard({ scoreData, jobTitle }) {
               </div>
             )}
           </div>
+          {scoreData.interview_questions?.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-indigo-700 mb-1">Suggested interview questions</p>
+              <ol className="list-decimal pl-4 space-y-0.5">{scoreData.interview_questions.map((q, i) => <li key={i} className="text-xs text-gray-700">{q}</li>)}</ol>
+            </div>
+          )}
         </div>
       )}
     </div>

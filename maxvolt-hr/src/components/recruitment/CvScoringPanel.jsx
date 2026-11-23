@@ -30,11 +30,11 @@ function CandidateScoreCard({ candidate, requisition }) {
         if (!res.data?.success) throw new Error(res.data?.error || 'Scoring failed');
         const raw = res.data?.data || res.data?.result || {};
         d = {
-          score:              Math.max(1, Math.round((raw.overall_score || 0) / 10)),
+          score:              Math.round((raw.overall_score || 0) / 10),
           summary:            raw.summary,
           strengths:          raw.strengths || raw.matched_skills || [],
           gaps:               raw.gaps || raw.missing_skills || [],
-          score_justification: `Skills: ${raw.skills_score || '?'}/100 · Experience: ${raw.experience_score || '?'}/100 · Salary: ${raw.salary_score || '?'}/100`,
+          score_justification: (raw.criteria || []).length ? raw.criteria.map(c => `${c.label}: ${c.score}/100`).join(' · ') + (raw.knockouts?.length ? ` · Knock-out: ${raw.knockouts[0]}` : '') : `Skills: ${raw.skills_score ?? '?'}/100 · Experience: ${raw.experience_score ?? '?'}/100 · Salary: ${raw.salary_score ?? '?'}/100`,
           recommendation:     raw.recommendation,
           resume_grounded:    !!raw.resume_grounded,
         };
@@ -50,7 +50,7 @@ function CandidateScoreCard({ candidate, requisition }) {
         if (!res.data?.success) throw new Error(res.data?.error || 'Scoring failed');
         const raw = res.data.result;
         d = {
-          score:              Math.max(1, Math.round((raw.score || 0) / 10)),
+          score:              Math.round((raw.score || 0) / 10),
           summary:            raw.summary,
           strengths:          raw.key_strengths || [],
           gaps:               raw.areas_for_improvement || [],
