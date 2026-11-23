@@ -72,7 +72,7 @@ function parsePlainJd(text) {
   return { meta: blocks.filter(b => PLAIN_META.includes(b.head)), body: blocks.filter(b => !PLAIN_META.includes(b.head)) };
 }
 const aboutOf = (plain) => plain?.body.find(b => b.head === 'ABOUT THE ROLE')?.lines.join(' ') || '';
-const ctcText = (job) => (job.salary_range_min > 0 ? `₹${Number(job.salary_range_min).toLocaleString('en-IN')} – ₹${Number(job.salary_range_max || job.salary_range_min).toLocaleString('en-IN')} per annum` : '');
+const ctcText = (job) => (job.salary_range_min > 0 ? `₹${inr(job.salary_range_min)} – ₹${inr(job.salary_range_max || job.salary_range_min)} per annum` : '');
 const arrangementLabel = (a) => ({ on_site: 'On-site', hybrid: 'Hybrid', remote: 'Remote' }[a] || '');
 const daysAgo = (iso) => { const d = Date.parse(iso || ''); return Number.isNaN(d) ? null : Math.max(0, Math.floor((Date.now() - d) / 86400000)); };
 const closesInDays = (iso) => { if (!iso) return null; const d = Date.parse(String(iso).slice(0, 10) + 'T23:59:59'); return Number.isNaN(d) ? null : Math.ceil((d - Date.now()) / 86400000); };
@@ -94,6 +94,40 @@ function PlainJd({ plain }) {
   );
 }
 
+// ── presentation helpers: one clean look for every job, whatever format its description was written in ──
+const inr = (n) => Number(n).toLocaleString('en-IN');
+const tidyExperience = (e) => String(e || '').replace(/\s*,\s*$/, '').trim();
+const SECTION_NAMES = ['about the role', 'key responsibilities', 'responsibilities', 'key deliverables', 'required qualifications', 'qualifications', 'technical / functional skills', 'required skills', 'preferred skills', 'key competencies', 'reporting structure', 'additional requirements', 'what we offer', 'about maxvolt energy', 'about us', 'benefits', 'perks'];
+const titleCase = (s) => s.toLowerCase().replace(/(^|[\s/(])([a-z])/g, (m, a, b) => a + b.toUpperCase()).replace(/ And /g, ' and ');
+/** Plain-text JD (CAPITAL headings, bullet dots) -> Markdown. The opening "About the role" heading is dropped (the card already says it). */
+function plainToMarkdown(plain) {
+  return plain.body
+    .filter(sec => !(sec.head === 'REPORTING STRUCTURE' && sec.lines.every(l => /as directed by the hiring manager/i.test(l))))
+    .map((sec, i) => {
+      const lines = sec.lines.map(l => (l.startsWith('•') ? `- ${l.replace(/^•\s*/, '')}` : l));
+      const spaced = lines.map((l, j) => (!l.startsWith('- ') && lines[j + 1] && !lines[j + 1].startsWith('- ') ? `${l}\n` : l));
+      return `${i === 0 && sec.head === 'ABOUT THE ROLE' ? '' : `### ${titleCase(sec.head)}\n\n`}${spaced.join('\n')}`;
+    }).join('\n\n');
+}
+/** Markdown / loosely formatted JD -> clean Markdown: real bullets, real headings, no duplicated "About the role". */
+function cleanJdMarkdown(text) {
+  const out = [];
+  let first = true;
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    let l = raw.trimEnd();
+    const bare = l.replace(/^#{1,6}\s*/, '').replace(/\*\*/g, '').replace(/:$/, '').trim();
+    if (SECTION_NAMES.includes(bare.toLowerCase()) && l.length < 60) {
+      if (first && bare.toLowerCase() === 'about the role') continue;
+      out.push('', `### ${titleCase(bare)}`, ''); first = false; continue;
+    }
+    if (/^\s*[•–▪●]\s+/.test(l)) l = l.replace(/^\s*[•–▪●]\s+/, '- ');
+    if (l.trim()) first = false;
+    out.push(l);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/[‐‑]/g, '-').trim();
+}
+
+
 const jdMarkdownComponents = {
   p:      ({ children }) => <p className="my-2.5 leading-relaxed text-gray-700">{children}</p>,
   ul:     ({ children }) => <ul className="my-2.5 ml-5 list-disc space-y-1 text-gray-700">{children}</ul>,
@@ -102,7 +136,7 @@ const jdMarkdownComponents = {
   strong: ({ children }) => <strong className="font-semibold text-gray-900">{children}</strong>,
   h1:     ({ children }) => <h3 className="text-base font-bold text-gray-900 mt-5 mb-2 first:mt-0">{children}</h3>,
   h2:     ({ children }) => <h3 className="text-base font-bold text-gray-900 mt-5 mb-2 first:mt-0">{children}</h3>,
-  h3:     ({ children }) => <h4 className="text-sm font-bold text-gray-900 mt-4 mb-1.5 first:mt-0">{children}</h4>,
+  h3:     ({ children }) => <h4 className="text-sm font-bold text-gray-900 border-l-4 border-orange-400 pl-2 mt-6 mb-2 first:mt-0">{children}</h4>,
   hr:     () => <hr className="my-5 border-gray-200" />,
   a:      ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-orange-600 hover:underline">{children}</a>,
 };
@@ -209,7 +243,7 @@ function JobListPage({ jobs, loading, onSelect }) {
             const rawJd = job.ai_job_description || job.job_description || '';
             const plain = parsePlainJd(rawJd);
             const { fields: jdFields, body: jdBody } = plain ? { fields: [], body: aboutOf(plain) } : parseJdFields(rawJd);
-            const salaryField = plain ? (ctcText(job) ? { value: ctcText(job) } : null) : jdFields.find(f => /salary/i.test(f.label));
+            const salaryField = ctcText(job) ? { value: ctcText(job) } : (plain ? null : jdFields.find(f => /salary/i.test(f.label)));
             const posted = daysAgo(job.published_date); const closing = closesInDays(job.application_deadline);
             return (
             <Card key={job.id} className="group hover:shadow-lg hover:border-orange-200 transition-all cursor-pointer border-gray-200" onClick={() => onSelect(job.id)}>
@@ -226,7 +260,7 @@ function JobListPage({ jobs, loading, onSelect }) {
                     <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm text-gray-500 mb-3">
                       {job.department && <span className="flex items-center gap-1"><Building2 className="w-3.5 h-3.5" />{job.department}</span>}
                       {job.location && <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{job.location}</span>}
-                      {job.experience_required && <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{job.experience_required}</span>}
+                      {tidyExperience(job.experience_required) && <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{tidyExperience(job.experience_required)}</span>}
                       {job.number_of_positions && <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" />{job.number_of_positions} position(s)</span>}
                       {salaryField && <span className="flex items-center gap-1 font-medium text-gray-700"><IndianRupee className="w-3.5 h-3.5" />{salaryField.value}</span>}
                     </div>
@@ -369,11 +403,13 @@ function JobDetailPage({ jobId, onBack }) {
 
   const jd = job.ai_job_description || job.job_description || '';
   const plainJd = parsePlainJd(jd);
-  const { fields: jdFields, body: jdBody } = plainJd ? { fields: plainJd.meta.filter(m => m.head !== 'JOB TITLE' && !(m.head === 'COMPENSATION RANGE' && ctcText(job))).map(m => ({ label: m.head.charAt(0) + m.head.slice(1).toLowerCase(), value: m.lines.join(' ') })), body: '' } : parseJdFields(jd);
   const shareUrl = typeof window !== 'undefined' ? `${window.location.origin}/career/${job.id}` : '';
   const copyLink = () => { try { navigator.clipboard.writeText(shareUrl); toast.success('Job link copied'); } catch { toast.error('Could not copy the link'); } };
+  const { body: legacyBody } = plainJd ? { body: '' } : parseJdFields(jd);
+  const bodyMd = plainJd ? plainToMarkdown(plainJd) : cleanJdMarkdown(legacyBody);
+  const about = plainJd ? aboutOf(plainJd) : stripMarkdown(legacyBody);
   const jsonLd = {
-    '@context': 'https://schema.org', '@type': 'JobPosting', title: job.position_title, description: (plainJd ? aboutOf(plainJd) : stripMarkdown(jdBody)).slice(0, 4000) || job.position_title,
+    '@context': 'https://schema.org', '@type': 'JobPosting', title: job.position_title, description: about.slice(0, 4000) || job.position_title,
     datePosted: job.published_date ? String(job.published_date).slice(0, 10) : undefined, validThrough: job.application_deadline ? String(job.application_deadline).slice(0, 10) : undefined,
     employmentType: ({ full_time: 'FULL_TIME', part_time: 'PART_TIME', contract: 'CONTRACTOR', intern: 'INTERN', internship: 'INTERN' })[job.employment_type] || undefined,
     hiringOrganization: { '@type': 'Organization', name: 'MaxVolt Energy Industries Limited', sameAs: 'https://maxvoltenergy.com' },
@@ -382,87 +418,76 @@ function JobDetailPage({ jobId, onBack }) {
     baseSalary: job.salary_range_min > 0 ? { '@type': 'MonetaryAmount', currency: 'INR', value: { '@type': 'QuantitativeValue', minValue: job.salary_range_min, maxValue: job.salary_range_max || job.salary_range_min, unitText: 'YEAR' } } : undefined,
   };
   try { document.title = `${job.position_title} — Careers at Maxvolt Energy`; } catch { /* ignore */ }
+  const empLabel = { full_time: 'Full-time', part_time: 'Part-time', contract: 'Contract', intern: 'Internship' }[job.employment_type] || job.employment_type;
+  const details = [
+    ['Position', job.position_title, Briefcase], ['Department', job.department, Building2], ['Location', [job.location, arrangementLabel(job.work_arrangement)].filter(Boolean).join(' · '), MapPin],
+    ['Employment type', empLabel, Clock], ['Experience required', tidyExperience(job.experience_required), Clock], ['Number of positions', job.number_of_positions, Users],
+    ['Salary range', ctcText(job), IndianRupee], ['Reports to', job.reports_to_designation, Users],
+  ].filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== '');
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
-      {/* Job Header */}
+    <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
+      {/* Job header */}
       <Card>
         <CardContent className="p-6 space-y-4">
           <div className="flex flex-wrap items-start gap-3 justify-between">
-            <div>
+            <div className="min-w-0">
               <h1 className="text-2xl font-bold text-gray-900">{job.position_title}</h1>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mt-2">
-                {job.department && <span className="flex items-center gap-1"><Briefcase className="w-3.5 h-3.5" />{job.department}</span>}
+                {job.department && <span className="flex items-center gap-1"><Building2 className="w-3.5 h-3.5" />{job.department}</span>}
                 {job.location && <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{job.location}</span>}
-                {job.experience_required && <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{job.experience_required}</span>}
-                {job.number_of_positions && <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" />{job.number_of_positions} opening(s)</span>}
+                {tidyExperience(job.experience_required) && <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{tidyExperience(job.experience_required)}</span>}
+                {job.number_of_positions && <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" />{job.number_of_positions} {Number(job.number_of_positions) === 1 ? 'opening' : 'openings'}</span>}
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
-              {job.employment_type && <Badge className="bg-orange-100 text-orange-700 border-0 text-sm">
-                {{ full_time: 'Full Time', part_time: 'Part Time', contract: 'Contract', intern: 'Internship' }[job.employment_type] || job.employment_type}
-              </Badge>}
+              {empLabel && <Badge className="bg-orange-100 text-orange-700 border-0 text-sm">{empLabel}</Badge>}
               {arrangementLabel(job.work_arrangement) && <Badge variant="outline" className="text-sm">{arrangementLabel(job.work_arrangement)}</Badge>}
             </div>
           </div>
           {ctcText(job) && <p className="text-sm font-semibold text-gray-800 flex items-center gap-1"><IndianRupee className="w-4 h-4" />{ctcText(job)}</p>}
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button size="sm" variant="outline" onClick={copyLink}>Copy link</Button>
-            <a className="inline-flex" href={`https://wa.me/?text=${encodeURIComponent(`${job.position_title} at Maxvolt Energy — ${shareUrl}`)}`} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="outline" type="button">Share on WhatsApp</Button></a>
-            <a className="inline-flex" href={`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="outline" type="button">Share on LinkedIn</Button></a>
-            <a href="#apply"><Button size="sm" className="bg-orange-500 hover:bg-orange-600" type="button">Apply now</Button></a>
-          </div>
-          <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
           {job.required_skills?.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {job.required_skills.map((s, i) => <Badge key={i} variant="outline" className="text-xs">{s}</Badge>)}
-            </div>
+            <div className="flex flex-wrap gap-1.5">{job.required_skills.map((s, i) => <Badge key={i} variant="outline" className="text-xs">{s}</Badge>)}</div>
           )}
           {job.application_deadline && (
-            <p className="text-sm text-red-500 flex items-center gap-1">
-              <Calendar className="w-3.5 h-3.5" /> Apply by {safeDate(job.application_deadline, 'dd MMMM yyyy')}
-            </p>
+            <p className="text-sm text-red-500 flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> Apply by {safeDate(job.application_deadline, 'dd MMMM yyyy')}</p>
           )}
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <a href="#apply"><Button size="sm" className="bg-orange-500 hover:bg-orange-600" type="button">Apply now</Button></a>
+            <Button size="sm" variant="outline" onClick={copyLink} type="button">Copy link</Button>
+            <a className="inline-flex" href={`https://wa.me/?text=${encodeURIComponent(`${job.position_title} at Maxvolt Energy — ${shareUrl}`)}`} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="outline" type="button">Share on WhatsApp</Button></a>
+            <a className="inline-flex" href={`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="outline" type="button">Share on LinkedIn</Button></a>
+          </div>
+          <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
         </CardContent>
       </Card>
 
-      {/* Key Details — Job Title, Department, CTC/Salary Range, etc. pulled
-          out of the description text into a clearly labeled grid, instead
-          of being buried as inline sentences. */}
-      {jdFields.length > 0 && (
+      {/* Role details — the same labelled grid for every job, built from the job record */}
+      {details.length > 0 && (
         <Card>
           <CardContent className="p-6">
             <h2 className="text-lg font-bold text-gray-900 mb-4">Role Details</h2>
             <div className="grid sm:grid-cols-2 gap-x-6 gap-y-4">
-              {jdFields.map((f, i) => {
-                const Icon = JD_FIELD_ICONS[f.label.toLowerCase()] || FileText;
-                return (
-                  <div key={i} className="flex items-start gap-3">
-                    <div className="p-2 bg-orange-50 rounded-lg shrink-0"><Icon className="w-4 h-4 text-orange-600" /></div>
-                    <div className="min-w-0">
-                      <p className="text-xs text-gray-500">{f.label}</p>
-                      <p className="text-sm font-semibold text-gray-900 break-words">{f.value}</p>
-                    </div>
+              {details.map(([label, value, Icon]) => (
+                <div key={label} className="flex items-start gap-3">
+                  <div className="p-2 bg-orange-50 rounded-lg shrink-0"><Icon className="w-4 h-4 text-orange-600" /></div>
+                  <div className="min-w-0">
+                    <p className="text-xs text-gray-500">{label}</p>
+                    <p className="text-sm font-semibold text-gray-900 break-words">{value}</p>
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
       )}
 
-      {plainJd && (
-        <Card><CardContent className="p-6"><PlainJd plain={plainJd} /></CardContent></Card>
-      )}
-
-      {/* Job Description narrative — responsibilities, requirements, etc. */}
-      {!plainJd && jdBody && (
+      {/* Job description */}
+      {bodyMd && (
         <Card>
           <CardContent className="p-6">
             <h2 className="text-lg font-bold text-gray-900 mb-2">About This Role</h2>
-            <div className="max-w-none">
-              <ReactMarkdown components={jdMarkdownComponents}>{jdBody}</ReactMarkdown>
-            </div>
+            <div className="max-w-none"><ReactMarkdown components={jdMarkdownComponents}>{bodyMd}</ReactMarkdown></div>
           </CardContent>
         </Card>
       )}

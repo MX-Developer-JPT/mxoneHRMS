@@ -188,7 +188,7 @@ export function templateJd(f, ctx = {}) {
   const loc = locationLabel(f);
   const n = Number(f.number_of_positions) || 1;
   const title = f.designation || 'Professional';
-  const reports = ctx.reportsToName || ctx.hiringManagerName;
+  const reports = ctx.reportsToDesignation || '';   // a designation, never a person's name
 
   const resp = [...(f.key_responsibilities || [])];
   for (const r of kw.responsibilities || []) { if (resp.length >= 7) break; if (!resp.some((x) => x.toLowerCase() === r.toLowerCase())) resp.push(r); }
@@ -204,7 +204,7 @@ export function templateJd(f, ctx = {}) {
     : [`MaxVolt Energy is looking for ${n > 1 ? `${n} ` : `${article(title)} `}${title}${n > 1 ? 's' : ''} to join our ${f.department || ''} team${loc ? ` at ${loc}` : ''}.`,
       f.purpose_of_hiring ? sentence(f.purpose_of_hiring) + '.' : `This is ${article(etype)} ${etype.toLowerCase()} ${f.requisition_type === 'replacement' ? 'replacement ' : ''}position${tier ? ` at the ${tier} level` : ''} that supports our growing operations.`,
       resp.length ? `In this role you will ${resp.slice(0, 2).map((r) => r.charAt(0).toLowerCase() + r.slice(1)).join(' and ')}, working closely with colleagues across the organisation.` : '',
-      reports ? `You will report to ${reports}.` : ''].filter(Boolean).join(' ');
+      reports ? `You will report to the ${reports}.` : ''].filter(Boolean).join(' ');
 
   const out = [];
   out.push(`JOB TITLE\n${title}`);
@@ -221,7 +221,7 @@ export function templateJd(f, ctx = {}) {
   if (skills.length) out.push(`TECHNICAL / FUNCTIONAL SKILLS\n${bullets(skills)}`);
   if ((f.preferred_skills || []).length) out.push(`PREFERRED SKILLS\n${bullets(f.preferred_skills)}`);
   out.push(`KEY COMPETENCIES\n${bullets([...(f.experience_expectations ? [sentence(f.experience_expectations)] : []), ...COMPETENCIES[tierBand(tier || title)]])}`);
-  out.push(`REPORTING STRUCTURE\n${reports ? `Reports to ${reports}${f.department ? `, ${f.department}` : ''}.` : `Reports within the ${f.department || 'department'} as directed by the Hiring Manager.`}`);
+  out.push(`REPORTING STRUCTURE\n${reports ? `Reports to the ${reports}${f.department ? `, ${f.department}` : ''}.` : `Reports within the ${f.department || 'department'} as directed by the Hiring Manager.`}`);
   if (f.department_requirements || f.additional_notes) out.push(`ADDITIONAL REQUIREMENTS\n${bullets([f.department_requirements, f.additional_notes].filter(Boolean).map(sentence))}`);
   out.push(`ABOUT MAXVOLT ENERGY\n${ABOUT_COMPANY}`);
   return out.join('\n\n');

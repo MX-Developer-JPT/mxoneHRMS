@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Badge } from "@/components/ui/badge";
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
+import { statusOf as mrfStatusOf, PRIORITY_CLS as MRF_PRIORITY_CLS, fmt as mrfFmt } from '@/lib/mrf';
 import { format } from 'date-fns';
 import {
   Plus, Briefcase, Check, X, Eye, Printer, Loader2,
@@ -440,8 +441,10 @@ Return ONLY the job description content as plain text with clear section headers
   };
 
   // Requisitions raised through the new Manpower Requisition (MRF) workflow live on their own page.
-  const filtered = requisitions.filter(r => r.mrf_version !== 2).filter(r => {
-    if (filterStatus !== 'all' && r.status !== filterStatus) return false;
+  const MRF_TO_FILTER = { pending_hm_approval: 'pending_manager_approval', pending_hr_publication: 'pending_hr_approval', rejected: 'manager_rejected', cancelled: 'closed' };
+  const filterKey = (r) => (r.mrf_version === 2 ? (MRF_TO_FILTER[r.status] || r.status) : r.status);
+  const filtered = requisitions.filter(r => {
+    if (filterStatus !== 'all' && filterKey(r) !== filterStatus) return false;
     if (filterDept !== 'all' && r.department !== filterDept) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -454,8 +457,8 @@ Return ONLY the job description content as plain text with clear section headers
 
   const stats = {
     total: requisitions.length,
-    pendingManager: requisitions.filter(r => r.status === 'pending_manager_approval').length,
-    pendingHR: requisitions.filter(r => r.status === 'pending_hr_approval').length,
+    pendingManager: requisitions.filter(r => filterKey(r) === 'pending_manager_approval').length,
+    pendingHR: requisitions.filter(r => filterKey(r) === 'pending_hr_approval').length,
     published: requisitions.filter(r => r.status === 'published').length,
   };
 
@@ -500,7 +503,7 @@ Return ONLY the job description content as plain text with clear section headers
           </div>
         </div>
 
-        <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">New requisitions now use the <Link to="/ManpowerRequisitions" className="underline font-medium">Manpower Requisition (MRF) workflow</Link> — the Hiring Manager approves the Job Description and HR publishes. This page keeps the earlier requisitions.</div>
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">Requisitions raised through the <Link to="/ManpowerRequisitions" className="underline font-medium">Manpower Requisition (MRF)</Link> workflow appear here too, marked <b>MRF</b>. Open one to approve the JD, publish it to the job portal or track its hiring pipeline; older requisitions keep their existing actions.</div>
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -563,6 +566,53 @@ Return ONLY the job description content as plain text with clear section headers
             ) : (
               <div className="divide-y">
                 {filtered.map(req => {
+                  if (req.mrf_version === 2) {
+                    const ms = mrfStatusOf(req);
+                    const filled = Number(req.positions_filled) || 0;
+                    return (
+                      <div key={req.id} className="p-5 hover:bg-gray-50 transition-colors">
+                        <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2 mb-2">
+                              <h3 className="font-semibold text-gray-900">{req.position_title || req.designation}</h3>
+                              <Badge className="bg-indigo-100 text-indigo-700">MRF</Badge>
+                              <Badge className={ms.cls}>{ms.label}</Badge>
+                              {req.priority && <Badge className={MRF_PRIORITY_CLS[req.priority] || 'bg-gray-100 text-gray-600'}>{String(req.priority).toUpperCase()}</Badge>}
+                              {req.is_published && req.status === 'published' && <Badge className="bg-green-100 text-green-700">On job portal</Badge>}
+                            </div>
+                            <div className="text-sm text-gray-500 flex flex-wrap gap-x-4 gap-y-1">
+                              <span className="font-mono text-xs text-gray-400">{req.id}</span>
+                              <span>{req.department}</span>
+                              <span>{String(req.employment_type || '').replace('_', ' ')}</span>
+                              <span>{filled}/{req.number_of_positions || 1} filled</span>
+                              {req.experience_required && <span>{req.experience_required}</span>}
+                              {req.location && <span>📍 {req.location}</span>}
+                            </div>
+                            <div className="flex items-center gap-2 mt-3 text-xs flex-wrap">
+                              <span className="text-gray-400">Raised by:</span><span className="font-medium text-gray-600">{getUserName(req.requested_by)}</span>
+                              <ChevronRight className="w-3 h-3 text-gray-300" />
+                              <span className="text-gray-400">JD approval (Hiring Manager):</span>
+                              <span className={`font-medium ${req.hm_approved_at ? 'text-green-600' : 'text-yellow-600'}`}>{req.hm_approved_at ? `✓ ${getUserName(req.hiring_manager_id)} · ${mrfFmt(req.hm_approved_at)}` : `⏳ ${getUserName(req.hiring_manager_id) || 'Unassigned'}`}</span>
+                              <ChevronRight className="w-3 h-3 text-gray-300" />
+                              <span className="text-gray-400">Published by HR:</span>
+                              <span className={`font-medium ${req.published_date ? 'text-green-600' : 'text-gray-400'}`}>{req.published_date ? `✓ ${mrfFmt(req.published_date)}` : '⏳ Pending'}</span>
+                            </div>
+                          </div>
+                          <div className="flex gap-2 flex-shrink-0 flex-wrap justify-end">
+                            <Link to={`/ManpowerRequisitions?open=${encodeURIComponent(req.id)}`}>
+                              <Button size="sm" variant="outline" className="border-indigo-300 text-indigo-700 hover:bg-indigo-50"><Eye className="w-3 h-3 mr-1" /> Open MRF</Button>
+                            </Link>
+                            <Link to={`/Recruitment?requisition=${req.id}`}>
+                              <Button size="sm" variant="outline" className="border-blue-300 text-blue-700 hover:bg-blue-50"><Users className="w-3 h-3 mr-1" /> View Pipeline</Button>
+                            </Link>
+                            {req.status === 'published' && (
+                              <Button size="sm" variant="outline" onClick={() => copyLink(req)}><Copy className="w-3 h-3 mr-1" /> Copy Link</Button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
                   const sc = STATUS_CONFIG[req.status] || { label: req.status, color: 'bg-gray-100 text-gray-700' };
                   const jdSc = JD_STATUS_CONFIG[req.jd_status || 'not_generated'];
                   const isManagerForReq = req.hiring_manager_id === user?.id;

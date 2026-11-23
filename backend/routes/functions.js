@@ -13645,10 +13645,10 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const jobId = p.job_id || p.jobId;
       const row = await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [jobId]);
       if (!row) return res.json({ job: null });
-      const { publicJob } = await import('./mrf.js');
+      const { publicJobSafe } = await import('./mrf.js');
       const gj = JSON.parse(row.data);
       if (gj.mrf_version === 2 && !(gj.is_published && gj.status === 'published')) return res.json({ job: null });
-      return res.json({ job: publicJob(gj) });
+      return res.json({ job: await publicJobSafe(gj) });
     }
 
     // Public careers page (maxone.maxvoltenergy.com/career) — deliberately
@@ -13666,14 +13666,15 @@ ${contextBlock || 'No employee context available — answer from general policy 
     case 'getPublishedJobs': {
       const rows = await all("SELECT data FROM entities WHERE type='JobRequisition'");
       const todayStr = new Date().toISOString().slice(0, 10);
-      const { publicJob } = await import('./mrf.js');
-      const jobs = rows.map(r => JSON.parse(r.data)).filter(j => {
+      const { publicJobSafe } = await import('./mrf.js');
+      const jobsRaw = rows.map(r => JSON.parse(r.data)).filter(j => {
         if (j.mrf_version === 2) return j.is_published === true && j.status === 'published' && (!j.application_deadline || j.application_deadline.slice(0, 10) >= todayStr);
         const isPublished = j.is_published === true || j.status === 'published' || j.status === 'approved';
         const notExpired = !j.application_deadline || j.application_deadline.slice(0, 10) >= todayStr;
         const notClosed = !['closed', 'cancelled', 'rejected', 'hr_rejected', 'manager_rejected'].includes(j.status);
         return isPublished && notExpired && notClosed;
-      }).sort((a, b) => new Date(b.published_date || 0) - new Date(a.published_date || 0)).map(publicJob);
+      }).sort((a, b) => new Date(b.published_date || 0) - new Date(a.published_date || 0));
+      const jobs = await Promise.all(jobsRaw.map(publicJobSafe));
       return res.json({ success: true, jobs });
     }
 
@@ -19156,6 +19157,18 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
         avg_time_to_fill_days: avgTimeToFill,
         open_positions: reqs.filter(r => r.status === 'active' || r.status === 'open').length,
       });
+    }
+
+    case 'exportRegularisationData':
+    case 'exportWfhData': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const exEnd = String(p.to || '').slice(0, 10) || new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+      const exStart = String(p.from || '').slice(0, 10) || exEnd.slice(0, 8) + '01';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(exStart) || !/^\d{4}-\d{2}-\d{2}$/.test(exEnd) || exStart > exEnd) return res.json({ success: false, error: 'Choose a valid date range' });
+      const xm = await import('../utils/attendanceExports.js');
+      const exOut = name === 'exportWfhData' ? await xm.buildWfhWorkbook({ from: exStart, to: exEnd, department: p.department }, (await import('exceljs')).default) : await xm.buildRegularisationWorkbook({ from: exStart, to: exEnd, department: p.department, status: p.status }, (await import('exceljs')).default);
+      console.log(`[audit] ${name} by ${cu.id} for ${exStart}..${exEnd}`);
+      return res.json({ success: true, base64: Buffer.from(exOut.buffer).toString('base64'), filename: exOut.filename, counts: exOut.counts });
     }
 
     case 'exportRecruitmentMIS': {

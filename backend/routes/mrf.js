@@ -153,7 +153,7 @@ const ctxText = (f, masters) => {
     `Overview: ${f.position_overview || ''}`, `Purpose: ${f.purpose_of_hiring || ''}`, `Responsibilities: ${(f.key_responsibilities || []).join('; ')}`, `Notes: ${f.additional_notes || ''}`,
   ].join('\n');
 };
-const JD_SYSTEM = 'You are a senior HR content writer for MaxVolt Energy Industries Limited, an Indian lithium-ion battery pack and energy storage manufacturer. Write job descriptions the way a top employer would: a short engaging role summary in two or three full sentences, then specific, action-led responsibilities (each one a concrete duty starting with a verb, not a vague phrase), realistic qualifications, and skills that fit the department and level. Be professional, inclusive and concise — no filler, no buzzwords, no repetition. Output plain text only: each section title in CAPITALS on its own line, bullets using "•", a blank line between sections, no markdown symbols. Never invent salary, benefits, perks or facts that were not provided.';
+const JD_SYSTEM = 'Never name any individual (hiring manager, reporting manager or requester) in the job description — refer to the reporting line by designation only, and only when it is given. You are a senior HR content writer for MaxVolt Energy Industries Limited, an Indian lithium-ion battery pack and energy storage manufacturer. Write job descriptions the way a top employer would: a short engaging role summary in two or three full sentences, then specific, action-led responsibilities (each one a concrete duty starting with a verb, not a vague phrase), realistic qualifications, and skills that fit the department and level. Be professional, inclusive and concise — no filler, no buzzwords, no repetition. Output plain text only: each section title in CAPITALS on its own line, bullets using "•", a blank line between sections, no markdown symbols. Never invent salary, benefits, perks or facts that were not provided.';
 const JD_SECTIONS = 'JOB TITLE, DEPARTMENT, POSITION TIER, JOB LOCATION, EMPLOYMENT TYPE, EXPERIENCE REQUIRED, COMPENSATION RANGE (only if given to disclose), ABOUT THE ROLE, KEY RESPONSIBILITIES, REQUIRED QUALIFICATIONS, TECHNICAL / FUNCTIONAL SKILLS, PREFERRED SKILLS, KEY COMPETENCIES, REPORTING STRUCTURE, ADDITIONAL REQUIREMENTS, ABOUT MAXVOLT ENERGY';
 const REFINE = {
   improve: 'Improve the writing: fix grammar, tighten wording and make it more professional. Keep every fact and the same structure.',
@@ -347,7 +347,7 @@ const H = {
     // fail early on permission so no AI call is wasted
     const hm = isHm(rec, cx);
     if (!hm && !(isCreator(rec, cx) && M.JD_EDITABLE_BY_CREATOR.includes(rec.status) && !refining)) return fail(res, refining ? 'Only the Hiring Manager can refine the Job Description.' : 'Only the Hiring Manager (or the creator, while drafting) can generate the Job Description.', 403);
-    const ctx = { masters, hiringManagerName: P.name(rec.hiring_manager_id), reportsToName: P.name(rec.reports_to_user_id) };
+    const ctx = { masters, reportsToDesignation: (P.empBy[rec.reports_to_user_id || rec.hiring_manager_id] || {}).designation || '' };
     let text = ''; let source = 'ai'; let note = '';
     if (await aiAllowed(cx.cu)) {
       try {
@@ -586,15 +586,50 @@ export async function handleMrf(name, p, cu, res) {
   catch (e) { console.error(`[mrf/${name}]`, e); if (!res.headersSent) return fail(res, e.message || 'Something went wrong', 500); }
 }
 
-/** What the public careers page may see of a v2 requisition — never CTC (unless disclosed), notes, audit or internal names. */
-export function publicJob(j) {
-  if (j.mrf_version !== 2) return j;
-  return {
-    id: j.id, requisition_id: j.requisition_id, mrf_version: 2, status: j.status, is_published: j.is_published, published_date: j.published_date, application_deadline: j.application_deadline,
+/**
+ * The public job portal never names a person. Names of the hiring manager / reporting person / requester are replaced by the
+ * reporting person's designation, or the sentence is dropped when there is no designation to show.
+ */
+export function scrubPersonNames(text, names, designation) {
+  const BS = String.fromCharCode(92); const esc = (n) => n.trim().split(/ +/).map((w) => w.split('').map((c) => ('.*+?^${}()|[]' + BS).includes(c) ? BS + c : c).join('')).join(' +');
+  const list = [...new Set((names || []).map((n) => String(n || '').trim()).filter((n) => n.length >= 3))].sort((a, b) => b.length - a.length);
+  let t = String(text || '');
+  for (const n of list) {
+    const hit = new RegExp(esc(n), 'i'); const all = new RegExp(esc(n), 'gi');
+    if (!hit.test(t)) continue;
+    t = t.split('\n').map((line) => {
+      if (!hit.test(line)) return line;
+      if (designation) return line.replace(all, designation);
+      return line.split(/(?<=[.!?])\s+/).filter((sn) => !hit.test(sn)).join(' ').trim();
+    }).join('\n');
+  }
+  return t.replace(/\n{3,}/g, '\n\n').replace(/^REPORTING STRUCTURE\n(?=\n|$)/m, 'REPORTING STRUCTURE\nReports within the department as directed by the Hiring Manager.\n');
+}
+
+/** What the public careers page may see of a requisition — never CTC (unless disclosed), notes, audit or internal names. */
+export function publicJob(j, extra = {}) {
+  const jd = extra.names ? scrubPersonNames(j.ai_job_description || j.job_description || '', extra.names, extra.designation) : (j.ai_job_description || j.job_description);
+  const base = {
+    id: j.id, requisition_id: j.requisition_id, status: j.status, is_published: j.is_published, published_date: j.published_date, application_deadline: j.application_deadline,
     position_title: j.position_title, department: j.department, employment_type: j.employment_type, number_of_positions: j.number_of_positions, experience_required: j.experience_required, location: j.location,
-    required_skills: j.required_skills, ai_job_description: j.ai_job_description, jd_status: j.jd_status, work_arrangement: j.work_arrangement,
-    ...(j.disclose_ctc ? { salary_range_min: j.salary_range_min, salary_range_max: j.salary_range_max } : { salary_range_min: 0, salary_range_max: 0 }),
+    required_skills: j.required_skills, ai_job_description: jd, jd_status: j.jd_status, work_arrangement: j.work_arrangement,
+    ...(extra.designation ? { reports_to_designation: extra.designation } : {}),
   };
+  if (j.mrf_version === 2) return { ...base, mrf_version: 2, ...(j.disclose_ctc ? { salary_range_min: j.salary_range_min, salary_range_max: j.salary_range_max } : { salary_range_min: 0, salary_range_max: 0 }) };
+  return { ...base, job_description: j.ai_job_description ? undefined : jd, salary_range_min: j.salary_range_min, salary_range_max: j.salary_range_max };
+}
+/** publicJob with the people named on the requisition resolved, so no name reaches the public page. */
+export async function publicJobSafe(j) {
+  const ids = [j.reports_to_user_id, j.hiring_manager_id, j.requested_by, j.created_by].filter(Boolean);
+  const names = [j.reports_to_name, j.hiring_manager_name, j.requested_by_name, j.hiring_manager, j.manager_name];
+  let designation = '';
+  for (const id of [...new Set(ids)]) {
+    const row = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [id]).catch(() => null);
+    const e = row ? jparse(row.data) : null; if (!e) continue;
+    names.push(e.display_name, e.full_name, e.first_name && e.last_name ? `${e.first_name} ${e.last_name}` : '');
+    if (!designation && id === (j.reports_to_user_id || j.hiring_manager_id) && e.designation) designation = e.designation;
+  }
+  return publicJob(j, { names, designation });
 }
 /**
  * Recruitment -> requisition: when a candidate is marked JOINED against a manpower requisition, count one filled position (once per

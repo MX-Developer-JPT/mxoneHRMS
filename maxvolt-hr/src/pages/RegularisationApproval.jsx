@@ -1,4 +1,5 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import DataExportBar from '@/components/mis/DataExportBar';
+import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -251,6 +252,8 @@ export default function RegularisationApproval() {
             )}
           </div>
         </div>
+
+        {(isHR || isManagementRole) && <DataExportBar fn="exportRegularisationData" label="Export regularisation requests" statuses={[['pending','Pending'],['manager_approved','Manager approved'],['completed','Approved'],['rejected','Rejected']]} />}
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

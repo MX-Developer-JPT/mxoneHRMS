@@ -3,6 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from 'sonner';
+import DataExportBar from '@/components/mis/DataExportBar';
 import { Loader2, Home, Calendar, Users } from 'lucide-react';
 
 export default function WFHTracking() {
@@ -50,6 +51,8 @@ export default function WFHTracking() {
         <h1 className="text-2xl font-bold text-gray-900">WFH Tracking</h1>
         <p className="text-gray-500 text-sm mt-1">Monitor work-from-home usage across the organization</p>
       </div>
+
+      <div className="mb-6"><DataExportBar fn="exportWfhData" label="Export WFH data" initialFrom={`${year}-${String(month).padStart(2, '0')}-01`} initialTo={(() => { const e = new Date(Number(year), Number(month), 0); const t = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10); const m = `${year}-${String(month).padStart(2, '0')}-${String(e.getDate()).padStart(2, '0')}`; return m > t ? t : m; })()} /></div>
 
       <div className="flex gap-4 mb-6">
         <div className="w-48">

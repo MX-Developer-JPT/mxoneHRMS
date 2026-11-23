@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { base44 } from '@/api/base44Client';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -23,7 +23,8 @@ export default function ManpowerRequisitions() {
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [form, setForm] = useState({ open: false, initial: null });
-  const [openId, setOpenId] = useState(null);
+  const [searchParams] = useSearchParams();
+  const [openId, setOpenId] = useState(searchParams.get('open') || null);
 
   const load = useCallback(async () => {
     try {

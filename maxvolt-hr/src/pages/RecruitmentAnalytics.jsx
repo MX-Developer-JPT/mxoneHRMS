@@ -106,10 +106,18 @@ export default function RecruitmentAnalytics() {
   const [xFrom, setXFrom] = useState(new Date(Date.now() + 5.5 * 3600000 - 29 * 86400000).toISOString().slice(0, 10));
   const [xTo, setXTo] = useState(istToday());
   const [xBusy, setXBusy] = useState(false);
+  const [xDept, setXDept] = useState('all');
+  const [xReq, setXReq] = useState('all');
+  const [xDepts, setXDepts] = useState([]);
+  const [xReqs, setXReqs] = useState([]);
+  useEffect(() => {
+    base44.entities.Department.list().then(d => setXDepts((d || []).map(x => x.name).filter(Boolean).sort())).catch(() => {});
+    base44.entities.JobRequisition.list('-created_date', 500).then(r => setXReqs((r || []).map(x => ({ id: x.id, department: x.department || '', label: `${x.id.length < 20 ? x.id + ' — ' : ''}${x.designation || x.position_title || x.job_title || 'Requisition'}` })))).catch(() => {});
+  }, []);
   const exportReport = async () => {
     setXBusy(true);
     try {
-      const res = await base44.functions.invoke('exportRecruitmentMIS', { from: xFrom, to: xTo });
+      const res = await base44.functions.invoke('exportRecruitmentMIS', { from: xFrom, to: xTo, department: xDept, requisition_id: xReq === 'all' ? '' : xReq });
       const d = res?.data || res;
       if (!d?.success) { toast.error(d?.error || 'Export failed'); }
       else { downloadBase64(d.base64, d.filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); toast.success(`${d.title} downloaded`); }
@@ -215,6 +223,16 @@ export default function RecruitmentAnalytics() {
             </label>
             <label className="text-xs text-gray-500 flex flex-col gap-1">to
               <input type="date" value={xTo} min={xFrom} max={istToday()} onChange={e => setXTo(e.target.value)} className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm" />
+            </label>
+            <label className="text-xs text-gray-500 flex flex-col gap-1">Department
+              <select value={xDept} onChange={e => { setXDept(e.target.value); setXReq('all'); }} className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm">
+                <option value="all">All departments</option>{xDepts.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-gray-500 flex flex-col gap-1">Requisition
+              <select value={xReq} onChange={e => setXReq(e.target.value)} className="h-9 max-w-[260px] rounded-md border border-gray-300 bg-white px-2 text-sm">
+                <option value="all">All requisitions</option>{xReqs.filter(r => xDept === 'all' || r.department === xDept).map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+              </select>
             </label>
             <button onClick={exportReport} disabled={xBusy} className="h-9 inline-flex items-center gap-2 rounded-md bg-green-600 px-3 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-60">
               {xBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Download MIS report (Excel)
