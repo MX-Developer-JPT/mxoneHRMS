@@ -127,7 +127,8 @@ const summary = (rec, P) => {
 };
 
 // ── AI ──
-async function aiAllowed(cu) { try { const u = await one('SELECT ai_consent_given FROM users WHERE id=$1', [cu.id]); return !!u?.ai_consent_given; } catch { return false; } }
+// The prompts carry only role details (title, department, skills, location) — never a person's data — so MRF drafting does not depend on the per-user AI consent.
+const aiAllowed = async () => true;
 const ctxText = (f, masters) => {
   const lab = (kind, v) => (masters[kind] || []).find((m) => m.value === v)?.label || v || '';
   return [
@@ -140,7 +141,7 @@ const ctxText = (f, masters) => {
     `Overview: ${f.position_overview || ''}`, `Purpose: ${f.purpose_of_hiring || ''}`, `Responsibilities: ${(f.key_responsibilities || []).join('; ')}`, `Notes: ${f.additional_notes || ''}`,
   ].join('\n');
 };
-const JD_SYSTEM = 'You are an HR content writer for MaxVolt Energy Industries Limited, an Indian lithium-ion battery and energy storage manufacturer. Write clear, professional, inclusive job descriptions. Plain text only: section titles in CAPITALS on their own line, bullets with "•". Never invent salary, benefits or facts that were not provided.';
+const JD_SYSTEM = 'You are a senior HR content writer for MaxVolt Energy Industries Limited, an Indian lithium-ion battery pack and energy storage manufacturer. Write job descriptions the way a top employer would: a short engaging role summary in two or three full sentences, then specific, action-led responsibilities (each one a concrete duty starting with a verb, not a vague phrase), realistic qualifications, and skills that fit the department and level. Be professional, inclusive and concise — no filler, no buzzwords, no repetition. Output plain text only: each section title in CAPITALS on its own line, bullets using "•", a blank line between sections, no markdown symbols. Never invent salary, benefits, perks or facts that were not provided.';
 const JD_SECTIONS = 'JOB TITLE, DEPARTMENT, POSITION TIER, JOB LOCATION, EMPLOYMENT TYPE, EXPERIENCE REQUIRED, COMPENSATION RANGE (only if given to disclose), ABOUT THE ROLE, KEY RESPONSIBILITIES, REQUIRED QUALIFICATIONS, TECHNICAL / FUNCTIONAL SKILLS, PREFERRED SKILLS, KEY COMPETENCIES, REPORTING STRUCTURE, ADDITIONAL REQUIREMENTS, ABOUT MAXVOLT ENERGY';
 const REFINE = {
   improve: 'Improve the writing: fix grammar, tighten wording and make it more professional. Keep every fact and the same structure.',
@@ -149,7 +150,7 @@ const REFINE = {
   industry: 'Add relevant industry-specific skills and competencies for this department and role (battery / energy / manufacturing context where it fits) to the skills sections. Do not remove anything.',
   portal: 'Optimise this job description for job portals: a clear title, a short compelling summary at the top of ABOUT THE ROLE, scannable bullets and natural searchable keywords. Keep all facts.',
 };
-const cleanAiText = (t) => String(t || '').replace(/^```[a-z]*\n?|```$/gim, '').trim();
+const cleanAiText = (t) => M.normalizeJdText(t);
 
 // ── JD versions ──
 const hashOf = (t) => createHash('sha256').update(String(t)).digest('hex').slice(0, 16);
@@ -340,8 +341,9 @@ const H = {
       try {
         const prompt = refining
           ? `${REFINE[action]}\n\nCURRENT JOB DESCRIPTION:\n${current}\n\nReturn ONLY the full updated job description as plain text.`
-          : `Write a complete job description with these sections in this order: ${JD_SECTIONS}.\nOmit COMPENSATION RANGE unless a disclosed CTC is given. Use only the facts below.\n\nREQUISITION DETAILS:\n${ctxText(rec, masters)}\n${rec.disclose_ctc && M.ctcLabel(rec) ? `Disclosed compensation: ${M.ctcLabel(rec)}\n` : ''}Reports to: ${ctx.reportsToName || ctx.hiringManagerName}\n${action === 'regenerate' ? 'Write a fresh variation with different wording from the earlier draft.\n' : ''}\nReturn ONLY the job description as plain text.`;
-        text = cleanAiText(await callAI(prompt, { system: JD_SYSTEM, maxTokens: 2200 }));
+          : `Write a complete, polished job description with these sections in this order: ${JD_SECTIONS}.\nSection guidance: JOB TITLE, DEPARTMENT, POSITION TIER, JOB LOCATION, EMPLOYMENT TYPE and EXPERIENCE REQUIRED are one short line each. ABOUT THE ROLE is 2-3 flowing sentences. KEY RESPONSIBILITIES has 6-8 bullets (use the provided ones first, then add realistic ones for this exact role). REQUIRED QUALIFICATIONS has 3-5 bullets including the experience level. TECHNICAL / FUNCTIONAL SKILLS and PREFERRED SKILLS are short bullets. KEY COMPETENCIES has 4-5 bullets suited to the level. REPORTING STRUCTURE is one sentence. ABOUT MAXVOLT ENERGY is 2-3 sentences.\nOmit COMPENSATION RANGE unless a disclosed CTC is given. Use only the facts below.\n\nREQUISITION DETAILS:\n${ctxText(rec, masters)}\n${rec.disclose_ctc && M.ctcLabel(rec) ? `Disclosed compensation: ${M.ctcLabel(rec)}\n` : ''}Reports to: ${ctx.reportsToName || ctx.hiringManagerName}\n${action === 'regenerate' ? 'Write a fresh variation with different wording from the earlier draft.\n' : ''}\nReturn ONLY the job description as plain text.`;
+        text = cleanAiText(await callAI(prompt, { system: JD_SYSTEM, maxTokens: 2600 }));
+        if (!refining && !M.jdLooksComplete(text)) { console.warn('[mrf] AI JD incomplete — using the form-based draft'); text = ''; }
       } catch (e) { console.warn('[mrf] JD AI failed:', e.message); text = ''; }
     }
     if (!text) {

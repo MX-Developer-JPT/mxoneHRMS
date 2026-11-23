@@ -1,27 +1,38 @@
 import React, { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Loader2, Sparkles, RefreshCw, Wand2, ListPlus, Languages, Factory, Globe, Pencil, Eye, Save, Lock } from 'lucide-react';
+import { Loader2, Sparkles, RefreshCw, Wand2, ListPlus, Languages, Factory, Globe, Pencil, Eye, Save, Lock, Printer } from 'lucide-react';
 import { toast } from 'sonner';
 import { mrf, fmt } from '@/lib/mrf';
+import { parseJd, printJd } from '@/lib/jdPrint';
 
 const ACTIONS = [
   ['improve', 'Improve writing', Wand2], ['expand', 'Expand responsibilities', ListPlus], ['simplify', 'Simplify language', Languages],
   ['industry', 'Add industry skills', Factory], ['portal', 'Optimise for portals', Globe],
 ];
 
-/** Pretty read-only rendering of the plain-text JD (section titles in capitals, • bullets). */
+const META = ['JOB TITLE', 'DEPARTMENT', 'POSITION TIER', 'JOB LOCATION', 'EMPLOYMENT TYPE', 'EXPERIENCE REQUIRED', 'COMPENSATION RANGE'];
+/** Read-only rendering of the plain-text JD: a details strip, then each section with real bullets. */
 export function JdText({ text }) {
   if (!String(text || '').trim()) return <p className="text-sm text-muted-foreground">No Job Description yet.</p>;
-  const blocks = String(text).split(/\n{2,}/);
+  const sections = parseJd(text);
+  const meta = sections.filter((x) => META.includes(x.head));
+  const body = sections.filter((x) => !META.includes(x.head));
+  const title = meta.find((x) => x.head === 'JOB TITLE')?.lines.join(' ');
   return (
-    <div className="space-y-3 text-sm">
-      {blocks.map((b, i) => {
-        const [head, ...rest] = b.split('\n');
-        const isHead = /^[A-Z0-9 /&()'’.,-]{3,60}$/.test(head.trim()) && head.trim() === head.trim().toUpperCase();
+    <div className="space-y-4 text-sm">
+      {title && <h2 className="text-xl font-bold">{title}</h2>}
+      {meta.filter((x) => x.head !== 'JOB TITLE').length > 0 && (
+        <div className="flex flex-wrap gap-x-5 gap-y-1 rounded-md bg-amber-50 border-l-4 border-amber-300 px-3 py-2 text-xs">
+          {meta.filter((x) => x.head !== 'JOB TITLE').map((x) => <span key={x.head}><b className="capitalize">{x.head.toLowerCase().replace(' required', '')}:</b> {x.lines.join(' ')}</span>)}
+        </div>
+      )}
+      {body.map((sec, i) => {
+        const bullets = sec.lines.filter((l) => l.startsWith('•')); const prose = sec.lines.filter((l) => !l.startsWith('•'));
         return (
           <div key={i}>
-            {isHead ? <p className="text-xs font-bold tracking-wide text-primary">{head.trim()}</p> : <p>{head}</p>}
-            {rest.map((l, j) => <p key={j} className={l.trim().startsWith('•') ? 'pl-3' : ''}>{l}</p>)}
+            {sec.head && <p className="text-xs font-bold tracking-wide border-l-4 border-yellow-400 bg-muted/40 pl-2 py-0.5 mb-1.5">{sec.head}</p>}
+            {prose.map((l, j) => <p key={j} className="leading-relaxed mb-1">{l}</p>)}
+            {bullets.length > 0 && <ul className="list-disc pl-5 space-y-0.5">{bullets.map((l, j) => <li key={j}>{l.replace(/^•\s*/, '')}</li>)}</ul>}
           </div>
         );
       })}
@@ -79,6 +90,12 @@ export default function JdPanel({ rec, ensureSaved, perms, onUpdated }) {
             {busy === k ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Icon className="w-4 h-4 mr-1.5" />}{l}
           </Button>
         ))}
+        {has && (
+          <>
+            <Button size="sm" variant="outline" onClick={() => printJd(rec, rec.approved_jd?.text || rec.jd_current_text, { letterhead: true })}><Printer className="w-4 h-4 mr-1.5" />Print on letterhead</Button>
+            <Button size="sm" variant="ghost" onClick={() => printJd(rec, rec.approved_jd?.text || rec.jd_current_text, { letterhead: false })} title="For pre-printed letterhead paper">Print without letterhead</Button>
+          </>
+        )}
         {has && (
           <div className="ml-auto inline-flex rounded-md border overflow-hidden text-xs">
             <button type="button" onClick={() => setMode('preview')} className={`px-3 py-1.5 flex items-center gap-1 ${mode === 'preview' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}><Eye className="w-3.5 h-3.5" />Preview</button>

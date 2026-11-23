@@ -82,12 +82,12 @@ export function TagInput({ value = [], onChange, suggestions = [], placeholder =
   );
 }
 
-export function Field({ label, required, hint, children, className = '' }) {
+export function Field({ label, required, hint, children, className = '', error = false, id }) {
   return (
-    <div className={className}>
-      <label className="text-sm font-medium">{label}{required && <span className="text-red-500"> *</span>}</label>
-      <div className="mt-1">{children}</div>
-      {hint && <p className="text-xs text-muted-foreground mt-1">{hint}</p>}
+    <div className={className} id={id}>
+      <label className={`text-sm font-medium ${error ? 'text-red-600' : ''}`}>{label}{required && <span className="text-red-500"> *</span>}</label>
+      <div className={`mt-1 ${error ? 'rounded-md ring-2 ring-red-300' : ''}`}>{children}</div>
+      {error ? <p className="text-xs text-red-600 mt-1">This is needed before you continue.</p> : hint && <p className="text-xs text-muted-foreground mt-1">{hint}</p>}
     </div>
   );
 }

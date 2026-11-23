@@ -143,8 +143,11 @@ export const isMaterialJdChange = (a, b) => normalizeJd(a) !== normalizeJd(b);
 export const ABOUT_COMPANY = 'MaxVolt Energy Industries Limited (NSE SME: MAXVOLT) is an Indian lithium-ion battery pack and energy storage manufacturer based in Ghaziabad, building energy solutions for mobility and stationary storage. We value ownership, quality and a culture where people grow with the company.';
 const bullets = (arr) => (arr || []).map((x) => `• ${x}`).join('\n');
 const expLabel = (f, masters) => {
-  const lab = (v) => (masters?.experience_range || []).find((m) => m.value === v)?.label || v || '';
+  const find = (v) => (masters?.experience_range || []).find((m) => m.value === v);
+  const lab = (v) => find(v)?.label || v || '';
   if (f.exp_mode === 'single' || !f.exp_max || f.exp_max === f.exp_min) return lab(f.exp_min) || lab(f.exp_max) || 'As per role';
+  const lo = find(f.exp_min)?.meta, hi = find(f.exp_max)?.meta;
+  if (lo && hi && Number.isFinite(lo.min) && Number.isFinite(hi.max)) return hi.max >= 99 ? `${lo.min}+ years` : `${lo.min}–${hi.max} years`;   // "3–7 years" reads better than "3–5 Years to 5–7 Years"
   return `${lab(f.exp_min)} to ${lab(f.exp_max)}`;
 };
 export const locationLabel = (f) => [f.work_location, f.work_city, f.work_state, f.work_country].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(', ')
@@ -155,32 +158,101 @@ export const ctcLabel = (f) => {
   return `${fmt(f.ctc_min)}${f.ctc_max != null ? ` – ${fmt(f.ctc_max)}` : ''} ${f.ctc_frequency === 'monthly' ? 'per month' : 'per annum'}`;
 };
 
-/** Deterministic JD from the form — the fallback when AI is unavailable, and the structure the AI is asked to follow. */
+const COMPETENCIES = {
+  junior: ['Ownership and reliability', 'Clear written and verbal communication', 'Eagerness to learn and take feedback', 'Attention to detail', 'Teamwork and a positive attitude'],
+  mid: ['Ownership and accountability', 'Problem solving and sound judgement', 'Planning and time management', 'Collaboration across teams', 'Clear communication with stakeholders'],
+  lead: ['Leading and mentoring a team', 'Planning, prioritising and delivering results', 'Decision-making under pressure', 'Stakeholder management', 'Driving process and quality improvements'],
+  senior: ['Strategic thinking and business acumen', 'Leadership and people development', 'Budget and resource ownership', 'Cross-functional influence', 'Driving measurable business outcomes'],
+};
+const tierBand = (tierLabel) => {
+  const t = String(tierLabel || '').toLowerCase();
+  if (/chief|director|president|managing|general manager|^gm|head/.test(t)) return 'senior';
+  if (/manager|team lead|leader|supervisor|territory|area|regional/.test(t)) return 'lead';
+  if (/senior executive|deputy|assistant manager/.test(t)) return 'mid';
+  return 'junior';
+};
+const sentence = (x) => { const t = String(x || '').trim().replace(/[.;]+$/, ''); return t ? t.charAt(0).toUpperCase() + t.slice(1) : ''; };
+const listOf = (arr) => { const a = (arr || []).filter(Boolean); return a.length <= 2 ? a.join(' and ') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`; };
+const article = (w) => (/^[aeiou]/i.test(w) ? 'an' : 'a');
+
+/**
+ * Reads like a real job posting: a written role summary, responsibilities (topped up with proven ones for the department when
+ * the requester gave few), qualifications with the experience line, skills, competencies for the level, reporting line and
+ * the company. This is also the fallback when the AI is unavailable, so a requisition never gets a thin JD.
+ */
 export function templateJd(f, ctx = {}) {
   const masters = ctx.masters || {};
   const tier = f.position_tier === 'other_custom' ? f.position_tier_custom : ((masters.position_tier || []).find((m) => m.value === f.position_tier)?.label || f.position_tier);
-  const etype = (masters.employment_type || []).find((m) => m.value === f.employment_type)?.label || f.employment_type;
-  const lines = [];
-  lines.push(`JOB TITLE\n${f.designation || ''}`);
-  lines.push(`DEPARTMENT\n${f.department || ''}`);
-  if (tier) lines.push(`POSITION TIER\n${tier}`);
-  lines.push(`JOB LOCATION\n${locationLabel(f) || 'As per company requirement'}${f.work_arrangement ? ` (${String(f.work_arrangement).replace(/_/g, '-')})` : ''}`);
-  lines.push(`EMPLOYMENT TYPE\n${etype || ''}`);
-  lines.push(`EXPERIENCE REQUIRED\n${expLabel(f, masters)}`);
-  if (f.disclose_ctc && ctcLabel(f)) lines.push(`COMPENSATION RANGE\n${ctcLabel(f)}`);
-  lines.push(`ABOUT THE ROLE\n${f.position_overview || f.purpose_of_hiring || `We are looking for ${f.number_of_positions > 1 ? f.number_of_positions + ' ' : 'a '}${f.designation || 'professional'}${f.number_of_positions > 1 ? 's' : ''} to join our ${f.department || ''} team.`}`);
-  if ((f.key_responsibilities || []).length) lines.push(`KEY RESPONSIBILITIES\n${bullets(f.key_responsibilities)}`);
-  if ((f.key_deliverables || []).length) lines.push(`KEY DELIVERABLES\n${bullets(f.key_deliverables)}`);
-  const quals = [...(f.qualification || []), ...(f.specialisation || []).map((s) => `Specialisation: ${s}`), ...(f.certifications || []).map((c) => `Certification: ${c}`)];
-  if (quals.length) lines.push(`REQUIRED QUALIFICATIONS\n${bullets(quals)}`);
-  const skills = [...(f.required_skills || []), ...(f.technical_skills || [])].filter((x, i, a) => a.indexOf(x) === i);
-  if (skills.length) lines.push(`TECHNICAL / FUNCTIONAL SKILLS\n${bullets(skills)}`);
-  if ((f.preferred_skills || []).length) lines.push(`PREFERRED SKILLS\n${bullets(f.preferred_skills)}`);
-  if (f.experience_expectations || (f.industry_experience || []).length) lines.push(`KEY COMPETENCIES\n${[f.experience_expectations, (f.industry_experience || []).length ? `Industry exposure: ${f.industry_experience.join(', ')}` : ''].filter(Boolean).join('\n')}`);
-  lines.push(`REPORTING STRUCTURE\nReports to ${ctx.reportsToName || ctx.hiringManagerName || 'the Hiring Manager'}${f.department ? `, ${f.department}` : ''}.`);
-  if (f.department_requirements || f.additional_notes) lines.push(`ADDITIONAL REQUIREMENTS\n${[f.department_requirements, f.additional_notes].filter(Boolean).join('\n')}`);
-  lines.push(`ABOUT MAXVOLT ENERGY\n${ABOUT_COMPANY}`);
-  return lines.join('\n\n');
+  const etype = (masters.employment_type || []).find((m) => m.value === f.employment_type)?.label || f.employment_type || 'Full-time';
+  const kw = fallbackKeywords(f);
+  const loc = locationLabel(f);
+  const n = Number(f.number_of_positions) || 1;
+  const title = f.designation || 'Professional';
+  const reports = ctx.reportsToName || ctx.hiringManagerName;
+
+  const resp = [...(f.key_responsibilities || [])];
+  for (const r of kw.responsibilities || []) { if (resp.length >= 7) break; if (!resp.some((x) => x.toLowerCase() === r.toLowerCase())) resp.push(r); }
+  const skills = [...(f.required_skills || []), ...(f.technical_skills || [])].filter((x, i, a) => a.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i);
+  const quals = [...(f.qualification || [])];
+  if (!quals.length) for (const q of kw.qualifications || []) quals.push(q);
+  const exp = expLabel(f, masters);
+  const qualLines = [...quals, ...(f.specialisation || []).map((x) => `Specialisation / stream: ${x}`), ...(f.certifications || []).map((x) => `Certification: ${x}`),
+    /^fresher/i.test(exp) ? 'Freshers are welcome to apply' : exp && exp !== 'As per role' ? `${/year/i.test(exp) ? exp : exp + ' years'} of relevant experience${(f.industry_experience || []).length ? ` in ${listOf(f.industry_experience)}` : ''}` : ((f.industry_experience || []).length ? `Experience in ${listOf(f.industry_experience)}` : '')].filter(Boolean);
+
+  const about = f.position_overview
+    ? String(f.position_overview).trim()
+    : [`MaxVolt Energy is looking for ${n > 1 ? `${n} ` : `${article(title)} `}${title}${n > 1 ? 's' : ''} to join our ${f.department || ''} team${loc ? ` at ${loc}` : ''}.`,
+      f.purpose_of_hiring ? sentence(f.purpose_of_hiring) + '.' : `This is ${article(etype)} ${etype.toLowerCase()} ${f.requisition_type === 'replacement' ? 'replacement ' : ''}position${tier ? ` at the ${tier} level` : ''} that supports our growing operations.`,
+      resp.length ? `In this role you will ${resp.slice(0, 2).map((r) => r.charAt(0).toLowerCase() + r.slice(1)).join(' and ')}, working closely with colleagues across the organisation.` : '',
+      reports ? `You will report to ${reports}.` : ''].filter(Boolean).join(' ');
+
+  const out = [];
+  out.push(`JOB TITLE\n${title}`);
+  out.push(`DEPARTMENT\n${f.department || ''}`);
+  if (tier) out.push(`POSITION TIER\n${tier}`);
+  out.push(`JOB LOCATION\n${loc || 'As per company requirement'}${f.work_arrangement ? ` (${String(f.work_arrangement).replace(/_/g, '-')})` : ''}`);
+  out.push(`EMPLOYMENT TYPE\n${etype}`);
+  out.push(`EXPERIENCE REQUIRED\n${exp}`);
+  if (f.disclose_ctc && ctcLabel(f)) out.push(`COMPENSATION RANGE\n${ctcLabel(f)}`);
+  out.push(`ABOUT THE ROLE\n${about}`);
+  if (resp.length) out.push(`KEY RESPONSIBILITIES\n${bullets(resp.map(sentence))}`);
+  if ((f.key_deliverables || []).length) out.push(`KEY DELIVERABLES\n${bullets(f.key_deliverables.map(sentence))}`);
+  if (qualLines.length) out.push(`REQUIRED QUALIFICATIONS\n${bullets(qualLines.map(sentence))}`);
+  if (skills.length) out.push(`TECHNICAL / FUNCTIONAL SKILLS\n${bullets(skills)}`);
+  if ((f.preferred_skills || []).length) out.push(`PREFERRED SKILLS\n${bullets(f.preferred_skills)}`);
+  out.push(`KEY COMPETENCIES\n${bullets([...(f.experience_expectations ? [sentence(f.experience_expectations)] : []), ...COMPETENCIES[tierBand(tier || title)]])}`);
+  out.push(`REPORTING STRUCTURE\n${reports ? `Reports to ${reports}${f.department ? `, ${f.department}` : ''}.` : `Reports within the ${f.department || 'department'} as directed by the Hiring Manager.`}`);
+  if (f.department_requirements || f.additional_notes) out.push(`ADDITIONAL REQUIREMENTS\n${bullets([f.department_requirements, f.additional_notes].filter(Boolean).map(sentence))}`);
+  out.push(`ABOUT MAXVOLT ENERGY\n${ABOUT_COMPANY}`);
+  return out.join('\n\n');
+}
+
+/** Turns whatever the AI returned (markdown, "-"/"*" bullets, "##" headings, bold) into the plain, consistent JD format. */
+export function normalizeJdText(text) {
+  let t = String(text || '').replace(/\r/g, '').replace(/^```[a-z]*\n?|```$/gim, '');
+  t = t.replace(/\*\*(.+?)\*\*/g, '$1').replace(/__(.+?)__/g, '$1');
+  const lines = t.split('\n').map((raw) => {
+    let l = raw.trimEnd();
+    const h = /^\s{0,3}#{1,6}\s+(.*)$/.exec(l);
+    if (h) return `\n${h[1].replace(/[:：]\s*$/, '').toUpperCase()}`;
+    const b = /^\s*[-*•–]\s+(.*)$/.exec(l);
+    if (b) return `• ${b[1]}`;
+    const num = /^\s*\d+[.)]\s+(.*)$/.exec(l);
+    if (num) return `• ${num[1]}`;
+    // "Key Responsibilities:" on its own line -> heading
+    const colon = /^\s*([A-Za-z][A-Za-z /&'’()-]{2,48}):\s*$/.exec(l);
+    if (colon) return `\n${colon[1].toUpperCase()}`;
+    return l;
+  });
+  t = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  // a heading line directly followed by text keeps one blank line before the heading, none after
+  return t.split(/\n{2,}/).map((blk) => blk.trim()).filter(Boolean).join('\n\n');
+}
+export const JD_REQUIRED_HEADINGS = ['ABOUT THE ROLE', 'KEY RESPONSIBILITIES', 'REQUIRED QUALIFICATIONS'];
+/** True when generated text looks like a complete JD (has the core sections and real content). */
+export function jdLooksComplete(text) {
+  const t = String(text || ''); if (t.length < 500) return false;
+  return JD_REQUIRED_HEADINGS.every((h) => new RegExp(`^${h.replace(/[/()]/g, '\\$&')}\\s*$`, 'mi').test(t));
 }
 
 // ── keyword suggestions: department-aware fallback (used when the AI is unavailable and to top up its answer) ──

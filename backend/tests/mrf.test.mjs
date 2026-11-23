@@ -1,6 +1,6 @@
 // MRF pure rules. Run: node backend/tests/mrf.test.mjs
 import assert from 'node:assert/strict';
-import { cleanForm, submitProblems, timelineHint, isMaterialJdChange, templateJd, fallbackKeywords, canTransition, nextReqId, legacyMirror, DEFAULT_MASTERS } from '../utils/mrf.js';
+import { normalizeJdText, jdLooksComplete, cleanForm, submitProblems, timelineHint, isMaterialJdChange, templateJd, fallbackKeywords, canTransition, nextReqId, legacyMirror, DEFAULT_MASTERS } from '../utils/mrf.js';
 let n = 0; const t = (name, fn) => { fn(); n++; console.log('ok  ', name); };
 const masters = { experience_range: DEFAULT_MASTERS.experience_range };
 t('tags are de-duplicated case-insensitively and numbers/dates sanitised', () => {
@@ -40,5 +40,15 @@ t('workflow, ids and the legacy mirror', () => {
 t('the designation master is large, unique and includes the common roles', () => {
   const d = DEFAULT_MASTERS.designation; assert.ok(d.length > 400); assert.equal(new Set(d.map(x => x.value)).size, d.length);
   for (const l of ['Software Developer', 'Battery Design Engineer', 'Plant Head', 'Territory Manager', 'Chief Executive Officer', 'Accounts Executive', 'Other / Custom']) assert.ok(d.some(x => x.label === l), l);
+});
+t('the form-based JD reads like a real posting and passes the completeness check', () => {
+  const f = { designation: 'Business Development Executive', department: 'Sales', position_tier: 'executive', employment_type: 'full_time', number_of_positions: 2, work_city: 'Noida', exp_min: '1_2', exp_max: '3_5', qualification: ['MBA'], required_skills: ['CRM'], key_responsibilities: ['generate qualified leads'] };
+  const jd = templateJd(f, { masters: { ...masters, position_tier: DEFAULT_MASTERS.position_tier, employment_type: DEFAULT_MASTERS.employment_type }, hiringManagerName: 'Hari' });
+  assert.ok(jdLooksComplete(jd)); assert.match(jd, /1–5 years of relevant experience/); assert.match(jd, /looking for 2 Business Development Executives/); assert.match(jd, /KEY COMPETENCIES\n• /);
+  assert.ok((jd.match(/^• /gm) || []).length >= 10, 'responsibilities are topped up for the department');
+});
+t('AI output is tidied into the plain format and thin output is rejected', () => {
+  assert.equal(normalizeJdText('## About the Role\n**We** hire.\n- one\n* two\nKey Responsibilities:\n1. do x'), 'ABOUT THE ROLE\nWe hire.\n• one\n• two\n\nKEY RESPONSIBILITIES\n• do x');
+  assert.equal(jdLooksComplete('ABOUT THE ROLE\nshort'), false);
 });
 console.log(`\n${n} tests passed`);

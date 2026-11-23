@@ -43,3 +43,19 @@ export const fmt = (iso, withTime = false) => {
   return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', ...(withTime ? { hour: '2-digit', minute: '2-digit', hour12: true } : {}) });
 };
 export const labelOf = (masters, kind, value) => (masters?.[kind] || []).find((m) => m.value === value)?.label || value || '';
+
+const TIER_RULES = [
+  [/chief executive|\bceo\b/i, 'chief_executive_officer'], [/chief financial|\bcfo\b/i, 'chief_financial_officer'], [/chief operating|\bcoo\b/i, 'chief_operating_officer'], [/managing director/i, 'managing_director'],
+  [/\bdirector\b|chairman|president(?!.*vice)/i, 'director'], [/senior vice president|\bsvp\b/i, 'senior_vice_president'], [/vice president|\bavp\b|\bvp\b/i, 'vice_president'],
+  [/deputy general manager|\bdgm\b/i, 'deputy_general_manager'], [/assistant general manager|\bagm\b/i, 'assistant_general_manager'], [/general manager|\bgm\b|\bhead\b/i, 'general_manager'],
+  [/regional .*manager|regional head/i, 'regional_manager'], [/area .*manager/i, 'area_manager'], [/territory .*manager/i, 'territory_manager'],
+  [/senior manager/i, 'senior_manager'], [/deputy manager/i, 'deputy_manager'], [/assistant manager/i, 'assistant_manager'], [/manager|architect/i, 'manager'],
+  [/team lead|team leader|supervisor|in-?charge|lead\b/i, 'team_leader'], [/senior (executive|engineer|developer|associate|accountant|analyst|recruiter)/i, 'senior_executive'],
+];
+/** Best-guess position tier for a designation (only returns values that exist in the tier master). */
+export function suggestTier(designation, masters) {
+  const has = (v) => (masters?.position_tier || []).some((m) => m.value === v);
+  for (const [re, v] of TIER_RULES) if (re.test(designation || '') && has(v)) return v;
+  return has('executive') && designation ? 'executive' : '';
+}
+export const plusDays = (n) => { const d = new Date(Date.now() + 5.5 * 3600 * 1000 + n * 86400000); return d.toISOString().slice(0, 10); };

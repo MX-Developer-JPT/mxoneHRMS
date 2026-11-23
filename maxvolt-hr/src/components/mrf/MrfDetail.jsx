@@ -7,6 +7,7 @@ import { Loader2, Check, X, Undo2, Send, Pause, Play, CheckCircle2, Ban, Calenda
 import { toast } from 'sonner';
 import { mrf, statusOf, PRIORITY_CLS, STAGES, stageIndex, fmt, labelOf } from '@/lib/mrf';
 import JdPanel, { JdText } from './JdPanel';
+import { printJd } from '@/lib/jdPrint';
 import { SearchSelect } from './Pickers';
 
 const CHANNELS = ['Careers page', 'LinkedIn', 'Naukri', 'Indeed', 'Employee referral', 'Campus / placement cell'];
@@ -109,7 +110,7 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
             <div>
               <p className="text-sm font-semibold mb-2">Job Description</p>
               {status === 'pending_hr_publication' || status === 'published' || status === 'on_hold'
-                ? <div className="rounded-lg border bg-white p-5 max-h-[420px] overflow-y-auto"><JdText text={rec.approved_jd?.text || rec.jd_current_text} /><p className="text-xs text-green-700 mt-3">🔒 Approved version {rec.approved_jd?.version} — locked. Only the Hiring Manager can change it (which voids the approval).</p></div>
+                ? <div className="rounded-lg border bg-white p-5 max-h-[420px] overflow-y-auto"><JdText text={rec.approved_jd?.text || rec.jd_current_text} /><div className="flex gap-2 mt-3"><Button size="sm" variant="outline" onClick={() => printJd(rec, rec.approved_jd?.text || rec.jd_current_text, { letterhead: true })}>Print on letterhead</Button><Button size="sm" variant="ghost" onClick={() => printJd(rec, rec.approved_jd?.text || rec.jd_current_text, { letterhead: false })}>Print without letterhead</Button></div><p className="text-xs text-green-700 mt-3">🔒 Approved version {rec.approved_jd?.version} — locked. Only the Hiring Manager can change it (which voids the approval).</p></div>
                 : null}
               {(p.can_edit_jd || ['draft', 'changes_requested', 'pending_hm_approval'].includes(status)) && (
                 <JdPanel rec={rec} ensureSaved={async () => rec.id} perms={jdPerms} onUpdated={(r) => { setRec((x) => ({ ...x, ...r, permissions: x.permissions })); load(); onChanged?.(); }} />
