@@ -524,6 +524,18 @@ async function buildLetterPdf(label, ref, htmlContent, extraImages = {}) {
  * Car lease deduction for a payroll month. The salary structure carries car_lease_deduction (₹ per month) and optionally
  * car_lease_from / car_lease_to ("YYYY-MM"; blank = open ended). Returns whole rupees, 0 when it does not apply.
  */
+/** Copy of every leave row a bulk import is about to change, so the import can be previewed and undone. */
+async function saveLeaveImportSnapshot({ kind, cu, year, balances, history }) {
+  const id = uuidv4();
+  const data = {
+    id, kind, year, status: 'active', created_at: new Date().toISOString(), created_by: cu?.id || '', created_by_name: cu?.full_name || cu?.email || '',
+    balances, history, summary: { balances: balances.length, history: history.length },
+  };
+  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveImportSnapshot',$2,'active',$3)", [id, cu?.id || null, JSON.stringify(data)]);
+  return id;
+}
+const LB_RESTORE = ['total_allocated', 'accrued_this_year', 'carried_forward', 'used', 'available', 'pending_approval'];
+
 function carLeaseFor(ss, month, year) {
   const amt = Math.round(Number(ss?.car_lease_deduction) || 0);
   if (amt <= 0) return 0;
@@ -3213,6 +3225,7 @@ router.post('/:name', async (req, res) => {
 
       let created = 0, updated = 0, skipped = 0;
       const errors = [];
+      const snapBalB = [];
 
       for (const [i, row] of rows.entries()) {
         const code = String(row.employee_code || '').trim().toUpperCase();
@@ -3235,17 +3248,22 @@ router.post('/:name', async (req, res) => {
             const pending = existing.pending_approval || 0;
             const merged = { ...existing, total_allocated: value, available: Math.max(value - used - pending, 0) };
             await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(merged), existingRow.id]);
+            snapBalB.push({ id: existingRow.id, user_id: emp.user_id, policy_id: policy.id, before: existing, after: merged });
             updated++;
           } else {
             const id = uuidv4();
             const d = { id, user_id: emp.user_id, leave_policy_id: policy.id, year, total_allocated: value, accrued_this_year: 0, used: 0, pending_approval: 0, available: value, carried_forward: 0 };
             await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [id, emp.user_id, JSON.stringify(d)]);
+            snapBalB.push({ id, user_id: emp.user_id, policy_id: policy.id, before: null, after: d });
             created++;
           }
         }
       }
 
-      return res.json({ success: true, created, updated, skipped, errors });
+      let lbSnapshotId = null;
+      if (snapBalB.length) { try { lbSnapshotId = await saveLeaveImportSnapshot({ kind: 'leave_balances', cu, year, balances: snapBalB, history: [] }); } catch (e) { console.warn('[leave import] snapshot failed:', e.message); } }
+      cacheInvalidate('LeaveBalance');
+      return res.json({ success: true, created, updated, skipped, errors, snapshot_id: lbSnapshotId });
     }
 
     /* ── Leave Book import — a completely different source format from the
@@ -3462,6 +3480,7 @@ router.post('/:name', async (req, res) => {
       const now = new Date().toISOString();
       const balInserts = [], balUpdates = [];
       const histInserts = [], histUpdates = [];
+      const snapBal = [], snapHist = [];
       const warnings = [];
       let balCreated = 0, balUpdated = 0, balUnchanged = 0;
       let histCreated = 0, histUpdated = 0;
@@ -3502,6 +3521,7 @@ router.post('/:name', async (req, res) => {
             const changed = ['total_allocated', 'accrued_this_year', 'used', 'available', 'carried_forward'].some(f => (ex[f] || 0) !== (newVals[f] || 0));
             if (changed) {
               balUpdates.push([JSON.stringify({ ...ex, ...newVals }), existing.id]);
+              snapBal.push({ id: existing.id, user_id: row.userId, policy_id: policyId, before: ex, after: { ...ex, ...newVals } });
               balUpdated++;
             } else balUnchanged++;
           } else {
@@ -3510,10 +3530,9 @@ router.post('/:name', async (req, res) => {
               used: stats.taken, available: stats.available, carried_forward: stats.opening,
             };
             const id = uuidv4();
-            balInserts.push([id, row.userId, JSON.stringify({
-              id, user_id: row.userId, leave_policy_id: policyId, year: row.row_year,
-              ...newVals, pending_approval: 0,
-            })]);
+            const newBal = { id, user_id: row.userId, leave_policy_id: policyId, year: row.row_year, ...newVals, pending_approval: 0 };
+            balInserts.push([id, row.userId, JSON.stringify(newBal)]);
+            snapBal.push({ id, user_id: row.userId, policy_id: policyId, before: null, after: newBal });
             balCreated++;
           }
         }
@@ -3528,10 +3547,12 @@ router.post('/:name', async (req, res) => {
         const existingHist = histByUser.get(row.userId);
         if (existingHist) {
           histUpdates.push([JSON.stringify({ ...existingHist.data, ...histData }), existingHist.id]);
+          snapHist.push({ id: existingHist.id, user_id: row.userId, before: existingHist.data });
           histUpdated++;
         } else {
           const id = uuidv4();
           histInserts.push([id, row.userId, JSON.stringify({ id, ...histData })]);
+          snapHist.push({ id, user_id: row.userId, before: null });
           histCreated++;
         }
       }
@@ -3551,21 +3572,114 @@ router.post('/:name', async (req, res) => {
         }
       };
 
+      // Keep a copy of what is about to be overwritten — this is what "Undo" restores from.
+      const lhSnapshotId = await saveLeaveImportSnapshot({ kind: 'leave_history', cu, year: detectedYear, balances: snapBal, history: snapHist });
+
       await Promise.all([
         bulkInsertEntities('LeaveBalance', balInserts),
         bulkUpdateEntities(balUpdates),
         bulkInsertEntities('LeaveHistory', histInserts),
         bulkUpdateEntities(histUpdates),
       ]);
+      cacheInvalidate('LeaveBalance'); cacheInvalidate('LeaveHistory');
 
       return res.json({
-        success: true, year: detectedYear,
+        success: true, year: detectedYear, snapshot_id: lhSnapshotId,
         total_rows: parsedRows.length, matched_count: matched.length, not_found_count: notFound.length, not_found: notFound.slice(0, 50),
         leave_balances_created: balCreated, leave_balances_updated: balUpdated, leave_balances_unchanged: balUnchanged,
         history_records_created: histCreated, history_records_updated: histUpdated,
         warnings,
         message: `Processed ${matched.length} employees from ${[...new Set(matched.map(r=>r.sheetName))].join(', ')}: ${balCreated} balances created, ${balUpdated} updated, ${balUnchanged} unchanged. ${histCreated + histUpdated} leave history records saved.`,
       });
+    }
+
+    /* ── Undo for leave imports: list the saved copies, preview (dry run), then apply ── */
+    case 'listLeaveImportSnapshots': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const snaps = await all("SELECT data FROM entities WHERE type='LeaveImportSnapshot' ORDER BY created_at DESC LIMIT 30");
+      return res.json({ success: true, snapshots: snaps.map(r => { const d = JSON.parse(r.data); return { id: d.id, kind: d.kind, year: d.year, status: d.status, created_at: d.created_at, created_by_name: d.created_by_name, summary: d.summary, undone_at: d.undone_at || null, undone_by_name: d.undone_by_name || '' }; }) });
+    }
+
+    case 'undoLeaveImport': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { snapshot_id, mode = 'preview', preview_hash } = p;
+      const snRow = snapshot_id ? await one("SELECT data FROM entities WHERE type='LeaveImportSnapshot' AND id=$1", [snapshot_id]) : null;
+      if (!snRow) return res.json({ success: false, error: 'That import copy was not found' });
+      const snap = JSON.parse(snRow.data);
+      if (snap.status === 'undone') return res.json({ success: false, error: `This import was already undone${snap.undone_at ? ' on ' + snap.undone_at.slice(0, 10) : ''}` });
+
+      const balIds = snap.balances.map(b => b.id), histIds = (snap.history || []).map(h => h.id);
+      const curBal = new Map((balIds.length ? await all("SELECT id, data FROM entities WHERE type='LeaveBalance' AND id = ANY($1)", [balIds]) : []).map(r => [r.id, JSON.parse(r.data)]));
+      const curHist = new Map((histIds.length ? await all("SELECT id, data FROM entities WHERE type='LeaveHistory' AND id = ANY($1)", [histIds]) : []).map(r => [r.id, JSON.parse(r.data)]));
+      const userIds = [...new Set([...snap.balances, ...(snap.history || [])].map(x => x.user_id))];
+      const empRows = userIds.length ? await all("SELECT user_id, data FROM entities WHERE type='Employee' AND user_id = ANY($1)", [userIds]) : [];
+      const empBy = new Map(empRows.map(r => { const e = JSON.parse(r.data); return [r.user_id, e]; }));
+      const polRows = await all("SELECT id, data FROM entities WHERE type='LeavePolicy'");
+      const polBy = new Map(polRows.map(r => { const d = JSON.parse(r.data); return [r.id, d.code || d.name || '']; }));
+      const n0 = (v) => Number(v) || 0;
+      const same = (a, b) => LB_RESTORE.every(f => n0(a?.[f]) === n0(b?.[f]));
+
+      const plan = []; // one entry per leave balance row
+      for (const b of snap.balances) {
+        const cur = curBal.get(b.id) || null;
+        const emp = empBy.get(b.user_id) || {};
+        const base = { id: b.id, user_id: b.user_id, employee_code: emp.employee_code || '', employee_name: emp.display_name || '', policy: polBy.get(b.policy_id) || '' };
+        if (b.before === null) {
+          if (!cur) continue;
+          if (same(cur, b.after)) plan.push({ ...base, action: 'remove', current: cur, restored: null });
+          else plan.push({ ...base, action: 'keep', note: 'Created by the import but changed since — left as it is', current: cur, restored: null });
+          continue;
+        }
+        const changedSince = cur ? !same(cur, b.after) : false;
+        // Restore the figures as they were, then re-apply any leave activity that happened after the import
+        const restored = cur ? { ...cur } : { ...b.before };
+        for (const f of ['total_allocated', 'accrued_this_year', 'carried_forward']) restored[f] = b.before[f] ?? 0;
+        for (const f of ['used', 'available', 'pending_approval']) restored[f] = Math.max(0, n0(b.before[f]) + (cur ? n0(cur[f]) - n0(b.after[f]) : 0));
+        if (!cur) plan.push({ ...base, action: 'recreate', current: null, restored });
+        else if (same(cur, restored)) plan.push({ ...base, action: 'same', current: cur, restored });
+        else plan.push({ ...base, action: 'restore', changed_since_import: changedSince, current: cur, restored });
+      }
+      const histPlan = [];
+      for (const h of (snap.history || [])) {
+        const cur = curHist.get(h.id) || null;
+        if (h.before === null) { if (cur) histPlan.push({ id: h.id, action: 'remove' }); }
+        else histPlan.push({ id: h.id, action: cur ? 'restore' : 'recreate', user_id: h.user_id, data: h.before });
+      }
+
+      const hash = createHash('sha1').update(JSON.stringify([plan.map(x => [x.id, x.action, x.restored && LB_RESTORE.map(f => n0(x.restored[f]))]), histPlan.map(x => [x.id, x.action])])).digest('hex');
+
+      if (mode !== 'apply') {
+        const fields = LB_RESTORE;
+        const rows = plan.filter(x => x.action !== 'same').map(x => ({
+          employee_code: x.employee_code, employee_name: x.employee_name, policy: x.policy, action: x.action, note: x.note || (x.changed_since_import ? 'Leave activity since the import is kept on top of the restored figures' : ''),
+          current: x.current ? Object.fromEntries(fields.map(f => [f, n0(x.current[f])])) : null,
+          restored: x.restored ? Object.fromEntries(fields.map(f => [f, n0(x.restored[f])])) : null,
+        })).sort((a, b) => (a.employee_name || '').localeCompare(b.employee_name || ''));
+        const count = (a) => plan.filter(x => x.action === a).length;
+        return res.json({
+          success: true, preview: true, preview_hash: hash,
+          snapshot: { id: snap.id, kind: snap.kind, year: snap.year, created_at: snap.created_at, created_by_name: snap.created_by_name },
+          summary: { employees: new Set(plan.filter(x => x.action !== 'same').map(x => x.user_id)).size, balances_restored: count('restore') + count('recreate'), balances_removed: count('remove'), balances_unchanged: count('same'), balances_kept: count('keep'), changed_since_import: plan.filter(x => x.changed_since_import).length, history_restored: histPlan.filter(x => x.action !== 'remove').length, history_removed: histPlan.filter(x => x.action === 'remove').length },
+          rows: rows.slice(0, 1000), truncated: rows.length > 1000,
+        });
+      }
+
+      if (!preview_hash || preview_hash !== hash) return res.json({ success: false, error: 'The leave data changed since the preview, or no preview was run. Run the preview again and confirm it.' });
+      const nowIso = new Date().toISOString();
+      for (const x of plan) {
+        if (x.action === 'restore') await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(x.restored), x.id]);
+        else if (x.action === 'recreate') await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [x.id, x.user_id, JSON.stringify({ ...x.restored, id: x.id })]);
+        else if (x.action === 'remove') await run("DELETE FROM entities WHERE id=$1 AND type='LeaveBalance'", [x.id]);
+      }
+      for (const x of histPlan) {
+        if (x.action === 'restore') await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(x.data), x.id]);
+        else if (x.action === 'recreate') await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveHistory',$2,'active',$3)", [x.id, x.user_id, JSON.stringify(x.data)]);
+        else if (x.action === 'remove') await run("DELETE FROM entities WHERE id=$1 AND type='LeaveHistory'", [x.id]);
+      }
+      await run("UPDATE entities SET data=$1, status='undone', updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...snap, status: 'undone', undone_at: nowIso, undone_by: cu.id, undone_by_name: cu.full_name || cu.email || '' }), snap.id]);
+      cacheInvalidate('LeaveBalance'); cacheInvalidate('LeaveHistory');
+      console.log(`[audit] Leave import ${snap.id} undone by ${cu.id}: ${plan.filter(x => ['restore', 'recreate'].includes(x.action)).length} restored, ${plan.filter(x => x.action === 'remove').length} removed`);
+      return res.json({ success: true, restored: plan.filter(x => ['restore', 'recreate'].includes(x.action)).length, removed: plan.filter(x => x.action === 'remove').length, message: 'The leave import was undone.' });
     }
 
     /* ── Leave history — month-by-month view, HR sees all, employees see own ── */

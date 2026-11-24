@@ -14,6 +14,7 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import LeavePolicyManager from '../components/leave/LeavePolicyManager';
+import LeaveImportUndo from '../components/leave/LeaveImportUndo';
 import LeaveAllocationPanel from '../components/leave/LeaveAllocationPanel';
 import HRApplyOnBehalf from '../components/leave/HRApplyOnBehalf';
 import { resolveHierarchy } from '@/lib/hierarchy';
@@ -636,6 +637,7 @@ export default function LeaveManagement() {
                   <p className="text-xs text-gray-500 mb-3">
                     Import the full Leave Book workbook (e.g. "LEAVE DETAILS JAN-DEC.xlsx" — sheets: Other EMP Data / Manager Leave Data / Intern Leave data / Left Employee) to set every employee's EL/CL/SL balance from the ledger and save the month-by-month history below. Re-importing the same file is safe — unchanged balances are left untouched.
                   </p>
+                  <LeaveImportUndo onChanged={() => { loadLeaveHistory(historyYear); }} />
                   {historyImportResult && (
                     <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
                       <div className="bg-green-50 border border-green-100 rounded-lg p-2"><p className="text-lg font-bold text-green-700">{historyImportResult.leave_balances_created}</p><p className="text-green-600">Balances Created</p></div>
