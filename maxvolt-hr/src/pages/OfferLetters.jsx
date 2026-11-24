@@ -24,11 +24,11 @@ const TODAY = new Date().toISOString().slice(0, 10);
 
 function fmt(n) { return Number(n || 0).toLocaleString('en-IN'); }
 
-// PF applies to ALL employees (capped at ₹15,000 wage).
+// PF applies to ALL employees (capped at ₹25,000 wage).
 // ESI applies when basic ≤ ₹21,000, calculated on basic salary.
 function calcSalary(annualCTC, medicalContrib = 0) {
   if (!annualCTC || annualCTC <= 0) return null;
-  const PF_CEIL = 15000, ESI_CEIL = 21000;
+  const PF_CEIL = 25000, ESI_CEIL = 21000;
   const monthlyTotal = annualCTC / 12;
   const basic  = Math.round(monthlyTotal * 0.5);
   const hra    = Math.round(basic * 0.4);
@@ -230,7 +230,7 @@ function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) 
         const basic  = Number(override.basic)      || autoSal.basic_monthly;
         const hra    = Number(override.hra)         || autoSal.hra_monthly;
         const conv   = Number(override.conveyance)  || autoSal.conveyance_monthly;
-        const pfBase = Math.min(basic, 15000);
+        const pfBase = Math.min(basic, 25000);
         const pfEmp  = Math.round(pfBase * 0.12);
         const pfEmpr = Math.round(pfBase * 0.13);
         const isESI  = basic <= 21000;

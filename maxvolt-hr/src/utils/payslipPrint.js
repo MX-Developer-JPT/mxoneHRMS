@@ -84,7 +84,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const bonusBreakdown = bonuses.filter(b => b.amount > 0);
 
   // Deductions — PF and ESI are computed on earned (prorated) basis
-  const pfDeduction  = deductions.pf  ?? payroll.pf_contribution  ?? Math.round(Math.min(basicEarned, 15000) * 0.12);
+  const pfDeduction  = deductions.pf  ?? payroll.pf_contribution  ?? Math.round(Math.min(basicEarned, 25000) * 0.12);
   const esiDeduction = deductions.esi != null
     ? deductions.esi
     : (payroll.esi_contribution ?? (basicFixed <= 21000 ? Math.round(basicEarned * 0.0075) : 0));
@@ -99,7 +99,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
   const netSalary = grossSalary - totalDeductions + reimbAmount;
 
   // Employer contributions (CTC components — not deducted from employee salary)
-  const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(Math.min(basicEarned, 15000) * 0.13);
+  const employerPF  = payroll.employer_contributions?.pf  ?? salaryStructure.employer_pf_contribution  ?? Math.round(Math.min(basicEarned, 25000) * 0.13);
   const employerESI = payroll.employer_contributions?.esi ?? (basicFixed <= 21000 ? (salaryStructure.employer_esi_contribution || Math.round(basicEarned * 0.0325)) : 0);
   // gratuity removed from payslip
 
@@ -209,7 +209,7 @@ function _buildPayslipParts({ payroll, employee, empUser, salaryStructure, bonus
           <div style="background:#fff5f5;padding:5px 12px;font-size:9.5px;font-weight:bold;text-transform:uppercase;color:#dc2626;border-bottom:1px solid #e5e7eb;">Deductions</div>
           <table style="width:100%;border-collapse:collapse;">
             <tbody>
-              ${dedRow(`Provident Fund (12% on Basic, max ₹15,000 wage)`, pfDeduction, true)}
+              ${dedRow(`Provident Fund (12% on Basic, max ₹25,000 wage)`, pfDeduction, true)}
               ${esiDeduction > 0 ? dedRow('ESI (Employee 0.75%)', esiDeduction) : ''}
               ${tdsDeduction ? dedRow('Income Tax (TDS)', tdsDeduction) : ''}
               ${loanEmi ? dedRow('Loan EMI', loanEmi) : ''}

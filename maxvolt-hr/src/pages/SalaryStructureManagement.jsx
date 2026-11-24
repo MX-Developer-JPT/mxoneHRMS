@@ -18,7 +18,7 @@ import { openLetterheadPrintWindow } from '../utils/letterhead';
 import SalaryBreakdownCard from '../components/salary/SalaryBreakdownCard';
 
 // Defaults — overridden by PayrollConfiguration loaded from DB
-let PF_CEILING = 15000;
+let PF_CEILING = 25000;
 let ESI_CEILING_MONTHLY = 21000;
 
 const fmt = (val) => (val || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 });
@@ -41,7 +41,7 @@ function calcBonus(annualCTC, basicAnnual) {
 // Salary structure:
 // Earnings: Basic (50% of CTC), HRA (40% of Basic), Conveyance (balance to complete gross)
 // Gross = CTC - employer contributions
-// PF: employee 12% on min(basic, ₹15,000) — ALL employees including ESI
+// PF: employee 12% on min(basic, ₹25,000) — ALL employees including ESI
 // ESI: employee 0.75% on basic — only when basic ≤ ₹21,000
 // Employer: PF 13%, ESI 3.25%, Medical (0 if not configured), Bonus/VPP
 function calcStructure(annualCTC, medicalContribution = 0) {
@@ -54,7 +54,7 @@ function calcStructure(annualCTC, medicalContribution = 0) {
   const bonus = calcBonus(annualCTC, basicAnnual);
   const bonusAnnual = bonus.amount * 12;
 
-  // PF: 12% on min(basic, ₹15,000) — applicable to ALL employees
+  // PF: 12% on min(basic, ₹25,000) — applicable to ALL employees
   const pfBase = Math.min(basicM, PF_CEILING);
   const employeePF = Math.round(pfBase * 0.12);
   const employerPF = Math.round(pfBase * 0.13);
@@ -175,7 +175,7 @@ function printSalaryStructure(structure, emp) {
             <td style="padding:6px 10px;text-align:right;font-size:11px;border:1px solid #ccc;">${L(grossM)}</td>
           </tr>
           <tr><td colspan="3" style="padding:5px 10px;font-size:11px;font-weight:bold;text-decoration:underline;border:1px solid #ccc;">Deduction</td></tr>
-          ${row('PF Employee Contribution (12% on Basic, max ₹15,000)', pfM, pfM * 12)}
+          ${row('PF Employee Contribution (12% on Basic, max ₹25,000)', pfM, pfM * 12)}
           ${esiM > 0 ? row('ESI Employee Contribution (0.75% on Basic)', esiM, esiM * 12) : ''}
           ${carLeaseM > 0 ? row('Car Lease Deduction' + (structure.car_lease_note ? ' (' + String(structure.car_lease_note).replace(/[<>&]/g, '') + ')' : ''), carLeaseM, carLeaseM * 12) : ''}
           <tr style="background:#d9d9d9;font-weight:bold;">
@@ -289,7 +289,7 @@ export default function SalaryStructureManagement() {
       // Apply payroll config settings to calc constants
       if (configs.length > 0) {
         const cfg = configs[0];
-        PF_CEILING = cfg.pf_ceiling || 15000;
+        PF_CEILING = (cfg.pf_ceiling && Number(cfg.pf_ceiling) !== 15000) ? Number(cfg.pf_ceiling) : 25000;
         ESI_CEILING_MONTHLY = cfg.esi_wage_ceiling || 21000;
       }
       // NOTE: salary structures intentionally still include HR/admin/recruiter
@@ -891,7 +891,7 @@ export default function SalaryStructureManagement() {
                     </div>
                   ) : null}
                   <div className="p-3 bg-gray-50 rounded-lg text-sm text-gray-500">
-                    <strong>Compliance Notes:</strong> PF (12% employee, 13% employer) on basic salary, capped at ₹15,000 — applicable to all employees. ESI (0.75% employee, 3.25% employer) on gross — applicable only when basic ≤ ₹21,000.
+                    <strong>Compliance Notes:</strong> PF (12% employee, 13% employer) on basic salary, capped at ₹25,000 — applicable to all employees. ESI (0.75% employee, 3.25% employer) on gross — applicable only when basic ≤ ₹21,000.
                   </div>
                 </TabsContent>
 

@@ -21,7 +21,7 @@ export default function PayrollSettings() {
     try {
       const configs = await base44.entities.PayrollConfiguration.list();
       if (configs.length > 0) {
-        setConfig(configs[0]);
+        setConfig({ ...configs[0], pf_ceiling: Number(configs[0].pf_ceiling) === 15000 || !configs[0].pf_ceiling ? 25000 : configs[0].pf_ceiling });
       } else {
         // Initialize default config
         const currentYear = new Date().getFullYear();
@@ -29,7 +29,7 @@ export default function PayrollSettings() {
           financial_year: `${currentYear}-${currentYear + 1}`,
           pf_employer_rate: 12,
           pf_employee_rate: 12,
-          pf_ceiling: 15000,
+          pf_ceiling: 25000,
           esi_employer_rate: 3.25,
           esi_employee_rate: 0.75,
           esi_wage_ceiling: 21000,

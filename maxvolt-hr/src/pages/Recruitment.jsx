@@ -24,7 +24,7 @@ const TODAY = new Date().toISOString().slice(0, 10);
 
 function calcSalary(annualCTC) {
   if (!annualCTC || annualCTC <= 0) return null;
-  const PF_CEIL = 15000, ESI_CEIL = 21000;
+  const PF_CEIL = 25000, ESI_CEIL = 21000;
   const m = Math.round(annualCTC / 12);
   const basic = Math.round(m * 0.5);
   const hra = Math.round(basic * 0.4);

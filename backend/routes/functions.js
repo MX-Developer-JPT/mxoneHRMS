@@ -26,6 +26,7 @@ import { isRoasterPolicy, roasterErrors, departmentAllowed, isDuhai, ROASTER_EXC
 import { loadRoasterConfig, saveRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
 import { COMPETENCIES, SCALE, OPEN_QUESTIONS, MIN_RATERS, LEGACY_PERIOD, currentPeriod, normalizePeriod, periodLabel, validateSubmission, summarize, periodsOf } from '../utils/feedback360.js';
+// Statutory EPF wage ceiling (monthly basic). Employee PF = 12%, employer 13% on min(basic, this). Was 15,000; now 25,000.const PF_WAGE_CEILING = 25000;
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -434,7 +435,7 @@ function calcBonusVPP(annualCTC, basicAnnual) {
    of keeping their own copies of the PF/ESI/bonus formulas in sync by hand. ── */
 function calcSalaryBreakdown(annualCTC, medicalContribution = 0, ceilings = {}) {
   if (!annualCTC || annualCTC <= 0) return null;
-  const PF_CEILING = ceilings.pf_ceiling || 15000;
+  const PF_CEILING = (Number(ceilings.pf_ceiling) && Number(ceilings.pf_ceiling) !== 15000 ? Number(ceilings.pf_ceiling) : PF_WAGE_CEILING);
   const ESI_CEILING_MONTHLY = ceilings.esi_wage_ceiling || 21000;
 
   const basicAnnual = annualCTC * 0.5;
@@ -576,7 +577,7 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
       ];
 
       const dedRows = [
-        dRow('PF Employee Contribution (12% on Basic, max ₹15,000)', sal.pf_emp_annual, sal.pf_emp_monthly),
+        dRow('PF Employee Contribution (12% on Basic, max ₹25,000)', sal.pf_emp_annual, sal.pf_emp_monthly),
         ...(sal.isESI ? [dRow('ESI Employee Contribution (0.75% on Basic)', sal.esi_emp_annual, sal.esi_emp_monthly)] : []),
       ];
       const totalDedAnnual  = (sal.pf_emp_monthly + sal.esi_emp_monthly) * 12;
@@ -679,7 +680,7 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
 function computeOfferSalary(annualCTC, medicalContribution = 0, overrides = {}) {
   const ctc = Number(annualCTC) || 0;
   const monthlyCTC = ctc / 12;
-  const PF_CEIL = 15000, ESI_CEIL = 21000;
+  const PF_CEIL = PF_WAGE_CEILING, ESI_CEIL = 21000;
   const autoBasicM = Math.round(monthlyCTC * 0.5);
   const basicM  = overrides?.basic ? Number(overrides.basic) : autoBasicM;
   const autoHraM = Math.round(basicM * 0.4);
@@ -846,7 +847,7 @@ function buildOfferLetterPdf(offer) {
         cell(L(monthly), { bold: true, fillColor: GRAY, alignment: 'right', ...(color ? { color } : {}) }),
       ];
       const dedRows = [
-        dRow('PF Employee Contribution (12% on Basic, max ₹15,000)', sal.pf_emp_annual, sal.pf_emp_monthly),
+        dRow('PF Employee Contribution (12% on Basic, max ₹25,000)', sal.pf_emp_annual, sal.pf_emp_monthly),
         ...(sal.isESI ? [dRow('ESI Employee Contribution (0.75% on Basic)', sal.esi_emp_annual, sal.esi_emp_monthly)] : []),
       ];
       const totalDedAnnual  = sal.pf_emp_annual + sal.esi_emp_annual;
@@ -5684,9 +5685,9 @@ router.post('/:name', async (req, res) => {
         const lopAmount    = totalLOPDays > 0 ? Math.round(gross * totalLOPDays / calendarDays) : 0;
         const grossAfterLop = Math.max(0, gross - lopAmount);
 
-        // PF: cap basic at ₹15,000 first, then prorate by days worked
-        // monthlyPF = 12% × min(basic, 15000);  Final PF = monthlyPF × payDays / calendarDays
-        const monthlyPFBase = Math.min(basic, 15000);
+        // PF: cap basic at ₹25,000 first, then prorate by days worked
+        // monthlyPF = 12% × min(basic, 25000);  Final PF = monthlyPF × payDays / calendarDays
+        const monthlyPFBase = Math.min(basic, PF_WAGE_CEILING);
         const pf    = Math.round(monthlyPFBase * 0.12 * payDays / calendarDays);
         const empPF = Math.round(monthlyPFBase * 0.13 * payDays / calendarDays);
 
@@ -6106,7 +6107,7 @@ router.post('/:name', async (req, res) => {
         const annualCTC     = totalCTCM * 12;
 
         // Derive employer PF (13% on capped basic) and employee ESI (0.75% on basic ≤21000)
-        const pfBase          = Math.min(basicM, 15000);
+        const pfBase          = Math.min(basicM, PF_WAGE_CEILING);
         const employerPFM     = Math.round(pfBase * 0.13);
         const employeeESIM    = basicM <= 21000 ? Math.round(basicM * 0.0075) : 0;
         const performanceBonus = ctcBonusM || vppM; // prefer CTC_BONUS, fallback to VPP
@@ -8242,12 +8243,12 @@ router.post('/:name', async (req, res) => {
         const special= ss.special_allowance || 0;
         const bonus  = ss.performance_bonus || ss.ctc_bonus || Math.round(basic * 0.0833);
         const gross  = basic + hra + conv + special;
-        const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, 15000) * 0.12);
+        const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, PF_WAGE_CEILING) * 0.12);
         const esiEmp = ss.esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
         const carLease = carLeaseFor(ss, new Date().getMonth() + 1, new Date().getFullYear());
         const totalDed = pfEmp + esiEmp + carLease;
         const net    = Math.max(0, gross - totalDed);
-        const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, 15000) * 0.13);
+        const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, PF_WAGE_CEILING) * 0.13);
         const esiEmpr= ss.employer_esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
         const totalEmpr = pfEmpr + esiEmpr;
 
@@ -8494,10 +8495,10 @@ router.post('/:name', async (req, res) => {
         const special= ss.special_allowance || 0;
         const bonus  = ss.performance_bonus || ss.ctc_bonus || Math.round(basic * 0.0833);
         const gross  = basic + hra + conv + special;
-        const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, 15000) * 0.12);
+        const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, PF_WAGE_CEILING) * 0.12);
         const esiEmp = ss.esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
         const net    = Math.max(0, gross - pfEmp - esiEmp);
-        const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, 15000) * 0.13);
+        const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, PF_WAGE_CEILING) * 0.13);
         const esiEmpr= ss.employer_esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
 
         const isAlt  = idx % 2 === 1;
@@ -8527,10 +8528,10 @@ router.post('/:name', async (req, res) => {
         const special= ss.special_allowance || 0;
         const bonus  = ss.performance_bonus || ss.ctc_bonus || Math.round(basic * 0.0833);
         const gross  = basic + hra + conv + special;
-        const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, 15000) * 0.12);
+        const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, PF_WAGE_CEILING) * 0.12);
         const esiEmp = ss.esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
         const net    = Math.max(0, gross - pfEmp - esiEmp);
-        const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, 15000) * 0.13);
+        const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, PF_WAGE_CEILING) * 0.13);
         const esiEmpr= ss.employer_esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0325) : 0);
         return { annCTC:acc.annCTC+annCTC, monCTC:acc.monCTC+monCTC, basic:acc.basic+basic, hra:acc.hra+hra, conv:acc.conv+conv, special:acc.special+special, bonus:acc.bonus+bonus, gross:acc.gross+gross, pfEmp:acc.pfEmp+pfEmp, esiEmp:acc.esiEmp+esiEmp, net:acc.net+net, pfEmpr:acc.pfEmpr+pfEmpr, esiEmpr:acc.esiEmpr+esiEmpr };
       }, { annCTC:0, monCTC:0, basic:0, hra:0, conv:0, special:0, bonus:0, gross:0, pfEmp:0, esiEmp:0, net:0, pfEmpr:0, esiEmpr:0 });
@@ -8841,9 +8842,9 @@ router.post('/:name', async (req, res) => {
         // Informational — how much of the fixed gross the LOP days cost.
         const lop = grossFixed - grossEarned;
 
-        // PF: cap FIXED basic at ₹15,000 first (eligibility/wage-ceiling is
+        // PF: cap FIXED basic at ₹25,000 first (eligibility/wage-ceiling is
         // on the fixed wage), then prorate the contribution by days worked.
-        const monthlyPFBaseSS = Math.min(basicFixed, 15000);
+        const monthlyPFBaseSS = Math.min(basicFixed, PF_WAGE_CEILING);
         const pfEmp  = pr?.deductions?.pf               ?? Math.round(monthlyPFBaseSS * 0.12 * proRate);
         const pfEmpr = pr?.employer_contributions?.pf   ?? Math.round(monthlyPFBaseSS * 0.13 * proRate);
 
@@ -12480,7 +12481,7 @@ router.post('/:name', async (req, res) => {
       const totalDedAnnual  = sal.pf_emp_annual  + sal.esi_emp_annual;
       const totalDedMonthly = sal.pf_emp_monthly + sal.esi_emp_monthly;
       const dedRows = [
-        trow([td('PF Employee Contribution (12% on Basic, max ₹15,000)'), tdr(fmtIN(sal.pf_emp_annual)), tdr(fmtIN(sal.pf_emp_monthly))]),
+        trow([td('PF Employee Contribution (12% on Basic, max ₹25,000)'), tdr(fmtIN(sal.pf_emp_annual)), tdr(fmtIN(sal.pf_emp_monthly))]),
         isESI ? trow([td('ESI Employee Contribution (0.75% on Basic)'), tdr(fmtIN(sal.esi_emp_annual)), tdr(fmtIN(sal.esi_emp_monthly))]) : '',
       ].join('');
       const empRows = [
@@ -12883,7 +12884,7 @@ router.post('/:name', async (req, res) => {
       // the "M/S MAXVOLT ENERGY INDUSTRIES LIMITED" bordered salary-annexure
       // box exactly as it appears on the reference Offer/Increment letters.
       const buildMeilBreakdown = (basicM, ctcAnnual) => {
-        const PF_CEIL = 15000, ESI_CEIL = 21000;
+        const PF_CEIL = PF_WAGE_CEILING, ESI_CEIL = 21000;
         const pfBase = Math.min(basicM || 0, PF_CEIL);
         const pfEmpM = Math.round(pfBase * 0.12);
         const pfEmployerM = Math.round(pfBase * 0.13);
@@ -17921,7 +17922,7 @@ Return ONLY valid JSON (no markdown):
     /* ── Statutory: PF ECR + ESI registers ───────────── */
     case 'getStatutoryRegisters': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
-      const PF_WAGE_CEILING = 15000;
+      const PF_WAGE_CEILING_EPF = PF_WAGE_CEILING;
       const ESI_GROSS_CEILING = 21000;
       const now = new Date();
       const month = Number(p.month) || (now.getMonth() + 1); // 1-12
@@ -17954,7 +17955,7 @@ Return ONLY valid JSON (no markdown):
         const ncp = ncpByUser[emp.user_id] || 0;
 
         // ── PF ──
-        const epfWages = Math.round(Math.min(basic, PF_WAGE_CEILING));
+        const epfWages = Math.round(Math.min(basic, PF_WAGE_CEILING_EPF));
         if (epfWages > 0) {
           const ee = Math.round(epfWages * 0.12);
           const erEPS = Math.round(epfWages * 0.0833);
@@ -18239,7 +18240,7 @@ Return ONLY valid JSON (no markdown):
 
       const twHraExempt = twReg === 'new' ? 0 : Math.round(twHraEx);
       const twHraTaxable = Math.max(0, totalHra - twHraExempt);
-      const twEmpPFAnnual = Math.round(Math.min(twBasic, 15000) * 0.12 * 12);
+      const twEmpPFAnnual = Math.round(Math.min(twBasic, PF_WAGE_CEILING) * 0.12 * 12);
       const tw12BDeduction = twReg === 'new' ? 0 : Math.min(150000, twEmpPFAnnual + twN('life_insurance_premium') + twN('ppf') + twN('elss') + twN('nsc') + twN('home_loan_principal'));
 
       const twMonths = ['APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC','JAN','FEB','MAR'];
