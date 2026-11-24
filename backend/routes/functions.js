@@ -8244,7 +8244,7 @@ router.post('/:name', async (req, res) => {
         const gross  = basic + hra + conv + special;
         const pfEmp  = ss.pf_contribution || Math.round(Math.min(basic, 15000) * 0.12);
         const esiEmp = ss.esi_contribution || (basic <= 21000 ? Math.round(basic * 0.0075) : 0);
-        const carLease = Math.round(Number(ss.car_lease_deduction) || 0);
+        const carLease = carLeaseFor(ss, new Date().getMonth() + 1, new Date().getFullYear());
         const totalDed = pfEmp + esiEmp + carLease;
         const net    = Math.max(0, gross - totalDed);
         const pfEmpr = ss.employer_pf_contribution || Math.round(Math.min(basic, 15000) * 0.13);

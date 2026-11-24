@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { carLeaseFor } from '@/lib/carLease';
 import { TrendingUp, TrendingDown, Building, Printer } from 'lucide-react';
 
 const fmt = (val) => (val || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 });
@@ -42,7 +43,7 @@ export default function SalaryBreakdownCard({ structure, employee, onPrint }) {
   const otherDed = typeof structure.deductions === 'object' && structure.deductions
     ? Object.values(structure.deductions).reduce((s, v) => s + (parseFloat(v) || 0), 0)
     : 0;
-  const carLease = Number(structure.car_lease_deduction) || 0;
+  const carLease = carLeaseFor(structure);
   const totalDeductions = employeePF + employeeESI + otherDed + carLease;
   const netMonthly = grossMonthly - totalDeductions;
 

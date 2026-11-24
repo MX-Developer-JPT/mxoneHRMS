@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { base44 } from '@/api/base44Client';
+import { carLeaseFor } from '@/lib/carLease';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -120,7 +121,7 @@ function printSalaryStructure(structure, emp) {
   const grossM = basicM + hraM + convM;
   const pfM = structure.pf_contribution || 0;
   const esiM = structure.esi_contribution || 0;
-  const carLeaseM = Number(structure.car_lease_deduction) || 0;
+  const carLeaseM = carLeaseFor(structure);
   const totalDed = pfM + esiM + carLeaseM;
   const netM = grossM - totalDed;
 
@@ -247,6 +248,7 @@ export default function SalaryStructureManagement() {
   const [medicalContrib, setMedicalContrib] = useState(0);
   // Car lease: a fixed monthly deduction from net salary, between two optional months
   const [carLease, setCarLease] = useState({ amount: '', from: '', to: '', note: '' });
+  const formLease = Math.max(0, Math.round(parseFloat(carLease.amount) || 0));
 
   // Manual overrides (monthly values)
   const [overrides, setOverrides] = useState({
@@ -632,7 +634,7 @@ export default function SalaryStructureManagement() {
                 const grossM = basicM + hraM + convM + medM + ltaM + saM;
                 const pfM = structure.pf_contribution || 0;
                 const esiM = structure.esi_contribution || 0;
-                const netM = grossM - pfM - esiM - (Number(structure.car_lease_deduction) || 0);
+                const netM = grossM - pfM - esiM - carLeaseFor(structure);
 
                 return (
                   <div key={structure.id} className="border rounded-xl overflow-hidden">
@@ -946,11 +948,13 @@ export default function SalaryStructureManagement() {
                 </div>
                 <div className="text-center">
                   <p className="text-xs text-gray-600">Total Deductions</p>
-                  <p className="text-xl font-bold text-red-700">₹{fmt((vals.pf_contribution || 0) + (vals.esi_contribution || 0))}</p>
+                  <p className="text-xl font-bold text-red-700">₹{fmt((vals.pf_contribution || 0) + (vals.esi_contribution || 0) + formLease)}</p>
+                  {formLease > 0 && <p className="text-[11px] text-gray-500">incl. car lease ₹{fmt(formLease)}</p>}
                 </div>
                 <div className="text-center">
                   <p className="text-xs text-gray-600">Net Take-Home / Month</p>
-                  <p className="text-xl font-bold text-green-700">₹{fmt(vals.grossMonthly - (vals.pf_contribution || 0) - (vals.esi_contribution || 0))}</p>
+                  <p className="text-xl font-bold text-green-700">₹{fmt(vals.grossMonthly - (vals.pf_contribution || 0) - (vals.esi_contribution || 0) - formLease)}</p>
+                  {formLease > 0 && <p className="text-[11px] text-gray-500">while the car lease runs</p>}
                 </div>
                 <div className="text-center">
                   <p className="text-xs text-gray-600">Annual CTC</p>
