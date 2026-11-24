@@ -146,7 +146,7 @@ export function computeAttrition(ctx, model, scope, from, to, today, x, cfg = HR
   const xBy = {}; for (const r of ctx.exits) if (r.user_id && !['rejected', 'cancelled', 'withdrawn'].includes(r.status)) xBy[r.user_id] = r;
   const emps = scope.scopeEmps;
   const hcOn = (d, f = () => true) => emps.filter(e => model.activeOn(e, d) && f(e)).length;
-  const exitsIn = (a, b, f = () => true) => emps.filter(e => e.lwd && e.lwd >= a && e.lwd <= b && f(e));   // same definition as the workforce card: the last working day falls in the period
+  const exitsIn = (a, b, f = () => true) => emps.filter(e => e.lwd && e.lwd >= addDays(a, -1) && e.lwd < b && f(e));   // same as the workforce card: a person leaves the day after the last working day, so lwd from the day before the period up to the day before its end
   const joinsIn = (a, b, f = () => true) => emps.filter(e => e.doj && e.doj >= a && e.doj <= b && f(e));
   const rate = (exits, opening, closing, d) => { const avg = (opening + closing) / 2; return { exits, avgHeadcount: r1(avg), rate: avg > 0 ? r1((exits / avg) * 100) : null, annualised: avg > 0 ? r1((exits / avg) * 100 * (365 / d)) : null }; };
   const opening = hcOn(addDays(from, -1)), closing = hcOn(to);
@@ -160,7 +160,7 @@ export function computeAttrition(ctx, model, scope, from, to, today, x, cfg = HR
   const annual = { from: t12From, to, ...rate(t12Exits, t12Open, closing, 365) };
   // retention: of the people employed on the first day, how many are still here at the end
   const cohort = emps.filter(e => model.activeOn(e, addDays(from, -1)));
-  const stayed = cohort.filter(e => !(e.lwd && e.lwd <= to)).length;
+  const stayed = cohort.filter(e => !(e.lwd && e.lwd < to)).length;
   const retention = { cohort: cohort.length, stayed, rate: pctOf(stayed, cohort.length) };
   // monthly trend: 12 months to the period end
   const lastM = ym(to), trend = [];
