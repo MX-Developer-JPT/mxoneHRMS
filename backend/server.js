@@ -411,6 +411,13 @@ setTimeout(async () => {
   } catch (err) { console.error('[attendance-repair] failed:', err.message); }
 }, 150 * 1000);
 
+// Hiring mailbox: CVs that arrive by email become candidates (only when INTAKE_MAILBOX and a Google key are configured)
+cron.schedule('*/5 * * * *', async () => {
+  if (!process.env.INTAKE_MAILBOX) return;
+  try { const { pollIntakeMailbox } = await import('./utils/gmailInbox.js'); const r = await pollIntakeMailbox(); if (r.processed || (r.errors || []).length) console.log('[intake-mail]', JSON.stringify({ processed: r.processed, created: r.created, merged: r.merged, review: r.needs_review, errors: r.errors })); }
+  catch (e) { console.error('[intake-mail] failed:', e.message); }
+});
+
 // ── Manpower requisitions: target-date and pending-approval reminders — 9:40 AM IST ──
 cron.schedule('40 9 * * *', async () => {
   try { const { sendMrfReminders } = await import('./cron/mrfReminders.js'); await sendMrfReminders(); }

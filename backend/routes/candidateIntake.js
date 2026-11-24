@@ -245,8 +245,18 @@ const H = {
   // where the email intake stands (HR / admin)
   async ci_email_info({ cx, res }) {
     if (!hasAny(cx, ['hr', 'admin'])) return fail(res, 'Not allowed', 403);
-    const last = (await all("SELECT data FROM entities WHERE type='CandidateIntake' AND data LIKE '%\"channel\":\"email\"%' ORDER BY created_at DESC LIMIT 5")).map((r) => jparse(r.data));
-    return res.json({ success: true, enabled: !!process.env.INBOUND_EMAIL_SECRET, endpoint: `${(process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '')}/api/intake/email`, recent: last.map((x) => ({ at: x.at, from: x.from, subject: x.subject, status: x.status })) });
+    const { intakeMailbox, intakeMailState } = await import('../utils/gmailInbox.js');
+    const last = (await all("SELECT data FROM entities WHERE type='CandidateIntake' AND data LIKE '%\"channel\":\"email\"%' ORDER BY created_at DESC LIMIT 8")).map((r) => jparse(r.data));
+    const keySet = !!(process.env.INTAKE_GOOGLE_KEY_B64 || process.env.GOOGLE_SERVICE_ACCOUNT_JSON_B64);
+    return res.json({ success: true, mailbox: intakeMailbox(), mailbox_enabled: !!intakeMailbox() && keySet, key_set: keySet, state: await intakeMailState(), enabled: !!process.env.INBOUND_EMAIL_SECRET, endpoint: `${(process.env.APP_URL || 'https://maxone.maxvoltenergy.com').replace(/\/+$/, '')}/api/intake/email`, recent: last.map((x) => ({ at: x.at, from: x.from, subject: x.subject, status: x.status })) });
+  },
+
+  // read the hiring mailbox right now
+  async ci_email_poll_now({ cx, res }) {
+    if (!hasAny(cx, ['hr', 'admin'])) return fail(res, 'Not allowed', 403);
+    const { pollIntakeMailbox } = await import('../utils/gmailInbox.js');
+    const r = await pollIntakeMailbox({ force: true });
+    return res.json({ success: !(r.errors || []).length && !r.skipped, ...r, error: r.skipped || (r.errors || [])[0] || undefined });
   },
 };
 export default H;

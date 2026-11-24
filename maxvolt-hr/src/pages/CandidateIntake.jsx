@@ -164,24 +164,44 @@ function InboxTab({ opts, onChanged }) {
   );
 }
 
-function EmailTab() {
-  const [d, setD] = useState(null);
-  useEffect(() => { call('ci_email_info', {}).then(setD).catch(() => setD({ enabled: false, endpoint: '', recent: [] })); }, []);
-  if (!d) return <div className="py-10 text-center text-gray-400"><Loader2 className="w-5 h-5 animate-spin inline" /></div>;
+function EmailTab({ onChanged }) {
+  const [d, setD] = useState(null); const [busy, setBusy] = useState(false);
+  const load = useCallback(() => call('ci_email_info', {}).then(setD).catch(() => setD({ mailbox: '', state: {}, recent: [] })), []);
+  useEffect(() => { load(); }, [load]);
+  const check = async () => {
+    setBusy(true);
+    try { const r = await call('ci_email_poll_now', {}); toast.success(`Checked ${r.mailbox}: ${r.created} new candidate(s), ${r.merged} added to existing, ${r.needs_review} for review`); onChanged?.(); } catch (e) { toast.error(e.message); }
+    await load(); setBusy(false);
+  };
   const copy = (t) => { try { navigator.clipboard.writeText(t); toast.success('Copied'); } catch { /* ignore */ } };
+  if (!d) return <div className="py-10 text-center text-gray-400"><Loader2 className="w-5 h-5 animate-spin inline" /></div>;
+  const s = d.state || {};
   return (
     <div className="space-y-4 max-w-3xl text-sm">
-      <div className={`rounded-lg border p-3 ${d.enabled ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>{d.enabled ? <span className="text-green-800 flex items-center gap-1"><CheckCircle2 className="w-4 h-4" /> Email intake is switched on.</span> : <span className="text-amber-900 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Email intake is not switched on yet.</span>}</div>
-      <p className="text-gray-600">Every email sent to a hiring address (for example <b>careers@…</b> or <b>hiring+MRF-2026-0007@…</b>) can become a candidate automatically: the CV attachment is stored and read, the person is matched against existing candidates, and the source is detected (Naukri, LinkedIn, Indeed, or direct email). The requisition is picked from an MRF number in the address or subject. Emails the app cannot place go to the Inbox tab.</p>
-      <div className="border rounded-lg p-3 bg-white space-y-2">
-        <p className="font-semibold">To switch it on</p>
-        <ol className="list-decimal ml-5 space-y-1 text-gray-700">
-          <li>In Railway, add a variable <code className="bg-gray-100 px-1 rounded">INTAKE EMAIL SECRET</code> written as <code className="bg-gray-100 px-1 rounded">INBOUND_EMAIL_SECRET</code> with a long random value.</li>
-          <li>In your email service (Brevo inbound parsing, or any service that can post an email to a web address), send incoming mail for the hiring address to the address below, adding <code className="bg-gray-100 px-1 rounded">?key=</code> followed by that secret.</li>
-        </ol>
-        <div className="flex items-center gap-2 bg-gray-50 rounded px-2 py-1.5 font-mono text-xs break-all"><span className="flex-1">{d.endpoint}?key=&lt;your secret&gt;</span><button onClick={() => copy(`${d.endpoint}?key=`)}><Copy className="w-3.5 h-3.5" /></button></div>
+      <div className={`rounded-lg border p-3 ${d.mailbox_enabled && s.last_ok !== false ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
+        {d.mailbox_enabled ? (
+          <div className="space-y-1">
+            <p className={`flex items-center gap-1 font-medium ${s.last_ok === false ? 'text-amber-900' : 'text-green-800'}`}>{s.last_ok === false ? <AlertTriangle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />} Reading <b>{d.mailbox}</b> every 5 minutes</p>
+            <p className="text-xs text-gray-600">{s.last_run_at ? `Last checked ${fmtDT(s.last_run_at)}` : 'Not checked yet'}{s.total_processed ? ` · ${s.total_processed} email(s) processed · ${s.total_created || 0} new candidates · ${s.total_merged || 0} added to existing · ${s.total_review || 0} sent to the Inbox` : ''}</p>
+            {s.last_ok === false && <p className="text-xs text-red-700 bg-white/70 rounded p-2 break-words">{s.last_error}</p>}
+            {s.backlog && <p className="text-xs text-gray-600">More emails are waiting; the next check continues with them.</p>}
+          </div>
+        ) : <span className="text-amber-900 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Email intake is not switched on yet.</span>}
       </div>
-      {d.recent?.length > 0 && <div><p className="font-semibold mb-1">Recent emails received</p><ul className="text-xs text-gray-600 space-y-0.5">{d.recent.map((r, i) => <li key={i}>{fmtDT(r.at)} · {r.from} · {r.subject} · {r.status}</li>)}</ul></div>}
+      {d.mailbox_enabled && <Button onClick={check} disabled={busy} variant="outline">{busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Mail className="w-4 h-4 mr-1" />}Check the mailbox now</Button>}
+      <p className="text-gray-600">Every email that reaches the hiring mailbox becomes a candidate automatically: the CV attachment is stored and read, the person is matched against existing candidates, and the source is detected (Naukri, LinkedIn, Indeed, or direct email). The requisition comes from an MRF number in the address (<b>careers+MRF-2026-0007@…</b>) or the subject. Emails the app cannot place go to the Inbox tab. The app only <b>reads</b> the mailbox — nothing is changed or deleted in it.</p>
+      <div className="border rounded-lg p-3 bg-white space-y-2">
+        <p className="font-semibold">Setup</p>
+        <ol className="list-decimal ml-5 space-y-1 text-gray-700">
+          <li>Use a real Google Workspace mailbox for hiring (for example <b>careers@maxvoltenergy.com</b>) and tell candidates, job boards and recruiters to send CVs there.</li>
+          <li>In the Google Admin Console, add the read-only Gmail permission (<code className="bg-gray-100 px-1 rounded">https://www.googleapis.com/auth/gmail.readonly</code>) to the same service account that Max Mail uses (Security → API controls → Domain-wide delegation).</li>
+          <li>In Railway set <code className="bg-gray-100 px-1 rounded">INTAKE_MAILBOX</code> to that address and <code className="bg-gray-100 px-1 rounded">INTAKE_GOOGLE_KEY_B64</code> to the service account key.</li>
+        </ol>
+      </div>
+      {d.recent?.length > 0 && <div><p className="font-semibold mb-1">Recent emails</p><ul className="text-xs text-gray-600 space-y-0.5">{d.recent.map((r, i) => <li key={i}>{fmtDT(r.at)} · {r.from} · {r.subject} · {r.status}</li>)}</ul></div>}
+      <details className="text-xs text-gray-500"><summary className="cursor-pointer">Other mail services (web address instead of a mailbox)</summary>
+        <div className="mt-2 space-y-1"><p>A service that can post incoming email to a web address can use: {d.enabled ? '' : '(not switched on — set INBOUND_EMAIL_SECRET)'}</p>
+          <div className="flex items-center gap-2 bg-gray-50 rounded px-2 py-1.5 font-mono break-all"><span className="flex-1">{d.endpoint}?key=&lt;secret&gt;</span><button onClick={() => copy(`${d.endpoint}?key=`)}><Copy className="w-3.5 h-3.5" /></button></div></div></details>
     </div>
   );
 }
@@ -204,7 +224,7 @@ export default function CandidateIntake() {
         {tab === 'sheet' && <Sheet opts={opts} onDone={loadOpts} />}
         {tab === 'quick' && <Quick opts={opts} onDone={loadOpts} />}
         {tab === 'inbox' && <InboxTab opts={opts} onChanged={loadOpts} />}
-        {tab === 'email' && <EmailTab />}
+        {tab === 'email' && <EmailTab onChanged={loadOpts} />}
       </CardContent></Card>
     </div>
   );
