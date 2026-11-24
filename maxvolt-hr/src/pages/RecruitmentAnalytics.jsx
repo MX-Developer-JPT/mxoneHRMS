@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from 'sonner';
 import { downloadBase64 } from '@/lib/mis';
 import HiringLifecyclePanel from '@/components/recruitment/HiringLifecyclePanel';
+import HiringAttention from '@/components/recruitment/HiringAttention';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, Legend, FunnelChart, Funnel, LabelList,
@@ -297,6 +298,8 @@ export default function RecruitmentAnalytics() {
             </CardContent>
           </Card>
         )}
+
+        <HiringAttention />
 
         {/* Tabs */}
         <div className="flex gap-1 border-b overflow-x-auto">

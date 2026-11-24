@@ -848,10 +848,20 @@ function buildInsights({ ctx, model, scope, period, cmp, cur, prev, noLeave, exc
   const gpo = cur.gp.counts.overdue;
   if (gpo > 0) add({ rule: 'gp_overdue', title: `${gpo} gate pass(es) remain open beyond the expected return`, category: 'Gate pass', severity: gpo > 5 ? 'High' : 'Medium', dept: 'All', current: gpo, comparison: prev?.gp.counts.overdue ?? null, ...chg(gpo, prev?.gp.counts.overdue), evidence: cur.gp.exceptions.filter(x => x.kind === 'Open beyond expected return').slice(0, 5).map(x => `${x.name} (${fmtD(x.date)})`).join('; '), why: 'Pass is approved/departed with no return event past the expected time or day.', action: 'Gate admin to verify and close the passes.', owner: 'Security / Gate admin', drill: 'gatepass' });
   // department compliance drops (enough sample, percentage points)
+  const complianceDrops = [];
   if (prev) for (const [dp, v] of Object.entries(cur.att.perDept)) {
     const pv = prev.att.perDept[dp];
     if (!pv || v.sched < ctx.cfg.minSample || pv.sched < ctx.cfg.minSample) continue;
     const drop = (pv.rates.compliance ?? 0) - (v.rates.compliance ?? 0);
+    if (drop >= ctx.cfg.complianceDropPp) complianceDrops.push({ dp, v, pv, drop });
+  }
+  // when most departments slip together it is one company-wide story, not a dozen separate alarms
+  if (complianceDrops.length >= 4) {
+    const worst = [...complianceDrops].sort((a, b) => b.drop - a.drop);
+    add({ rule: 'compliance_drop_wide', subject: 'company', title: `Attendance compliance fell in ${complianceDrops.length} departments (worst: ${worst[0].dp}, −${r1(worst[0].drop)} points)`, category: 'Attendance', severity: sevFor(worst[0].drop / ctx.cfg.complianceDropPp), dept: `${complianceDrops.length} department(s)`,
+      current: null, comparison: null, abs: r1(-worst[0].drop), pct: null, evidence: worst.slice(0, 8).map((x) => `${x.dp} ${x.pv.rates.compliance}% → ${x.v.rates.compliance}%`).join('; '), action: 'Check what changed across the company (holiday cycle, biometric or shift problems, an unmarked-attendance backlog) before reviewing departments one by one.' });
+  }
+  if (complianceDrops.length < 4) for (const { dp, v, pv, drop } of complianceDrops) {
     if (drop >= ctx.cfg.complianceDropPp) add({ rule: 'compliance_drop', subject: dp, title: `${dp}: attendance compliance fell ${r1(drop)} points`, category: 'Attendance', severity: sevFor(drop / ctx.cfg.complianceDropPp), dept: dp, current: v.rates.compliance, comparison: pv.rates.compliance, abs: r1(-drop), pct: null, evidence: `Absent ${v.absent} vs ${pv.absent}; missing ${v.missing} vs ${pv.missing} employee-days.`, why: `Compliance (scheduled days not absent or missing) dropped by at least ${ctx.cfg.complianceDropPp} points on ≥${ctx.cfg.minSample} employee-days.`, action: 'Department head to review absences and missing records.', owner: 'Department head', drill: 'departments' });
   }
   // headcount vs vacancies

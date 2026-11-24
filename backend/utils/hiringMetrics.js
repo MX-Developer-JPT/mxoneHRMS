@@ -5,6 +5,7 @@ import * as LC from './hiringLifecycle.js';
 
 const jparse = (s) => { try { return JSON.parse(s); } catch { return null; } };
 const IST = 5.5 * 3600000;
+const d10 = (v) => (v ? String(v).slice(0, 10) : '');
 export const istDay = (v) => { if (!v) return ''; const t = Date.parse(String(v).length === 16 ? `${v}:00+05:30` : String(v)); if (!Number.isFinite(t)) return String(v).slice(0, 10); return new Date(t + IST).toISOString().slice(0, 10); };
 const first = (arr) => arr.filter(Boolean).sort()[0] || '';
 const last = (arr) => arr.filter(Boolean).sort().slice(-1)[0] || '';
@@ -136,6 +137,30 @@ export function computeHiringMis(D, f = {}) {
   const pendingFeedback = ivs.filter((i) => i.status === 'scheduled' && Date.parse(`${String(i.scheduled_date).slice(0, 16)}:00+05:30`) + (Number(i.duration_minutes) || 30) * 60000 < nowT)
     .map((i) => ({ interview_id: i.id, candidate: candById.get(i.candidate_id) ? (candById.get(i.candidate_id).full_name || '') : '', requisition_id: i.requisition_id, mrf_no: (reqs.find((r) => r.id === i.requisition_id) || {}).requisition_id || '', round: i.round_name || '—', date: String(i.scheduled_date).slice(0, 10), interviewers: (i.interviewer_ids || []).map(empName).join(', '), days_overdue: cd(String(i.scheduled_date).slice(0, 10), today) }));
 
+  // ── what needs attention now: every item says what is stuck, for how long, and where to fix it ──
+  const attention = [];
+  const addA = (severity, title, detail, link, count = 1) => attention.push({ severity, title, detail, link, count });
+  const daysSince = (iso) => cd(istDay(iso), today);
+  const openPublished = reqs.filter((r) => r.status === 'published');
+  const noCands = openPublished.filter((r) => !cands.some((c) => reqKey(c) === r.id) && (daysSince(r.published_date || r.created_at || r._created) ?? 0) >= 14);
+  if (noCands.length) addA(noCands.length >= 5 ? 'High' : 'Medium', `${noCands.length} published requisition(s) have no applicants after 14+ days`, noCands.slice(0, 5).map((r) => `${r.designation || r.position_title} (${r.department || '—'})`).join(', ') + (noCands.length > 5 ? '…' : ''), '/CandidateIntake', noCands.length);
+  const aged = openPublished.map((r) => ({ r, age: daysSince(r.published_date || r.created_at || r._created) ?? 0 })).filter((x) => x.age >= 45 && cands.some((c) => reqKey(c) === x.r.id)).sort((a, b) => b.age - a.age);
+  if (aged.length) addA(aged.length >= 5 ? 'High' : 'Medium', `${aged.length} requisition(s) open 45+ days that do have applicants`, aged.slice(0, 4).map((x) => `${x.r.designation || x.r.position_title} — ${x.age} days`).join('; '), '/Recruitment', aged.length);
+  const waitHm = reqs.filter((r) => r.status === 'pending_hm_approval' && (daysSince(r.submitted_at || r.created_at || r._created) ?? 0) >= 3);
+  if (waitHm.length) addA('Medium', `${waitHm.length} requisition(s) waiting 3+ days for the Hiring Manager to approve the JD`, waitHm.slice(0, 4).map((r) => `${r.designation} (${empName(r.hiring_manager_id) || 'no manager'})`).join('; '), '/ManpowerRequisitions', waitHm.length);
+  const waitHr = reqs.filter((r) => r.status === 'pending_hr_publication' && (daysSince(r.hm_approved_at) ?? 0) >= 2);
+  if (waitHr.length) addA('Medium', `${waitHr.length} approved requisition(s) waiting 2+ days for HR to publish`, waitHr.slice(0, 4).map((r) => r.designation).join(', '), '/ManpowerRequisitions', waitHr.length);
+  const overdueRev = pendingReviews.filter((p) => p.overdue);
+  if (overdueRev.length) addA('High', `${overdueRev.length} CV review(s) overdue — managers have not answered`, [...new Set(overdueRev.map((p) => `${p.reviewer} (${p.days_waiting}d)`))].slice(0, 4).join('; '), '/Recruitment', overdueRev.length);
+  if (pendingFeedback.length) addA('Medium', `${pendingFeedback.length} interview(s) held with no feedback recorded`, pendingFeedback.slice(0, 4).map((p) => `${p.candidate || 'Candidate'} — ${p.days_overdue}d`).join('; '), '/InterviewManagement', pendingFeedback.length);
+  const stale = cands.filter((c) => (c.status || 'applied') === 'applied' && (daysSince(c.applied_date || c.created_at || c._created) ?? 0) >= 7);
+  if (stale.length) addA(stale.length >= 20 ? 'High' : 'Low', `${stale.length} applicant(s) have had no action for 7+ days`, 'Screen, shortlist or reject them so the requisition clock reflects real progress.', '/Recruitment', stale.length);
+  const offerWait = cands.filter((c) => c.status === 'offered' && (daysSince(c.offer_letter_date) ?? 0) >= 7);
+  if (offerWait.length) addA('Medium', `${offerWait.length} offer(s) unanswered for 7+ days`, offerWait.slice(0, 4).map((c) => c.full_name).join(', '), '/OfferLetters', offerWait.length);
+  const notJoined = cands.filter((c) => c.status === 'offer_accepted' && c.joining_date && d10(c.joining_date) < today);
+  if (notJoined.length) addA('High', `${notJoined.length} candidate(s) accepted an offer but their joining date has passed`, notJoined.slice(0, 4).map((c) => c.full_name).join(', '), '/Recruitment', notJoined.length);
+  attention.sort((a, b) => ({ High: 0, Medium: 1, Low: 2 }[a.severity] - { High: 0, Medium: 1, Low: 2 }[b.severity]));
+
   const kpis = {
     mrfs: mrfs.length, open_mrfs: mrfs.filter((m) => !['closed', 'filled', 'cancelled', 'rejected'].includes(m.status)).length, applications: cands.length, cvs_sent: new Set(batches.flatMap((b) => (b.candidates || []).map((x) => x.candidate_id))).size, review_batches: batches.length,
     interviews: ivs.length, selected: cands.filter((c) => maxRank(c) >= 7).length, offers: funnel[8].count, joined: funnel[9].count,
@@ -144,7 +169,7 @@ export function computeHiringMis(D, f = {}) {
   const keys = Object.keys(mrfs[0]?.metrics || { mrf_approval_tat: 1, time_to_first_cv: 1, time_to_first_shortlist: 1, manager_response_tat: 1, interview_scheduling_tat: 1, interview_completion_tat: 1, selection_tat: 1, offer_tat: 1, time_to_fill: 1 });
   const metrics = {}; for (const k of keys) metrics[k] = { avg_cal: avg(mrfs.map((m) => m.metrics[k].cal)), median_cal: median(mrfs.map((m) => m.metrics[k].cal)), avg_biz: avg(mrfs.map((m) => m.metrics[k].biz)), samples: mrfs.filter((m) => m.metrics[k].cal != null).length };
   const sources = {}; for (const c of cands) { const s = c.source || 'walk_in'; (sources[s] ||= { source: s, applied: 0, shortlisted: 0, interviewed: 0, offered: 0, joined: 0 }); const o = sources[s]; o.applied++; if (maxRank(c) >= 2) o.shortlisted++; if (maxRank(c) >= 6) o.interviewed++; if (maxRank(c) >= 9) o.offered++; if (c.status === 'joined') o.joined++; }
-  return { kpis, metrics, funnel, mrfs, departments, recruiters: Object.values(recruiters).sort((a, b) => b.cvs_submitted - a.cvs_submitted), sources: Object.values(sources).sort((a, b) => b.applied - a.applied), pending_reviews: pendingReviews.sort((a, b) => (b.days_waiting || 0) - (a.days_waiting || 0)), pending_feedback: pendingFeedback, generated: today };
+  return { kpis, metrics, funnel, mrfs, departments, recruiters: Object.values(recruiters).sort((a, b) => b.cvs_submitted - a.cvs_submitted), sources: Object.values(sources).sort((a, b) => b.applied - a.applied), pending_reviews: pendingReviews.sort((a, b) => (b.days_waiting || 0) - (a.days_waiting || 0)), pending_feedback: pendingFeedback, attention, generated: today };
 }
 
 export const METRIC_LABELS = {

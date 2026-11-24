@@ -35,6 +35,8 @@ const TABS = [
   { id: 'compliance', label: 'Compliance' },
 ];
 
+const monthName = (n) => ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][(Number(n) || 1) - 1];
+
 const INSIGHT_COLORS = {
   warning: 'bg-amber-50 border-amber-200 text-amber-800',
   positive: 'bg-emerald-50 border-emerald-200 text-emerald-800',
@@ -48,7 +50,7 @@ const INSIGHT_ICONS = {
 function AIInsightsPanel({ data, metrics }) {
   const [insights, setInsights] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState(null);
 
   const generateInsights = async () => {
@@ -86,7 +88,7 @@ function AIInsightsPanel({ data, metrics }) {
       <div className="flex items-center justify-between px-5 py-4 bg-gradient-to-r from-purple-50 to-blue-50 border-b border-purple-100">
         <div className="flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-purple-600" />
-          <h3 className="font-semibold text-gray-800">AI-Driven Insights</h3>
+          <h3 className="font-semibold text-gray-800">AI analysis <span className="text-xs font-normal text-gray-500">(optional — a written summary of these numbers)</span></h3>
           <span className="text-xs px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full font-medium">Powered by Groq</span>
         </div>
         <div className="flex items-center gap-2">
@@ -147,6 +149,7 @@ export default function MISDashboard() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [showExport, setShowExport] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
@@ -176,10 +179,14 @@ export default function MISDashboard() {
               {lastUpdated ? `Last updated: ${lastUpdated.toLocaleTimeString('en-IN')}` : 'Loading...'}
             </p>
           </div>
-          <Button onClick={fetchData} disabled={loading} variant="outline" className="gap-2">
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Link to="/MISIntelligence" className="text-sm text-blue-700 hover:underline mr-1">Open Intelligent MIS →</Link>
+            <Button onClick={() => setShowExport(s => !s)} variant="outline" className="gap-2">{showExport ? 'Hide downloads' : 'Download reports'}</Button>
+            <Button onClick={fetchData} disabled={loading} variant="outline" className="gap-2">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Tab Navigation */}
@@ -200,7 +207,7 @@ export default function MISDashboard() {
         </div>
       </div>
 
-      <MisExportPanel />
+      {showExport && <MisExportPanel />}
 
       <div className="p-6">
         {loading && !data ? (
@@ -219,17 +226,17 @@ export default function MISDashboard() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <MetricCard title="Total Employees" value={m.totalActive} subtitle="Active headcount" icon={Users} color="blue" />
                   <MetricCard title="Present Today" value={m.presentToday} subtitle={`${m.totalActive ? ((m.presentToday / m.totalActive) * 100).toFixed(1) : 0}% attendance rate`} icon={UserCheck} color="green" onClick={() => setActiveTab('attendance')} />
-                  <MetricCard title="Absent Today" value={m.absentToday} subtitle="Including leaves" icon={UserX} color="red" onClick={() => setActiveTab('attendance')} />
-                  <MetricCard title="Active Leaves" value={m.activeLeaves} subtitle="Approved & on leave" icon={FileText} color="yellow" onClick={() => setActiveTab('leave')} />
-                  <MetricCard title="Payroll Cost" value={`₹${(m.totalPayrollCost || 0).toLocaleString('en-IN')}`} subtitle="Current month net" icon={DollarSign} color="purple" onClick={() => setActiveTab('payroll')} />
+                  <MetricCard title="No Record Today" value={m.absentToday} subtitle={m.todayBreakdown ? `${m.todayBreakdown.leave} on leave · ${m.todayBreakdown.wfh} WFH · ${m.todayBreakdown.od} on duty (counted separately)` : 'Not present'} icon={UserX} color="red" onClick={() => setActiveTab('attendance')} />
+                  <MetricCard title="On Leave Today" value={m.todayBreakdown ? m.todayBreakdown.leave : m.activeLeaves} subtitle="Approved leave covering today" icon={FileText} color="yellow" onClick={() => setActiveTab('leave')} />
+                  <MetricCard title="Payroll (net pay)" value={m.payrollMonth && !m.payrollMonth.processed && !m.totalPayrollCost ? 'Not processed' : `₹${(m.totalPayrollCost || 0).toLocaleString('en-IN')}`} subtitle={m.payrollMonth ? (m.payrollMonth.processed ? `${monthName(m.payrollMonth.month)} ${m.payrollMonth.year} · ${m.payrollMonth.employees} employees` : `Latest: ${monthName(m.payrollMonth.month)} ${m.payrollMonth.year} — this month is not processed yet`) : 'Current month net'} icon={DollarSign} color="purple" onClick={() => setActiveTab('payroll')} />
                   <MetricCard title="Attrition Rate" value={`${m.attritionRate || 0}%`} subtitle="Annualized (12 months)" icon={TrendingDown} color="orange" />
                   <MetricCard title="Pending Leaves" value={m.pendingLeaveRequests} subtitle="Awaiting approval" icon={FileText} color="yellow" onClick={() => setActiveTab('leave')} />
                   <MetricCard title="Open Tickets" value={m.openTickets} subtitle="Helpdesk open items" icon={HelpCircle} color="blue" onClick={() => setActiveTab('helpdesk')} />
                 </div>
 
-                {/* AI Insights */}
+                {/* What needs attention (rules, instant) first; the optional AI analysis below it */}
+                <InsightCard insights={data?.insights || []} title="What needs attention" />
                 <AIInsightsPanel data={data} metrics={m} />
-                <InsightCard insights={data?.insights || []} />
 
                 {/* Charts Row 1 */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -24,11 +24,66 @@ const Stat = ({ label, value, sub }) => (<div className="rounded-lg border bg-wh
 
 
 // ───────────────────────────── Overview
+
+// ── "In plain words": the period told in five sentences, then what to look at first (grouped, so one cause is one line) ──
+const SEV_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+function plainSummary(d) {
+  const k = Object.fromEntries((d.kpis || []).map((x) => [x.key, x]));
+  const n = (v) => (v == null ? '—' : Number(v).toLocaleString('en-IN', { maximumFractionDigits: 1 }));
+  const vs = (x, unit = '') => (x && x.prev != null && x.abs != null && x.abs !== 0 ? ` (${x.abs > 0 ? '+' : ''}${n(x.abs)}${unit} vs ${d.meta.compare?.label || 'before'})` : '');
+  const out = [];
+  if (k.headcount) out.push({ tone: k.net && k.net.value < 0 ? 'warn' : 'ok', text: `${n(k.headcount.value)} people are on the roll${k.net ? `: ${n(k.joinings?.value)} joined and ${n(k.exits?.value)} left, a net ${k.net.value >= 0 ? '+' : ''}${n(k.net.value)}` : ''}${k.exits && k.exits.prev != null && k.exits.value > k.exits.prev * 1.5 && k.exits.value >= 3 ? ` — exits are well above the ${n(k.exits.prev)} of the comparison period` : ''}.`, tab: 'workforce' });
+  if (k.present) {
+    const comp = d.attendance?.total?.rates?.compliance;
+    out.push({ tone: k.absent && k.absent.prev != null && k.absent.value > k.absent.prev * 1.25 ? 'warn' : 'ok', text: `On an average working day ${n(k.present.value)} people were in the office${vs(k.present)}, ${n(k.absent?.value)} were absent${vs(k.absent)}${k.od ? ` and ${n(k.od.value)} were on duty` : ''}${comp != null ? `. Attendance compliance is ${comp}%` : ''}.`, tab: 'attendance' });
+  }
+  if (k.reg_pending && k.reg_pending.value > 0) out.push({ tone: k.reg_pending.value > 50 ? 'bad' : 'warn', text: `${n(k.reg_pending.value)} regularisation requests are waiting for a decision${vs(k.reg_pending)}; unclear attendance holds up payroll.`, tab: 'attendance' });
+  if (k.vacancies) out.push({ tone: 'info', text: `${n(k.vacancies.value)} positions are open${vs(k.vacancies)}; ${n(k.reqs?.value)} new requisition(s) were raised and ${n(k.offers?.value)} candidate(s) are at the offer stage.`, tab: 'workforce' });
+  if (k.gp_open && k.gp_open.value > 0) out.push({ tone: 'warn', text: `${n(k.gp_open.value)} gate pass(es) are still open with no return recorded.`, tab: 'gatepass' });
+  const ab = d.abnormalities;
+  if (ab) out.push({ tone: ab.bySeverity?.Critical ? 'bad' : ab.bySeverity?.High ? 'warn' : 'ok', text: `The system found ${ab.total} items to check: ${ab.bySeverity?.Critical || 0} critical, ${ab.bySeverity?.High || 0} high, ${ab.bySeverity?.Medium || 0} medium and ${ab.bySeverity?.Low || 0} low priority.`, tab: 'abnormalities' });
+  return out;
+}
+function groupedPriorities(d) {
+  const open = (d.insights || []).filter((i) => i.status !== 'Dismissed' && i.status !== 'Resolved');
+  const byRule = {};
+  for (const i of open) (byRule[i.rule] ||= []).push(i);
+  const rows = [];
+  for (const [rule, list] of Object.entries(byRule)) {
+    const worst = [...list].sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9))[0];
+    if (list.length >= 3) rows.push({ key: `${rule}-group`, severity: worst.severity, title: `${list.length} similar findings: ${worst.title.replace(/^[^:]+:\s*/, '')}`, action: worst.action, sub: list.slice(0, 6).map((x) => x.subject || x.dept).filter(Boolean).join(', ') + (list.length > 6 ? '…' : ''), first: worst, count: list.length });
+    else for (const i of list) rows.push({ key: i.key, severity: i.severity, title: i.title, action: i.action, first: i, count: 1 });
+  }
+  return rows.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9)).slice(0, 6);
+}
+const TONE = { ok: 'bg-green-500', warn: 'bg-amber-500', bad: 'bg-red-500', info: 'bg-blue-500' };
+function PlainWords({ d, setTab, onOpenInsight }) {
+  const lines = plainSummary(d); const todo = groupedPriorities(d);
+  return (
+    <div className="rounded-xl border border-blue-100 bg-gradient-to-br from-blue-50/60 to-white p-4 grid lg:grid-cols-2 gap-5">
+      <div>
+        <div className="text-sm font-semibold text-gray-900 mb-2">In plain words — {periodText(d)}</div>
+        <ul className="space-y-2">{lines.map((l, i) => (
+          <li key={i} className="flex items-start gap-2 text-sm text-gray-700"><span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${TONE[l.tone] || TONE.info}`} /><span>{l.text} <button onClick={() => setTab(l.tab)} className="text-xs text-blue-700 hover:underline whitespace-nowrap">Details →</button></span></li>))}</ul>
+      </div>
+      <div>
+        <div className="text-sm font-semibold text-gray-900 mb-2">Look at these first</div>
+        {todo.length === 0 ? <p className="text-sm text-gray-500">Nothing urgent for this period.</p> : (
+          <ol className="space-y-2">{todo.map((t, i) => (
+            <li key={t.key}><button onClick={() => onOpenInsight(t.first)} className="w-full text-left flex items-start gap-2 rounded-lg border bg-white p-2.5 hover:bg-gray-50">
+              <span className="text-xs font-semibold text-gray-400 mt-0.5">{i + 1}</span><span className="min-w-0"><span className="flex items-center gap-2"><Pill sev={t.severity} /><span className="text-sm font-medium text-gray-900">{t.title}</span></span>
+                {t.sub && <span className="block text-xs text-gray-500 mt-0.5">{t.sub}</span>}{t.action && <span className="block text-xs text-gray-600 mt-0.5">→ {t.action}</span>}</span></button></li>))}</ol>)}
+      </div>
+    </div>
+  );
+}
+
 export function OverviewTab({ d, setTab, onOpenInsight }) {
   const A = d.attendance;
   const top = d.insights.filter(i => i.status !== 'Dismissed' && i.status !== 'Resolved').slice(0, 5);
   return (
     <div className="space-y-4">
+      <PlainWords d={d} setTab={setTab} onOpenInsight={onOpenInsight} />
       <button onClick={() => setTab('abnormalities')} className="w-full text-left rounded-xl border border-orange-200 bg-orange-50 hover:bg-orange-100/70 p-3 flex flex-wrap items-center gap-x-5 gap-y-1">
         <span className="text-sm font-semibold text-orange-900">{d.abnormalities.total} abnormalities detected</span>
         {['Critical', 'High', 'Medium', 'Low'].map(s => <span key={s} className="text-xs text-orange-900">{d.abnormalities.bySeverity[s]} {s.toLowerCase()}</span>)}

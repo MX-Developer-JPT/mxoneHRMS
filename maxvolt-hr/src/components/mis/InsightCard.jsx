@@ -1,6 +1,6 @@
 import { AlertTriangle, Info, CheckCircle, XCircle } from 'lucide-react';
 
-export default function InsightCard({ insights = [] }) {
+export default function InsightCard({ insights = [], title = 'What needs attention' }) {
   const config = {
     warning: { icon: AlertTriangle, bg: 'bg-yellow-50 border-yellow-200', text: 'text-yellow-800', icon_color: 'text-yellow-500' },
     danger:  { icon: XCircle,       bg: 'bg-red-50 border-red-200',       text: 'text-red-800',    icon_color: 'text-red-500' },
@@ -12,7 +12,7 @@ export default function InsightCard({ insights = [] }) {
     <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
       <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
         <span className="w-2 h-2 rounded-full bg-purple-500 inline-block"></span>
-        AI-Driven Insights
+        {title}
       </h3>
       <div className="space-y-2">
         {insights.map((ins, i) => {

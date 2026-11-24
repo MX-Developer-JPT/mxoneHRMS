@@ -14006,13 +14006,27 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const yr12Ago    = new Date(Date.UTC(now.getFullYear() - 1, now.getMonth(), 1)).toISOString().slice(0, 10);
 
       // ── Core headcount ──────────────────────────────────────────────────────
+      // "Active" here means exactly what the Intelligent MIS means: not separated, not past the last working day — so both screens show one headcount.
+      const SEPARATED_STATUS = ['resigned', 'retired', 'terminated', 'inactive', 'absconded'];
+      const liveEmp = scopedIds ? null : parseEntities(await all("SELECT user_id, data FROM entities WHERE type='Employee'")).filter(e => !SEPARATED_STATUS.includes(String(e.status || '').toLowerCase()) && e.is_active !== false && (!e.last_working_date || String(e.last_working_date).slice(0, 10) >= today));
+      const liveIds = liveEmp ? new Set(liveEmp.map(e => e.user_id).filter(Boolean)) : null;
       const totalActive  = scopedIds
         ? scopedIds.length
-        : (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND status='active'")).c;
+        : liveEmp.length;
       const presentToday = scopedIds
         ? (scopedIds.length ? (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL AND user_id=ANY($2)", [today, scopedIds])).c : 0)
         : (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [today])).c;
-      const absentToday  = Math.max(0, totalActive - presentToday);
+      // Who is where today (organisation-wide view): present, WFH, on duty, on leave — and the rest, who have no record at all.
+      let todayBreakdown = null;
+      if (liveIds) {
+        const attToday = parseEntities(await all("SELECT user_id, data FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1", [today]));
+        const leaveToday = new Set(parseEntities(await all("SELECT user_id, data FROM entities WHERE type='Leave' AND status='approved' AND data::jsonb->>'start_date' <= $1 AND data::jsonb->>'end_date' >= $1", [today])).filter(l => !l.is_wfh).map(l => l.user_id));
+        const mark = {}; for (const a of attToday) { if (!a.user_id || !liveIds.has(a.user_id)) continue; const st = String(a.status || ''); const cur = mark[a.user_id]; const kind = ['work_from_home'].includes(st) ? 'wfh' : st === 'on_duty' ? 'od' : st === 'leave' ? 'leave' : (a.check_in_time || ['present', 'late', 'half_day'].includes(st)) ? 'present' : st === 'absent' ? 'absent' : 'other'; if (!cur || cur === 'absent' || cur === 'other') mark[a.user_id] = kind; }
+        for (const uid of leaveToday) if (liveIds.has(uid) && !mark[uid]) mark[uid] = 'leave';
+        const c = { present: 0, wfh: 0, od: 0, leave: 0, absent: 0 }; for (const k of Object.values(mark)) if (c[k] !== undefined) c[k]++;
+        todayBreakdown = { ...c, notMarked: Math.max(0, liveIds.size - (c.present + c.wfh + c.od + c.leave + c.absent)) };
+      }
+      const absentToday  = todayBreakdown ? todayBreakdown.notMarked + todayBreakdown.absent : Math.max(0, totalActive - presentToday);
       const newJoineesThisMonth = scopedIds
         ? (scopedIds.length ? (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1 AND user_id=ANY($2)", [monthStart, scopedIds])).c : 0)
         : (await one("SELECT COUNT(*) as c FROM entities WHERE type='Employee' AND data::jsonb->>'date_of_joining' >= $1", [monthStart])).c;
@@ -14033,7 +14047,17 @@ ${contextBlock || 'No employee context available — answer from general policy 
       // org-wide financial/operational sections, not meaningfully "my team"
       // scoped; blank out for a manager rather than leak company-wide figures.
       const payrollRows      = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND data::jsonb->>'year'=$1 AND data::jsonb->>'month'=$2", [now.getFullYear(), now.getMonth()+1]));
-      const totalPayrollCost = payrollRows.reduce((s, r) => s + (r.net_salary || 0), 0);
+      let totalPayrollCost = payrollRows.reduce((s, r) => s + (r.net_salary || 0), 0);
+      // nothing processed for this month yet: show the latest processed month instead of a misleading zero
+      let payrollMonth = { year: now.getFullYear(), month: now.getMonth() + 1, processed: payrollRows.length > 0, employees: payrollRows.length };
+      if (!scopedIds && !payrollRows.length) {
+        const last = await one("SELECT (data::jsonb->>'year')::int AS y, (data::jsonb->>'month')::int AS m FROM entities WHERE type='Payroll' ORDER BY (data::jsonb->>'year')::int DESC, (data::jsonb->>'month')::int DESC LIMIT 1");
+        if (last) {
+          const lr = parseEntities(await all("SELECT data FROM entities WHERE type='Payroll' AND (data::jsonb->>'year')::int=$1 AND (data::jsonb->>'month')::int=$2", [last.y, last.m]));
+          totalPayrollCost = lr.reduce((s, r) => s + (r.net_salary || 0), 0);
+          payrollMonth = { year: last.y, month: last.m, processed: false, employees: lr.length };
+        }
+      }
 
       const allCandidates = scopedIds ? [] : parseEntities(await all("SELECT data FROM entities WHERE type='Candidate'"));
       const recruitment = {
@@ -14120,20 +14144,30 @@ ${contextBlock || 'No employee context available — answer from general policy 
 
       // ── Attendance trends (last 7 days) ─────────────────────────────────────
       const attendanceTrends = [];
+      const holDates = new Set(parseEntities(await all("SELECT data FROM entities WHERE type='Holiday'")).filter(h => h.date && h.is_working_day !== true && !h.is_half_day).map(h => String(h.date).slice(0, 10)));
       for (let i = 6; i >= 0; i--) {
         const d = new Date(); d.setDate(d.getDate() - i);
         const dateStr = d.toISOString().slice(0, 10);
+        const isOff = d.getDay() === 0 || holDates.has(dateStr);
         const present = scopedIds
           ? (scopedIds.length ? (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL AND user_id=ANY($2)", [dateStr, scopedIds])).c : 0)
           : (await one("SELECT COUNT(DISTINCT user_id) as c FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [dateStr])).c;
-        attendanceTrends.push({ date: dateStr, day: d.toLocaleDateString('en-IN',{weekday:'short'}), present, absent: Math.max(0, totalActive - present) });
+        attendanceTrends.push({ date: dateStr, day: d.toLocaleDateString('en-IN',{weekday:'short'}) + (isOff ? ' (off)' : ''), present, absent: isOff ? 0 : Math.max(0, totalActive - present), off: isOff });
       }
 
       // ── Department breakdown ────────────────────────────────────────────────
       const allEmps = scopedIds
         ? (scopedIds.length ? parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active' AND user_id=ANY($1)", [scopedIds])) : [])
-        : parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
-      const departmentBreakdown = Object.entries(allEmps.reduce((acc, e) => { const d = e.department||'Unknown'; acc[d]=(acc[d]||0)+1; return acc; }, {})).map(([name, count]) => ({ name, count }));
+        : liveEmp;
+      const presentUsersToday = new Set((await all("SELECT DISTINCT user_id FROM entities WHERE type='Attendance' AND data::jsonb->>'date'=$1 AND data::jsonb->>'check_in_time' IS NOT NULL", [today])).map(r => r.user_id));
+      const DEPT_ALIAS = { it: 'informationtechnology', logistic: 'logistics' };
+      const deptKey = (n) => { const k = String(n || '').toLowerCase().replace(/[^a-z0-9]/g, ''); return DEPT_ALIAS[k] || k; };
+      const deptGroups = {};
+      for (const e of allEmps) {
+        const raw = String(e.department || 'Unknown').trim() || 'Unknown'; const g = (deptGroups[deptKey(raw)] ||= { names: {}, count: 0, present: 0 });
+        g.count++; g.names[raw] = (g.names[raw] || 0) + 1; if (presentUsersToday.has(e.user_id)) g.present++;
+      }
+      const departmentBreakdown = Object.values(deptGroups).map(g => ({ name: Object.entries(g.names).sort((a, b) => b[1] - a[1])[0][0], count: g.count, present: g.present })).sort((a, b) => b.count - a.count).slice(0, 14);
 
       // ── Biometric / attendance stats ────────────────────────────────────────
       const attLogsRaw    = parseEntities(await all("SELECT data FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'punch_date' >= $1", [monthStart]));
@@ -14157,7 +14191,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
       // attendance model to compute a real figure from.
       const metrics = {
         totalActive, presentToday, absentToday, activeLeaves,
-        pendingLeaveRequests, totalPayrollCost, attritionRate,
+        pendingLeaveRequests, totalPayrollCost, attritionRate, todayBreakdown, payrollMonth,
         openTickets: tickets.openTickets, newJoineesThisMonth,
         biometricSyncedCount, avgWorkingHours, avgBreakHours: 0, avgDailyPunches,
       };

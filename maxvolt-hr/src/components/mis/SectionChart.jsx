@@ -12,13 +12,12 @@ export function AttendanceTrendChart({ data }) {
       <ResponsiveContainer width="100%" height={220}>
         <LineChart data={data}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+          <XAxis dataKey="day" tick={{ fontSize: 11 }} />
           <YAxis tick={{ fontSize: 11 }} />
           <Tooltip />
           <Legend />
-          <Line type="monotone" dataKey="present" stroke="#10b981" strokeWidth={2} dot={false} name="Present" />
-          <Line type="monotone" dataKey="absent" stroke="#ef4444" strokeWidth={2} dot={false} name="Absent" />
-          <Line type="monotone" dataKey="late" stroke="#f59e0b" strokeWidth={2} dot={false} name="Late" />
+          <Line type="monotone" dataKey="present" stroke="#10b981" strokeWidth={2} name="Present (checked in)" />
+          <Line type="monotone" dataKey="absent" stroke="#ef4444" strokeWidth={2} name="No record (weekly offs and holidays excluded)" />
         </LineChart>
       </ResponsiveContainer>
     </div>
