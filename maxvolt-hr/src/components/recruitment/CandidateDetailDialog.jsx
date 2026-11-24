@@ -194,6 +194,11 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
               </div>
             )}
 
+            {/* Stage, CV review history, interviews and the activity timeline */}
+            <div className="border rounded-lg p-3 bg-white">
+              <CandidateActivity candidateId={localCandidate.id} canAct onChanged={onCandidateUpdated} />
+            </div>
+
             {/* Resume Parse Panel */}
             <ResumeParsePanel
               candidate={localCandidate}
@@ -277,10 +282,6 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
                 })}
               </div>
             )}
-
-            <div className="border-t pt-4">
-              <CandidateActivity candidateId={localCandidate.id} canAct onChanged={onCandidateUpdated} />
-            </div>
           </div>
         </DialogContent>
       </Dialog>

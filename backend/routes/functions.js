@@ -2209,6 +2209,17 @@ Return ONLY JSON: {"summary":"2-3 sentences for the hiring manager","strengths":
 // actually say" — used by case 'parseResume' (explicit user action) AND by
 // case 'scoreCandidate' (auto-parses on first score if not already parsed),
 // so scoring is never CV-blind the way it silently used to be.
+/** What the application form left empty (0 / blank) but the CV states: experience, current company and designation, notice period. */
+function fillFromCv(cand, parsed) {
+  const out = {};
+  const yrs = Number(parsed?.total_experience_years);
+  if (!(Number(cand.experience_years) > 0) && Number.isFinite(yrs) && yrs > 0) { out.experience_years = yrs; out.experience_from_cv = true; }
+  if (!String(cand.current_company || '').trim() && parsed?.current_company) out.current_company = String(parsed.current_company).slice(0, 120);
+  if (!String(cand.current_designation || '').trim() && parsed?.current_designation) out.current_designation = String(parsed.current_designation).slice(0, 120);
+  const nd = Number(parsed?.notice_period_days);
+  if (!(noticeToDays(cand.notice_period) > 0) && Number.isFinite(nd) && nd > 0) out.notice_period = `${nd} days`;
+  return out;
+}
 async function performResumeParse(candidate_id, resume_url, candData, { useAI = true } = {}) {
   const cand = candData || {};
   const fileUrl = resume_url || cand.resume_url || '';
@@ -2344,6 +2355,7 @@ ${jsonSchema}`;
       parsed_resume_id: parsedId,
       ...(skillsList.length ? { skills: skillsList } : {}),
       ...(educationStr ? { education: educationStr } : {}),
+      ...fillFromCv(freshCand, parsed),
     };
     await run("UPDATE entities SET data=$1 WHERE type='Candidate' AND id=$2", [JSON.stringify(updCand), candidate_id]);
   }

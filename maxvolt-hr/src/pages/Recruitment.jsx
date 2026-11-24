@@ -611,6 +611,10 @@ function BulkRejectDialog({ count, onClose, onConfirm }) {
 
 
 
+// In the pipeline = past the first look and not finished; Selected = selected or in the offer stages.
+const PIPELINE = ['screening', 'shortlisted', 'cv_sent', 'interview_recommended', 'interview_scheduled', 'interviewed', 'interview_done', 'next_round_recommended', 'on_hold'];
+const SELECTED_STAGES = ['selected', 'offer_in_progress', 'offered', 'offer_accepted'];
+
 const DEFAULT_FILTERS = {
   search: '',
   status: 'all',
@@ -1007,8 +1011,8 @@ export default function Recruitment() {
 
   const stats = {
     total: candidates.length,
-    screening: candidates.filter(c => c.status === 'screening' || c.status === 'interview_scheduled').length,
-    selected: candidates.filter(c => c.status === 'selected' || c.status === 'offered').length
+    screening: candidates.filter(c => PIPELINE.includes(c.status)).length,
+    selected: candidates.filter(c => SELECTED_STAGES.includes(c.status)).length
   };
 
   const handleStatClick = (statKey) => {
@@ -1017,8 +1021,8 @@ export default function Recruitment() {
     // only, making interview_scheduled candidates vanish from the list even
     // though the card had just counted them.
     if (statKey === 'total') setFilter('status', 'all');
-    else if (statKey === 'screening') setFilter('status', ['screening', 'interview_scheduled']);
-    else if (statKey === 'selected') setFilter('status', ['selected', 'offered']);
+    else if (statKey === 'screening') setFilter('status', PIPELINE);
+    else if (statKey === 'selected') setFilter('status', SELECTED_STAGES);
   };
 
   return (

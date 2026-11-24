@@ -62,6 +62,20 @@ export async function moveCandidate(c, to, { by = '', byName = '', text = '', sy
   await saveCand(next);
   return next;
 }
+/** Candidates parsed before the CV started filling blanks: bring experience / company / notice from the parsed CV (only where the form was empty). */
+async function fillFromParsed(c) {
+  if (!c.parsed_resume_id) return c;
+  const needs = !(Number(c.experience_years) > 0) || !String(c.current_company || '').trim();
+  if (!needs) return c;
+  const r = await one("SELECT data FROM entities WHERE type='ParsedResume' AND id=$1", [c.parsed_resume_id]);
+  const pr = r ? jparse(r.data) : null; if (!pr) return c;
+  const next = { ...c };
+  const yrs = Number(pr.total_experience_years);
+  if (!(Number(c.experience_years) > 0) && Number.isFinite(yrs) && yrs > 0) { next.experience_years = yrs; next.experience_from_cv = true; }
+  if (!String(c.current_company || '').trim() && pr.current_company) next.current_company = String(pr.current_company).slice(0, 120);
+  if (next.experience_years !== c.experience_years || next.current_company !== c.current_company) await saveCand(next);
+  return next;
+}
 async function logEvent(c, evt) { const next = { ...c, timeline: LC.appendTimeline(c, evt) }; await saveCand(next); return next; }
 
 // ── config (interview rounds, who is notified about what, business-day rules) ──────────────────────────────────────
@@ -299,7 +313,7 @@ const H = {
       if (!['applied', 'screening', 'shortlisted'].includes(st) && !(st === 'cv_sent' && p.allow_resend)) {
         skipped.push({ id, name: candName(c), reason: st === 'cv_sent' ? 'Already sent for review and awaiting a response (tick "send again" to repeat)' : `${LC.statusLabel(st)} — cannot be sent for CV review from here` }); continue;
       }
-      cands.push(c);
+      cands.push(await fillFromParsed(c));
     }
     if (!cands.length) return res.json({ success: false, error: 'None of the selected candidates can be sent for review', skipped });
 
