@@ -14,6 +14,7 @@ const GATEWAY_KEY = process.env.MAIL_GATEWAY_KEY || '';
 const MODE = (process.env.EMAIL_PROVIDER || 'auto').toLowerCase();
 const GATEWAY_MAX_BYTES = (Number(process.env.MAIL_GATEWAY_MAX_MB) || 15) * 1024 * 1024;
 const GATEWAY_MAX_ATTACHMENTS = 10;
+const GATEWAY_MAX_RECIPIENTS = Number(process.env.MAIL_GATEWAY_MAX_RECIPIENTS) || 45;     // the gateway allows 50 per message
 const gatewayOn = () => !!(GATEWAY_URL && GATEWAY_KEY) && MODE !== 'brevo';
 const brevoOn = () => !!BREVO_API_KEY && MODE !== 'maxmail';
 
@@ -40,6 +41,24 @@ function parseAddress(addr) {
   const m = String(addr || '').match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
   if (m) return { name: m[1].replace(/^"|"$/g, '') || undefined, email: m[2].trim() };
   return { email: String(addr || '').trim() };
+}
+
+// One clean, de-duplicated list of valid addresses: a string holding several addresses ("a@x.com, b@x.com") is split, anything that is
+// not an address (or belongs to a disabled account) is dropped, so one bad entry cannot stop the mail for everybody else.
+const ADDR_OK = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]{2,}$/;
+function cleanList(v) {
+  const out = []; const seen = new Set();
+  for (const raw of [].concat(v || [])) {
+    if (!raw) continue;
+    const s = String(raw);
+    const parts = !s.includes('<') && /[;,]/.test(s) ? s.split(/[;,]/) : [s];
+    for (const part of parts) {
+      const a = parseAddress(part); const e = String(a.email || '').trim().toLowerCase();
+      if (!ADDR_OK.test(e) || e.includes('.disabled-') || seen.has(e)) continue;
+      seen.add(e); out.push(a.name ? `${a.name} <${e}>` : e);
+    }
+  }
+  return out;
 }
 
 // ── Brevo ────────────────────────────────────────────────────
@@ -183,16 +202,24 @@ export async function verifyEmail() {
 // meta: { source?: tag, confirm?: wait for the real delivery outcome (OTP and similar) }
 export async function sendEmail({ to, cc, subject, html, text, attachments, meta, scheduledAt, replyTo }) {
   const from = await getFromAddress();
-  const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
-  if (!recipients.length) throw new Error('sendEmail: "to" is required');
-  const ccList = (Array.isArray(cc) ? cc : cc ? [cc] : []).filter(Boolean).map(parseAddress);
+  const recipients = cleanList(to);
+  if (!recipients.length) throw new Error('sendEmail: no valid recipient address');
+  const ccList = cleanList(cc).filter((c) => !recipients.includes(c)).map(parseAddress);
 
   if (gatewayOn() && !scheduledAt) {                                 // scheduled sending exists only at Brevo
     try {
-      const id = await gatewaySend({ from, recipients, ccList, subject, html, text, attachments, meta, replyTo });
-      if (meta?.confirm) await gatewayConfirm(id);
+      if (meta?.simulateGatewayDown) throw new GatewayError('Simulated gateway outage (self-test)', 503, 'simulated', true);
+      // the gateway takes at most GATEWAY_MAX_RECIPIENTS addresses per message: a longer list goes out as several messages
+      const groups = []; for (let i = 0; i < recipients.length; i += GATEWAY_MAX_RECIPIENTS) groups.push(recipients.slice(i, i + GATEWAY_MAX_RECIPIENTS));
+      let firstId = '';
+      for (let g = 0; g < groups.length; g++) {
+        const room = 50 - groups[g].length;                     // the gateway counts To + Cc together
+        const id = await gatewaySend({ from, recipients: groups[g], ccList: g === 0 ? ccList.slice(0, Math.max(0, room)) : [], subject, html, text, attachments, meta, replyTo });
+        if (!firstId) firstId = id;
+        if (meta?.confirm && groups.length === 1) await gatewayConfirm(id);
+      }
       stats.gateway_sent++;
-      return { success: true, messageId: id, provider: 'maxmail' };
+      return { success: true, messageId: firstId, provider: 'maxmail', ...(groups.length > 1 ? { messages: groups.length } : {}) };
     } catch (e) {
       if (!(e instanceof GatewayError) || !e.fallbackOk || !brevoOn()) throw e;
       stats.fallbacks++; stats.last_fallback_at = new Date().toISOString(); stats.last_fallback_reason = String(e.message).slice(0, 200);

@@ -54,4 +54,17 @@ await t('scheduled mail goes straight to Brevo; the health check reports the gat
   const v = await verifyEmail(); assert.equal(v.ok, true); assert.equal(v.provider, 'maxmail'); assert.equal(v.fallback, true);
   reset({ status: 500, body: {} }); const v2 = await verifyEmail(); assert.equal(v2.ok, true); assert.equal(v2.provider, 'brevo'); assert.match(v2.warning, /not reachable/);
 });
+await t('address lists are cleaned: split, de-duplicated, invalid and disabled accounts dropped', async () => {
+  reset(); await sendEmail({ ...base, to: 'a@x.com, B@x.com; not-an-email', cc: ['a@x.com', 'c@x.com'] });
+  const b = JSON.parse(calls[0].opts.body); assert.deepEqual(b.to, ['a@x.com', 'b@x.com']); assert.deepEqual(b.cc, ['c@x.com'], 'cc never repeats a To address');
+  reset(); await sendEmail({ ...base, to: ['good@x.com', 'old.person.disabled-123@x.com', '', null] }); assert.deepEqual(JSON.parse(calls[0].opts.body).to, ['good@x.com']);
+  await assert.rejects(() => sendEmail({ ...base, to: ['broken', 'left.disabled-9@x.com'] }), /no valid recipient/);
+});
+await t('a long recipient list goes out as several messages of at most 45', async () => {
+  reset(); const many = Array.from({ length: 100 }, (_, i) => `u${i}@x.com`);
+  const r = await sendEmail({ ...base, to: many, cc: 'boss@x.com' }); assert.equal(r.messages, 3);
+  const sends = calls.filter((c) => c.url.includes('/v1/send')).map((c) => JSON.parse(c.opts.body));
+  assert.deepEqual(sends.map((b) => b.to.length), [45, 45, 10]); assert.deepEqual(sends.map((b) => (b.cc || []).length), [1, 0, 0]); assert.equal(sends.flatMap((b) => b.to).length, 100);
+  const keys = calls.filter((c) => c.url.includes('/v1/send')).map((c) => c.opts.headers['Idempotency-Key']); assert.equal(new Set(keys).size, 3);
+});
 console.log(`\n${n} tests passed`); process.exit(0);

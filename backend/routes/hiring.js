@@ -348,7 +348,7 @@ const H = {
     const emailErrors = [];
     for (const r of batch.recipients) {
       try {
-        await sendEmail({ to: r.email, subject, html: reviewEmailHtml({ batch, req, recipient: r, cands: entries, sender: `${cx.name}${senderUser.email ? ` (${senderUser.email})` : ''}`, note: batch.note }), attachments: files, replyTo: senderUser.email || undefined, meta: { source: 'cv-review' } });
+        await sendEmail({ to: r.email, subject, html: reviewEmailHtml({ batch, req, recipient: r, cands: entries, sender: `${cx.name}${senderUser.email ? ` (${senderUser.email})` : ''}`, note: batch.note }), attachments: files, replyTo: senderUser.email || undefined, meta: { source: 'cv-review', confirm: true } });
         r.sent_at = nowIso();
       } catch (e) { emailErrors.push(`${r.name}: ${e.message}`); }
     }

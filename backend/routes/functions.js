@@ -7185,6 +7185,37 @@ router.post('/:name', async (req, res) => {
 
     // Admin: one-call health check of every notification channel (in-app, web push, native push, e-mail),
     // optionally sending a real test through each to the calling admin.
+    // Admin: sends one real email of EVERY kind this app produces (all templates, PDF and multi-file attachments, a large attachment,
+    // reply-to, and a simulated gateway outage that must fall back to Brevo) to the calling admin only, and reports how each one went.
+    case 'emailSelfTest': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      if (!cu.email) return res.json({ success: false, error: 'Your account has no email address' });
+      const { sendEmail: stSend, emailTemplates: stTpl, celebrationEmail: stCel, verifyEmail: stVerify, getEmailStats: stStats } = await import('../utils/email.js');
+      const stSample = { candidateName: 'Test Candidate', position: 'Sales Executive', interviewDate: 'Monday, 1 December 2026', interviewTime: '10:00 AM', mode: 'Online', location: 'https://meet.example.com/test', interviewerName: 'Test Interviewer',
+        employeeName: 'Test Employee', month: 'November', year: 2026, payslipHtml: '<p>Sample payslip body</p>', leaveType: 'Casual Leave', startDate: '2026-12-01', endDate: '2026-12-02', days: 2, status: 'approved', remarks: 'Sample remark',
+        trainingTitle: 'Safety Induction', trainer: 'Test Trainer', managerName: 'Test Manager', department: 'Sales', designation: 'Executive', probationEndDate: '2026-12-15', daysLeft: 5,
+        ownerName: 'Test Owner', deptLabel: 'IT', lastWorkingDate: '2026-12-31', daysOverdue: 2, name: 'Test User', code: '123456', expiresMinutes: 10, resetLink: 'https://maxone.maxvoltenergy.com/reset-password?token=test',
+        link: 'https://maxone.maxvoltenergy.com/onboarding/test', loginEmail: cu.email, hrName: 'HR Team', dateOfJoining: '2026-12-01', expiryDays: 7, documentName: 'Aadhaar Card', reason: 'Sample reason', role: 'employee', to: cu.email };
+      const st = []; const total = Object.keys(stTpl).length + 2 + 6;
+      let i = 0;
+      const run1 = async (label, build) => {
+        i++; const t0 = Date.now();
+        try { const m = build(); const r = await stSend({ to: cu.email, ...m, subject: `[Self-test ${i}/${total}] ${m.subject}`, meta: { source: 'self-test', confirm: true, ...(m.meta || {}) } }); st.push({ test: label, ok: true, provider: r.provider, ms: Date.now() - t0 }); }
+        catch (e) { st.push({ test: label, ok: false, error: String(e.message).slice(0, 200), ms: Date.now() - t0 }); }
+      };
+      for (const [tn, fn] of Object.entries(stTpl)) await run1(`template: ${tn}`, () => fn(stSample));
+      for (const kind of ['birthday', 'anniversary']) await run1(`celebration: ${kind}`, () => stCel({ kind, name: 'Test Employee', department: 'Sales', designation: 'Executive', dateLabel: '1 Dec 2026', years: kind === 'anniversary' ? 3 : null, isToday: true }));
+      const pdf = await renderPdf({ pageSize: 'A4', content: [{ text: 'Self-test attachment', fontSize: 18 }, { text: 'A PDF produced by the app, sent as an email attachment.' }] });
+      await run1('PDF attachment (offer / letter / payslip style)', () => ({ subject: 'PDF attachment', html: '<p>A PDF is attached.</p>', attachments: [{ filename: 'Self_test_letter.pdf', content: pdf }] }));
+      await run1('three attachments (MIS report style: two Excel + a PDF)', () => ({ subject: 'Three attachments', html: '<p>Three files attached.</p>', attachments: [{ filename: 'one.pdf', content: pdf }, { filename: 'two.pdf', content: pdf }, { filename: 'notes.txt', content: Buffer.from('plain text file') }] }));
+      await run1('large attachment (6 MB)', () => ({ subject: 'Large attachment', html: '<p>A 6 MB file is attached.</p>', attachments: [{ filename: 'large-test.txt', content: Buffer.alloc(6 * 1024 * 1024, 'maxvolt ') }] }));
+      await run1('reply-to + plain text part', () => ({ subject: 'Reply-To and text', html: '<p>Reply-To is your own address.</p>', text: 'Reply-To is your own address.', replyTo: cu.email }));
+      await run1('non-English text and long subject', () => ({ subject: 'हिंदी विषय — Ünïcödé — ' + 'long subject '.repeat(8), html: '<p>नमस्ते — Ünïcödé — ₹ 1,00,000 — “quotes” — 😀</p>' }));
+      await run1('simulated gateway outage → must fall back to Brevo', () => ({ subject: 'Fallback to Brevo', html: '<p>This one is sent by Brevo on purpose.</p>', meta: { simulateGatewayDown: true } }));
+      const fails = st.filter((x) => !x.ok);
+      return res.json({ success: true, to: cu.email, total: st.length, passed: st.length - fails.length, failed: fails.length, results: st, provider_check: await stVerify(), stats: stStats() });
+    }
+
     case 'notificationHealthCheck': {
       if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
       const nhSend = !!p.send_test;
@@ -12232,6 +12263,7 @@ router.post('/:name', async (req, res) => {
       try {
         await sendEmail({
           to: cand.email,
+          meta: { source: 'candidate-documents', confirm: true },
           subject: `Document Submission Required — ${cand.full_name || 'Candidate'} at Maxvolt Energy Industries Limited`,
           html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
             <div style="background:#ea580c;color:#fff;padding:20px;border-radius:10px 10px 0 0;text-align:center;">
@@ -12568,6 +12600,7 @@ router.post('/:name', async (req, res) => {
       try {
         await sendEmail({
           to:      cand.email,
+          meta:    { source: 'offer-letter', confirm: true },
           subject: `Offer Letter – ${pos} at Maxvolt Energy Industries Limited`,
           html:    emailHtml,
           attachments: pdfBuffer ? [{
@@ -13637,7 +13670,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const { to, subject, body: textBody, html } = p;
       if (!to || !subject) return res.json({ success:false, error:'to and subject are required' });
       try {
-        const result = await sendEmail({ to, subject, html: html || `<p>${(textBody || '').replace(/\n/g, '<br/>')}</p>`, text: textBody });
+        const result = await sendEmail({ to, subject, html: html || `<p>${(textBody || '').replace(/\n/g, '<br/>')}</p>`, text: textBody, meta: { source: 'custom', confirm: true } });
         return res.json({ success:true, ...result });
       } catch(e) {
         return res.json({ success:false, error: e.message });
@@ -13699,7 +13732,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
         location,
         interviewerName
       });
-      const result = await sendEmail({ to: candidateEmail, ...tpl });
+      const result = await sendEmail({ to: candidateEmail, ...tpl, meta: { source: 'interview-invite', confirm: true } });
       return res.json({ success:true, ...result });
     }
 
@@ -17173,6 +17206,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
       await sendEmail({
         to: sclUser.email,
+        meta: { source: 'employee-letter', confirm: true },
         subject: `${label} – Maxvolt Energy Industries Limited`,
         html: `<div style="font-family:Arial,sans-serif;color:#111;font-size:14px;line-height:1.7">
           <p>Dear ${empName},</p>
@@ -18645,6 +18679,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
 
         await sendEmail({
           to: empUser.email,
+          meta: { source: 'employee-letter', confirm: true },
           ...(cc ? { cc } : {}),
           subject: `${label} — Maxvolt Energy Industries Limited`,
           html: `<div style="font-family:Arial,sans-serif;color:#111">
