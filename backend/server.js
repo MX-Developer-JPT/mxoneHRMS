@@ -540,6 +540,11 @@ cron.schedule('30 9 * * *', () => {
   sendExitClearanceReminders().catch(err => console.error('[exit-clearance-reminder] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
+// ── Resignation watch — daily at 9:00 AM IST: manager / HR decision deadlines, last working day alerts ──
+cron.schedule('0 9 * * *', async () => {
+  try { const { runExitLifecycle } = await import('./cron/exitLifecycle.js'); await runExitLifecycle(); } catch (err) { console.error('[exit-lifecycle] failed:', err); }
+}, { timezone: 'Asia/Kolkata' });
+
 // ── Confirmation-due email reminders — daily at 8:30 AM IST ──
 // Emails the reporting manager once an employee's probation end date is
 // within 30 days (or already overdue) — once per employee per probation

@@ -8,6 +8,7 @@ import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
+import { noticeDaysFor, evaluateResignation, recoverableShortfall, draftFnF, segregationProblem, closeBlockers, leftStatusFor, isYmd, addDaysYmd, istToday, mergeCfg as mergeExitCfg, EXIT_DEFAULTS } from '../utils/exitPolicy.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { buildCriteria, scoreAgainst, scoreProfile, analyseResumeText, detectSkills, rulesParse, readReport, workHistory, noticeToDays, ctcToRupees, highestDegree } from '../utils/cvScreening.js';
 import { createHash } from 'crypto';
@@ -1628,6 +1629,48 @@ async function getExitWorkflowConfig() {
 }
 function invalidateExitWorkflowConfigCache() { _exitWorkflowConfigCache = null; }
 
+// ── Resignation & exit: shared helpers (business rules are in utils/exitPolicy.js) ─────────────────────────────────────────
+const exIstToday = () => istToday();
+const exEsc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const EX_CLOSED = ['withdrawn', 'cancelled', 'manager_rejected', 'hr_rejected', 'completed'];
+async function getExitPolicyConfig() {
+  const row = await one("SELECT data FROM entities WHERE type='ExitWorkflowConfig' AND id='exit-workflow-global'");
+  let stored = {}; try { stored = row ? JSON.parse(row.data) : {}; } catch { stored = {}; }
+  return mergeExitCfg(stored);
+}
+async function exLoadEmployee(userId) {
+  const r = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
+  if (!r) return null; try { return { ...JSON.parse(r.data), user_id: userId }; } catch { return null; }
+}
+/** An exit case that is still running for this person (rejected / withdrawn / completed cases do not count). */
+async function exOpenCase(userId) {
+  const rows = await all("SELECT id,data FROM entities WHERE type='Exit' AND user_id=$1", [userId]);
+  for (const r of rows) { try { const d = JSON.parse(r.data); if (!EX_CLOSED.includes(d.status)) return { id: r.id, ...d }; } catch { /* skip */ } }
+  return null;
+}
+/** The reporting manager who decides first — only if they are a real, active person who is not themselves leaving. */
+async function exResolveManager(emp) {
+  const id = emp?.reporting_manager_id;
+  if (!id) return { ok: false, reason: 'no reporting manager is recorded for this employee' };
+  if (id === emp.user_id) return { ok: false, reason: 'the reporting manager is the employee themselves' };
+  const m = await exLoadEmployee(id);
+  const u = await one('SELECT full_name FROM users WHERE id=$1', [id]);
+  if (!m || !u) return { ok: false, reason: 'the reporting manager has no active record' };
+  if (m.status && m.status !== 'active') return { ok: false, reason: 'the reporting manager has left the company' };
+  if (m.exit_date && String(m.exit_date).slice(0, 10) < exIstToday()) return { ok: false, reason: 'the reporting manager has left the company' };
+  return { ok: true, id, name: m.display_name || u.full_name || '' };
+}
+/** The last working day on the employee record while the notice runs (cleared again if the resignation is withdrawn). */
+async function exSetEmployeeExitDate(userId, ymd) {
+  const row = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
+  if (!row) return;
+  let d; try { d = JSON.parse(row.data); } catch { return; }
+  if (['resigned', 'terminated', 'retired'].includes(d.status)) return;   // already archived — closeExitCase owns the date
+  const upd = { ...d, exit_date: ymd || null };
+  await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
+  cacheInvalidate('Employee');
+}
+
 // Default asset-return checklist — matches the reference docx's Assets
 // Returned table exactly.
 const DEFAULT_EXIT_ASSETS = [
@@ -1715,7 +1758,8 @@ function computeExitFnFTotals(fnf) {
   const gratuity = Number(fnf.other_earnings?.gratuity?.amount) || 0;
   const ot = Number(fnf.other_earnings?.ot) || 0;
   const others = Number(fnf.other_earnings?.others) || 0;
-  const otherEarningsTotal = bonus + gratuity + ot + others;
+  const leaveEnc = Number(fnf.other_earnings?.leave_encashment?.amount) || 0;
+  const otherEarningsTotal = bonus + gratuity + leaveEnc + ot + others;
   const netPayable = totalEarned - totalDeductions + otherEarningsTotal;
   return {
     ...fnf,
@@ -1725,6 +1769,7 @@ function computeExitFnFTotals(fnf) {
     other_earnings: {
       bonus: { eligibility_period: fnf.other_earnings?.bonus?.eligibility_period || '', amount: bonus },
       gratuity: { years: fnf.other_earnings?.gratuity?.years || 0, amount: gratuity },
+      leave_encashment: { days: Number(fnf.other_earnings?.leave_encashment?.days) || 0, amount: leaveEnc },
       ot, others,
     },
     net_payable: netPayable,
@@ -1871,6 +1916,7 @@ function buildFnFSettlementPdf({ empName, employeeCode, designation, department,
               [hCell('Other Earnings'), hCell('Eligibility Period / Years'), hCell('Amount (₹)')],
               [cell('Bonus'), cell(fnf.other_earnings?.bonus?.eligibility_period || ''), cell(L(fnf.other_earnings?.bonus?.amount), { alignment: 'right' })],
               [cell('Gratuity'), cell(fnf.other_earnings?.gratuity?.years ? `${fnf.other_earnings.gratuity.years} Year(s)` : ''), cell(L(fnf.other_earnings?.gratuity?.amount), { alignment: 'right' })],
+              [cell('Leave Encashment'), cell(fnf.other_earnings?.leave_encashment?.days ? `${fnf.other_earnings.leave_encashment.days} Day(s)` : ''), cell(L(fnf.other_earnings?.leave_encashment?.amount), { alignment: 'right' })],
               [cell('OT'), cell(''), cell(L(fnf.other_earnings?.ot), { alignment: 'right' })],
               [cell('Others'), cell(''), cell(L(fnf.other_earnings?.others), { alignment: 'right' })],
               [{ text: 'Net Payable (Rs)', bold: true, fillColor: '#1e3a5f', color: 'white', colSpan: 2, margin: [4,5,4,5] }, {}, { text: `₹${L(fnf.net_payable)}`, bold: true, fillColor: '#1e3a5f', color: 'white', alignment: 'right', fontSize: 11, margin: [4,5,4,5] }],
@@ -16240,6 +16286,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'getEmployeeSalaryForFnF': {
+      // Salary, leave and loan figures of one person — HR / management only.
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { user_id: gesfUserId } = p;
       if (!gesfUserId) return res.json({ success: false, error: 'user_id required' });
       try {
@@ -16270,6 +16318,19 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const gratuityAmount = gratuityEligible ? Math.round((basicM * 15 * yearsOfService) / 26) : 0;
         const gesfLoanRows = await all("SELECT data FROM entities WHERE type='Loan' AND user_id=$1 AND status IN ('approved','active')", [gesfUserId]);
         const loanOutstanding = gesfLoanRows.reduce((s, r) => { const l = JSON.parse(r.data); return s + Number(l.outstanding_amount ?? l.amount ?? 0); }, 0);
+        // A ready-made first draft of the settlement from the records: pay for the last month's days, leave encashment, gratuity,
+        // notice recovery (less what HR waived or bought out), loan recovery and statutory deductions. HR reviews every figure.
+        const gesfCfg = await getExitPolicyConfig();
+        const gesfExit = (await exOpenCase(gesfUserId)) || (await one("SELECT data FROM entities WHERE type='Exit' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [gesfUserId]).then(r => (r ? JSON.parse(r.data) : null)));
+        const gesfLwd = gesfExit?.last_working_date ? String(gesfExit.last_working_date).slice(0, 10) : exIstToday();
+        const gesfEarnedDays = Number(earnedLeave?.available) || 0;
+        const gesfRec = gesfExit ? recoverableShortfall({ noticeDays: gesfExit.notice_period_days || 30, lwd: gesfLwd, resignationDate: gesfExit.resignation_date || gesfLwd, waivedDays: gesfExit.notice_waived_days, buyoutApprovedDays: gesfExit.buyout_approved_days }) : { recoverable: 0, shortfall: 0, waived: 0, buyoutCovered: 0 };
+        const gesfDraft = draftFnF({
+          lwd: gesfLwd, doj: String(doj || '').slice(0, 10), cfg: gesfCfg, exitType: gesfExit?.exit_type || 'resignation', earnedLeaveDays: gesfEarnedDays, loanOutstanding,
+          noticeRecoveryDays: gesfRec.recoverable, pfCeiling: PF_WAGE_CEILING,
+          salary: { basic: basicM, hra: hraM, special: specialM, conveyance: conveyanceM, other: Number(gesfSal.medical || 0) + Number(gesfSal.lta || 0) },
+        });
+        gesfDraft.notice = { shortfall_days: gesfRec.shortfall, waived_days: gesfRec.waived, buyout_approved_days: gesfRec.buyoutCovered, recoverable_days: gesfRec.recoverable };
         return res.json({
           success: true,
           monthly_gross: monthlyGross,
@@ -16281,10 +16342,11 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           loan_outstanding: Math.round(loanOutstanding),
           // Direct per-component actuals for the F&F Actual/Earned table.
           earnings_actual: { basic_salary: basicM, hra: hraM, special_allowances: specialM, conveyance: conveyanceM, gwi: 0, others: 0 },
-          epf_estimate: Math.round(basicM * 0.12),
+          epf_estimate: Math.round(Math.min(basicM, PF_WAGE_CEILING) * 0.12),
           esi_estimate: monthlyGross <= 21000 ? Math.round(monthlyGross * 0.0075) : 0,
           salary_structure: gesfSal,
           employee: gesfEmp,
+          draft: gesfDraft,
         });
       } catch (e) {
         return res.json({ success: false, error: e.message });
@@ -16371,6 +16433,215 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 
     /* ══ Exit Management — server-enforced workflow endpoints ══ */
 
+    /* ── Resignation & exit workflow (rules live in utils/exitPolicy.js) ─────────────────────────────────────────────────────── */
+    // What the resignation form needs: the notice that applies to this employee, the standard last working day, who decides first.
+    case 'ex_get_policy': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exCfg = await getExitPolicyConfig();
+      const exEmp = await exLoadEmployee(cu.id);
+      if (!exEmp) return res.json({ success: false, error: 'Employee record not found' });
+      const exNotice = noticeDaysFor(exEmp, exCfg);
+      const exToday = exIstToday();
+      const exMgr = await exResolveManager(exEmp);
+      const exOpen = await exOpenCase(cu.id);
+      return res.json({ success: true, today: exToday, notice_days: exNotice.days, notice_source: exNotice.source, standard_last_day: addDaysYmd(exToday, exNotice.days), max_notice_days: exCfg.max_notice_days,
+        manager: exMgr.ok ? { id: exMgr.id, name: exMgr.name } : null, manager_note: exMgr.ok ? '' : exMgr.reason, open_case: exOpen ? { id: exOpen.id, status: exOpen.status } : null });
+    }
+
+    // The employee's resignation: validated and created here (never trusted from the browser), routed to the reporting manager, or straight
+    // to HR when there is no active reporting manager so it can never get stuck waiting for nobody.
+    case 'ex_submit_resignation': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exCfg = await getExitPolicyConfig();
+      const exEmp = await exLoadEmployee(cu.id);
+      if (!exEmp) return res.json({ success: false, error: 'Employee record not found' });
+      if (exEmp.status && exEmp.status !== 'active') return res.json({ success: false, error: 'Only an active employee can resign.' });
+      if (await exOpenCase(cu.id)) return res.json({ success: false, error: 'You already have an exit case in progress. Open My Exit to follow it.' });
+      const exReasonCat = String(p.reason_category || '').trim(), exReason = String(p.reason_for_leaving || '').trim();
+      if (!exReasonCat) return res.json({ success: false, error: 'Please select a reason category' });
+      if (exReason.length < 5) return res.json({ success: false, error: 'Please give your reason for leaving' });
+      const exToday = exIstToday();
+      const exNotice = noticeDaysFor(exEmp, exCfg);
+      const exEval = evaluateResignation({ today: exToday, proposedLastDay: String(p.proposed_last_day || '').slice(0, 10), noticeDays: exNotice.days, buyoutRequested: !!p.buyout_requested, buyoutDays: p.buyout_days_requested, cfg: exCfg });
+      if (!exEval.ok) return res.json({ success: false, error: exEval.errors[0], errors: exEval.errors });
+      const exMgr = await exResolveManager(exEmp);
+      const exNow = new Date().toISOString();
+      const exId = uuidv4();
+      const exStatus = exMgr.ok ? 'submitted' : 'manager_approved';
+      const exMgrStage = exMgr.ok
+        ? { stage: 'manager', status: 'pending', actor_id: null, actor_name: exMgr.name, comment: '', timestamp: null }
+        : { stage: 'manager', status: 'approved', actor_id: null, actor_name: 'System', comment: `Routed to HR: ${exMgr.reason}`, timestamp: exNow };
+      const exData = {
+        id: exId, user_id: cu.id, exit_type: 'resignation', status: exStatus,
+        resignation_date: exEval.resignationDate, last_working_date: p.proposed_last_day, proposed_last_day: p.proposed_last_day, standard_last_day: exEval.standardLwd,
+        reason_category: exReasonCat, reason_for_leaving: exReason, detailed_comments: String(p.detailed_comments || '').slice(0, 2000),
+        new_employer: String(p.new_employer || '').slice(0, 200), expected_ctc: p.expected_ctc || '',
+        willing_to_serve_notice: p.willing_to_serve_notice !== false && p.willing_to_serve_notice !== 'no',
+        notice_period_days: exNotice.days, notice_source: exNotice.source, notice_shortfall_days: exEval.shortfallDays,
+        buyout_requested: !!p.buyout_requested && exEval.buyoutDays > 0, buyout_days_requested: exEval.buyoutDays,
+        manager_id: exMgr.ok ? exMgr.id : null, manager_due_at: exMgr.ok ? addDaysYmd(exToday, exCfg.manager_decision_days) : null, manager_escalated: false,
+        employee_snapshot: { name: cu.full_name, code: exEmp.employee_code || '', department: exEmp.department || '', designation: exEmp.designation || '', date_of_joining: exEmp.date_of_joining || '' },
+        approval_stages: [exMgrStage, { stage: 'hr', status: 'pending', actor_id: null, actor_name: null, comment: '', timestamp: null }],
+        clearance_checklist: {}, assets: [], kt_items: [], exit_interview: null, hr_exit_interview: null, exit_interview_completed: false, hr_interview_completed: false,
+        fnf_data: null, fnf_calculated: false, access_deactivated: false, relieving_letter_generated: false, experience_letter_generated: false, initiated_by_hr: false,
+        audit_log: [{ actor_id: cu.id, actor_name: cu.full_name, action: 'Resignation submitted', comment: `${exReasonCat}; proposed last working day ${p.proposed_last_day}; notice ${exNotice.days} days (${exNotice.source})`, timestamp: exNow },
+          ...(exMgr.ok ? [] : [{ actor_id: null, actor_name: 'System', action: 'Manager stage skipped', comment: exMgr.reason, timestamp: exNow }])],
+        created_at: exNow,
+      };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Exit',$2,$3,$4)", [exId, cu.id, exStatus, JSON.stringify(exData)]);
+      await runNotifyExitStatusChange(exMgr.ok ? 'submitted' : 'manager_approved', cu.id, cu.full_name || '', exMgr.ok ? exMgr.id : null);
+      try {
+        if (cu.email) sendEmail({ to: cu.email, subject: 'Resignation submitted — confirmation', html: `<p>Dear ${exEsc(cu.full_name || '')},</p><p>Your resignation has been submitted.</p><p><b>Resignation date:</b> ${exEval.resignationDate}<br><b>Proposed last working day:</b> ${exEsc(p.proposed_last_day)}<br><b>Notice period:</b> ${exNotice.days} days (standard last working day ${exEval.standardLwd})${exEval.shortfallDays ? `<br><b>Notice shortfall:</b> ${exEval.shortfallDays} day(s) — HR will decide whether it is waived or recovered` : ''}</p><p>${exMgr.ok ? 'Your reporting manager will review it first, then HR.' : 'It has been sent to HR.'} You can follow it in My Exit.</p>` }).catch(() => {});
+      } catch { /* the in-app confirmation is enough */ }
+      return res.json({ success: true, exit_id: exId, status: exStatus, shortfall_days: exEval.shortfallDays, standard_last_day: exEval.standardLwd, routed_to_hr: !exMgr.ok });
+    }
+
+    // Withdrawal. Before HR accepts the resignation the employee can withdraw it directly; once the notice has started it is a request
+    // that HR decides (the company has already acted on it), so it cannot be used to dodge clearance or recoveries.
+    case 'ex_withdraw': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = p.exit_id ? await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]) : await one("SELECT id,data FROM entities WHERE type='Exit' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [cu.id]);
+      if (!exRow) return res.json({ success: false, error: 'No resignation found' });
+      const ex = JSON.parse(exRow.data);
+      if (ex.user_id !== cu.id) return res.status(403).json({ error: 'Only the employee can withdraw their own resignation' });
+      if (ex.exit_type && ex.exit_type !== 'resignation') return res.json({ success: false, error: 'Only a resignation can be withdrawn — this exit was started by the company.' });
+      const exReason = String(p.reason || '').trim();
+      const exNow = new Date().toISOString();
+      if (['submitted', 'manager_approved'].includes(ex.status)) {
+        const exUpd = { ...ex, status: 'withdrawn', withdrawal_at: exNow, withdrawal_reason: exReason, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Resignation withdrawn', comment: exReason, timestamp: exNow }] };
+        await run("UPDATE entities SET data=$1,status='withdrawn',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+        for (const hr of await all("SELECT id FROM users WHERE role IN ('hr','admin')")) await notify(hr.id, { title: 'Resignation withdrawn', message: `${cu.full_name} has withdrawn their resignation.`, type: 'info', link: '/exit-management' });
+        if (ex.manager_id) await notify(ex.manager_id, { title: 'Resignation withdrawn', message: `${cu.full_name} has withdrawn their resignation.`, type: 'info', link: '/exit-management' });
+        return res.json({ success: true, status: 'withdrawn' });
+      }
+      if (ex.status === 'in_notice') {
+        if (ex.withdrawal_request?.status === 'pending') return res.json({ success: false, error: 'Your withdrawal request is already with HR.' });
+        if (exReason.length < 5) return res.json({ success: false, error: 'Please give a reason — HR decides on a withdrawal once the notice has started.' });
+        const exUpd = { ...ex, withdrawal_request: { status: 'pending', reason: exReason, requested_at: exNow }, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Withdrawal requested', comment: exReason, timestamp: exNow }] };
+        await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+        for (const hr of await all("SELECT id FROM users WHERE role IN ('hr','admin')")) await notify(hr.id, { title: 'Withdrawal request', message: `${cu.full_name} has asked to withdraw their resignation during notice. Please decide.`, type: 'warning', link: '/exit-management' });
+        return res.json({ success: true, status: 'withdrawal_requested' });
+      }
+      return res.json({ success: false, error: `The case is at "${ex.status}" and can no longer be withdrawn — please speak to HR.` });
+    }
+
+    case 'ex_decide_withdrawal': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      if (ex.status !== 'in_notice') return res.json({ success: false, error: 'Only a case in notice can be withdrawn by HR decision' });
+      if (!['approved', 'rejected'].includes(p.action)) return res.json({ success: false, error: 'action must be approved or rejected' });
+      const exComment = String(p.comment || '').trim();
+      if (exComment.length < 3) return res.json({ success: false, error: 'Please record the reason for your decision' });
+      const exNow = new Date().toISOString();
+      if (p.action === 'approved') {
+        const exUpd = { ...ex, status: 'withdrawn', withdrawal_at: exNow, withdrawal_reason: ex.withdrawal_request?.reason || exComment, withdrawal_request: { ...(ex.withdrawal_request || {}), status: 'approved', decided_by: cu.full_name, decided_at: exNow, comment: exComment },
+          audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Withdrawal accepted — employee continues', comment: exComment, timestamp: exNow }] };
+        await run("UPDATE entities SET data=$1,status='withdrawn',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+        await exSetEmployeeExitDate(ex.user_id, null);
+        await notify(ex.user_id, { title: 'Withdrawal accepted', message: 'HR has accepted the withdrawal of your resignation. You continue in your role.', type: 'success', link: '/my-exit' });
+      } else {
+        const exUpd = { ...ex, withdrawal_request: { ...(ex.withdrawal_request || {}), status: 'rejected', decided_by: cu.full_name, decided_at: exNow, comment: exComment }, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Withdrawal declined', comment: exComment, timestamp: exNow }] };
+        await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+        await notify(ex.user_id, { title: 'Withdrawal not accepted', message: `HR has not accepted the withdrawal: ${exComment}`, type: 'warning', link: '/my-exit' });
+      }
+      return res.json({ success: true });
+    }
+
+    // HR moves the last working day (early release or extension) with a reason; the notice shortfall is recalculated.
+    case 'ex_update_lwd': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      if (!['in_notice', 'clearance_pending', 'clearance_done'].includes(ex.status)) return res.json({ success: false, error: `The last working day can only be changed during notice or clearance (case is at ${ex.status})` });
+      const exLwd = String(p.last_working_date || '').slice(0, 10), exWhy = String(p.reason || '').trim();
+      if (!isYmd(exLwd)) return res.json({ success: false, error: 'Enter a valid last working day' });
+      if (exLwd < ex.resignation_date) return res.json({ success: false, error: 'The last working day cannot be before the resignation date' });
+      if (exLwd < exIstToday()) return res.json({ success: false, error: 'The last working day cannot be moved into the past' });
+      if (exWhy.length < 3) return res.json({ success: false, error: 'Please record the reason for the change' });
+      const exRec = recoverableShortfall({ noticeDays: ex.notice_period_days || 30, lwd: exLwd, resignationDate: ex.resignation_date, waivedDays: p.waived_days ?? ex.notice_waived_days, buyoutApprovedDays: ex.buyout_approved_days });
+      const exNow = new Date().toISOString();
+      const exUpd = { ...ex, last_working_date: exLwd, notice_shortfall_days: exRec.shortfall, notice_waived_days: exRec.waived, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `Last working day changed ${ex.last_working_date} → ${exLwd}`, comment: exWhy, timestamp: exNow }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+      await exSetEmployeeExitDate(ex.user_id, exLwd);
+      await notify(ex.user_id, { title: 'Last working day updated', message: `Your last working day is now ${exLwd}. ${exWhy}`, type: 'info', link: '/my-exit' });
+      return res.json({ success: true, shortfall_days: exRec.shortfall, recoverable_days: exRec.recoverable });
+    }
+
+    // HR decides the buy-out request: the company accepts payment (or waives) for some of the shortfall, so it is not recovered as notice pay.
+    case 'ex_buyout_decision': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      if (!ex.buyout_requested) return res.json({ success: false, error: 'No buy-out was requested' });
+      if (!['approved', 'rejected'].includes(p.action)) return res.json({ success: false, error: 'action must be approved or rejected' });
+      const exRecNow = recoverableShortfall({ noticeDays: ex.notice_period_days || 30, lwd: ex.last_working_date, resignationDate: ex.resignation_date });
+      const exDays = p.action === 'approved' ? Math.min(exRecNow.shortfall, Math.max(0, Math.round(Number(p.days ?? ex.buyout_days_requested) || 0))) : 0;
+      if (p.action === 'approved' && exDays <= 0) return res.json({ success: false, error: 'Enter the days you approve (at most the notice shortfall)' });
+      const exNow = new Date().toISOString();
+      const exUpd = { ...ex, buyout_approved: p.action === 'approved', buyout_rejected: p.action === 'rejected', buyout_approved_days: exDays, buyout_decided_by: cu.full_name, buyout_decided_at: exNow,
+        audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: p.action === 'approved' ? `Notice buy-out approved: ${exDays} day(s)` : 'Notice buy-out rejected', comment: String(p.comment || ''), timestamp: exNow }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+      await notify(ex.user_id, { title: 'Notice buy-out ' + p.action, message: p.action === 'approved' ? `HR approved an early release with a buy-out of ${exDays} day(s); the notice pay for those days is recovered in your full and final settlement.` : 'HR did not approve the buy-out. Your last working day may be kept at the standard notice date — please check with HR.', type: p.action === 'approved' ? 'success' : 'warning', link: '/my-exit' });
+      return res.json({ success: true, approved_days: exDays });
+    }
+
+    case 'ex_start_clearance': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      if (ex.status !== 'in_notice') return res.json({ success: false, error: `Clearance can start only from notice (case is at ${ex.status})` });
+      if (ex.withdrawal_request?.status === 'pending') return res.json({ success: false, error: 'Decide the pending withdrawal request first' });
+      const exNow = new Date().toISOString();
+      const exUpd = { ...ex, status: 'clearance_pending', assets: Array.isArray(ex.assets) && ex.assets.length ? ex.assets : DEFAULT_EXIT_ASSETS.map((a, i) => ({ ...a, id: `asset_${i}` })), audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Clearance initiated', comment: '', timestamp: exNow }] };
+      await run("UPDATE entities SET data=$1,status='clearance_pending',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+      await runNotifyExitStatusChange('clearance_started', ex.user_id, '', null);
+      return res.json({ success: true });
+    }
+
+    case 'ex_submit_interview': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = p.exit_id ? await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]) : await one("SELECT id,data FROM entities WHERE type='Exit' AND user_id=$1 ORDER BY created_at DESC LIMIT 1", [cu.id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      if (ex.user_id !== cu.id) return res.status(403).json({ error: 'Not your exit case' });
+      if (!['in_notice', 'clearance_pending', 'clearance_done', 'fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted'].includes(ex.status)) return res.json({ success: false, error: 'The exit interview opens once your resignation is accepted.' });
+      const iv = p.interview && typeof p.interview === 'object' ? p.interview : {};
+      if (!String(iv.primary_reason || '').trim()) return res.json({ success: false, error: 'Please give your primary reason for leaving' });
+      const exNow = new Date().toISOString();
+      const exUpd = { ...ex, exit_interview: { ...iv, completed_at: exNow }, exit_interview_completed: true, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Exit interview submitted', comment: '', timestamp: exNow }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+      return res.json({ success: true });
+    }
+
+    case 'ex_skip_interview': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      const exWhy = String(p.reason || '').trim();
+      if (exWhy.length < 3) return res.json({ success: false, error: 'Please record why the interview is skipped' });
+      const exNow = new Date().toISOString();
+      const exUpd = { ...ex, exit_interview_completed: true, exit_interview: { primary_reason: `Skipped by HR: ${exWhy}`, skipped: true, completed_at: exNow }, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Exit interview skipped', comment: exWhy, timestamp: exNow }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+      return res.json({ success: true });
+    }
+
+    case 'ex_remind_interview': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      await notify(ex.user_id, { title: 'Please complete your exit interview', message: 'HR is waiting for your exit interview. It takes a few minutes and your feedback is confidential.', type: 'warning', link: '/my-exit' });
+      const exNow = new Date().toISOString();
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...ex, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Exit interview reminder sent', comment: '', timestamp: exNow }] }), exRow.id]);
+      return res.json({ success: true });
+    }
+
     case 'initiateExit': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { employee_user_id: ieUserId, exit_type: ieExitType, reason_category: ieReason, resignation_date: ieResignDate, last_working_date: ieLwd, hr_notes: ieNotes } = p;
@@ -16378,8 +16649,11 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const ieEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [ieUserId]);
       if (!ieEmpRow) return res.json({ success: false, error: 'Employee not found' });
       const ieEmp = JSON.parse(ieEmpRow.data);
-      const ieExisting = await one("SELECT id FROM entities WHERE type='Exit' AND user_id=$1 AND data::jsonb->>'status' NOT IN ('withdrawn','cancelled','manager_rejected','hr_rejected')", [ieUserId]);
-      if (ieExisting) return res.json({ success: false, error: 'An active exit case already exists for this employee' });
+      if (await exOpenCase(ieUserId)) return res.json({ success: false, error: 'An active exit case already exists for this employee' });
+      if (ieEmp.status && ieEmp.status !== 'active') return res.json({ success: false, error: 'This employee is already marked as left' });
+      if (!isYmd(String(ieLwd).slice(0, 10)) || String(ieLwd).slice(0, 10) < exIstToday()) return res.json({ success: false, error: 'The last working day must be today or a future date' });
+      if (!String(ieNotes || '').trim()) return res.json({ success: false, error: 'Please record the reason for starting this exit' });
+      const ieNotice = noticeDaysFor(ieEmp, await getExitPolicyConfig());
       const ieId = uuidv4();
       const ieNow = new Date().toISOString();
       const ieData = {
@@ -16387,7 +16661,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         exit_type: ieExitType || 'resignation', reason_category: ieReason || 'other',
         resignation_date: ieResignDate || ieNow.slice(0, 10), last_working_date: ieLwd, proposed_last_day: ieLwd,
         hr_notes: ieNotes || '', status: 'in_notice', initiated_by_hr: true,
-        hr_actioned_by: cu.id, hr_actioned_at: ieNow, notice_period_days: 30,
+        hr_actioned_by: cu.id, hr_actioned_at: ieNow, notice_period_days: ieNotice.days, notice_source: ieNotice.source, notice_shortfall_days: 0,
+        employee_snapshot: { name: '', code: ieEmp.employee_code || '', department: ieEmp.department || '', designation: ieEmp.designation || '', date_of_joining: ieEmp.date_of_joining || '' },
         approval_stages: [
           { stage: 'manager', status: 'approved', actor_name: 'HR (initiated)', timestamp: ieNow },
           { stage: 'hr', status: 'approved', actor_id: cu.id, actor_name: cu.full_name, timestamp: ieNow },
@@ -16401,6 +16676,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         audit_log: [{ actor_id: cu.id, actor_name: cu.full_name, action: 'HR Initiated Exit', comment: ieNotes || '', timestamp: ieNow }],
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Exit',$2,'in_notice',$3)", [ieId, ieUserId, JSON.stringify(ieData)]);
+      await exSetEmployeeExitDate(ieUserId, String(ieLwd).slice(0, 10));
       await notify(ieUserId, { title: 'Exit Process Initiated', message: 'HR has initiated an exit process for your account. Please log in to review the details and complete required steps.', type: 'warning', link: '/my-exit' });
       return res.json({ success: true, exit_id: ieId });
     }
@@ -16417,10 +16693,16 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       // reporting manager may approve/reject that stage ("Only the
       // employee's direct reporting manager should have the authority").
       // HR keeps full authority at the hr stage, which is correctly theirs.
-      let aeaAuthorized;
+      let aeaAuthorized, aeaOnBehalf = false;
       if (aeaStage === 'manager') {
         const mgrRow = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [aeaExit.user_id]);
         aeaAuthorized = mgrRow?.mgr === cu.id;
+        // HR may decide the manager stage only when it cannot move on its own: the manager did not answer in time (escalated) or
+        // there is no active manager. The comment then records that HR acted in the manager's place.
+        if (!aeaAuthorized && (await hasRole(cu, HR_ROLES))) {
+          const aeaMgrState = await exResolveManager(await exLoadEmployee(aeaExit.user_id));
+          if (aeaExit.manager_escalated || !aeaMgrState.ok) { aeaAuthorized = true; aeaOnBehalf = true; }
+        }
       } else {
         aeaAuthorized = (await hasRole(cu, HR_ROLES)) || (await hasRole(cu, ['management']));
       }
@@ -16428,8 +16710,22 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (aeaStage === 'manager' && aeaExit.status !== 'submitted') return res.json({ success: false, error: `Cannot act — case is at status ${aeaExit.status}` });
       if (aeaStage === 'hr' && aeaExit.status !== 'manager_approved') return res.json({ success: false, error: `Cannot act — case is at status ${aeaExit.status}` });
 
+      if (aeaAction === 'rejected' && String(aeaComment || '').trim().length < 3) return res.json({ success: false, error: 'Please record the reason for rejecting' });
+      if (aeaOnBehalf && String(aeaComment || '').trim().length < 3) return res.json({ success: false, error: 'Please record why HR is deciding in place of the reporting manager' });
+      // HR approval fixes the last working day and decides what happens to any notice shortfall.
+      let aeaFinalLwd = aeaExit.last_working_date, aeaRec = null, aeaWaived = 0;
+      if (aeaStage === 'hr' && aeaAction === 'approved') {
+        aeaFinalLwd = String(aeaLwd || aeaExit.last_working_date || '').slice(0, 10);
+        if (!isYmd(aeaFinalLwd)) return res.json({ success: false, error: 'Enter a valid last working day' });
+        if (aeaFinalLwd < exIstToday()) return res.json({ success: false, error: 'The last working day cannot be in the past' });
+        if (aeaExit.resignation_date && aeaFinalLwd < aeaExit.resignation_date) return res.json({ success: false, error: 'The last working day cannot be before the resignation date' });
+        aeaWaived = Math.max(0, Math.round(Number(p.waived_days) || 0));
+        aeaRec = recoverableShortfall({ noticeDays: aeaExit.notice_period_days || 30, lwd: aeaFinalLwd, resignationDate: aeaExit.resignation_date || exIstToday(), waivedDays: aeaWaived, buyoutApprovedDays: aeaExit.buyout_approved_days });
+        if (aeaWaived > aeaRec.shortfall) return res.json({ success: false, error: `Only ${aeaRec.shortfall} day(s) of notice are short — cannot waive ${aeaWaived}` });
+        if (aeaWaived > 0 && String(aeaComment || '').trim().length < 3) return res.json({ success: false, error: 'Please record why the notice shortfall is waived' });
+      }
       const aeaNow = new Date().toISOString();
-      const aeaStages = (aeaExit.approval_stages || []).map(s => s.stage === aeaStage ? { ...s, status: aeaAction, actor_id: cu.id, actor_name: cu.full_name, comment: aeaComment || '', timestamp: aeaNow } : s);
+      const aeaStages = (aeaExit.approval_stages || []).map(s => s.stage === aeaStage ? { ...s, status: aeaAction, actor_id: cu.id, actor_name: cu.full_name, comment: `${aeaOnBehalf ? '[HR in place of manager] ' : ''}${aeaComment || ''}`.trim(), timestamp: aeaNow } : s);
       const aeaAudit = [...(aeaExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `${aeaStage === 'manager' ? 'Manager' : 'HR'} ${aeaAction}`, comment: aeaComment || '', timestamp: aeaNow }];
       let aeaNewStatus, aeaUpd;
       if (aeaStage === 'manager') {
@@ -16439,7 +16735,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         aeaNewStatus = aeaAction === 'approved' ? 'in_notice' : 'hr_rejected';
         aeaUpd = {
           ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, hr_action: aeaAction, hr_comment: aeaComment || '',
-          hr_actioned_by: cu.id, hr_actioned_at: aeaNow, ...(aeaLwd ? { last_working_date: aeaLwd } : {}), audit_log: aeaAudit,
+          hr_actioned_by: cu.id, hr_actioned_at: aeaNow, audit_log: aeaAudit,
+          ...(aeaAction === 'approved' ? { last_working_date: aeaFinalLwd, notice_shortfall_days: aeaRec.shortfall, notice_waived_days: aeaRec.waived } : {}),
           // Clearance is initialized here — the moment the case actually
           // reaches in_notice, the earliest point clearance actions become
           // possible (updateExitClearance requires this status) — never at
@@ -16452,10 +16749,35 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         };
       }
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(aeaUpd), aeaNewStatus, aeaRow.id]);
+      // Once HR accepts: the employee record carries the last working day (so MIS, learning and reports see the exit date straight away),
+      // leave booked after that day is dealt with, and HR is told who reports to this person.
+      const aeaWarnings = [];
+      if (aeaStage === 'hr' && aeaAction === 'approved') {
+        await exSetEmployeeExitDate(aeaExit.user_id, aeaFinalLwd);
+        try {
+          const aeaLeaves = (await all("SELECT id,data FROM entities WHERE type='Leave' AND user_id=$1", [aeaExit.user_id])).map(r => ({ id: r.id, ...JSON.parse(r.data) })).filter(l => ['pending', 'approved'].includes(l.status) && String(l.start_date || '').slice(0, 10) > aeaFinalLwd);
+          let aeaAuto = 0;
+          for (const l of aeaLeaves.filter(x => x.status === 'pending')) {
+            const { id: lid, ...ld } = l;
+            await run("UPDATE entities SET data=$1,status='cancelled',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...ld, status: 'cancelled', cancel_reason: `Cancelled automatically — starts after the last working day (${aeaFinalLwd})`, cancelled_at: aeaNow }), lid]); aeaAuto++;
+          }
+          if (aeaAuto) { cacheInvalidate('Leave'); aeaWarnings.push(`${aeaAuto} pending leave request(s) after the last working day were cancelled.`); }
+          const aeaApprovedAfter = aeaLeaves.filter(x => x.status === 'approved').length;
+          if (aeaApprovedAfter) aeaWarnings.push(`${aeaApprovedAfter} approved leave(s) fall after the last working day — cancel them from Admin Panel → Leave Cancellation.`);
+        } catch (e) { console.warn('[actionExitApproval] leave check failed:', e.message); }
+        try {
+          const aeaReports = (await all("SELECT data FROM entities WHERE type='Employee' AND data::jsonb->>'reporting_manager_id'=$1 AND COALESCE(data::jsonb->>'status','active')='active'", [aeaExit.user_id])).map(r => JSON.parse(r.data));
+          if (aeaReports.length) aeaWarnings.push(`${aeaReports.length} employee(s) report to this person — assign a new reporting manager before the last working day (${aeaReports.slice(0, 5).map(e => e.display_name).filter(Boolean).join(', ')}${aeaReports.length > 5 ? '…' : ''}).`);
+          const aeaLoans = await all("SELECT data FROM entities WHERE type='Loan' AND user_id=$1 AND status IN ('approved','active')", [aeaExit.user_id]);
+          const aeaOut = aeaLoans.reduce((s, r) => { const l = JSON.parse(r.data); return s + Number(l.outstanding_amount ?? l.amount ?? 0); }, 0);
+          if (aeaOut > 0) aeaWarnings.push(`Loan / advance outstanding ₹${Math.round(aeaOut).toLocaleString('en-IN')} will be recovered in the full and final settlement.`);
+        } catch (e) { console.warn('[actionExitApproval] dependants check failed:', e.message); }
+        if (aeaWarnings.length) for (const hr of await all("SELECT id FROM users WHERE role IN ('hr','admin')")) await notify(hr.id, { title: 'Exit accepted — things to handle', message: aeaWarnings.join(' '), type: 'warning', link: '/exit-management' });
+      }
       const aeaNotifyAction = aeaStage === 'manager' ? (aeaAction === 'approved' ? 'manager_approved' : 'manager_rejected') : (aeaAction === 'approved' ? 'hr_approved' : 'hr_rejected');
       const aeaUserRow = await one('SELECT full_name FROM users WHERE id=$1', [aeaExit.user_id]);
       await runNotifyExitStatusChange(aeaNotifyAction, aeaExit.user_id, aeaUserRow?.full_name || '');
-      return res.json({ success: true, status: aeaNewStatus });
+      return res.json({ success: true, status: aeaNewStatus, warnings: aeaWarnings, shortfall_days: aeaRec?.shortfall ?? null, recoverable_days: aeaRec?.recoverable ?? null });
     }
 
     case 'updateExitAssets': {
@@ -16620,6 +16942,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (!vefRow) return res.json({ success: false, error: 'Exit case not found' });
       const vefExit = JSON.parse(vefRow.data);
       if (vefExit.status !== 'fnf_prepared') return res.json({ success: false, error: `Cannot verify — case is at status ${vefExit.status}` });
+      const vefSeg = segregationProblem(vefExit.fnf_data, cu.id, 'verify', await getExitPolicyConfig());
+      if (vefSeg) return res.json({ success: false, error: vefSeg });
       const vefNow = new Date().toISOString();
       const vefUpd = { ...vefExit, fnf_data: { ...vefExit.fnf_data, verified_by_id: cu.id, verified_by_name: cu.full_name, verified_at: vefNow }, status: 'fnf_verified', audit_log: [...(vefExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'F&F verified', comment: '', timestamp: vefNow }] };
       await run("UPDATE entities SET data=$1,status='fnf_verified',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(vefUpd), vefRow.id]);
@@ -16633,6 +16957,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (!aefRow) return res.json({ success: false, error: 'Exit case not found' });
       const aefExit = JSON.parse(aefRow.data);
       if (aefExit.status !== 'fnf_verified') return res.json({ success: false, error: `Cannot approve — case is at status ${aefExit.status}` });
+      const aefSeg = segregationProblem(aefExit.fnf_data, cu.id, 'approve', await getExitPolicyConfig());
+      if (aefSeg) return res.json({ success: false, error: aefSeg });
       const aefNow = new Date().toISOString();
       const aefUpd = { ...aefExit, fnf_data: { ...aefExit.fnf_data, hr_approved_by_id: cu.id, hr_approved_by_name: cu.full_name, hr_approved_at: aefNow }, status: 'fnf_hr_approved', audit_log: [...(aefExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'F&F approved by HR', comment: '', timestamp: aefNow }] };
       await run("UPDATE entities SET data=$1,status='fnf_hr_approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(aefUpd), aefRow.id]);
@@ -16706,18 +17032,16 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const cecExit = JSON.parse(cecRow.data);
       const cecAllCleared = isChecklistFullyCleared(cecExit.clearance_checklist);
       const cecWfCfg = await getExitWorkflowConfig();
-      const cecReasons = [];
-      if (!cecAllCleared) cecReasons.push('all mandatory department clearances must be Cleared');
-      if (cecWfCfg.require_employee_declaration && !cecExit.declaration_signed_at) cecReasons.push('employee must sign the exit declaration');
-      if (!cecExit.no_dues_generated) cecReasons.push('No Dues Certificate must be generated');
-      if (!cecExit.fnf_data?.employee_accepted) cecReasons.push('employee must accept the F&F settlement');
-      if (!cecExit.fnf_data?.finance_processed_by_id) cecReasons.push('Finance must process the F&F payment');
+      const cecLoanRows = await all("SELECT data FROM entities WHERE type='Loan' AND user_id=$1 AND status IN ('approved','active')", [cecExit.user_id]);
+      const cecLoanOut = cecLoanRows.reduce((s, r) => { const l = JSON.parse(r.data); return s + Number(l.outstanding_amount ?? l.amount ?? 0); }, 0);
+      const cecReasons = closeBlockers({ exit: cecExit, cfg: await getExitPolicyConfig(), wf: cecWfCfg, today: exIstToday(), allCleared: cecAllCleared, loanOutstanding: cecLoanOut });
       if (cecReasons.length) return res.json({ success: false, error: `Cannot close — ${cecReasons.join('; ')}` });
       const cecNow = new Date().toISOString();
       const cecUpd = { ...cecExit, status: 'completed', access_deactivated: true, relieving_letter_generated: true, experience_letter_generated: true, audit_log: [...(cecExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Exit completed. Access deactivated.', comment: '', timestamp: cecNow }] };
       await run("UPDATE entities SET data=$1,status='completed',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecUpd), cecRow.id]);
       const cecEmpRow = await one("SELECT id FROM entities WHERE type='Employee' AND user_id=$1", [cecExit.user_id]);
-      if (cecEmpRow) await run("UPDATE entities SET data=jsonb_set(jsonb_set(data::jsonb,'{status}','\"resigned\"'),'{exit_date}',$1::jsonb)::text,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecExit.last_working_date || null), cecEmpRow.id]);
+      if (cecEmpRow) await run("UPDATE entities SET data=jsonb_set(jsonb_set(data::jsonb,'{status}',$3::jsonb),'{exit_date}',$1::jsonb)::text,status=$4,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecExit.last_working_date || null), cecEmpRow.id, JSON.stringify(leftStatusFor(cecExit.exit_type)), leftStatusFor(cecExit.exit_type)]);
+      cacheInvalidate('Employee');
       await disableIfDue(cecExit.user_id).catch(e => console.error('[closeExitCase] account disable failed:', e.message));
       await notify(cecExit.user_id, { title: 'Exit Process Completed', message: 'Your exit process has been completed. Your relieving and experience letters will be shared shortly.', type: 'success', link: '/my-exit' });
       return res.json({ success: true });
@@ -16903,6 +17227,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         require_employee_declaration: require_employee_declaration !== false,
         require_asset_verification: require_asset_verification !== false,
         require_kra_handover: require_kra_handover !== false,
+        // policy numbers (notice days, escalation, gratuity, segregation) — anything not sent keeps its current / default value
+        ...mergeExitCfg({ ...(await getExitPolicyConfig()), ...Object.fromEntries(Object.keys(EXIT_DEFAULTS).filter(k => p[k] !== undefined).map(k => [k, p[k]])) }),
       };
       const swcExisting = await one("SELECT id FROM entities WHERE type='ExitWorkflowConfig' AND id='exit-workflow-global'");
       if (swcExisting) await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(swcData), swcExisting.id]);

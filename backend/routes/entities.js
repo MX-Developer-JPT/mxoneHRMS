@@ -187,7 +187,25 @@ async function filterMrfRows(data, cu, type) {
   return data.filter(d => d.mrf_version !== 2 || d.requested_by === cu.id || d.hiring_manager_id === cu.id);
 }
 
+// Exit cases: HR / admin / management see everything. The employee sees their own case (without HR's private notes and interview).
+// A reporting manager sees the cases of their reports, and a department's clearance owner sees the cases that need their clearance —
+// but neither sees the settlement amounts, the exit interview or HR notes.
+async function filterExitRows(data, cu) {
+  const role = await getEffectiveRole(cu);
+  if (PRIVILEGED_ROLES.has(role)) return data;
+  const reports = await getDirectReportUserIds(cu.id);
+  let owner = false;
+  try { owner = (await all("SELECT data FROM entities WHERE type='ExitClearanceConfig'")).some(r => (JSON.parse(r.data).owner_user_ids || []).includes(cu.id)); } catch { /* none */ }
+  const out = [];
+  for (const d of data) {
+    if (d.user_id === cu.id) { const { hr_exit_interview, hr_notes, ...mine } = d; out.push(mine); continue; }
+    if (reports.has(d.user_id) || d.manager_id === cu.id || owner) { const { fnf_data, fnf_settlement, exit_interview, hr_exit_interview, hr_notes, declaration_signature_data_url, ...rest } = d; out.push(rest); }
+  }
+  return out;
+}
+
 async function filterSensitive(data, cu, type) {
+  if (type === 'Exit') return filterExitRows(data, cu);
   if (!SENSITIVE_TYPES.has(type)) return data;
   const role = await getEffectiveRole(cu);
   if (PRIVILEGED_ROLES.has(role)) return data;
@@ -780,6 +798,26 @@ async function assetValidation(data, current) {
 const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster', 'AttendanceBulkBatch', 'LeaveImportSnapshot', 'CvReviewBatch', 'RecruitmentConfig', 'CandidateIntake']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them
 router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
 
+// Exit cases are driven by the exit workflow functions (resignation, approvals, clearance, settlement). Writing the record directly
+// would let anyone — including the employee on their own case — skip approvals or change a settlement, so the generic API may only
+// touch a few hand-kept fields (knowledge-transfer notes, HR interview notes) and only for HR, and the audit log can only grow.
+router.use('/Exit', async (req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+  const cu = getCurrentUser(req);
+  if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+  const parts = req.path.split('/').filter(Boolean);
+  if (req.method !== 'PATCH' && req.method !== 'PUT') return res.status(403).json({ error: 'Exit cases are created and changed through the exit workflow' });
+  if (parts.length !== 1) return next();
+  const role = await getEffectiveRole(cu);
+  if (!PRIVILEGED_ROLES.has(role)) return res.status(403).json({ error: 'Exit cases are changed through the exit workflow' });
+  const row = await one("SELECT data FROM entities WHERE type='Exit' AND id=$1", [parts[0]]);
+  if (!row) return next();
+  const { exitPatchProblem } = await import('../utils/exitPolicy.js');
+  const problem = exitPatchProblem(JSON.parse(row.data), req.body || {});
+  if (problem) return res.status(403).json({ error: problem });
+  return next();
+});
+
 router.get('/:type', async (req, res) => {
   const cu = getCurrentUser(req);
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });
@@ -881,6 +919,7 @@ router.get('/:type/:id', async (req, res) => {
   const data = parseRow(row);
   if (!(await canAccessSensitive(cu, type, data.user_id))) return res.status(403).json({ error: 'Access denied' });
   if (type === 'JobRequisition' && data.mrf_version === 2 && (await filterMrfRows([data], cu, type)).length === 0) return res.status(403).json({ error: 'Access denied' });
+  if (type === 'Exit') { const visible = await filterExitRows([data], cu); if (!visible.length) return res.status(403).json({ error: 'Access denied' }); return res.json(visible[0]); }
   res.json(data);
 });
 

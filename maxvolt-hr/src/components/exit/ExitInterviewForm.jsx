@@ -138,10 +138,8 @@ export default function ExitInterviewForm({ exitRecord, user, onComplete }) {
     e.preventDefault();
     if (!form.primary_reason.trim()) { toast.error('Please enter your primary reason for leaving'); return; }
     setSaving(true);
-    await base44.entities.Exit.update(exitRecord.id, {
-      exit_interview_completed: true,
-      exit_interview: { ...form, completed_at: new Date().toISOString() },
-    });
+    const res = await base44.functions.invoke('ex_submit_interview', { exit_id: exitRecord.id, interview: form });
+    if (!res?.data?.success) { toast.error(res?.data?.error || 'Could not submit the interview'); setSaving(false); return; }
     toast.success('Exit interview submitted. Thank you for your feedback!');
     setSaving(false);
     onComplete();

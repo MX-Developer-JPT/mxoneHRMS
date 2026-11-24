@@ -77,7 +77,7 @@ const BLANK_FNF = {
   total_earnings_actual: 0, total_earnings_earned: 0,
   deductions: Object.fromEntries(FNF_DED_ROWS.map(([, k]) => [k, 0])),
   total_deductions: 0,
-  other_earnings: { bonus: { eligibility_period: '', amount: 0 }, gratuity: { years: 0, amount: 0 }, ot: 0, others: 0 },
+  other_earnings: { bonus: { eligibility_period: '', amount: 0 }, gratuity: { years: 0, amount: 0 }, leave_encashment: { days: 0, amount: 0 }, ot: 0, others: 0 },
   net_payable: 0,
 };
 
@@ -105,6 +105,8 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   const [activeTab, setActiveTab] = useState('overview');
   const [comment, setComment] = useState('');
   const [lwdEdit, setLwdEdit] = useState(initialRecord.last_working_date);
+  const [waivedDays, setWaivedDays] = useState('');
+  const [lwdReason, setLwdReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [hrInterview, setHrInterview] = useState(initialRecord.hr_exit_interview || { ...BLANK_HR_INTERVIEW });
   const [savingInterview, setSavingInterview] = useState(false);
@@ -189,22 +191,28 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   };
 
   const handleHRAction = async (action) => {
-    const ok = await callExit('actionExitApproval', { stage: 'hr', action, comment, last_working_date: lwdEdit }, `Resignation ${action} by HR`);
-    if (ok) setComment('');
+    const ok = await callExit('actionExitApproval', { stage: 'hr', action, comment, last_working_date: lwdEdit, waived_days: Number(waivedDays) || 0 }, `Resignation ${action} by HR`);
+    if (ok) { setComment(''); setWaivedDays(''); (ok.warnings || []).forEach(w => toast.warning(w, { duration: 9000 })); }
   };
 
   const handleWithdraw = async () => {
     if (!window.confirm('Are you sure you want to withdraw your resignation?')) return;
-    await saveExit({ status: 'withdrawn', withdrawal_at: new Date().toISOString(), audit_log: addAudit(exit.audit_log, 'Resignation Withdrawn', '') });
-    base44.functions.invoke('notifyExitStatusChange', { action: 'withdrawn', employee_id: exit.user_id, employee_name: exit.user?.full_name || '' }).catch(() => {});
-    toast.success('Resignation withdrawn');
+    await callExit('ex_withdraw', {}, 'Resignation withdrawn');
+  };
+
+  const handleDecideWithdrawal = async (action) => {
+    if (comment.trim().length < 3) { toast.error('Please write the reason for your decision in the comment box'); return; }
+    const ok = await callExit('ex_decide_withdrawal', { action, comment }, action === 'approved' ? 'Withdrawal accepted' : 'Withdrawal declined');
+    if (ok) setComment('');
+  };
+
+  const handleChangeLwd = async () => {
+    const ok = await callExit('ex_update_lwd', { last_working_date: lwdEdit, reason: lwdReason }, 'Last working day updated');
+    if (ok) setLwdReason('');
   };
 
   const handleStartClearance = async () => {
-    const initAssets = assets.length ? assets : DEFAULT_ASSETS;
-    await saveExit({ status: 'clearance_pending', assets: initAssets, audit_log: addAudit(exit.audit_log, 'Clearance initiated', '') });
-    base44.functions.invoke('notifyExitStatusChange', { action: 'clearance_started', employee_id: exit.user_id, employee_name: exit.user?.full_name || '' }).catch(() => {});
-    toast.success('Clearance process started');
+    await callExit('ex_start_clearance', {}, 'Clearance process started');
   };
 
   const handleUpdateClearance = async (deptKey, status, remarks, checklistItems, supportingDocuments) => {
@@ -378,10 +386,10 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
               ))}
 
               {/* Action panels */}
-              {isManager && exit.status === 'submitted' && (
+              {(isManager || (isHR && exit.manager_escalated)) && exit.status === 'submitted' && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 space-y-3">
-                  <p className="font-semibold text-yellow-800 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Manager Action Required</p>
-                  <div><Label className="text-xs">Comment</Label><Textarea value={comment} onChange={e => setComment(e.target.value)} rows={2} placeholder="Optional comment..." /></div>
+                  <p className="font-semibold text-yellow-800 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> {isManager ? 'Manager Action Required' : 'The reporting manager has not decided in time — HR may decide in their place'}</p>
+                  <div><Label className="text-xs">Comment</Label><Textarea value={comment} onChange={e => setComment(e.target.value)} rows={2} placeholder={isManager ? 'Optional comment...' : 'Required — say why HR is deciding for the manager'} /></div>
                   <div className="flex gap-3">
                     <Button className="bg-green-600 hover:bg-green-700 flex-1" disabled={saving} onClick={() => handleManagerAction('approved')}><CheckCircle2 className="w-4 h-4 mr-2" />Approve</Button>
                     <Button className="bg-red-600 hover:bg-red-700 flex-1" disabled={saving} onClick={() => handleManagerAction('rejected')}><XCircle className="w-4 h-4 mr-2" />Reject</Button>
@@ -393,12 +401,28 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-3">
                   <p className="font-semibold text-green-800 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> HR Action Required</p>
                   <div className="grid md:grid-cols-2 gap-3">
-                    <div><Label className="text-xs">Adjust Last Working Day</Label><Input type="date" value={lwdEdit} onChange={e => setLwdEdit(e.target.value)} /></div>
+                    <div><Label className="text-xs">Last Working Day</Label><Input type="date" value={lwdEdit} onChange={e => setLwdEdit(e.target.value)} />
+                      {(() => { const served = Math.round((new Date(lwdEdit) - new Date(exit.resignation_date)) / 86400000); const short = Math.max(0, (exit.notice_period_days || 30) - (isNaN(served) ? 0 : served)); return (
+                        <p className={`text-xs mt-1 ${short > 0 ? 'text-orange-700' : 'text-gray-500'}`}>Notice {exit.notice_period_days || 30} days · standard last day {exit.standard_last_day || '—'}{short > 0 ? ` · ${short} day(s) short` : ''}</p>); })()}
+                      <Label className="text-xs mt-2 block">Notice days to waive (company forgives)</Label>
+                      <Input type="number" min="0" value={waivedDays} onChange={e => setWaivedDays(e.target.value)} placeholder="0 — the shortfall is recovered in the settlement" /></div>
                     <div><Label className="text-xs">Comment</Label><Textarea value={comment} onChange={e => setComment(e.target.value)} rows={2} /></div>
                   </div>
                   <div className="flex gap-3">
                     <Button className="bg-green-600 hover:bg-green-700 flex-1" disabled={saving} onClick={() => handleHRAction('approved')}><CheckCircle2 className="w-4 h-4 mr-2" />Approve & Start Notice</Button>
                     <Button className="bg-red-600 hover:bg-red-700 flex-1" disabled={saving} onClick={() => handleHRAction('rejected')}><XCircle className="w-4 h-4 mr-2" />Reject</Button>
+                  </div>
+                </div>
+              )}
+
+              {isHR && exit.status === 'in_notice' && exit.withdrawal_request?.status === 'pending' && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3">
+                  <p className="font-semibold text-amber-800 flex items-center gap-2"><RotateCcw className="w-4 h-4" /> Withdrawal request from the employee</p>
+                  <p className="text-sm text-gray-700">“{exit.withdrawal_request.reason}”</p>
+                  <div><Label className="text-xs">Your reason (required)</Label><Textarea value={comment} onChange={e => setComment(e.target.value)} rows={2} /></div>
+                  <div className="flex gap-3">
+                    <Button className="bg-green-600 hover:bg-green-700 flex-1" disabled={saving} onClick={() => handleDecideWithdrawal('approved')}>Accept — employee stays</Button>
+                    <Button className="bg-red-600 hover:bg-red-700 flex-1" disabled={saving} onClick={() => handleDecideWithdrawal('rejected')}>Decline — exit continues</Button>
                   </div>
                 </div>
               )}
@@ -495,6 +519,15 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                 <InfoRow label="Last Working Day" value={exit.last_working_date ? safeDate(exit.last_working_date, 'dd MMM yyyy') : null} />
                 <InfoRow label="Willing to Serve Notice" value={exit.willing_to_serve_notice ? 'Yes' : 'No'} />
                 <InfoRow label="Notice Shortfall" value={exit.notice_shortfall_days ? `${exit.notice_shortfall_days} days` : 'None'} />
+                {exit.notice_waived_days > 0 && <InfoRow label="Waived by HR" value={`${exit.notice_waived_days} days`} />}
+                {exit.notice_shortfall_days > 0 && <InfoRow label="Recovered in F&F" value={`${Math.max(0, exit.notice_shortfall_days - (exit.notice_waived_days || 0))} days of notice pay`} />}
+                {isHR && ['in_notice', 'clearance_pending', 'clearance_done'].includes(exit.status) && (
+                  <div className="col-span-full flex flex-wrap items-end gap-2 border-t pt-3">
+                    <div><Label className="text-xs">Change last working day</Label><Input type="date" value={lwdEdit} onChange={e => setLwdEdit(e.target.value)} /></div>
+                    <div className="flex-1 min-w-[180px]"><Label className="text-xs">Reason (required)</Label><Input value={lwdReason} onChange={e => setLwdReason(e.target.value)} placeholder="e.g. early release agreed" /></div>
+                    <Button size="sm" variant="outline" disabled={saving || !lwdReason.trim() || lwdEdit === exit.last_working_date} onClick={handleChangeLwd}>Update</Button>
+                  </div>
+                )}
               </div>
 
               {exit.buyout_requested && (
@@ -509,15 +542,8 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                     <div className="mt-3 flex gap-3">
                       <Input type="number" className="w-32" placeholder="Days to approve"
                         onChange={e => { exit._buyoutApproveDays = e.target.value; }} />
-                      <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={async () => {
-                        const days = Number(exit._buyoutApproveDays || exit.buyout_days_requested || 0);
-                        await saveExit({ buyout_approved: true, buyout_approved_days: days, audit_log: addAudit(exit.audit_log, `Buyout approved: ${days} days`, '') });
-                        toast.success(`Buyout approved for ${days} days`);
-                      }}>Approve Buyout</Button>
-                      <Button size="sm" variant="outline" className="border-red-300 text-red-600" onClick={async () => {
-                        await saveExit({ buyout_rejected: true, audit_log: addAudit(exit.audit_log, 'Buyout rejected', '') });
-                        toast.success('Buyout rejected');
-                      }}>Reject</Button>
+                      <Button size="sm" className="bg-green-600 hover:bg-green-700" disabled={saving} onClick={() => callExit('ex_buyout_decision', { action: 'approved', days: Number(exit._buyoutApproveDays || exit.buyout_days_requested || 0) }, 'Buy-out approved')}>Approve Buyout</Button>
+                      <Button size="sm" variant="outline" className="border-red-300 text-red-600" disabled={saving} onClick={() => callExit('ex_buyout_decision', { action: 'rejected' }, 'Buy-out rejected')}>Reject</Button>
                     </div>
                   )}
                 </div>
@@ -566,14 +592,8 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                     <p className="text-sm mb-2">Employee has not yet submitted the interview</p>
                     {isHR && (
                       <div className="flex gap-2 justify-center">
-                        <Button size="sm" className="bg-blue-600 hover:bg-blue-700" disabled={saving} onClick={async () => {
-                          await saveExit({ audit_log: addAudit(exit.audit_log, 'Exit interview reminder sent', '') });
-                          toast.success('Reminder noted in audit log');
-                        }}><CalendarClock className="w-3.5 h-3.5 mr-1" />Remind Employee</Button>
-                        <Button size="sm" variant="outline" disabled={saving} onClick={async () => {
-                          await saveExit({ exit_interview_completed: true, exit_interview: { primary_reason: 'Skipped by HR', completed_at: new Date().toISOString() }, audit_log: addAudit(exit.audit_log, 'Exit interview skipped', '') });
-                          toast.success('Interview skipped');
-                        }}><CalendarX className="w-3.5 h-3.5 mr-1" />Skip</Button>
+                        <Button size="sm" className="bg-blue-600 hover:bg-blue-700" disabled={saving} onClick={() => callExit('ex_remind_interview', {}, 'Reminder sent to the employee')}><CalendarClock className="w-3.5 h-3.5 mr-1" />Remind Employee</Button>
+                        <Button size="sm" variant="outline" disabled={saving} onClick={() => { const why = window.prompt('Why is the exit interview being skipped?'); if (why && why.trim()) callExit('ex_skip_interview', { reason: why }, 'Interview skipped'); }}><CalendarX className="w-3.5 h-3.5 mr-1" />Skip</Button>
                       </div>
                     )}
                   </div>
@@ -904,20 +924,17 @@ function FnFTab({ exit, isHR, currentUser, saving, generating, fnfData, setFnfDa
     try {
       const res = await base44.functions.invoke('getEmployeeSalaryForFnF', { user_id: exit.user_id });
       const d = res.data;
-      if (d?.success) {
+      if (d?.success && d.draft) {
+        const dr = d.draft;
         setFnfData(p => ({
           ...p,
-          earnings: {
-            ...p.earnings,
-            basic_salary: { ...p.earnings?.basic_salary, actual: d.earnings_actual?.basic_salary || 0 },
-            hra: { ...p.earnings?.hra, actual: d.earnings_actual?.hra || 0 },
-            special_allowances: { ...p.earnings?.special_allowances, actual: d.earnings_actual?.special_allowances || 0 },
-            conveyance: { ...p.earnings?.conveyance, actual: d.earnings_actual?.conveyance || 0 },
-          },
-          deductions: { ...p.deductions, epf: d.epf_estimate || 0, esi: d.esi_estimate || 0 },
-          other_earnings: { ...p.other_earnings, gratuity: { years: d.years_of_service || 0, amount: d.gratuity_eligible ? (d.gratuity_amount || 0) : 0 } },
+          total_days_in_month: dr.total_days_in_month, paid_days: dr.paid_days,
+          earnings: { ...p.earnings, ...Object.fromEntries(Object.entries(dr.earnings).map(([k, v]) => [k, { ...p.earnings?.[k], actual: v.actual }])) },
+          deductions: { ...p.deductions, ...dr.deductions },
+          other_earnings: { ...p.other_earnings, gratuity: dr.other_earnings.gratuity, leave_encashment: dr.other_earnings.leave_encashment },
         }));
-        toast.success(`Loaded salary components · ${d.years_of_service || 0} yrs service · ${d.gratuity_eligible ? 'gratuity eligible' : 'gratuity not eligible'}`);
+        toast.success(`Draft filled from records · ${dr.paid_days} paid day(s) in the last month · ${dr.gratuity_eligible ? 'gratuity eligible' : 'gratuity not eligible'}. Review every figure.`);
+        (dr.notes || []).forEach(n => toast.message(n, { duration: 12000 }));
       } else toast.error(d?.error || 'Could not fetch salary data');
     } catch (e) { toast.error('Failed: ' + e.message); }
     setLoadingSalary(false);
@@ -984,6 +1001,11 @@ function FnFTab({ exit, isHR, currentUser, saving, generating, fnfData, setFnfDa
             <span className="text-sm w-24">Gratuity</span>
             {canEdit ? <Input type="number" className="w-20 h-7 text-xs" placeholder="Years" value={fnfData.other_earnings?.gratuity?.years || ''} onChange={e => setFnfData(p => ({ ...p, other_earnings: { ...p.other_earnings, gratuity: { ...p.other_earnings?.gratuity, years: Number(e.target.value) || 0 } } }))} /> : <span className="flex-1 text-xs text-gray-500">{fnfData.other_earnings?.gratuity?.years} yr(s)</span>}
             {canEdit ? <Input type="number" className="w-28 h-7 text-sm text-right" value={fnfData.other_earnings?.gratuity?.amount || ''} onChange={e => setFnfData(p => ({ ...p, other_earnings: { ...p.other_earnings, gratuity: { ...p.other_earnings?.gratuity, amount: Number(e.target.value) || 0 } } }))} /> : <span className="w-28 text-right text-sm">₹{fmt(fnfData.other_earnings?.gratuity?.amount)}</span>}
+          </div>
+          <div className="flex items-center gap-3 px-3 py-2">
+            <span className="text-sm w-24">Leave encashment</span>
+            {canEdit ? <Input type="number" className="w-20 h-7 text-xs" placeholder="Days" value={fnfData.other_earnings?.leave_encashment?.days || ''} onChange={e => setFnfData(p => ({ ...p, other_earnings: { ...p.other_earnings, leave_encashment: { ...p.other_earnings?.leave_encashment, days: Number(e.target.value) || 0 } } }))} /> : <span className="flex-1 text-xs text-gray-500">{fnfData.other_earnings?.leave_encashment?.days || 0} day(s)</span>}
+            {canEdit ? <Input type="number" className="w-28 h-7 text-sm text-right" value={fnfData.other_earnings?.leave_encashment?.amount || ''} onChange={e => setFnfData(p => ({ ...p, other_earnings: { ...p.other_earnings, leave_encashment: { ...p.other_earnings?.leave_encashment, amount: Number(e.target.value) || 0 } } }))} /> : <span className="w-28 text-right text-sm">₹{fmt(fnfData.other_earnings?.leave_encashment?.amount)}</span>}
           </div>
           {[['OT', 'ot'], ['Others', 'others']].map(([label, key]) => (
             <div key={key} className="flex items-center gap-3 px-3 py-2">

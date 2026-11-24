@@ -29,18 +29,12 @@ const REASON_CATEGORIES = [
   ['other', 'Other'],
 ];
 
-function calcNoticeDays(emp) {
-  const grade = (emp?.employee_grade || '').toLowerCase();
-  const type  = (emp?.employment_type || '').toLowerCase();
-  if (grade.includes('senior') || grade.includes('lead') || grade.includes('manager')) return 90;
-  if (type.includes('contract') || type.includes('intern')) return 15;
-  return 30;
-}
-
 export default function ResignationForm({ user, employee, onClose, onSubmitted }) {
   const today = format(new Date(), 'yyyy-MM-dd');
-  const noticeDays = calcNoticeDays(employee);
-  const defaultLWD = format(addDays(new Date(), noticeDays), 'yyyy-MM-dd');
+  // The notice period, the standard last working day and who decides first come from the server (company policy / the employee's contract).
+  const [policy, setPolicy] = useState(null);
+  const noticeDays = policy?.notice_days ?? 30;
+  const defaultLWD = policy?.standard_last_day || format(addDays(new Date(), noticeDays), 'yyyy-MM-dd');
 
   const [form, setForm] = useState({
     resignation_date: today,
@@ -56,6 +50,12 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
   });
   const [saving, setSaving] = useState(false);
   const [step, setStep] = useState(1); // 1=details, 2=preview
+  useEffect(() => {
+    base44.functions.invoke('ex_get_policy', {}).then(r => {
+      const d = r?.data;
+      if (d?.success) { setPolicy(d); setForm(p => ({ ...p, resignation_date: d.today, proposed_last_day: d.standard_last_day })); }
+    }).catch(() => {});
+  }, []);
 
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
@@ -72,74 +72,19 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
 
     setSaving(true);
     try {
-      const now = new Date().toISOString();
-      await base44.entities.Exit.create({
-        user_id: user.id,
-        exit_type: 'resignation',
-        resignation_date: form.resignation_date,
-        last_working_date: form.proposed_last_day,
+      const res = await base44.functions.invoke('ex_submit_resignation', {
         proposed_last_day: form.proposed_last_day,
         reason_category: form.reason_category,
         reason_for_leaving: form.reason_for_leaving,
         detailed_comments: form.detailed_comments,
         new_employer: form.new_employer,
         expected_ctc: form.expected_ctc,
-        willing_to_serve_notice: form.willing_to_serve_notice === 'yes',
-        buyout_requested: form.buyout_requested,
-        buyout_days_requested: form.buyout_requested ? Number(form.buyout_days_requested) || 0 : 0,
-        notice_period_days: noticeDays,
-        notice_shortfall_days: noticeDaysShort,
-        status: 'submitted',
-        manager_id: employee?.reporting_manager_id || null,
-        approval_stages: [
-          { stage: 'manager', status: 'pending', actor_id: null, actor_name: null, comment: '', timestamp: null },
-          { stage: 'hr', status: 'pending', actor_id: null, actor_name: null, comment: '', timestamp: null },
-        ],
-        // Deliberately NOT seeded here — the clearance checklist and asset
-        // list must not exist until the direct reporting manager approves
-        // (actionExitApproval builds them via the shared, dynamically
-        // department-configured makeDefaultClearanceChecklist() at that
-        // point, once status actually reaches in_notice). Building it here
-        // at submission time would let clearance start before any approval
-        // at all, and would duplicate department config that only the
-        // server should own.
-        clearance_checklist: {},
-        assets: [],
-        kt_items: [],
-        exit_interview: null,
-        hr_exit_interview: null,
-        exit_interview_completed: false,
-        hr_interview_completed: false,
-        fnf_data: null,
-        fnf_calculated: false,
-        access_deactivated: false,
-        relieving_letter_generated: false,
-        experience_letter_generated: false,
-        initiated_by_hr: false,
-        audit_log: [{
-          actor_id: user.id,
-          actor_name: user.full_name,
-          action: 'Resignation Submitted',
-          comment: form.reason_category,
-          timestamp: now,
-        }],
-        created_at: now,
+        willing_to_serve_notice: form.willing_to_serve_notice,
+        buyout_requested: noticeDaysShort > 0 && form.willing_to_serve_notice !== 'yes',
+        buyout_days_requested: noticeDaysShort,
       });
-
-      base44.functions.invoke('notifyExitStatusChange', {
-        action: 'submitted',
-        employee_id: user.id,
-        employee_name: user.full_name,
-        manager_id: employee?.reporting_manager_id || null,
-      }).catch(() => {});
-
-      try {
-        await base44.integrations.Core.SendEmail({
-          to: user.email,
-          subject: 'Resignation Submitted – Confirmation',
-          body: `Dear ${user.full_name},\n\nYour resignation has been submitted successfully.\n\nResignation Date: ${form.resignation_date}\nProposed Last Working Day: ${form.proposed_last_day}\nNotice Period: ${noticeDays} days\n\nYour request is now pending manager approval. You will be notified at each stage.\n\nRegards,\nHR Team\nMaxvolt Energy Industries Limited`
-        });
-      } catch (_) {}
+      if (!res?.data?.success) { toast.error(res?.data?.error || 'Could not submit the resignation'); setSaving(false); return; }
+      toast.success(res.data.routed_to_hr ? 'Resignation submitted — sent to HR (no active reporting manager)' : 'Resignation submitted — your reporting manager will review it');
 
       onSubmitted?.();
     } catch (err) {
@@ -171,12 +116,11 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
             <div className="grid md:grid-cols-2 gap-4">
               <div>
                 <Label>Resignation Date *</Label>
-                <Input type="date" value={form.resignation_date}
-                  onChange={e => { set('resignation_date', e.target.value); set('proposed_last_day', format(addDays(new Date(e.target.value), noticeDays), 'yyyy-MM-dd')); }} required />
+                <Input type="date" value={form.resignation_date} disabled readOnly />
               </div>
               <div>
                 <Label>Proposed Last Working Day *</Label>
-                <Input type="date" value={form.proposed_last_day}
+                <Input type="date" value={form.proposed_last_day} min={form.resignation_date}
                   onChange={e => set('proposed_last_day', e.target.value)} required />
               </div>
             </div>
@@ -185,10 +129,11 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
             <div className={`rounded-lg p-3 text-sm flex items-start gap-2 ${noticeDaysShort > 0 ? 'bg-orange-50 border border-orange-200' : 'bg-blue-50 border border-blue-200'}`}>
               <Info className={`w-4 h-4 mt-0.5 flex-shrink-0 ${noticeDaysShort > 0 ? 'text-orange-500' : 'text-blue-500'}`} />
               <div>
-                <p className="font-medium">Notice Period: {noticeDays} days</p>
+                <p className="font-medium">Notice Period: {noticeDays} days{policy?.notice_source ? ` (${policy.notice_source})` : ''}</p>
+                {policy && <p className="text-gray-600">Standard last working day: {policy.standard_last_day}</p>}
                 <p className="text-gray-600">Proposed: {proposedNoticeDays} days | LWD: {form.proposed_last_day}</p>
                 {noticeDaysShort > 0 && (
-                  <p className="text-orange-700 font-medium mt-0.5">{noticeDaysShort} days short — buyout recovery may apply</p>
+                  <p className="text-orange-700 font-medium mt-0.5">{noticeDaysShort} day(s) short — HR decides whether this is allowed; the notice pay for these days is recovered in your full and final settlement unless HR waives it</p>
                 )}
               </div>
             </div>
@@ -233,17 +178,7 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
                 <p className="text-sm font-semibold text-amber-800 flex items-center gap-2">
                   <AlertCircle className="w-4 h-4" /> Buyout Request
                 </p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-xs">Days Requested for Buyout</Label>
-                    <Input type="number" min="1" value={form.buyout_days_requested}
-                      onChange={e => { set('buyout_days_requested', e.target.value); set('buyout_requested', true); }}
-                      placeholder="e.g. 30" />
-                  </div>
-                  <div className="flex items-end pb-1">
-                    <p className="text-xs text-amber-700">HR/Finance will calculate the buyout amount based on your salary.</p>
-                  </div>
-                </div>
+                <p className="text-sm text-amber-800">{noticeDaysShort > 0 ? `You are asking to leave ${noticeDaysShort} day(s) before your notice ends. HR decides whether to allow it; the notice pay for those days is recovered in your full and final settlement unless HR waives it.` : 'Move the last working day earlier than the standard date above to request an early release.'}</p>
               </div>
             )}
 
@@ -298,7 +233,7 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
 
             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
               <AlertCircle className="w-4 h-4 inline mr-1" />
-              Once submitted, your resignation will be sent to your manager for approval. You can withdraw only before HR approval.
+              {policy?.manager ? `Once submitted, your resignation goes to ${policy.manager.name} (your reporting manager) and then to HR.` : 'Once submitted, your resignation goes to HR (no active reporting manager is recorded for you).'} You can withdraw it directly until HR accepts it; after that HR decides on a withdrawal request.
             </div>
 
             <div className="flex gap-3">

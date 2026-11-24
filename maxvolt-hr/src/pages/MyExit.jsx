@@ -169,15 +169,16 @@ export default function MyExit() {
   };
 
   const handleWithdraw = async () => {
-    if (!window.confirm('Are you sure you want to withdraw your resignation? This cannot be undone.')) return;
+    const inNotice = exitRecord.status === 'in_notice';
+    let reason = '';
+    if (inNotice) {
+      reason = window.prompt('Your resignation has already been accepted. Tell HR why you want to withdraw it — HR will decide.') || '';
+      if (!reason.trim()) return;
+    } else if (!window.confirm('Are you sure you want to withdraw your resignation?')) return;
     try {
-      await base44.entities.Exit.update(exitRecord.id, {
-        status: 'withdrawn',
-        withdrawal_at: new Date().toISOString(),
-        audit_log: [...(exitRecord.audit_log || []), { actor_id: user.id, actor_name: user.full_name, action: 'Resignation Withdrawn', comment: '', timestamp: new Date().toISOString() }]
-      });
-      base44.functions.invoke('notifyExitStatusChange', { action: 'withdrawn', employee_id: user.id, employee_name: user.full_name }).catch(() => {});
-      toast.success('Resignation withdrawn');
+      const res = await base44.functions.invoke('ex_withdraw', { exit_id: exitRecord.id, reason });
+      if (!res?.data?.success) { toast.error(res?.data?.error || 'Could not withdraw'); return; }
+      toast.success(res.data.status === 'withdrawn' ? 'Resignation withdrawn' : 'Withdrawal request sent to HR');
       loadData();
     } catch { toast.error('Failed to withdraw'); }
   };
@@ -189,11 +190,8 @@ export default function MyExit() {
     }
     setSavingInterview(true);
     try {
-      await base44.entities.Exit.update(exitRecord.id, {
-        exit_interview: { ...interview, completed_at: new Date().toISOString() },
-        exit_interview_completed: true,
-        audit_log: [...(exitRecord.audit_log || []), { actor_id: user.id, actor_name: user.full_name, action: 'Exit interview submitted', comment: '', timestamp: new Date().toISOString() }]
-      });
+      const res = await base44.functions.invoke('ex_submit_interview', { exit_id: exitRecord.id, interview });
+      if (!res?.data?.success) { toast.error(res?.data?.error || 'Failed to submit interview'); setSavingInterview(false); return; }
       toast.success('Exit interview submitted');
       loadData();
     } catch { toast.error('Failed to submit interview'); }
@@ -341,6 +339,16 @@ export default function MyExit() {
                   <Button variant="outline" className="w-full border-orange-300 text-orange-700 hover:bg-orange-50" onClick={handleWithdraw}>
                     <RotateCcw className="w-4 h-4 mr-2" />Withdraw Resignation
                   </Button>
+                )}
+                {exitRecord.status === 'in_notice' && exitRecord.exit_type === 'resignation' && (
+                  exitRecord.withdrawal_request?.status === 'pending'
+                    ? <p className="text-sm bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-yellow-800">Your withdrawal request is with HR for a decision.</p>
+                    : <>
+                        {exitRecord.withdrawal_request?.status === 'rejected' && <p className="text-sm bg-red-50 border border-red-200 rounded-lg p-3 text-red-800">HR did not accept your earlier withdrawal request{exitRecord.withdrawal_request.comment ? `: ${exitRecord.withdrawal_request.comment}` : '.'}</p>}
+                        <Button variant="outline" className="w-full border-orange-300 text-orange-700 hover:bg-orange-50" onClick={handleWithdraw}>
+                          <RotateCcw className="w-4 h-4 mr-2" />Request to withdraw resignation
+                        </Button>
+                      </>
                 )}
               </div>
             )}
