@@ -11,6 +11,7 @@ import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { buildCriteria, scoreAgainst, scoreProfile, analyseResumeText, detectSkills, rulesParse, readReport, workHistory, noticeToDays, ctcToRupees, highestDegree } from '../utils/cvScreening.js';
 import { createHash } from 'crypto';
+import * as HLC from '../utils/hiringLifecycle.js';
 import { disableIfDue, reenableAccount } from '../utils/accountAccess.js';
 import { publicFence as geoPublicFence, isShaped as geoIsShaped, signedDistanceM as geoSignedDistanceM } from '../utils/geofenceShape.js';
 import { createRequire } from 'module';
@@ -751,7 +752,7 @@ function deriveDocCollectionStatus(documents) {
 // other terminal action (offer, doc request) emails them, this one didn't.
 async function rejectOneCandidate(candRow, { reason, notes, notifyCandidate = true, actorName }) {
   const cand = JSON.parse(candRow.data);
-  const updated = { ...cand, status: 'rejected', rejection_reason: reason || '', rejection_notes: notes || '' };
+  const updated = { ...cand, status: 'rejected', rejection_reason: reason || '', rejection_notes: notes || '', timeline: HLC.appendTimeline(cand, { type: 'status', from: cand.status || 'applied', to: 'rejected', text: `Rejected${reason ? ` — ${reason}` : ''}`, by_name: actorName || '' }) };
   await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(updated), candRow.id]);
 
   let emailSent = false, emailError = null;
@@ -2703,6 +2704,11 @@ router.post('/:name', async (req, res) => {
   if (name.startsWith('ap_')) {
     const { handleAppraisal } = await import('./appraisal.js');
     return await handleAppraisal(name, p, cu, res);
+  }
+  // Candidate screening, CV review by email, interviews and recruitment lifecycle MIS (routes/hiringApi.js) — every rh_* function
+  if (name.startsWith('rh_')) {
+    const { handleHiring } = await import('./hiringApi.js');
+    return await handleHiring(name, p, cu, res);
   }
   // Manpower Requisition Form (routes/mrf.js) — every mrf_* function
   if (name.startsWith('mrf_')) {
@@ -12439,6 +12445,7 @@ router.post('/:name', async (req, res) => {
       const offerData = {
         ...cand,
         status: 'offered',
+        timeline: HLC.appendTimeline(cand, { type: 'status', from: cand.status, to: 'offered', text: 'Offer letter released', by: cu?.id, by_name: cu?.full_name || '' }),
         offer_ref: offerRef,
         offer_accept_token: acceptToken,
         offer_letter_date: new Date().toISOString(),
@@ -12554,6 +12561,7 @@ router.post('/:name', async (req, res) => {
       const updated = {
         ...cand,
         status: 'offer_accepted',
+        timeline: HLC.appendTimeline(cand, { type: 'status', from: cand.status, to: 'offer_accepted', text: 'Offer accepted by the candidate', by_name: cand.full_name || 'Candidate' }),
         offer_status: 'accepted',
         offer_accepted_at: now,
         offer_accepted_name: full_name || cand.full_name,
@@ -13677,7 +13685,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
         position_applied: appliedJob?.position_title || jobTitle,
         department: appliedJob?.department || jobDepartment,
         ...(candidateData || {}),
-        status: 'applied',
+        status: 'applied', timeline: [{ at: new Date().toISOString(), type: 'status', to: 'applied', text: 'Applied through the careers page', by_name: 'Candidate' }],
         applied_date: new Date().toISOString(),
         status_token: statusToken,
       };
@@ -19350,7 +19358,7 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
       for (const c of cands) { const st = c.status || 'applied'; if (stageCounts[st] !== undefined) stageCounts[st]++; }
 
       // cumulative funnel (everyone at or past each stage)
-      const stageOrder = { applied:0, screening:1, interview_scheduled:2, interviewed:3, selected:4, offered:5, offer_accepted:6, joined:7, rejected:-1, offer_declined:-1 };
+      const stageOrder = { shortlisted:1, cv_sent:1, interview_recommended:1, next_round_recommended:3, interview_done:3, offer_in_progress:4, withdrawn:-1, on_hold:-1, applied:0, screening:1, interview_scheduled:2, interviewed:3, selected:4, offered:5, offer_accepted:6, joined:7, rejected:-1, offer_declined:-1 };
       const funnelCounts = {};
       for (const s of STAGES) {
         funnelCounts[s] = cands.filter(c => (stageOrder[c.status] ?? -1) >= stageOrder[s]).length;
@@ -19550,8 +19558,9 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       // interviewer's submission is appended; `interview_scorecard`
       // (singular) is kept in sync as "the latest" for any older reader
       // that still expects a single object.
+      const sisTimeline = HLC.appendTimeline(sisCand, { type: 'interview', text: `Scorecard recorded by ${cu?.full_name || 'HR'}: ${sisCard.recommendation || 'on hold'}`, by: cu?.id, by_name: cu?.full_name || '' });
       const scorecards = [...(sisCand.interview_scorecards || (sisCand.interview_scorecard ? [sisCand.interview_scorecard] : [])), updatedCard];
-      await run("UPDATE entities SET data=$1,updated_at=$2 WHERE id=$3", [JSON.stringify({ ...sisCand, interview_scorecard: updatedCard, interview_scorecards: scorecards, status: newStatus, interviewed_at: now }), now, sisCandRow.id]);
+      await run("UPDATE entities SET data=$1,updated_at=$2 WHERE id=$3", [JSON.stringify({ ...sisCand, interview_scorecard: updatedCard, interview_scorecards: scorecards, timeline: sisTimeline, status: newStatus, interviewed_at: now }), now, sisCandRow.id]);
       // Notify HR — and recruiter/management, who now own this pipeline
       // just as much (they're the ones who'll action select/reject next).
       const hrUsers = await all("SELECT id FROM users WHERE role IN ('hr','admin','recruiter','management')");
@@ -19598,11 +19607,19 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       if (!Array.isArray(bucIds) || !bucIds.length) return res.json({ success: false, error: 'candidate_ids required' });
       if (!bucStatus) return res.json({ success: false, error: 'status required' });
       const bucRows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND id = ANY($1)", [bucIds]);
+      const bucRole = (await hasRole(cu, ['admin'])) ? 'admin' : (await hasRole(cu, ['hr'])) ? 'hr' : 'recruiter';
+      let bucDone = 0; const bucErrors = [];
       for (const row of bucRows) {
-        const d = JSON.parse(row.data);
-        await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify({ ...d, status: bucStatus }), bucStatus, row.id]);
+        const d = { ...JSON.parse(row.data), id: row.id };
+        const chk = HLC.checkTransition(d, bucStatus, { role: bucRole, override_reason: p.override_reason });
+        if (!chk.ok) { bucErrors.push({ id: row.id, name: d.full_name || '', error: chk.error }); continue; }
+        if (chk.same) continue;
+        const nd = { ...d, status: bucStatus, timeline: HLC.appendTimeline(d, { type: 'status', from: d.status || 'applied', to: bucStatus, text: `${HLC.statusLabel(d.status)} → ${HLC.statusLabel(bucStatus)} (bulk)`, by: cu?.id, by_name: cu?.full_name || '', ...(chk.override ? { override: true, reason: p.override_reason } : {}) }) };
+        await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(nd), bucStatus, row.id]);
+        bucDone++;
       }
-      return res.json({ success: true, updated: bucRows.length });
+      cacheInvalidate('Candidate');
+      return res.json({ success: true, updated: bucDone, skipped: bucErrors.length, errors: bucErrors });
     }
 
     case 'getMinimumWagesReport': {

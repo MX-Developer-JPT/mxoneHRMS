@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from 'sonner';
 import { downloadBase64 } from '@/lib/mis';
+import HiringLifecyclePanel from '@/components/recruitment/HiringLifecyclePanel';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, Legend, FunnelChart, Funnel, LabelList,
@@ -192,6 +193,7 @@ export default function RecruitmentAnalytics() {
 
   const tabs = [
     { id: 'overview',    label: 'Overview',         icon: BarChart3 },
+    { id: 'lifecycle',   label: 'Lifecycle & TAT',  icon: Clock },
     { id: 'funnel',      label: 'Hiring Funnel',    icon: Filter },
     { id: 'sources',     label: 'Source Analysis',  icon: Zap },
     { id: 'departments', label: 'By Department',    icon: Building2 },
@@ -308,6 +310,8 @@ export default function RecruitmentAnalytics() {
             );
           })}
         </div>
+
+        {activeTab === 'lifecycle' && <HiringLifecyclePanel />}
 
         {/* ═══ OVERVIEW ═══ */}
         {activeTab === 'overview' && (

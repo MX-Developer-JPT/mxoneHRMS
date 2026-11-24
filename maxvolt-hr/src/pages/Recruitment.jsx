@@ -16,6 +16,8 @@ import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { useSearchParams } from 'react-router-dom';
 import { openPdfBlob } from '@/utils/letterhead';
 import CandidateDetailDialog from '../components/recruitment/CandidateDetailDialog';
+import CvReviewDialog from '../components/recruitment/CvReviewDialog';
+import { rh, STATUS as LC_STATUS, statusLabel, statusCls, manualNext, BOARD_STAGES } from '@/lib/hiring';
 import CandidateScoreCard from '../components/recruitment/CandidateScoreCard';
 
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -280,17 +282,7 @@ function OfferLetterDialog({ candidate, onClose, onRefresh }) {
   );
 }
 
-const STATUS_COLORS = {
-  applied: 'bg-blue-100 text-blue-800',
-  screening: 'bg-yellow-100 text-yellow-800',
-  interview_scheduled: 'bg-purple-100 text-purple-800',
-  interviewed: 'bg-orange-100 text-orange-800',
-  selected: 'bg-green-100 text-green-800',
-  rejected: 'bg-red-100 text-red-800',
-  offered: 'bg-teal-100 text-teal-800',
-  offer_accepted: 'bg-emerald-100 text-emerald-800',
-  joined: 'bg-green-200 text-green-900',
-};
+const STATUS_COLORS = Object.fromEntries(Object.entries(LC_STATUS).filter(([k]) => k !== 'interview_done').map(([k, v]) => [k, v.cls]));
 
 const SCORE_COLOR = (score) => {
   if (score >= 8) return 'bg-green-100 text-green-700';
@@ -617,16 +609,7 @@ function BulkRejectDialog({ count, onClose, onConfirm }) {
   );
 }
 
-const BOARD_STAGES = [
-  { key: 'applied',             label: 'Applied',          color: 'border-blue-200 bg-blue-50' },
-  { key: 'screening',           label: 'Screening',        color: 'border-yellow-200 bg-yellow-50' },
-  { key: 'interview_scheduled', label: 'Interview Sched.', color: 'border-purple-200 bg-purple-50' },
-  { key: 'interviewed',         label: 'Interviewed',      color: 'border-orange-200 bg-orange-50' },
-  { key: 'selected',            label: 'Selected',         color: 'border-green-200 bg-green-50' },
-  { key: 'offered',             label: 'Offered',          color: 'border-teal-200 bg-teal-50' },
-  { key: 'offer_accepted',      label: 'Accepted',         color: 'border-emerald-200 bg-emerald-50' },
-  { key: 'joined',              label: 'Joined',           color: 'border-green-300 bg-green-100' },
-];
+
 
 const DEFAULT_FILTERS = {
   search: '',
@@ -672,6 +655,7 @@ export default function Recruitment() {
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedCandidate, setSelectedCandidate] = useState(null);
+  const [review, setReview] = useState({ open: false, requisitionId: '', candidates: [] });
   const [offerDialogCandidate, setOfferDialogCandidate] = useState(null);
   const [scorecardCandidate, setScorecardCandidate] = useState(null);
   const [rejectCandidate, setRejectCandidate] = useState(null);
@@ -718,6 +702,12 @@ export default function Recruitment() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobRequisitions]);
+
+  useEffect(() => {
+    const cid = searchParams.get('candidate');
+    if (cid && candidates.length) { const c = candidates.find(x => x.id === cid); if (c) setSelectedCandidate(c); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidates]);
 
   const checkDuplicates = async () => {
     setDupDialogOpen(true);
@@ -851,8 +841,18 @@ export default function Recruitment() {
   };
 
   const updateStatus = async (candidateId, newStatus) => {
-    await base44.entities.Candidate.update(candidateId, { status: newStatus });
-    toast.success('Status updated');
+    try {
+      let r = await base44.functions.invoke('rh_set_status', { candidate_ids: [candidateId], status: newStatus });
+      let d = r?.data || r;
+      let row = d?.results?.[0];
+      if (row && !row.ok && row.needs_override) {
+        const reason = window.prompt(`${row.error}\n\nEnter the reason to override (it is kept on the candidate timeline):`);
+        if (reason && reason.trim().length >= 5) { r = await base44.functions.invoke('rh_set_status', { candidate_ids: [candidateId], status: newStatus, override_reason: reason.trim() }); d = r?.data || r; row = d?.results?.[0]; }
+        else { return; }
+      }
+      if (row && !row.ok) { toast.error(row.error || 'Could not change the stage'); return; }
+      toast.success('Stage updated');
+    } catch (e) { toast.error(e.message || 'Could not change the stage'); }
     loadData();
   };
 
@@ -880,15 +880,25 @@ export default function Recruitment() {
   });
   const clearSelection = () => setSelectedIds(new Set());
 
+  // One requisition per review request: the reviewers (Hiring Manager / HOD) belong to the requisition.
+  const openCvReview = () => {
+    const picked = candidates.filter(c => selectedIds.has(c.id));
+    const reqs = [...new Set(picked.map(c => c.requisition_id || c.job_id || c.job_requisition_id || ''))];
+    if (reqs.length !== 1 || !reqs[0]) { toast.error(reqs.length > 1 ? 'Select candidates of ONE requisition for a review request' : 'These candidates are not linked to a requisition'); return; }
+    setReview({ open: true, requisitionId: reqs[0], candidates: picked });
+  };
+
   const handleBulkStageMove = async (newStatus) => {
     if (!selectedIds.size) return;
     setBulkActing(true);
     try {
-      const res = await base44.functions.invoke('bulkUpdateCandidateStatus', {
+      const res = await base44.functions.invoke('rh_set_status', {
         candidate_ids: [...selectedIds], status: newStatus,
       });
       if (res.data?.success) {
-        toast.success(`${res.data.updated} candidate(s) moved to ${newStatus.replace(/_/g, ' ')}`);
+        const bad = (res.data.results || []).filter(r => !r.ok);
+        toast.success(`${res.data.updated} candidate(s) moved to ${statusLabel(newStatus)}`);
+        if (bad.length) toast.warning(`${bad.length} not moved — ${bad[0].error}`);
         clearSelection();
         loadData();
       } else {
@@ -1389,11 +1399,14 @@ export default function Recruitment() {
               <Select onValueChange={v => handleBulkStageMove(v)} disabled={bulkActing}>
                 <SelectTrigger className="w-44 h-8 bg-white"><SelectValue placeholder="Move to stage..." /></SelectTrigger>
                 <SelectContent>
-                  {Object.keys(STATUS_COLORS).filter(s => s !== 'rejected').map(s => (
-                    <SelectItem key={s} value={s}>{s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</SelectItem>
+                  {['screening', 'shortlisted', 'on_hold', 'withdrawn', 'selected', 'offer_in_progress', 'offered', 'offer_accepted', 'joined'].map(s => (
+                    <SelectItem key={s} value={s}>{statusLabel(s)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <Button size="sm" className="h-8 bg-blue-600 hover:bg-blue-700 text-white" disabled={bulkActing} onClick={openCvReview}>
+                <Mail className="w-3.5 h-3.5 mr-1.5" /> Send CVs for review
+              </Button>
               <Button size="sm" variant="outline" className="h-8 border-red-200 text-red-600 hover:bg-red-50" disabled={bulkActing} onClick={() => setBulkRejectOpen(true)}>
                 <ThumbsDown className="w-3.5 h-3.5 mr-1.5" /> Reject Selected
               </Button>
@@ -1430,9 +1443,11 @@ export default function Recruitment() {
                             )}
                           </div>
                         </div>
-                        <Badge className={STATUS_COLORS[candidate.status] || 'bg-gray-100 text-gray-700'}>
-                          {candidate.status.replace(/_/g, ' ').toUpperCase()}
+                        <Badge className={statusCls(candidate.status)}>
+                          {statusLabel(candidate.status).toUpperCase()}
                         </Badge>
+                        {candidate.review_flag === 'conflict' && <Badge className="bg-amber-100 text-amber-800">REVIEWERS DISAGREE</Badge>}
+                        {candidate.review_flag === 'more_info' && <Badge className="bg-blue-100 text-blue-800">MORE INFO ASKED</Badge>}
                         {candidate.joining_date === TODAY && (
                           <Badge className="bg-purple-100 text-purple-800 animate-pulse">
                             Joining Today!
@@ -1528,10 +1543,9 @@ export default function Recruitment() {
                       <Select value={candidate.status} onValueChange={v => updateStatus(candidate.id, v)}>
                         <SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          {Object.keys(STATUS_COLORS).map(s => (
-                            <SelectItem key={s} value={s}>{s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</SelectItem>
+                          {[...new Set([candidate.status || 'applied', ...manualNext(candidate)])].map(s => (
+                            <SelectItem key={s} value={s}>{statusLabel(s)}</SelectItem>
                           ))}
-                          <SelectItem value="interview_done">Interview Done</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -1544,6 +1558,9 @@ export default function Recruitment() {
           </CardContent>
         </Card>}
       </div>
+
+      <CvReviewDialog open={review.open} requisitionId={review.requisitionId} candidates={review.candidates}
+        onClose={() => setReview(r => ({ ...r, open: false }))} onSent={() => { clearSelection(); loadData(); }} />
 
       <CandidateDetailDialog
         candidate={selectedCandidate}

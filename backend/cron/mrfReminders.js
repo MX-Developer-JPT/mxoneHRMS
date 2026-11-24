@@ -37,6 +37,7 @@ export async function sendMrfReminders() {
     }
     if (changed) await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(r), row.id]);
   }
+  try { const { sendHiringReminders } = await import('../routes/hiringApi.js'); sent += await sendHiringReminders(); } catch (e) { console.warn('[hiring-reminders] failed:', e.message); }
   if (sent) console.log(`[mrf-reminders] sent ${sent} reminder(s)`);
   return sent;
 }

@@ -525,8 +525,8 @@ export function computeRecruitment(ctx, model, scope, from, to, today, { detail 
   const offersAccepted = cands.filter(c => c.status === 'offer_accepted').length;
   const funnel = [
     { stage: 'Applied (all)', n: cands.length },
-    { stage: 'Screening', n: cands.filter(c => ['screening', 'interview_scheduled', 'interviewed', 'selected', 'offered', 'offer_accepted', 'joined', 'hired'].includes(c.status)).length },
-    { stage: 'Interview', n: cands.filter(c => ['interview_scheduled', 'interviewed', 'selected', 'offered', 'offer_accepted', 'joined', 'hired'].includes(c.status)).length },
+    { stage: 'Screening', n: cands.filter(c => ['screening', 'shortlisted', 'cv_sent', 'interview_recommended', 'next_round_recommended', 'offer_in_progress', 'interview_scheduled', 'interviewed', 'selected', 'offered', 'offer_accepted', 'joined', 'hired'].includes(c.status)).length },
+    { stage: 'Interview', n: cands.filter(c => ['interview_scheduled', 'next_round_recommended', 'offer_in_progress', 'interviewed', 'selected', 'offered', 'offer_accepted', 'joined', 'hired'].includes(c.status)).length },
     { stage: 'Selected / offer', n: cands.filter(c => OFFER_RELEASED.has(c.status)).length },
     { stage: 'Offer accepted', n: offersAccepted + cands.filter(c => FILLED.has(c.status)).length },
     { stage: 'Joined', n: cands.filter(c => FILLED.has(c.status)).length },

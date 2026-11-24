@@ -497,7 +497,7 @@ const H = {
   async mrf_pipeline({ p, cx, res }) {
     const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
     if (!canSee(rec, cx)) return fail(res, 'You do not have access to this requisition', 403);
-    const STAGES = ['applied', 'screening', 'interview_scheduled', 'interviewed', 'selected', 'offered', 'offer_accepted', 'joined', 'rejected', 'offer_declined'];
+    const STAGES = ['applied', 'screening', 'shortlisted', 'cv_sent', 'interview_recommended', 'interview_scheduled', 'interviewed', 'next_round_recommended', 'selected', 'offer_in_progress', 'offered', 'offer_accepted', 'joined', 'on_hold', 'rejected', 'offer_declined', 'withdrawn'];
     const by = {}; let total = 0;
     for (const r of await all("SELECT data FROM entities WHERE type='Candidate'")) { const c = jparse(r.data); if (!c || (c.requisition_id !== rec.id && c.job_id !== rec.id)) continue; total++; by[c.status || 'applied'] = (by[c.status || 'applied'] || 0) + 1; }
     return res.json({ success: true, total, by_stage: STAGES.filter((k) => by[k]).map((k) => ({ stage: k, count: by[k] })), positions: Number(rec.number_of_positions) || 1, filled: Number(rec.positions_filled) || 0 });

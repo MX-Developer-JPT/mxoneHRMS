@@ -777,7 +777,7 @@ async function assetValidation(data, current) {
   return { atype, problem: assetProblem(data, current, atype, others) };
 }
 
-const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster', 'AttendanceBulkBatch', 'LeaveImportSnapshot']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them
+const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster', 'AttendanceBulkBatch', 'LeaveImportSnapshot', 'CvReviewBatch', 'RecruitmentConfig']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them
 router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
 
 router.get('/:type', async (req, res) => {
@@ -1223,6 +1223,23 @@ router.patch('/:type/:id', async (req, res) => {
     if (req.body.status === 'published' && current.status !== 'published') { req.body.publish_date = new Date().toISOString(); req.body.published_by = cu.id; }
   }
   const updated = { ...current, ...req.body, id };
+
+  // Candidate lifecycle: one set of stages and transitions for every screen; the timeline is append-only and only the server writes it.
+  if (type === 'Candidate') {
+    const lc = await import('../utils/hiringLifecycle.js');
+    const { override_reason: ovReason, status_override_reason: ovReason2 } = req.body;
+    delete updated.status_override_reason;
+    updated.timeline = current.timeline || [];
+    updated.review_batch_ids = current.review_batch_ids || [];
+    if (req.body.status !== undefined && req.body.status !== (current.status || 'applied')) {
+      const role = await getEffectiveRole(cu);
+      const chk = lc.checkTransition(current, req.body.status, { role, override_reason: ovReason2 || ovReason });
+      if (!chk.ok) return res.status(400).json({ error: chk.error, needs_override: !!chk.needs_override });
+      const from = current.status || 'applied';
+      updated.timeline = lc.appendTimeline(current, { type: 'status', from, to: req.body.status, text: `${lc.statusLabel(from)} → ${lc.statusLabel(req.body.status)}`, by: cu.id, by_name: cu.full_name || cu.email || '', ...(chk.override ? { override: true, reason: ovReason2 || ovReason } : {}) });
+      if (req.body.status === 'on_hold') updated.held_from = from;
+    }
+  }
 
   // A business-card photo, once uploaded, stays until someone removes it ON PURPOSE (the card form sends
   // _remove_photo). A blank value from anywhere else — a bulk-import row with an empty photo cell, an older

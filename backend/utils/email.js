@@ -65,7 +65,7 @@ export async function verifyEmail() {
 // attachments: [{ filename, content: Buffer | base64 string, contentType? }]
 // cc: string email or array of strings
 // to: string email or array of strings
-export async function sendEmail({ to, cc, subject, html, text, attachments, meta, scheduledAt }) {
+export async function sendEmail({ to, cc, subject, html, text, attachments, meta, scheduledAt, replyTo }) {
   const from = await getFromAddress();
   const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
   if (!recipients.length) throw new Error('sendEmail: "to" is required');
@@ -85,6 +85,7 @@ export async function sendEmail({ to, cc, subject, html, text, attachments, meta
       sender:      parseAddress(from),
       to:          recipients.map(parseAddress),
       cc:          ccList.length ? ccList : undefined,
+      replyTo:     replyTo ? parseAddress(replyTo) : undefined,
       subject,
       htmlContent: html || undefined,
       textContent: text || undefined,

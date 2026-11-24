@@ -13,7 +13,7 @@ const avg = (xs) => { const v = xs.filter(x => x != null); return v.length ? Mat
 const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : 0);
 const inr = (n) => (Number(n) ? Math.round(Number(n)) : '');
 
-const ORDER = { applied: 0, screening: 1, interview_scheduled: 2, interviewed: 3, selected: 4, offered: 5, offer_accepted: 6, joined: 7 };
+const ORDER = { applied: 0, screening: 1, shortlisted: 1, cv_sent: 1, interview_recommended: 1, interview_scheduled: 2, interviewed: 3, interview_done: 3, next_round_recommended: 3, selected: 4, offer_in_progress: 4, offered: 5, offer_accepted: 6, joined: 7 };
 const STAGES = Object.keys(ORDER);
 const reached = (c, stage) => stage === 'applied' || (ORDER[c.status] ?? -1) >= ORDER[stage] || (stage === 'offered' && !!c.offer_letter_date) || (stage === 'interviewed' && c._interviews.some(i => i.status === 'completed'));
 const reqKey = (c) => c.requisition_id || c.job_requisition_id || c.job_id || '';

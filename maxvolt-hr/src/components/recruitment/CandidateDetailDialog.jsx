@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from 'sonner';
 import ResumeParsePanel from './ResumeParsePanel';
 import CvViewerModal from './CvViewerModal';
+import CandidateActivity from './CandidateActivity';
 
 export default function CandidateDetailDialog({ candidate, open, onClose, onCandidateUpdated }) {
   const [aiResult, setAiResult] = useState(null);
@@ -104,7 +105,7 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
   return (
     <>
       <Dialog open={open} onOpenChange={onClose}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-semibold text-sm">
@@ -276,6 +277,10 @@ export default function CandidateDetailDialog({ candidate, open, onClose, onCand
                 })}
               </div>
             )}
+
+            <div className="border-t pt-4">
+              <CandidateActivity candidateId={localCandidate.id} canAct onChanged={onCandidateUpdated} />
+            </div>
           </div>
         </DialogContent>
       </Dialog>

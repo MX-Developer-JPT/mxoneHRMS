@@ -28,6 +28,7 @@ import entitiesRouter       from './routes/entities.js';
 import functionsRouter, { payslipDownloadFile, payslipDownloadData } from './routes/functions.js';
 import uploadRouter         from './routes/upload.js';
 import { inviteRouter as onboardingInviteRouter } from './routes/onboarding.js';
+import { publicRouter as hiringPublicRouter } from './routes/hiringApi.js';
 import aiRouter             from './routes/ai.js';
 import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
@@ -264,7 +265,8 @@ app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
 // Tokens of disabled accounts (people who have left) stop working everywhere, immediately.
 app.use('/api', blockDisabledTokens);
 app.use('/api/auth',            authLimiter, authRouter);
-app.use('/api/onboarding-invite', authLimiter, onboardingInviteRouter);   // public: open the emailed invite link, set a password
+app.use('/api/onboarding-invite', authLimiter, onboardingInviteRouter);
+app.use('/api/hiring', authLimiter, hiringPublicRouter);   // public: a Hiring Manager / HOD decides on a CV from the emailed link   // public: open the emailed invite link, set a password
 app.use('/api/entities',        entitiesRouter);
 // Token-authenticated (no login session) — opened from the device's real
 // browser via a short-lived signed link; see getPayslipDownloadLink.
