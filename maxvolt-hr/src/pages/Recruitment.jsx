@@ -13,7 +13,7 @@ import { Plus, UserPlus, Briefcase, Building2, Mail, Phone, Eye, Sparkles, Loade
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { openPdfBlob } from '@/utils/letterhead';
 import CandidateDetailDialog from '../components/recruitment/CandidateDetailDialog';
 import CvReviewDialog from '../components/recruitment/CvReviewDialog';
@@ -1042,6 +1042,9 @@ export default function Recruitment() {
                 <LayoutGrid className="w-4 h-4" />
               </Button>
             </div>
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/CandidateIntake"><UserPlus className="w-4 h-4 mr-1.5" /> Bulk add &amp; import</Link>
+            </Button>
             <Button variant="outline" size="sm" onClick={checkDuplicates}>
               <Copy className="w-4 h-4 mr-1.5" /> Check Duplicates
             </Button>
@@ -1450,6 +1453,7 @@ export default function Recruitment() {
                         <Badge className={statusCls(candidate.status)}>
                           {statusLabel(candidate.status).toUpperCase()}
                         </Badge>
+                        {(candidate.sources_seen || []).length > 1 && <Badge variant="outline" className="text-[10px]">Also via {(candidate.sources_seen || []).filter(x => x !== candidate.source).map(x => x.replace(/_/g, ' ')).join(', ')}</Badge>}
                         {candidate.review_flag === 'conflict' && <Badge className="bg-amber-100 text-amber-800">REVIEWERS DISAGREE</Badge>}
                         {candidate.review_flag === 'more_info' && <Badge className="bg-blue-100 text-blue-800">MORE INFO ASKED</Badge>}
                         {candidate.joining_date === TODAY && (

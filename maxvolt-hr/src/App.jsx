@@ -107,6 +107,7 @@ const LeaveDashboard = lazy(() => import('./pages/LeaveDashboard'));
 const LocationMaster = lazy(() => import('./pages/LocationMaster'));
 const AssetTracking = lazy(() => import('./pages/AssetTracking'));
 const ManpowerRequisitions = lazy(() => import('./pages/ManpowerRequisitions'));
+const CandidateIntake = lazy(() => import('./pages/CandidateIntake'));
 const MyAssets = lazy(() => import('./pages/MyAssets'));
 const TeamCalendar = lazy(() => import('./pages/TeamCalendar'));
 const TaxDeclaration = lazy(() => import('./pages/TaxDeclaration'));
@@ -649,6 +650,11 @@ const AuthenticatedApp = () => {
       <Route path="/AssetTracking" element={
         <LayoutWrapper currentPageName="AssetTracking">
           <AssetTracking />
+        </LayoutWrapper>
+      } />
+      <Route path="/CandidateIntake" element={
+        <LayoutWrapper currentPageName="CandidateIntake">
+          <CandidateIntake />
         </LayoutWrapper>
       } />
       <Route path="/ManpowerRequisitions" element={

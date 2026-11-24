@@ -29,6 +29,7 @@ import functionsRouter, { payslipDownloadFile, payslipDownloadData } from './rou
 import uploadRouter         from './routes/upload.js';
 import { inviteRouter as onboardingInviteRouter } from './routes/onboarding.js';
 import { publicRouter as hiringPublicRouter } from './routes/hiringApi.js';
+import { inboundRouter as intakeInboundRouter } from './routes/candidateIntake.js';
 import aiRouter             from './routes/ai.js';
 import adminRouter          from './routes/admin.js';
 import attendanceLogRouter  from './routes/attendancelog.js';
@@ -266,6 +267,7 @@ app.get('/api/apps/public/prod/public-settings/by-id/:id', (_req, res) => {
 app.use('/api', blockDisabledTokens);
 app.use('/api/auth',            authLimiter, authRouter);
 app.use('/api/onboarding-invite', authLimiter, onboardingInviteRouter);
+app.use('/api/intake', intakeInboundRouter);   // public, key-protected: CVs received by email are posted here by the mail service
 app.use('/api/hiring', authLimiter, hiringPublicRouter);   // public: a Hiring Manager / HOD decides on a CV from the emailed link   // public: open the emailed invite link, set a password
 app.use('/api/entities',        entitiesRouter);
 // Token-authenticated (no login session) — opened from the device's real
