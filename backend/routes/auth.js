@@ -175,7 +175,7 @@ router.post('/resend-otp', async (req, res) => {
   await run('DELETE FROM otps WHERE email = $1', [norm]);
   await run('INSERT INTO otps (email, code, expires_at) VALUES ($1, $2, $3)', [norm, code, expiresAt]);
   const tpl = emailTemplates.otpEmail({ name: user.full_name, code, expiresMinutes: 10 });
-  sendEmail({ to: norm, ...tpl }).catch(e => console.error('[auth] Resend OTP failed:', e.message));
+  sendEmail({ to: norm, ...tpl, meta: { source: 'otp', confirm: true } }).catch(e => console.error('[auth] Resend OTP failed:', e.message));
   res.json({ success: true });
 });
 
@@ -202,7 +202,7 @@ router.post('/reset-password-request', async (req, res) => {
     const appUrl = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
     const resetLink = `${appUrl}/reset-password?token=${token}`;
     const tpl = emailTemplates.passwordResetEmail({ name: user.full_name, resetLink });
-    await sendEmail({ to: norm, ...tpl });
+    await sendEmail({ to: norm, ...tpl, meta: { source: 'otp', confirm: true } });
   } catch(e) {
     console.error('[auth] Password reset email failed:', e.message);
   }
@@ -238,7 +238,7 @@ router.post('/forgot-password-otp', async (req, res) => {
     await run('INSERT INTO otps (email, code, expires_at) VALUES ($1, $2, $3)', [key, code, expiresAt]);
     pwResetAttempts.delete(email);
     const tpl = emailTemplates.otpEmail({ name: user.full_name, code, expiresMinutes: 10 });
-    await sendEmail({ to: user.email, ...tpl });
+    await sendEmail({ to: user.email, ...tpl, meta: { source: 'otp', confirm: true } });
   } catch (e) {
     console.error('[auth] Password reset OTP email failed:', e.message);
   }
@@ -346,7 +346,7 @@ router.post('/request-password-change-otp', async (req, res) => {
   await run('DELETE FROM otps WHERE email = $1', [norm]);
   await run('INSERT INTO otps (email, code, expires_at) VALUES ($1, $2, $3)', [norm, code, expiresAt]);
   const tpl = emailTemplates.otpEmail({ name: user.full_name, code, expiresMinutes: 10 });
-  sendEmail({ to: norm, ...tpl }).catch(e => console.error('[auth] Password-change OTP email failed:', e.message));
+  sendEmail({ to: norm, ...tpl, meta: { source: 'otp', confirm: true } }).catch(e => console.error('[auth] Password-change OTP email failed:', e.message));
   // Masked so the UI can show "we sent a code to j***@maxvoltenergy.com"
   // without exposing the full address to anything reading the response.
   const maskedEmail = norm.replace(/^(.{1,2}).*(@.*)$/, (_, a, b) => `${a}***${b}`);

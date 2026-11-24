@@ -335,12 +335,12 @@ const H = {
       audit: [{ at: nowIso(), action: 'created', by: cx.name, text: `${cands.length} profile(s) sent to ${recips.map((r) => r.name).join(', ')}` }],
     };
 
-    // CV attachments — each file ≤ 8 MB and the whole email ≤ 20 MB; anything larger goes as a link
+    // CV attachments — at most 10 files and 14 MB per email (the mail gateway limit); the rest go as a link
     const files = []; let total = 0;
     const entries = [];
     for (const c of cands) {
       const f = await fetchCv(c); let attachment = null;
-      if (f?.buf && total + f.buf.length <= 20 * 1024 * 1024) { files.push({ filename: f.filename, content: f.buf }); total += f.buf.length; attachment = f.filename; }
+      if (f?.buf && files.length < 10 && total + f.buf.length <= 14 * 1024 * 1024) { files.push({ filename: f.filename, content: f.buf }); total += f.buf.length; attachment = f.filename; }
       entries.push({ c, remark: batch.candidates.find((x) => x.candidate_id === c.id).remarks, attachment });
     }
     const subject = `CV Review Request — ${mrfNo(req) ? mrfNo(req) + ' · ' : ''}${reqTitle(req)} (${cands.length} profile${cands.length > 1 ? 's' : ''}) [${batch.id}]`;

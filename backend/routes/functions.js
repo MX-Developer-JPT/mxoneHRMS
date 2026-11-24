@@ -7190,7 +7190,7 @@ router.post('/:name', async (req, res) => {
       const nhSend = !!p.send_test;
       const nhCount = async (sql, params = []) => Number((await one(sql, params))?.c || 0);
       const out = {
-        email: { provider: 'brevo', api_key_set: !!process.env.BREVO_API_KEY },
+        email: { ...(await import('../utils/email.js')).getEmailStats(), api_key_set: !!process.env.BREVO_API_KEY || !!(process.env.MAIL_GATEWAY_URL && process.env.MAIL_GATEWAY_KEY) },
         web_push: { keys_source: (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) ? 'environment' : 'auto-generated and stored (works without setup)' },
         native_push: { firebase_service_account_set: !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON },
         devices: {
@@ -7203,7 +7203,8 @@ router.post('/:name', async (req, res) => {
         scheduled_jobs: ['shift reminders (5 min)', 'absent/regularisation reminders (daily)', 'birthdays & anniversaries (daily)', 'exit clearance reminders (daily)', 'recruitment reminders (daily)', 'MIS mails (daily 12:00 AM, weekly Mon 12:10 AM, monthly 1st 12:10 AM)'],
         problems: [],
       };
-      if (!out.email.api_key_set) out.problems.push('BREVO_API_KEY is not set — no e-mail can be sent (OTP, payslips, offers, MIS mails).');
+      if (!out.email.api_key_set) out.problems.push('No e-mail provider is configured (MAIL_GATEWAY_URL / MAIL_GATEWAY_KEY or BREVO_API_KEY) — no e-mail can be sent (OTP, payslips, offers, MIS mails).');
+      else if (out.email.fallbacks > 0) out.problems.push(`The mail gateway failed ${out.email.fallbacks} time(s) since the last restart and Brevo took over (last: ${out.email.last_fallback_reason}).`);
       if (!out.native_push.firebase_service_account_set) out.problems.push('FIREBASE_SERVICE_ACCOUNT_JSON is not set — Android/iOS push notifications cannot be delivered.');
       if (!out.devices.native_tokens_total) out.problems.push('No device has registered for native push yet.');
       if (nhSend) {

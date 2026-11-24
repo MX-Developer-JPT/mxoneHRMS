@@ -1,18 +1,29 @@
-import { one } from '../db.js';
+import { randomUUID } from 'crypto';
 
-// ── Brevo (Sendinblue) integration ──────────────────────────
-// All HRMS email sends directly through Brevo's transactional email API.
-// Configure via environment variable:
-//   BREVO_API_KEY   Brevo → Settings → SMTP & API → API Keys
-// Sender address comes from the SMTP_FROM setting (Admin Panel → Email
-// Settings), falling back to no-reply@maxvoltenergy.com — that address (and
-// the domain's SPF/DKIM) must be verified as a sender in Brevo first, or
-// sends will be rejected.
+// ── Email delivery ───────────────────────────────────────────
+// Mail goes out through Max Mail (our own gateway: Gmail API as no-reply@maxvoltenergy.com) and falls back to Brevo when the
+// gateway cannot take or deliver a message. Configure with environment variables:
+//   MAIL_GATEWAY_URL   https://max-mail-production.up.railway.app
+//   MAIL_GATEWAY_KEY   the "hrms" app key from Max Mail
+//   BREVO_API_KEY      kept as the fallback (and as the only provider until the gateway is configured)
+//   EMAIL_PROVIDER     auto (default: gateway first, Brevo as fallback) | maxmail (gateway only) | brevo (Brevo only)
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 const BREVO_BASE = 'https://api.brevo.com/v3';
+const GATEWAY_URL = (process.env.MAIL_GATEWAY_URL || '').replace(/\/+$/, '');
+const GATEWAY_KEY = process.env.MAIL_GATEWAY_KEY || '';
+const MODE = (process.env.EMAIL_PROVIDER || 'auto').toLowerCase();
+const GATEWAY_MAX_BYTES = (Number(process.env.MAIL_GATEWAY_MAX_MB) || 15) * 1024 * 1024;
+const GATEWAY_MAX_ATTACHMENTS = 10;
+const gatewayOn = () => !!(GATEWAY_URL && GATEWAY_KEY) && MODE !== 'brevo';
+const brevoOn = () => !!BREVO_API_KEY && MODE !== 'maxmail';
+
+const stats = { gateway_sent: 0, brevo_sent: 0, fallbacks: 0, last_fallback_at: null, last_fallback_reason: '' };
+export const getEmailStats = () => ({ ...stats, mode: MODE, gateway_configured: !!(GATEWAY_URL && GATEWAY_KEY), brevo_configured: !!BREVO_API_KEY });
 
 async function getSetting(key, fallback = '') {
+  if (process.env.EMAIL_SETTINGS_FROM_ENV && process.env[key]) return process.env[key];   // tests: no database
   try {
+    const { one } = await import('../db.js');           // loaded on demand: the sender itself needs no database
     const row = await one('SELECT value FROM settings WHERE key=$1', [key]);
     if (row?.value) return row.value;
   } catch {}
@@ -24,14 +35,14 @@ async function getFromAddress() {
   return from.includes('@') ? from : 'Maxvolt HR <no-reply@maxvoltenergy.com>';
 }
 
-// Parses "Display Name <email@domain>" or a bare "email@domain" into Brevo's
-// { name, email } sender/recipient shape.
+// Parses "Display Name <email@domain>" or a bare "email@domain" into { name, email }.
 function parseAddress(addr) {
   const m = String(addr || '').match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
   if (m) return { name: m[1].replace(/^"|"$/g, '') || undefined, email: m[2].trim() };
   return { email: String(addr || '').trim() };
 }
 
+// ── Brevo ────────────────────────────────────────────────────
 async function brevoRequest(path, options = {}) {
   if (!BREVO_API_KEY) throw new Error('BREVO_API_KEY is not set');
   const res = await fetch(`${BREVO_BASE}${path}`, {
@@ -48,37 +59,10 @@ async function brevoRequest(path, options = {}) {
   return data;
 }
 
-// ── Public API (signatures unchanged) ──────────────────────
-
-export async function verifyEmail() {
-  try {
-    if (!BREVO_API_KEY) return { ok: false, provider: 'brevo', error: 'BREVO_API_KEY is not set' };
-    const res = await fetch(`${BREVO_BASE}/account`, { headers: { 'api-key': BREVO_API_KEY, Accept: 'application/json' } });
-    if (res.status === 401) return { ok: false, provider: 'brevo', error: 'Invalid API key' };
-    if (!res.ok) return { ok: false, provider: 'brevo', error: `Brevo error ${res.status}` };
-    return { ok: true, provider: 'brevo' };
-  } catch (e) {
-    return { ok: false, provider: 'brevo', error: `Brevo: ${e.message}` };
-  }
-}
-
-// attachments: [{ filename, content: Buffer | base64 string, contentType? }]
-// cc: string email or array of strings
-// to: string email or array of strings
-export async function sendEmail({ to, cc, subject, html, text, attachments, meta, scheduledAt, replyTo }) {
-  const from = await getFromAddress();
-  const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
-  if (!recipients.length) throw new Error('sendEmail: "to" is required');
-
-  const ccList = (Array.isArray(cc) ? cc : cc ? [cc] : []).filter(Boolean).map(parseAddress);
-
+async function brevoSend({ from, recipients, ccList, subject, html, text, attachments, meta, scheduledAt, replyTo }) {
   const mappedAttachments = (attachments || [])
     .filter(a => a && a.content)
-    .map(a => ({
-      name:    a.filename,
-      content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : String(a.content),
-    }));
-
+    .map(a => ({ name: a.filename, content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : String(a.content) }));
   const result = await brevoRequest('/smtp/email', {
     method: 'POST',
     body: JSON.stringify({
@@ -97,9 +81,133 @@ export async function sendEmail({ to, cc, subject, html, text, attachments, meta
   return { success: true, messageId: String(result?.messageId ?? ''), provider: 'brevo' };
 }
 
+// ── Max Mail gateway ─────────────────────────────────────────
+class GatewayError extends Error {
+  constructor(message, status, code, fallbackOk) { super(message); this.status = status; this.code = code; this.fallbackOk = fallbackOk; }
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function gatewayFetch(path, { method = 'GET', body, idem, timeoutMs = 15000 } = {}) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetch(`${GATEWAY_URL}${path}`, {
+      method, signal: ctl.signal,
+      headers: { Authorization: `Bearer ${GATEWAY_KEY}`, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}), ...(idem ? { 'Idempotency-Key': idem } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } finally { clearTimeout(t); }
+}
+
+async function gatewaySend({ from, recipients, ccList, subject, html, text, attachments, meta, replyTo }) {
+  if (!html && !text) throw new GatewayError('Message body is empty', 400, 'validation_error', false);
+  const atts = (attachments || []).filter((a) => a && a.content).map((a) => ({
+    filename: String(a.filename || 'file').slice(0, 255),
+    contentBase64: Buffer.isBuffer(a.content) ? a.content.toString('base64') : String(a.content),
+    ...(a.contentType ? { contentType: a.contentType } : {}),
+  }));
+  const bytes = atts.reduce((s, a) => s + Math.floor((a.contentBase64.length * 3) / 4), 0);
+  if (atts.length > GATEWAY_MAX_ATTACHMENTS || bytes > GATEWAY_MAX_BYTES) throw new GatewayError('Attachments are too large for the gateway', 413, 'attachments_too_large', true);
+  const toGw = (a) => { const p = parseAddress(a); return p.name ? { email: p.email.toLowerCase(), name: p.name.slice(0, 100) } : p.email.toLowerCase(); };
+  const fromName = (parseAddress(from).name || '').slice(0, 100);
+  const body = {
+    to: recipients.map(toGw), ...(ccList.length ? { cc: ccList.map((c) => toGw(c.name ? `${c.name} <${c.email}>` : c.email)) } : {}),
+    subject: String(subject || '').slice(0, 998), ...(html ? { html } : {}), ...(text ? { text } : {}),
+    ...(replyTo ? { replyTo: parseAddress(replyTo).email.toLowerCase() } : {}), ...(fromName ? { fromName } : {}),
+    tags: [String(meta?.source || 'hrms').slice(0, 50)], ...(atts.length ? { attachments: atts } : {}),
+  };
+  const idem = randomUUID();                                   // one key for every attempt of this send, so a retry can never mail twice
+  let last;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await gatewayFetch('/v1/send', { method: 'POST', body, idem });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 202 && data.id) return data.id;
+      const code = data?.error?.code || '';
+      const msg = data?.error?.message || `Mail gateway error ${res.status}`;
+      const retryable = res.status >= 500 || (res.status === 429 && code === 'rate_limited');
+      last = new GatewayError(msg, res.status, code, res.status !== 400 && res.status !== 422);
+      if (!retryable || attempt === 3) throw last;
+      await sleep(Math.min(5000, Number(res.headers.get('retry-after')) * 1000 || 600 * attempt));
+    } catch (e) {
+      if (e instanceof GatewayError) { if (!e.fallbackOk || attempt === 3 || (e.status < 500 && e.code !== 'rate_limited')) throw e; last = e; continue; }
+      last = new GatewayError(`Mail gateway unreachable: ${e.name === 'AbortError' ? 'timed out' : e.message}`, 0, 'network', true);
+      if (attempt === 3) throw last;
+      await sleep(600 * attempt);
+    }
+  }
+  throw last;
+}
+
+// For mail a person is waiting on (OTP, password change): wait a few seconds for the real outcome so a failed delivery can still fall back.
+async function gatewayConfirm(id, waitMs = 10000) {
+  const until = Date.now() + waitMs;
+  while (Date.now() < until) {
+    await sleep(700);
+    try {
+      const res = await gatewayFetch(`/v1/messages/${id}`, { timeoutMs: 5000 });
+      const d = await res.json().catch(() => ({}));
+      if (d.status === 'sent') return;
+      if (d.status === 'failed' || d.status === 'dead' || d.status === 'bounced') throw new GatewayError(d.error || `Message ${d.status}`, 0, d.status, true);
+    } catch (e) { if (e instanceof GatewayError) throw e; /* a failed status check is not a failed send */ }
+  }
+}
+
+// ── Public API (signatures unchanged) ──────────────────────
+
+export async function verifyEmail() {
+  const brevoCheck = async () => {
+    try {
+      if (!BREVO_API_KEY) return { ok: false, provider: 'brevo', error: 'BREVO_API_KEY is not set' };
+      const res = await fetch(`${BREVO_BASE}/account`, { headers: { 'api-key': BREVO_API_KEY, Accept: 'application/json' } });
+      if (res.status === 401) return { ok: false, provider: 'brevo', error: 'Invalid API key' };
+      if (!res.ok) return { ok: false, provider: 'brevo', error: `Brevo error ${res.status}` };
+      return { ok: true, provider: 'brevo' };
+    } catch (e) { return { ok: false, provider: 'brevo', error: `Brevo: ${e.message}` }; }
+  };
+  if (!gatewayOn()) return brevoCheck();
+  try {
+    const res = await gatewayFetch('/v1/me', { timeoutMs: 8000 });
+    if (res.status === 401) throw new Error('The mail gateway rejected the key');
+    if (!res.ok) throw new Error(`Mail gateway error ${res.status}`);
+    const me = await res.json().catch(() => ({}));
+    return { ok: true, provider: 'maxmail', sender: me.sender, usage_today: me.usage_today, fallback: brevoOn() };
+  } catch (e) {
+    if (brevoOn()) { const b = await brevoCheck(); return { ...b, warning: `Mail gateway not reachable (${e.message}) — using Brevo` }; }
+    return { ok: false, provider: 'maxmail', error: `Mail gateway: ${e.message}` };
+  }
+}
+
+// attachments: [{ filename, content: Buffer | base64 string, contentType? }]
+// cc: string email or array of strings
+// to: string email or array of strings
+// meta: { source?: tag, confirm?: wait for the real delivery outcome (OTP and similar) }
+export async function sendEmail({ to, cc, subject, html, text, attachments, meta, scheduledAt, replyTo }) {
+  const from = await getFromAddress();
+  const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
+  if (!recipients.length) throw new Error('sendEmail: "to" is required');
+  const ccList = (Array.isArray(cc) ? cc : cc ? [cc] : []).filter(Boolean).map(parseAddress);
+
+  if (gatewayOn() && !scheduledAt) {                                 // scheduled sending exists only at Brevo
+    try {
+      const id = await gatewaySend({ from, recipients, ccList, subject, html, text, attachments, meta, replyTo });
+      if (meta?.confirm) await gatewayConfirm(id);
+      stats.gateway_sent++;
+      return { success: true, messageId: id, provider: 'maxmail' };
+    } catch (e) {
+      if (!(e instanceof GatewayError) || !e.fallbackOk || !brevoOn()) throw e;
+      stats.fallbacks++; stats.last_fallback_at = new Date().toISOString(); stats.last_fallback_reason = String(e.message).slice(0, 200);
+      console.warn(`[email] mail gateway could not send "${String(subject).slice(0, 60)}" (${e.message}) — falling back to Brevo`);
+    }
+  }
+  if (!BREVO_API_KEY || MODE === 'maxmail') throw new Error('No email provider is available (set MAIL_GATEWAY_URL / MAIL_GATEWAY_KEY, or BREVO_API_KEY)');
+  const r = await brevoSend({ from, recipients, ccList, subject, html, text, attachments, meta, scheduledAt, replyTo });
+  stats.brevo_sent++;
+  return r;
+}
+
 export async function getEmailConfig() {
   const from = await getSetting('SMTP_FROM', '');
-  return { provider: 'brevo', from, url: BREVO_BASE };
+  return { provider: gatewayOn() ? (brevoOn() ? 'maxmail (Brevo fallback)' : 'maxmail') : 'brevo', from, url: gatewayOn() ? GATEWAY_URL : BREVO_BASE, stats: getEmailStats() };
 }
 
 // ── Shared email chrome ────────────────────────────────────

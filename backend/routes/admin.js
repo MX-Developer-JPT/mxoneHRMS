@@ -327,8 +327,8 @@ router.post('/test-email', async (req, res) => {
     const verify = await verifyEmail();
     if (!verify.ok) return res.status(500).json({ error: verify.error });
     const tmpl   = emailTemplates.testEmail({ to });
-    const result = await sendEmail({ to, ...tmpl });
-    res.json({ success: true, sentTo: to, messageId: result.messageId, provider: 'brevo' });
+    const result = await sendEmail({ to, ...tmpl, meta: { source: 'test', confirm: true } });
+    res.json({ success: true, sentTo: to, messageId: result.messageId, provider: result.provider, via: verify.provider, warning: verify.warning });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
