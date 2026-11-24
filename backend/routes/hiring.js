@@ -43,6 +43,8 @@ async function saveCand(c) {
 }
 async function loadReq(id) { if (!id) return null; const r = await one("SELECT id, data, created_at FROM entities WHERE type='JobRequisition' AND id=$1", [id]); return r ? { ...jparse(r.data), id: r.id, _created: r.created_at } : null; }
 const reqTitle = (r) => r?.designation || r?.position_title || r?.job_title || '';
+/** The MRF number people know (MRF-2026-0007). Older requisitions have none. */
+export const mrfNo = (r) => r?.requisition_id || (/^MRF-/i.test(String(r?.id || '')) ? r.id : '');
 
 /** Move a candidate along the lifecycle (or stay put), recording the event on the candidate's timeline. Returns the saved candidate. */
 export async function moveCandidate(c, to, { by = '', byName = '', text = '', system = true, role = '', overrideReason = '', ref = null, extra = {} } = {}) {
@@ -142,7 +144,7 @@ function reviewEmailHtml({ batch, req, recipient, cands, sender, note }) {
   const link = (cid, d) => `${appUrl()}/api/hiring/decide/${recipient.token}/${cid}/${d}`;
   const th = 'padding:6px 10px;text-align:left;background:#f1f5f9;border:1px solid #e2e8f0;font-size:12px;width:34%';
   const td = 'padding:6px 10px;border:1px solid #e2e8f0;font-size:13px';
-  const meta = [['MRF / Job Requisition', `${esc(req.id)}`], ['Position / Designation', esc(reqTitle(req))], ['Department', esc(req.department || '')],
+  const meta = [['MRF / Job Requisition', esc(mrfNo(req) || 'Older requisition')], ['Position / Designation', esc(reqTitle(req))], ['Department', esc(req.department || '')],
     ['Hiring Manager', esc(batch.hiring_manager_name || '—')], ['HOD', esc(batch.hod_name || '—')], ['Review batch', `${esc(batch.id)} (batch ${batch.batch_no} for this MRF)`], ['Sent by', esc(sender)]]
     .map(([k, v]) => `<tr><td style="${th}">${k}</td><td style="${td}">${v}</td></tr>`).join('');
   const blocks = cands.map(({ c, remark, attachment }, i) => {
@@ -165,7 +167,7 @@ function reviewEmailHtml({ batch, req, recipient, cands, sender, note }) {
       ${note ? `<p style="font-size:13px;background:#fefce8;border:1px solid #fde68a;padding:8px 10px;border-radius:6px"><b>Note from HR:</b> ${esc(note)}</p>` : ''}
       <table style="border-collapse:collapse;width:100%;margin:10px 0">${meta}</table>
       ${blocks}
-      <p style="font-size:12px;color:#64748b">Each candidate remains individually accessible through the profile link. This request is tracked against ${esc(req.id)}; replies and decisions are recorded on the candidate's timeline.</p>
+      <p style="font-size:12px;color:#64748b">Each candidate remains individually accessible through the profile link. This request is tracked against ${esc(mrfNo(req) || reqTitle(req))}; replies and decisions are recorded on the candidate's timeline.</p>
     </div></div>`;
 }
 
@@ -215,7 +217,7 @@ async function notifyDecision(batch, candidate, decision, byName, outcome) {
   if (wants(cfg, 'review_decided', 'recruiter') && batch.created_by) who.add(batch.created_by);
   if (wants(cfg, 'review_decided', 'hr')) for (const id of await hrAudience()) who.add(id);
   const extra = outcome === 'conflict' ? ' Reviewers disagree — HR needs to resolve it.' : decision === 'more_info' ? ' More information was requested.' : '';
-  await notifyUsers([...who], { title: `CV review: ${label}`, message: `${byName || 'A reviewer'} marked ${candName(candidate || {})} as “${label}” for ${batch.requisition_id}.${extra}`, link: `/Recruitment?candidate=${candidate?.id || ''}`, type: decision === 'shortlist' ? 'success' : 'info' });
+  await notifyUsers([...who], { title: `CV review: ${label}`, message: `${byName || 'A reviewer'} marked ${candName(candidate || {})} as “${label}” for ${batch.mrf_no || batch.position}.${extra}`, link: `/Recruitment?candidate=${candidate?.id || ''}`, type: decision === 'shortlist' ? 'success' : 'info' });
 }
 
 // ── handlers ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -276,7 +278,7 @@ const H = {
     const P = await people();
     const recips = await recipientsFor(req, P);
     const batches = await batchesFor((b) => b.requisition_id === req.id);
-    return res.json({ success: true, requisition: { id: req.id, title: reqTitle(req), department: req.department, hiring_manager_name: P.name(req.hiring_manager_id), status: req.status },
+    return res.json({ success: true, requisition: { id: req.id, mrf_no: mrfNo(req), title: reqTitle(req), department: req.department, hiring_manager_name: P.name(req.hiring_manager_id), status: req.status },
       recipients: recips.map(({ user_id, name, email, role }) => ({ user_id, name, email, role })), batches_sent: batches.length });
   },
 
@@ -311,7 +313,7 @@ const H = {
     const existing = await batchesFor((b) => b.requisition_id === req.id);
     const seq = (await all("SELECT COUNT(*)::int AS n FROM entities WHERE type='CvReviewBatch'"))[0].n + 1;
     const batch = {
-      id: `CVR-${istDate().slice(0, 4)}-${String(seq).padStart(4, '0')}-${uuidv4().slice(0, 4).toUpperCase()}`, requisition_id: req.id, position: reqTitle(req), department: req.department || '', batch_no: existing.length + 1,
+      id: `CVR-${istDate().slice(0, 4)}-${String(seq).padStart(4, '0')}-${uuidv4().slice(0, 4).toUpperCase()}`, requisition_id: req.id, mrf_no: mrfNo(req), position: reqTitle(req), department: req.department || '', batch_no: existing.length + 1,
       hiring_manager_id: req.hiring_manager_id || '', hiring_manager_name: P.name(req.hiring_manager_id), hod_name: (recips.find((r) => r.role === 'hod') || {}).name || '',
       created_by: cx.cu.id, created_by_name: cx.name, sent_at: nowIso(), note: String(p.note || '').slice(0, 1000), status: 'sent',
       recipients: recips.map((r) => ({ user_id: r.user_id, name: r.name, email: r.email, role: r.role, token: randomBytes(24).toString('hex'), sent_at: null, reminders: [] })),
@@ -327,7 +329,7 @@ const H = {
       if (f?.buf && total + f.buf.length <= 20 * 1024 * 1024) { files.push({ filename: f.filename, content: f.buf }); total += f.buf.length; attachment = f.filename; }
       entries.push({ c, remark: batch.candidates.find((x) => x.candidate_id === c.id).remarks, attachment });
     }
-    const subject = `CV Review Request — ${req.id} · ${reqTitle(req)} (${cands.length} profile${cands.length > 1 ? 's' : ''}) [${batch.id}]`;
+    const subject = `CV Review Request — ${mrfNo(req) ? mrfNo(req) + ' · ' : ''}${reqTitle(req)} (${cands.length} profile${cands.length > 1 ? 's' : ''}) [${batch.id}]`;
     const senderUser = P.byUser[cx.cu.id] || {};
     const emailErrors = [];
     for (const r of batch.recipients) {
@@ -348,8 +350,8 @@ const H = {
       c = await moveCandidate({ ...c, review_batch_ids: [...(c.review_batch_ids || []), batch.id], review_flag: '' }, 'cv_sent', { by: cx.cu.id, byName: cx.name, text: `CV sent for review to ${batch.recipients.filter((r) => r.sent_at).map((r) => `${r.name} (${r.role === 'hod' ? 'HOD' : r.role === 'hiring_manager' ? 'Hiring Manager' : 'Reviewer'})`).join(', ')} — batch ${batch.id}`, ref: { batch_id: batch.id } });
     }
     const cfg = await loadConfig();
-    if (wants(cfg, 'cv_review_sent', 'recruiter')) await notifyUsers([cx.cu.id], { title: 'CV review request sent', message: `${cands.length} profile(s) for ${req.id} (${reqTitle(req)}) sent to ${batch.recipients.map((r) => r.name).join(', ')}.`, link: '/Recruitment' });
-    await notifyUsers(batch.recipients.map((r) => r.user_id).filter(Boolean), { title: `CV review request — ${reqTitle(req)}`, message: `${cx.name} sent ${cands.length} profile(s) for ${req.id}. Check your email to record your decisions.`, link: '/Recruitment' });
+    if (wants(cfg, 'cv_review_sent', 'recruiter')) await notifyUsers([cx.cu.id], { title: 'CV review request sent', message: `${cands.length} profile(s) for ${mrfNo(req) || reqTitle(req)} (${reqTitle(req)}) sent to ${batch.recipients.map((r) => r.name).join(', ')}.`, link: '/Recruitment' });
+    await notifyUsers(batch.recipients.map((r) => r.user_id).filter(Boolean), { title: `CV review request — ${reqTitle(req)}`, message: `${cx.name} sent ${cands.length} profile(s) for ${mrfNo(req) || reqTitle(req)}. Check your email to record your decisions.`, link: '/Recruitment' });
     return res.json({ success: true, batch: publicBatch(batch), sent: cands.length, skipped, email_errors: emailErrors, attachments: files.length });
   },
 
@@ -381,7 +383,7 @@ const H = {
       if (!pending.length || !r.email) continue;
       const rows = pending.map((x) => `<li><b>${esc(x.name)}</b> — <a href="${appUrl()}/api/hiring/decide/${r.token}/${x.candidate_id}/shortlist">Shortlist</a> · <a href="${appUrl()}/api/hiring/decide/${r.token}/${x.candidate_id}/reject">Reject</a> · <a href="${appUrl()}/api/hiring/decide/${r.token}/${x.candidate_id}/hold">Hold</a> · <a href="${appUrl()}/api/hiring/decide/${r.token}/${x.candidate_id}/more_info">More information</a></li>`).join('');
       try {
-        await sendEmail({ to: r.email, subject: `Reminder: CV review pending — ${batch.requisition_id} · ${reqTitle(req)} [${batch.id}]`, html: `<div style="font-family:Arial,sans-serif;font-size:14px"><p>Dear ${esc(r.name)},</p><p>Your decision is still pending on ${pending.length} profile(s) for ${esc(batch.requisition_id)} (${esc(reqTitle(req))}). The original email has the CVs attached.</p><ul>${rows}</ul></div>`, replyTo: (await one('SELECT email FROM users WHERE id=$1', [cx.cu.id]))?.email || undefined });
+        await sendEmail({ to: r.email, subject: `Reminder: CV review pending — ${batch.mrf_no ? batch.mrf_no + ' · ' : ''}${reqTitle(req)} [${batch.id}]`, html: `<div style="font-family:Arial,sans-serif;font-size:14px"><p>Dear ${esc(r.name)},</p><p>Your decision is still pending on ${pending.length} profile(s) for ${esc(batch.mrf_no || batch.position)} (${esc(reqTitle(req))}). The original email has the CVs attached.</p><ul>${rows}</ul></div>`, replyTo: (await one('SELECT email FROM users WHERE id=$1', [cx.cu.id]))?.email || undefined });
         r.reminders = [...(r.reminders || []), { at: nowIso(), by: cx.name }]; sent.push(r.name);
       } catch (e) { console.warn('[hiring] reminder failed:', e.message); }
     }

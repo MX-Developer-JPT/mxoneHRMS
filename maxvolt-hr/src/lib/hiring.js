@@ -54,6 +54,8 @@ export async function rh(name, params = {}) {
   if (d && d.success === false) { const e = new Error(d.error || 'Something went wrong'); e.data = d; throw e; }
   return d;
 }
+// Older requisitions are identified by a long system id — only real MRF numbers are shown to people.
+export const mrfId = (id) => (/^MRF-/i.test(String(id || '')) ? id : '');
 export const fmtDT = (iso) => { try { return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }); } catch { return iso || ''; } };
 export const fmtD = (iso) => { try { return iso ? new Date(String(iso).length === 10 ? iso + 'T00:00:00+05:30' : iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—'; } catch { return iso || ''; } };
 export const DECISION = { shortlist: ['Shortlisted', 'text-green-700 bg-green-50'], reject: ['Rejected', 'text-red-700 bg-red-50'], hold: ['On hold', 'text-amber-700 bg-amber-50'], more_info: ['More information requested', 'text-blue-700 bg-blue-50'] };

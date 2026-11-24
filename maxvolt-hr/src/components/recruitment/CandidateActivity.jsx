@@ -31,7 +31,7 @@ export default function CandidateActivity({ candidateId, canAct = false, onChang
         <span className={`text-xs font-semibold px-2 py-1 rounded ${statusCls(d.status)}`}>{d.status_label}</span>
         {d.review_flag === 'conflict' && <span className="text-xs px-2 py-1 rounded bg-amber-100 text-amber-800">Reviewers disagree — HR to resolve</span>}
         {d.review_flag === 'more_info' && <span className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-800">A reviewer asked for more information</span>}
-        {d.requisition && <span className="text-xs text-gray-500">{d.requisition.id} · {d.requisition.title}</span>}
+        {d.requisition && <span className="text-xs text-gray-500">{d.requisition.mrf_no ? `${d.requisition.mrf_no} · ` : ''}{d.requisition.title}</span>}
       </div>
 
       {d.batches.length > 0 && (

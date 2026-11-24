@@ -86,7 +86,7 @@ export function computeHiringMis(D, f = {}) {
     };
     const unique = new Set(bs.flatMap((b) => (b.candidates || []).map((x) => x.candidate_id)));
     return {
-      id: r.id, title: r.designation || r.position_title || '', department: r.department || '', hiring_manager_id: r.hiring_manager_id || '', hiring_manager: empName(r.hiring_manager_id), hod: empName(deptHead(r.department)),
+      id: r.id, mrf_no: r.requisition_id || '', title: r.designation || r.position_title || '', department: r.department || '', hiring_manager_id: r.hiring_manager_id || '', hiring_manager: empName(r.hiring_manager_id), hod: empName(deptHead(r.department)),
       status: mrfStatus(r), positions: Number(r.number_of_positions) || 1, filled: Number(r.positions_filled) || cs.filter((c) => c.status === 'joined').length, timeline: T, metrics: m,
       counts: { applications: cs.length, cvs_sent: unique.size, batches: bs.length, interviews: is.length, offers: cs.filter((c) => c.offer_letter_date || maxRank(c) >= 9).length, joined: cs.filter((c) => c.status === 'joined').length },
     };
@@ -102,7 +102,8 @@ export function computeHiringMis(D, f = {}) {
     ['Offers released', (c) => maxRank(c) >= 9 || !!c.offer_letter_date], ['Joined', (c) => maxRank(c) >= 11 || c.status === 'joined'],
   ];
   let prev = null;
-  const funnel = stages.map(([label, fn]) => { const n = cands.filter(fn).length; const row = { stage: label, count: n, of_total: pct(n, cands.length), from_previous: prev === null ? 100 : pct(n, prev) }; prev = n; return row; });
+  const furthest = new Map(cands.map((c) => { let k = 0; stages.forEach(([, fn], i) => { if (fn(c)) k = i; }); return [c.id, k]; }));
+  const funnel = stages.map(([label], i) => { const n = cands.filter((c) => furthest.get(c.id) >= i).length; const row = { stage: label, count: n, of_total: pct(n, cands.length), from_previous: prev === null ? 100 : pct(n, prev) }; prev = n; return row; });
 
   // ── people & departments ──
   const recruiters = {};
@@ -112,7 +113,7 @@ export function computeHiringMis(D, f = {}) {
     if (firstAct?.by) rec(firstAct.by, firstAct.by_name).screened++;
   }
   for (const b of batches) { const r = rec(b.created_by, b.created_by_name); r.batches++; r.cvs_submitted += new Set((b.candidates || []).map((x) => x.candidate_id)).size; }
-  for (const i of ivs) rec(i.created_by, i.created_by_name).interviews_coordinated++;
+  for (const i of ivs) if (i.created_by) rec(i.created_by, i.created_by_name).interviews_coordinated++;
   for (const c of cands.filter((x) => x.status === 'joined')) { const b = batches.find((x) => (x.candidates || []).some((y) => y.candidate_id === c.id)); if (b) rec(b.created_by, b.created_by_name).hired++; }
 
   const deptMap = {};
@@ -129,11 +130,11 @@ export function computeHiringMis(D, f = {}) {
   const pendingReviews = [];
   for (const b of batches) for (const x of b.candidates || []) {
     const c = candById.get(x.candidate_id); if (!c || c.status !== 'cv_sent') continue;
-    for (const rcp of b.recipients || []) if (!x.decisions?.[rcp.role] && rcp.sent_at) pendingReviews.push({ batch_id: b.id, requisition_id: b.requisition_id, position: b.position, department: b.department, candidate: x.name, reviewer: rcp.name, role: rcp.role, sent: istDay(rcp.sent_at), days_waiting: cd(istDay(rcp.sent_at), today), overdue: (cd(istDay(rcp.sent_at), today) || 0) >= D.reminderDays });
+    for (const rcp of b.recipients || []) if (!x.decisions?.[rcp.role] && rcp.sent_at) pendingReviews.push({ batch_id: b.id, requisition_id: b.requisition_id, mrf_no: b.mrf_no || (D.reqs.find((r) => r.id === b.requisition_id) || {}).requisition_id || '', position: b.position, department: b.department, candidate: x.name, reviewer: rcp.name, role: rcp.role, sent: istDay(rcp.sent_at), days_waiting: cd(istDay(rcp.sent_at), today), overdue: (cd(istDay(rcp.sent_at), today) || 0) >= D.reminderDays });
   }
   const nowT = Date.now();
   const pendingFeedback = ivs.filter((i) => i.status === 'scheduled' && Date.parse(`${String(i.scheduled_date).slice(0, 16)}:00+05:30`) + (Number(i.duration_minutes) || 30) * 60000 < nowT)
-    .map((i) => ({ interview_id: i.id, candidate: candById.get(i.candidate_id) ? (candById.get(i.candidate_id).full_name || '') : '', requisition_id: i.requisition_id, round: i.round_name, date: String(i.scheduled_date).slice(0, 10), interviewers: (i.interviewer_ids || []).map(empName).join(', '), days_overdue: cd(String(i.scheduled_date).slice(0, 10), today) }));
+    .map((i) => ({ interview_id: i.id, candidate: candById.get(i.candidate_id) ? (candById.get(i.candidate_id).full_name || '') : '', requisition_id: i.requisition_id, mrf_no: (reqs.find((r) => r.id === i.requisition_id) || {}).requisition_id || '', round: i.round_name || '—', date: String(i.scheduled_date).slice(0, 10), interviewers: (i.interviewer_ids || []).map(empName).join(', '), days_overdue: cd(String(i.scheduled_date).slice(0, 10), today) }));
 
   const kpis = {
     mrfs: mrfs.length, open_mrfs: mrfs.filter((m) => !['closed', 'filled', 'cancelled', 'rejected'].includes(m.status)).length, applications: cands.length, cvs_sent: new Set(batches.flatMap((b) => (b.candidates || []).map((x) => x.candidate_id))).size, review_batches: batches.length,

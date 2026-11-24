@@ -39,7 +39,7 @@ async function enrich(list) {
     const have = new Set((i.feedbacks || []).map((f) => f.interviewer_id));
     const missing = (i.interviewer_ids || []).filter((u) => !have.has(u));
     const isPast = i.status === 'scheduled' && endMs(i) < nowT;
-    return { ...i, candidate_name: candName(c), candidate_status: c.status || 'applied', candidate_email: c.email || '', candidate_phone: c.phone || '', position: rq.designation || rq.position_title || c.position_applied || '', department: rq.department || c.department || '', requisition_id: i.requisition_id || reqKey(c),
+    return { ...i, mrf_no: rq.requisition_id || '', candidate_name: candName(c), candidate_status: c.status || 'applied', candidate_email: c.email || '', candidate_phone: c.phone || '', position: rq.designation || rq.position_title || c.position_applied || '', department: rq.department || c.department || '', requisition_id: i.requisition_id || reqKey(c),
       interviewer_names: (i.interviewer_ids || []).map(P.name), feedback_pending: isPast || (i.status === 'scheduled' && (i.feedbacks || []).length > 0 && missing.length > 0), pending_interviewers: isPast || i.status === 'scheduled' ? missing.map(P.name) : [], is_past: isPast };
   });
 }
@@ -71,7 +71,8 @@ const H = {
     const cands = (await all("SELECT id, data FROM entities WHERE type='Candidate'")).map((r) => ({ ...jparse(r.data), id: r.id }));
     const awaiting = cands.filter((c) => ELIGIBLE.includes(c.status) || (!reqKey(c) && LEGACY_ELIGIBLE.includes(c.status || 'applied')));
     const ivs = await allInterviews();
-    const rows = awaiting.map((c) => ({ id: c.id, name: candName(c), status: c.status || 'applied', status_label: LC.statusLabel(c.status), position: c.position_applied || '', requisition_id: reqKey(c), department: c.department || '', email: c.email || '', rounds_done: ivs.filter((i) => i.candidate_id === c.id && i.status === 'completed').length }));
+    const reqNo = Object.fromEntries((await all("SELECT id, data FROM entities WHERE type='JobRequisition'")).map((r) => [r.id, jparse(r.data)?.requisition_id || '']));
+    const rows = awaiting.map((c) => ({ id: c.id, mrf_no: reqNo[reqKey(c)] || '', name: candName(c), status: c.status || 'applied', status_label: LC.statusLabel(c.status), position: c.position_applied || '', requisition_id: reqKey(c), department: c.department || '', email: c.email || '', rounds_done: ivs.filter((i) => i.candidate_id === c.id && i.status === 'completed').length }));
     return res.json({ success: true, rounds: cfg.rounds.filter((r) => r.active !== false), awaiting: rows, criteria: LC.FEEDBACK_CRITERIA });
   },
 

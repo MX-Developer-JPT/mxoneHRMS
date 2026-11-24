@@ -61,7 +61,7 @@ export default function InterviewManagement() {
 
   const uname = (id) => users.find((u) => u.id === id)?.full_name || '';
   const depts = useMemo(() => [...new Set([...data.interviews.map((i) => i.department), ...opts.awaiting.map((a) => a.department)].filter(Boolean))].sort(), [data, opts]);
-  const mrfs = useMemo(() => [...new Set([...data.interviews.map((i) => i.requisition_id), ...opts.awaiting.map((a) => a.requisition_id)].filter(Boolean))].sort(), [data, opts]);
+  const mrfs = useMemo(() => { const m = new Map(); for (const x of [...data.interviews, ...opts.awaiting]) if (x.requisition_id && x.mrf_no) m.set(x.requisition_id, x.mrf_no); return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1])); }, [data, opts]);
 
   const rows = useMemo(() => data.interviews.filter((i) => {
     if (f.status === 'pending_feedback' && !i.feedback_pending) return false;
@@ -69,7 +69,7 @@ export default function InterviewManagement() {
     if (!['all', 'pending_feedback', 'rescheduled'].includes(f.status) && i.status !== f.status) return false;
     if (day && String(i.scheduled_date).slice(0, 10) !== day) return false;
     const q = f.q.trim().toLowerCase();
-    return !q || `${i.candidate_name} ${i.position} ${i.requisition_id} ${i.round_name}`.toLowerCase().includes(q);
+    return !q || `${i.candidate_name} ${i.position} ${i.mrf_no || ''} ${i.round_name}`.toLowerCase().includes(q);
   }), [data, f, day]);
 
   const run = async (fn, params, ok) => {
@@ -136,7 +136,7 @@ export default function InterviewManagement() {
               {opts.awaiting.map((c) => (
                 <label key={c.id} className={`flex items-center gap-3 border rounded-lg px-3 py-2 cursor-pointer ${pick.has(c.id) ? 'bg-blue-50 border-blue-300' : ''}`}>
                   <input type="checkbox" checked={pick.has(c.id)} onChange={() => setPick((p) => { const n = new Set(p); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })} />
-                  <div className="flex-1 min-w-0"><p className="text-sm font-medium truncate">{c.name}</p><p className="text-xs text-gray-500 truncate">{c.position || '—'} · {c.requisition_id || 'no MRF'}{c.rounds_done ? ` · ${c.rounds_done} round(s) done` : ''}</p></div>
+                  <div className="flex-1 min-w-0"><p className="text-sm font-medium truncate">{c.name}</p><p className="text-xs text-gray-500 truncate">{c.position || '—'}{c.mrf_no ? ` · ${c.mrf_no}` : ''}{c.rounds_done ? ` · ${c.rounds_done} round(s) done` : ''}</p></div>
                   <Badge className={statusCls(c.status)}>{c.status_label}</Badge>
                   <Button size="sm" variant="outline" className="h-7" onClick={(e) => { e.preventDefault(); openSchedule([c.id]); }}>Schedule</Button>
                 </label>
@@ -149,7 +149,7 @@ export default function InterviewManagement() {
       <div className="flex flex-wrap items-end gap-2">
         <div className="relative"><Search className="w-4 h-4 absolute left-2 top-2.5 text-gray-400" /><input className={`${cls} pl-7 w-52`} placeholder="Search candidate, MRF, round…" value={f.q} onChange={(e) => setF({ ...f, q: e.target.value })} /></div>
         <select className={cls} value={f.department} onChange={(e) => setF({ ...f, department: e.target.value })}><option value="all">All departments</option>{depts.map((d) => <option key={d}>{d}</option>)}</select>
-        <select className={cls} value={f.requisition_id} onChange={(e) => setF({ ...f, requisition_id: e.target.value })}><option value="">All MRFs</option>{mrfs.map((d) => <option key={d}>{d}</option>)}</select>
+        <select className={cls} value={f.requisition_id} onChange={(e) => setF({ ...f, requisition_id: e.target.value })}><option value="">All MRFs</option>{mrfs.map(([id, no]) => <option key={id} value={id}>{no}</option>)}</select>
         <select className={cls} value={f.interviewer_id} onChange={(e) => setF({ ...f, interviewer_id: e.target.value })}><option value="">All interviewers</option>{users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}</select>
         <select className={cls} value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}><option value="all">All statuses</option><option value="scheduled">Scheduled</option><option value="completed">Completed</option><option value="rescheduled">Rescheduled</option><option value="cancelled">Cancelled</option><option value="pending_feedback">Feedback pending</option></select>
         <input type="date" className={cls} value={f.from} onChange={(e) => setF({ ...f, from: e.target.value })} title="From" /><input type="date" className={cls} value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} title="To" />
@@ -187,7 +187,7 @@ export default function InterviewManagement() {
                   {i.feedback_pending && <Badge className="bg-orange-100 text-orange-800">Feedback pending{i.pending_interviewers?.length ? `: ${i.pending_interviewers.join(', ')}` : ''}</Badge>}
                   <Badge className={statusCls(i.candidate_status)}>{statusLabel(i.candidate_status)}</Badge>
                 </div>
-                <p className="text-sm text-gray-600 mt-1">{i.position || '—'} · {i.requisition_id || 'no MRF'} · {i.department || '—'}</p>
+                <p className="text-sm text-gray-600 mt-1">{i.position || '—'}{i.mrf_no ? ` · ${i.mrf_no}` : ''} · {i.department || '—'}</p>
                 <p className="text-sm text-gray-700 mt-1 flex items-center gap-3 flex-wrap"><span className="flex items-center gap-1"><CalendarCheck className="w-3.5 h-3.5" />{fmtDT(at(i))} · {i.duration_minutes} min</span><span className="flex items-center gap-1">{i.interview_mode === 'in_person' ? <MapPin className="w-3.5 h-3.5" /> : <Video className="w-3.5 h-3.5" />}{modeText(i.interview_mode)}{(i.meeting_link || i.location) ? ` · ${i.meeting_link || i.location}` : ''}</span></p>
                 <p className="text-xs text-gray-500 mt-1">Panel: {(i.interviewer_names || []).join(', ') || '—'}</p>
                 {(i.feedbacks || []).length > 0 && <div className="mt-2 space-y-1">{i.feedbacks.map((b, k) => <p key={k} className="text-xs bg-gray-50 rounded px-2 py-1"><b>{b.interviewer_name}</b>: {REC[b.recommendation]} · {b.overall}/5{b.remarks ? ` — ${b.remarks}` : ''}</p>)}</div>}

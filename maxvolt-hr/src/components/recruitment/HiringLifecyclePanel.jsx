@@ -103,7 +103,7 @@ export default function HiringLifecyclePanel() {
             <React.Fragment key={m.id}>
               <tr className="border-b hover:bg-gray-50 cursor-pointer" onClick={() => setOpen((s) => ({ ...s, [m.id]: !s[m.id] }))}>
                 <td className="py-2">{open[m.id] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}</td>
-                <td className="font-mono">{m.id}</td><td className="font-medium">{m.title}</td><td>{m.department}</td><td>{m.hiring_manager || '—'}</td><td>{m.status}</td>
+                <td className="font-mono">{m.mrf_no || 'Older'}</td><td className="font-medium">{m.title}</td><td>{m.department}</td><td>{m.hiring_manager || '—'}</td><td>{m.status}</td>
                 <td>{m.counts.cvs_sent}</td><td>{m.counts.batches}</td><td>{dash(biz ? m.metrics.manager_response_tat.biz : m.metrics.manager_response_tat.cal)}</td><td>{dash(biz ? m.metrics.time_to_first_cv.biz : m.metrics.time_to_first_cv.cal)}</td><td>{dash(biz ? m.metrics.selection_tat.biz : m.metrics.selection_tat.cal)}</td><td>{dash(biz ? m.metrics.time_to_fill.biz : m.metrics.time_to_fill.cal)}</td>
               </tr>
               {open[m.id] && (
@@ -135,13 +135,13 @@ export default function HiringLifecyclePanel() {
         <Card><CardHeader className="pb-2"><CardTitle className="text-base">Waiting on Hiring Manager / HOD ({d.pending_reviews.length})</CardTitle></CardHeader><CardContent className="overflow-x-auto">
           <table className="w-full text-xs"><thead><tr className="text-left text-gray-500 border-b"><th className="py-2">Candidate</th><th>MRF</th><th>Reviewer</th><th>Sent</th><th>Days waiting</th></tr></thead><tbody>
             {d.pending_reviews.length === 0 && <tr><td colSpan={5} className="py-4 text-center text-gray-400">No reviews are pending</td></tr>}
-            {d.pending_reviews.slice(0, 40).map((x, i) => <tr key={i} className="border-b"><td className="py-1.5 font-medium">{x.candidate}</td><td className="font-mono">{x.requisition_id}</td><td>{x.reviewer} <span className="text-gray-400">({x.role === 'hod' ? 'HOD' : 'HM'})</span></td><td>{fmtD(x.sent)}</td><td className={x.overdue ? 'text-red-600 font-semibold' : ''}>{x.days_waiting}</td></tr>)}
+            {d.pending_reviews.slice(0, 40).map((x, i) => <tr key={i} className="border-b"><td className="py-1.5 font-medium">{x.candidate}</td><td className="font-mono">{x.mrf_no || 'Older'}</td><td>{x.reviewer} <span className="text-gray-400">({x.role === 'hod' ? 'HOD' : 'HM'})</span></td><td>{fmtD(x.sent)}</td><td className={x.overdue ? 'text-red-600 font-semibold' : ''}>{x.days_waiting}</td></tr>)}
           </tbody></table>
         </CardContent></Card>
         <Card><CardHeader className="pb-2"><CardTitle className="text-base">Interview feedback pending ({d.pending_feedback.length})</CardTitle></CardHeader><CardContent className="overflow-x-auto">
           <table className="w-full text-xs"><thead><tr className="text-left text-gray-500 border-b"><th className="py-2">Candidate</th><th>MRF</th><th>Round</th><th>Interviewers</th><th>Days overdue</th></tr></thead><tbody>
             {d.pending_feedback.length === 0 && <tr><td colSpan={5} className="py-4 text-center text-gray-400">No feedback is pending</td></tr>}
-            {d.pending_feedback.map((x, i) => <tr key={i} className="border-b"><td className="py-1.5 font-medium">{x.candidate}</td><td className="font-mono">{x.requisition_id}</td><td>{x.round}</td><td>{x.interviewers}</td><td className="text-orange-600 font-semibold">{x.days_overdue}</td></tr>)}
+            {d.pending_feedback.map((x, i) => <tr key={i} className="border-b"><td className="py-1.5 font-medium">{x.candidate}</td><td className="font-mono">{x.mrf_no || 'Older'}</td><td>{x.round}</td><td>{x.interviewers}</td><td className="text-orange-600 font-semibold">{x.days_overdue}</td></tr>)}
           </tbody></table>
         </CardContent></Card>
       </div>
