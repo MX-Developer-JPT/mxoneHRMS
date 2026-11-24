@@ -76,3 +76,43 @@ test('left status follows the exit type; hand edits are limited and the audit lo
   assert.match(exitPatchProblem(cur, { audit_log: [{ a: 9 }] }), /added to/);
   assert.equal(addDaysYmd('2026-12-31', 1), '2027-01-01');
 });
+
+import { buildApprovalChain, needsManagement, displayStatus, nextExitRef, lastDayFor, exitAnalytics, fnfStatusLabel } from '../utils/exitPolicy.js';
+test('approval chain: HOD and management steps are conditional', () => {
+  assert.deepEqual(buildApprovalChain({ emp: {}, managerOk: true, hodOk: true }), ['manager', 'hod', 'hr']);
+  assert.deepEqual(buildApprovalChain({ emp: {}, managerOk: false, hodOk: false }), ['hr']);
+  const cfg = mergeCfg({ management_designations: 'head, director', management_grades: 'G7' });
+  assert.equal(needsManagement({ designation: 'Plant Head' }, cfg), true);
+  assert.equal(needsManagement({ employee_grade: 'g7' }, cfg), true);
+  assert.equal(needsManagement({ designation: 'Operator', employee_grade: 'G2' }, cfg), false);
+  assert.deepEqual(buildApprovalChain({ emp: { designation: 'Director' }, managerOk: true, hodOk: false, cfg }), ['manager', 'hr', 'management']);
+  assert.deepEqual(buildApprovalChain({ emp: {}, managerOk: true, hodOk: true, cfg: mergeCfg({ approval_hod_enabled: false }) }), ['manager', 'hr']);
+});
+test('status labels, reference numbers and working-day notice', () => {
+  const stages = [{ stage: 'manager', status: 'approved' }, { stage: 'hod', status: 'pending' }, { stage: 'hr', status: 'pending' }];
+  assert.equal(displayStatus({ status: 'manager_approved', approval_stages: stages }), 'Pending with HOD');
+  assert.equal(displayStatus({ status: 'submitted', approval_stages: [{ stage: 'manager', status: 'pending' }], retention: { status: 'open', discussions: [{}] } }), 'Under Retention Discussion');
+  assert.equal(displayStatus({ status: 'cancelled', cancel_reason: 'retained' }), 'Retained');
+  assert.equal(displayStatus({ status: 'in_notice', notice_shortfall_days: 10, notice_waived_days: 10 }), 'Notice Period Waived');
+  assert.equal(displayStatus({ status: 'withdrawn' }), 'Withdrawn');
+  assert.equal(nextExitRef(['EXT-2026-0007', 'EXT-2025-0099', null], 2026), 'EXT-2026-0008');
+  assert.equal(nextExitRef([], 2026), 'EXT-2026-0001');
+  assert.equal(lastDayFor('2026-12-01', 5), '2026-12-06');
+  assert.equal(lastDayFor('2026-12-01', 5, { mode: 'working', weeklyOff: [0], holidays: ['2026-12-03'] }), '2026-12-08');
+  assert.equal(fnfStatusLabel({ status: 'fnf_verified' }), 'Under Verification');
+});
+test('analytics: KPIs, retention and averages', () => {
+  const ex = [
+    { user_id: 'a', status: 'submitted', exit_type: 'resignation', resignation_date: '2026-11-10', reason_category: 'relocation', approval_stages: [] },
+    { user_id: 'b', status: 'in_notice', exit_type: 'resignation', resignation_date: '2026-11-02', last_working_date: '2026-11-30', reason_category: 'relocation', kt_overall_completion: 40 },
+    { user_id: 'c', status: 'completed', exit_type: 'resignation', resignation_date: '2026-09-01', last_working_date: '2026-10-01', fnf_data: { prepared_at: '2026-10-05T00:00:00Z', finance_processed_at: '2026-10-15T00:00:00Z' } },
+    { user_id: 'd', status: 'cancelled', cancel_reason: 'retained', exit_type: 'resignation', resignation_date: '2026-11-03', retention: { status: 'closed', discussions: [{}] } },
+  ];
+  const emp = { a: { department: 'Sales' }, b: { department: 'Sales' }, c: { department: 'HR' }, d: { department: 'Sales' } };
+  const r = exitAnalytics(ex, (u) => emp[u], { today: '2026-11-24' });
+  assert.equal(r.kpis.total, 4); assert.equal(r.kpis.this_month, 3); assert.equal(r.kpis.pending_approvals, 1); assert.equal(r.kpis.serving_notice, 1);
+  assert.equal(r.kpis.upcoming_7, 1); assert.equal(r.kpis.completed, 1); assert.equal(r.kpis.pending_kt, 1);
+  assert.equal(r.avg_notice_served_days, 30); assert.equal(r.avg_fnf_days, 10);
+  assert.deepEqual(r.retention, { discussions: 1, retained: 1, success_rate: 100 });
+  assert.equal(exitAnalytics(ex, (u) => emp[u], { today: '2026-11-24', department: 'HR' }).kpis.total, 1);
+});

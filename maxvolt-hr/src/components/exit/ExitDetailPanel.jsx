@@ -1,3 +1,5 @@
+import ExitRetention from './ExitRetention';
+import { exitDisplayStatus } from '@/lib/exitStatus';
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -137,6 +139,14 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
   // manager still able to approve/reject via this stale match. canManagerAct
   // checks the live reporting hierarchy instead.
   const isManager = role === 'management' || canManagerAct;
+  // The stage waiting now (manager -> HOD -> HR -> management, as configured for this case) and whether this user may act on it.
+  const curStage = ['submitted', 'manager_approved'].includes(exit.status) ? ((exit.approval_stages || []).find(s => s.status === 'pending') || {}).stage || '' : '';
+  const escalated = !!(exit.stage_escalated || exit.manager_escalated);
+  const STAGE_NAME = { manager: 'Reporting Manager', hod: 'HOD', hr: 'HR', management: 'Management' };
+  const canActCur = curStage === 'manager' ? (isManager || (isHR && escalated))
+    : curStage === 'hod' ? (exit.hod_id === currentUser?.id || (isHR && escalated))
+    : curStage === 'hr' ? isHR
+    : curStage === 'management' ? ['management', 'admin'].includes(role) : false;
   // Working Department clearance is always actioned by the employee's actual
   // reporting manager — every other dept is HR-gated client-side (the
   // backend independently enforces owner_user_ids/HR via canActOnExitClearance).
@@ -186,7 +196,7 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
 
   /* ── Approval Actions ── */
   const handleManagerAction = async (action) => {
-    const ok = await callExit('actionExitApproval', { stage: 'manager', action, comment }, `Resignation ${action}`);
+    const ok = await callExit('actionExitApproval', { stage: curStage, action, comment }, `Resignation ${action}`);
     if (ok) setComment('');
   };
 
@@ -311,7 +321,7 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
     { id: 'timeline',   label: 'Timeline',           icon: Activity },
   ];
 
-  const statusCfg = STATUS_CONFIG[exit.status] || { label: exit.status, color: 'bg-gray-100 text-gray-700' };
+  const statusCfg = { ...(STATUS_CONFIG[exit.status] || { color: 'bg-gray-100 text-gray-700' }), label: exitDisplayStatus(exit) };
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -385,10 +395,12 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                 </div>
               ))}
 
+              <ExitRetention exit={exit} canRecord={isHR || isManager || exit.hod_id === currentUser?.id} isHR={isHR} saving={saving} callExit={callExit} />
+
               {/* Action panels */}
-              {(isManager || (isHR && exit.manager_escalated)) && exit.status === 'submitted' && (
+              {curStage && curStage !== 'hr' && canActCur && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 space-y-3">
-                  <p className="font-semibold text-yellow-800 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> {isManager ? 'Manager Action Required' : 'The reporting manager has not decided in time — HR may decide in their place'}</p>
+                  <p className="font-semibold text-yellow-800 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> {(curStage === 'manager' ? isManager : curStage === 'hod' ? exit.hod_id === currentUser?.id : true) ? `${STAGE_NAME[curStage]} decision required` : `The ${STAGE_NAME[curStage]} has not decided in time — HR may decide in their place`}</p>
                   <div><Label className="text-xs">Comment</Label><Textarea value={comment} onChange={e => setComment(e.target.value)} rows={2} placeholder={isManager ? 'Optional comment...' : 'Required — say why HR is deciding for the manager'} /></div>
                   <div className="flex gap-3">
                     <Button className="bg-green-600 hover:bg-green-700 flex-1" disabled={saving} onClick={() => handleManagerAction('approved')}><CheckCircle2 className="w-4 h-4 mr-2" />Approve</Button>
@@ -397,7 +409,7 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
                 </div>
               )}
 
-              {isHR && exit.status === 'manager_approved' && (
+              {curStage === 'hr' && isHR && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-3">
                   <p className="font-semibold text-green-800 flex items-center gap-2"><AlertCircle className="w-4 h-4" /> HR Action Required</p>
                   <div className="grid md:grid-cols-2 gap-3">

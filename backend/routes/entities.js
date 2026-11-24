@@ -199,7 +199,7 @@ async function filterExitRows(data, cu) {
   const out = [];
   for (const d of data) {
     if (d.user_id === cu.id) { const { hr_exit_interview, hr_notes, ...mine } = d; out.push(mine); continue; }
-    if (reports.has(d.user_id) || d.manager_id === cu.id || owner) { const { fnf_data, fnf_settlement, exit_interview, hr_exit_interview, hr_notes, declaration_signature_data_url, ...rest } = d; out.push(rest); }
+    if (reports.has(d.user_id) || d.manager_id === cu.id || d.hod_id === cu.id || owner) { const { fnf_data, fnf_settlement, exit_interview, hr_exit_interview, hr_notes, declaration_signature_data_url, ...rest } = d; out.push(rest); }
   }
   return out;
 }

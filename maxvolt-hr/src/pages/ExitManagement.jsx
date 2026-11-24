@@ -20,6 +20,7 @@ import {
   PieChart as RechartsPie, Pie, Cell, Legend
 } from 'recharts';
 import ExitDetailPanel from '../components/exit/ExitDetailPanel';
+import ExitInsights from '../components/exit/ExitInsights';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
 import { resolveHierarchy } from '@/lib/hierarchy';
@@ -287,7 +288,7 @@ export default function ExitManagement() {
 
         {/* Tabs */}
         <div className="flex gap-1 border-b">
-          {[{ id: 'dashboard', label: 'Dashboard', icon: BarChart3 }, { id: 'cases', label: 'Exit Cases', icon: Users }, { id: 'clearance', label: 'Clearance Dashboard', icon: ClipboardList }].map(tab => {
+          {[{ id: 'dashboard', label: 'Dashboard', icon: BarChart3 }, ...(isHRRole() || ['management'].includes(currentUser?.custom_role || currentUser?.role) ? [{ id: 'insights', label: 'Analytics & Register', icon: BarChart3 }] : []), { id: 'cases', label: 'Exit Cases', icon: Users }, { id: 'clearance', label: 'Clearance Dashboard', icon: ClipboardList }].map(tab => {
             const Icon = tab.icon;
             return (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -430,6 +431,8 @@ export default function ExitManagement() {
         )}
 
         {/* ══ CLEARANCE DASHBOARD TAB ══ */}
+        {activeTab === 'insights' && <ExitInsights onOpenCase={(id) => { const c = enriched.find(x => x.id === id) || exits.find(x => x.id === id); if (c) setSelected(c); }} />}
+
         {activeTab === 'clearance' && (
           <Card>
             <CardContent className="p-0 overflow-x-auto">

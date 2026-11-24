@@ -22,6 +22,18 @@ export const EXIT_DEFAULTS = {
   leave_encashment_enabled: true,
   enforce_fnf_segregation: true, // the person who prepares the settlement cannot also verify / approve it
   require_exit_interview: true,
+  notice_day_mode: 'calendar',   // calendar | working (working days skip weekly offs and holidays)
+  approval_hod_enabled: true,    // reporting manager -> HOD -> HR (the HOD step is left out when there is no separate HOD)
+  management_grades: '',         // comma separated; a resignation from these grades also needs management approval
+  management_departments: '',
+  management_designations: '',   // matches if the designation contains any of these words
+  retention_enabled: true,
+  reasons: [
+    { key: 'better_career_opportunity', label: 'Better Career Opportunity' }, { key: 'higher_studies', label: 'Higher Studies' },
+    { key: 'personal_reasons', label: 'Personal Reasons' }, { key: 'health_reasons', label: 'Health Reasons' }, { key: 'relocation', label: 'Relocation' },
+    { key: 'compensation_benefits', label: 'Compensation / Benefits' }, { key: 'work_environment', label: 'Work Environment' }, { key: 'career_change', label: 'Career Change' },
+    { key: 'family_commitments', label: 'Family Commitments' }, { key: 'retirement', label: 'Retirement' }, { key: 'other', label: 'Other', remarks_required: true },
+  ],
 };
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -33,7 +45,14 @@ export const istToday = (ms = Date.now()) => new Date(ms + 5.5 * 3600000).toISOS
 
 export function mergeCfg(stored = {}) {
   const out = { ...EXIT_DEFAULTS };
-  for (const k of Object.keys(EXIT_DEFAULTS)) if (stored[k] !== undefined && stored[k] !== null && stored[k] !== '') out[k] = typeof EXIT_DEFAULTS[k] === 'boolean' ? stored[k] !== false : (Number(stored[k]) || EXIT_DEFAULTS[k]);
+  for (const k of Object.keys(EXIT_DEFAULTS)) {
+    const v = stored[k], d = EXIT_DEFAULTS[k];
+    if (v === undefined || v === null || v === '') continue;
+    if (typeof d === 'boolean') out[k] = v !== false && v !== 'false';
+    else if (Array.isArray(d)) { if (Array.isArray(v) && v.length) out[k] = v; }
+    else if (typeof d === 'string') out[k] = String(v);
+    else out[k] = Number(v) || d;
+  }
   return out;
 }
 
@@ -49,17 +68,17 @@ export function noticeDaysFor(emp = {}, cfg = EXIT_DEFAULTS) {
 }
 
 /** Check a resignation before it is created. Returns the figures the form shows and the errors that block it. */
-export function evaluateResignation({ today, proposedLastDay, noticeDays, buyoutRequested = false, buyoutDays = 0, cfg = EXIT_DEFAULTS }) {
+export function evaluateResignation({ today, proposedLastDay, noticeDays, buyoutRequested = false, buyoutDays = 0, cfg = EXIT_DEFAULTS, standardLwd: standardOverride = '' }) {
   const errors = [];
   const resignationDate = today;
-  const standardLwd = addDaysYmd(resignationDate, noticeDays);
+  const standardLwd = standardOverride || addDaysYmd(resignationDate, noticeDays);
   if (!isYmd(proposedLastDay)) errors.push('Enter the last working day you are proposing.');
   else {
     if (proposedLastDay < today) errors.push('The last working day cannot be in the past.');
     if (diffDaysYmd(today, proposedLastDay) > cfg.max_notice_days) errors.push(`The last working day cannot be more than ${cfg.max_notice_days} days from today.`);
   }
   const served = isYmd(proposedLastDay) ? diffDaysYmd(resignationDate, proposedLastDay) : noticeDays;
-  const shortfall = Math.max(0, noticeDays - served);
+  const shortfall = isYmd(proposedLastDay) && proposedLastDay >= standardLwd ? 0 : Math.max(0, noticeDays - served);
   let buyout = 0;
   if (buyoutRequested) {
     if (shortfall <= 0) errors.push('A notice buy-out is only needed when the last working day is earlier than the notice period.');
@@ -167,4 +186,147 @@ export function exitPatchProblem(current = {}, body = {}) {
     if (!Array.isArray(next) || next.length < cur.length || cur.some((c, i) => JSON.stringify(c) !== JSON.stringify(next[i]))) return 'The audit log can only be added to';
   }
   return '';
+}
+
+// ── approval chain, status model, reference numbers, notice calendar ────────────────────────────────────────────────────────
+const csv = (v) => String(v || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+
+/** Whether this employee's resignation also needs management approval under the configured conditions. */
+export function needsManagement(emp = {}, cfg = EXIT_DEFAULTS) {
+  const g = csv(cfg.management_grades), d = csv(cfg.management_departments), w = csv(cfg.management_designations);
+  const grade = String(emp.employee_grade || emp.grade || '').toLowerCase(), dept = String(emp.department || '').toLowerCase(), des = String(emp.designation || '').toLowerCase();
+  return !!((g.length && g.includes(grade)) || (d.length && d.includes(dept)) || (w.length && w.some((x) => des.includes(x))));
+}
+
+/** Stages a resignation goes through, in order. A stage with nobody to act is left out so a case never waits for nobody. */
+export function buildApprovalChain({ emp, managerOk, hodOk, cfg = EXIT_DEFAULTS }) {
+  const chain = [];
+  if (managerOk) chain.push('manager');
+  if (cfg.approval_hod_enabled && hodOk) chain.push('hod');
+  chain.push('hr');
+  if (needsManagement(emp, cfg)) chain.push('management');
+  return chain;
+}
+
+/** The stage waiting now (the first one not yet approved), or '' when the chain is finished. */
+export const currentStageOf = (exit) => ((exit.approval_stages || []).find((s) => s.status === 'pending') || {}).stage || '';
+export const STAGE_LABEL = { manager: 'Reporting Manager', hod: 'HOD', hr: 'HR', management: 'Management' };
+
+/** One label per case for lists, badges and the register (the stored status keeps the machine states the workflow uses). */
+export function displayStatus(exit = {}) {
+  const s = exit.status;
+  const retention = (exit.retention?.discussions || []).length > 0 && exit.retention?.status === 'open';
+  if (s === 'withdrawn') return 'Withdrawn';
+  if (s === 'cancelled') return exit.cancel_reason === 'retained' ? 'Retained' : 'Cancelled';
+  if (['manager_rejected', 'hr_rejected'].includes(s)) return 'Rejected';
+  if (s === 'completed') return 'Exit Completed';
+  if (exit.withdrawal_request?.status === 'pending') return 'Withdrawal Pending Approval';
+  if (retention && ['submitted', 'manager_approved'].includes(s)) return 'Under Retention Discussion';
+  if (s === 'submitted' || s === 'manager_approved') { const st = currentStageOf(exit) || 'manager'; return `Pending with ${STAGE_LABEL[st] || st}`; }
+  if (s === 'in_notice') return exit.notice_shortfall_days > 0 && exit.notice_waived_days >= exit.notice_shortfall_days ? 'Notice Period Waived' : 'Notice Period';
+  if (s === 'clearance_pending') return 'Exit Clearance Pending';
+  if (s === 'clearance_done' || String(s).startsWith('fnf_')) return 'F&F Pending';
+  return s || 'Submitted';
+}
+
+/** Next resignation reference number: EXT-<year>-<4 digit running number>. */
+export function nextExitRef(existing = [], year = new Date().getUTCFullYear()) {
+  const prefix = `EXT-${year}-`;
+  const max = existing.filter((r) => String(r || '').startsWith(prefix)).reduce((m, r) => Math.max(m, parseInt(String(r).slice(prefix.length), 10) || 0), 0);
+  return `${prefix}${String(max + 1).padStart(4, '0')}`;
+}
+
+/** Last working day for a notice period. Working-day mode counts only days that are not weekly offs or holidays. */
+export function lastDayFor(resignationDate, days, { mode = 'calendar', weeklyOff = [0], holidays = [] } = {}) {
+  if (mode !== 'working') return addDaysYmd(resignationDate, days);
+  const hol = new Set(holidays), off = new Set(weeklyOff);
+  let d = resignationDate, left = days;
+  for (let guard = 0; left > 0 && guard < 800; guard++) {
+    d = addDaysYmd(d, 1);
+    const dow = new Date(`${d}T00:00:00Z`).getUTCDay();
+    if (!off.has(dow) && !hol.has(d)) left--;
+  }
+  return d;
+}
+
+// ── register labels and dashboard analytics (pure — the screens and the tests use the same numbers) ───────────────────────────
+export function fnfStatusLabel(exit = {}) {
+  const s = exit.status;
+  if (s === 'completed') return 'Completed';
+  if (exit.fnf_data?.on_hold) return 'On Hold';
+  return ({ fnf_prepared: 'Pending with HR', fnf_verified: 'Under Verification', fnf_hr_approved: 'Pending with Finance', fnf_finance_processed: 'Paid', fnf_employee_accepted: 'Paid' })[s] || 'Not Initiated';
+}
+export function clearanceSummary(exit = {}) {
+  const e = Object.values(exit.clearance_checklist || {});
+  if (!e.length) return 'Not started';
+  const done = e.filter((v) => ['cleared', 'not_applicable'].includes(v.status)).length;
+  return done === e.length ? 'Completed' : `${done} of ${e.length} cleared`;
+}
+export function noticeStatus(exit = {}, today) {
+  if (['submitted', 'manager_approved'].includes(exit.status)) return 'Awaiting approval';
+  if (['withdrawn', 'cancelled', 'manager_rejected', 'hr_rejected'].includes(exit.status)) return '—';
+  const l = String(exit.last_working_date || '').slice(0, 10);
+  if (!isYmd(l)) return '—';
+  if (exit.status === 'completed' || l < today) return 'Served';
+  return `${diffDaysYmd(today, l)} day(s) left`;
+}
+const ym = (d) => String(d || '').slice(0, 7);
+const bump = (o, k, n = 1) => { o[k || 'Not recorded'] = (o[k || 'Not recorded'] || 0) + n; };
+const sortedPairs = (o) => Object.entries(o).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+const AFTER_ACCEPT = ['in_notice', 'clearance_pending', 'clearance_done', 'fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted', 'completed'];
+
+/** KPIs and charts for the HR dashboard. `exits` are Exit rows, `empOf(userId)` gives the employee record (department, location, type). */
+export function exitAnalytics(exits, empOf, { today, department = '', location = '', employmentType = '', from = '', to = '' } = {}) {
+  const rows = exits.filter((x) => {
+    const e = empOf(x.user_id) || {};
+    const dep = e.department || x.employee_snapshot?.department || '';
+    if (department && dep !== department) return false;
+    if (location && (e.work_location || e.location || '') !== location) return false;
+    if (employmentType && (e.employment_type || '') !== employmentType) return false;
+    const d = String(x.resignation_date || '').slice(0, 10);
+    if (from && d < from) return false;
+    if (to && d > to) return false;
+    return true;
+  });
+  const lwd = (x) => String(x.last_working_date || '').slice(0, 10);
+  const open = rows.filter((x) => !['withdrawn', 'cancelled', 'manager_rejected', 'hr_rejected', 'completed'].includes(x.status));
+  const monthKey = today.slice(0, 7);
+  const upcoming = (n) => open.filter((x) => AFTER_ACCEPT.includes(x.status) && isYmd(lwd(x)) && lwd(x) >= today && diffDaysYmd(today, lwd(x)) <= n).length;
+  const kpis = {
+    total: rows.filter((x) => (x.exit_type || 'resignation') === 'resignation').length,
+    this_month: rows.filter((x) => ym(x.resignation_date) === monthKey).length,
+    pending_approvals: rows.filter((x) => ['submitted', 'manager_approved'].includes(x.status)).length,
+    under_retention: rows.filter((x) => x.retention?.status === 'open' && ['submitted', 'manager_approved'].includes(x.status)).length,
+    accepted: rows.filter((x) => AFTER_ACCEPT.includes(x.status)).length,
+    serving_notice: open.filter((x) => x.status === 'in_notice' || x.status === 'clearance_pending').length,
+    upcoming_7: upcoming(7), upcoming_15: upcoming(15), upcoming_30: upcoming(30),
+    pending_clearances: open.filter((x) => ['in_notice', 'clearance_pending'].includes(x.status)).length,
+    pending_kt: open.filter((x) => AFTER_ACCEPT.includes(x.status) && x.status !== 'completed' && Number(x.kt_overall_completion || 0) < 100).length,
+    pending_fnf: rows.filter((x) => ['clearance_done', 'fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted'].includes(x.status)).length,
+    completed: rows.filter((x) => x.status === 'completed').length,
+  };
+  const dept = {}, desig = {}, reason = {}, type = { Voluntary: 0, Involuntary: 0, Other: 0 }, trend = {};
+  for (const x of rows.filter((r) => AFTER_ACCEPT.includes(r.status))) {
+    const e = empOf(x.user_id) || {};
+    bump(dept, e.department || x.employee_snapshot?.department); bump(desig, e.designation || x.employee_snapshot?.designation);
+  }
+  for (const x of rows) {
+    bump(reason, x.reason_category || 'other');
+    const t = String(x.exit_type || 'resignation').toLowerCase();
+    type[/terminat|dismiss|abscond/.test(t) ? 'Involuntary' : /resign|mutual/.test(t) ? 'Voluntary' : 'Other']++;
+    if (x.resignation_date) bump(trend, ym(x.resignation_date));
+  }
+  const months = []; { let y = Number(today.slice(0, 4)), m = Number(today.slice(5, 7)); for (let i = 0; i < 12; i++) { months.unshift(`${y}-${String(m).padStart(2, '0')}`); m--; if (m === 0) { m = 12; y--; } } }
+  const done = rows.filter((x) => x.status === 'completed' && isYmd(lwd(x)) && x.resignation_date);
+  const settled = rows.filter((x) => x.fnf_data?.prepared_at && x.fnf_data?.finance_processed_at);
+  const avg = (a) => (a.length ? Math.round((a.reduce((s, v) => s + v, 0) / a.length) * 10) / 10 : null);
+  const talked = rows.filter((x) => (x.retention?.discussions || []).length > 0);
+  return {
+    kpis, department: sortedPairs(dept), designation: sortedPairs(desig).slice(0, 12), reasons: sortedPairs(reason), voluntary: Object.entries(type).map(([name, count]) => ({ name, count })).filter((v) => v.count > 0),
+    trend: months.map((m) => ({ month: m, count: trend[m] || 0 })),
+    avg_notice_served_days: avg(done.map((x) => diffDaysYmd(String(x.resignation_date).slice(0, 10), lwd(x)))),
+    avg_fnf_days: avg(settled.map((x) => diffDaysYmd(String(x.fnf_data.prepared_at).slice(0, 10), String(x.fnf_data.finance_processed_at).slice(0, 10)))),
+    retention: { discussions: talked.length, retained: talked.filter((x) => x.cancel_reason === 'retained').length, success_rate: talked.length ? Math.round((talked.filter((x) => x.cancel_reason === 'retained').length / talked.length) * 1000) / 10 : null },
+    count: rows.length,
+  };
 }

@@ -5,7 +5,7 @@
 //  • a withdrawal request nobody has decided is raised again.
 // Each alert is remembered on the case (alerts.<key>) so it fires once per day at most.
 import { all, run } from '../db.js';
-import { istToday, addDaysYmd, diffDaysYmd, mergeCfg } from '../utils/exitPolicy.js';
+import { istToday, addDaysYmd, diffDaysYmd, mergeCfg, currentStageOf } from '../utils/exitPolicy.js';
 import { v4 as uuidv4 } from 'uuid';
 
 async function notifyDb(userId, { title, message, type = 'warning', link = '/exit-management' }) {
@@ -27,14 +27,17 @@ export async function runExitLifecycle() {
     const name = ex.employee_snapshot?.name || 'An employee';
     const once = async (key, fn) => { if (alerts[key] === today) return; alerts[key] = today; changed = true; await fn(); sent++; };
 
-    const mgrDue = ex.manager_due_at || (ex.created_at ? addDaysYmd(String(ex.created_at).slice(0, 10), cfg.manager_decision_days) : null);
-    if (ex.status === 'submitted' && mgrDue && mgrDue < today && !ex.manager_escalated) {
-      ex = { ...ex, manager_escalated: true }; escalated++; changed = true;
-      audit = [...audit, { actor_id: null, actor_name: 'System', action: `Escalated to HR — the reporting manager did not decide within ${cfg.manager_decision_days} day(s)`, comment: '', timestamp: new Date().toISOString() }];
-      for (const h of hr) await notifyDb(h.id, { title: 'Resignation waiting on manager', message: `${name}'s resignation has waited over ${cfg.manager_decision_days} day(s) for the reporting manager. You can now decide it in the manager's place.` });
-      if (ex.manager_id) await notifyDb(ex.manager_id, { title: 'Resignation needs your decision', message: `${name}'s resignation is overdue for your decision. HR has been told.` });
+    const stage = ['submitted', 'manager_approved'].includes(ex.status) ? currentStageOf(ex) : '';
+    const stageDue = ex.stage_due_at || ex.manager_due_at || (ex.created_at ? addDaysYmd(String(ex.created_at).slice(0, 10), cfg.manager_decision_days) : null);
+    if (['manager', 'hod'].includes(stage) && stageDue && stageDue < today && !ex.stage_escalated && !ex.manager_escalated) {
+      const label = stage === 'hod' ? 'HOD' : 'reporting manager';
+      ex = { ...ex, stage_escalated: true, manager_escalated: true }; escalated++; changed = true;
+      audit = [...audit, { actor_id: null, actor_name: 'System', action: `Escalated to HR — the ${label} did not decide within ${cfg.manager_decision_days} day(s)`, comment: '', timestamp: new Date().toISOString() }];
+      for (const h of hr) await notifyDb(h.id, { title: `Resignation waiting on ${label}`, message: `${name}'s resignation (${ex.reference_no || ''}) has waited over ${cfg.manager_decision_days} day(s) for the ${label}. You can now decide it in their place.` });
+      const owner = stage === 'hod' ? ex.hod_id : ex.manager_id;
+      if (owner) await notifyDb(owner, { title: 'Resignation needs your decision', message: `${name}'s resignation is overdue for your decision. HR has been told.` });
     }
-    if (ex.status === 'manager_approved') {
+    if (ex.status === 'manager_approved' && ['hr', 'management'].includes(currentStageOf(ex))) {
       const since = (ex.approval_stages || []).find(s => s.stage === 'manager')?.timestamp?.slice(0, 10) || ex.created_at?.slice(0, 10) || today;
       if (diffDaysYmd(since, today) >= cfg.hr_decision_days) await once('hr_wait', async () => { for (const h of hr) await notifyDb(h.id, { title: 'Resignation awaiting HR', message: `${name}'s resignation has been waiting ${diffDaysYmd(since, today)} day(s) for an HR decision.` }); });
     }

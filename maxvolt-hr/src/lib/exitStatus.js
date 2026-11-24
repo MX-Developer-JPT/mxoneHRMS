@@ -45,3 +45,22 @@ export const OVERALL_STATUS_COLORS = {
   'F&F Pending': 'bg-indigo-100 text-indigo-800',
   'Exit Closed': 'bg-green-100 text-green-800',
 };
+
+
+// One label per case for lists and badges — mirrors displayStatus() on the server (backend/utils/exitPolicy.js).
+const STAGE_LABEL = { manager: 'Reporting Manager', hod: 'HOD', hr: 'HR', management: 'Management' };
+export function exitDisplayStatus(exit = {}) {
+  const s = exit.status;
+  const retention = (exit.retention?.discussions || []).length > 0 && exit.retention?.status === 'open';
+  if (s === 'withdrawn') return 'Withdrawn';
+  if (s === 'cancelled') return exit.cancel_reason === 'retained' ? 'Retained' : 'Cancelled';
+  if (['manager_rejected', 'hr_rejected'].includes(s)) return 'Rejected';
+  if (s === 'completed') return 'Exit Completed';
+  if (exit.withdrawal_request?.status === 'pending') return 'Withdrawal Pending Approval';
+  if (retention && ['submitted', 'manager_approved'].includes(s)) return 'Under Retention Discussion';
+  if (s === 'submitted' || s === 'manager_approved') { const st = ((exit.approval_stages || []).find(x => x.status === 'pending') || {}).stage || 'manager'; return `Pending with ${STAGE_LABEL[st] || st}`; }
+  if (s === 'in_notice') return exit.notice_shortfall_days > 0 && exit.notice_waived_days >= exit.notice_shortfall_days ? 'Notice Period Waived' : 'Notice Period';
+  if (s === 'clearance_pending') return 'Exit Clearance Pending';
+  if (s === 'clearance_done' || String(s).startsWith('fnf_')) return 'F&F Pending';
+  return s || 'Submitted';
+}

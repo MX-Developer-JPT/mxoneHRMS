@@ -8,7 +8,7 @@ import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
-import { noticeDaysFor, evaluateResignation, recoverableShortfall, draftFnF, segregationProblem, closeBlockers, leftStatusFor, isYmd, addDaysYmd, istToday, mergeCfg as mergeExitCfg, EXIT_DEFAULTS } from '../utils/exitPolicy.js';
+import { exitAnalytics, fnfStatusLabel as fnfStatusLabelOf, clearanceSummary as clearanceSummaryOf, noticeStatus as noticeStatusOf, buildApprovalChain, currentStageOf, STAGE_LABEL, displayStatus, nextExitRef, lastDayFor, needsManagement, noticeDaysFor, evaluateResignation, recoverableShortfall, draftFnF, segregationProblem, closeBlockers, leftStatusFor, isYmd, addDaysYmd, istToday, mergeCfg as mergeExitCfg, EXIT_DEFAULTS } from '../utils/exitPolicy.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { buildCriteria, scoreAgainst, scoreProfile, analyseResumeText, detectSkills, rulesParse, readReport, workHistory, noticeToDays, ctcToRupees, highestDegree } from '../utils/cvScreening.js';
 import { createHash } from 'crypto';
@@ -1660,6 +1660,26 @@ async function exResolveManager(emp) {
   if (m.exit_date && String(m.exit_date).slice(0, 10) < exIstToday()) return { ok: false, reason: 'the reporting manager has left the company' };
   return { ok: true, id, name: m.display_name || u.full_name || '' };
 }
+/** The department head (HOD) who decides after the reporting manager — only a real, active person who is neither the employee nor the manager already deciding. */
+async function exResolveHod(emp, managerId) {
+  const dept = String(emp?.department || '').trim().toLowerCase();
+  if (!dept) return { ok: false };
+  const rows = await all("SELECT data FROM entities WHERE type='Department'");
+  const d = rows.map(r => { try { return JSON.parse(r.data); } catch { return null; } }).find(x => x && String(x.name || '').trim().toLowerCase() === dept && x.head_user_id);
+  if (!d) return { ok: false };
+  const id = d.head_user_id;
+  if (id === emp.user_id || id === managerId) return { ok: false };
+  const m = await exLoadEmployee(id); const u = await one('SELECT full_name FROM users WHERE id=$1', [id]);
+  if (!u || (m && m.status && m.status !== 'active')) return { ok: false };
+  return { ok: true, id, name: m?.display_name || u.full_name || '' };
+}
+/** Weekly offs and holidays used when notice is counted in working days. */
+async function exCalendar() {
+  const hol = (await all("SELECT data FROM entities WHERE type='Holiday'")).map(r => { try { return String(JSON.parse(r.data).date || '').slice(0, 10); } catch { return ''; } }).filter(Boolean);
+  return { weeklyOff: [0], holidays: hol };
+}
+const AFTER_ACCEPT_STATUSES = ['in_notice', 'clearance_pending', 'clearance_done', 'fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted', 'completed'];
+const EX_STAGE_FIELDS = { manager: 'manager', hod: 'hod', hr: 'hr', management: 'management' };
 /** The last working day on the employee record while the notice runs (cleared again if the resignation is withdrawn). */
 async function exSetEmployeeExitDate(userId, ymd) {
   const row = await one("SELECT id,data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
@@ -16443,9 +16463,26 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const exNotice = noticeDaysFor(exEmp, exCfg);
       const exToday = exIstToday();
       const exMgr = await exResolveManager(exEmp);
+      const exHod = await exResolveHod(exEmp, exMgr.ok ? exMgr.id : null);
       const exOpen = await exOpenCase(cu.id);
-      return res.json({ success: true, today: exToday, notice_days: exNotice.days, notice_source: exNotice.source, standard_last_day: addDaysYmd(exToday, exNotice.days), max_notice_days: exCfg.max_notice_days,
-        manager: exMgr.ok ? { id: exMgr.id, name: exMgr.name } : null, manager_note: exMgr.ok ? '' : exMgr.reason, open_case: exOpen ? { id: exOpen.id, status: exOpen.status } : null });
+      const exChain = buildApprovalChain({ emp: exEmp, managerOk: exMgr.ok, hodOk: exHod.ok, cfg: exCfg });
+      const exStd = lastDayFor(exToday, exNotice.days, { mode: exCfg.notice_day_mode, ...(await exCalendar()) });
+      const exDraftRow = await one("SELECT data FROM entities WHERE type='ExitDraft' AND user_id=$1", [cu.id]);
+      const exUserRow = await one('SELECT email FROM users WHERE id=$1', [cu.id]);
+      return res.json({ success: true, today: exToday, notice_days: exNotice.days, notice_source: exNotice.source, notice_day_mode: exCfg.notice_day_mode, standard_last_day: exStd, max_notice_days: exCfg.max_notice_days,
+        reasons: exCfg.reasons, chain: exChain.map(st => ({ stage: st, label: STAGE_LABEL[st], person: st === 'manager' ? exMgr.name : st === 'hod' ? exHod.name : '' })),
+        manager: exMgr.ok ? { id: exMgr.id, name: exMgr.name } : null, manager_note: exMgr.ok ? '' : exMgr.reason, hod: exHod.ok ? { id: exHod.id, name: exHod.name } : null,
+        employee: { code: exEmp.employee_code || '', name: exEmp.display_name || cu.full_name || '', designation: exEmp.designation || '', department: exEmp.department || '', date_of_joining: exEmp.date_of_joining || '', employment_type: exEmp.employment_type || '', location: exEmp.work_location || exEmp.location || '', email: exUserRow?.email || exEmp.work_email || '' },
+        draft: exDraftRow ? JSON.parse(exDraftRow.data) : null, open_case: exOpen ? { id: exOpen.id, status: exOpen.status } : null });
+    }
+
+    case 'ex_save_draft': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exDraft = { user_id: cu.id, saved_at: new Date().toISOString(), form: p.form && typeof p.form === 'object' ? p.form : {} };
+      const exRow = await one("SELECT id FROM entities WHERE type='ExitDraft' AND user_id=$1", [cu.id]);
+      if (exRow) await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exDraft), exRow.id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ExitDraft',$2,'draft',$3)", [uuidv4(), cu.id, JSON.stringify(exDraft)]);
+      return res.json({ success: true, saved_at: exDraft.saved_at });
     }
 
     // The employee's resignation: validated and created here (never trusted from the browser), routed to the reporting manager, or straight
@@ -16457,43 +16494,52 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (!exEmp) return res.json({ success: false, error: 'Employee record not found' });
       if (exEmp.status && exEmp.status !== 'active') return res.json({ success: false, error: 'Only an active employee can resign.' });
       if (await exOpenCase(cu.id)) return res.json({ success: false, error: 'You already have an exit case in progress. Open My Exit to follow it.' });
-      const exReasonCat = String(p.reason_category || '').trim(), exReason = String(p.reason_for_leaving || '').trim();
-      if (!exReasonCat) return res.json({ success: false, error: 'Please select a reason category' });
-      if (exReason.length < 5) return res.json({ success: false, error: 'Please give your reason for leaving' });
+      const exReasonCat = String(p.reason_category || '').trim(), exReason = String(p.reason_for_leaving || p.detailed_comments || '').trim();
+      const exReasonDef = (exCfg.reasons || []).find(r => r.key === exReasonCat);
+      if (!exReasonCat || !exReasonDef) return res.json({ success: false, error: 'Please select a reason for resignation' });
+      if (exReason.length < 5) return res.json({ success: false, error: exReasonDef.remarks_required ? 'Please explain the reason — remarks are mandatory when you choose “' + exReasonDef.label + '”' : 'Please give the detailed reason / remarks' });
       const exToday = exIstToday();
       const exNotice = noticeDaysFor(exEmp, exCfg);
-      const exEval = evaluateResignation({ today: exToday, proposedLastDay: String(p.proposed_last_day || '').slice(0, 10), noticeDays: exNotice.days, buyoutRequested: !!p.buyout_requested, buyoutDays: p.buyout_days_requested, cfg: exCfg });
+      const exStdLwd = lastDayFor(exToday, exNotice.days, { mode: exCfg.notice_day_mode, ...(await exCalendar()) });
+      const exEval = evaluateResignation({ today: exToday, proposedLastDay: String(p.proposed_last_day || '').slice(0, 10), noticeDays: exNotice.days, buyoutRequested: !!p.buyout_requested, buyoutDays: p.buyout_days_requested, cfg: exCfg, standardLwd: exStdLwd });
       if (!exEval.ok) return res.json({ success: false, error: exEval.errors[0], errors: exEval.errors });
       const exMgr = await exResolveManager(exEmp);
+      const exHod = await exResolveHod(exEmp, exMgr.ok ? exMgr.id : null);
+      const exChain = buildApprovalChain({ emp: exEmp, managerOk: exMgr.ok, hodOk: exHod.ok, cfg: exCfg });
       const exNow = new Date().toISOString();
       const exId = uuidv4();
-      const exStatus = exMgr.ok ? 'submitted' : 'manager_approved';
-      const exMgrStage = exMgr.ok
-        ? { stage: 'manager', status: 'pending', actor_id: null, actor_name: exMgr.name, comment: '', timestamp: null }
-        : { stage: 'manager', status: 'approved', actor_id: null, actor_name: 'System', comment: `Routed to HR: ${exMgr.reason}`, timestamp: exNow };
+      const exStatus = exChain[0] === 'manager' ? 'submitted' : 'manager_approved';
+      const exRef = nextExitRef((await all("SELECT data::jsonb->>'reference_no' AS r FROM entities WHERE type='Exit'")).map(r => r.r));
+      const exStages = exChain.map(st => ({ stage: st, status: 'pending', actor_id: null, actor_name: st === 'manager' ? exMgr.name : st === 'hod' ? exHod.name : null, comment: '', timestamp: null }));
+      const exSkipped = [];
+      if (!exMgr.ok) exSkipped.push(`Reporting manager skipped: ${exMgr.reason}`);
+      if (exCfg.approval_hod_enabled && !exHod.ok) exSkipped.push('HOD step skipped: no separate department head is recorded');
       const exData = {
-        id: exId, user_id: cu.id, exit_type: 'resignation', status: exStatus,
+        id: exId, user_id: cu.id, exit_type: 'resignation', status: exStatus, reference_no: exRef, current_stage: exChain[0], current_owner_id: exChain[0] === 'manager' ? exMgr.id : exChain[0] === 'hod' ? exHod.id : null,
+        waiver_requested: !!p.waiver_requested, supporting_documents: Array.isArray(p.supporting_documents) ? p.supporting_documents.slice(0, 5).map(d => ({ name: String(d.name || '').slice(0, 120), url: String(d.url || '').slice(0, 600) })) : [],
         resignation_date: exEval.resignationDate, last_working_date: p.proposed_last_day, proposed_last_day: p.proposed_last_day, standard_last_day: exEval.standardLwd,
         reason_category: exReasonCat, reason_for_leaving: exReason, detailed_comments: String(p.detailed_comments || '').slice(0, 2000),
         new_employer: String(p.new_employer || '').slice(0, 200), expected_ctc: p.expected_ctc || '',
         willing_to_serve_notice: p.willing_to_serve_notice !== false && p.willing_to_serve_notice !== 'no',
         notice_period_days: exNotice.days, notice_source: exNotice.source, notice_shortfall_days: exEval.shortfallDays,
         buyout_requested: !!p.buyout_requested && exEval.buyoutDays > 0, buyout_days_requested: exEval.buyoutDays,
-        manager_id: exMgr.ok ? exMgr.id : null, manager_due_at: exMgr.ok ? addDaysYmd(exToday, exCfg.manager_decision_days) : null, manager_escalated: false,
+        manager_id: exMgr.ok ? exMgr.id : null, hod_id: exHod.ok ? exHod.id : null, stage_due_at: addDaysYmd(exToday, exCfg.manager_decision_days), stage_escalated: false, manager_due_at: exMgr.ok ? addDaysYmd(exToday, exCfg.manager_decision_days) : null, manager_escalated: false,
         employee_snapshot: { name: cu.full_name, code: exEmp.employee_code || '', department: exEmp.department || '', designation: exEmp.designation || '', date_of_joining: exEmp.date_of_joining || '' },
-        approval_stages: [exMgrStage, { stage: 'hr', status: 'pending', actor_id: null, actor_name: null, comment: '', timestamp: null }],
+        approval_stages: exStages,
         clearance_checklist: {}, assets: [], kt_items: [], exit_interview: null, hr_exit_interview: null, exit_interview_completed: false, hr_interview_completed: false,
         fnf_data: null, fnf_calculated: false, access_deactivated: false, relieving_letter_generated: false, experience_letter_generated: false, initiated_by_hr: false,
         audit_log: [{ actor_id: cu.id, actor_name: cu.full_name, action: 'Resignation submitted', comment: `${exReasonCat}; proposed last working day ${p.proposed_last_day}; notice ${exNotice.days} days (${exNotice.source})`, timestamp: exNow },
-          ...(exMgr.ok ? [] : [{ actor_id: null, actor_name: 'System', action: 'Manager stage skipped', comment: exMgr.reason, timestamp: exNow }])],
+          ...exSkipped.map(t => ({ actor_id: null, actor_name: 'System', action: 'Approval step skipped', comment: t, timestamp: exNow }))],
         created_at: exNow,
       };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Exit',$2,$3,$4)", [exId, cu.id, exStatus, JSON.stringify(exData)]);
+      await run("DELETE FROM entities WHERE type='ExitDraft' AND user_id=$1", [cu.id]);
       await runNotifyExitStatusChange(exMgr.ok ? 'submitted' : 'manager_approved', cu.id, cu.full_name || '', exMgr.ok ? exMgr.id : null);
+      if (!exMgr.ok && exHod.ok) await notify(exHod.id, { title: 'Resignation needs your decision', message: `${cu.full_name} has submitted a resignation (${exRef}).`, type: 'warning', link: '/exit-management' });
       try {
-        if (cu.email) sendEmail({ to: cu.email, subject: 'Resignation submitted — confirmation', html: `<p>Dear ${exEsc(cu.full_name || '')},</p><p>Your resignation has been submitted.</p><p><b>Resignation date:</b> ${exEval.resignationDate}<br><b>Proposed last working day:</b> ${exEsc(p.proposed_last_day)}<br><b>Notice period:</b> ${exNotice.days} days (standard last working day ${exEval.standardLwd})${exEval.shortfallDays ? `<br><b>Notice shortfall:</b> ${exEval.shortfallDays} day(s) — HR will decide whether it is waived or recovered` : ''}</p><p>${exMgr.ok ? 'Your reporting manager will review it first, then HR.' : 'It has been sent to HR.'} You can follow it in My Exit.</p>` }).catch(() => {});
+        if (cu.email) sendEmail({ to: cu.email, subject: `Resignation submitted — ${exRef}`, html: `<p>Dear ${exEsc(cu.full_name || '')},</p><p>Your resignation has been submitted. <b>Reference: ${exRef}</b></p><p><b>Resignation date:</b> ${exEval.resignationDate}<br><b>Proposed last working day:</b> ${exEsc(p.proposed_last_day)}<br><b>Notice period:</b> ${exNotice.days} days (standard last working day ${exEval.standardLwd})${exEval.shortfallDays ? `<br><b>Notice shortfall:</b> ${exEval.shortfallDays} day(s) — HR will decide whether it is waived or recovered` : ''}</p><p>${exMgr.ok ? 'Your reporting manager will review it first, then HR.' : 'It has been sent to HR.'} You can follow it in My Exit.</p>` }).catch(() => {});
       } catch { /* the in-app confirmation is enough */ }
-      return res.json({ success: true, exit_id: exId, status: exStatus, shortfall_days: exEval.shortfallDays, standard_last_day: exEval.standardLwd, routed_to_hr: !exMgr.ok });
+      return res.json({ success: true, exit_id: exId, reference_no: exRef, chain: exChain, status: exStatus, shortfall_days: exEval.shortfallDays, standard_last_day: exEval.standardLwd, routed_to_hr: !exMgr.ok });
     }
 
     // Withdrawal. Before HR accepts the resignation the employee can withdraw it directly; once the notice has started it is a request
@@ -16642,6 +16688,89 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true });
     }
 
+    // Retention: before the resignation is finally accepted the reporting manager, HOD or HR can hold a retention discussion and record it.
+    case 'ex_retention_log': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      if (!(await getExitPolicyConfig()).retention_enabled) return res.json({ success: false, error: 'Retention discussions are switched off' });
+      if (!['submitted', 'manager_approved'].includes(ex.status)) return res.json({ success: false, error: 'A retention discussion can be recorded only before the resignation is accepted' });
+      const exEmp = await exLoadEmployee(ex.user_id);
+      const exAllowed = exEmp?.reporting_manager_id === cu.id || ex.hod_id === cu.id || (await hasRole(cu, HR_ROLES));
+      if (!exAllowed) return res.status(403).json({ error: 'Only the reporting manager, the HOD or HR can record a retention discussion' });
+      const d = p.discussion || {};
+      const exOutcomes = ['', 'retained', 'resignation_accepted', 'declined_by_employee', 'proposal_rejected'];
+      if (!exOutcomes.includes(d.outcome || '')) return res.json({ success: false, error: 'Unknown outcome' });
+      if (!String(d.concerns || d.proposal || d.notes || '').trim()) return res.json({ success: false, error: 'Record what was discussed (concerns, proposal or notes)' });
+      const exNow = new Date().toISOString();
+      const entry = { id: uuidv4(), date: String(d.date || exNow).slice(0, 10), owner_id: cu.id, owner_name: cu.full_name, concerns: String(d.concerns || '').slice(0, 2000), proposal: String(d.proposal || '').slice(0, 2000),
+        revised_compensation: String(d.revised_compensation || '').slice(0, 200), revised_designation: String(d.revised_designation || '').slice(0, 200), employee_decision: String(d.employee_decision || '').slice(0, 1000), outcome: d.outcome || '', notes: String(d.notes || '').slice(0, 2000), recorded_at: exNow };
+      const ret = ex.retention || { status: 'open', discussions: [] };
+      const discussions = [...(ret.discussions || []), entry];
+      const closed = !!entry.outcome;
+      const exUpd = { ...ex, retention: { status: closed ? 'closed' : 'open', discussions, last_outcome: entry.outcome || ret.last_outcome || '' }, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: closed ? `Retention discussion closed: ${entry.outcome}` : 'Retention discussion recorded', comment: entry.notes || entry.concerns, timestamp: exNow }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+      if (entry.outcome === 'retained') for (const hr of await all("SELECT id FROM users WHERE role IN ('hr','admin')")) await notify(hr.id, { title: 'Employee agreed to stay', message: `${ex.employee_snapshot?.name || 'An employee'} agreed to stay after a retention discussion. HR can now cancel the resignation.`, type: 'info', link: '/exit-management' });
+      return res.json({ success: true, retention: exUpd.retention });
+    }
+
+    // HR cancels a resignation after the employee is retained. The whole history stays on the case.
+    case 'ex_cancel_retained': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      if (!['submitted', 'manager_approved', 'in_notice'].includes(ex.status)) return res.json({ success: false, error: `A case at ${ex.status} cannot be cancelled this way` });
+      if (ex.retention?.last_outcome !== 'retained') return res.json({ success: false, error: 'Record a retention discussion with the outcome "Retained" first' });
+      const exWhy = String(p.remarks || '').trim();
+      if (exWhy.length < 3) return res.json({ success: false, error: 'Please enter remarks for the cancellation' });
+      const exNow = new Date().toISOString();
+      const exUpd = { ...ex, status: 'cancelled', cancel_reason: 'retained', cancelled_at: exNow, cancelled_by: cu.full_name, current_stage: '', current_owner_id: null, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Resignation cancelled — employee retained', comment: exWhy, timestamp: exNow }] };
+      await run("UPDATE entities SET data=$1,status='cancelled',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+      await exSetEmployeeExitDate(ex.user_id, null);
+      await notify(ex.user_id, { title: 'Resignation cancelled', message: 'Your resignation has been cancelled following the retention discussion. Welcome to staying on!', type: 'success', link: '/my-exit' });
+      return res.json({ success: true });
+    }
+
+    // The exit register: one row per case with search, filters, sorting and paging (page_size 0 = everything, for the Excel export).
+    case 'ex_register': {
+      if (!(await hasRole(cu, ['hr', 'admin', 'management']))) return res.status(403).json({ error: 'HR / Management access required' });
+      const exToday = exIstToday();
+      const exRows = (await all("SELECT data FROM entities WHERE type='Exit'")).map(r => { try { return JSON.parse(r.data); } catch { return null; } }).filter(Boolean);
+      const exEmps = {}; for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee'")) { try { exEmps[r.user_id] = JSON.parse(r.data); } catch { /* skip */ } }
+      const exUsers = {}; for (const r of await all('SELECT id,full_name,email FROM users')) exUsers[r.id] = r;
+      const exReasons = Object.fromEntries((await getExitPolicyConfig()).reasons.map(r => [r.key, r.label]));
+      let out = exRows.map(x => { const e = exEmps[x.user_id] || {}; return {
+        id: x.id, reference_no: x.reference_no || '', employee_code: e.employee_code || x.employee_snapshot?.code || '', employee_name: exUsers[x.user_id]?.full_name || e.display_name || x.employee_snapshot?.name || '',
+        department: e.department || x.employee_snapshot?.department || '', designation: e.designation || x.employee_snapshot?.designation || '', location: e.work_location || e.location || '', employment_type: e.employment_type || '',
+        reporting_manager: exUsers[e.reporting_manager_id]?.full_name || '', resignation_date: String(x.resignation_date || '').slice(0, 10), proposed_lwd: String(x.proposed_last_day || '').slice(0, 10), approved_lwd: AFTER_ACCEPT_STATUSES.includes(x.status) ? String(x.last_working_date || '').slice(0, 10) : '',
+        reason: exReasons[x.reason_category] || x.reason_category || '', exit_type: x.exit_type || 'resignation', status: displayStatus(x), raw_status: x.status, notice_status: noticeStatusOf(x, exToday), clearance_status: clearanceSummaryOf(x), fnf_status: fnfStatusLabelOf(x),
+      }; });
+      const q = String(p.q || '').trim().toLowerCase();
+      if (q) out = out.filter(r => [r.reference_no, r.employee_code, r.employee_name, r.department, r.designation, r.reporting_manager, r.reason].some(v => String(v).toLowerCase().includes(q)));
+      for (const k of ['department', 'location', 'employment_type', 'status', 'exit_type']) if (p[k]) out = out.filter(r => r[k] === p[k]);
+      if (p.from) out = out.filter(r => r.resignation_date >= p.from);
+      if (p.to) out = out.filter(r => r.resignation_date <= p.to);
+      const sortKey = ['reference_no', 'employee_name', 'department', 'resignation_date', 'approved_lwd', 'status'].includes(p.sort) ? p.sort : 'resignation_date';
+      const dir = p.dir === 'asc' ? 1 : -1;
+      out.sort((a, b) => String(a[sortKey]).localeCompare(String(b[sortKey])) * dir);
+      const total = out.length, size = Number(p.page_size) === 0 ? total : Math.min(200, Math.max(5, Number(p.page_size) || 25)), page = Math.max(1, Number(p.page) || 1);
+      return res.json({ success: true, total, page, page_size: size, rows: size ? out.slice((page - 1) * size, page * size) : out,
+        options: { departments: [...new Set(out.map(r => r.department).filter(Boolean))].sort(), locations: [...new Set(out.map(r => r.location).filter(Boolean))].sort(), employment_types: [...new Set(out.map(r => r.employment_type).filter(Boolean))].sort(), statuses: [...new Set(out.map(r => r.status))].sort() } });
+    }
+
+    case 'ex_dashboard': {
+      if (!(await hasRole(cu, ['hr', 'admin', 'management']))) return res.status(403).json({ error: 'HR / Management access required' });
+      const exRows = (await all("SELECT data FROM entities WHERE type='Exit'")).map(r => { try { return JSON.parse(r.data); } catch { return null; } }).filter(Boolean);
+      const exEmps = {}; for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee'")) { try { exEmps[r.user_id] = JSON.parse(r.data); } catch { /* skip */ } }
+      const exReasons = Object.fromEntries((await getExitPolicyConfig()).reasons.map(r => [r.key, r.label]));
+      const a = exitAnalytics(exRows, (u) => exEmps[u], { today: exIstToday(), department: p.department || '', location: p.location || '', employmentType: p.employment_type || '', from: p.from || '', to: p.to || '' });
+      a.reasons = a.reasons.map(r => ({ ...r, name: exReasons[r.name] || r.name }));
+      const exAll = Object.values(exEmps);
+      return res.json({ success: true, ...a, options: { departments: [...new Set(exAll.map(e => e.department).filter(Boolean))].sort(), locations: [...new Set(exAll.map(e => e.work_location || e.location).filter(Boolean))].sort(), employment_types: [...new Set(exAll.map(e => e.employment_type).filter(Boolean))].sort() } });
+    }
+
     case 'initiateExit': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { employee_user_id: ieUserId, exit_type: ieExitType, reason_category: ieReason, resignation_date: ieResignDate, last_working_date: ieLwd, hr_notes: ieNotes } = p;
@@ -16684,75 +16813,89 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     case 'actionExitApproval': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { exit_id: aeaExitId, stage: aeaStage, action: aeaAction, comment: aeaComment, last_working_date: aeaLwd } = p;
-      if (!aeaExitId || !['manager', 'hr'].includes(aeaStage) || !['approved', 'rejected'].includes(aeaAction)) return res.json({ success: false, error: 'exit_id, stage (manager|hr) and action (approved|rejected) required' });
+      if (!aeaExitId || !['manager', 'hod', 'hr', 'management'].includes(aeaStage) || !['approved', 'rejected'].includes(aeaAction)) return res.json({ success: false, error: 'exit_id, stage (manager|hod|hr|management) and action (approved|rejected) required' });
       const aeaRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [aeaExitId]);
       if (!aeaRow) return res.json({ success: false, error: 'Exit case not found' });
       const aeaExit = JSON.parse(aeaRow.data);
-      // Manager-stage approval is deliberately NOT overridable by HR/
-      // management — only the employee's actual configured direct
-      // reporting manager may approve/reject that stage ("Only the
-      // employee's direct reporting manager should have the authority").
-      // HR keeps full authority at the hr stage, which is correctly theirs.
-      let aeaAuthorized, aeaOnBehalf = false;
-      if (aeaStage === 'manager') {
-        const mgrRow = await one("SELECT data::jsonb->>'reporting_manager_id' AS mgr FROM entities WHERE type='Employee' AND user_id=$1", [aeaExit.user_id]);
-        aeaAuthorized = mgrRow?.mgr === cu.id;
-        // HR may decide the manager stage only when it cannot move on its own: the manager did not answer in time (escalated) or
-        // there is no active manager. The comment then records that HR acted in the manager's place.
-        if (!aeaAuthorized && (await hasRole(cu, HR_ROLES))) {
-          const aeaMgrState = await exResolveManager(await exLoadEmployee(aeaExit.user_id));
-          if (aeaExit.manager_escalated || !aeaMgrState.ok) { aeaAuthorized = true; aeaOnBehalf = true; }
-        }
-      } else {
-        aeaAuthorized = (await hasRole(cu, HR_ROLES)) || (await hasRole(cu, ['management']));
+      if (!['submitted', 'manager_approved'].includes(aeaExit.status)) return res.json({ success: false, error: `Cannot act — case is at status ${aeaExit.status}` });
+      const aeaCur = currentStageOf(aeaExit);
+      if (aeaStage !== aeaCur) return res.json({ success: false, error: `This resignation is waiting for ${STAGE_LABEL[aeaCur] || aeaCur}, not ${STAGE_LABEL[aeaStage]}` });
+      if (aeaExit.withdrawal_request?.status === 'pending') return res.json({ success: false, error: 'Decide the pending withdrawal request first' });
+      const aeaEmp = await exLoadEmployee(aeaExit.user_id);
+      // Who may act: the reporting manager (manager stage), the department head (hod stage), HR (hr stage) or management (management stage).
+      // HR may decide the manager / HOD stage only when it cannot move by itself: it was escalated after the deadline, or nobody active holds it.
+      let aeaAuthorized = false, aeaOnBehalf = false;
+      if (aeaStage === 'manager') aeaAuthorized = aeaEmp?.reporting_manager_id === cu.id;
+      else if (aeaStage === 'hod') aeaAuthorized = !!aeaExit.hod_id && aeaExit.hod_id === cu.id;
+      else if (aeaStage === 'hr') aeaAuthorized = (await hasRole(cu, HR_ROLES)) || (await hasRole(cu, ['management']));
+      else aeaAuthorized = await hasRole(cu, ['management', 'admin']);
+      if (!aeaAuthorized && ['manager', 'hod'].includes(aeaStage) && (await hasRole(cu, HR_ROLES))) {
+        const aeaHolder = aeaStage === 'manager' ? await exResolveManager(aeaEmp) : (aeaExit.hod_id ? { ok: !!(await exLoadEmployee(aeaExit.hod_id)) } : { ok: false });
+        if (aeaExit.stage_escalated || aeaExit.manager_escalated || !aeaHolder.ok) { aeaAuthorized = true; aeaOnBehalf = true; }
       }
       if (!aeaAuthorized) return res.status(403).json({ error: 'Not authorized to act on this stage' });
-      if (aeaStage === 'manager' && aeaExit.status !== 'submitted') return res.json({ success: false, error: `Cannot act — case is at status ${aeaExit.status}` });
-      if (aeaStage === 'hr' && aeaExit.status !== 'manager_approved') return res.json({ success: false, error: `Cannot act — case is at status ${aeaExit.status}` });
+      const aeaCommentTxt = String(aeaComment || '').trim();
+      if (aeaAction === 'rejected' && aeaCommentTxt.length < 3) return res.json({ success: false, error: 'Please record the reason for rejecting' });
+      if (aeaOnBehalf && aeaCommentTxt.length < 3) return res.json({ success: false, error: `Please record why HR is deciding in place of the ${STAGE_LABEL[aeaStage]}` });
+      if (aeaAction === 'approved' && aeaExit.retention?.status === 'open') return res.json({ success: false, error: 'A retention discussion is still open — record its outcome before approving' });
 
-      if (aeaAction === 'rejected' && String(aeaComment || '').trim().length < 3) return res.json({ success: false, error: 'Please record the reason for rejecting' });
-      if (aeaOnBehalf && String(aeaComment || '').trim().length < 3) return res.json({ success: false, error: 'Please record why HR is deciding in place of the reporting manager' });
-      // HR approval fixes the last working day and decides what happens to any notice shortfall.
-      let aeaFinalLwd = aeaExit.last_working_date, aeaRec = null, aeaWaived = 0;
+      const aeaNow = new Date().toISOString();
+      const aeaStagesNow = aeaExit.approval_stages || [];
+      const aeaIdx = aeaStagesNow.findIndex(s => s.stage === aeaStage);
+      const aeaNext = aeaAction === 'approved' ? aeaStagesNow.slice(aeaIdx + 1).find(s => s.status === 'pending') : null;
+      const aeaFinalize = aeaAction === 'approved' && !aeaNext;
+
+      // HR fixes the last working day and decides what happens to any notice shortfall; later stages see and keep those figures.
+      let aeaFinalLwd = aeaExit.last_working_date, aeaWaivedDays = aeaExit.notice_waived_days || 0;
       if (aeaStage === 'hr' && aeaAction === 'approved') {
         aeaFinalLwd = String(aeaLwd || aeaExit.last_working_date || '').slice(0, 10);
         if (!isYmd(aeaFinalLwd)) return res.json({ success: false, error: 'Enter a valid last working day' });
         if (aeaFinalLwd < exIstToday()) return res.json({ success: false, error: 'The last working day cannot be in the past' });
         if (aeaExit.resignation_date && aeaFinalLwd < aeaExit.resignation_date) return res.json({ success: false, error: 'The last working day cannot be before the resignation date' });
-        aeaWaived = Math.max(0, Math.round(Number(p.waived_days) || 0));
-        aeaRec = recoverableShortfall({ noticeDays: aeaExit.notice_period_days || 30, lwd: aeaFinalLwd, resignationDate: aeaExit.resignation_date || exIstToday(), waivedDays: aeaWaived, buyoutApprovedDays: aeaExit.buyout_approved_days });
-        if (aeaWaived > aeaRec.shortfall) return res.json({ success: false, error: `Only ${aeaRec.shortfall} day(s) of notice are short — cannot waive ${aeaWaived}` });
-        if (aeaWaived > 0 && String(aeaComment || '').trim().length < 3) return res.json({ success: false, error: 'Please record why the notice shortfall is waived' });
+        aeaWaivedDays = Math.max(0, Math.round(Number(p.waived_days) || 0));
+        const aeaChk = recoverableShortfall({ noticeDays: aeaExit.notice_period_days || 30, lwd: aeaFinalLwd, resignationDate: aeaExit.resignation_date || exIstToday() });
+        if (aeaWaivedDays > aeaChk.shortfall) return res.json({ success: false, error: `Only ${aeaChk.shortfall} day(s) of notice are short — cannot waive ${aeaWaivedDays}` });
+        if (aeaWaivedDays > 0 && aeaCommentTxt.length < 3) return res.json({ success: false, error: 'Please record why the notice shortfall is waived' });
       }
-      const aeaNow = new Date().toISOString();
-      const aeaStages = (aeaExit.approval_stages || []).map(s => s.stage === aeaStage ? { ...s, status: aeaAction, actor_id: cu.id, actor_name: cu.full_name, comment: `${aeaOnBehalf ? '[HR in place of manager] ' : ''}${aeaComment || ''}`.trim(), timestamp: aeaNow } : s);
-      const aeaAudit = [...(aeaExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `${aeaStage === 'manager' ? 'Manager' : 'HR'} ${aeaAction}`, comment: aeaComment || '', timestamp: aeaNow }];
+      const aeaRec = recoverableShortfall({ noticeDays: aeaExit.notice_period_days || 30, lwd: aeaFinalLwd, resignationDate: aeaExit.resignation_date || exIstToday(), waivedDays: aeaWaivedDays, buyoutApprovedDays: aeaExit.buyout_approved_days });
+
+      const aeaStages = aeaStagesNow.map(s => s.stage === aeaStage ? { ...s, status: aeaAction, actor_id: cu.id, actor_name: cu.full_name, comment: `${aeaOnBehalf ? `[HR in place of ${STAGE_LABEL[aeaStage]}] ` : ''}${aeaCommentTxt}`.trim(), timestamp: aeaNow } : s);
+      const aeaAudit = [...(aeaExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `${STAGE_LABEL[aeaStage]} ${aeaAction}${aeaOnBehalf ? ' (on behalf)' : ''}`, comment: aeaCommentTxt, timestamp: aeaNow }];
       let aeaNewStatus, aeaUpd;
-      if (aeaStage === 'manager') {
-        aeaNewStatus = aeaAction === 'approved' ? 'manager_approved' : 'manager_rejected';
-        aeaUpd = { ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, manager_action: aeaAction, manager_comment: aeaComment || '', manager_actioned_at: aeaNow, audit_log: aeaAudit };
+      if (aeaAction === 'rejected') {
+        aeaNewStatus = aeaStage === 'manager' ? 'manager_rejected' : 'hr_rejected';
+        aeaUpd = { ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, current_stage: '', current_owner_id: null, rejected_at_stage: aeaStage, audit_log: aeaAudit, [`${aeaStage}_comment`]: aeaCommentTxt };
+      } else if (aeaNext) {
+        aeaNewStatus = 'manager_approved';   // "waiting for the next stage"; the label shown to people is derived from current_stage
+        aeaUpd = { ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, current_stage: aeaNext.stage, current_owner_id: aeaNext.stage === 'hod' ? (aeaExit.hod_id || null) : null,
+          stage_due_at: addDaysYmd(exIstToday(), (await getExitPolicyConfig()).manager_decision_days), stage_escalated: false, [`${aeaStage}_comment`]: aeaCommentTxt, audit_log: aeaAudit,
+          ...(aeaStage === 'hr' ? { last_working_date: aeaFinalLwd, notice_shortfall_days: aeaRec.shortfall, notice_waived_days: aeaRec.waived, hr_decision: { last_working_date: aeaFinalLwd, waived_days: aeaRec.waived, by: cu.full_name, at: aeaNow } } : {}) };
       } else {
-        aeaNewStatus = aeaAction === 'approved' ? 'in_notice' : 'hr_rejected';
+        aeaNewStatus = 'in_notice';
         aeaUpd = {
-          ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, hr_action: aeaAction, hr_comment: aeaComment || '',
-          hr_actioned_by: cu.id, hr_actioned_at: aeaNow, audit_log: aeaAudit,
-          ...(aeaAction === 'approved' ? { last_working_date: aeaFinalLwd, notice_shortfall_days: aeaRec.shortfall, notice_waived_days: aeaRec.waived } : {}),
-          // Clearance is initialized here — the moment the case actually
-          // reaches in_notice, the earliest point clearance actions become
-          // possible (updateExitClearance requires this status) — never at
-          // submission time. Manager approval is always a strict
-          // prerequisite to reaching this point.
-          ...(aeaAction === 'approved' ? {
-            clearance_checklist: await makeDefaultClearanceChecklist(),
-            assets: Array.isArray(aeaExit.assets) && aeaExit.assets.length ? aeaExit.assets : DEFAULT_EXIT_ASSETS.map((a, i) => ({ ...a, id: `asset_${i}` })),
-          } : {}),
+          ...aeaExit, status: aeaNewStatus, approval_stages: aeaStages, current_stage: '', current_owner_id: null, hr_action: aeaStage === 'hr' ? 'approved' : aeaExit.hr_action, hr_actioned_by: cu.id, hr_actioned_at: aeaNow, [`${aeaStage}_comment`]: aeaCommentTxt, audit_log: aeaAudit,
+          last_working_date: aeaFinalLwd, notice_shortfall_days: aeaRec.shortfall, notice_waived_days: aeaRec.waived,
+          // Clearance is built the moment the case reaches notice — never at submission, and only after every approval stage.
+          clearance_checklist: await makeDefaultClearanceChecklist(),
+          assets: Array.isArray(aeaExit.assets) && aeaExit.assets.length ? aeaExit.assets : DEFAULT_EXIT_ASSETS.map((a, i) => ({ ...a, id: `asset_${i}` })),
         };
       }
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(aeaUpd), aeaNewStatus, aeaRow.id]);
-      // Once HR accepts: the employee record carries the last working day (so MIS, learning and reports see the exit date straight away),
-      // leave booked after that day is dealt with, and HR is told who reports to this person.
+
       const aeaWarnings = [];
-      if (aeaStage === 'hr' && aeaAction === 'approved') {
+      const aeaUserRow = await one('SELECT full_name FROM users WHERE id=$1', [aeaExit.user_id]);
+      const aeaName = aeaUserRow?.full_name || '';
+      // tell whoever is next
+      if (aeaNext) {
+        const nextIds = aeaNext.stage === 'hod' ? [aeaExit.hod_id].filter(Boolean)
+          : aeaNext.stage === 'management' ? (await all("SELECT id FROM users WHERE role IN ('management','admin')")).map(r => r.id)
+          : (await all("SELECT id FROM users WHERE role IN ('hr','admin')")).map(r => r.id);
+        for (const id of nextIds) await notify(id, { title: `Resignation waiting for ${STAGE_LABEL[aeaNext.stage]}`, message: `${aeaName}'s resignation (${aeaExit.reference_no || ''}) has been ${aeaAction} by ${STAGE_LABEL[aeaStage]} and now needs your decision.`, type: 'warning', link: '/exit-management' });
+        await notify(aeaExit.user_id, { title: 'Resignation moved on', message: `Your resignation was approved by ${STAGE_LABEL[aeaStage]} and is now with ${STAGE_LABEL[aeaNext.stage]}.`, type: 'info', link: '/my-exit' });
+      }
+      // Once the last stage accepts: the employee record carries the last working day (so MIS, learning and reports see the exit date at once),
+      // leave booked after that day is dealt with, and HR is told who reports to this person.
+      if (aeaFinalize) {
         await exSetEmployeeExitDate(aeaExit.user_id, aeaFinalLwd);
         try {
           const aeaLeaves = (await all("SELECT id,data FROM entities WHERE type='Leave' AND user_id=$1", [aeaExit.user_id])).map(r => ({ id: r.id, ...JSON.parse(r.data) })).filter(l => ['pending', 'approved'].includes(l.status) && String(l.start_date || '').slice(0, 10) > aeaFinalLwd);
@@ -16774,10 +16917,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         } catch (e) { console.warn('[actionExitApproval] dependants check failed:', e.message); }
         if (aeaWarnings.length) for (const hr of await all("SELECT id FROM users WHERE role IN ('hr','admin')")) await notify(hr.id, { title: 'Exit accepted — things to handle', message: aeaWarnings.join(' '), type: 'warning', link: '/exit-management' });
       }
-      const aeaNotifyAction = aeaStage === 'manager' ? (aeaAction === 'approved' ? 'manager_approved' : 'manager_rejected') : (aeaAction === 'approved' ? 'hr_approved' : 'hr_rejected');
-      const aeaUserRow = await one('SELECT full_name FROM users WHERE id=$1', [aeaExit.user_id]);
-      await runNotifyExitStatusChange(aeaNotifyAction, aeaExit.user_id, aeaUserRow?.full_name || '');
-      return res.json({ success: true, status: aeaNewStatus, warnings: aeaWarnings, shortfall_days: aeaRec?.shortfall ?? null, recoverable_days: aeaRec?.recoverable ?? null });
+      const aeaNotifyAction = aeaAction === 'rejected' ? (aeaStage === 'manager' ? 'manager_rejected' : 'hr_rejected') : (aeaFinalize ? 'hr_approved' : (aeaStage === 'manager' ? 'manager_approved' : null));
+      if (aeaNotifyAction) await runNotifyExitStatusChange(aeaNotifyAction, aeaExit.user_id, aeaName);
+      return res.json({ success: true, status: aeaNewStatus, next_stage: aeaNext?.stage || '', warnings: aeaWarnings, shortfall_days: aeaRec.shortfall, recoverable_days: aeaRec.recoverable });
     }
 
     case 'updateExitAssets': {

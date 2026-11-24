@@ -45,6 +45,8 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
     new_employer: '',
     expected_ctc: '',
     willing_to_serve_notice: 'yes',
+    waiver_requested: false,
+    supporting_documents: [],
     buyout_requested: false,
     buyout_days_requested: '',
   });
@@ -53,11 +55,24 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
   useEffect(() => {
     base44.functions.invoke('ex_get_policy', {}).then(r => {
       const d = r?.data;
-      if (d?.success) { setPolicy(d); setForm(p => ({ ...p, resignation_date: d.today, proposed_last_day: d.standard_last_day })); }
+      if (d?.success) { setPolicy(d); setForm(p => ({ ...p, resignation_date: d.today, proposed_last_day: d.standard_last_day, ...(d.draft?.form || {}), resignation_date: d.today })); if (d.draft) toast.message('Your saved draft was restored'); }
     }).catch(() => {});
   }, []);
 
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const reasons = policy?.reasons?.length ? policy.reasons.map(r => [r.key, r.label, !!r.remarks_required]) : REASON_CATEGORIES.map(([k, l]) => [k, l, k === 'other']);
+  const reasonDef = reasons.find(r => r[0] === form.reason_category);
+  const [uploading, setUploading] = useState(false);
+  const saveDraft = async () => {
+    try { await base44.functions.invoke('ex_save_draft', { form }); toast.success('Draft saved — you can finish it later'); } catch { toast.error('Could not save the draft'); }
+  };
+  const uploadDoc = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    try { const { file_url } = await base44.integrations.Core.UploadFile({ file }); set('supporting_documents', [...(form.supporting_documents || []), { name: file.name, url: file_url }].slice(0, 5)); }
+    catch { toast.error('Upload failed'); }
+    setUploading(false);
+  };
 
   const noticeDaysServed = 0;
   const proposedNoticeDays = form.proposed_last_day
@@ -82,9 +97,11 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
         willing_to_serve_notice: form.willing_to_serve_notice,
         buyout_requested: noticeDaysShort > 0 && form.willing_to_serve_notice !== 'yes',
         buyout_days_requested: noticeDaysShort,
+        waiver_requested: form.waiver_requested,
+        supporting_documents: form.supporting_documents,
       });
       if (!res?.data?.success) { toast.error(res?.data?.error || 'Could not submit the resignation'); setSaving(false); return; }
-      toast.success(res.data.routed_to_hr ? 'Resignation submitted — sent to HR (no active reporting manager)' : 'Resignation submitted — your reporting manager will review it');
+      toast.success(`Resignation submitted — reference ${res.data.reference_no}`);
 
       onSubmitted?.();
     } catch (err) {
@@ -108,9 +125,15 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
             {/* Employee Info Banner */}
             <div className="bg-gray-50 rounded-lg p-3 flex flex-wrap gap-4 text-sm">
               <div><span className="text-gray-500">Name: </span><strong>{user?.full_name}</strong></div>
-              <div><span className="text-gray-500">ID: </span><strong>{employee?.employee_code || '—'}</strong></div>
-              <div><span className="text-gray-500">Dept: </span><strong>{employee?.department || '—'}</strong></div>
-              <div><span className="text-gray-500">Designation: </span><strong>{employee?.designation || '—'}</strong></div>
+              <div><span className="text-gray-500">ID: </span><strong>{policy?.employee?.code || employee?.employee_code || '—'}</strong></div>
+              <div><span className="text-gray-500">Dept: </span><strong>{policy?.employee?.department || employee?.department || '—'}</strong></div>
+              <div><span className="text-gray-500">Designation: </span><strong>{policy?.employee?.designation || employee?.designation || '—'}</strong></div>
+              <div><span className="text-gray-500">Joined: </span><strong>{policy?.employee?.date_of_joining ? String(policy.employee.date_of_joining).slice(0, 10) : '—'}</strong></div>
+              <div><span className="text-gray-500">Type: </span><strong>{policy?.employee?.employment_type || '—'}</strong></div>
+              <div><span className="text-gray-500">Location: </span><strong>{policy?.employee?.location || '—'}</strong></div>
+              <div><span className="text-gray-500">Email: </span><strong>{policy?.employee?.email || user?.email || '—'}</strong></div>
+              <div><span className="text-gray-500">Reporting manager: </span><strong>{policy?.manager?.name || '—'}</strong></div>
+              {policy?.chain?.length > 0 && <div className="w-full text-xs text-gray-600">Approval path: {policy.chain.map(c => c.person ? `${c.label} (${c.person})` : c.label).join(' → ')}</div>}
             </div>
 
             <div className="grid md:grid-cols-2 gap-4">
@@ -144,7 +167,7 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
                 <Select value={form.reason_category} onValueChange={v => set('reason_category', v)}>
                   <SelectTrigger><SelectValue placeholder="Select reason..." /></SelectTrigger>
                   <SelectContent>
-                    {REASON_CATEGORIES.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                    {reasons.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -162,13 +185,13 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
             </div>
 
             <div>
-              <Label>Reason for Leaving *</Label>
+              <Label>Detailed reason / remarks * {reasonDef?.[2] ? <span className="text-red-600 text-xs">(mandatory for “{reasonDef[1]}”)</span> : null}</Label>
               <Textarea value={form.reason_for_leaving} onChange={e => set('reason_for_leaving', e.target.value)}
                 rows={3} placeholder="Brief reason for your resignation..." required />
             </div>
 
             <div>
-              <Label>Detailed Comments (optional)</Label>
+              <Label>Additional comments (optional)</Label>
               <Textarea value={form.detailed_comments} onChange={e => set('detailed_comments', e.target.value)}
                 rows={2} placeholder="Any additional details, suggestions, or feedback..." />
             </div>
@@ -181,6 +204,21 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
                 <p className="text-sm text-amber-800">{noticeDaysShort > 0 ? `You are asking to leave ${noticeDaysShort} day(s) before your notice ends. HR decides whether to allow it; the notice pay for those days is recovered in your full and final settlement unless HR waives it.` : 'Move the last working day earlier than the standard date above to request an early release.'}</p>
               </div>
             )}
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <Label>Request notice period waiver?</Label>
+                <Select value={form.waiver_requested ? 'yes' : 'no'} onValueChange={v => set('waiver_requested', v === 'yes')}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="no">No</SelectItem><SelectItem value="yes">Yes — I request a waiver</SelectItem></SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Supporting document (optional)</Label>
+                <Input type="file" disabled={uploading} onChange={e => uploadDoc(e.target.files?.[0])} />
+                {(form.supporting_documents || []).map((d, i) => <p key={i} className="text-xs text-gray-600 mt-1 truncate">📎 {d.name}</p>)}
+              </div>
+            </div>
 
             <div className="grid md:grid-cols-2 gap-4">
               <div>
@@ -197,6 +235,7 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
 
             <div className="flex gap-3 pt-2">
               <Button variant="outline" onClick={onClose} className="flex-1">Cancel</Button>
+              <Button variant="outline" onClick={saveDraft} className="flex-1">Save draft</Button>
               <Button onClick={() => setStep(2)} className="flex-1 bg-red-600 hover:bg-red-700">
                 Review & Submit →
               </Button>
@@ -215,7 +254,7 @@ export default function ResignationForm({ user, employee, onClose, onSubmitted }
                   ['Resignation Date', form.resignation_date],
                   ['Last Working Day', form.proposed_last_day],
                   ['Notice Period', `${noticeDays} days (serving ${proposedNoticeDays})`],
-                  ['Reason', REASON_CATEGORIES.find(r => r[0] === form.reason_category)?.[1] || form.reason_category],
+                  ['Reason', reasonDef?.[1] || form.reason_category],
                   ['Serving Full Notice', form.willing_to_serve_notice === 'yes' ? 'Yes' : 'No (Requesting buyout)'],
                   form.new_employer && ['New Employer', form.new_employer],
                 ].filter(Boolean).map(([label, value]) => (
