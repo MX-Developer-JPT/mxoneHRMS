@@ -535,6 +535,7 @@ async function saveLeaveImportSnapshot({ kind, cu, year, balances, history }) {
   await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveImportSnapshot',$2,'active',$3)", [id, cu?.id || null, JSON.stringify(data)]);
   return id;
 }
+const jparseSafe = (x) => { try { return JSON.parse(x); } catch { return null; } };
 const LB_RESTORE = ['total_allocated', 'accrued_this_year', 'carried_forward', 'used', 'available', 'pending_approval'];
 
 function carLeaseFor(ss, month, year) {
@@ -3597,6 +3598,124 @@ router.post('/:name', async (req, res) => {
         warnings,
         message: `Processed ${matched.length} employees from ${[...new Set(matched.map(r=>r.sheetName))].join(', ')}: ${balCreated} balances created, ${balUpdated} updated, ${balUnchanged} unchanged. ${histCreated + histUpdated} leave history records saved.`,
       });
+    }
+
+    /* ── Restore leave balances and history from a backup file (the Excel read from a database backup).
+       preview = dry run, nothing is written; apply only runs with the hash of the preview that was shown.
+       Leave approved / cancelled after the backup moment is kept on top of the restored figures, and the live
+       "pending approval" amount is kept. The restore saves a copy of what it replaces, so it can be undone. ── */
+    case 'restoreLeaveFromBackup': {
+      if (!(await hasRole(cu, ['hr', 'admin']))) return res.status(403).json({ error: 'HR or admin access required' });
+      const { fileUrl, mode = 'preview', preview_hash } = p;
+      if (!fileUrl) return res.json({ success: false, error: 'Upload the backup Excel file first' });
+      let rbBuf;
+      try { const r = await fetch(fileUrl); if (!r.ok) throw new Error(`Server returned ${r.status}`); rbBuf = Buffer.from(await r.arrayBuffer()); } catch (e) { return res.json({ success: false, error: `Failed to fetch file: ${e.message}` }); }
+      const XLSXr = await import('xlsx');
+      let rbWb; try { rbWb = XLSXr.read(rbBuf, { type: 'buffer' }); } catch (e) { return res.json({ success: false, error: `Failed to parse Excel file: ${e.message}` }); }
+      const sheetRows = (name) => { const ws = rbWb.Sheets[name]; return ws ? XLSXr.utils.sheet_to_json(ws, { defval: '' }) : null; };
+      const balSheet = sheetRows('Leave balances');
+      if (!balSheet) return res.json({ success: false, error: 'This is not a leave backup file (no "Leave balances" sheet)' });
+      const readMe = rbWb.Sheets['Read me'] ? XLSXr.utils.sheet_to_json(rbWb.Sheets['Read me'], { header: 1, defval: '' }) : [];
+      const restoredTo = String((readMe.find((r) => /restored to/i.test(String(r[0]))) || [])[1] || '');
+      const mm = restoredTo.match(/(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+      const cutoff = p.cutoff || (mm ? `${mm[1]}T${mm[2]}:00Z` : '');
+      if (!cutoff || isNaN(Date.parse(cutoff))) return res.json({ success: false, error: 'The backup time could not be read from the file (Read me sheet). Pass the backup time.' });
+      const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+
+      // match the file to employees, leave types and the live balance rows
+      const empRows = (await all("SELECT user_id, data FROM entities WHERE type='Employee'")).map((r) => ({ ...(jparseSafe(r.data) || {}), user_id: r.user_id })).filter((e) => e.user_id);
+      const empByCode = new Map(empRows.filter((e) => e.employee_code).map((e) => [String(e.employee_code).trim().toUpperCase(), e]));
+      const polRows = (await all("SELECT id, data FROM entities WHERE type='LeavePolicy'")).map((r) => ({ id: r.id, ...(jparseSafe(r.data) || {}) }));
+      const polByKey = new Map(); for (const pl of polRows) { for (const k of [pl.code, pl.name]) if (k) polByKey.set(String(k).trim().toUpperCase(), pl); }
+      const empByUid = new Map(empRows.map((e) => [e.user_id, e]));
+      const wanted = balSheet.filter((r) => !/^old/i.test(String(r['Row format'] || ''))).map((r) => ({ code: String(r['Employee code'] || '').trim().toUpperCase(), type: String(r['Leave type'] || '').trim().toUpperCase(), year: Number(r['Year']), rowId: String(r['Row id'] || '').trim(), uid: String(r['User id'] || '').trim(), row: r })).filter((x) => (x.code || x.uid) && x.type && x.year);
+      // each row is matched to its own employee record (user id), then to the live balance row by its id — an employee code can belong to two accounts
+      const empOf = (x) => (x.uid ? empByUid.get(x.uid) : null) || empByCode.get(x.code);
+      const userIds = [...new Set(wanted.map((x) => x.uid || empByCode.get(x.code)?.user_id).filter(Boolean))];
+      const liveBal = userIds.length ? (await all("SELECT id, user_id, data FROM entities WHERE type='LeaveBalance' AND user_id = ANY($1)", [userIds])).map((r) => ({ id: r.id, user_id: r.user_id, d: jparseSafe(r.data) || {} })) : [];
+      const liveByKey = new Map(liveBal.map((b) => [`${b.user_id}|${b.d.leave_policy_id}|${b.d.year}`, b]));
+      const liveById = new Map(liveBal.map((b) => [b.id, b]));
+      const leaves = userIds.length ? (await all("SELECT data FROM entities WHERE type='Leave' AND user_id = ANY($1)", [userIds])).map((r) => jparseSafe(r.data)).filter(Boolean) : [];
+      const cut = Date.parse(cutoff);
+      const after = (v) => { const t = Date.parse(v || ''); return Number.isFinite(t) && t > cut; };
+      const delta = new Map();   // user|policy -> days used since the backup (approved after, minus approved-before-then-cancelled-after)
+      for (const l of leaves) {
+        if (l.is_wfh || !l.leave_policy_id || !l.total_days) continue;
+        const k = `${l.user_id}|${l.leave_policy_id}`; const d = Number(l.total_days) || 0;
+        if (l.status === 'approved' && after(l.approved_date)) delta.set(k, (delta.get(k) || 0) + d);
+        else if (l.status === 'cancelled' && l.cancelled_after_approval && after(l.cancelled_at) && l.approved_date && !after(l.approved_date)) delta.set(k, (delta.get(k) || 0) - d);
+      }
+
+      const plan = []; const unmatched = [];
+      for (const w of wanted) {
+        const emp = empOf(w); const pol = polByKey.get(w.type);
+        if (!emp) { unmatched.push({ code: w.code || w.uid, reason: 'Employee not found' }); continue; }
+        if (!pol) { unmatched.push({ code: w.code, reason: `Leave type "${w.type}" not found` }); continue; }
+        const b = w.row; const live = (w.rowId && liveById.get(w.rowId)) || (w.rowId ? null : liveByKey.get(`${emp.user_id}|${pol.id}|${w.year}`));
+        const base = { user_id: emp.user_id, employee_code: emp.employee_code || w.code, employee_name: emp.display_name || '', policy: pol.code || pol.name, policy_id: pol.id, year: w.year };
+        const bk = { total_allocated: num(b['Total allocated']), accrued_this_year: num(b['Accrued this year']), carried_forward: num(b['Carried forward']), used: num(b['Used']), pending_approval: num(b['Pending approval']), available: num(b['Available']) };
+        const dUsed = delta.get(`${emp.user_id}|${pol.id}`) || 0;
+        if (!live) { plan.push({ ...base, newId: w.rowId || undefined, action: 'recreate', current: null, restored: { ...bk, used: Math.max(0, bk.used + dUsed), available: Math.max(0, bk.available + bk.pending_approval - dUsed), pending_approval: 0 }, note: 'Balance row is missing now — it will be re-created' }); continue; }
+        const livePend = num(live.d.pending_approval);
+        const restored = { ...live.d, total_allocated: bk.total_allocated, accrued_this_year: bk.accrued_this_year, carried_forward: bk.carried_forward, used: Math.max(0, bk.used + dUsed), pending_approval: livePend, available: Math.max(0, bk.available + bk.pending_approval - livePend - dUsed) };
+        const same = ['total_allocated', 'accrued_this_year', 'carried_forward', 'used', 'pending_approval', 'available'].every((f) => num(restored[f]) === num(live.d[f]));
+        plan.push({ ...base, id: live.id, action: same ? 'same' : 'restore', current: live.d, restored, note: dUsed ? `Leave changed since the backup (${dUsed > 0 ? '+' : ''}${dUsed} day(s) used) is kept on top` : '' });
+      }
+
+      // leave history (summary + month by month sheets)
+      const histSum = sheetRows('Leave history (summary)') || []; const histMon = sheetRows('Leave history (monthly)') || [];
+      const hMap = new Map();
+      const hKey = (code, year) => `${String(code).trim().toUpperCase()}|${year}`;
+      for (const r of histSum) { const k = String(r['Row id'] || '') || hKey(r['Employee code'], r['Year']); const o = hMap.get(k) || { code: String(r['Employee code']).trim().toUpperCase(), uid: String(r['User id'] || ''), rowId: String(r['Row id'] || ''), year: Number(r['Year']), name: r['Name'], source_sheet: r['Source sheet'], is_left: r['Left employee'] === 'Yes', imported_at: r['Imported at'], leaves: {}, months: [] }; const lt = String(r['Leave type']).trim().toUpperCase(); if (lt) o.leaves[lt] = { opening: num(r['Opening']), earned: num(r['Earned']), taken: num(r['Taken']), total_allocated: num(r['Total allocated']), available: num(r['Available']) }; hMap.set(k, o); }
+      for (const r of histMon) {
+        const o = hMap.get(String(r['Row id'] || '')) || hMap.get(hKey(r['Employee code'], r['Year'])); if (!o) continue;
+        const m = { month: r['Month'] }; const put = (k, v) => { if (v !== '' && v !== null && v !== undefined) m[k] = Number(v); };
+        put('working_day', r['Working days']); put('taken_el', r['EL taken']); put('taken_cl', r['CL taken']); put('taken_sl', r['SL taken']); put('balance_el', r['EL balance']); put('balance_cl', r['CL balance']); put('balance_sl', r['SL balance']);
+        o.months.push(m);
+      }
+      const hUsers = [...new Set([...hMap.values()].map((h) => h.uid || empByCode.get(h.code)?.user_id).filter(Boolean))];
+      const liveHist = hUsers.length ? (await all("SELECT id, user_id, data FROM entities WHERE type='LeaveHistory' AND user_id = ANY($1)", [hUsers])).map((r) => ({ id: r.id, user_id: r.user_id, d: jparseSafe(r.data) || {} })) : [];
+      const histPlan = [];
+      for (const h of hMap.values()) {
+        const emp = (h.uid ? empByUid.get(h.uid) : null) || empByCode.get(h.code); if (!emp) continue;
+        const live = (h.rowId && liveHist.find((x) => x.id === h.rowId)) || (h.rowId ? null : liveHist.find((x) => x.user_id === emp.user_id && Number(x.d.year) === h.year));
+        const body = { months: h.months, leaves: h.leaves, source_sheet: h.source_sheet || live?.d.source_sheet, is_left_employee: h.is_left, imported_at: h.imported_at || live?.d.imported_at };
+        if (!live) histPlan.push({ action: 'recreate', user_id: emp.user_id, id: h.rowId || uuidv4(), code: h.code, name: emp.display_name || h.name, data: { id: null, user_id: emp.user_id, employee_code: h.code, employee_name: emp.display_name || h.name, year: h.year, ...body } });
+        else if (JSON.stringify({ m: live.d.months, l: live.d.leaves }) !== JSON.stringify({ m: body.months, l: body.leaves })) histPlan.push({ action: 'restore', user_id: emp.user_id, id: live.id, code: h.code, name: emp.display_name || h.name, before: live.d, data: { ...live.d, ...body } });
+      }
+
+      const rbHash = createHash('sha1').update(JSON.stringify([cutoff, plan.map((x) => [x.user_id, x.policy_id, x.year, x.action, ['total_allocated', 'used', 'available', 'carried_forward', 'pending_approval'].map((f) => x.restored ? num(x.restored[f]) : null)]), histPlan.map((x) => [x.user_id, x.action, JSON.stringify(x.data.leaves)])])).digest('hex');
+
+      if (mode !== 'apply') {
+        const F = ['total_allocated', 'accrued_this_year', 'carried_forward', 'used', 'pending_approval', 'available'];
+        const rows = plan.filter((x) => x.action !== 'same').map((x) => ({ employee_code: x.employee_code, employee_name: x.employee_name, policy: x.policy, year: x.year, action: x.action, note: x.note, current: x.current ? Object.fromEntries(F.map((f) => [f, num(x.current[f])])) : null, restored: Object.fromEntries(F.map((f) => [f, num(x.restored[f])])) }))
+          .sort((a, b) => (a.employee_name || '').localeCompare(b.employee_name || ''));
+        const c = (a) => plan.filter((x) => x.action === a).length;
+        return res.json({ success: true, preview: true, preview_hash: rbHash,
+          snapshot: { id: 'backup', kind: 'backup_restore', year: null, created_at: cutoff, created_by_name: `Backup file (as of ${cutoff.replace('T', ' ').slice(0, 16)} UTC)` },
+          summary: { employees: new Set(plan.filter((x) => x.action !== 'same').map((x) => x.user_id)).size, balances_restored: c('restore') + c('recreate'), balances_removed: 0, balances_unchanged: c('same'), balances_kept: 0, changed_since_import: plan.filter((x) => x.note && x.action !== 'same').length, history_restored: histPlan.length, history_removed: 0, unmatched: unmatched.length },
+          unmatched: unmatched.slice(0, 30), rows: rows.slice(0, 1000), truncated: rows.length > 1000 });
+      }
+
+      if (!preview_hash || preview_hash !== rbHash) return res.json({ success: false, error: 'The leave data changed since the preview, or no preview was run. Run the preview again and confirm it.' });
+      const rbSnapBal = [], rbSnapHist = [];
+      for (const x of plan) {
+        if (x.action === 'restore') { rbSnapBal.push({ id: x.id, user_id: x.user_id, policy_id: x.policy_id, before: x.current, after: x.restored }); }
+        else if (x.action === 'recreate') { x.newId = x.newId || uuidv4(); rbSnapBal.push({ id: x.newId, user_id: x.user_id, policy_id: x.policy_id, before: null, after: { ...x.restored, id: x.newId } }); }
+      }
+      for (const x of histPlan) rbSnapHist.push({ id: x.id, user_id: x.user_id, before: x.action === 'restore' ? x.before : null });
+      const rbSnapId = await saveLeaveImportSnapshot({ kind: 'backup_restore', cu, year: null, balances: rbSnapBal, history: rbSnapHist });
+      for (const x of plan) {
+        if (x.action === 'restore') await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(x.restored), x.id]);
+        else if (x.action === 'recreate') await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [x.newId, x.user_id, JSON.stringify({ ...x.restored, id: x.newId, user_id: x.user_id, leave_policy_id: x.policy_id, year: x.year })]);
+      }
+      for (const x of histPlan) {
+        if (x.action === 'restore') await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(x.data), x.id]);
+        else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveHistory',$2,'active',$3)", [x.id, x.user_id, JSON.stringify({ ...x.data, id: x.id })]);
+      }
+      cacheInvalidate('LeaveBalance'); cacheInvalidate('LeaveHistory');
+      console.log(`[audit] Leave restored from backup file (as of ${cutoff}) by ${cu.id}: ${rbSnapBal.length} balances, ${rbSnapHist.length} history records; snapshot ${rbSnapId}`);
+      return res.json({ success: true, restored: rbSnapBal.length, history_restored: rbSnapHist.length, snapshot_id: rbSnapId, message: 'Leave balances and history restored from the backup. This restore can be undone from "Undo a leave import".' });
     }
 
     /* ── Undo for leave imports: list the saved copies, preview (dry run), then apply ── */

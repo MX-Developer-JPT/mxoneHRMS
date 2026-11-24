@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Loader2, Undo2, ShieldCheck } from 'lucide-react';
+import { Loader2, Undo2, ShieldCheck, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 
 // Every leave import keeps a copy of what it overwrote. "Undo" first runs a dry run — nothing changes — and shows each
 // balance as it is now and as it would be after the undo; only the confirm button on that preview applies it.
-const KIND = { leave_history: 'Leave history import', leave_balances: 'Leave balances import' };
+const KIND = { leave_history: 'Leave history import', leave_balances: 'Leave balances import', backup_restore: 'Restore from backup' };
 const FIELDS = [['total_allocated', 'Allocated'], ['used', 'Used'], ['available', 'Available'], ['carried_forward', 'Carried fwd']];
 const when = (iso) => { try { return new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }); } catch { return iso || ''; } };
 const call = async (fn, p) => { const r = await base44.functions.invoke(fn, p); return r?.data || r; };
@@ -18,6 +18,8 @@ export default function LeaveImportUndo({ onChanged }) {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState('');
   const [search, setSearch] = useState('');
+  const [fileUrl, setFileUrl] = useState('');
+  const fileRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -34,12 +36,26 @@ export default function LeaveImportUndo({ onChanged }) {
     } catch (e) { toast.error(e.message); }
     setBusy('');
   };
+  // Restore from a backup Excel (the leave balances / history as they were before an import): upload, preview, then confirm
+  const openBackup = async (e) => {
+    const file = e.target.files?.[0]; e.target.value = '';
+    if (!file) return;
+    setBusy('backup'); setSearch('');
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      const d = await call('restoreLeaveFromBackup', { fileUrl: file_url, mode: 'preview' });
+      if (!d.success) toast.error(d.error || 'Could not read the backup file'); else { setFileUrl(file_url); setPreview(d); }
+    } catch (err) { toast.error(err.message); }
+    setBusy('');
+  };
   const apply = async () => {
     setBusy('apply');
     try {
-      const d = await call('undoLeaveImport', { snapshot_id: preview.snapshot.id, mode: 'apply', preview_hash: preview.preview_hash });
+      const isBackup = preview.snapshot.kind === 'backup_restore';
+      const d = isBackup ? await call('restoreLeaveFromBackup', { fileUrl, mode: 'apply', preview_hash: preview.preview_hash })
+        : await call('undoLeaveImport', { snapshot_id: preview.snapshot.id, mode: 'apply', preview_hash: preview.preview_hash });
       if (!d.success) { toast.error(d.error || 'Undo failed'); }
-      else { toast.success(`Undone — ${d.restored} balance(s) restored${d.removed ? `, ${d.removed} removed` : ''}`); setPreview(null); load(); onChanged?.(); }
+      else { toast.success(`${preview.snapshot.kind === 'backup_restore' ? 'Restored' : 'Undone'} — ${d.restored} balance(s) restored${d.removed ? `, ${d.removed} removed` : ''}`); setPreview(null); load(); onChanged?.(); }
     } catch (e) { toast.error(e.message); }
     setBusy('');
   };
@@ -51,6 +67,13 @@ export default function LeaveImportUndo({ onChanged }) {
     <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
       <div className="flex items-center gap-2 text-sm font-semibold text-amber-900"><ShieldCheck className="w-4 h-4" /> Undo a leave import</div>
       <p className="text-xs text-amber-800 mt-1">Each import saves a copy of the balances it replaced. Pick one to preview exactly what would change — nothing is changed until you confirm the preview.</p>
+      <div className="mt-2 flex items-center gap-2 flex-wrap">
+        <input ref={fileRef} type="file" accept=".xlsx" className="hidden" onChange={openBackup} />
+        <Button size="sm" variant="outline" className="h-8 border-amber-300 text-amber-800" onClick={() => fileRef.current?.click()} disabled={!!busy}>
+          {busy === 'backup' ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Upload className="w-3.5 h-3.5 mr-1" />} Restore from a backup file…
+        </Button>
+        <span className="text-xs text-amber-800">Upload the leave backup Excel; you see exactly what would change before anything is written.</span>
+      </div>
       {loading ? <p className="text-xs text-gray-500 mt-2">Loading…</p> : active.length === 0 ? (
         <p className="text-xs text-gray-600 mt-2">No saved imports yet. Imports made from now on can be undone here.</p>
       ) : (
@@ -68,10 +91,10 @@ export default function LeaveImportUndo({ onChanged }) {
 
       <Dialog open={!!preview} onOpenChange={(o) => { if (!o && busy !== 'apply') setPreview(null); }}>
         <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Preview — undo {preview ? (KIND[preview.snapshot.kind] || 'leave import').toLowerCase() : ''}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Preview — {preview?.snapshot.kind === 'backup_restore' ? 'restore from backup' : `undo ${preview ? (KIND[preview.snapshot.kind] || 'leave import').toLowerCase() : ''}`}</DialogTitle></DialogHeader>
           {preview && (
             <div className="space-y-3">
-              <p className="text-sm text-gray-600">Import made {when(preview.snapshot.created_at)} by {preview.snapshot.created_by_name || 'unknown'}. <b>This is a preview — nothing has been changed yet.</b></p>
+              <p className="text-sm text-gray-600">{preview.snapshot.kind === 'backup_restore' ? `Source: ${preview.snapshot.created_by_name}.` : `Import made ${when(preview.snapshot.created_at)} by ${preview.snapshot.created_by_name || 'unknown'}.`} <b>This is a preview — nothing has been changed yet.</b></p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
                 <div className="bg-blue-50 border border-blue-100 rounded-lg p-2"><p className="text-lg font-bold text-blue-700">{s.balances_restored}</p>balances restored</div>
                 <div className="bg-red-50 border border-red-100 rounded-lg p-2"><p className="text-lg font-bold text-red-700">{s.balances_removed}</p>created by the import, removed</div>
@@ -79,7 +102,8 @@ export default function LeaveImportUndo({ onChanged }) {
                 <div className="bg-amber-50 border border-amber-100 rounded-lg p-2"><p className="text-lg font-bold text-amber-700">{s.changed_since_import}</p>have leave activity since</div>
               </div>
               {(s.history_restored > 0 || s.history_removed > 0) && <p className="text-xs text-gray-600">Leave history: {s.history_restored} record(s) restored to their earlier content{s.history_removed ? `, ${s.history_removed} added by the import removed` : ''}.</p>}
-              {s.changed_since_import > 0 && <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded p-2">Where leave was approved, rejected or applied after the import, that activity is kept on top of the restored balance.</p>}
+              {s.changed_since_import > 0 && <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded p-2">Where leave was approved, rejected, cancelled or applied after that moment, that activity is kept on top of the restored balance.</p>}
+              {s.unmatched > 0 && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded p-2">{s.unmatched} row(s) in the file could not be matched to an employee or leave type and are skipped: {(preview.unmatched || []).slice(0, 5).map(u => `${u.code} (${u.reason})`).join('; ')}</p>}
               <input className="h-9 w-full sm:w-72 rounded-md border border-gray-300 px-2 text-sm" placeholder="Search employee or leave type…" value={search} onChange={e => setSearch(e.target.value)} />
               <div className="border rounded-lg overflow-auto max-h-[45vh]">
                 <table className="w-full text-xs">
@@ -104,7 +128,7 @@ export default function LeaveImportUndo({ onChanged }) {
               <div className="flex justify-end gap-2 pt-1">
                 <Button variant="outline" onClick={() => setPreview(null)} disabled={busy === 'apply'}>Cancel</Button>
                 <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={apply} disabled={busy === 'apply' || (s.balances_restored + s.balances_removed + s.history_restored + s.history_removed === 0)}>
-                  {busy === 'apply' ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Undo2 className="w-4 h-4 mr-1" />} Confirm undo
+                  {busy === 'apply' ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Undo2 className="w-4 h-4 mr-1" />} {preview?.snapshot.kind === 'backup_restore' ? 'Confirm restore' : 'Confirm undo'}
                 </Button>
               </div>
             </div>
