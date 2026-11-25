@@ -4697,8 +4697,10 @@ router.post('/:name', async (req, res) => {
         config: {
           // Immediate: the first reliable fix inside the radius checks in, the first one outside
           // (small 15 m hysteresis) checks out. Multiple in/outs per day, like biometric.
-          max_accuracy_m: 100, enter_confirmations: 1, enter_min_seconds: 0, enter_timer_seconds: 2,
-          exit_confirmations: 1, exit_dwell_seconds: 0, exit_buffer_m: 15, strong_exit_m: 60, stale_fix_seconds: 180,
+          // Same limits the server enforces on every event (tracking rules): a fix worse than max_accuracy_m can never drive a
+          // check-in, and two reliable fixes are needed for an arrival or a departure (one stray fix near an edge proves nothing).
+          max_accuracy_m: (await getFieldTrackingConfig()).geofence_max_accuracy_m, enter_confirmations: 2, enter_min_seconds: 0, enter_timer_seconds: 6,
+          exit_confirmations: 2, exit_dwell_seconds: 8, exit_buffer_m: 15, strong_exit_m: 60, stale_fix_seconds: 180,
         },
         server_time: new Date().toISOString(),
       });
