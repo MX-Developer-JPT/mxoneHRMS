@@ -92,7 +92,7 @@ export function OfficePickerMap({ latitude, longitude, radius, onChange, otherFe
         <button type="submit" disabled={searching} className="h-8 px-3 rounded-md border text-sm hover:bg-muted">{searching ? '…' : 'Find'}</button>
       </form>
       {msg && <p className="text-xs text-amber-700">{msg}</p>}
-      <div className="rounded-lg overflow-hidden border" style={{ height }}>
+      <div className="rounded-lg overflow-hidden border relative z-0" style={{ height, isolation: 'isolate' }}>
         <MapContainer center={pos || INDIA} zoom={pos ? 17 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
           <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
           <Resize />
@@ -118,7 +118,7 @@ export function RouteMap({ points = [], lastPos, fences = [], height = 360, snap
   const all = [...line, ...(end ? [end] : [])];
   if (!all.length) return <div className="rounded-lg border bg-gray-50 flex items-center justify-center text-center text-sm text-gray-500 px-4" style={{ height: Math.min(height, 200) }}>No location has been received yet. The route appears as soon as the employee's phone sends its first GPS fix (the app must be open on their phone).</div>;
   return (
-    <div className="rounded-lg overflow-hidden border" style={{ height }}>
+    <div className="rounded-lg overflow-hidden border relative z-0" style={{ height, isolation: 'isolate' }}>
       <MapContainer center={all[0] || INDIA} zoom={all.length ? 14 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
         <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
         <Resize />
@@ -141,7 +141,7 @@ export function LiveMap({ people = [], fences = [], selected, onSelect, trail = 
   const pts = placed.map(p => [p.position.lat, p.position.lng]);
   const sel = placed.find(p => p.trip_id === selected);
   return (
-    <div className="rounded-lg overflow-hidden border" style={{ height }}>
+    <div className="rounded-lg overflow-hidden border relative z-0" style={{ height, isolation: 'isolate' }}>
       <MapContainer center={pts[0] || INDIA} zoom={pts.length ? 13 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
         <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
         <Resize />
@@ -184,7 +184,7 @@ export function PlacesMap({ markers = [], fences = [], height = 420 }) {
         {q && <button type="button" onClick={() => { setQ(''); setJump(null); setMsg(''); }} className="h-8 px-2 rounded-md border text-sm hover:bg-muted">Clear</button>}
       </form>
       <p className="text-xs text-muted-foreground">{term ? `${shown.length} of ${markers.length} pin${markers.length === 1 ? '' : 's'} match “${q.trim()}”.` : `${markers.length} pin${markers.length === 1 ? '' : 's'} shown.`}{msg && <span className="text-amber-700"> {msg}</span>}</p>
-      <div className="rounded-lg overflow-hidden border" style={{ height }}>
+      <div className="rounded-lg overflow-hidden border relative z-0" style={{ height, isolation: 'isolate' }}>
         <MapContainer center={pts[0] || fencePts[0] || INDIA} zoom={pts.length ? 15 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
           <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
           <Resize />
@@ -265,7 +265,7 @@ export function AreaEditorMap({ vertices, onChange, otherFences = [], excludeId,
         </span>
       </div>
       {vertices && !drawing && <p className="text-xs text-muted-foreground">Drag any white point to move it on its own. Tap a small dot on an edge to add a point there. Tap a point and press “Delete selected point” to remove it. Drag the pin to move the whole area.</p>}
-      <div className="rounded-lg overflow-hidden border" style={{ height, cursor: drawing ? 'crosshair' : undefined }}>
+      <div className="rounded-lg overflow-hidden border relative z-0" style={{ height, isolation: 'isolate', cursor: drawing ? 'crosshair' : undefined }}>
         <MapContainer center={initialFit ? initialFit[0] : INDIA} zoom={initialFit ? 17 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
           <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
           <Resize />
@@ -307,7 +307,7 @@ export function EmployeeRouteMap({ route, fences = [], height = 460 }) {
   const start = route?.start, end = route?.end;
   const COLORS = ['#ea580c', '#2563eb', '#7c3aed', '#0d9488'];
   return (
-    <div className="rounded-lg overflow-hidden border" style={{ height }}>
+    <div className="rounded-lg overflow-hidden border relative z-0" style={{ height, isolation: 'isolate' }}>
       <MapContainer center={fit[0] || INDIA} zoom={fit.length ? 14 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
         <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
         <Resize />
