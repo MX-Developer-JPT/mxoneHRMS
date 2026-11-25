@@ -16,6 +16,8 @@ import {
   RotateCcw, Loader2, BookOpen, Save, ShieldCheck, Monitor, Building2
 } from 'lucide-react';
 import ResignationForm from '../components/exit/ResignationForm';
+import ExitKT from '../components/exit/ExitKT';
+import ExitDocuments from '../components/exit/ExitDocuments';
 import SignaturePad from '@/components/SignaturePad';
 import { deriveOverallExitStatus, OVERALL_STATUS_COLORS } from '@/lib/exitStatus';
 
@@ -202,6 +204,7 @@ export default function MyExit() {
     { id: 'status',    label: 'My Status',      icon: Clock,        show: true },
     { id: 'notice',    label: 'Notice Period',  icon: CalendarDays, show: !!exitRecord },
     { id: 'clearance', label: 'Clearance',      icon: ClipboardList,show: !!exitRecord },
+    { id: 'kt',        label: 'Handover',       icon: ClipboardList,show: !!exitRecord && (exitRecord.kt_items || []).length > 0 },
     { id: 'interview', label: 'Exit Interview', icon: MessageSquare,show: !!exitRecord },
     { id: 'assets',    label: 'My Assets',      icon: Package,      show: !!exitRecord && ['clearance_pending','clearance_done',...FNF_SUBSTAGES,'completed'].includes(exitRecord?.status) },
     { id: 'fnf',       label: 'F&F Settlement', icon: DollarSign,   show: !!exitRecord && exitRecord.no_dues_generated },
@@ -584,8 +587,11 @@ export default function MyExit() {
             )}
 
             {/* ── DOCUMENTS ── */}
+            {activeTab === 'kt' && <ExitKT exit={exitRecord} currentUser={user} canManage={false} employees={[]} onChanged={loadData} />}
+
             {activeTab === 'documents' && (
               <div className="space-y-3">
+                <ExitDocuments exit={exitRecord} name={user?.full_name} />
                 {['completed',...FNF_SUBSTAGES].includes(exitRecord.status) || exitRecord.no_dues_generated ? (
                   [
                     { id: exitRecord.no_dues_document_id, label: 'No Dues Certificate', available: exitRecord.no_dues_generated, desc: 'Department-wise clearance certificate' },

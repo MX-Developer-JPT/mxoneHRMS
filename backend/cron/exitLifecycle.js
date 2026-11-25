@@ -49,6 +49,11 @@ export async function runExitLifecycle() {
       if (left >= 0 && left <= 3 && ['in_notice', 'clearance_pending'].includes(ex.status)) await once('lwd_near', async () => { for (const h of hr) await notifyDb(h.id, { title: 'Last working day is close', message: `${name}'s last working day is ${left === 0 ? 'today' : `in ${left} day(s)`} and clearance is not complete.` }); await notifyDb(ex.user_id, { title: 'Complete your exit steps', message: `Your last working day is ${ex.last_working_date}. Please finish your clearances, handover and exit interview.`, link: '/my-exit' }); });
       if (left < 0 && diffDaysYmd(String(ex.last_working_date).slice(0, 10), today) % 3 === 0) await once('lwd_passed', async () => { for (const h of hr) await notifyDb(h.id, { title: 'Exit case still open after last working day', message: `${name}'s last working day was ${ex.last_working_date}; the case is at "${ex.status}".` }); });
     }
+    const ktLate = (ex.kt_items || []).filter(i => i.v === 2 && i.due_date && i.due_date < today && ['assigned', 'in_progress', 'sent_back'].includes(i.status));
+    if (ktLate.length && ['in_notice', 'clearance_pending'].includes(ex.status)) await once('kt_late', async () => {
+      await notifyDb(ex.user_id, { title: 'Handover overdue', message: `${ktLate.length} handover item(s) are past their due date: ${ktLate.slice(0, 3).map(i => i.title).join('; ')}`, link: '/my-exit' });
+      if (ex.manager_id) await notifyDb(ex.manager_id, { title: 'Handover overdue', message: `${name}: ${ktLate.length} handover item(s) are overdue.` });
+    });
     if (changed) await run('UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2', [JSON.stringify({ ...ex, alerts, audit_log: audit }), r.id]);
   }
   return { checked: rows.length, alerts: sent, escalated };

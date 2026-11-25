@@ -67,7 +67,7 @@ test('closing the case: every blocker is reported', () => {
 
 test('left status follows the exit type; hand edits are limited and the audit log only grows', () => {
   assert.equal(leftStatusFor('resignation'), 'resigned'); assert.equal(leftStatusFor('termination'), 'terminated'); assert.equal(leftStatusFor('retirement'), 'retired');
-  assert.equal(exitPatchProblem({}, { kt_items: [] }), '');
+  assert.equal(exitPatchProblem({}, { hr_notes: 'x' }), '');
   assert.match(exitPatchProblem({}, { status: 'completed' }), /exit workflow/);
   assert.match(exitPatchProblem({}, { fnf_data: {} }), /exit workflow/);
   const cur = { audit_log: [{ a: 1 }] };
@@ -115,4 +115,26 @@ test('analytics: KPIs, retention and averages', () => {
   assert.equal(r.avg_notice_served_days, 30); assert.equal(r.avg_fnf_days, 10);
   assert.deepEqual(r.retention, { discussions: 1, retained: 1, success_rate: 100 });
   assert.equal(exitAnalytics(ex, (u) => emp[u], { today: '2026-11-24', department: 'HR' }).kpis.total, 1);
+});
+
+import { renderDocTemplate, docGate, DOC_TEMPLATES, templatesFor, ktSummary, buildAccessChecklist, accessPending } from '../utils/exitPolicy.js';
+test('letters: placeholders are escaped, gates hold relieving letters back, custom wording wins', () => {
+  assert.equal(renderDocTemplate('Dear {{employee_name}} {{missing}}!', { employee_name: '<b>A & B</b>' }), 'Dear &lt;b&gt;A &amp; B&lt;/b&gt; !');
+  assert.match(DOC_TEMPLATES.relieving_letter.body, /last_working_date/);
+  assert.equal(docGate({ status: 'submitted' }, 'resignation_acknowledgement'), '');
+  assert.match(docGate({ status: 'submitted' }, 'resignation_acceptance'), /not been accepted/);
+  assert.equal(docGate({ status: 'in_notice', notice_waived_days: 0 }, 'notice_waiver') !== '', true);
+  assert.equal(docGate({ status: 'in_notice', notice_waived_days: 5 }, 'notice_waiver'), '');
+  assert.match(docGate({ status: 'in_notice' }, 'relieving_letter', { closeBlockers: ['Finance must process the F&F payment'] }), /Finance must process/);
+  assert.equal(docGate({ status: 'completed' }, 'experience_certificate', { closeBlockers: [] }), '');
+  assert.equal(templatesFor({ doc_templates: { relieving_letter: { body: 'X' } } }).relieving_letter.body, 'X');
+  assert.equal(templatesFor({}).relieving_letter.custom, false);
+});
+test('knowledge transfer progress and access revocation', () => {
+  assert.deepEqual(ktSummary([{ v: 2, status: 'verified' }, { v: 2, status: 'handed_over' }]), { total: 2, done: 1, pct: 50, pending: 1 });
+  assert.equal(ktSummary([]).pct, 0);
+  const a = buildAccessChecklist(undefined, '2026-12-10');
+  assert.equal(a.length, 6); assert.equal(a[0].scheduled_for, '2026-12-10');
+  assert.equal(accessPending({ access_checklist: a }).length, 5, 'the MaxVolt One account is closed by the system, not waited for');
+  assert.match(closeBlockers({ exit: { access_checklist: a, fnf_data: {} }, today: '2026-12-20', allCleared: true }).join(' '), /system access/);
 });

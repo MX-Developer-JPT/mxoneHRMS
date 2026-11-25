@@ -28,6 +28,11 @@ export const EXIT_DEFAULTS = {
   management_departments: '',
   management_designations: '',   // matches if the designation contains any of these words
   retention_enabled: true,
+  access_items: [
+    { key: 'email', label: 'Official email deactivation' }, { key: 'maxvolt_one', label: 'MaxVolt One account deactivation' }, { key: 'crm_lms', label: 'CRM / LMS access revocation' },
+    { key: 'erp', label: 'ERP / application access revocation' }, { key: 'vpn_cloud', label: 'VPN / cloud access revocation' }, { key: 'other', label: 'Other company systems' },
+  ],
+  doc_templates: {},   // only the templates HR has changed; the rest use the built-in wording
   reasons: [
     { key: 'better_career_opportunity', label: 'Better Career Opportunity' }, { key: 'higher_studies', label: 'Higher Studies' },
     { key: 'personal_reasons', label: 'Personal Reasons' }, { key: 'health_reasons', label: 'Health Reasons' }, { key: 'relocation', label: 'Relocation' },
@@ -51,6 +56,7 @@ export function mergeCfg(stored = {}) {
     if (typeof d === 'boolean') out[k] = v !== false && v !== 'false';
     else if (Array.isArray(d)) { if (Array.isArray(v) && v.length) out[k] = v; }
     else if (typeof d === 'string') out[k] = String(v);
+    else if (typeof d === 'object') { if (v && typeof v === 'object') out[k] = v; }
     else out[k] = Number(v) || d;
   }
   return out;
@@ -154,6 +160,8 @@ export function segregationProblem(fnf = {}, actorId, step, cfg = EXIT_DEFAULTS)
 /** What must be true before HR can close the case. Returns the list of blockers. */
 export function closeBlockers({ exit, cfg = EXIT_DEFAULTS, wf = {}, today, allCleared, loanOutstanding = 0 }) {
   const out = [];
+  const pendingAccess = (exit.access_checklist || []).filter((i) => i.key !== 'maxvolt_one' && i.status === 'pending');
+  if (pendingAccess.length) out.push(`system access must be revoked or marked not applicable (${pendingAccess.map((i) => i.label).join(', ')})`);
   if (!allCleared) out.push('all mandatory department clearances must be Cleared');
   if (wf.require_employee_declaration && !exit.declaration_signed_at) out.push('the employee must sign the exit declaration');
   if (cfg.require_exit_interview && !exit.exit_interview_completed) out.push('the exit interview must be completed (or skipped by HR with a reason)');
@@ -175,7 +183,7 @@ export function leftStatusFor(exitType) {
 }
 
 /** Whether an Exit PATCH from the generic API only touches fields that are safe to edit by hand. */
-export const EXIT_HAND_EDITABLE = ['kt_items', 'kt_overall_completion', 'hr_exit_interview', 'hr_interview_completed', 'hr_notes', 'audit_log'];
+export const EXIT_HAND_EDITABLE = ['hr_exit_interview', 'hr_interview_completed', 'hr_notes', 'audit_log'];
 export function exitPatchProblem(current = {}, body = {}) {
   for (const k of Object.keys(body)) {
     if (k === 'id' || k === 'updated_at' || k === 'created_at' || k === 'updated_date' || k === 'created_date') continue;
@@ -253,7 +261,7 @@ export function lastDayFor(resignationDate, days, { mode = 'calendar', weeklyOff
 export function fnfStatusLabel(exit = {}) {
   const s = exit.status;
   if (s === 'completed') return 'Completed';
-  if (exit.fnf_data?.on_hold) return 'On Hold';
+  if (exit.fnf_meta?.on_hold) return 'On Hold';
   return ({ fnf_prepared: 'Pending with HR', fnf_verified: 'Under Verification', fnf_hr_approved: 'Pending with Finance', fnf_finance_processed: 'Paid', fnf_employee_accepted: 'Paid' })[s] || 'Not Initiated';
 }
 export function clearanceSummary(exit = {}) {
@@ -330,3 +338,68 @@ export function exitAnalytics(exits, empOf, { today, department = '', location =
     count: rows.length,
   };
 }
+
+// ── exit documents: templates, placeholders, and the rules for when each may be issued ───────────────────────────────────────
+const P = (s) => s;   // marker: templates are plain HTML with {{placeholders}}
+export const DOC_TEMPLATES = {
+  resignation_acknowledgement: { title: 'Resignation Acknowledgement', body: P(`<p style="text-align:right;">{{today}}</p><p>Ref: {{reference_no}}</p><p>Dear {{prefix}} {{employee_name}},</p>
+<p>We acknowledge receipt of your resignation dated <strong>{{resignation_date}}</strong> from the position of <strong>{{designation}}</strong>{{department_clause}} (Employee Code: {{employee_code}}).</p>
+<p>Your proposed last working day is <strong>{{proposed_last_day}}</strong>. The applicable notice period is {{notice_days}} days. The resignation is under review and you will be informed of the decision.</p>
+<p>Sincerely,<br/>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`) },
+  resignation_acceptance: { title: 'Resignation Acceptance Letter', body: P(`<p style="text-align:right;">{{today}}</p><p>Ref: {{reference_no}}</p><p>Dear {{prefix}} {{employee_name}},</p>
+<p>With reference to your resignation dated <strong>{{resignation_date}}</strong>, we confirm that the company has accepted it. Your last working day with Maxvolt Energy Industries Limited will be <strong>{{last_working_date}}</strong>.</p>
+<p>Please complete the knowledge transfer, return all company assets and finish the exit clearances before your last working day. Your full and final settlement will be processed as per company policy once clearances are complete.</p>
+<p>Sincerely,<br/>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`) },
+  notice_waiver: { title: 'Notice Period Waiver Letter', body: P(`<p style="text-align:right;">{{today}}</p><p>Ref: {{reference_no}}</p><p>Dear {{prefix}} {{employee_name}},</p>
+<p>With reference to your resignation dated <strong>{{resignation_date}}</strong>, the company has agreed to waive <strong>{{waived_days}} day(s)</strong> of the notice period of {{notice_days}} days. Your last working day is <strong>{{last_working_date}}</strong>.</p>
+<p>Any remaining notice shortfall will be recovered in your full and final settlement as per policy.</p>
+<p>Sincerely,<br/>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`) },
+  relieving_letter: { title: 'Relieving Letter', body: P(`<p style="font-weight:bold;text-align:center;">Relieving Letter</p><p style="text-align:right;">{{today}}</p><p>To Whomsoever It May Concern,</p>
+<p>This is to certify that <strong>{{prefix}} {{employee_name}}</strong> (Employee Code: {{employee_code}}) was employed with Maxvolt Energy Industries Limited as <strong>{{designation}}</strong>{{department_clause}} from <strong>{{date_of_joining}}</strong> to <strong>{{last_working_date}}</strong>.</p>
+<p>{{prefix}} {{employee_name}} has been formally relieved from the services of the company with effect from <strong>{{last_working_date}}</strong>, after completing all exit formalities.</p>
+<p>We wish {{pronoun_obj}} all the best in {{pronoun_pos}} future endeavours.</p>
+<p>Sincerely,<br/>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`) },
+  experience_certificate: { title: 'Experience Certificate', body: P(`<p style="font-weight:bold;text-align:center;">Experience Certificate</p><p style="text-align:right;">{{today}}</p><p>To Whomsoever It May Concern,</p>
+<p>This is to certify that <strong>{{prefix}} {{employee_name}}</strong> (Employee Code: {{employee_code}}) was employed with <strong>Maxvolt Energy Industries Limited</strong> from <strong>{{date_of_joining}}</strong> to <strong>{{last_working_date}}</strong>, last holding the position of <strong>{{designation}}</strong>{{department_clause}}.</p>
+<p>During {{pronoun_pos}} association with the company, {{pronoun_sub}} discharged {{pronoun_pos}} duties with sincerity. We wish {{pronoun_obj}} all the best in {{pronoun_pos}} future career.</p>
+<p>Sincerely,<br/>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`) },
+};
+export const DOC_TYPES = Object.keys(DOC_TEMPLATES);
+const escHtml = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+/** Fill {{placeholders}}; values are escaped so a name can never inject markup. */
+export function renderDocTemplate(body, vars = {}) {
+  return String(body || '').replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (_, k) => (vars[k] === undefined ? '' : escHtml(vars[k])));
+}
+export function templatesFor(cfg = {}) {
+  const out = {};
+  for (const k of DOC_TYPES) { const o = (cfg.doc_templates || {})[k]; out[k] = { title: o?.title || DOC_TEMPLATES[k].title, body: o?.body || DOC_TEMPLATES[k].body, custom: !!o?.body }; }
+  return out;
+}
+/** Whether a document may be issued now. Returns an error text, or '' when it may. The relieving and experience letters wait for every mandatory exit condition. */
+export function docGate(exit = {}, type, { closeBlockers: blockers = [] } = {}) {
+  const accepted = ['in_notice', 'clearance_pending', 'clearance_done', 'fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted', 'completed'].includes(exit.status);
+  if (!DOC_TYPES.includes(type)) return 'Unknown document';
+  if (type === 'resignation_acknowledgement') return ['draft'].includes(exit.status) ? 'The resignation has not been submitted' : '';
+  if (type === 'resignation_acceptance') return accepted ? '' : 'The resignation has not been accepted yet';
+  if (type === 'notice_waiver') return !accepted ? 'The resignation has not been accepted yet' : (exit.notice_waived_days > 0 ? '' : 'No notice period waiver was granted on this case');
+  if (blockers.length) return `Not yet — ${blockers.join('; ')}`;
+  return '';
+}
+
+// ── knowledge transfer and access revocation ───────────────────────────────────────────────────────────────────────────────
+export const KT_STATUS = ['assigned', 'in_progress', 'handed_over', 'verified', 'sent_back'];
+export function ktSummary(items = []) {
+  const v2 = items.filter((i) => i.v === 2);
+  const total = v2.length || items.length;
+  const done = v2.length ? v2.filter((i) => i.status === 'verified').length : items.filter((i) => i.status === 'completed').length;
+  return { total, done, pct: total ? Math.round((done / total) * 100) : 0, pending: total - done };
+}
+export const DEFAULT_ACCESS_ITEMS = [
+  { key: 'email', label: 'Official email deactivation' }, { key: 'maxvolt_one', label: 'MaxVolt One account deactivation' }, { key: 'crm_lms', label: 'CRM / LMS access revocation' },
+  { key: 'erp', label: 'ERP / application access revocation' }, { key: 'vpn_cloud', label: 'VPN / cloud access revocation' }, { key: 'other', label: 'Other company systems' },
+];
+export function buildAccessChecklist(items = DEFAULT_ACCESS_ITEMS, lwd) {
+  return items.map((i) => ({ key: i.key, label: i.label, status: 'pending', scheduled_for: lwd || '', done_at: null, done_by: '', remarks: '' }));
+}
+/** Access items still to do before closing (the MaxVolt One account is closed by the system at closure itself). */
+export const accessPending = (exit = {}) => (exit.access_checklist || []).filter((i) => i.key !== 'maxvolt_one' && i.status === 'pending');

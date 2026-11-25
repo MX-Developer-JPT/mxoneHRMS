@@ -8,7 +8,7 @@ import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
-import { exitAnalytics, fnfStatusLabel as fnfStatusLabelOf, clearanceSummary as clearanceSummaryOf, noticeStatus as noticeStatusOf, buildApprovalChain, currentStageOf, STAGE_LABEL, displayStatus, nextExitRef, lastDayFor, needsManagement, noticeDaysFor, evaluateResignation, recoverableShortfall, draftFnF, segregationProblem, closeBlockers, leftStatusFor, isYmd, addDaysYmd, istToday, mergeCfg as mergeExitCfg, EXIT_DEFAULTS } from '../utils/exitPolicy.js';
+import { ktSummary, buildAccessChecklist, DOC_TEMPLATES, DOC_TYPES, templatesFor, renderDocTemplate, docGate, exitAnalytics, fnfStatusLabel as fnfStatusLabelOf, clearanceSummary as clearanceSummaryOf, noticeStatus as noticeStatusOf, buildApprovalChain, currentStageOf, STAGE_LABEL, displayStatus, nextExitRef, lastDayFor, needsManagement, noticeDaysFor, evaluateResignation, recoverableShortfall, draftFnF, segregationProblem, closeBlockers, leftStatusFor, isYmd, addDaysYmd, istToday, mergeCfg as mergeExitCfg, EXIT_DEFAULTS } from '../utils/exitPolicy.js';
 import { runNightlyAttendanceAutomation, markExemptEmployeesPresent, markMissingAttendanceAsAbsent, closeUnfinishedSessions, closeStaleOpenSessions } from '../cron/attendanceAutomation.js';
 import { buildCriteria, scoreAgainst, scoreProfile, analyseResumeText, detectSkills, rulesParse, readReport, workHistory, noticeToDays, ctcToRupees, highestDegree } from '../utils/cvScreening.js';
 import { createHash } from 'crypto';
@@ -1677,6 +1677,13 @@ async function exResolveHod(emp, managerId) {
 async function exCalendar() {
   const hol = (await all("SELECT data FROM entities WHERE type='Holiday'")).map(r => { try { return String(JSON.parse(r.data).date || '').slice(0, 10); } catch { return ''; } }).filter(Boolean);
   return { weeklyOff: [0], holidays: hol };
+}
+/** What still stands between this case and closure (also decides when the relieving / experience letters may be issued). */
+async function exCloseBlockers(ex, cfg) {
+  const wf = await getExitWorkflowConfig();
+  const loans = await all("SELECT data FROM entities WHERE type='Loan' AND user_id=$1 AND status IN ('approved','active')", [ex.user_id]);
+  const out = loans.reduce((a, r) => { const l = JSON.parse(r.data); return a + Number(l.outstanding_amount ?? l.amount ?? 0); }, 0);
+  return closeBlockers({ exit: ex, cfg, wf, today: exIstToday(), allCleared: isChecklistFullyCleared(ex.clearance_checklist), loanOutstanding: ex.status === 'completed' ? 0 : out });
 }
 const AFTER_ACCEPT_STATUSES = ['in_notice', 'clearance_pending', 'clearance_done', 'fnf_prepared', 'fnf_verified', 'fnf_hr_approved', 'fnf_finance_processed', 'fnf_employee_accepted', 'completed'];
 const EX_STAGE_FIELDS = { manager: 'manager', hod: 'hod', hr: 'hr', management: 'management' };
@@ -16374,6 +16381,12 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
     }
 
     case 'generateExitDocument': {
+      // Superseded by ex_generate_document (templates, permission and exit-condition checks). Kept so an old screen gets a clear message.
+      return res.json({ success: false, error: 'This document is now issued from the Documents tab of the exit case.' });
+    }
+
+    case 'generateExitDocumentLegacy': {
+      return res.status(404).json({ error: 'Not found' });   // old unauthenticated generator, retired
       const { exit_id: gedExitId, doc_type: gedDocType, employee_name: gedEmpName, designation: gedDesignation, department: gedDept, joining_date: gedJoining, last_working_date: gedLwd, fnf_data: gedFnf } = p;
       if (!gedExitId || !gedDocType) return res.json({ success: false, error: 'exit_id and doc_type required' });
       try {
@@ -16609,7 +16622,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       if (exWhy.length < 3) return res.json({ success: false, error: 'Please record the reason for the change' });
       const exRec = recoverableShortfall({ noticeDays: ex.notice_period_days || 30, lwd: exLwd, resignationDate: ex.resignation_date, waivedDays: p.waived_days ?? ex.notice_waived_days, buyoutApprovedDays: ex.buyout_approved_days });
       const exNow = new Date().toISOString();
-      const exUpd = { ...ex, last_working_date: exLwd, notice_shortfall_days: exRec.shortfall, notice_waived_days: exRec.waived, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `Last working day changed ${ex.last_working_date} → ${exLwd}`, comment: exWhy, timestamp: exNow }] };
+      const exUpd = { ...ex, access_checklist: (ex.access_checklist || []).map(i => i.status === 'pending' ? { ...i, scheduled_for: exLwd } : i), last_working_date: exLwd, notice_shortfall_days: exRec.shortfall, notice_waived_days: exRec.waived, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `Last working day changed ${ex.last_working_date} → ${exLwd}`, comment: exWhy, timestamp: exNow }] };
       await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
       await exSetEmployeeExitDate(ex.user_id, exLwd);
       await notify(ex.user_id, { title: 'Last working day updated', message: `Your last working day is now ${exLwd}. ${exWhy}`, type: 'info', link: '/my-exit' });
@@ -16771,6 +16784,188 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       return res.json({ success: true, ...a, options: { departments: [...new Set(exAll.map(e => e.department).filter(Boolean))].sort(), locations: [...new Set(exAll.map(e => e.work_location || e.location).filter(Boolean))].sort(), employment_types: [...new Set(exAll.map(e => e.employment_type).filter(Boolean))].sort() } });
     }
 
+    /* ── Knowledge transfer ──────────────────────────────────────────────────────────────────────────────────────────────── */
+    // Who may assign / verify: the reporting manager, the HOD or HR.
+    case 'ex_kt_assign': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      const exEmp = await exLoadEmployee(ex.user_id);
+      if (!(exEmp?.reporting_manager_id === cu.id || ex.hod_id === cu.id || (await hasRole(cu, HR_ROLES)))) return res.status(403).json({ error: 'Only the reporting manager, the HOD or HR can assign knowledge transfer' });
+      if (!['in_notice', 'clearance_pending', 'clearance_done'].includes(ex.status)) return res.json({ success: false, error: 'Knowledge transfer is assigned once the resignation is accepted' });
+      const t = p.item || {};
+      if (!String(t.title || '').trim()) return res.json({ success: false, error: 'Describe what is to be handed over' });
+      if (t.recipient_id) { const r = await exLoadEmployee(t.recipient_id); if (!r || (r.status && r.status !== 'active') || t.recipient_id === ex.user_id) return res.json({ success: false, error: 'Choose an active colleague as the KT recipient' }); }
+      const exNow = new Date().toISOString();
+      const recip = t.recipient_id ? (await exLoadEmployee(t.recipient_id)) : null;
+      const item = { v: 2, id: uuidv4(), title: String(t.title).slice(0, 200), type: ['project', 'responsibility', 'document', 'process', 'pending', 'client_vendor'].includes(t.type) ? t.type : 'project', details: String(t.details || '').slice(0, 1500),
+        recipient_id: t.recipient_id || '', recipient_name: recip?.display_name || '', due_date: isYmd(String(t.due_date || '').slice(0, 10)) ? String(t.due_date).slice(0, 10) : (ex.last_working_date || ''), status: 'assigned', progress: 0, employee_note: '', assigned_by: cu.full_name, assigned_at: exNow };
+      const items = [...(ex.kt_items || []), item];
+      const exUpd = { ...ex, kt_items: items, kt_overall_completion: ktSummary(items).pct, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `Knowledge transfer assigned: ${item.title}`, comment: recip ? `to ${recip.display_name}` : '', timestamp: exNow }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+      await notify(ex.user_id, { title: 'Knowledge transfer assigned', message: `${item.title}${item.due_date ? ` — due ${item.due_date}` : ''}`, type: 'warning', link: '/my-exit' });
+      if (item.recipient_id) await notify(item.recipient_id, { title: 'You will take over some work', message: `${ex.employee_snapshot?.name || 'A colleague'} is handing over: ${item.title}`, type: 'info', link: '/my-exit' });
+      return res.json({ success: true, item });
+    }
+
+    case 'ex_kt_remove': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      const exEmp = await exLoadEmployee(ex.user_id);
+      if (!(exEmp?.reporting_manager_id === cu.id || ex.hod_id === cu.id || (await hasRole(cu, HR_ROLES)))) return res.status(403).json({ error: 'Not allowed' });
+      const it = (ex.kt_items || []).find(i => i.id === p.item_id);
+      if (!it || it.v !== 2) return res.json({ success: false, error: 'Item not found' });
+      if (it.status === 'verified') return res.json({ success: false, error: 'A verified handover cannot be removed' });
+      const items = (ex.kt_items || []).filter(i => i.id !== p.item_id);
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...ex, kt_items: items, kt_overall_completion: ktSummary(items).pct, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `Knowledge transfer item removed: ${it.title}`, comment: '', timestamp: new Date().toISOString() }] }), exRow.id]);
+      return res.json({ success: true });
+    }
+
+    // The leaving employee updates progress on their own handover items.
+    case 'ex_kt_update': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      if (ex.user_id !== cu.id) return res.status(403).json({ error: 'Only the leaving employee updates handover progress' });
+      const it = (ex.kt_items || []).find(i => i.id === p.item_id && i.v === 2);
+      if (!it) return res.json({ success: false, error: 'Item not found' });
+      if (it.status === 'verified') return res.json({ success: false, error: 'This handover is already verified' });
+      if (!['in_progress', 'handed_over'].includes(p.status)) return res.json({ success: false, error: 'Status must be in progress or handed over' });
+      const exNow = new Date().toISOString();
+      const items = ex.kt_items.map(i => i.id === it.id ? { ...i, status: p.status, progress: p.status === 'handed_over' ? 100 : Math.min(99, Math.max(0, Math.round(Number(p.progress) || 0))), employee_note: String(p.note || '').slice(0, 1000), updated_at: exNow } : i);
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...ex, kt_items: items, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `Handover ${p.status === 'handed_over' ? 'completed — awaiting verification' : 'progress'}: ${it.title}`, comment: String(p.note || ''), timestamp: exNow }] }), exRow.id]);
+      if (p.status === 'handed_over') { const exEmp = await exLoadEmployee(ex.user_id); if (exEmp?.reporting_manager_id) await notify(exEmp.reporting_manager_id, { title: 'Handover ready to verify', message: `${cu.full_name} has completed: ${it.title}`, type: 'info', link: '/exit-management' }); }
+      return res.json({ success: true });
+    }
+
+    case 'ex_kt_verify': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      const exEmp = await exLoadEmployee(ex.user_id);
+      if (!(exEmp?.reporting_manager_id === cu.id || ex.hod_id === cu.id || (await hasRole(cu, HR_ROLES)))) return res.status(403).json({ error: 'Only the reporting manager, the HOD or HR can verify a handover' });
+      const it = (ex.kt_items || []).find(i => i.id === p.item_id && i.v === 2);
+      if (!it) return res.json({ success: false, error: 'Item not found' });
+      if (!['verified', 'sent_back'].includes(p.action)) return res.json({ success: false, error: 'action must be verified or sent_back' });
+      if (p.action === 'sent_back' && String(p.comment || '').trim().length < 3) return res.json({ success: false, error: 'Say what is still missing' });
+      const exNow = new Date().toISOString();
+      const items = ex.kt_items.map(i => i.id === it.id ? { ...i, status: p.action, progress: p.action === 'verified' ? 100 : Math.min(i.progress || 0, 90), verified_by: p.action === 'verified' ? cu.full_name : '', verified_at: p.action === 'verified' ? exNow : null, review_comment: String(p.comment || '').slice(0, 1000) } : i);
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...ex, kt_items: items, kt_overall_completion: ktSummary(items).pct, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `Handover ${p.action === 'verified' ? 'verified' : 'sent back'}: ${it.title}`, comment: String(p.comment || ''), timestamp: exNow }] }), exRow.id]);
+      await notify(ex.user_id, { title: p.action === 'verified' ? 'Handover verified' : 'Handover needs more work', message: `${it.title}${p.comment ? ` — ${p.comment}` : ''}`, type: p.action === 'verified' ? 'success' : 'warning', link: '/my-exit' });
+      return res.json({ success: true });
+    }
+
+    /* ── System access revocation ────────────────────────────────────────────────────────────────────────────────────────── */
+    case 'ex_access_update': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      const exEmp = await exLoadEmployee(ex.user_id);
+      if (!(await canActOnExitClearance(cu, 'it', exEmp || {}))) return res.status(403).json({ error: 'Only HR or the IT clearance owner can update access revocation' });
+      const it = (ex.access_checklist || []).find(i => i.key === p.key);
+      if (!it) return res.json({ success: false, error: 'Item not found — access revocation is set up when the resignation is accepted' });
+      if (p.status && !['pending', 'revoked', 'not_applicable'].includes(p.status)) return res.json({ success: false, error: 'Unknown status' });
+      if (p.scheduled_for && !isYmd(String(p.scheduled_for).slice(0, 10))) return res.json({ success: false, error: 'Enter a valid date' });
+      if (p.status === 'revoked' && ex.last_working_date && exIstToday() < ex.last_working_date && !p.early_ok) return res.json({ success: false, error: `The last working day is ${ex.last_working_date}. Access should be revoked on or after it — confirm to revoke early.`, needs_confirm: true });
+      const exNow = new Date().toISOString();
+      const list = ex.access_checklist.map(i => i.key === p.key ? { ...i, status: p.status || i.status, scheduled_for: p.scheduled_for ? String(p.scheduled_for).slice(0, 10) : i.scheduled_for, remarks: p.remarks !== undefined ? String(p.remarks).slice(0, 500) : i.remarks, done_at: ['revoked', 'not_applicable'].includes(p.status) ? exNow : (p.status === 'pending' ? null : i.done_at), done_by: ['revoked', 'not_applicable'].includes(p.status) ? cu.full_name : (p.status === 'pending' ? '' : i.done_by) } : i);
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...ex, access_checklist: list, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `Access: ${it.label} → ${p.status || 'updated'}`, comment: String(p.remarks || ''), timestamp: exNow }] }), exRow.id]);
+      return res.json({ success: true });
+    }
+
+    /* ── Exit documents (templates are configurable; relieving / experience wait for the exit conditions) ─────────────────────── */
+    case 'ex_doc_list': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = await one("SELECT data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      const isHr = await hasRole(cu, HR_ROLES);
+      if (ex.user_id !== cu.id && !isHr) return res.status(403).json({ error: 'Not authorized' });
+      const cfg = await getExitPolicyConfig(); const tpl = templatesFor(cfg);
+      const blockers = await exCloseBlockers(ex, cfg);
+      const docs = DOC_TYPES.map(t => ({ type: t, title: tpl[t].title, available: !docGate(ex, t, { closeBlockers: blockers }), reason: docGate(ex, t, { closeBlockers: blockers }), generated: (ex.documents_log || []).filter(d => d.type === t).length }));
+      return res.json({ success: true, documents: docs, log: (ex.documents_log || []).slice(-30) });
+    }
+
+    case 'ex_generate_document': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      const isHr = await hasRole(cu, HR_ROLES);
+      if (ex.user_id !== cu.id && !isHr) return res.status(403).json({ error: 'Not authorized' });
+      const cfg = await getExitPolicyConfig(); const tpl = templatesFor(cfg);
+      const blockers = await exCloseBlockers(ex, cfg);
+      const why = docGate(ex, p.doc_type, { closeBlockers: blockers });
+      if (why) return res.json({ success: false, error: why });
+      const emp = (await exLoadEmployee(ex.user_id)) || {};
+      const u = await one('SELECT full_name FROM users WHERE id=$1', [ex.user_id]);
+      const g = String(emp.gender || '').toLowerCase();
+      const ord = (d) => { if (!d) return ''; const x = new Date(`${String(d).slice(0, 10)}T00:00:00`); const day = x.getDate(); const sfx = day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th'; return `${day}${sfx} ${['January','February','March','April','May','June','July','August','September','October','November','December'][x.getMonth()]} ${x.getFullYear()}`; };
+      const vars = { employee_name: u?.full_name || emp.display_name || '', employee_code: emp.employee_code || '', designation: emp.designation || ex.employee_snapshot?.designation || '', department_clause: (emp.department || ex.employee_snapshot?.department) ? ` in the ${emp.department || ex.employee_snapshot.department} department` : '',
+        date_of_joining: ord(emp.date_of_joining), resignation_date: ord(ex.resignation_date), proposed_last_day: ord(ex.proposed_last_day), last_working_date: ord(ex.last_working_date), today: ord(exIstToday()), reference_no: ex.reference_no || '',
+        notice_days: ex.notice_period_days || '', waived_days: ex.notice_waived_days || 0,
+        prefix: g === 'female' ? 'Ms.' : g === 'male' ? 'Mr.' : '', pronoun_sub: g === 'female' ? 'she' : g === 'male' ? 'he' : 'they', pronoun_obj: g === 'female' ? 'her' : g === 'male' ? 'him' : 'them', pronoun_pos: g === 'female' ? 'her' : g === 'male' ? 'his' : 'their' };
+      const html = renderDocTemplate(tpl[p.doc_type].body, vars);
+      const exNow = new Date().toISOString();
+      const flags = p.doc_type === 'relieving_letter' ? { relieving_letter_generated: true } : p.doc_type === 'experience_certificate' ? { experience_letter_generated: true } : {};
+      const exUpd = { ...ex, ...flags, documents_log: [...(ex.documents_log || []), { type: p.doc_type, title: tpl[p.doc_type].title, at: exNow, by: cu.full_name, by_id: cu.id }], audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `Document generated: ${tpl[p.doc_type].title}`, comment: '', timestamp: exNow }] };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(exUpd), exRow.id]);
+      if (ex.user_id !== cu.id && ['relieving_letter', 'experience_certificate'].includes(p.doc_type)) await notify(ex.user_id, { title: `${tpl[p.doc_type].title} is available`, message: 'You can view and download it from My Exit.', type: 'success', link: '/my-exit' });
+      return res.json({ success: true, html, title: tpl[p.doc_type].title, doc_type: p.doc_type });
+    }
+
+    /* ── Masters: everything HR can change without a code change ────────────────────────────────────────────────────────── */
+    case 'ex_config_get': {
+      if (!(await hasRole(cu, ['hr', 'admin', 'management']))) return res.status(403).json({ error: 'HR / Management access required' });
+      const cfg = await getExitPolicyConfig(); const wf = await getExitWorkflowConfig();
+      return res.json({ success: true, config: { ...cfg, ...wf }, templates: templatesFor(cfg), defaults: { templates: DOC_TEMPLATES } });
+    }
+
+    case 'ex_config_save': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const row = await one("SELECT data FROM entities WHERE type='ExitWorkflowConfig' AND id='exit-workflow-global'");
+      let stored = {}; try { stored = row ? JSON.parse(row.data) : {}; } catch { stored = {}; }
+      const next = { ...stored };
+      for (const k of [...Object.keys(EXIT_DEFAULTS), 'require_employee_declaration', 'require_asset_verification', 'require_kra_handover']) if (p.config && p.config[k] !== undefined) next[k] = p.config[k];
+      // keep lists well formed
+      const cleanList = (arr, fallback) => { const out = (Array.isArray(arr) ? arr : []).map(x => ({ key: String(x.key || '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_|_$/g, ''), label: String(x.label || '').trim().slice(0, 80), ...(x.remarks_required ? { remarks_required: true } : {}) })).filter(x => x.key && x.label); return out.length ? out : fallback; };
+      if (p.config?.reasons !== undefined) next.reasons = cleanList(p.config.reasons, EXIT_DEFAULTS.reasons);
+      if (p.config?.access_items !== undefined) next.access_items = cleanList(p.config.access_items, EXIT_DEFAULTS.access_items);
+      if (p.config?.doc_templates !== undefined) {
+        const t = {}; for (const k of DOC_TYPES) { const o = (p.config.doc_templates || {})[k]; if (o && typeof o.body === 'string' && o.body.trim() && o.body.trim() !== DOC_TEMPLATES[k].body.trim()) t[k] = { title: String(o.title || DOC_TEMPLATES[k].title).slice(0, 120), body: o.body.slice(0, 20000) }; }
+        next.doc_templates = t;
+      }
+      const num = (k, lo, hi) => { if (next[k] !== undefined && next[k] !== '') { const v = Number(next[k]); if (!Number.isFinite(v) || v < lo || v > hi) throw new Error(`${k} must be between ${lo} and ${hi}`); } };
+      try { num('notice_default_days', 0, 365); num('notice_senior_days', 0, 365); num('notice_contract_days', 0, 365); num('max_notice_days', 1, 730); num('manager_decision_days', 1, 60); num('hr_decision_days', 1, 60); num('gratuity_min_years', 1, 10); } catch (e) { return res.json({ success: false, error: e.message }); }
+      if (next.notice_day_mode && !['calendar', 'working'].includes(next.notice_day_mode)) return res.json({ success: false, error: 'Notice day mode must be calendar or working' });
+      const data = { id: 'exit-workflow-global', ...next };
+      if (row) await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE type='ExitWorkflowConfig' AND id='exit-workflow-global'", [JSON.stringify(data)]);
+      else await run("INSERT INTO entities(id,type,status,data) VALUES('exit-workflow-global','ExitWorkflowConfig','active',$1)", [JSON.stringify(data)]);
+      invalidateExitWorkflowConfigCache();
+      return res.json({ success: true });
+    }
+
+    /* ── F&F tracking details: tentative date and on-hold (the amounts stay in the payroll-linked settlement) ─────────────────── */
+    case 'ex_fnf_meta': {
+      if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR access required' });
+      const exRow = await one("SELECT id,data FROM entities WHERE type='Exit' AND id=$1", [p.exit_id]);
+      if (!exRow) return res.json({ success: false, error: 'Exit case not found' });
+      const ex = JSON.parse(exRow.data);
+      if (p.tentative_date && !isYmd(String(p.tentative_date).slice(0, 10))) return res.json({ success: false, error: 'Enter a valid tentative settlement date' });
+      if (p.on_hold && String(p.hold_reason || '').trim().length < 3) return res.json({ success: false, error: 'Please say why the settlement is on hold' });
+      const exNow = new Date().toISOString();
+      const meta = { ...(ex.fnf_meta || {}), tentative_date: p.tentative_date ? String(p.tentative_date).slice(0, 10) : (ex.fnf_meta?.tentative_date || ''), on_hold: !!p.on_hold, hold_reason: p.on_hold ? String(p.hold_reason).slice(0, 500) : '', initiated_at: ex.fnf_meta?.initiated_at || (ex.fnf_data ? exNow : '') };
+      await run("UPDATE entities SET data=$1,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...ex, fnf_meta: meta, audit_log: [...(ex.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: meta.on_hold ? 'F&F put on hold' : 'F&F details updated', comment: meta.hold_reason || meta.tentative_date, timestamp: exNow }] }), exRow.id]);
+      return res.json({ success: true, fnf_meta: meta });
+    }
+
     case 'initiateExit': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { employee_user_id: ieUserId, exit_type: ieExitType, reason_category: ieReason, resignation_date: ieResignDate, last_working_date: ieLwd, hr_notes: ieNotes } = p;
@@ -16878,6 +17073,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           // Clearance is built the moment the case reaches notice — never at submission, and only after every approval stage.
           clearance_checklist: await makeDefaultClearanceChecklist(),
           assets: Array.isArray(aeaExit.assets) && aeaExit.assets.length ? aeaExit.assets : DEFAULT_EXIT_ASSETS.map((a, i) => ({ ...a, id: `asset_${i}` })),
+          access_checklist: buildAccessChecklist((await getExitPolicyConfig()).access_items, aeaFinalLwd),
         };
       }
       await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(aeaUpd), aeaNewStatus, aeaRow.id]);
@@ -16972,6 +17168,10 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       // card still marked "pending" must block IT sign-off, not just its
       // own checklist items, since the checklist and the asset table are
       // tracked separately in the UI.
+      if (uecDept === 'working_department' && uecStatus === 'cleared' && (await getExitWorkflowConfig()).require_kra_handover) {
+        const uecKtOpen = (uecExit.kt_items || []).filter(i => i.v === 2 && i.status !== 'verified');
+        if (uecKtOpen.length) return res.json({ success: false, error: `Knowledge transfer must be verified first (${uecKtOpen.length} item(s) pending)` });
+      }
       if (uecDept === 'it' && uecStatus === 'cleared') {
         const uecAssets = Array.isArray(uecExit.assets) ? uecExit.assets : [];
         if (uecAssets.some(a => a.status === 'pending')) {
@@ -17073,7 +17273,9 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const sefNow = new Date().toISOString();
       const sefComputed = computeExitFnFTotals({ ...(sefFnf || {}) });
       const sefUpd = { ...sefExit, fnf_data: { ...sefComputed, prepared_by_id: cu.id, prepared_by_name: cu.full_name, prepared_at: sefNow }, fnf_calculated: true, status: 'fnf_prepared', audit_log: [...(sefExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: `F&F prepared: Net ₹${sefComputed.net_payable.toLocaleString('en-IN')}`, comment: '', timestamp: sefNow }] };
+      if (!sefExit.fnf_meta?.initiated_at) sefUpd.fnf_meta = { ...(sefExit.fnf_meta || {}), initiated_at: sefNow };
       await run("UPDATE entities SET data=$1,status='fnf_prepared',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(sefUpd), sefRow.id]);
+      if (!sefExit.fnf_meta?.initiated_at) await notify(sefExit.user_id, { title: 'Full & final settlement started', message: 'HR has started your full and final settlement. You will be asked to review and accept it.', type: 'info', link: '/my-exit' });
       return res.json({ success: true, fnf_data: sefUpd.fnf_data });
     }
 
@@ -17179,7 +17381,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       const cecReasons = closeBlockers({ exit: cecExit, cfg: await getExitPolicyConfig(), wf: cecWfCfg, today: exIstToday(), allCleared: cecAllCleared, loanOutstanding: cecLoanOut });
       if (cecReasons.length) return res.json({ success: false, error: `Cannot close — ${cecReasons.join('; ')}` });
       const cecNow = new Date().toISOString();
-      const cecUpd = { ...cecExit, status: 'completed', access_deactivated: true, relieving_letter_generated: true, experience_letter_generated: true, audit_log: [...(cecExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Exit completed. Access deactivated.', comment: '', timestamp: cecNow }] };
+      const cecUpd = { ...cecExit, status: 'completed', access_deactivated: true, access_checklist: (cecExit.access_checklist || []).map(i => i.key === 'maxvolt_one' ? { ...i, status: 'revoked', done_at: cecNow, done_by: 'System', remarks: 'Account disabled when the exit was closed' } : i), audit_log: [...(cecExit.audit_log || []), { actor_id: cu.id, actor_name: cu.full_name, action: 'Exit completed. Access deactivated.', comment: '', timestamp: cecNow }] };
       await run("UPDATE entities SET data=$1,status='completed',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecUpd), cecRow.id]);
       const cecEmpRow = await one("SELECT id FROM entities WHERE type='Employee' AND user_id=$1", [cecExit.user_id]);
       if (cecEmpRow) await run("UPDATE entities SET data=jsonb_set(jsonb_set(data::jsonb,'{status}',$3::jsonb),'{exit_date}',$1::jsonb)::text,status=$4,updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cecExit.last_working_date || null), cecEmpRow.id, JSON.stringify(leftStatusFor(cecExit.exit_type)), leftStatusFor(cecExit.exit_type)]);

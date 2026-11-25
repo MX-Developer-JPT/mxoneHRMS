@@ -1,4 +1,8 @@
 import ExitRetention from './ExitRetention';
+import ExitKT from './ExitKT';
+import ExitAccess from './ExitAccess';
+import ExitDocuments from './ExitDocuments';
+import FnFMeta from './FnFMeta';
 import { exitDisplayStatus } from '@/lib/exitStatus';
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
@@ -17,7 +21,7 @@ import {
   Clock, CalendarClock, CalendarX, Star, Save, Plus, Trash2, Package,
   Laptop, Phone, CreditCard, Key, Headphones, Monitor, Printer as PrintIcon,
   RotateCcw, ChevronRight, BookOpen, ShieldCheck, Activity, Info, Loader2,
-  Send, Edit3, Building2, Paperclip
+  Send, Edit3, Building2, Paperclip, Lock
 } from 'lucide-react';
 import { openLetterheadPrintWindow } from '@/utils/letterhead';
 import { isDirectReport } from '@/lib/hierarchy';
@@ -316,6 +320,8 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
     { id: 'interview',  label: 'Exit Interview',     icon: FileText },
     { id: 'kt',         label: 'Knowledge Transfer', icon: BookOpen },
     { id: 'assets',     label: 'Asset Return',       icon: Package },
+    { id: 'access',     label: 'Access',             icon: Lock },
+    { id: 'docs',       label: 'Documents',          icon: FileText },
     { id: 'clearance',  label: 'Clearance',          icon: ClipboardList },
     { id: 'fnf',        label: 'F&F Settlement',     icon: DollarSign },
     { id: 'timeline',   label: 'Timeline',           icon: Activity },
@@ -462,7 +468,7 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
               )}
 
               {/* Documents section */}
-              {exit.status === 'completed' && (
+              {false && (
                 <div className="border rounded-lg overflow-hidden">
                   <div className="bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">Generated Documents</div>
                   <div className="divide-y">
@@ -653,76 +659,17 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
 
           {/* ══ KNOWLEDGE TRANSFER ══ */}
           {activeTab === 'kt' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold text-sm">Knowledge Transfer Tasks</p>
-                  <p className="text-xs text-gray-500">Track handover of projects, documentation, and credentials</p>
-                </div>
-                {isHR && (
-                  <Button size="sm" onClick={() => setKtItems(p => [...p, { id: Date.now(), task: '', description: '', assignee: '', due_date: '', status: 'pending', completion_pct: 0 }])}>
-                    <Plus className="w-3.5 h-3.5 mr-1" />Add Task
-                  </Button>
-                )}
-              </div>
-
-              {ktItems.length === 0 ? (
-                <div className="text-center py-8 text-gray-400 bg-gray-50 rounded-lg text-sm">
-                  <BookOpen className="w-8 h-8 mx-auto mb-2" />No KT tasks added yet
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {ktItems.map((item, i) => (
-                    <div key={item.id || i} className="border rounded-lg p-3 space-y-2">
-                      <div className="grid md:grid-cols-3 gap-2">
-                        <div><Label className="text-xs">Task / Item</Label>
-                          <Input value={item.task} onChange={e => { const c = [...ktItems]; c[i] = { ...c[i], task: e.target.value }; setKtItems(c); }} placeholder="e.g. Handover Project X docs" /></div>
-                        <div><Label className="text-xs">Assignee</Label>
-                          <Select value={item.assignee_user_id || ''} onValueChange={v => {
-                            const emp = employees.find(e => e.user_id === v);
-                            const c = [...ktItems]; c[i] = { ...c[i], assignee_user_id: v, assignee: emp?.display_name || emp?.full_name || v }; setKtItems(c);
-                          }}>
-                            <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select employee..." /></SelectTrigger>
-                            <SelectContent>
-                              {employees.map(emp => (
-                                <SelectItem key={emp.user_id || emp.id} value={emp.user_id || emp.id}>
-                                  {emp.display_name || emp.full_name} {emp.designation ? `· ${emp.designation}` : ''}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div><Label className="text-xs">Due Date</Label>
-                          <Input type="date" value={item.due_date} onChange={e => { const c = [...ktItems]; c[i] = { ...c[i], due_date: e.target.value }; setKtItems(c); }} /></div>
-                      </div>
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <div className="flex-1 min-w-[140px]"><Label className="text-xs">Description</Label>
-                          <Input value={item.description} onChange={e => { const c = [...ktItems]; c[i] = { ...c[i], description: e.target.value }; setKtItems(c); }} placeholder="Details..." /></div>
-                        <div><Label className="text-xs">Status</Label>
-                          <Select value={item.status} onValueChange={v => { const c = [...ktItems]; c[i] = { ...c[i], status: v }; setKtItems(c); }}>
-                            <SelectTrigger className="h-8 w-32 text-xs"><SelectValue /></SelectTrigger>
-                            <SelectContent><SelectItem value="pending">Pending</SelectItem><SelectItem value="in_progress">In Progress</SelectItem><SelectItem value="completed">Completed</SelectItem></SelectContent>
-                          </Select></div>
-                        <Button size="sm" variant="ghost" className="text-red-400 mt-4" onClick={() => setKtItems(p => p.filter((_, j) => j !== i))}><Trash2 className="w-3.5 h-3.5" /></Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {ktItems.length > 0 && (
-                <div className="flex items-center justify-between">
-                  <div className="text-sm text-gray-600">
-                    {ktItems.filter(k => k.status === 'completed').length}/{ktItems.length} tasks completed
-                    ({Math.round(ktItems.filter(k => k.status === 'completed').length / ktItems.length * 100)}%)
-                  </div>
-                  <Button onClick={handleSaveKT} disabled={saving}><Save className="w-4 h-4 mr-2" />Save KT</Button>
-                </div>
-              )}
-            </div>
+            <ExitKT exit={exit} currentUser={currentUser} canManage={isHR || isManager || exit.hod_id === currentUser?.id} employees={employees} onChanged={onRefresh} />
           )}
 
-          {/* ══ ASSET RETURN ══ */}
+          {activeTab === 'access' && (
+            <ExitAccess exit={exit} canAct={isHR || canActDept('it')} onChanged={onRefresh} />
+          )}
+
+          {activeTab === 'docs' && (
+            <ExitDocuments exit={exit} name={exit.user?.full_name} />
+          )}
+
           {activeTab === 'assets' && (
             <AssetReturnTab
               exit={exit}
@@ -804,6 +751,7 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
           {/* ══ F&F SETTLEMENT ══ */}
           {activeTab === 'fnf' && (
             <FnFTab
+              onRefresh={onRefresh}
               exit={exit} isHR={isHR} currentUser={currentUser} saving={saving} generating={generating}
               fnfData={fnfData} setFnfData={setFnfData}
               loadingSalary={loadingSalary} setLoadingSalary={setLoadingSalary}
@@ -925,7 +873,7 @@ function ClearanceDeptActions({ dept, data, onUpdate }) {
 /* ── F&F Settlement tab — Actual/Earned statement matching the reference
    document, with the full Prepare → Verify → Approve → Process Finance →
    Employee Accept stage pipeline. ── */
-function FnFTab({ exit, isHR, currentUser, saving, generating, fnfData, setFnfData, loadingSalary, setLoadingSalary, onSave, onVerify, onApprove, onProcessFinance, paymentRef, setPaymentRef, acceptName, setAcceptName, onAccept, downloadPdf }) {
+function FnFTab({ onRefresh, exit, isHR, currentUser, saving, generating, fnfData, setFnfData, loadingSalary, setLoadingSalary, onSave, onVerify, onApprove, onProcessFinance, paymentRef, setPaymentRef, acceptName, setAcceptName, onAccept, downloadPdf }) {
   const setEarn = (key, actual) => setFnfData(p => ({ ...p, earnings: { ...p.earnings, [key]: { ...p.earnings?.[key], actual: Number(actual) || 0 } } }));
   const setDed = (key, val) => setFnfData(p => ({ ...p, deductions: { ...p.deductions, [key]: Number(val) || 0 } }));
   const canEdit = isHR && exit.status === 'clearance_done' && exit.no_dues_generated;
@@ -959,6 +907,7 @@ function FnFTab({ exit, isHR, currentUser, saving, generating, fnfData, setFnfDa
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-500">Full & Final Settlement Statement — Actual vs Earned, matching the standard MaxVolt format.</p>
+      {isHR && <FnFMeta exit={exit} onChanged={onRefresh} />}
       {canEdit && (
         <Button size="sm" variant="outline" onClick={autoFill} disabled={loadingSalary}>
           {loadingSalary ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : null}Auto-fill from Payroll
