@@ -1185,7 +1185,7 @@ new file mode 100644
 index 0000000..4bcf020
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,225 @@
 +package com.equimaps.capacitor_background_geolocation;
 +
 +import android.content.Context;
@@ -1307,6 +1307,7 @@ index 0000000..4bcf020
 +            pt.put("acc", l.hasAccuracy() ? (double) l.getAccuracy() : 0.0);
 +            pt.put("t", iso.format(new Date(l.getTime() > 0 ? l.getTime() : System.currentTimeMillis())));
 +            if (l.hasSpeed()) pt.put("sp", (double) l.getSpeed());
++            if (l.isFromMockProvider()) pt.put("mock", true);   // the server refuses fake-GPS fixes (field-duty tracking rules)
 +            synchronized (LOCK) {
 +                SharedPreferences p = prefs(c);
 +                JSONArray q = new JSONArray(p.getString(K_QUEUE, "[]"));
