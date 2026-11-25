@@ -249,7 +249,7 @@ export function canViewLocation({ viewerId, subjectId, isMgmt, isManager, visibl
 
 /* ── nudging silent sessions ────────────────────────────────────────────── */
 
-export const NUDGE = { QUIET_MIN: 10, EVERY_MIN: 20, MAX: 6, FROM_HOUR: 8, TO_HOUR: 21 };
+export const NUDGE = { QUIET_MIN: 10, EVERY_MIN: 20, MAX: 6, FROM_HOUR: 8, TO_HOUR: 21, WAKE_QUIET_MIN: 2, WAKE_EVERY_MIN: 10, WAKE_MAX: 12 };
 
 // An active session whose phone has not been heard from recently needs the employee to open the app (the app starts the
 // phone's background recorder, which then keeps going with the screen locked or the app closed). state: { count, lastMs }.
@@ -261,5 +261,17 @@ export function nudgeDue(trip, state, nowMs) {
   if (!Number.isFinite(heardMs) || nowMs - heardMs < NUDGE.QUIET_MIN * 60000) return false;
   if (state && state.count >= NUDGE.MAX) return false;
   if (state && nowMs - state.lastMs < NUDGE.EVERY_MIN * 60000) return false;
+  return true;
+}
+
+// The silent wake push is cheap and invisible, so it goes out sooner and more often than the visible reminder.
+export function wakeDue(trip, state, nowMs) {
+  if (!trip || trip.status !== 'active') return false;
+  const hour = new Date(nowMs + 5.5 * 3600000).getUTCHours();
+  if (hour < NUDGE.FROM_HOUR || hour >= NUDGE.TO_HOUR) return false;
+  const heardMs = Date.parse(trip.last_point_at || trip.start_time);
+  if (!Number.isFinite(heardMs) || nowMs - heardMs < NUDGE.WAKE_QUIET_MIN * 60000) return false;
+  if (state && state.count >= NUDGE.WAKE_MAX) return false;
+  if (state && nowMs - state.lastMs < NUDGE.WAKE_EVERY_MIN * 60000) return false;
   return true;
 }

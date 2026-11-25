@@ -188,3 +188,15 @@ test('nudge: only silent active sessions, in daytime, rate-limited and capped', 
   assert.equal(nudgeDue(t, { count: NUDGE.MAX, lastMs: 0 }, noon), false);                                     // capped
   assert.equal(nudgeDue(t, null, Date.parse('2026-11-25T18:30:00Z')), false);                                  // midnight IST
 });
+
+test('wake: silent push goes out sooner and more often than the visible reminder, still daytime only and capped', async () => {
+  const { wakeDue, nudgeDue, NUDGE } = await import('../utils/fieldTracking.js');
+  const noon = Date.parse('2026-11-25T06:30:00Z');
+  const t = { status: 'active', start_time: new Date(noon - 3 * 60000).toISOString() };   // started 3 minutes ago, never heard
+  assert.equal(wakeDue(t, null, noon), true);
+  assert.equal(nudgeDue(t, null, noon), false);                                          // the visible reminder waits 10 min
+  assert.equal(wakeDue({ ...t, last_point_at: new Date(noon - 30000).toISOString() }, null, noon), false);
+  assert.equal(wakeDue(t, { count: 1, lastMs: noon - 5 * 60000 }, noon), false);
+  assert.equal(wakeDue(t, { count: NUDGE.WAKE_MAX, lastMs: 0 }, noon), false);
+  assert.equal(wakeDue(t, null, Date.parse('2026-11-25T19:00:00Z')), false);
+});

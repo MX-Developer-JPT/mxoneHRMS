@@ -2,22 +2,28 @@
 // the employee gets a push notification (shown even with the app closed and the phone locked); tapping it opens the app, which
 // starts the phone's background recorder. Eligibility is re-checked every time: nobody HR has switched off is ever nudged.
 import { all } from '../db.js';
-import { sendPushToUser } from '../utils/push.js';
-import { nudgeDue } from '../utils/fieldTracking.js';
+import { sendPushToUser, sendFieldDutyWake } from '../utils/push.js';
+import { nudgeDue, wakeDue } from '../utils/fieldTracking.js';
 
-const state = new Map();   // trip id -> { count, lastMs }   (in memory: a restart simply allows one more reminder)
+const state = new Map();   // visible reminders
+const wakeState = new Map();   // silent wake pushes   // trip id -> { count, lastMs }   (in memory: a restart simply allows one more reminder)
 
 export async function nudgeSilentFieldSessions(nowMs = Date.now()) {
   const trips = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'");
-  if (!trips.length) return { checked: 0, nudged: 0 };
+  if (!trips.length) return { checked: 0, nudged: 0, woken: 0 };
   const eligible = new Set();
   for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")) {
     try { if (JSON.parse(r.data).field_duty_tracking_eligible) eligible.add(r.user_id); } catch { /* skip */ }
   }
-  let nudged = 0;
+  let nudged = 0, woken = 0;
   for (const r of trips) {
     let t; try { t = JSON.parse(r.data); } catch { continue; }
     if (!eligible.has(r.user_id)) continue;
+    const ws = wakeState.get(t.id);
+    if (wakeDue(t, ws, nowMs)) {
+      await sendFieldDutyWake(r.user_id, t.id).catch(() => null);   // starts native recording on an Android phone without opening the app
+      wakeState.set(t.id, { count: (ws?.count || 0) + 1, lastMs: nowMs }); woken++;
+    }
     const st = state.get(t.id);
     if (!nudgeDue(t, st, nowMs)) continue;
     await sendPushToUser(r.user_id, {
@@ -28,5 +34,5 @@ export async function nudgeSilentFieldSessions(nowMs = Date.now()) {
     state.set(t.id, { count: (st?.count || 0) + 1, lastMs: nowMs });
     nudged++;
   }
-  return { checked: trips.length, nudged };
+  return { checked: trips.length, nudged, woken };
 }

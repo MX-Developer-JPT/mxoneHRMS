@@ -20,6 +20,14 @@
             </intent-filter>
         </activity>
 
+        <!-- The app's single Firebase messaging service: starts native Field Duty recording from a silent push and hands every
+             other message to the Capacitor plugin's own service. Higher priority = this one receives the push. -->
+        <service android:name=".FieldDutyMessagingService" android:exported="false">
+            <intent-filter android:priority="100">
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

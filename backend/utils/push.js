@@ -212,6 +212,23 @@ export async function sendPushToUser(userId, payload) {
   }
 }
 
+// Silent, high-priority DATA push (no notification) that makes the Android app start native Field Duty recording on its own,
+// even when the app is closed and the phone is locked (see FieldDutyMessagingService.java). Android only; iOS cannot be woken this way.
+export async function sendFieldDutyWake(userId, tripId) {
+  const app = await loadFcm();
+  if (!app) return { attempted: false, reason: 'fcm_not_configured_on_server' };
+  const tokens = (await all("SELECT token FROM device_tokens WHERE user_id=$1 AND platform LIKE '%android%'", [userId])).map(r => r.token);
+  if (!tokens.length) return { attempted: false, reason: 'no_android_device_token' };
+  const admin = (await import('firebase-admin')).default;
+  const messaging = admin.messaging(app);
+  let ok = 0;
+  for (const token of tokens) {
+    try { await messaging.send({ token, data: { type: 'field_duty_start', trip_id: String(tripId) }, android: { priority: 'high', ttl: 600000 } }); ok++; }
+    catch (e) { if (/registration-token-not-registered|invalid-argument|invalid-registration/i.test(String(e.code || e.message))) await removeDeviceToken(token).catch(() => {}); }
+  }
+  return { attempted: true, token_count: tokens.length, sent_ok: ok };
+}
+
 // Self-diagnostic variant — returns exactly where delivery stands instead of
 // swallowing everything, so a user/HR can tell in one tap whether the problem
 // is "server has no Firebase credentials", "this device never registered a

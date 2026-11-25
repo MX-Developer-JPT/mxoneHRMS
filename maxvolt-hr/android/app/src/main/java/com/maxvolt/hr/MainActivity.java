@@ -9,6 +9,7 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
+        registerPlugin(FieldDutyWakePlugin.class);   // must be registered before super.onCreate()
         super.onCreate(savedInstanceState);
         // Explicit edge-to-edge opt-in. Android 15+ (API 35, this app's compile/
         // target SDK is 36) enforces edge-to-edge regardless and no longer allows
