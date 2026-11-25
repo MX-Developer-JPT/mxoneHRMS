@@ -22,7 +22,18 @@ const pinIcon = L.divIcon({
 
 const ok = (n) => Number.isFinite(Number(n)) && n !== '' && n !== null;
 
-function Resize() { const map = useMap(); useEffect(() => { const t = setTimeout(() => map.invalidateSize(), 250); return () => clearTimeout(t); }, [map]); return null; }
+// Maps inside dialogs are measured while the dialog is still animating open, which leaves misaligned tiles: re-measure on every size change.
+function Resize() {
+  const map = useMap();
+  useEffect(() => {
+    const fix = () => map.invalidateSize();
+    const ts = [100, 300, 700].map(ms => setTimeout(fix, ms));
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(fix); ro.observe(map.getContainer()); }
+    return () => { ts.forEach(clearTimeout); ro?.disconnect(); };
+  }, [map]);
+  return null;
+}
 
 function FitTo({ points, pad = 40, max = 16 }) {
   const map = useMap();
@@ -105,6 +116,7 @@ export function RouteMap({ points = [], lastPos, fences = [], height = 360, snap
   const line = useMemo(() => points.filter(p => ok(p.lat) && ok(p.lng)).map(p => [Number(p.lat), Number(p.lng)]), [points]);
   const end = lastPos && ok(lastPos.lat) ? [Number(lastPos.lat), Number(lastPos.lng)] : line[line.length - 1];
   const all = [...line, ...(end ? [end] : [])];
+  if (!all.length) return <div className="rounded-lg border bg-gray-50 flex items-center justify-center text-center text-sm text-gray-500 px-4" style={{ height: Math.min(height, 200) }}>No location has been received yet. The route appears as soon as the employee's phone sends its first GPS fix (the app must be open on their phone).</div>;
   return (
     <div className="rounded-lg overflow-hidden border" style={{ height }}>
       <MapContainer center={all[0] || INDIA} zoom={all.length ? 14 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
