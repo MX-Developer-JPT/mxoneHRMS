@@ -237,7 +237,7 @@ export default function FieldTrackingPanel({ isHR }) {
                       {route.segments.length === 0
                         ? <p className="text-sm text-gray-400 text-center py-16 border rounded-lg">No field-duty tracking was recorded for this employee on {data.date}.</p>
                         : <EmployeeRouteMap route={route} fences={fences} />}
-                      {route.segments.length > 0 && <p className="text-[11px] text-gray-500">{route.snap?.enabled && route.snap.matched_pct != null ? `Drawn along roads (${route.snap.matched_pct}% of the path matched to the road network); the rest follows the raw GPS line. Distance always comes from the GPS points.` : 'Drawn from the raw GPS points (road matching is not active).'}{date === todayIST() ? ' Refreshes every 10 seconds.' : ''}</p>}
+                      {route.segments.length > 0 && <p className="text-[11px] text-gray-500">{route.snap?.enabled && route.snap.matched_pct > 0 ? `Drawn along roads (${route.snap.matched_pct}% of the path matched to the road network); the rest follows the raw GPS line. Distance always comes from the GPS points.` : 'Drawn from the raw GPS points (road matching is not active).'}{date === todayIST() ? ' Refreshes every 10 seconds.' : ''}</p>}
                       {route.stops?.length > 0 && (
                         <div className="rounded-lg border p-3 space-y-1">
                           <p className="text-sm font-medium text-gray-700">Stays {route.longest_stop_min > 0 && <span className="text-xs font-normal text-gray-500">· longest away from an office {fmtDur(route.longest_stop_min)}</span>}</p>
