@@ -78,6 +78,11 @@ async function initSchema() {
     -- forcing a full scan-and-JSON-parse of every row of that type. This
     -- expression index matches that exact cast so the planner can use it.
     CREATE INDEX IF NOT EXISTS idx_entities_type_data_date ON entities(type, (data::jsonb->>'date'));
+    -- Field Duty trips carry a long GPS "points" array, and the 3/10-minute field-duty jobs plus the live map ask for the
+    -- active ones with data::jsonb->>'status'='active' — without these partial indexes every such call parsed every trip
+    -- ever recorded (blocking the server for everyone). Same for attendance days still "in progress".
+    CREATE INDEX IF NOT EXISTS idx_fieldtrip_status ON entities((data::jsonb->>'status')) WHERE type='FieldTrip';
+    CREATE INDEX IF NOT EXISTS idx_attendance_in_progress ON entities((data::jsonb->>'date')) WHERE type='Attendance' AND data::jsonb->>'is_in_progress'='true';
 
     CREATE TABLE IF NOT EXISTS otps (
       email      TEXT NOT NULL,
