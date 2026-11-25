@@ -147,19 +147,41 @@ export function LiveMap({ people = [], fences = [], selected, onSelect, trail = 
 
 // Pins for check-in / check-out places (selfie attendance). markers: [{ id, lat, lng, color, label }]
 export function PlacesMap({ markers = [], fences = [], height = 420 }) {
-  const pts = markers.filter(m => ok(m.lat) && ok(m.lng)).map(m => [Number(m.lat), Number(m.lng)]);
+  const [q, setQ] = useState(''); const [searching, setSearching] = useState(false); const [msg, setMsg] = useState(''); const [jump, setJump] = useState(null);
+  // typing narrows the pins to matching people (or times / places in the label); "Find place" jumps the map to an address
+  const term = q.trim().toLowerCase();
+  const shown = markers.filter(m => ok(m.lat) && ok(m.lng) && (!term || String(m.label || '').toLowerCase().includes(term)));
+  const pts = shown.map(m => [Number(m.lat), Number(m.lng)]);
   const fencePts = fences.filter(f => ok(f.latitude) && ok(f.longitude)).map(f => [Number(f.latitude), Number(f.longitude)]);
+  const findPlace = async (e) => {
+    e?.preventDefault(); if (!q.trim()) return; setSearching(true); setMsg('');
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q.trim())}`, { headers: { Accept: 'application/json' }, referrerPolicy: 'origin' });
+      const j = await r.json();
+      if (j[0]) setJump([Number(j[0].lat), Number(j[0].lon)]); else setMsg('Place not found — try a fuller address.');
+    } catch { setMsg('Place search is unavailable right now.'); }
+    setSearching(false);
+  };
   return (
-    <div className="rounded-lg overflow-hidden border" style={{ height }}>
-      <MapContainer center={pts[0] || fencePts[0] || INDIA} zoom={pts.length ? 15 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
-        <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
-        <Resize />
-        <Fences fences={fences} />
-        {pts.length > 0 && <FitTo points={pts.length === 1 ? [...pts, ...fencePts.slice(0, 1)] : pts} max={17} />}
-        {markers.filter(m => ok(m.lat) && ok(m.lng)).map(m => (
-          <Marker key={m.id} position={[Number(m.lat), Number(m.lng)]} icon={dot(m.color || '#2563eb', 18)}><Tooltip direction="top" offset={[0, -8]}>{m.label}</Tooltip></Marker>
-        ))}
-      </MapContainer>
+    <div className="space-y-2">
+      <form onSubmit={findPlace} className="flex gap-2 items-center">
+        <input className="flex-1 h-8 rounded-md border bg-background px-2 text-sm" placeholder="Search an employee name, or a place / address…" value={q} onChange={e => { setQ(e.target.value); setJump(null); setMsg(''); }} />
+        <button type="submit" disabled={searching || !q.trim()} className="h-8 px-3 rounded-md border text-sm hover:bg-muted whitespace-nowrap">{searching ? '…' : 'Find place'}</button>
+        {q && <button type="button" onClick={() => { setQ(''); setJump(null); setMsg(''); }} className="h-8 px-2 rounded-md border text-sm hover:bg-muted">Clear</button>}
+      </form>
+      <p className="text-xs text-muted-foreground">{term ? `${shown.length} of ${markers.length} pin${markers.length === 1 ? '' : 's'} match “${q.trim()}”.` : `${markers.length} pin${markers.length === 1 ? '' : 's'} shown.`}{msg && <span className="text-amber-700"> {msg}</span>}</p>
+      <div className="rounded-lg overflow-hidden border" style={{ height }}>
+        <MapContainer center={pts[0] || fencePts[0] || INDIA} zoom={pts.length ? 15 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
+          <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
+          <Resize />
+          <Fences fences={fences} />
+          {jump ? <FitTo points={[jump]} max={17} /> : pts.length > 0 && <FitTo points={pts.length === 1 ? [...pts, ...fencePts.slice(0, 1)] : pts} max={17} />}
+          {jump && <Marker position={jump} icon={pinIcon}><Tooltip direction="top" offset={[0, -30]}>{q.trim()}</Tooltip></Marker>}
+          {shown.map(m => (
+            <Marker key={m.id} position={[Number(m.lat), Number(m.lng)]} icon={dot(m.color || '#2563eb', 18)}><Tooltip direction="top" offset={[0, -8]}>{m.label}</Tooltip></Marker>
+          ))}
+        </MapContainer>
+      </div>
     </div>
   );
 }
