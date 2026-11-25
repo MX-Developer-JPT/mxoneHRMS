@@ -5,9 +5,9 @@
 # Default = northern zone (Delhi NCR, UP, Haryana, Punjab, Rajasthan...) + central zone (Madhya Pradesh incl. Indore/Ujjain, Chhattisgarh).
 # Whole-India extracts are too slow for Railway's build time limit (tried: the build was cut off); keep to the zones you operate in.
 # Other zones: western-zone, southern-zone, eastern-zone, north-eastern-zone.
-FROM alpine:3.20 AS download
+FROM debian:bookworm-slim AS download
 ARG PBF_URLS="https://download.geofabrik.de/asia/india/northern-zone-latest.osm.pbf https://download.geofabrik.de/asia/india/central-zone-latest.osm.pbf"
-RUN apk add --no-cache wget ca-certificates osmium-tool
+RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates osmium-tool && rm -rf /var/lib/apt/lists/*
 RUN set -e; i=0; for u in $PBF_URLS; do i=$((i+1)); wget -q -O /part$i.osm.pbf "$u"; done; \
     if [ "$i" -gt 1 ]; then osmium merge /part*.osm.pbf -o /region.osm.pbf; else mv /part1.osm.pbf /region.osm.pbf; fi; \
     rm -f /part*.osm.pbf
