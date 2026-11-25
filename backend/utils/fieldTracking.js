@@ -474,3 +474,34 @@ export function attendanceSyncAction({ eligible, attendance, activeTrip }) {
   if (!inProgress) return { action: 'stop', reason: 'OD check-out' };
   return { action: 'none' };
 }
+
+/* ── the server's clock decides every time; a phone's clock is only used to measure intervals ───────────── */
+
+// How far the phone's clock is from the server's, measured at upload: the phone sends its own "now" with each upload.
+// Anything the phone reports (fix times) is shifted by this, so a phone running minutes or hours fast/slow, or deliberately changed,
+// still lands on the true time. null = unusable (missing, or off by more than 12 h: then nothing is shifted and the usual
+// stale / future checks refuse what does not fit).
+export function clockOffsetMs(deviceNowIso, serverNowMs, maxMs = 12 * 3600000) {
+  const d = Date.parse(deviceNowIso);
+  if (!Number.isFinite(d)) return null;
+  const off = serverNowMs - d;
+  return Math.abs(off) <= maxMs ? off : null;
+}
+
+export function correctPointTimes(points, offsetMs) {
+  if (offsetMs == null || !Array.isArray(points)) return points;
+  return points.map(p => {
+    const ms = Date.parse(p?.t);
+    return Number.isFinite(ms) ? { ...p, t: new Date(ms + offsetMs).toISOString() } : p;
+  });
+}
+
+// When did a geofence crossing happen? Never the phone's clock: the phone reports when it crossed and what its own clock read when it
+// uploaded; the difference is how long ago it was (right even if the clock is wrong, as long as it did not change in between), and the
+// server subtracts that from ITS time of receipt. No device_now (an older app) = the crossing counts as happening at receipt.
+export function geofenceEventTime({ occurred_at, device_now }, serverNowMs) {
+  const occ = Date.parse(occurred_at), dev = Date.parse(device_now);
+  if (!Number.isFinite(occ) || !Number.isFinite(dev)) return { ms: serverNowMs, fromDevice: false, ageMs: 0 };
+  const ageMs = Math.max(0, dev - occ);
+  return { ms: serverNowMs - ageMs, fromDevice: true, ageMs };
+}

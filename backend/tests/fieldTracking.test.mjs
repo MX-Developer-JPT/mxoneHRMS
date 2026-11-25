@@ -341,3 +341,23 @@ test('attendance sync: tracking begins at OD check-in and ends at OD check-out',
   assert.equal(a({ eligible: true, attendance: null, activeTrip: t }).action, 'stop');
   assert.equal(a({ eligible: true, attendance: { ...od, is_in_progress: false }, activeTrip: { status: 'active' } }).action, 'none');   // a gate-pass trip is not ended by OD check-out
 });
+
+test('clock: a phone running fast or slow is corrected to server time; nonsense offsets are not trusted', async () => {
+  const { clockOffsetMs, correctPointTimes, geofenceEventTime } = await import('../utils/fieldTracking.js');
+  // phone is 7 minutes fast: its "now" reads 10:07 while the server says 10:00
+  const off = clockOffsetMs('2026-11-25T10:07:00.000Z', Date.parse('2026-11-25T10:00:00.000Z'));
+  assert.equal(off, -7 * 60000);
+  const fixed = correctPointTimes([{ t: '2026-11-25T10:05:00.000Z', lat: 1, lng: 1 }, { t: 'bad', lat: 1, lng: 1 }], off);
+  assert.equal(fixed[0].t, '2026-11-25T09:58:00.000Z'); assert.equal(fixed[1].t, 'bad');
+  assert.equal(clockOffsetMs('2026-11-25T23:00:00.000Z', Date.parse('2026-11-25T10:00:00.000Z')), null);   // 13 h off: ignored
+  assert.equal(clockOffsetMs(undefined, 1), null);
+  assert.equal(correctPointTimes([{ t: 'x' }], null)[0].t, 'x');
+  // a point stamped "in the future" by a fast phone becomes a valid recent one after correction
+  const s = screenPoints(correctPointTimes([pt(0, -400)], clockOffsetMs(new Date(NOW + 400000).toISOString(), NOW)), ctx());
+  assert.equal(s.accepted.length, 1);
+  // geofence crossing: phone clock wrong by +3 h, crossing reported 90 s before upload -> server time minus 90 s, not the phone's time
+  const ev = geofenceEventTime({ occurred_at: '2026-11-25T13:00:00.000Z', device_now: '2026-11-25T13:01:30.000Z' }, NOW);
+  assert.equal(ev.ms, NOW - 90000); assert.equal(ev.fromDevice, true);
+  assert.equal(geofenceEventTime({ occurred_at: '2026-11-25T13:00:00.000Z' }, NOW).ms, NOW);              // older app: receipt time
+  assert.equal(geofenceEventTime({ occurred_at: '2026-11-25T13:05:00.000Z', device_now: '2026-11-25T13:00:00.000Z' }, NOW).ms, NOW);   // negative age is clamped
+});

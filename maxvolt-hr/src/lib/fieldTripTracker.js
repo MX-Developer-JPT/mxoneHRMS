@@ -198,7 +198,7 @@ export async function flushNow() {
   const tripId = currentTripId;
   const points = buffer.splice(0, buffer.length);
   try {
-    const res = await base44.functions.invoke('logFieldPoints', { trip_id: tripId, points });
+    const res = await base44.functions.invoke('logFieldPoints', { trip_id: tripId, points, device_now: new Date().toISOString() });
     const d = res.data || res;
     if (d.success) { liveKm = d.distance_km || liveKm; persistBuffer(); notify(); return liveKm; }
     // The trip itself is gone/ended: nothing can ever accept these points.

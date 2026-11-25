@@ -647,7 +647,8 @@ async function flushOutbox() {
       let d;
       try {
         const { attempts, queued_at, ...payload } = ev;
-        const res = await base44.functions.invoke('nativeGeofenceEvent', payload);
+        // the phone's own clock at upload: lets the server work out how long ago the crossing was (it never trusts the phone's clock itself)
+        const res = await base44.functions.invoke('nativeGeofenceEvent', { ...payload, device_now: new Date().toISOString() });
         d = res?.data || res;
       } catch (e) {
         // Network / server unavailable: keep the event, retry with backoff.

@@ -4838,11 +4838,10 @@ router.post('/:name', async (req, res) => {
       if (is_mock === true) return res.json({ success: false, error: 'Mock locations are not accepted', code: 'MOCK_LOCATION' });
 
       // Effective event time: client occurred_at if plausible (≤48h old — an offline-queued event keeps its REAL time — and not future), else server now.
-      let evUtc = Date.now();
-      if (occurred_at) {
-        const t = Date.parse(occurred_at);
-        if (isFinite(t) && t <= Date.now() + 120000 && t >= Date.now() - 48 * 3600000) evUtc = t;
-      }
+      // The time of a crossing comes from the SERVER's clock: receipt time minus how long ago the phone says it was (measured on the phone's
+      // own clock, so a wrong or changed clock cannot move a punch). An older app that sends no device_now is stamped at receipt.
+      const ngClock = (await import('../utils/fieldTracking.js')).geofenceEventTime({ occurred_at, device_now: p.device_now }, Date.now());
+      let evUtc = ngClock.ms;
       // The native background paths post the instant it happens, with the PHONE's clock — which
       // anyone can change. For those, the server's own clock is the only time that counts.
       if (/^(android-os-geofence|ios-os-geofence|capacitor-background-geolocation-headless)/.test(String(device_id || ''))) evUtc = Date.now();
@@ -4854,7 +4853,7 @@ router.post('/:name', async (req, res) => {
       let ngPrev = null; try { ngPrev = ngDev ? JSON.parse(ngDev.data).last_geo || null : null; } catch { ngPrev = null; }
       const ngProblem = ngRules.geofenceEventProblem({
         event, accuracy, mock: is_mock === true || p.mock === true || p.simulated === true,
-        occurredMs: !ngHeadless && occurred_at && isFinite(Date.parse(occurred_at)) ? Date.parse(occurred_at) : null,
+        occurredMs: !ngHeadless && ngClock.fromDevice ? ngClock.ms : null,
         lat: Number(latitude), lng: Number(longitude), prev: ngPrev,
       }, ngCfg, Date.now());
       if (ngProblem) {
@@ -5416,7 +5415,8 @@ router.post('/:name', async (req, res) => {
       const { processPoints } = await import('../utils/fieldTrip.js');
       const lfNow = Date.now();
       const lfLast = (ft.points || [])[(ft.points || []).length - 1] || null;
-      const lfScreen = lfRules.screenPoints(points, { nowMs: lfNow, tripStartMs: Date.parse(ft.start_time) || 0, last: lfLast }, lfCfg);
+      const lfPoints = lfRules.correctPointTimes(points, lfRules.clockOffsetMs(p.device_now, lfNow));   // the phone's clock never decides a fix time
+      const lfScreen = lfRules.screenPoints(lfPoints, { nowMs: lfNow, tripStartMs: Date.parse(ft.start_time) || 0, last: lfLast }, lfCfg);
       const { trip: proc } = processPoints(ft, lfScreen.accepted, lfNow);
       const upd = {
         ...proc,

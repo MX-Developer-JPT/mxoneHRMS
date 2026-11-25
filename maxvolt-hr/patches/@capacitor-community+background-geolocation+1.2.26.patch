@@ -360,7 +360,7 @@ index fafbb86..20f7e04 100644
      private final IBinder binder = new LocalBinder();
  
      // Must be unique for this application.
-@@ -42,22 +75,97 @@ public class BackgroundGeolocationService extends Service {
+@@ -42,22 +75,104 @@ public class BackgroundGeolocationService extends Service {
      }
      private HashSet<Watcher> watchers = new HashSet<Watcher>();
  
@@ -379,6 +379,13 @@ index fafbb86..20f7e04 100644
 +    // The app UI is in the background (WebView not running JS reliably): native code takes over
 +    // geofence decisions even though JS watchers are still registered.
 +    private volatile boolean backgroundHandoff = false;
++    // Battery: GPS every few seconds only when it matters (near an office, moving, or recording a trip that is moving). Parked at a desk or
++    // far from every office the service drops to a low-power profile (network/wifi, 30 m movement, batched) and returns to precise the
++    // moment the phone moves. See updateHeadlessProfile().
++    private volatile boolean headlessEco = false;
++    private long headlessProfileAt = 0;
++    private long headlessLastMoveMs = 0;
++    private Location headlessAnchor = null;
 +    private int headlessFixCount = 0;
 +
 +    // Rolling on-device log of what native (JS-free) tracking did. The app reads it
@@ -460,7 +467,7 @@ index fafbb86..20f7e04 100644
          return false;
      }
  
-@@ -77,6 +185,10 @@ public class BackgroundGeolocationService extends Service {
+@@ -77,6 +192,10 @@ public class BackgroundGeolocationService extends Service {
                  Notification backgroundNotification,
                  float distanceFilter
          ) {
@@ -471,7 +478,7 @@ index fafbb86..20f7e04 100644
              FusedLocationProviderClient client = LocationServices.getFusedLocationProviderClient(
                      BackgroundGeolocationService.this
              );
-@@ -90,6 +202,8 @@ public class BackgroundGeolocationService extends Service {
+@@ -90,6 +209,8 @@ public class BackgroundGeolocationService extends Service {
                  @Override
                  public void onLocationResult(LocationResult locationResult) {
                      Location location = locationResult.getLastLocation();
@@ -480,7 +487,7 @@ index fafbb86..20f7e04 100644
                      Intent intent = new Intent(ACTION_BROADCAST);
                      intent.putExtra("location", location);
                      intent.putExtra("id", id);
-@@ -168,8 +282,400 @@ public class BackgroundGeolocationService extends Service {
+@@ -168,8 +289,442 @@ public class BackgroundGeolocationService extends Service {
              }
          }
  
@@ -527,11 +534,7 @@ index fafbb86..20f7e04 100644
 +        seedHeadlessAttendanceState(token, apiBase, fencesJson);
 +        headlessClient = LocationServices.getFusedLocationProviderClient(this);
 +
-+        LocationRequest request = new LocationRequest();
-+        request.setInterval(5000);
-+        request.setFastestInterval(3000);
-+        request.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
-+        request.setSmallestDisplacement(5f);
++        LocationRequest request = buildHeadlessRequest(false);
 +
 +        headlessCallback = new LocationCallback() {
 +            @Override
@@ -662,6 +665,51 @@ index fafbb86..20f7e04 100644
 +        }).start();
 +    }
 +
++    private LocationRequest buildHeadlessRequest(boolean eco) {
++        LocationRequest r = new LocationRequest();
++        if (eco) {
++            r.setInterval(30000);
++            r.setFastestInterval(15000);
++            r.setMaxWaitTime(90000);   // let the system batch updates
++            r.setPriority(LocationRequest.PRIORITY_BALANCED_POWER_ACCURACY);
++            r.setSmallestDisplacement(30f);
++        } else {
++            r.setInterval(5000);
++            r.setFastestInterval(3000);
++            r.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
++            r.setSmallestDisplacement(5f);
++        }
++        return r;
++    }
++
++    // Switches between the precise and the low-power profile. Eco only when (a) not recording a trip and over 1 km from every office, or
++    // (b) the phone has not moved 25 m for 4 minutes and is inside an office, recording a trip, or well away from the nearest office edge.
++    // Any movement beyond 25 m, or being close to an office edge while idle, returns to precise at once. Never switches more than once per 20 s.
++    private void updateHeadlessProfile(Location location, JSONArray fences) {
++        long now = System.currentTimeMillis();
++        if (headlessAnchor == null || location.distanceTo(headlessAnchor) > 25f) { headlessAnchor = location; headlessLastMoveMs = now; }
++        long stillMs = now - headlessLastMoveMs;
++        double nearest = Double.MAX_VALUE;
++        try {
++            for (int i = 0; i < fences.length(); i++) nearest = Math.min(nearest, signedDistance(fences.getJSONObject(i), location.getLatitude(), location.getLongitude()));
++        } catch (Exception ignored) { /* keep precise */ nearest = 0; }
++        boolean trip = TripRecorder.isActive(this);
++        boolean far = nearest > 1000 && !trip;
++        boolean parked = stillMs > 4 * 60000L && (trip || nearest < 0 || nearest > 150);
++        boolean wantEco = far || parked;
++        if (wantEco == headlessEco || now - headlessProfileAt < 20000) return;
++        try { headlessClient.removeLocationUpdates(headlessCallback); } catch (Exception ignored) { /* nothing registered */ }
++        try {
++            headlessClient.requestLocationUpdates(buildHeadlessRequest(wantEco), headlessCallback, android.os.Looper.getMainLooper());
++            headlessEco = wantEco;
++            headlessProfileAt = now;
++            diag("location profile -> " + (wantEco ? "low-power" : "precise"));
++        } catch (Exception e) {
++            // never end up with no location updates at all: fall back to precise
++            try { headlessClient.requestLocationUpdates(buildHeadlessRequest(false), headlessCallback, android.os.Looper.getMainLooper()); headlessEco = false; } catch (Exception ignored) { /* the service restarts on the next trigger */ }
++        }
++    }
++
 +    private void handleHeadlessLocation(Location location, String token, String fencesJson, String apiBase) {
 +        headlessFixCount++;
 +        if (headlessFixCount <= 2 || headlessFixCount % 20 == 0) diag("headless fix #" + headlessFixCount + " acc=" + (location.hasAccuracy() ? Math.round(location.getAccuracy()) : -1) + "m inProgress=" + headlessLastKnownInProgress + " owned=" + headlessGeofenceOwned);
@@ -673,6 +721,7 @@ index fafbb86..20f7e04 100644
 +        if (acc > 100) return;   // beyond even the looser departure limit the server accepts
 +        try {
 +            JSONArray fences = new JSONArray(fencesJson);
++            updateHeadlessProfile(location, fences);
 +
 +            JSONObject best = null;
 +            double bestDist = Double.MAX_VALUE;
@@ -1189,7 +1238,7 @@ new file mode 100644
 index 0000000..4bcf020
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,229 @@
 +package com.equimaps.capacitor_background_geolocation;
 +
 +import android.content.Context;
@@ -1357,6 +1406,9 @@ index 0000000..4bcf020
 +                JSONObject body = new JSONObject();
 +                body.put("trip_id", tripId);
 +                body.put("points", batch);
++                SimpleDateFormat nowIso = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
++                nowIso.setTimeZone(TimeZone.getTimeZone("UTC"));
++                body.put("device_now", nowIso.format(new Date()));   // the server shifts fix times by (its clock - this): a wrong phone clock cannot move a fix
 +                String resp = post(api + "/api/functions/logFieldPoints", token, body.toString());
 +                if (resp == null) { prefs(c).edit().putString(K_LAST_ERR, "no response").apply(); return false; }
 +                JSONObject r = new JSONObject(resp);

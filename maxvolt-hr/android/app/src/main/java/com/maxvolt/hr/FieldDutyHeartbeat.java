@@ -26,7 +26,7 @@ import org.json.JSONObject;
  */
 final class FieldDutyHeartbeat {
     private static final String TR_PREFS = "maxvolt_trip_recorder";
-    private static final long EVERY_MS = 60_000L;
+    private static final long EVERY_MS = 120_000L;     // battery: one tiny request every 2 minutes (the server treats 5 silent minutes as a gap)
     private static final long MAX_FIX_AGE_MS = 6L * 3600_000L;   // an older "last fix" no longer says where the phone is
     private static boolean started = false;
 
@@ -49,6 +49,7 @@ final class FieldDutyHeartbeat {
     private static void beat(final Context app) {
         SharedPreferences p = app.getSharedPreferences(TR_PREFS, Context.MODE_PRIVATE);
         if (!p.getBoolean("active", false)) return;
+        if (System.currentTimeMillis() - p.getLong("last_ok", 0) < 90_000L) return;   // a real upload just told the server; save the radio wake-up
         final String tripId = p.getString("trip_id", null), token = p.getString("token", null), api = p.getString("api_base", null), lastFix = p.getString("last_fix", null);
         if (tripId == null || token == null || api == null || lastFix == null) return;
         final JSONObject fix;
