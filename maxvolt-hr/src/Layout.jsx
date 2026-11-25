@@ -35,6 +35,7 @@ const LeavePage = lazy(() => import('./pages/Leave'));
 const ProfilePage = lazy(() => import('./pages/Profile'));
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { armFieldDutyWake, disarmFieldDutyWake } from '@/lib/fieldDutyWake';
+import LocationGate from '@/components/LocationGate';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
 import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption, isBackgroundGeofenceAvailable, resumeGeofence } from '@/lib/geofenceBackground';
 import { syncStatusBarTheme, initKeyboardAvoidance } from '@/lib/nativeChrome';
@@ -526,7 +527,7 @@ function NavItem({ item, isActive, onClick }) {
 }
 
 /* ── Layout ─────────────────────────────────────────────────── */
-export default function Layout({ children, currentPageName }) {
+function LayoutInner({ children, currentPageName }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { theme, setTheme, resolvedTheme } = useTheme();
@@ -1496,4 +1497,9 @@ export default function Layout({ children, currentPageName }) {
       <AppTour user={user} recheckKey={photoRequiredEmpId} />
     </div>
   );
+}
+
+// The location-access gate sits above the whole app: an employee who must grant location (see the tracking rules) and has not cannot use anything.
+export default function Layout(props) {
+  return (<><LocationGate /><LayoutInner {...props} /></>);
 }

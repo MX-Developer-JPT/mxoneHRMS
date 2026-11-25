@@ -85,7 +85,7 @@ test('screen: poor accuracy, out of order, too frequent, impossible speed', () =
 });
 
 test('screen: a batch uploaded out of order is sorted, the first fix may be a little rougher, heartbeats skip accuracy/interval', () => {
-  const r = screenPoints([pt(40, 50), pt(0, 100, { acc: 90 }), pt(40, 49, { hb: true, acc: 150 })], ctx());
+  const r = screenPoints([pt(40, 50), pt(0, 100, { acc: 55 }), pt(40, 49, { hb: true, acc: 150 })], ctx());
   assert.deepEqual(r.accepted.map(p => !!p.hb), [false, false, true]);
   assert.equal(r.rejectedCount, 0);
 });
@@ -199,4 +199,51 @@ test('wake: silent push goes out sooner and more often than the visible reminder
   assert.equal(wakeDue(t, { count: 1, lastMs: noon - 5 * 60000 }, noon), false);
   assert.equal(wakeDue(t, { count: NUDGE.WAKE_MAX, lastMs: 0 }, noon), false);
   assert.equal(wakeDue(t, null, Date.parse('2026-11-25T19:00:00Z')), false);
+});
+
+test('strict defaults: accuracy 30 m, speed 130, stale 6 h, gap 5 min; first fix may be 60 m', () => {
+  assert.equal(FT_DEFAULTS.max_accuracy_m, 30); assert.equal(FT_DEFAULTS.max_speed_kmh, 130);
+  assert.equal(FT_DEFAULTS.max_point_age_h, 6); assert.equal(FT_DEFAULTS.gap_minutes, 5);
+  const r = screenPoints([pt(0, 200, { acc: 55 }), pt(30, 150, { acc: 40 }), pt(60, 100, { acc: 25 })], ctx({ tripStartMs: 0 }));
+  assert.deepEqual(r.accepted.map(p => p.acc), [55, 25]);              // first fix 55 ok, 40 m refused, 25 m ok
+  assert.equal(r.rejected.accuracy, 1);
+  assert.equal(screenPoints([pt(0, 7 * 3600)], ctx({ tripStartMs: 0 })).rejected.stale, 1);
+});
+
+test('config: location-permission scope and new limits', () => {
+  assert.equal(normalizeConfig({ require_location_permission: 'all' }).require_location_permission, 'all');
+  assert.equal(normalizeConfig({ require_location_permission: 'nobody' }).require_location_permission, 'tracked');
+  assert.equal(normalizeConfig({ geofence_max_event_age_h: 500 }).geofence_max_event_age_h, 48);
+});
+
+test('location gate: who must grant location, and which device states block', async () => {
+  const { locationRequired, devicePolicyProblems } = await import('../utils/fieldTracking.js');
+  assert.equal(locationRequired({ field_duty_tracking_eligible: true }), true);
+  assert.equal(locationRequired({ geofence_eligible: true }), true);
+  assert.equal(locationRequired({}), false);
+  assert.equal(locationRequired({}, { ...FT_DEFAULTS, require_location_permission: 'all' }), true);
+  assert.equal(locationRequired({ geofence_eligible: true }, { ...FT_DEFAULTS, require_location_permission: 'off' }), false);
+  const good = { platform: 'android', fg: true, bg: true, gps: true, battery: true };
+  assert.deepEqual(devicePolicyProblems(good), []);
+  assert.deepEqual(devicePolicyProblems({ ...good, fg: false }), ['location_denied']);
+  assert.deepEqual(devicePolicyProblems({ ...good, bg: false, battery: false, gps: false }), ['gps_off', 'background_location_denied', 'battery_restricted']);
+  assert.deepEqual(devicePolicyProblems({ platform: 'ios', fg: true, bg: false, gps: true }), ['background_location_denied']);
+  assert.deepEqual(devicePolicyProblems({ platform: 'web', fg: true, gps: true }), []);       // a browser has no background / battery concept
+  assert.deepEqual(devicePolicyProblems({}), ['location_denied']);                            // unknown is not assumed fine
+  assert.deepEqual(devicePolicyProblems({ ...good, bg: false, battery: false }, { ...FT_DEFAULTS, require_background_permission: false, require_battery_exemption: false }), []);
+});
+
+test('geofence events: mock, accuracy (enter strict, exit looser), stale, future, impossible jump', async () => {
+  const { geofenceEventProblem } = await import('../utils/fieldTracking.js');
+  const base = { event: 'enter', accuracy: 20, occurredMs: NOW - 1000, lat: 28.6, lng: 77.2 };
+  assert.equal(geofenceEventProblem(base, FT_DEFAULTS, NOW), null);
+  assert.equal(geofenceEventProblem({ ...base, mock: true }, FT_DEFAULTS, NOW).code, 'MOCK_LOCATION');
+  assert.equal(geofenceEventProblem({ ...base, accuracy: 70 }, FT_DEFAULTS, NOW).code, 'LOW_ACCURACY');
+  assert.equal(geofenceEventProblem({ ...base, event: 'exit', accuracy: 70 }, FT_DEFAULTS, NOW), null);
+  assert.equal(geofenceEventProblem({ ...base, event: 'exit', accuracy: 120 }, FT_DEFAULTS, NOW).code, 'LOW_ACCURACY');
+  assert.equal(geofenceEventProblem({ ...base, occurredMs: NOW - 7 * 3600000 }, FT_DEFAULTS, NOW).code, 'STALE_EVENT');
+  assert.equal(geofenceEventProblem({ ...base, occurredMs: NOW + 600000 }, FT_DEFAULTS, NOW).code, 'FUTURE_EVENT');
+  const jump = { ...base, lat: 19.07, lng: 72.87, prev: { lat: 28.6, lng: 77.2, ms: NOW - 600000 } };
+  assert.equal(geofenceEventProblem(jump, FT_DEFAULTS, NOW).code, 'IMPOSSIBLE_SPEED');
+  assert.equal(geofenceEventProblem({ ...base, prev: { lat: 28.6, lng: 77.2001, ms: NOW - 600000 } }, FT_DEFAULTS, NOW), null);
 });

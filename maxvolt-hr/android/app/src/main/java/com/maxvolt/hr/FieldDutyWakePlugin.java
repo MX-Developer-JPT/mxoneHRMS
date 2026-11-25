@@ -1,5 +1,13 @@
 package com.maxvolt.hr;
 
+import android.Manifest;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.location.LocationManager;
+import android.os.Build;
+import android.os.PowerManager;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -25,6 +33,34 @@ public class FieldDutyWakePlugin extends Plugin {
     public void disarm(PluginCall call) {
         FieldDutyWake.disarm(getContext());
         call.resolve();
+    }
+
+    /** The phone's real location-related state, for the app's access gate and the server's audit trail. */
+    @PluginMethod
+    public void locationState(PluginCall call) {
+        Context c = getContext();
+        boolean fg = ContextCompat.checkSelfPermission(c, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean bg = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                || ContextCompat.checkSelfPermission(c, Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean gps = true;
+        try {
+            LocationManager lm = (LocationManager) c.getSystemService(Context.LOCATION_SERVICE);
+            if (lm != null) {
+                gps = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                        ? lm.isLocationEnabled()
+                        : (lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER));
+            }
+        } catch (Exception ignored) {}
+        boolean battery = true;
+        try {
+            PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+            if (pm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) battery = pm.isIgnoringBatteryOptimizations(c.getPackageName());
+        } catch (Exception ignored) {}
+        boolean notif = true;
+        try { notif = NotificationManagerCompat.from(c).areNotificationsEnabled(); } catch (Exception ignored) {}
+        JSObject ret = new JSObject();
+        ret.put("fg", fg); ret.put("bg", bg); ret.put("gps", gps); ret.put("battery", battery); ret.put("notif", notif);
+        call.resolve(ret);
     }
 
     @PluginMethod

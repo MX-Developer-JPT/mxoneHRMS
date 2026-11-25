@@ -4839,6 +4839,22 @@ router.post('/:name', async (req, res) => {
       // The native background paths post the instant it happens, with the PHONE's clock — which
       // anyone can change. For those, the server's own clock is the only time that counts.
       if (/^(android-os-geofence|ios-os-geofence|capacitor-background-geolocation-headless)/.test(String(device_id || ''))) evUtc = Date.now();
+      // Same rules as Field Duty tracking (utils/fieldTracking.js, thresholds in the tracking rules): mock, accuracy, stale, future, impossible jump.
+      const ngRules = await import('../utils/fieldTracking.js');
+      const ngCfg = await getFieldTrackingConfig();
+      const ngHeadless = /^(android-os-geofence|ios-os-geofence|capacitor-background-geolocation-headless)/.test(String(device_id || ''));
+      const ngDev = await one("SELECT data FROM entities WHERE id=$1 AND type='TrackingDevice'", ['td-' + cu.id]);
+      let ngPrev = null; try { ngPrev = ngDev ? JSON.parse(ngDev.data).last_geo || null : null; } catch { ngPrev = null; }
+      const ngProblem = ngRules.geofenceEventProblem({
+        event, accuracy, mock: is_mock === true || p.mock === true || p.simulated === true,
+        occurredMs: !ngHeadless && occurred_at && isFinite(Date.parse(occurred_at)) ? Date.parse(occurred_at) : null,
+        lat: Number(latitude), lng: Number(longitude), prev: ngPrev,
+      }, ngCfg, Date.now());
+      if (ngProblem) {
+        if (ngProblem.code === 'MOCK_LOCATION') recordTrackingDevice(cu.id, null, { mock: true, where: 'geofence' }).catch(() => {});
+        return res.json({ success: false, error: ngProblem.error, code: ngProblem.code });
+      }
+      if (isFinite(Number(latitude)) && isFinite(Number(longitude))) recordTrackingDevice(cu.id, null, { last_geo: { lat: Number(latitude), lng: Number(longitude), ms: evUtc } }).catch(() => {});
       const evIST = new Date(evUtc + 5.5 * 3600000); // store-IST-digits convention
       const evDate = evIST.toISOString().slice(0, 10);
 
@@ -5394,6 +5410,7 @@ router.post('/:name', async (req, res) => {
         rule_stats: lfRules.addRejectStats(ft.rule_stats, lfScreen.rejected),
       };
       await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
+      if (lfScreen.rejected.mock > 0) recordTrackingDevice(cu.id, null, { mock: true, where: 'field_duty' }).catch(() => {});
       return res.json({ success: true, distance_km: upd.distance_km, points_stored: upd.point_count, rejected: lfScreen.rejectedCount, rejected_reasons: lfScreen.rejected });
     }
 
@@ -5497,6 +5514,25 @@ router.post('/:name', async (req, res) => {
         })()) });
     }
 
+    // Does this employee have to grant location access to use the app at all (see the tracking rules)? The app shows a blocking screen when it is missing.
+    case 'getMyTrackingPolicy': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { locationRequired } = await import('../utils/fieldTracking.js');
+      const tpCfg = await getFieldTrackingConfig();
+      const tpEmp = await getFieldEmployee(cu.id);
+      return res.json({
+        success: true, required: locationRequired(tpEmp, tpCfg),
+        background: tpCfg.require_background_permission, battery: tpCfg.require_battery_exemption, report_minutes: tpCfg.device_report_minutes,
+      });
+    }
+    // The phone reports its own permission / GPS / battery state. The server keeps the latest state and every change, so HR can see
+    // when tracking was switched off and why. (The app also blocks itself on these states; this is the audit trail.)
+    case 'reportTrackingDevice': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const rd = await recordTrackingDevice(cu.id, { platform: p.platform, fg: p.fg, bg: p.bg, gps: p.gps, battery: p.battery, notif: p.notif, app_version: p.app_version });
+      return res.json({ success: true, problems: rd.problems || [] });
+    }
+
     // Field Duty tracking rules (thresholds): anyone signed in may read them, only HR may change them.
     case 'getFieldTrackingConfig': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
@@ -5520,11 +5556,13 @@ router.post('/:name', async (req, res) => {
       const feActive = {};
       for (const r of await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'")) feActive[r.user_id] = JSON.parse(r.data);
       const feCfg = await getFieldTrackingConfig();
+      const feDev = {};
+      for (const r of await all("SELECT user_id,data FROM entities WHERE type='TrackingDevice'")) { try { feDev[r.user_id] = JSON.parse(r.data).problems || []; } catch { /* skip */ } }
       const feNow = Date.now();
       const { liveStatus } = await import('../utils/fieldTracking.js');
       const employees = Object.entries(feEmp).filter(([uid]) => feV.isMgmt || (feV.visibleIds || []).includes(uid)).map(([uid, e]) => {
         const a = feActive[uid]; const pos = a ? (a.last_pos || (a.points || []).slice(-1)[0]) : null;
-        return { user_id: uid, ...e, on_duty: !!a, live: a ? liveStatus(pos?.t, feNow, feCfg) : null };
+        return { user_id: uid, ...e, on_duty: !!a, live: a ? liveStatus(pos?.t, feNow, feCfg) : null, device_problems: feDev[uid] || [] };
       }).sort((x, y) => (y.on_duty - x.on_duty) || String(x.name).localeCompare(String(y.name)));
       return res.json({ success: true, employees, config: feCfg, server_time: new Date(feNow).toISOString() });
     }
@@ -5560,6 +5598,12 @@ router.post('/:name', async (req, res) => {
         success: true, date: frDate, user_id: frUser,
         employee: frEmp ? { name: frEmp.display_name || 'Employee', code: frEmp.employee_code || '', department: frEmp.department || '', designation: frEmp.designation || '' } : null,
         route, config: { gap_minutes: frCfg.gap_minutes, live_stale_minutes: frCfg.live_stale_minutes }, server_time: new Date().toISOString(),
+        device: await (async () => {
+          const r = await one("SELECT data FROM entities WHERE id=$1 AND type='TrackingDevice'", ['td-' + frUser]);
+          if (!r) return null; const dv = JSON.parse(r.data);
+          const day = (iso) => istDate(Date.parse(iso)) === frDate;
+          return { platform: dv.platform || '', problems: dv.problems || [], reported_at: dv.at || null, events: (dv.events || []).filter(e => day(e.at)) };
+        })(),
       });
     }
 
@@ -21991,6 +22035,33 @@ async function getEligibleFieldEmployees() {
   }
   return out;
 }
+// What a phone last said about its own location permission / GPS / battery, plus a short history of changes and of rejected
+// (mock) locations. One private row per employee (TrackingDevice); only the field-duty / geofence functions touch it.
+async function recordTrackingDevice(userId, report, extra) {
+  const { devicePolicyProblems } = await import('../utils/fieldTracking.js');
+  const cfg = await getFieldTrackingConfig();
+  const id = 'td-' + userId;
+  const row = await one("SELECT data FROM entities WHERE id=$1 AND type='TrackingDevice'", [id]);
+  let d = {}; try { d = row ? JSON.parse(row.data) : {}; } catch { d = {}; }
+  const now = new Date().toISOString();
+  const events = Array.isArray(d.events) ? d.events.slice() : [];
+  const next = { ...d, id, user_id: userId };
+  if (report) {
+    const problems = devicePolicyProblems(report, cfg);
+    next.platform = String(report.platform || ''); next.fg = report.fg === true; next.bg = report.bg === true; next.gps = report.gps !== false;
+    next.battery = report.battery === true; next.notif = report.notif !== false; next.app_version = String(report.app_version || '').slice(0, 20);
+    next.at = now;
+    if (JSON.stringify(problems) !== JSON.stringify(d.problems || [])) events.push({ at: now, kind: 'device', problems });
+    next.problems = problems;
+  }
+  if (extra?.mock && !events.slice(-5).some(e => e.kind === 'mock_location' && Date.now() - Date.parse(e.at) < 300000)) events.push({ at: now, kind: 'mock_location', where: extra.where || '' });
+  if (extra?.last_geo) next.last_geo = extra.last_geo;
+  next.events = events.slice(-200);
+  await run("DELETE FROM entities WHERE id=$1 AND type='TrackingDevice'", [id]);
+  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'TrackingDevice',$2,'ready',$3)", [id, userId, JSON.stringify(next)]);
+  return next;
+}
+
 // Road-snapped route for display (self-hosted OSRM at OSRM_URL; see /osrm). Cached in its own row so it can never race with
 // the point uploads that rewrite the trip. Returns null when matching is off/unavailable — the map then draws the raw GPS line.
 async function getTripSnap(tr) {

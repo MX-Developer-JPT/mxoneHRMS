@@ -14,20 +14,28 @@ import { havM } from './fieldTrip.js';
 export const FT_DEFAULTS = {
   require_duty_day: true,      // tracking may only start on a day the employee is on approved field duty (OD attendance / official gate pass)
   reject_mock: true,           // reject fixes flagged as mocked / simulated by the phone
-  max_accuracy_m: 50,          // a fix less accurate than this is not stored (the very first fix of a trip may be 100 m)
+  max_accuracy_m: 30,          // a fix less accurate than this is not stored
+  first_fix_accuracy_m: 60,    // the very first fix of a session may be a little rougher so the start is not lost
   min_interval_s: 5,           // fixes closer together than this are dropped (battery / flood protection)
-  max_speed_kmh: 150,          // an implied speed above this between two fixes is a jump
-  max_point_age_h: 12,         // a fix older than this when it arrives is stale (a phone dumping an old buffer)
+  max_speed_kmh: 130,          // an implied speed above this between two fixes is a jump
+  max_point_age_h: 6,          // a fix older than this when it arrives is stale (a phone dumping an old buffer)
   max_future_s: 120,           // a fix timestamped later than this ahead of the server clock is rejected
-  gap_minutes: 10,             // nothing heard from the phone for this long = tracking gap
+  gap_minutes: 5,              // nothing heard from the phone for this long = tracking gap
   gap_moved_m: 150,            // a gap during which the phone moved at least this far is also counted as estimated distance
-  live_stale_minutes: 10,      // a "live" position older than this is shown as offline
+  live_stale_minutes: 5,       // a "live" position older than this is shown as offline
   max_batch: 500,              // points accepted in one upload
+  geofence_max_accuracy_m: 50,   // geofence ENTER (attendance in) is refused when the fix is less accurate than this
+  geofence_exit_accuracy_m: 100, // geofence EXIT: a little looser, because refusing it would leave a session wrongly open
+  geofence_max_event_age_h: 6,   // a queued geofence event older than this is refused (was 48 h)
+  require_location_permission: 'tracked',   // who may not open the app without location access: 'tracked' (field-duty / geofence employees), 'all', or 'off'
+  require_background_permission: true,      // "Allow all the time" is required, not just while-using
+  require_battery_exemption: true,          // Android: the app must be exempt from battery optimisation or the OS kills tracking
+  device_report_minutes: 5,                 // the phone reports its permission / GPS / battery state at least this often while the app is open
   snap_to_roads: true,         // draw routes along the road network (needs the OSRM service; display only, never changes distance)
 };
 
 const LIMITS = {
-  max_accuracy_m: [5, 100], min_interval_s: [1, 120], max_speed_kmh: [30, 300], max_point_age_h: [1, 72],
+  max_accuracy_m: [5, 100], first_fix_accuracy_m: [10, 150], geofence_max_accuracy_m: [10, 150], geofence_exit_accuracy_m: [10, 250], geofence_max_event_age_h: [1, 48], device_report_minutes: [1, 60], min_interval_s: [1, 120], max_speed_kmh: [30, 300], max_point_age_h: [1, 72],
   max_future_s: [0, 600], gap_minutes: [2, 120], gap_moved_m: [20, 2000], live_stale_minutes: [2, 120], max_batch: [10, 1000],
 };
 
@@ -35,11 +43,12 @@ const LIMITS = {
 export function normalizeConfig(raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
   const cfg = { ...FT_DEFAULTS };
-  for (const k of ['require_duty_day', 'reject_mock', 'snap_to_roads']) if (typeof r[k] === 'boolean') cfg[k] = r[k];
+  for (const k of ['require_duty_day', 'reject_mock', 'snap_to_roads', 'require_background_permission', 'require_battery_exemption']) if (typeof r[k] === 'boolean') cfg[k] = r[k];
   for (const [k, [lo, hi]] of Object.entries(LIMITS)) {
     const v = Number(r[k]);
     if (r[k] != null && r[k] !== '' && Number.isFinite(v)) cfg[k] = Math.min(hi, Math.max(lo, v));
   }
+  if (['off', 'tracked', 'all'].includes(r.require_location_permission)) cfg.require_location_permission = r.require_location_permission;
   return cfg;
 }
 
@@ -106,7 +115,7 @@ export function screenPoints(incoming, ctx, cfgIn) {
     if (p.tMs < now - cfg.max_point_age_h * 3600000) { rej.stale++; continue; }
     if (startMs && p.tMs < startMs - 60000) { rej.before_start++; continue; }   // recorded before this session began
     if (!p.hb) {
-      const accLimit = last ? cfg.max_accuracy_m : Math.max(cfg.max_accuracy_m, 100);
+      const accLimit = last ? cfg.max_accuracy_m : Math.max(cfg.max_accuracy_m, cfg.first_fix_accuracy_m);
       if (p.acc > accLimit) { rej.accuracy++; continue; }
       if (last && p.tMs <= last.tMs) { rej.out_of_order++; continue; }
       if (last && (p.tMs - last.tMs) / 1000 < cfg.min_interval_s) { rej.interval++; continue; }
@@ -274,4 +283,58 @@ export function wakeDue(trip, state, nowMs) {
   if (state && state.count >= NUDGE.WAKE_MAX) return false;
   if (state && nowMs - state.lastMs < NUDGE.WAKE_EVERY_MIN * 60000) return false;
   return true;
+}
+
+/* ── device state, location gate, geofence events ───────────────────────── */
+
+// Who must have location access to use the app at all. 'tracked' = anyone HR enabled for field duty tracking or geofence attendance.
+export function locationRequired(emp, cfg = FT_DEFAULTS) {
+  if (cfg.require_location_permission === 'off') return false;
+  if (cfg.require_location_permission === 'all') return true;
+  return !!(emp && (emp.field_duty_tracking_eligible || emp.geofence_eligible));
+}
+
+// report: what the phone says about itself { platform, fg, bg, gps, battery, notif }. Missing facts are not assumed fine for
+// the ones that matter; a browser (no bg / battery concept) is only held to foreground location + GPS.
+export function devicePolicyProblems(report, cfg = FT_DEFAULTS) {
+  const r = report || {};
+  const native = r.platform === 'android' || r.platform === 'ios';
+  const out = [];
+  if (r.fg !== true) out.push('location_denied');
+  if (r.gps === false) out.push('gps_off');
+  if (native && cfg.require_background_permission && r.bg !== true) out.push('background_location_denied');
+  if (r.platform === 'android' && cfg.require_battery_exemption && r.battery !== true) out.push('battery_restricted');
+  return out;
+}
+
+export const PROBLEM_TEXT = {
+  location_denied: 'Location permission is off',
+  gps_off: 'Phone location (GPS) is switched off',
+  background_location_denied: 'Location is not set to "Allow all the time"',
+  battery_restricted: 'Battery optimisation is not switched off for Maxvolt One',
+};
+
+// A phone that has not reported within 2x the reporting interval + a minute while the app should be open is "unknown", not "fine".
+export function deviceReportAge(report, nowMs) {
+  const at = Date.parse(report?.at);
+  return Number.isFinite(at) ? Math.round((nowMs - at) / 60000) : null;
+}
+
+// Geofence attendance events get the same believability rules as field-duty fixes.
+export function geofenceEventProblem(ev, cfg, nowMs) {
+  const c = cfg || FT_DEFAULTS;
+  const e = ev || {};
+  if (c.reject_mock && (e.mock === true || e.is_mock === true || e.simulated === true)) return { code: 'MOCK_LOCATION', error: 'Mock locations are not accepted' };
+  const acc = Number(e.accuracy);
+  const limit = e.event === 'exit' ? c.geofence_exit_accuracy_m : c.geofence_max_accuracy_m;
+  if (Number.isFinite(acc) && acc > limit) return { code: 'LOW_ACCURACY', error: `GPS accuracy too low (${Math.round(acc)} m, limit ${limit} m)` };
+  if (e.occurredMs != null) {
+    if (e.occurredMs > nowMs + c.max_future_s * 1000) return { code: 'FUTURE_EVENT', error: 'Event time is in the future' };
+    if (e.occurredMs < nowMs - c.geofence_max_event_age_h * 3600000) return { code: 'STALE_EVENT', error: `Event is older than ${c.geofence_max_event_age_h} hours` };
+  }
+  if (e.prev && Number.isFinite(e.lat) && Number.isFinite(e.lng) && e.occurredMs != null && Number.isFinite(e.prev.ms) && e.occurredMs > e.prev.ms) {
+    const kmh = havM(e.prev, { lat: e.lat, lng: e.lng }) / ((e.occurredMs - e.prev.ms) / 1000) * 3.6;
+    if (kmh > c.max_speed_kmh) return { code: 'IMPOSSIBLE_SPEED', error: 'Position jumped faster than a person can travel' };
+  }
+  return null;
 }

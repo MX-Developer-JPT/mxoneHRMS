@@ -21,7 +21,16 @@ const GAP_LABEL = {
 };
 
 // The rules HR can tune. Defaults are strict; the server clamps every value to a safe range.
+const PROBLEM_LABEL = {
+  location_denied: 'Location permission off', gps_off: 'GPS switched off',
+  background_location_denied: 'Not "Allow all the time"', battery_restricted: 'Battery optimisation on',
+};
 const RULE_FIELDS = [
+  ['first_fix_accuracy_m', 'First fix max error (m)', 'The start of a session may be a little rougher'],
+  ['geofence_max_accuracy_m', 'Geofence entry max error (m)', 'Attendance IN is refused when less accurate'],
+  ['geofence_exit_accuracy_m', 'Geofence exit max error (m)', 'Looser: refusing an exit leaves a day open'],
+  ['geofence_max_event_age_h', 'Geofence event max age (h)', 'Older queued events are refused'],
+  ['device_report_minutes', 'Phone status report (min)', 'How often the app reports permission / GPS / battery'],
   ['max_accuracy_m', 'Max GPS error (m)', 'Fixes less accurate than this are dropped'],
   ['min_interval_s', 'Min seconds between fixes', 'Closer fixes are dropped'],
   ['max_speed_kmh', 'Max speed (km/h)', 'Faster jumps between fixes are rejected'],
@@ -53,6 +62,12 @@ function RulesEditor({ onClose }) {
       </div>
       <div className="flex flex-wrap gap-6">
         <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.reject_mock} onCheckedChange={v => setCfg({ ...cfg, reject_mock: v })} /> Reject mock / fake-GPS locations</label>
+        <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.require_background_permission} onCheckedChange={v => setCfg({ ...cfg, require_background_permission: v })} /> Require "Allow all the time" location</label>
+        <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.require_battery_exemption} onCheckedChange={v => setCfg({ ...cfg, require_battery_exemption: v })} /> Require battery optimisation off (Android)</label>
+        <label className="flex items-center gap-2 text-sm">Block the app without location for
+          <select className="border rounded px-2 py-1 text-sm" value={cfg.require_location_permission || 'tracked'} onChange={e => setCfg({ ...cfg, require_location_permission: e.target.value })}>
+            <option value="tracked">field-duty / geofence employees</option><option value="all">everyone</option><option value="off">nobody</option>
+          </select></label>
         <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.snap_to_roads} onCheckedChange={v => setCfg({ ...cfg, snap_to_roads: v })} /> Draw routes along roads (needs the road-matching service)</label>
         <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.require_duty_day} onCheckedChange={v => setCfg({ ...cfg, require_duty_day: v })} /> Track only on an approved field-duty day (OD attendance or official gate pass)</label>
       </div>
@@ -152,6 +167,7 @@ export default function FieldTrackingPanel({ isHR }) {
                   <div key={e.user_id} onClick={() => setSelected(e.user_id)} className={`cursor-pointer rounded-lg border px-3 py-2 ${selected === e.user_id ? 'border-orange-400 bg-orange-50' : 'hover:bg-gray-50'}`}>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium text-gray-800 truncate">{e.name}</span>
+                      {e.device_problems?.length > 0 && <span title={e.device_problems.map(k => PROBLEM_LABEL[k] || k).join(', ')} className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 shrink-0">phone issue</span>}
                       {e.on_duty ? <span className={`text-[10px] px-2 py-0.5 rounded-full ${e.live?.state === 'live' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{e.live?.state === 'live' ? 'on duty · live' : e.live?.state === 'offline' ? `offline ${e.live.age_minutes} min` : 'on duty'}</span> : null}
                     </div>
                     <p className="text-[11px] text-gray-500 truncate">{e.code} · {e.department}</p>
@@ -180,6 +196,12 @@ export default function FieldTrackingPanel({ isHR }) {
                         ? <p className="text-sm text-gray-400 text-center py-16 border rounded-lg">No field-duty tracking was recorded for this employee on {data.date}.</p>
                         : <EmployeeRouteMap route={route} fences={fences} />}
                       {route.segments.length > 0 && <p className="text-[11px] text-gray-500">{route.snap?.enabled && route.snap.matched_pct != null ? `Drawn along roads (${route.snap.matched_pct}% of the path matched to the road network); the rest follows the raw GPS line. Distance always comes from the GPS points.` : 'Drawn from the raw GPS points (road matching is not active).'}{date === todayIST() ? ' Refreshes every 10 seconds.' : ''}</p>}
+                      {(data.device?.problems?.length > 0 || data.device?.events?.length > 0) && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-1">
+                          <p className="text-sm font-medium text-amber-900 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" />Phone status {data.device.reported_at ? <span className="text-xs font-normal text-amber-700">(last report {fmtTime(data.device.reported_at)})</span> : null}</p>
+                          {data.device.problems.length > 0 && <p className="text-xs text-amber-800">Now: {data.device.problems.map(k => PROBLEM_LABEL[k] || k).join(' · ')}</p>}
+                          {data.device.events.map((ev, i) => <p key={i} className="text-xs text-amber-800">{fmtTime(ev.at)} · {ev.kind === 'mock_location' ? `Fake / mock location rejected (${ev.where === 'geofence' ? 'attendance' : 'field duty'})` : ev.problems.length ? ev.problems.map(k => PROBLEM_LABEL[k] || k).join(' · ') : 'Phone settings OK again'}</p>)}
+                        </div>)}
                       {route.gaps.length > 0 && (
                         <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-1">
                           <p className="text-sm font-medium text-red-800 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" />Tracking gaps (dashed red on the map)</p>
