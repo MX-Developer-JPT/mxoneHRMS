@@ -27,7 +27,8 @@ export const FT_DEFAULTS = {
   geofence_max_accuracy_m: 50,   // geofence ENTER (attendance in) is refused when the fix is less accurate than this
   geofence_exit_accuracy_m: 100, // geofence EXIT: a little looser, because refusing it would leave a session wrongly open
   geofence_max_event_age_h: 6,   // a queued geofence event older than this is refused (was 48 h)
-  require_location_permission: 'tracked',   // who may not open the app without location access: 'tracked' (field-duty / geofence employees), 'all', or 'off'
+  require_location_permission: 'off',       // who is BLOCKED from the app without location access: 'tracked' (field-duty / geofence employees), 'all', or 'off' (off for now)
+  guide_location_permission: 'tracked',     // who is GUIDED (not blocked) to enable it, and alerted if they switch it off: 'tracked', 'all' or 'off'
   require_background_permission: true,      // "Allow all the time" is required, not just while-using
   require_battery_exemption: true,          // Android: the app must be exempt from battery optimisation or the OS kills tracking
   device_report_minutes: 5,                 // the phone reports its permission / GPS / battery state at least this often while the app is open
@@ -49,6 +50,7 @@ export function normalizeConfig(raw) {
     if (r[k] != null && r[k] !== '' && Number.isFinite(v)) cfg[k] = Math.min(hi, Math.max(lo, v));
   }
   if (['off', 'tracked', 'all'].includes(r.require_location_permission)) cfg.require_location_permission = r.require_location_permission;
+  if (['off', 'tracked', 'all'].includes(r.guide_location_permission)) cfg.guide_location_permission = r.guide_location_permission;
   return cfg;
 }
 
@@ -291,6 +293,13 @@ export function wakeDue(trip, state, nowMs) {
 export function locationRequired(emp, cfg = FT_DEFAULTS) {
   if (cfg.require_location_permission === 'off') return false;
   if (cfg.require_location_permission === 'all') return true;
+  return !!(emp && (emp.field_duty_tracking_eligible || emp.geofence_eligible));
+}
+
+// Who is guided (a dismissible prompt, never a block) to enable location access and alerted if they switch it off.
+export function locationGuide(emp, cfg = FT_DEFAULTS) {
+  if (cfg.guide_location_permission === 'off') return false;
+  if (cfg.guide_location_permission === 'all') return true;
   return !!(emp && (emp.field_duty_tracking_eligible || emp.geofence_eligible));
 }
 

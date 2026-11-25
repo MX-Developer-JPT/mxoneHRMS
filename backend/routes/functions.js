@@ -5517,11 +5517,11 @@ router.post('/:name', async (req, res) => {
     // Does this employee have to grant location access to use the app at all (see the tracking rules)? The app shows a blocking screen when it is missing.
     case 'getMyTrackingPolicy': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const { locationRequired } = await import('../utils/fieldTracking.js');
+      const { locationRequired, locationGuide } = await import('../utils/fieldTracking.js');
       const tpCfg = await getFieldTrackingConfig();
       const tpEmp = await getFieldEmployee(cu.id);
       return res.json({
-        success: true, required: locationRequired(tpEmp, tpCfg),
+        success: true, required: locationRequired(tpEmp, tpCfg), guide: locationGuide(tpEmp, tpCfg),
         background: tpCfg.require_background_permission, battery: tpCfg.require_battery_exemption, report_minutes: tpCfg.device_report_minutes,
       });
     }

@@ -64,6 +64,10 @@ function RulesEditor({ onClose }) {
         <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.reject_mock} onCheckedChange={v => setCfg({ ...cfg, reject_mock: v })} /> Reject mock / fake-GPS locations</label>
         <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.require_background_permission} onCheckedChange={v => setCfg({ ...cfg, require_background_permission: v })} /> Require "Allow all the time" location</label>
         <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.require_battery_exemption} onCheckedChange={v => setCfg({ ...cfg, require_battery_exemption: v })} /> Require battery optimisation off (Android)</label>
+        <label className="flex items-center gap-2 text-sm">Guide to enable location (never blocks) for
+          <select className="border rounded px-2 py-1 text-sm" value={cfg.guide_location_permission || 'tracked'} onChange={e => setCfg({ ...cfg, guide_location_permission: e.target.value })}>
+            <option value="tracked">field-duty / geofence employees</option><option value="all">everyone</option><option value="off">nobody</option>
+          </select></label>
         <label className="flex items-center gap-2 text-sm">Block the app without location for
           <select className="border rounded px-2 py-1 text-sm" value={cfg.require_location_permission || 'tracked'} onChange={e => setCfg({ ...cfg, require_location_permission: e.target.value })}>
             <option value="tracked">field-duty / geofence employees</option><option value="all">everyone</option><option value="off">nobody</option>

@@ -212,17 +212,24 @@ test('strict defaults: accuracy 30 m, speed 130, stale 6 h, gap 5 min; first fix
 
 test('config: location-permission scope and new limits', () => {
   assert.equal(normalizeConfig({ require_location_permission: 'all' }).require_location_permission, 'all');
-  assert.equal(normalizeConfig({ require_location_permission: 'nobody' }).require_location_permission, 'tracked');
+  assert.equal(normalizeConfig({ require_location_permission: 'nobody' }).require_location_permission, 'off');
   assert.equal(normalizeConfig({ geofence_max_event_age_h: 500 }).geofence_max_event_age_h, 48);
 });
 
 test('location gate: who must grant location, and which device states block', async () => {
   const { locationRequired, devicePolicyProblems } = await import('../utils/fieldTracking.js');
-  assert.equal(locationRequired({ field_duty_tracking_eligible: true }), true);
-  assert.equal(locationRequired({ geofence_eligible: true }), true);
-  assert.equal(locationRequired({}), false);
+  const block = { ...FT_DEFAULTS, require_location_permission: 'tracked' };
+  assert.equal(locationRequired({ field_duty_tracking_eligible: true }), false);          // blocking is off by default for now
+  assert.equal(locationRequired({ field_duty_tracking_eligible: true }, block), true);
+  assert.equal(locationRequired({ geofence_eligible: true }, block), true);
+  assert.equal(locationRequired({}, block), false);
+  const { locationGuide } = await import('../utils/fieldTracking.js');
+  assert.equal(locationGuide({ field_duty_tracking_eligible: true }), true);               // guidance is on for tracked employees
+  assert.equal(locationGuide({ geofence_eligible: true }), true);
+  assert.equal(locationGuide({}), false);
+  assert.equal(locationGuide({}, { ...FT_DEFAULTS, guide_location_permission: 'all' }), true);
+  assert.equal(locationGuide({ geofence_eligible: true }, { ...FT_DEFAULTS, guide_location_permission: 'off' }), false);
   assert.equal(locationRequired({}, { ...FT_DEFAULTS, require_location_permission: 'all' }), true);
-  assert.equal(locationRequired({ geofence_eligible: true }, { ...FT_DEFAULTS, require_location_permission: 'off' }), false);
   const good = { platform: 'android', fg: true, bg: true, gps: true, battery: true };
   assert.deepEqual(devicePolicyProblems(good), []);
   assert.deepEqual(devicePolicyProblems({ ...good, fg: false }), ['location_denied']);

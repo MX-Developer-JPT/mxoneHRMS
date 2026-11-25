@@ -1,7 +1,7 @@
 // Watches active Field Duty sessions. When the phone has gone quiet (never opened the app, app force-stopped, permission lost),
 // the employee gets a push notification (shown even with the app closed and the phone locked); tapping it opens the app, which
 // starts the phone's background recorder. Eligibility is re-checked every time: nobody HR has switched off is ever nudged.
-import { all } from '../db.js';
+import { all, one } from '../db.js';
 import { sendPushToUser, sendFieldDutyWake } from '../utils/push.js';
 import { nudgeDue, wakeDue } from '../utils/fieldTracking.js';
 
@@ -26,9 +26,13 @@ export async function nudgeSilentFieldSessions(nowMs = Date.now()) {
     }
     const st = state.get(t.id);
     if (!nudgeDue(t, st, nowMs)) continue;
+    let locOff = false;
+    try { const dv = await one("SELECT data FROM entities WHERE id=$1 AND type='TrackingDevice'", ['td-' + r.user_id]); locOff = !!dv && (JSON.parse(dv.data).problems || []).length > 0; } catch { /* unknown */ }
     await sendPushToUser(r.user_id, {
-      title: 'Field Duty tracking needs your phone',
-      message: 'Open Maxvolt One now so your location can be recorded for today\'s field duty. Keep location on "Allow all the time".',
+      title: locOff ? 'Location is switched off for Maxvolt One' : 'Field Duty tracking needs your phone',
+      message: locOff
+        ? 'Your field duty is not being recorded. Open Maxvolt One and turn location back on (Allow all the time).'
+        : 'Open Maxvolt One now so your location can be recorded for today\'s field duty. Keep location on "Allow all the time".',
       link: '/FieldDuty', type: 'warning',
     });
     state.set(t.id, { count: (st?.count || 0) + 1, lastMs: nowMs });
