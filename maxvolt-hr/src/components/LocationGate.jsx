@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { MapPinOff, ShieldAlert, Settings, RefreshCw, LogOut } from 'lucide-react';
-import { readLocationState, problemsFor, requestLocationAccess, openLocationSettings, PROBLEM_TEXT } from '@/lib/locationAccess';
+import { readLocationState, problemsFor, requestLocationAccess, openLocationSettings, PROBLEM_TEXT, PROBLEM_STEPS } from '@/lib/locationAccess';
 
 const POLICY_KEY = 'mv_location_policy_v1';
 const loadPolicy = () => { try { return JSON.parse(localStorage.getItem(POLICY_KEY) || 'null'); } catch { return null; } };
@@ -80,14 +80,20 @@ export default function LocationGate() {
           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">You cannot use Maxvolt One until the settings below are fixed. Your location is used only for attendance and field duty.</p>
         </div>
         <ul className="text-left space-y-2">
-          {problems.map(k => (
-            <li key={k} className="flex gap-2 rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm text-orange-900"><ShieldAlert className="w-4 h-4 mt-0.5 shrink-0" /><span>{PROBLEM_TEXT[k] || k}</span></li>
-          ))}
+          {problems.map(k => {
+            const steps = (PROBLEM_STEPS[stateRef.current?.platform] || PROBLEM_STEPS.web)[k];
+            return (
+              <li key={k} className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm text-orange-900">
+                <div className="flex gap-2"><ShieldAlert className="w-4 h-4 mt-0.5 shrink-0" /><span className="font-medium">{PROBLEM_TEXT[k] || k}</span></div>
+                {steps && <ol className="list-decimal ml-10 mt-1.5 space-y-0.5 text-xs text-orange-800">{steps.map((st, i) => <li key={i}>{st}</li>)}</ol>}
+              </li>);
+          })}
         </ul>
         <div className="space-y-2">
           <Button className="w-full bg-orange-600 hover:bg-orange-700 text-white" disabled={busy} onClick={fix}>{busy ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : null}Enable location access</Button>
           <Button variant="outline" className="w-full" onClick={() => openLocationSettings()}><Settings className="w-4 h-4 mr-2" />Open phone settings</Button>
-          <p className="text-xs text-gray-500">Set Location to "Allow all the time" and Battery to "Unrestricted", then come back. This screen closes by itself.</p>
+          <Button variant="outline" className="w-full" disabled={busy} onClick={() => { setBusy(true); check().finally(() => setBusy(false)); }}>I have done this - check again</Button>
+          <p className="text-xs text-gray-500">This screen closes by itself as soon as everything is allowed. If location is already allowed on your phone you will not see it.</p>
           <button className="text-xs text-gray-500 underline inline-flex items-center gap-1" onClick={logout}><LogOut className="w-3 h-3" />Sign out</button>
         </div>
       </div>
