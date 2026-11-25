@@ -41,6 +41,7 @@ import { kioskRouter, kioskAdminRouter } from './routes/kiosk.js';
 import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, sendPreShiftReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 import { closeUnreturnedGatePasses, closeStaleGatePassRequests } from './cron/gatePassAutomation.js';
+import { nudgeSilentFieldSessions } from './cron/fieldTrackingWatch.js';
 import { sendConfirmationDueReminders } from './cron/confirmationAutomation.js';
 import { sendExitClearanceReminders } from './cron/exitClearanceReminders.js';
 import { sendAbsentLeaveReminders, sendRegularisationReminders, sendCelebrationNotifications, sendUpcomingHolidayReminders } from './cron/dailyReminders.js';
@@ -503,6 +504,12 @@ cron.schedule('*/5 * * * *', () => {
   sendShiftStartReminders().catch(err => console.error('[shift-start-reminders] failed:', err));
   sendShiftEndReminders().catch(err => console.error('[shift-end-reminders] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
+
+// ── Field Duty: remind employees whose phone has gone quiet during a tracked session (push; daytime only, capped) ──
+cron.schedule('*/10 * * * *', () => {
+  nudgeSilentFieldSessions().catch(err => console.error('[field-nudge] failed:', err));
+}, { timezone: 'Asia/Kolkata' });
+setTimeout(() => nudgeSilentFieldSessions().catch(err => console.error('[field-nudge] startup run failed:', err)), 90000);
 
 // ── Gate pass auto-close — every 15 minutes ───────────────────
 // Closes any gate pass still "departed" once that employee's own shift has

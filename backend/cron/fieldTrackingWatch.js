@@ -1,0 +1,32 @@
+// Watches active Field Duty sessions. When the phone has gone quiet (never opened the app, app force-stopped, permission lost),
+// the employee gets a push notification (shown even with the app closed and the phone locked); tapping it opens the app, which
+// starts the phone's background recorder. Eligibility is re-checked every time: nobody HR has switched off is ever nudged.
+import { all } from '../db.js';
+import { sendPushToUser } from '../utils/push.js';
+import { nudgeDue } from '../utils/fieldTracking.js';
+
+const state = new Map();   // trip id -> { count, lastMs }   (in memory: a restart simply allows one more reminder)
+
+export async function nudgeSilentFieldSessions(nowMs = Date.now()) {
+  const trips = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'");
+  if (!trips.length) return { checked: 0, nudged: 0 };
+  const eligible = new Set();
+  for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")) {
+    try { if (JSON.parse(r.data).field_duty_tracking_eligible) eligible.add(r.user_id); } catch { /* skip */ }
+  }
+  let nudged = 0;
+  for (const r of trips) {
+    let t; try { t = JSON.parse(r.data); } catch { continue; }
+    if (!eligible.has(r.user_id)) continue;
+    const st = state.get(t.id);
+    if (!nudgeDue(t, st, nowMs)) continue;
+    await sendPushToUser(r.user_id, {
+      title: 'Field Duty tracking needs your phone',
+      message: 'Open Maxvolt One now so your location can be recorded for today\'s field duty. Keep location on "Allow all the time".',
+      link: '/FieldDuty', type: 'warning',
+    });
+    state.set(t.id, { count: (st?.count || 0) + 1, lastMs: nowMs });
+    nudged++;
+  }
+  return { checked: trips.length, nudged };
+}

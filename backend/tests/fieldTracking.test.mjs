@@ -175,3 +175,16 @@ test('privacy: self, HR/management, own hierarchy only', () => {
   assert.equal(canViewLocation({ ...base, isManager: true, visibleIds: null }), false);
   assert.equal(canViewLocation({ ...base, viewerId: null }), false);
 });
+
+test('nudge: only silent active sessions, in daytime, rate-limited and capped', async () => {
+  const { nudgeDue, NUDGE } = await import('../utils/fieldTracking.js');
+  const noon = Date.parse('2026-11-25T06:30:00Z');                         // 12:00 IST
+  const t = { status: 'active', start_time: new Date(noon - 3600000).toISOString() };
+  assert.equal(nudgeDue(t, null, noon), true);
+  assert.equal(nudgeDue({ ...t, last_point_at: new Date(noon - 120000).toISOString() }, null, noon), false);   // heard 2 min ago
+  assert.equal(nudgeDue({ ...t, status: 'completed' }, null, noon), false);
+  assert.equal(nudgeDue(t, { count: 1, lastMs: noon - 5 * 60000 }, noon), false);                              // too soon
+  assert.equal(nudgeDue(t, { count: 1, lastMs: noon - (NUDGE.EVERY_MIN + 1) * 60000 }, noon), true);
+  assert.equal(nudgeDue(t, { count: NUDGE.MAX, lastMs: 0 }, noon), false);                                     // capped
+  assert.equal(nudgeDue(t, null, Date.parse('2026-11-25T18:30:00Z')), false);                                  // midnight IST
+});

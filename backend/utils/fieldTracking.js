@@ -246,3 +246,20 @@ export function canViewLocation({ viewerId, subjectId, isMgmt, isManager, visibl
   if (isManager && Array.isArray(visibleIds)) return visibleIds.includes(subjectId);
   return false;
 }
+
+/* ── nudging silent sessions ────────────────────────────────────────────── */
+
+export const NUDGE = { QUIET_MIN: 10, EVERY_MIN: 20, MAX: 6, FROM_HOUR: 8, TO_HOUR: 21 };
+
+// An active session whose phone has not been heard from recently needs the employee to open the app (the app starts the
+// phone's background recorder, which then keeps going with the screen locked or the app closed). state: { count, lastMs }.
+export function nudgeDue(trip, state, nowMs) {
+  if (!trip || trip.status !== 'active') return false;
+  const hour = new Date(nowMs + 5.5 * 3600000).getUTCHours();
+  if (hour < NUDGE.FROM_HOUR || hour >= NUDGE.TO_HOUR) return false;               // never at night
+  const heardMs = Date.parse(trip.last_point_at || trip.start_time);
+  if (!Number.isFinite(heardMs) || nowMs - heardMs < NUDGE.QUIET_MIN * 60000) return false;
+  if (state && state.count >= NUDGE.MAX) return false;
+  if (state && nowMs - state.lastMs < NUDGE.EVERY_MIN * 60000) return false;
+  return true;
+}
