@@ -272,3 +272,72 @@ test('sessions: ineligible or over-long sessions are closed, healthy ones are le
   assert.equal(sessionEndMs(mk(5)), Date.parse(mk(5).start_time));
   assert.equal(normalizeConfig({ max_session_hours: 1000 }).max_session_hours, 48);
 });
+
+const P = (x, y, minAgo, extra = {}) => ({ lat: 28.6 + y / 111195, lng: 77.2 + x / (111195 * Math.cos(28.6 * Math.PI / 180)), t: new Date(NOW - minAgo * 60000).toISOString(), ...extra });
+
+test('stays: a long stop is measured from arrival to departure, short pauses are ignored, offices are never flagged', async () => {
+  const { detectStops } = await import('../utils/fieldTracking.js');
+  const pts = [P(0, 0, 240), P(500, 0, 220), P(1000, 0, 200),            // driving
+               P(1010, 5, 190), P(1020, 8, 100), P(1015, 3, 70),         // arrives at 190 min ago, still there 70 min ago (parked: few points)
+               P(2500, 0, 60), P(3000, 0, 50)];                           // leaves
+  const s = detectStops(pts, [], { startMs: NOW - 240 * 60000, endMs: NOW - 50 * 60000, open: false }, []);
+  assert.equal(s.length, 1);
+  assert.equal(s[0].minutes, 130); assert.equal(s[0].long, true); assert.equal(s[0].at_office, false);   // arrival fix 200 min ago, last fix there 70 min ago
+  assert.equal(s[0].verified_minutes, 130);
+  // 10 minute pause is below the stop threshold
+  assert.equal(detectStops([P(0, 0, 100), P(5, 0, 90), P(900, 0, 80)], [], { endMs: NOW - 80 * 60000 }, []).length, 0);
+  // same stay inside an office geofence: listed, not flagged
+  const office = [{ name: 'E82 office', latitude: 28.6 + 4 / 111195, longitude: 77.2 + 1015 / (111195 * Math.cos(28.6 * Math.PI / 180)), geofence_radius: 150 }];
+  const so = detectStops(pts, [], { endMs: NOW - 50 * 60000 }, office);
+  assert.equal(so[0].at_office, true); assert.equal(so[0].long, false); assert.equal(so[0].place, 'E82 office');
+});
+
+test('stays: silent minutes inside a stay are counted separately and the last stay runs to the end of the session', async () => {
+  const { detectStops } = await import('../utils/fieldTracking.js');
+  const pts = [P(0, 0, 200), P(5, 0, 120)];
+  const gaps = [{ kind: 'silent', from: new Date(NOW - 190 * 60000).toISOString(), to: new Date(NOW - 130 * 60000).toISOString() }];
+  const s = detectStops(pts, gaps, { endMs: NOW - 120 * 60000, open: false }, []);
+  assert.equal(s[0].minutes, 80); assert.equal(s[0].silent_minutes, 60); assert.equal(s[0].verified_minutes, 20);
+  const tail = detectStops([P(0, 0, 100)], [], { endMs: NOW, open: false }, []);                              // ended 100 minutes after the last fix
+  assert.equal(tail[0].minutes, 100);
+});
+
+test('checkpoints: one every 30 minutes with the place and the km so far', async () => {
+  const { checkpoints } = await import('../utils/fieldTracking.js');
+  const pts = [P(0, 0, 100), P(1000, 0, 80), P(2000, 0, 55), P(3000, 0, 25), P(4000, 0, 5)];
+  const c = checkpoints(pts, NOW - 100 * 60000, NOW - 5 * 60000);
+  assert.deepEqual(c.map(x => x.n), [1, 2, 3]);                              // +30, +60, +90 minutes
+  assert.deepEqual(c.map(x => x.km), [1, 2, 3]);                             // 1 km at 80, 2 km at 55 (as of 40 min ago), 3 km at 25 (as of 10 min ago)
+  assert.deepEqual(checkpoints([], NOW - 100 * 60000, NOW), []);
+});
+
+test('route: includes stops, checkpoints, duration and longest non-office stop', () => {
+  const tr = { id: 'a', status: 'completed', start_time: iso(300 * 60), end_time: iso(10 * 60), vehicle_type: '2_wheeler',
+    points: [pt(0, 18000), pt(2000, 17000), pt(2010, 15000), pt(2005, 9000), pt(5000, 7000)] };
+  const r = buildRoute([tr], NOW);
+  assert.ok(r.stops.length >= 1 && r.stops[0].long === true);
+  assert.ok(r.longest_stop_min >= 100);
+  assert.ok(r.checkpoints.length >= 5);
+  assert.equal(r.duration_min, 290);
+});
+
+test('daySummary flattens a route', async () => {
+  const { daySummary } = await import('../utils/fieldTracking.js');
+  const tr = { id: 'a', status: 'completed', start_time: iso(7200), end_time: iso(3600), points: [pt(0, 7200), pt(1000, 6000)] };
+  const s = daySummary(buildRoute([tr], NOW));
+  assert.equal(s.sessions, 1); assert.ok(Math.abs(s.distance_km - 1) < 0.02); assert.equal(s.duration_min, 60);
+});
+
+test('attendance sync: tracking begins at OD check-in and ends at OD check-out', async () => {
+  const { attendanceSyncAction: a } = await import('../utils/fieldTracking.js');
+  const od = { selfie_reason: 'od', status: 'on_duty', is_in_progress: true };
+  assert.equal(a({ eligible: true, attendance: od, activeTrip: null }).action, 'start');
+  assert.equal(a({ eligible: false, attendance: od, activeTrip: null }).action, 'none');
+  assert.equal(a({ eligible: true, attendance: { selfie_reason: 'wfh', status: 'work_from_home', is_in_progress: true }, activeTrip: null }).action, 'none');
+  assert.equal(a({ eligible: true, attendance: { ...od, is_in_progress: false }, activeTrip: null }).action, 'none');
+  const t = { status: 'active', source: 'od_attendance' };
+  assert.equal(a({ eligible: true, attendance: od, activeTrip: t }).action, 'none');
+  assert.equal(a({ eligible: true, attendance: { ...od, is_in_progress: false }, activeTrip: t }).reason, 'OD check-out');
+  assert.equal(a({ eligible: true, attendance: null, activeTrip: t }).action, 'stop');
+  assert.equal(a({ eligible: true, attendance: { ...od, is_in_progress: false }, activeTrip: { status: 'active' } }).action, 'none');   // a gate-pass trip is not ended by OD check-out
+});

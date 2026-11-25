@@ -24,6 +24,10 @@ export const FT_DEFAULTS = {
   gap_moved_m: 150,            // a gap during which the phone moved at least this far is also counted as estimated distance
   live_stale_minutes: 5,       // a "live" position older than this is shown as offline
   max_batch: 500,              // points accepted in one upload
+  stop_radius_m: 100,          // staying within this distance of where you stopped counts as the same place
+  stop_min_minutes: 15,        // a stay at least this long is listed as a stop on the day's route
+  long_stop_minutes: 45,       // a stay this long (away from an office) is highlighted as too long in one place
+  checkpoint_minutes: 30,      // a timed checkpoint (time, place, km so far) is marked on the route this often
   max_session_hours: 16,       // a field-duty session may not stay open longer than this; it is closed automatically
   geofence_max_accuracy_m: 50,   // geofence ENTER (attendance in) is refused when the fix is less accurate than this
   geofence_exit_accuracy_m: 100, // geofence EXIT: a little looser, because refusing it would leave a session wrongly open
@@ -38,7 +42,7 @@ export const FT_DEFAULTS = {
 
 const LIMITS = {
   max_accuracy_m: [5, 100], first_fix_accuracy_m: [10, 150], geofence_max_accuracy_m: [10, 150], geofence_exit_accuracy_m: [10, 250], geofence_max_event_age_h: [1, 48], device_report_minutes: [1, 60], min_interval_s: [1, 120], max_speed_kmh: [30, 300], max_point_age_h: [1, 72],
-  max_future_s: [0, 600], gap_minutes: [2, 120], gap_moved_m: [20, 2000], live_stale_minutes: [2, 120], max_batch: [10, 1000], max_session_hours: [2, 48],
+  max_future_s: [0, 600], gap_minutes: [2, 120], gap_moved_m: [20, 2000], live_stale_minutes: [2, 120], max_batch: [10, 1000], max_session_hours: [2, 48], stop_radius_m: [30, 500], stop_min_minutes: [5, 120], long_stop_minutes: [10, 480], checkpoint_minutes: [5, 120],
 };
 
 // Anything missing or out of range falls back to the strict default (clamped, never trusted blindly).
@@ -206,10 +210,10 @@ export function liveStatus(lastPosT, nowMs, cfgIn) {
 }
 
 // trips: stored FieldTrip documents of ONE employee for the day. Returns the whole picture HR needs on a map.
-export function buildRoute(trips, nowMs, cfgIn, maxPoints = 4000) {
+export function buildRoute(trips, nowMs, cfgIn, maxPoints = 4000, fences = []) {
   const cfg = cfgIn || FT_DEFAULTS;
   const sorted = [...(trips || [])].sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
-  const segments = [], gaps = [];
+  const segments = [], gaps = [], stops = [], checkpointsAll = [];
   let distanceM = 0, estimatedM = 0, live = null, accepted = 0, rejected = 0;
   for (const tr of sorted) {
     const pts = (tr.points || []).filter(p => Number.isFinite(Number(p.lat)) && Number.isFinite(Date.parse(p.t))).sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
@@ -217,6 +221,8 @@ export function buildRoute(trips, nowMs, cfgIn, maxPoints = 4000) {
     const startMs = Date.parse(tr.start_time), endMs = open ? nowMs : Date.parse(tr.end_time || tr.last_point_at || tr.start_time);
     const tripGaps = detectGaps(pts, tr.beats, { startMs, endMs, open }, cfg).map(g => ({ ...g, trip_id: tr.id }));
     gaps.push(...tripGaps);
+    stops.push(...detectStops(pts, tripGaps, { startMs, endMs, open, liveMs: Date.parse(tr.last_pos?.t || '') }, fences, cfg).map(s => ({ ...s, trip_id: tr.id })));
+    checkpointsAll.push(...checkpoints(pts, startMs, endMs, cfg).map(c => ({ ...c, trip_id: tr.id })));
     const dM = pathDistanceM(pts);
     let est = 0;
     for (let i = 1; i < pts.length; i++) if (pts[i].g) est += havM(pts[i - 1], pts[i]);
@@ -244,6 +250,9 @@ export function buildRoute(trips, nowMs, cfgIn, maxPoints = 4000) {
     estimated_km: Math.round(estimatedM / 10) / 100,
     gap_minutes_total: gaps.reduce((a, g) => a + g.minutes, 0),
     points_accepted: accepted, points_rejected: rejected,
+    stops, checkpoints: checkpointsAll,
+    duration_min: Math.round(segments.reduce((a, s) => a + Math.max(0, (Date.parse(s.end_time || '') || (s.status === 'active' ? nowMs : Date.parse(s.start_time))) - Date.parse(s.start_time)), 0) / 60000),
+    longest_stop_min: stops.reduce((m, s) => (s.at_office ? m : Math.max(m, s.minutes)), 0),
   };
 }
 
@@ -367,4 +376,101 @@ export function sessionEndMs(trip, cfg = FT_DEFAULTS) {
   const startMs = Date.parse(trip.start_time) || 0;
   const lastMs = Date.parse(trip.last_point_at || '') || startMs;
   return Math.min(Math.max(lastMs, startMs), startMs + cfg.max_session_hours * 3600000);
+}
+
+/* ── stays (dwell time) and timed checkpoints ───────────────────────────── */
+
+const norm = (points) => (points || []).filter(p => Number.isFinite(Number(p.lat)) && Number.isFinite(Date.parse(p.t))).map(p => ({ lat: Number(p.lat), lng: Number(p.lng), t: p.t, ms: Date.parse(p.t) })).sort((a, b) => a.ms - b.ms);
+
+// A stay = the phone stayed within stop_radius_m of where it stopped. A parked phone stores no new trail points, so the time between
+// the fix that arrived at a place and the first fix that left it IS the stay. Minutes the phone was silent inside the stay are
+// reported separately (silent_minutes) so a dead phone is not mistaken for someone sitting still.
+// fences: [{ name, latitude, longitude, geofence_radius }] — a stay inside one is an office stay and is never flagged as "too long".
+export function detectStops(points, gaps, win, fences = [], cfgIn) {
+  const cfg = cfgIn || FT_DEFAULTS;
+  const pts = norm(points);
+  if (pts.length < 1) return [];
+  const out = [];
+  const flush = (cluster, endMs) => {
+    const first = cluster[0], lastP = cluster[cluster.length - 1];
+    const from = first.ms, to = Math.max(endMs, lastP.ms);
+    const minutes = Math.round((to - from) / 60000);
+    if (minutes < cfg.stop_min_minutes) return;
+    const lat = cluster.reduce((a, p) => a + p.lat, 0) / cluster.length, lng = cluster.reduce((a, p) => a + p.lng, 0) / cluster.length;
+    let silent = 0;
+    for (const g of gaps || []) {
+      const gf = Date.parse(g.from), gt = Date.parse(g.to);
+      if (g.kind === 'silent' || g.kind === 'offline_now') silent += Math.max(0, Math.min(to, gt) - Math.max(from, gf));
+    }
+    const fence = (fences || []).find(f => Number.isFinite(Number(f.latitude)) && havM({ lat, lng }, { lat: Number(f.latitude), lng: Number(f.longitude) }) <= Number(f.geofence_radius || f.radius_m || 0) + 50);
+    const silentMin = Math.round(silent / 60000);
+    out.push({
+      lat, lng, from: new Date(from).toISOString(), to: new Date(to).toISOString(), minutes,
+      silent_minutes: Math.min(silentMin, minutes), verified_minutes: Math.max(0, minutes - silentMin),
+      place: fence?.name || '', at_office: !!fence,
+      long: !fence && minutes >= cfg.long_stop_minutes,
+    });
+  };
+  let cluster = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const anchor = cluster[0];
+    if (havM(anchor, pts[i]) <= cfg.stop_radius_m) { cluster.push(pts[i]); continue; }
+    flush(cluster, cluster[cluster.length - 1].ms);
+    cluster = [pts[i]];
+  }
+  // the last cluster runs to the end of the session (or to now, while it is still open and the phone is alive)
+  const endMs = Number.isFinite(win?.endMs) ? win.endMs : cluster[cluster.length - 1].ms;
+  const lastMs = cluster[cluster.length - 1].ms;
+  flush(cluster, win?.open ? Math.max(lastMs, Math.min(Number.isFinite(win.liveMs) ? win.liveMs : lastMs, endMs)) : endMs);
+  return out;
+}
+
+// A timed checkpoint every checkpoint_minutes from the start of the session: where the phone was then and the km travelled so far.
+export function checkpoints(points, startMs, endMs, cfgIn) {
+  const cfg = cfgIn || FT_DEFAULTS;
+  const pts = norm(points);
+  if (!pts.length || !Number.isFinite(startMs)) return [];
+  const step = cfg.checkpoint_minutes * 60000;
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + havM(pts[i - 1], pts[i]));
+  const out = [];
+  const last = Math.min(Number.isFinite(endMs) ? endMs : pts[pts.length - 1].ms, pts[pts.length - 1].ms);
+  for (let t = startMs + step, n = 1; t <= last && n <= 200; t += step, n++) {
+    let idx = -1;
+    for (let i = 0; i < pts.length; i++) { if (pts[i].ms <= t) idx = i; else break; }
+    if (idx < 0) continue;                                    // nothing recorded yet at that time
+    out.push({ n, at: new Date(t).toISOString(), lat: pts[idx].lat, lng: pts[idx].lng, km: Math.round(cum[idx] / 10) / 100, fix_at: pts[idx].t });
+  }
+  return out;
+}
+
+// One day for one employee, flattened for lists and reports.
+export function daySummary(route) {
+  const segs = route?.segments || [];
+  const flat = segs.flatMap(s => s.points);
+  return {
+    sessions: segs.length,
+    distance_km: route?.distance_km || 0, estimated_km: route?.estimated_km || 0,
+    start: segs[0]?.start_time || null, end: segs.length ? (segs[segs.length - 1].end_time || null) : null,
+    duration_min: route?.duration_min || 0,
+    points: flat.length, gaps: (route?.gaps || []).length, gap_minutes: route?.gap_minutes_total || 0,
+    stops: (route?.stops || []).length, long_stops: (route?.stops || []).filter(s => s.long).length, longest_stop_min: route?.longest_stop_min || 0,
+    checkpoints: (route?.checkpoints || []).length,
+  };
+}
+
+/* ── tracking follows OD attendance ─────────────────────────────────────── */
+
+// What to do with one employee's field session given today's attendance. Tracking begins at OD check-in and ends at OD check-out.
+//   start: OD checked in (session in progress) and no session is running            -> open one
+//   stop:  a session that OD attendance opened (not a gate-pass one) and the OD day is checked out / gone -> close it
+export function attendanceSyncAction({ eligible, attendance, activeTrip }) {
+  const od = !!attendance && (attendance.selfie_reason === 'od' || attendance.status === 'on_duty');
+  const inProgress = od && attendance.is_in_progress === true;
+  if (!activeTrip) return eligible && inProgress ? { action: 'start' } : { action: 'none' };
+  const odTrip = activeTrip.source === 'od_attendance' || activeTrip.duty_basis === 'od_attendance' || !!activeTrip.linked_attendance_id;
+  if (!odTrip) return { action: 'none' };                                   // a gate-pass / manual trip follows its own end
+  if (!od) return { action: 'stop', reason: 'OD attendance no longer applies' };
+  if (!inProgress) return { action: 'stop', reason: 'OD check-out' };
+  return { action: 'none' };
 }

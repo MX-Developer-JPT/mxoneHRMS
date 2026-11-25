@@ -21,6 +21,15 @@ const pinIcon = L.divIcon({
 });
 
 const ok = (n) => Number.isFinite(Number(n)) && n !== '' && n !== null;
+export const fmtDur = (min) => { const m = Math.round(Number(min) || 0); return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`; };
+const checkpointIcon = (n) => L.divIcon({
+  className: '', iconSize: [20, 20], iconAnchor: [10, 10],
+  html: `<div style="background:#fff;color:#374151;width:20px;height:20px;border-radius:50%;border:2px solid #6b7280;font:600 10px/16px system-ui;text-align:center">${n}</div>`,
+});
+const stopIcon = (s) => L.divIcon({
+  className: '', iconSize: [34, 34], iconAnchor: [17, 17],
+  html: `<div style="background:${s.long ? '#dc2626' : s.at_office ? '#2563eb' : '#f59e0b'};color:#fff;width:34px;height:34px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 0 ${s.long ? 3 : 1}px ${s.long ? 'rgba(220,38,38,.45)' : 'rgba(0,0,0,.35)'};font:700 10px/28px system-ui;text-align:center">${s.minutes >= 60 ? Math.floor(s.minutes / 60) + 'h' : s.minutes + 'm'}</div>`,
+});
 
 // Maps inside dialogs are measured while the dialog is still animating open, which leaves misaligned tiles: re-measure on every size change.
 function Resize() {
@@ -325,6 +334,14 @@ export function EmployeeRouteMap({ route, fences = [], height = 460 }) {
             <Tooltip>Last heard {fmtT(g.from)}{g.open ? ` · silent for ${g.minutes} min` : ''}</Tooltip>
           </Marker>
         ))}
+        {(route?.checkpoints || []).map(c => ok(c.lat) && (
+          <Marker key={'cp' + c.trip_id + c.n} position={[Number(c.lat), Number(c.lng)]} icon={checkpointIcon(c.n)}>
+            <Tooltip>Checkpoint {c.n} · {fmtT(c.at)} · {Number(c.km).toFixed(2)} km so far</Tooltip>
+          </Marker>))}
+        {(route?.stops || []).map((s, i) => ok(s.lat) && (
+          <Marker key={'st' + i} position={[Number(s.lat), Number(s.lng)]} icon={stopIcon(s)} zIndexOffset={s.long ? 800 : 400}>
+            <Tooltip direction="top" offset={[0, -10]}>{s.long ? 'LONG STAY' : 'Stay'}{s.place ? ` at ${s.place}` : ''} · {fmtDur(s.minutes)} · {fmtT(s.from)} to {fmtT(s.to)}{s.silent_minutes ? ` (phone silent ${s.silent_minutes} min)` : ''}</Tooltip>
+          </Marker>))}
         {start && ok(start.lat) && <Marker position={[Number(start.lat), Number(start.lng)]} icon={dot('#16a34a', 18)}><Tooltip>Start · {fmtT(start.t)}</Tooltip></Marker>}
         {end && ok(end.lat) && !route?.on_duty_now && <Marker position={[Number(end.lat), Number(end.lng)]} icon={dot('#111827', 18)}><Tooltip>End · {fmtT(end.t)}</Tooltip></Marker>}
         {live && ok(live.lat) && (

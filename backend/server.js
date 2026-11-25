@@ -41,7 +41,7 @@ import { kioskRouter, kioskAdminRouter } from './routes/kiosk.js';
 import { runNightlyAttendanceAutomation, closeStaleGeofenceSessions, closeStaleOpenSessions, sendShiftStartReminders, sendShiftEndReminders, sendPreShiftReminders, checkRepeatedLateArrivals } from './cron/attendanceAutomation.js';
 import { sendDueCandidateReminders, checkStalePipeline } from './cron/recruitmentAutomation.js';
 import { closeUnreturnedGatePasses, closeStaleGatePassRequests } from './cron/gatePassAutomation.js';
-import { nudgeSilentFieldSessions } from './cron/fieldTrackingWatch.js';
+import { nudgeSilentFieldSessions, syncODFieldSessions } from './cron/fieldTrackingWatch.js';
 import { sendConfirmationDueReminders } from './cron/confirmationAutomation.js';
 import { sendExitClearanceReminders } from './cron/exitClearanceReminders.js';
 import { sendAbsentLeaveReminders, sendRegularisationReminders, sendCelebrationNotifications, sendUpcomingHolidayReminders } from './cron/dailyReminders.js';
@@ -506,6 +506,9 @@ cron.schedule('*/5 * * * *', () => {
 }, { timezone: 'Asia/Kolkata' });
 
 // ── Field Duty: remind employees whose phone has gone quiet during a tracked session (push; daytime only, capped) ──
+cron.schedule('*/3 * * * *', () => {
+  syncODFieldSessions().catch(err => console.error('[field-od-sync] failed:', err));   // tracking begins at OD check-in, ends at OD check-out
+}, { timezone: 'Asia/Kolkata' });
 cron.schedule('*/10 * * * *', () => {
   nudgeSilentFieldSessions().catch(err => console.error('[field-nudge] failed:', err));
 }, { timezone: 'Asia/Kolkata' });

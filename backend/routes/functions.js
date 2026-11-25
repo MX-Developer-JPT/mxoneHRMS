@@ -5175,7 +5175,7 @@ router.post('/:name', async (req, res) => {
           if (!saActiveTrip) {
             const ftId = uuidv4();
             const ft = {
-              id: ftId, user_id: cu.id, date: saToday, start_time: saNowIST.toISOString(), status: 'active',
+              id: ftId, user_id: cu.id, date: saToday, start_time: new Date().toISOString(), status: 'active', duty_basis: 'od_attendance',
               vehicle_type: '2_wheeler', purpose: 'Outduty (auto-started from attendance check-in)',
               points: [], distance_km: 0, point_count: 0, toll_parking_amount: 0,
               source: 'od_attendance', linked_attendance_id: saId,
@@ -5190,7 +5190,7 @@ router.post('/:name', async (req, res) => {
           const saTripRow = await one("SELECT id,data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active' AND data::jsonb->>'linked_attendance_id'=$2", [cu.id, saId]);
           if (saTripRow) {
             const saTrip = JSON.parse(saTripRow.data);
-            const saTripUpd = { ...saTrip, status: 'completed', end_time: saNowIST.toISOString() };
+            const saTripUpd = { ...saTrip, status: 'completed', end_time: new Date().toISOString() };
             await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(saTripUpd), saTripRow.id]);
             saFieldTrip = saTripUpd;
           }
@@ -5428,6 +5428,7 @@ router.post('/:name', async (req, res) => {
         notes: (notes || '').slice(0, 300),
       };
       await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
+      (await import('../cron/fieldDayStore.js')).saveFieldDaySummary(cu.id, upd.date).catch(() => {});
       return res.json({ success: true, trip: { ...upd, points: undefined } });
     }
 
@@ -5475,6 +5476,7 @@ router.post('/:name', async (req, res) => {
       if (cf.status !== 'active') return res.json({ success: false, error: 'Trip is not active' });
       const cfEnd = new Date(Date.parse(cf.last_point_at || cf.start_time)).toISOString();
       await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...cf, status: 'completed', end_time: cfEnd, auto_closed: true, auto_closed_reason: `Closed by ${cu.email || cu.id}`, closed_by: cu.id }), cfRow.id]);
+      (await import('../cron/fieldDayStore.js')).saveFieldDaySummary(cfRow.user_id, cf.date).catch(() => {});
       return res.json({ success: true });
     }
 
@@ -5569,6 +5571,30 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, employees, config: feCfg, server_time: new Date(feNow).toISOString() });
     }
 
+    // Day-wise distance for one employee: the stored daily summaries (distance, duration, stops, gaps) for the last N days.
+    case 'getFieldDaily': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const fdUser = p.user_id || cu.id;
+      const fdRules = await import('../utils/fieldTracking.js');
+      const fdV = await getFieldViewer(cu);
+      if (!fdRules.canViewLocation({ viewerId: cu.id, subjectId: fdUser, ...fdV })) return res.status(403).json({ error: 'Access denied' });
+      const fdEmp = await getFieldEmployee(fdUser);
+      if (fdUser !== cu.id && !(fdEmp && fdEmp.field_duty_tracking_eligible)) return res.json({ success: false, error: 'This employee is not enabled for Field Duty Tracking', code: 'NOT_ELIGIBLE' });
+      const fdDays = Math.min(60, Math.max(1, Number(p.days) || 14));
+      const fdFrom = istDate(Date.now() - (fdDays - 1) * 86400000), fdToday = istDate();
+      const fdStore = await import('../cron/fieldDayStore.js');
+      const have = new Map();
+      for (const r of await all("SELECT data FROM entities WHERE type='FieldDaySummary' AND user_id=$1", [fdUser])) { const d = JSON.parse(r.data); have.set(d.date, d); }
+      const tripDates = new Set((await all("SELECT data::jsonb->>'date' AS d FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'date' >= $2", [fdUser, fdFrom])).map(r => r.d));
+      const rows = [];
+      for (const d of [...tripDates].sort().reverse()) {
+        let s = have.get(d);
+        if (!s || d === fdToday || s.open) s = await fdStore.saveFieldDaySummary(fdUser, d);      // today / still-open days are always recomputed; older days are stored once
+        if (s) rows.push(s);
+      }
+      return res.json({ success: true, user_id: fdUser, days: rows, total_km: Math.round(rows.reduce((a, r) => a + (r.distance_km || 0), 0) * 100) / 100 });
+    }
+
     // One employee, one day: every trip merged in time order — the real GPS path, distance, gaps, live position.
     case 'getFieldRoute': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
@@ -5588,7 +5614,8 @@ router.post('/:name', async (req, res) => {
         }
       }
       const frTrips = frRows.map(r => JSON.parse(r.data));
-      const route = frRules.buildRoute(frTrips, Date.now(), frCfg);
+      const frStore = await import('../cron/fieldDayStore.js');
+      const route = frRules.buildRoute(frTrips, Date.now(), frCfg, 4000, await frStore.loadFences());
       route.snap = { enabled: !!process.env.OSRM_URL && frCfg.snap_to_roads, matched_pct: null };
       if (route.snap.enabled) {
         let m = 0, t = 0;

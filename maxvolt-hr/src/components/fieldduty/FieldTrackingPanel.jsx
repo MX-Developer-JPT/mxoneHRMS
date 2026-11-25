@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Navigation, RefreshCw, Search, Route, AlertTriangle, ShieldCheck, Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { EmployeeRouteMap, LiveMap } from '@/components/maps/GeoMaps';
+import { EmployeeRouteMap, LiveMap, fmtDur } from '@/components/maps/GeoMaps';
 import { fenceOf } from '@/lib/geofenceShape';
 
 const todayIST = () => new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
@@ -32,6 +32,12 @@ const RULE_FIELDS_GEOFENCE = [
   ['geofence_max_event_age_h', 'Geofence event max age (h)', 'Older queued events are refused'],
   ['device_report_minutes', 'Phone status report (min)', 'How often the app reports permission / GPS / battery'],
 ];
+const RULE_FIELDS_STAYS = [
+  ['stop_radius_m', 'Same place within (m)', 'Staying within this distance counts as one place'],
+  ['stop_min_minutes', 'List a stay from (min)', 'Shorter pauses are ignored'],
+  ['long_stop_minutes', 'Flag as too long from (min)', 'Stays this long away from an office are highlighted red'],
+  ['checkpoint_minutes', 'Checkpoint every (min)', 'Timed checkpoints on the route'],
+];
 const RULE_FIELDS_CORE = [
   ['max_accuracy_m', 'Max GPS error (m)', 'Fixes less accurate than this are dropped'],
   ['min_interval_s', 'Min seconds between fixes', 'Closer fixes are dropped'],
@@ -41,7 +47,7 @@ const RULE_FIELDS_CORE = [
   ['live_stale_minutes', 'Offline after (min)', 'A live dot turns grey after this'],
   ['max_session_hours', 'Max session length (h)', 'A session left open longer is closed automatically'],
 ];
-const RULE_FIELDS = [...RULE_FIELDS_CORE, ...RULE_FIELDS_GEOFENCE];
+const RULE_FIELDS = [...RULE_FIELDS_CORE, ...RULE_FIELDS_STAYS, ...RULE_FIELDS_GEOFENCE];
 
 function RulesEditor({ onClose }) {
   const [cfg, setCfg] = useState(null);
@@ -96,6 +102,7 @@ export default function FieldTrackingPanel({ isHR }) {
   const [liveSel, setLiveSel] = useState(null);
   const [fences, setFences] = useState([]);
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [daily, setDaily] = useState(null);
 
   const loadEmployees = useCallback(async () => {
     try { const r = await base44.functions.invoke('getFieldEmployees', {}); const d = r.data || r; if (d.success) setEmployees(d.employees || []); } catch { /* keep the list */ }
@@ -118,6 +125,15 @@ export default function FieldTrackingPanel({ isHR }) {
     const t = date === todayIST() ? setInterval(() => pull(false), 10000) : null;
     return () => { dead = true; if (t) clearInterval(t); };
   }, [mode, selected, date]);
+
+  // day-wise distance for the selected employee (stored daily summaries), refreshed with the route
+  useEffect(() => {
+    if (mode !== 'employee' || !selected) { setDaily(null); return undefined; }
+    let dead = false;
+    const pull = async () => { try { const r = await base44.functions.invoke('getFieldDaily', { user_id: selected, days: 14 }); const d = r.data || r; if (!dead) setDaily(d.success ? d : null); } catch { /* keep */ } };
+    pull(); const t = setInterval(pull, 60000);
+    return () => { dead = true; clearInterval(t); };
+  }, [mode, selected]);
 
   useEffect(() => {
     if (mode !== 'live') return undefined;
@@ -190,6 +206,24 @@ export default function FieldTrackingPanel({ isHR }) {
                     {data?.employee && <div className="text-sm"><p className="font-semibold text-gray-800">{data.employee.name} <span className="text-gray-400 font-normal">{data.employee.code}</span></p><p className="text-xs text-gray-500">{data.employee.designation} · {data.employee.department}</p></div>}
                     {loading && <RefreshCw className="w-4 h-4 animate-spin text-gray-400 mb-2" />}
                   </div>
+                  {daily?.days?.length > 0 && (
+                    <div className="rounded-lg border overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50 text-gray-500"><tr><th className="text-left p-2">Date</th><th className="text-right p-2">Distance</th><th className="text-right p-2">On duty</th><th className="text-right p-2">Stays</th><th className="text-right p-2">Longest stay</th><th className="text-right p-2">Gaps</th></tr></thead>
+                        <tbody>
+                          {daily.days.map(d => (
+                            <tr key={d.date} onClick={() => setDate(d.date)} className={`cursor-pointer border-t hover:bg-orange-50 ${d.date === date ? 'bg-orange-50' : ''}`}>
+                              <td className="p-2 font-medium">{d.date}{d.open ? ' (today)' : ''}</td>
+                              <td className="p-2 text-right">{fmtKm(d.distance_km)}</td>
+                              <td className="p-2 text-right">{fmtDur(d.duration_min)}</td>
+                              <td className="p-2 text-right">{d.stops}{d.long_stops > 0 && <span className="ml-1 text-red-600">({d.long_stops} long)</span>}</td>
+                              <td className={`p-2 text-right ${d.long_stops > 0 ? 'text-red-600 font-medium' : ''}`}>{d.longest_stop_min ? fmtDur(d.longest_stop_min) : '-'}</td>
+                              <td className="p-2 text-right">{d.gaps}</td>
+                            </tr>))}
+                        </tbody>
+                        <tfoot><tr className="border-t bg-gray-50 font-medium"><td className="p-2">Last 14 days</td><td className="p-2 text-right">{fmtKm(daily.total_km)}</td><td colSpan={4} /></tr></tfoot>
+                      </table>
+                    </div>)}
                   {data?.error ? <p className="text-sm text-red-600">{data.error}</p> : route && (
                     <>
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -204,6 +238,19 @@ export default function FieldTrackingPanel({ isHR }) {
                         ? <p className="text-sm text-gray-400 text-center py-16 border rounded-lg">No field-duty tracking was recorded for this employee on {data.date}.</p>
                         : <EmployeeRouteMap route={route} fences={fences} />}
                       {route.segments.length > 0 && <p className="text-[11px] text-gray-500">{route.snap?.enabled && route.snap.matched_pct != null ? `Drawn along roads (${route.snap.matched_pct}% of the path matched to the road network); the rest follows the raw GPS line. Distance always comes from the GPS points.` : 'Drawn from the raw GPS points (road matching is not active).'}{date === todayIST() ? ' Refreshes every 10 seconds.' : ''}</p>}
+                      {route.stops?.length > 0 && (
+                        <div className="rounded-lg border p-3 space-y-1">
+                          <p className="text-sm font-medium text-gray-700">Stays {route.longest_stop_min > 0 && <span className="text-xs font-normal text-gray-500">· longest away from an office {fmtDur(route.longest_stop_min)}</span>}</p>
+                          {route.stops.map((s, i) => (
+                            <p key={i} className={`text-xs flex flex-wrap items-center gap-x-2 ${s.long ? 'text-red-700 font-medium' : 'text-gray-600'}`}>
+                              <span className={`inline-block w-2.5 h-2.5 rounded-full ${s.long ? 'bg-red-600' : s.at_office ? 'bg-blue-600' : 'bg-amber-500'}`} />
+                              {fmtTime(s.from)} – {fmtTime(s.to)} · {fmtDur(s.minutes)}{s.place ? ` · ${s.place}` : ''}
+                              {s.long && <Badge className="bg-red-100 text-red-700">too long in one place</Badge>}
+                              {s.silent_minutes > 0 && <span className="text-amber-700">(phone silent {s.silent_minutes} min of this)</span>}
+                            </p>))}
+                        </div>)}
+                      {route.checkpoints?.length > 0 && (
+                        <p className="text-[11px] text-gray-500">Numbered grey dots are timed checkpoints: {route.checkpoints.map(c => `${c.n}) ${fmtTime(c.at)} · ${Number(c.km).toFixed(1)} km`).join('   ')}</p>)}
                       {(data.device?.problems?.length > 0 || data.device?.events?.length > 0) && (
                         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-1">
                           <p className="text-sm font-medium text-amber-900 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" />Phone status {data.device.reported_at ? <span className="text-xs font-normal text-amber-700">(last report {fmtTime(data.device.reported_at)})</span> : null}</p>

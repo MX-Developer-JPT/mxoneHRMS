@@ -3,7 +3,9 @@
 // starts the phone's background recorder. Eligibility is re-checked every time: nobody HR has switched off is ever nudged.
 import { all, one, run } from '../db.js';
 import { sendPushToUser, sendFieldDutyWake } from '../utils/push.js';
-import { nudgeDue, wakeDue, sessionCloseReason, sessionEndMs, normalizeConfig } from '../utils/fieldTracking.js';
+import { nudgeDue, wakeDue, sessionCloseReason, sessionEndMs, normalizeConfig, attendanceSyncAction } from '../utils/fieldTracking.js';
+import { saveFieldDaySummary } from './fieldDayStore.js';
+import { randomUUID } from 'node:crypto';
 
 const state = new Map();   // visible reminders
 const wakeState = new Map();   // silent wake pushes   // trip id -> { count, lastMs }   (in memory: a restart simply allows one more reminder)
@@ -29,10 +31,52 @@ export async function closeInvalidFieldSessions(nowMs = Date.now()) {
     const old = nowMs - (Date.parse(t.start_time) || nowMs) > 48 * 3600000;
     const upd = { ...t, status: 'completed', end_time: new Date(endMs).toISOString(), auto_closed: true, auto_closed_reason: why.text, auto_closed_by: 'system', needs_review: true, ...(old ? { claim_blocked: true } : {}) };
     await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(upd), r.id]);
+    saveFieldDaySummary(r.user_id, t.date).catch(() => {});
     closed++;
   }
   if (closed) console.log('[field-sessions] closed ' + closed + ' session(s) that were not allowed to stay open');
   return { closed };
+}
+
+// Tracking begins at OD check-in and ends at OD check-out. markSelfieAttendance does this at the moment of the punch; this sync covers
+// everything else (an OD day started or ended another way — HR, the gate, a missed request) and a phone that never got the signal.
+// Attendance times are stored as IST digits, so a stored check-out is converted back to a real instant before it is used.
+export async function syncODFieldSessions(nowMs = Date.now()) {
+  const today = new Date(nowMs + 5.5 * 3600000).toISOString().slice(0, 10);
+  const eligible = new Set();
+  for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")) {
+    try { if (JSON.parse(r.data).field_duty_tracking_eligible) eligible.add(r.user_id); } catch { /* skip */ }
+  }
+  const attByUserDate = new Map();
+  const attRows = await all("SELECT id,user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1", [new Date(nowMs + 5.5 * 3600000 - 2 * 86400000).toISOString().slice(0, 10)]);
+  for (const r of attRows) { try { const d = JSON.parse(r.data); attByUserDate.set(r.user_id + '|' + d.date, { id: r.id, ...d }); } catch { /* skip */ } }
+  const active = new Map();
+  for (const r of await all("SELECT id,user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'")) { try { active.set(r.user_id, { rowId: r.id, ...JSON.parse(r.data) }); } catch { /* skip */ } }
+  let started = 0, stopped = 0;
+  const users = new Set([...eligible, ...[...active.keys()]]);
+  for (const uid of users) {
+    const trip = active.get(uid) || null;
+    const att = attByUserDate.get(uid + '|' + (trip?.date || today)) || (trip ? null : attByUserDate.get(uid + '|' + today)) || null;
+    const act = attendanceSyncAction({ eligible: eligible.has(uid), attendance: att, activeTrip: trip });
+    if (act.action === 'start') {
+      const id = randomUUID();
+      const ft = { id, user_id: uid, date: today, start_time: new Date(nowMs).toISOString(), status: 'active', vehicle_type: '2_wheeler', duty_basis: 'od_attendance',
+        purpose: 'Outduty (started automatically at OD check-in)', points: [], distance_km: 0, point_count: 0, toll_parking_amount: 0, source: 'od_attendance', linked_attendance_id: att.id };
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'FieldTrip',$2,'active',$3)", [id, uid, JSON.stringify(ft)]);
+      started++;
+    } else if (act.action === 'stop' && trip) {
+      let endMs = nowMs;
+      const co = att?.check_out_time ? Date.parse(att.check_out_time) - 5.5 * 3600000 : NaN;
+      if (Number.isFinite(co) && co <= nowMs) endMs = co;
+      endMs = Math.max(endMs, Date.parse(trip.start_time) || 0);
+      const { rowId, ...doc } = trip;
+      await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...doc, status: 'completed', end_time: new Date(endMs).toISOString(), auto_closed: true, auto_closed_reason: act.reason, auto_closed_by: 'od_sync' }), rowId]);
+      saveFieldDaySummary(uid, trip.date).catch(() => {});
+      stopped++;
+    }
+  }
+  if (started || stopped) console.log('[field-od-sync] started ' + started + ', stopped ' + stopped);
+  return { started, stopped };
 }
 
 export async function nudgeSilentFieldSessions(nowMs = Date.now()) {
