@@ -1,14 +1,42 @@
 // Watches active Field Duty sessions. When the phone has gone quiet (never opened the app, app force-stopped, permission lost),
 // the employee gets a push notification (shown even with the app closed and the phone locked); tapping it opens the app, which
 // starts the phone's background recorder. Eligibility is re-checked every time: nobody HR has switched off is ever nudged.
-import { all, one } from '../db.js';
+import { all, one, run } from '../db.js';
 import { sendPushToUser, sendFieldDutyWake } from '../utils/push.js';
-import { nudgeDue, wakeDue } from '../utils/fieldTracking.js';
+import { nudgeDue, wakeDue, sessionCloseReason, sessionEndMs, normalizeConfig } from '../utils/fieldTracking.js';
 
 const state = new Map();   // visible reminders
 const wakeState = new Map();   // silent wake pushes   // trip id -> { count, lastMs }   (in memory: a restart simply allows one more reminder)
 
+// Closes sessions that must not stay open: the employee is not enabled for tracking, or the session outlived the maximum length.
+// Sessions left open for weeks had kept recording phones long after the trip; an old closed session is also blocked from
+// reimbursement claims and marked for HR review, because its distance may have accumulated over days.
+export async function closeInvalidFieldSessions(nowMs = Date.now()) {
+  const trips = await all("SELECT id,user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'");
+  if (!trips.length) return { closed: 0 };
+  let cfgRaw = null; try { const r = await one("SELECT value FROM settings WHERE key='field_tracking_config'"); cfgRaw = r ? JSON.parse(r.value) : null; } catch { cfgRaw = null; }
+  const cfg = normalizeConfig(cfgRaw);
+  const eligible = new Set();
+  for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")) {
+    try { if (JSON.parse(r.data).field_duty_tracking_eligible) eligible.add(r.user_id); } catch { /* skip */ }
+  }
+  let closed = 0;
+  for (const r of trips) {
+    let t; try { t = JSON.parse(r.data); } catch { continue; }
+    const why = sessionCloseReason(t, eligible.has(r.user_id), nowMs, cfg);
+    if (!why) continue;
+    const endMs = sessionEndMs(t, cfg);
+    const old = nowMs - (Date.parse(t.start_time) || nowMs) > 48 * 3600000;
+    const upd = { ...t, status: 'completed', end_time: new Date(endMs).toISOString(), auto_closed: true, auto_closed_reason: why.text, auto_closed_by: 'system', needs_review: true, ...(old ? { claim_blocked: true } : {}) };
+    await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(upd), r.id]);
+    closed++;
+  }
+  if (closed) console.log('[field-sessions] closed ' + closed + ' session(s) that were not allowed to stay open');
+  return { closed };
+}
+
 export async function nudgeSilentFieldSessions(nowMs = Date.now()) {
+  await closeInvalidFieldSessions(nowMs).catch(e => console.warn('[field-sessions] close failed:', e.message));
   const trips = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'");
   if (!trips.length) return { checked: 0, nudged: 0, woken: 0 };
   const eligible = new Set();

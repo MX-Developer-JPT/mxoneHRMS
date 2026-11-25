@@ -254,3 +254,21 @@ test('geofence events: mock, accuracy (enter strict, exit looser), stale, future
   assert.equal(geofenceEventProblem(jump, FT_DEFAULTS, NOW).code, 'IMPOSSIBLE_SPEED');
   assert.equal(geofenceEventProblem({ ...base, prev: { lat: 28.6, lng: 77.2001, ms: NOW - 600000 } }, FT_DEFAULTS, NOW), null);
 });
+
+test('sessions: ineligible or over-long sessions are closed, healthy ones are left alone', async () => {
+  const { sessionCloseReason, sessionEndMs } = await import('../utils/fieldTracking.js');
+  const mk = (hoursAgo, extra = {}) => ({ status: 'active', start_time: new Date(NOW - hoursAgo * 3600000).toISOString(), ...extra });
+  assert.equal(sessionCloseReason(mk(2), true, NOW), null);
+  assert.equal(sessionCloseReason(mk(2), false, NOW).code, 'not_eligible');
+  assert.equal(sessionCloseReason(mk(17), true, NOW).code, 'too_long');
+  assert.equal(sessionCloseReason(mk(15), true, NOW), null);
+  assert.equal(sessionCloseReason({ ...mk(99), status: 'completed' }, false, NOW), null);
+  assert.equal(sessionCloseReason(mk(24 * 60), true, NOW, { ...FT_DEFAULTS, max_session_hours: 48 }).code, 'too_long');
+  // recorded end: last sign of life, but never beyond the allowed length
+  const long = mk(24 * 60, { last_point_at: new Date(NOW).toISOString() });
+  assert.equal(sessionEndMs(long), Date.parse(long.start_time) + 16 * 3600000);
+  const quiet = mk(30, { last_point_at: new Date(NOW - 29 * 3600000).toISOString() });
+  assert.equal(sessionEndMs(quiet), Date.parse(quiet.last_point_at));
+  assert.equal(sessionEndMs(mk(5)), Date.parse(mk(5).start_time));
+  assert.equal(normalizeConfig({ max_session_hours: 1000 }).max_session_hours, 48);
+});

@@ -25,19 +25,23 @@ const PROBLEM_LABEL = {
   location_denied: 'Location permission off', gps_off: 'GPS switched off',
   background_location_denied: 'Not "Allow all the time"', battery_restricted: 'Battery optimisation on',
 };
-const RULE_FIELDS = [
+const RULE_FIELDS_GEOFENCE = [
   ['first_fix_accuracy_m', 'First fix max error (m)', 'The start of a session may be a little rougher'],
   ['geofence_max_accuracy_m', 'Geofence entry max error (m)', 'Attendance IN is refused when less accurate'],
   ['geofence_exit_accuracy_m', 'Geofence exit max error (m)', 'Looser: refusing an exit leaves a day open'],
   ['geofence_max_event_age_h', 'Geofence event max age (h)', 'Older queued events are refused'],
   ['device_report_minutes', 'Phone status report (min)', 'How often the app reports permission / GPS / battery'],
+];
+const RULE_FIELDS_CORE = [
   ['max_accuracy_m', 'Max GPS error (m)', 'Fixes less accurate than this are dropped'],
   ['min_interval_s', 'Min seconds between fixes', 'Closer fixes are dropped'],
   ['max_speed_kmh', 'Max speed (km/h)', 'Faster jumps between fixes are rejected'],
   ['max_point_age_h', 'Max fix age (hours)', 'Older fixes are rejected as stale'],
   ['gap_minutes', 'Tracking gap after (min)', 'Silence this long is flagged on the route'],
   ['live_stale_minutes', 'Offline after (min)', 'A live dot turns grey after this'],
+  ['max_session_hours', 'Max session length (h)', 'A session left open longer is closed automatically'],
 ];
+const RULE_FIELDS = [...RULE_FIELDS_CORE, ...RULE_FIELDS_GEOFENCE];
 
 function RulesEditor({ onClose }) {
   const [cfg, setCfg] = useState(null);
@@ -169,8 +173,8 @@ export default function FieldTrackingPanel({ isHR }) {
                 {list.length === 0 && <p className="text-sm text-gray-400 text-center py-6">{employees.length ? 'No match.' : 'No employee is enabled for Field Duty Tracking in your team.'}</p>}
                 {list.map(e => (
                   <div key={e.user_id} onClick={() => setSelected(e.user_id)} className={`cursor-pointer rounded-lg border px-3 py-2 ${selected === e.user_id ? 'border-orange-400 bg-orange-50' : 'hover:bg-gray-50'}`}>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium text-gray-800 truncate">{e.name}</span>
+                    <span className="block text-sm font-medium text-gray-800 leading-tight">{e.name}</span>
+                    <div className="flex flex-wrap items-center gap-1 mt-1">
                       {e.device_problems?.length > 0 && <span title={e.device_problems.map(k => PROBLEM_LABEL[k] || k).join(', ')} className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 shrink-0">phone issue</span>}
                       {e.on_duty ? <span className={`text-[10px] px-2 py-0.5 rounded-full ${e.live?.state === 'live' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{e.live?.state === 'live' ? 'on duty · live' : e.live?.state === 'offline' ? `offline ${e.live.age_minutes} min` : 'on duty'}</span> : null}
                     </div>

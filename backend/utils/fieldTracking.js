@@ -24,6 +24,7 @@ export const FT_DEFAULTS = {
   gap_moved_m: 150,            // a gap during which the phone moved at least this far is also counted as estimated distance
   live_stale_minutes: 5,       // a "live" position older than this is shown as offline
   max_batch: 500,              // points accepted in one upload
+  max_session_hours: 16,       // a field-duty session may not stay open longer than this; it is closed automatically
   geofence_max_accuracy_m: 50,   // geofence ENTER (attendance in) is refused when the fix is less accurate than this
   geofence_exit_accuracy_m: 100, // geofence EXIT: a little looser, because refusing it would leave a session wrongly open
   geofence_max_event_age_h: 6,   // a queued geofence event older than this is refused (was 48 h)
@@ -37,7 +38,7 @@ export const FT_DEFAULTS = {
 
 const LIMITS = {
   max_accuracy_m: [5, 100], first_fix_accuracy_m: [10, 150], geofence_max_accuracy_m: [10, 150], geofence_exit_accuracy_m: [10, 250], geofence_max_event_age_h: [1, 48], device_report_minutes: [1, 60], min_interval_s: [1, 120], max_speed_kmh: [30, 300], max_point_age_h: [1, 72],
-  max_future_s: [0, 600], gap_minutes: [2, 120], gap_moved_m: [20, 2000], live_stale_minutes: [2, 120], max_batch: [10, 1000],
+  max_future_s: [0, 600], gap_minutes: [2, 120], gap_moved_m: [20, 2000], live_stale_minutes: [2, 120], max_batch: [10, 1000], max_session_hours: [2, 48],
 };
 
 // Anything missing or out of range falls back to the strict default (clamped, never trusted blindly).
@@ -346,4 +347,24 @@ export function geofenceEventProblem(ev, cfg, nowMs) {
     if (kmh > c.max_speed_kmh) return { code: 'IMPOSSIBLE_SPEED', error: 'Position jumped faster than a person can travel' };
   }
   return null;
+}
+
+/* ── sessions that must not stay open ───────────────────────────────────── */
+
+// Why an open session has to be closed now (or null). A session is only legitimate while its employee is enabled and it has not
+// outlived the maximum session length: sessions left open for weeks kept recording people's phones long after the trip ended.
+export function sessionCloseReason(trip, eligible, nowMs, cfg = FT_DEFAULTS) {
+  if (!trip || trip.status !== 'active') return null;
+  if (!eligible) return { code: 'not_eligible', text: 'Employee is not enabled for Field Duty Tracking' };
+  const startMs = Date.parse(trip.start_time);
+  if (Number.isFinite(startMs) && nowMs - startMs > cfg.max_session_hours * 3600000) {
+    return { code: 'too_long', text: `Session was open longer than ${cfg.max_session_hours} hours` };
+  }
+  return null;
+}
+// When the closed session is recorded as having ended: its last sign of life, never later than the allowed length.
+export function sessionEndMs(trip, cfg = FT_DEFAULTS) {
+  const startMs = Date.parse(trip.start_time) || 0;
+  const lastMs = Date.parse(trip.last_point_at || '') || startMs;
+  return Math.min(Math.max(lastMs, startMs), startMs + cfg.max_session_hours * 3600000);
 }

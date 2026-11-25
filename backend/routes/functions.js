@@ -5397,8 +5397,9 @@ router.post('/:name', async (req, res) => {
       // accuracy / interval / speed — utils/fieldTracking.js); what survives becomes trail + distance (utils/fieldTrip.js).
       const lfRules = await import('../utils/fieldTracking.js');
       const lfElig = lfRules.eligibilityProblem(await getFieldEmployee(cu.id));
-      if (lfElig) return res.json({ success: false, error: 'Tracking is not allowed for this account: ' + lfElig, code: 'NOT_ELIGIBLE' });
+      if (lfElig) return res.json({ success: false, error: 'Trip is not active: tracking is not allowed for this account (' + lfElig + ')', code: 'NOT_ELIGIBLE' });   // 'not active' makes the phone stop recording
       const lfCfg = await getFieldTrackingConfig();
+      if (lfRules.sessionCloseReason(ft, true, Date.now(), lfCfg)) return res.json({ success: false, error: 'Trip is not active: the session was open too long', code: 'SESSION_TOO_LONG' });
       const { processPoints } = await import('../utils/fieldTrip.js');
       const lfNow = Date.now();
       const lfLast = (ft.points || [])[(ft.points || []).length - 1] || null;
@@ -5457,7 +5458,8 @@ router.post('/:name', async (req, res) => {
         const { points, beats, ...rest } = d;
         return { ...rest, employee: empBy[r.user_id] || {}, trail_points: (points || []).length, quality: tripQualityFn(d) };
       });
-      return res.json({ success: true, trips, rates, is_hr: isMgmtUser, can_manage: isMgmtUser || isTeamManager });
+      const gtElig = (await import('../utils/fieldTracking.js')).eligibilityProblem(await getFieldEmployee(cu.id));
+      return res.json({ success: true, trips, rates, is_hr: isMgmtUser, can_manage: isMgmtUser || isTeamManager, my_tracking: { eligible: !gtElig, reason: gtElig || '' } });
     }
 
     // Who may see a field employee's location: the employee, HR/admin/management, or their manager chain.
@@ -5577,8 +5579,14 @@ router.post('/:name', async (req, res) => {
       if (!frRules.canViewLocation({ viewerId: cu.id, subjectId: frUser, ...frV })) return res.status(403).json({ error: 'Access denied' });
       const frEmp = await getFieldEmployee(frUser);
       if (frUser !== cu.id && !(frEmp && frEmp.field_duty_tracking_eligible)) return res.json({ success: false, error: 'This employee is not enabled for Field Duty Tracking', code: 'NOT_ELIGIBLE' });
-      const frRows = await all("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'date'=$2", [frUser, frDate]);
       const frCfg = await getFieldTrackingConfig();
+      let frRows = await all("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'date'=$2", [frUser, frDate]);
+      if (frDate === istDate()) {   // a session that began before midnight and is still open belongs on today's map too
+        const seen = new Set(frRows.map(r => JSON.parse(r.data).id));
+        for (const r of await all("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [frUser])) {
+          const d = JSON.parse(r.data); if (!seen.has(d.id) && Date.now() - Date.parse(d.start_time) <= frCfg.max_session_hours * 3600000) frRows.push(r);
+        }
+      }
       const frTrips = frRows.map(r => JSON.parse(r.data));
       const route = frRules.buildRoute(frTrips, Date.now(), frCfg);
       route.snap = { enabled: !!process.env.OSRM_URL && frCfg.snap_to_roads, matched_pct: null };
@@ -22154,7 +22162,7 @@ async function buildFieldReimbursementForm(userId, periodType, periodDateStr, op
     [userId, period.date_from, period.date_to]
   );
   let trips = tripRows.map(r => JSON.parse(r.data));
-  trips = opts.claimIdOverride ? trips.filter(t => t.claim_id === opts.claimIdOverride) : trips.filter(t => !t.claimed);
+  trips = opts.claimIdOverride ? trips.filter(t => t.claim_id === opts.claimIdOverride) : trips.filter(t => !t.claimed && !t.claim_blocked);
 
   const rows = trips.map(ft => rowFromTrip(ft, rates)).sort((a, b) => a.date.localeCompare(b.date));
   const totals = {

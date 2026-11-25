@@ -35,6 +35,7 @@ export default function FieldDuty() {
   const [canManage, setCanManage] = useState(false);
   const [isHrView, setIsHrView] = useState(false);
   const [trackOpen, setTrackOpen] = useState(false);
+  const [myTracking, setMyTracking] = useState({ eligible: true, reason: '' });
   const [scope, setScope] = useState('mine');
 
   const [activeTrip, setActiveTrip] = useState(null);
@@ -143,6 +144,7 @@ export default function FieldDuty() {
         setRates(d.rates || { two_wheeler: 0, four_wheeler: 0 });
         setCanManage(!!d.can_manage);
         setIsHrView(!!d.is_hr);
+        if (d.my_tracking) setMyTracking(d.my_tracking);
         // Only "mine" ever reflects/attaches the tracker — an active row seen while
         // viewing the team's trips (scope=all) belongs to someone else.
         const myActive = scope === 'mine' ? (d.trips || []).find(t => t.status === 'active') : null;
@@ -370,10 +372,14 @@ export default function FieldDuty() {
         <Card>
           <CardContent className="py-6 text-center space-y-3">
             <MapPin className="w-10 h-10 mx-auto text-orange-400" />
-            <p className="text-gray-600 text-sm">Start a trip when you leave for field work. Your route distance is measured by GPS.</p>
-            <Button className="bg-orange-600 hover:bg-orange-700 text-white" onClick={() => setStartDialog(true)}>
-              <Play className="w-4 h-4 mr-2" /> Start Field Trip
-            </Button>
+            {myTracking.eligible ? (<>
+              <p className="text-gray-600 text-sm">Start a trip when you leave for field work. Your route distance is measured by GPS.</p>
+              <Button className="bg-orange-600 hover:bg-orange-700 text-white" onClick={() => setStartDialog(true)}>
+                <Play className="w-4 h-4 mr-2" /> Start Field Trip
+              </Button>
+            </>) : (
+              <p className="text-gray-600 text-sm">Field Duty tracking is not enabled for your account, so you cannot start a trip. If you do field work, ask HR to enable you under Field Duty Eligibility.</p>
+            )}
           </CardContent>
         </Card>
       )}
