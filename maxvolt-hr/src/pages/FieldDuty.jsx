@@ -456,7 +456,7 @@ export default function FieldDuty() {
           {!routeData ? <div className="py-16 text-center text-gray-400"><RefreshCw className="w-5 h-5 mx-auto animate-spin" /></div>
             : routeData.error ? <p className="text-sm text-red-600 py-6">{routeData.error}</p>
             : <div className="space-y-2">
-                <RouteMap points={routeData.points} lastPos={routeData.last_pos} />
+                <RouteMap points={routeData.points} lastPos={routeData.last_pos} snapped={routeData.snapped} links={routeData.links} tail={routeData.tail} />
                 {routeData.quality && routeData.quality.gap_count > 0 && <p className="text-xs rounded-md bg-amber-50 border border-amber-200 text-amber-800 p-2">GPS signal was lost {routeData.quality.gap_count} time(s). About {routeData.quality.gap_km} km of this route is a straight line across the gap, so the real road distance there may be longer.</p>}
                 <p className="text-xs text-gray-500">{fmtKm(routeData.trip.distance_km)} · {routeData.points.length} recorded points{routeData.trip.status === 'active' ? ' · live, refreshing every 20 seconds' : ''}. Green = start, red = {routeData.trip.status === 'active' ? 'latest position' : 'last recorded position'}.</p>
               </div>}

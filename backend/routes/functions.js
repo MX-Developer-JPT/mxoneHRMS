@@ -5489,7 +5489,12 @@ router.post('/:name', async (req, res) => {
       if (!ttOk) return res.status(403).json({ error: 'Access denied' });
       const tt = JSON.parse(ttRow.data);
       return res.json({ success: true, trip: { id: tt.id, date: tt.date, status: tt.status, start_time: tt.start_time, end_time: tt.end_time || null, distance_km: tt.distance_km || 0, purpose: tt.purpose || '', vehicle_type: tt.vehicle_type }, points: (tt.points || []).map(x => ({ lat: x.lat, lng: x.lng, t: x.t, g: x.g ? 1 : undefined })), last_pos: tt.last_pos || null, quality: (await import('../utils/fieldTrip.js')).tripQuality(tt), stats: tt.stats || null,
-        gaps: (await import('../utils/fieldTracking.js')).buildRoute([tt], Date.now(), await getFieldTrackingConfig()).gaps });
+        gaps: (await import('../utils/fieldTracking.js')).buildRoute([tt], Date.now(), await getFieldTrackingConfig()).gaps,
+        ...(await (async () => {
+          if (!process.env.OSRM_URL || !(await getFieldTrackingConfig()).snap_to_roads) return {};
+          const sn = await getTripSnap({ ...tt, user_id: ttRow.user_id });
+          return sn ? { snapped: sn.pieces, links: sn.links || [], tail: (tt.points || []).slice(Math.max(0, sn.n - 1)).map(x => [x.lat, x.lng]).slice(-300), snap_pct: sn.total ? Math.round(sn.matched / sn.total * 100) : null } : {};
+        })()) });
     }
 
     // Field Duty tracking rules (thresholds): anyone signed in may read them, only HR may change them.
@@ -5545,7 +5550,7 @@ router.post('/:name', async (req, res) => {
           const tr = frTrips.find(x => x.id === seg.trip_id); if (!tr) continue;
           const sn = await getTripSnap(tr);
           if (!sn) continue;
-          seg.snapped = sn.pieces;
+          seg.snapped = sn.pieces; seg.links = sn.links || [];
           seg.tail = (tr.points || []).slice(Math.max(0, sn.n - 1)).map(x => [x.lat, x.lng]).slice(-300);   // fixes that arrived after the last snap
           m += sn.matched; t += sn.total;
         }
@@ -22004,7 +22009,7 @@ async function getTripSnap(tr) {
       try { const r = await fetch(url, { signal: ac.signal }); return await r.json(); } finally { clearTimeout(to); }
     };
     const res = await snapTrip(pts, fetchJson, base);
-    const data = { id, trip_id: tr.id, n: pts.length, at: new Date().toISOString(), pieces: res.pieces, matched: res.matched, total: res.total };
+    const data = { id, trip_id: tr.id, n: pts.length, at: new Date().toISOString(), pieces: res.pieces, matched: res.matched, total: res.total, links: res.links || [] };
     await run("DELETE FROM entities WHERE id=$1 AND type='FieldTripSnap'", [id]);
     await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'FieldTripSnap',$2,'ready',$3)", [id, tr.user_id || null, JSON.stringify(data)]);
     return data;

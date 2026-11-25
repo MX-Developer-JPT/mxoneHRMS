@@ -62,6 +62,29 @@ export function parseMatch(json, rawPts, cfg = MM) {
   return line;
 }
 
+// Where tracking was lost the phone kept moving: estimate the likely road path across each gap (driving route between the last
+// fix before and the first fix after). Drawn dashed as an ESTIMATE, never counted as distance.
+export function buildRouteUrl(base, a, b) {
+  return `${String(base).replace(/\/+$/, '')}/route/v1/driving/${Number(a[1]).toFixed(6)},${Number(a[0]).toFixed(6)};${Number(b[1]).toFixed(6)},${Number(b[0]).toFixed(6)}?overview=full&geometries=geojson&steps=false`;
+}
+export async function linkGaps(pieces, fetchJson, base, cfg = MM) {
+  const links = [];
+  for (let i = 1; i < pieces.length && links.length < 20; i++) {
+    const a = pieces[i - 1][pieces[i - 1].length - 1], b = pieces[i][0];
+    if (!a || !b) continue;
+    const straight = havM({ lat: a[0], lng: a[1] }, { lat: b[0], lng: b[1] });
+    if (straight < 150 || straight > 60000) continue;
+    try {
+      const j = await fetchJson(buildRouteUrl(base, a, b));
+      const coords = j?.code === 'Ok' ? j.routes?.[0]?.geometry?.coordinates : null;
+      if (!coords || coords.length < 2) continue;
+      const line = [a, ...coords.map(c => [c[1], c[0]]), b];
+      if (lineLenM(line) <= 2.2 * straight + 500) links.push(line);   // a route far longer than the crow-flies gap is a wrong guess
+    } catch { /* no estimate for this gap */ }
+  }
+  return links;
+}
+
 // Snap a whole trail. Returns { pieces: [[ [lat,lng], ... ], ...], matched, total }:
 // each piece is one continuous polyline (road-snapped where OSRM was confident, the raw GPS otherwise).
 export async function snapTrip(points, fetchJson, base, cfg = MM) {
@@ -82,5 +105,5 @@ export async function snapTrip(points, fetchJson, base, cfg = MM) {
     matched += Math.min(runMatched, run.length);   // chunks share a joint point
     pieces.push(piece);
   }
-  return { pieces, matched, total };
+  return { pieces, matched, total, links: await linkGaps(pieces, fetchJson, base, cfg) };
 }

@@ -68,3 +68,19 @@ test('snapTrip: a single stray point and an empty trail are harmless', async () 
   assert.deepEqual((await snapTrip([], async () => null, 'http://x')).pieces, []);
   assert.ok(MM.MIN_CONFIDENCE > 0);
 });
+
+test('gap links: a sensible road estimate is added, absurd or missing ones are not, snapTrip returns them', async () => {
+  const { linkGaps, buildRouteUrl } = await import('../utils/mapMatch.js');
+  const A = [[28.6, 77.2], [28.6, 77.201]], B = [[28.62, 77.22], [28.62, 77.221]];   // ~2.9 km apart
+  assert.match(buildRouteUrl('http://x/', A[1], B[0]), /^http:\/\/x\/route\/v1\/driving\/77\.201000,28\.600000;77\.220000,28\.620000\?/);
+  const ok = async () => ({ code: 'Ok', routes: [{ geometry: { coordinates: [[77.201, 28.6], [77.21, 28.61], [77.22, 28.62]] } }] });
+  const l = await linkGaps([A, B], ok, 'http://x');
+  assert.equal(l.length, 1); assert.deepEqual(l[0][0], A[1]); assert.deepEqual(l[0].at(-1), B[0]);
+  const absurd = async () => ({ code: 'Ok', routes: [{ geometry: { coordinates: [[77.201, 28.6], [79, 30], [77.22, 28.62]] } }] });
+  assert.equal((await linkGaps([A, B], absurd, 'http://x')).length, 0);
+  assert.equal((await linkGaps([A, B], async () => { throw new Error('down'); }, 'http://x')).length, 0);
+  assert.equal((await linkGaps([A, [[28.6001, 77.2011]]], ok, 'http://x')).length, 0);   // gap too small to estimate
+  const run1 = trail(5), run2 = trail(5).map((p, i) => ({ ...p, lat: 28.62, lng: 77.22 + i * 1e-4, t: new Date(T0 + (5000 + i * 5) * 1000).toISOString() }));
+  const r = await snapTrip([...run1, ...run2], async (u) => u.includes('/route/') ? ok() : { code: 'NoMatch' }, 'http://x');
+  assert.equal(r.pieces.length, 2); assert.equal(r.links.length, 1);
+});

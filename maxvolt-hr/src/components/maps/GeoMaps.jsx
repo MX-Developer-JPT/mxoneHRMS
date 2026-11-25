@@ -101,7 +101,7 @@ export function OfficePickerMap({ latitude, longitude, radius, onChange, otherFe
 const fmtT = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }); };
 
 // A finished or running trip's route: start, end/last position and the path between.
-export function RouteMap({ points = [], lastPos, fences = [], height = 360 }) {
+export function RouteMap({ points = [], lastPos, fences = [], height = 360, snapped, links, tail }) {
   const line = useMemo(() => points.filter(p => ok(p.lat) && ok(p.lng)).map(p => [Number(p.lat), Number(p.lng)]), [points]);
   const end = lastPos && ok(lastPos.lat) ? [Number(lastPos.lat), Number(lastPos.lng)] : line[line.length - 1];
   const all = [...line, ...(end ? [end] : [])];
@@ -112,7 +112,9 @@ export function RouteMap({ points = [], lastPos, fences = [], height = 360 }) {
         <Resize />
         <Fences fences={fences} />
         {all.length > 0 && <FitTo points={all} />}
-        {line.length > 1 && <Polyline positions={line} pathOptions={{ color: '#ea580c', weight: 4, opacity: 0.85 }} />}
+        {snapped && snapped.length ? <Polyline positions={[...snapped, ...(tail && tail.length > 1 ? [tail] : [])]} pathOptions={{ color: '#ea580c', weight: 5, opacity: 0.9, lineJoin: 'round' }} />
+          : line.length > 1 && <Polyline positions={line} pathOptions={{ color: '#ea580c', weight: 4, opacity: 0.85 }} />}
+        {(links || []).map((l, i) => <Polyline key={'l' + i} positions={l} pathOptions={{ color: '#d97706', weight: 4, dashArray: '4 8', opacity: 0.9 }}><Tooltip sticky>Estimated road path across a tracking gap</Tooltip></Polyline>)}
         {line[0] && <Marker position={line[0]} icon={dot('#16a34a', 18)}><Tooltip>Start{points[0]?.t ? ` · ${fmtT(points[0].t)}` : ''}</Tooltip></Marker>}
         {end && <Marker position={end} icon={dot('#dc2626', 18)}><Tooltip>Latest{lastPos?.t ? ` · ${fmtT(lastPos.t)}` : ''}</Tooltip></Marker>}
       </MapContainer>
@@ -300,7 +302,8 @@ export function EmployeeRouteMap({ route, fences = [], height = 460 }) {
         <Fences fences={fences} />
         {fit.length > 0 && <FitTo points={fit} />}
         {segs.map((s, i) => { const sn = snapped(s); return (sn || s.line.length > 1) && <Polyline key={s.trip_id} positions={sn || s.line} pathOptions={{ color: COLORS[i % COLORS.length], weight: 5, opacity: 0.9, lineJoin: 'round' }} />; })}
-        {gaps.filter(g => g.from_pos && g.to_pos).map((g, i) => (
+        {segs.flatMap(s => s.links || []).map((l, i) => <Polyline key={'lk' + i} positions={l} pathOptions={{ color: '#d97706', weight: 4, dashArray: '4 8', opacity: 0.9 }}><Tooltip sticky>Estimated road path across a tracking gap</Tooltip></Polyline>)}
+        {!segs.some(s => (s.links || []).length) && gaps.filter(g => g.from_pos && g.to_pos).map((g, i) => (
           <Polyline key={'g' + i} positions={[[g.from_pos.lat, g.from_pos.lng], [g.to_pos.lat, g.to_pos.lng]]} pathOptions={{ color: '#dc2626', weight: 3, dashArray: '6 8', opacity: 0.9 }}>
             <Tooltip sticky>No tracking {fmtT(g.from)} → {fmtT(g.to)} ({g.minutes} min){g.moved_m ? ` · moved ~${(g.moved_m / 1000).toFixed(2)} km` : ''}</Tooltip>
           </Polyline>
