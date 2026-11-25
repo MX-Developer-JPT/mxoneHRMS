@@ -1089,6 +1089,7 @@ function buildConsentFormPdf(data) {
 // request overlapping the original, or an in-app and a headless-native event)
 // could both pass the "not already in progress" check and double-punch.
 const _geoLocks = new Map();
+import { keyedLock } from '../utils/keyedLock.js';
 async function acquireGeoLock(key) {
   const prev = _geoLocks.get(key) || Promise.resolve();
   let release;
@@ -2732,7 +2733,11 @@ router.post('/:name', async (req, res) => {
   const { name } = req.params;
   const p = req.body || {};
   let cu = getUser(req);
-  if (!cu && GEO_DEVICE_FNS.has(name)) cu = getGeoDeviceUser(req);
+  if (!cu && GEO_DEVICE_FNS.has(name)) {
+    cu = getGeoDeviceUser(req);
+    // a 365-day device token must stop working when the employee leaves or is deactivated
+    if (cu && !(await one("SELECT 1 AS ok FROM entities WHERE type='Employee' AND user_id=$1 AND status='active'", [cu.id]))) cu = null;
+  }
 
   try {
   // Learning & Development module (routes/ld.js) — every ld_* function
@@ -4872,6 +4877,7 @@ router.post('/:name', async (req, res) => {
       // ever produce a real attendance change via geofencing, regardless of
       // what any client sends — eligibility isn't just a UI-level gate.
       if (!ngEmp.geofence_eligible) return res.json({ success: false, error: 'Not eligible for geofence-based attendance', code: 'NOT_ELIGIBLE' });
+      if (ngEmp.status && ngEmp.status !== 'active') return res.json({ success: false, error: 'Employee record is not active', code: 'NOT_ACTIVE' });
       const ngLocs = (await all("SELECT data FROM entities WHERE type='AppLocation'")).map(r => JSON.parse(r.data))
         .filter(l => l.is_active !== false && l.latitude != null && l.longitude != null && Number(l.geofence_radius) > 0);
 
@@ -5038,6 +5044,9 @@ router.post('/:name', async (req, res) => {
         // auto-closed by a later exit (never a manual / WFH / OD session).
         geofence_open_in: event === 'enter' ? (resumedSession ? (ngAtt?.geofence_open_in || evIST.toISOString()) : evIST.toISOString()) : null,
         geofence_event_ids: event_id ? [...seenIds, event_id].slice(-200) : seenIds,
+        // An event the phone reported late (offline queue) is stamped with the phone's own time of crossing. Record how late, so HR can see
+        // every punch whose time came from the phone's clock rather than the server's.
+        ...(Math.abs(Date.now() - evUtc) > 300000 ? { geofence_event_delay_min: Math.round((Date.now() - evUtc) / 60000) } : {}),
         geofence_source: ['in_app', 'native_android', 'native_ios'].includes(source) ? source : 'native_android', geofence_device: device_id || '',
         ...(event === 'enter' ? { check_in_location: locPayload } : { check_out_location: locPayload }),
       };
@@ -5387,6 +5396,8 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'logFieldPoints': {
+      const lfRel = await keyedLock('ft:' + String(p.trip_id));   // JS and native recorders upload the same session at once: one at a time per session
+      try {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { trip_id, points } = p;
       if (!trip_id || !Array.isArray(points) || !points.length) return res.json({ success: false, error: 'trip_id and points required' });
@@ -5415,6 +5426,7 @@ router.post('/:name', async (req, res) => {
       await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
       if (lfScreen.rejected.mock > 0) recordTrackingDevice(cu.id, null, { mock: true, where: 'field_duty' }).catch(() => {});
       return res.json({ success: true, distance_km: upd.distance_km, points_stored: upd.point_count, rejected: lfScreen.rejectedCount, rejected_reasons: lfScreen.rejected });
+      } finally { lfRel(); }
     }
 
     case 'endFieldTrip': {
@@ -22066,7 +22078,7 @@ async function getFieldEmployee(userId) {
 // user_id -> { name, code, department } for every employee HR has enabled for Field Duty Tracking (only these are ever tracked or shown).
 async function getEligibleFieldEmployees() {
   const out = {};
-  for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")) {
+  for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active' AND data::jsonb->>'field_duty_tracking_eligible'='true'")) {
     let d; try { d = JSON.parse(r.data); } catch { continue; }
     if (d.field_duty_tracking_eligible && r.user_id) out[r.user_id] = { name: d.display_name || 'Employee', code: d.employee_code || '', department: d.department || '', designation: d.designation || '' };
   }

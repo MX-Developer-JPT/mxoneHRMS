@@ -6,6 +6,7 @@ import { sendPushToUser, sendFieldDutyWake } from '../utils/push.js';
 import { nudgeDue, wakeDue, sessionCloseReason, sessionEndMs, normalizeConfig, attendanceSyncAction } from '../utils/fieldTracking.js';
 import { saveFieldDaySummary } from './fieldDayStore.js';
 import { randomUUID } from 'node:crypto';
+import { keyedLock } from '../utils/keyedLock.js';
 
 const state = new Map();   // visible reminders
 const wakeState = new Map();   // silent wake pushes   // trip id -> { count, lastMs }   (in memory: a restart simply allows one more reminder)
@@ -27,12 +28,18 @@ export async function closeInvalidFieldSessions(nowMs = Date.now()) {
     let t; try { t = JSON.parse(r.data); } catch { continue; }
     const why = sessionCloseReason(t, eligible.has(r.user_id), nowMs, cfg);
     if (!why) continue;
+    const rel = await keyedLock('ft:' + t.id);
+    try {
+    const fresh = await one("SELECT data FROM entities WHERE id=$1 AND type='FieldTrip'", [r.id]);   // re-read under the lock: points may have arrived meanwhile
+    if (fresh) { try { t = JSON.parse(fresh.data); } catch { /* keep */ } }
+    if (!t || t.status !== 'active') continue;
     const endMs = sessionEndMs(t, cfg);
     const old = nowMs - (Date.parse(t.start_time) || nowMs) > 48 * 3600000;
     const upd = { ...t, status: 'completed', end_time: new Date(endMs).toISOString(), auto_closed: true, auto_closed_reason: why.text, auto_closed_by: 'system', needs_review: true, ...(old ? { claim_blocked: true } : {}) };
     await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(upd), r.id]);
     saveFieldDaySummary(r.user_id, t.date).catch(() => {});
     closed++;
+    } finally { rel(); }
   }
   if (closed) console.log('[field-sessions] closed ' + closed + ' session(s) that were not allowed to stay open');
   return { closed };
@@ -48,7 +55,11 @@ export async function syncODFieldSessions(nowMs = Date.now()) {
     try { if (JSON.parse(r.data).field_duty_tracking_eligible) eligible.add(r.user_id); } catch { /* skip */ }
   }
   const attByUserDate = new Map();
-  const attRows = await all("SELECT id,user_id,data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1", [new Date(nowMs + 5.5 * 3600000 - 2 * 86400000).toISOString().slice(0, 10)]);
+  const active0 = await all("SELECT user_id FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'");
+  const relevant = [...new Set([...eligible, ...active0.map(r => r.user_id)])];
+  const attRows = relevant.length
+    ? await all("SELECT id,user_id,data FROM entities WHERE type='Attendance' AND user_id = ANY($1) AND data::jsonb->>'date' >= $2", [relevant, new Date(nowMs + 5.5 * 3600000 - 2 * 86400000).toISOString().slice(0, 10)])
+    : [];
   for (const r of attRows) { try { const d = JSON.parse(r.data); attByUserDate.set(r.user_id + '|' + d.date, { id: r.id, ...d }); } catch { /* skip */ } }
   const active = new Map();
   for (const r of await all("SELECT id,user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'")) { try { active.set(r.user_id, { rowId: r.id, ...JSON.parse(r.data) }); } catch { /* skip */ } }
@@ -59,20 +70,29 @@ export async function syncODFieldSessions(nowMs = Date.now()) {
     const att = attByUserDate.get(uid + '|' + (trip?.date || today)) || (trip ? null : attByUserDate.get(uid + '|' + today)) || null;
     const act = attendanceSyncAction({ eligible: eligible.has(uid), attendance: att, activeTrip: trip });
     if (act.action === 'start') {
+      const relS = await keyedLock('ftstart:' + uid);
+      try {
+      if (await one("SELECT id FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [uid])) continue;   // someone just opened one
       const id = randomUUID();
       const ft = { id, user_id: uid, date: today, start_time: new Date(nowMs).toISOString(), status: 'active', vehicle_type: '2_wheeler', duty_basis: 'od_attendance',
         purpose: 'Outduty (started automatically at OD check-in)', points: [], distance_km: 0, point_count: 0, toll_parking_amount: 0, source: 'od_attendance', linked_attendance_id: att.id };
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'FieldTrip',$2,'active',$3)", [id, uid, JSON.stringify(ft)]);
       started++;
+      } finally { relS(); }
     } else if (act.action === 'stop' && trip) {
       let endMs = nowMs;
       const co = att?.check_out_time ? Date.parse(att.check_out_time) - 5.5 * 3600000 : NaN;
       if (Number.isFinite(co) && co <= nowMs) endMs = co;
       endMs = Math.max(endMs, Date.parse(trip.start_time) || 0);
-      const { rowId, ...doc } = trip;
+      const relT = await keyedLock('ft:' + trip.id);
+      try {
+      const fresh = await one("SELECT data FROM entities WHERE id=$1 AND type='FieldTrip'", [trip.rowId]);
+      const { rowId, ...doc } = fresh ? { rowId: trip.rowId, ...JSON.parse(fresh.data) } : trip;
+      if (doc.status !== 'active') continue;
       await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...doc, status: 'completed', end_time: new Date(endMs).toISOString(), auto_closed: true, auto_closed_reason: act.reason, auto_closed_by: 'od_sync' }), rowId]);
       saveFieldDaySummary(uid, trip.date).catch(() => {});
       stopped++;
+      } finally { relT(); }
     }
   }
   if (started || stopped) console.log('[field-od-sync] started ' + started + ', stopped ' + stopped);
