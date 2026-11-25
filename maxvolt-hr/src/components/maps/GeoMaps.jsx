@@ -277,3 +277,46 @@ export function AreaEditorMap({ vertices, onChange, otherFences = [], excludeId,
     </div>
   );
 }
+
+// One employee's day: every trip as a time-ordered polyline, start/end markers with timestamps, the live position and
+// tracking gaps (dashed red between the last fix before and the first fix after the silence).
+export function EmployeeRouteMap({ route, fences = [], height = 460 }) {
+  const segs = useMemo(() => (route?.segments || []).map(s => ({ ...s, line: (s.points || []).filter(p => ok(p.lat) && ok(p.lng)).map(p => [Number(p.lat), Number(p.lng)]) })), [route]);
+  const gaps = route?.gaps || [];
+  const live = route?.live;
+  const fit = useMemo(() => {
+    const a = segs.flatMap(s => s.line);
+    if (live && ok(live.lat)) a.push([Number(live.lat), Number(live.lng)]);
+    return a;
+  }, [segs, live]);
+  const start = route?.start, end = route?.end;
+  const COLORS = ['#ea580c', '#2563eb', '#7c3aed', '#0d9488'];
+  return (
+    <div className="rounded-lg overflow-hidden border" style={{ height }}>
+      <MapContainer center={fit[0] || INDIA} zoom={fit.length ? 14 : 5} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
+        <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
+        <Resize />
+        <Fences fences={fences} />
+        {fit.length > 0 && <FitTo points={fit} />}
+        {segs.map((s, i) => s.line.length > 1 && <Polyline key={s.trip_id} positions={s.line} pathOptions={{ color: COLORS[i % COLORS.length], weight: 4, opacity: 0.85 }} />)}
+        {gaps.filter(g => g.from_pos && g.to_pos).map((g, i) => (
+          <Polyline key={'g' + i} positions={[[g.from_pos.lat, g.from_pos.lng], [g.to_pos.lat, g.to_pos.lng]]} pathOptions={{ color: '#dc2626', weight: 3, dashArray: '6 8', opacity: 0.9 }}>
+            <Tooltip sticky>No tracking {fmtT(g.from)} → {fmtT(g.to)} ({g.minutes} min){g.moved_m ? ` · moved ~${(g.moved_m / 1000).toFixed(2)} km` : ''}</Tooltip>
+          </Polyline>
+        ))}
+        {gaps.filter(g => g.from_pos && !g.to_pos).map((g, i) => (
+          <Marker key={'go' + i} position={[g.from_pos.lat, g.from_pos.lng]} icon={dot('#f59e0b', 16)}>
+            <Tooltip>Last heard {fmtT(g.from)}{g.open ? ` · silent for ${g.minutes} min` : ''}</Tooltip>
+          </Marker>
+        ))}
+        {start && ok(start.lat) && <Marker position={[Number(start.lat), Number(start.lng)]} icon={dot('#16a34a', 18)}><Tooltip>Start · {fmtT(start.t)}</Tooltip></Marker>}
+        {end && ok(end.lat) && !route?.on_duty_now && <Marker position={[Number(end.lat), Number(end.lng)]} icon={dot('#111827', 18)}><Tooltip>End · {fmtT(end.t)}</Tooltip></Marker>}
+        {live && ok(live.lat) && (
+          <Marker position={[Number(live.lat), Number(live.lng)]} icon={dot(live.state === 'live' ? '#16a34a' : '#6b7280', 24)}>
+            <Tooltip permanent direction="top" offset={[0, -10]}>{live.state === 'live' ? 'Live now' : 'Last known'} · {fmtT(live.t)}</Tooltip>
+          </Marker>
+        )}
+      </MapContainer>
+    </div>
+  );
+}

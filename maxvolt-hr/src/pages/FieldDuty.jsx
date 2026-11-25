@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { RouteMap, LiveMap } from '@/components/maps/GeoMaps';
+import FieldTrackingPanel from '@/components/fieldduty/FieldTrackingPanel';
 import { fenceOf } from '@/lib/geofenceShape';
 import { subscribe as subscribeTracker, startTracking, stopTracking, flushNow } from '@/lib/fieldTripTracker';
 
@@ -32,6 +33,8 @@ export default function FieldDuty() {
   const [trips, setTrips] = useState([]);
   const [rates, setRates] = useState({ two_wheeler: 0, four_wheeler: 0 });
   const [canManage, setCanManage] = useState(false);
+  const [isHrView, setIsHrView] = useState(false);
+  const [trackOpen, setTrackOpen] = useState(false);
   const [scope, setScope] = useState('mine');
 
   const [activeTrip, setActiveTrip] = useState(null);
@@ -139,6 +142,7 @@ export default function FieldDuty() {
         setTrips(d.trips || []);
         setRates(d.rates || { two_wheeler: 0, four_wheeler: 0 });
         setCanManage(!!d.can_manage);
+        setIsHrView(!!d.is_hr);
         // Only "mine" ever reflects/attaches the tracker — an active row seen while
         // viewing the team's trips (scope=all) belongs to someone else.
         const myActive = scope === 'mine' ? (d.trips || []).find(t => t.status === 'active') : null;
@@ -282,6 +286,9 @@ export default function FieldDuty() {
               <Button variant="outline" size="sm" onClick={() => { setNew2w(String(rates.two_wheeler || '')); setNew4w(String(rates.four_wheeler || '')); setRateDialog(true); }}>
                 <Settings2 className="w-4 h-4 mr-1" /> Set Rates
               </Button>
+              <Button variant="outline" size="sm" className={trackOpen ? 'border-orange-400 text-orange-700' : ''} onClick={() => setTrackOpen(o => !o)}>
+                <Route className="w-4 h-4 mr-1" /> {trackOpen ? 'Hide Employee Routes' : 'Employee Routes'}
+              </Button>
               <Button variant="outline" size="sm" onClick={() => setLiveOpen(o => !o)}>
                 <Navigation className="w-4 h-4 mr-1" /> {liveOpen ? 'Hide Live Map' : 'Live Map'}
               </Button>
@@ -303,6 +310,9 @@ export default function FieldDuty() {
           )}
         </div>
       </div>
+
+      {/* Per-employee route by date + all-on-duty live view + tracking rules (eligible employees only) */}
+      {canManage && trackOpen && <FieldTrackingPanel isHR={isHrView} />}
 
       {/* Live map: managers and HR see everyone on an active trip right now */}
       {canManage && liveOpen && (

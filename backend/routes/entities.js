@@ -795,7 +795,7 @@ async function assetValidation(data, current) {
   return { atype, problem: assetProblem(data, current, atype, others) };
 }
 
-const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster', 'AttendanceBulkBatch', 'LeaveImportSnapshot', 'CvReviewBatch', 'RecruitmentConfig', 'CandidateIntake']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them
+const PRIVATE_TYPES = new Set(['SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster', 'AttendanceBulkBatch', 'LeaveImportSnapshot', 'CvReviewBatch', 'RecruitmentConfig', 'CandidateIntake', 'FieldTrip']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them; FieldTrip holds the GPS trail of field staff — written only by the field-duty functions (so nobody can edit or delete their own points or distance) and read only through getFieldRoute/getFieldLive/getFieldTripTrail, which enforce the reporting hierarchy
 router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
 
 // Exit cases are driven by the exit workflow functions (resignation, approvals, clearance, settlement). Writing the record directly
@@ -1252,6 +1252,12 @@ router.patch('/:type/:id', async (req, res) => {
     const isGateAdminAttendance = type === 'Attendance' && genRole === 'gate_admin';
     const isFrontDeskCard = type === 'DigitalBusinessCard' && genRole === 'front_desk_admin';
     if (!PRIVILEGED_ROLES.has(genRole) && !isGateAdminAttendance && !isFrontDeskCard) return res.status(403).json({ error: 'Access denied — not your record' });
+  }
+
+  // Who is enabled for Field Duty Tracking is HR's decision — an employee must not be able to switch it on (or off) on their own record.
+  if (type === 'Employee' && req.body && Object.prototype.hasOwnProperty.call(req.body, 'field_duty_tracking_eligible')
+      && !PRIVILEGED_ROLES.has(await getEffectiveRole(cu))) {
+    return res.status(403).json({ error: 'Only HR can change Field Duty Tracking eligibility' });
   }
 
   if (type === 'Announcement') {

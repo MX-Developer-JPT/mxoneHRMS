@@ -82,7 +82,7 @@ async function getCapacitor() {
 // last-stored point, so this is a pre-filter for upload volume, not the
 // authoritative distance calculation.
 let lastFix = null;      // newest usable fix, used for the liveness heartbeat
-function handleFix(lat, lng, accuracy, timeMs, speed) {
+function handleFix(lat, lng, accuracy, timeMs, speed, mock) {
   liveAccuracy = accuracy != null ? Math.round(accuracy) : null;
   notify();
   // The server (utils/fieldTrip.js) is the one place that decides what counts as distance — accuracy gate, jump
@@ -91,6 +91,7 @@ function handleFix(lat, lng, accuracy, timeMs, speed) {
   if (accuracy != null && accuracy > 100) return;
   const q = { lat, lng, acc: accuracy || 0, t: new Date(timeMs || Date.now()).toISOString() };
   if (Number.isFinite(speed) && speed >= 0) q.sp = Math.round(speed * 10) / 10;
+  if (mock === true) q.mock = true;   // the server refuses mocked fixes (fake-GPS apps)
   lastFix = q;
   const prev = buffer[buffer.length - 1];
   if (prev) {
@@ -148,7 +149,7 @@ export async function startTracking(tripId, initialKm = 0) {
         (location, error) => {
           if (error) { console.warn('[fieldTripTracker] native watcher error:', error.code, error.message); return; }
           if (!location) return;
-          handleFix(location.latitude, location.longitude, location.accuracy, location.time, location.speed);
+          handleFix(location.latitude, location.longitude, location.accuracy, location.time, location.speed, location.simulated === true);
         }
       );
       // Native recording: the location service saves and uploads every fix itself, so a locked screen, another app in

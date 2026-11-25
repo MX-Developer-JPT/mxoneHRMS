@@ -5338,6 +5338,17 @@ router.post('/:name', async (req, res) => {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { vehicle_type, gate_pass_id } = p;
       if (!['2_wheeler', '4_wheeler'].includes(vehicle_type)) return res.json({ success: false, error: 'vehicle_type must be 2_wheeler or 4_wheeler' });
+      // Strict rules (utils/fieldTracking.js): only an employee HR enabled, and only on an approved field-duty day.
+      const ftRules = await import('../utils/fieldTracking.js');
+      const sfCfg = await getFieldTrackingConfig();
+      const sfEmp = await getFieldEmployee(cu.id);
+      const sfElig = ftRules.eligibilityProblem(sfEmp);
+      if (sfElig) return res.json({ success: false, error: sfElig, code: 'NOT_ELIGIBLE' });
+      const sfToday = istDate();
+      const sfAttRow = await one("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, sfToday]);
+      const sfGpRow = gate_pass_id ? await one("SELECT data FROM entities WHERE type='GatePass' AND id=$1", [gate_pass_id]) : null;
+      const sfDuty = ftRules.dutyDayProblem({ today: sfToday, userId: cu.id, attendance: sfAttRow ? JSON.parse(sfAttRow.data) : null, gatePass: sfGpRow ? JSON.parse(sfGpRow.data) : null }, sfCfg);
+      if (sfDuty) return res.json({ success: false, error: sfDuty, code: 'NOT_DUTY_DAY' });
       const active = await one("SELECT id,data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [cu.id]);
       if (active) {
         // A trip nobody ended (phone off, forgot) must not block the next one: anything quiet for 18 h is closed at its last recorded moment.
@@ -5348,8 +5359,8 @@ router.post('/:name', async (req, res) => {
       }
       const ftId = uuidv4();
       const ft = {
-        id: ftId, user_id: cu.id, date: new Date().toISOString().slice(0, 10),
-        start_time: new Date().toISOString(), status: 'active', vehicle_type,
+        id: ftId, user_id: cu.id, date: sfToday,
+        start_time: new Date().toISOString(), status: 'active', vehicle_type, duty_basis: gate_pass_id ? 'gate_pass' : 'od_attendance',
         purpose: p.purpose || '', points: [], distance_km: 0, point_count: 0,
         toll_parking_amount: 0, gate_pass_id: gate_pass_id || null,
       };
@@ -5366,11 +5377,24 @@ router.post('/:name', async (req, res) => {
       const ft = JSON.parse(ftRow.data);
       if (ft.status !== 'active') return res.json({ success: false, error: 'Trip is not active' });
 
-      // All filtering / distance rules live in utils/fieldTrip.js (tested with simulated trips).
+      // Rules, in order: the employee must still be enabled by HR; every point is screened (stale / future / out of order / mock /
+      // accuracy / interval / speed — utils/fieldTracking.js); what survives becomes trail + distance (utils/fieldTrip.js).
+      const lfRules = await import('../utils/fieldTracking.js');
+      const lfElig = lfRules.eligibilityProblem(await getFieldEmployee(cu.id));
+      if (lfElig) return res.json({ success: false, error: 'Tracking is not allowed for this account: ' + lfElig, code: 'NOT_ELIGIBLE' });
+      const lfCfg = await getFieldTrackingConfig();
       const { processPoints } = await import('../utils/fieldTrip.js');
-      const { trip: upd } = processPoints(ft, points);
+      const lfNow = Date.now();
+      const lfLast = (ft.points || [])[(ft.points || []).length - 1] || null;
+      const lfScreen = lfRules.screenPoints(points, { nowMs: lfNow, tripStartMs: Date.parse(ft.start_time) || 0, last: lfLast }, lfCfg);
+      const { trip: proc } = processPoints(ft, lfScreen.accepted, lfNow);
+      const upd = {
+        ...proc,
+        beats: lfRules.recordBeats(ft.beats, lfScreen.accepted.map(x => Date.parse(x.t)).concat(lfNow)),   // the server heard from the phone now
+        rule_stats: lfRules.addRejectStats(ft.rule_stats, lfScreen.rejected),
+      };
       await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
-      return res.json({ success: true, distance_km: upd.distance_km, points_stored: upd.point_count });
+      return res.json({ success: true, distance_km: upd.distance_km, points_stored: upd.point_count, rejected: lfScreen.rejectedCount, rejected_reasons: lfScreen.rejected });
     }
 
     case 'endFieldTrip': {
@@ -5409,9 +5433,11 @@ router.post('/:name', async (req, res) => {
       const empRows = await all("SELECT user_id,data FROM entities WHERE type='Employee'");
       const empBy = {};
       for (const r of empRows) { const d = JSON.parse(r.data); empBy[r.user_id] = { name: d.display_name || 'Employee', code: d.employee_code || '', department: d.department || '' }; }
+      // The all-staff views list only people who are enabled for Field Duty Tracking (own trips are always shown to their owner).
+      if (p.scope === 'all' && (isMgmtUser || isTeamManager)) { const eligNow = await getEligibleFieldEmployees(); rows = rows.filter(r => eligNow[r.user_id]); }
       const trips = rows.map(r => {
         const d = JSON.parse(r.data);
-        const { points, ...rest } = d;
+        const { points, beats, ...rest } = d;
         return { ...rest, employee: empBy[r.user_id] || {}, trail_points: (points || []).length, quality: tripQualityFn(d) };
       });
       return res.json({ success: true, trips, rates, is_hr: isMgmtUser, can_manage: isMgmtUser || isTeamManager });
@@ -5440,16 +5466,16 @@ router.post('/:name', async (req, res) => {
       if (!flMgmt && !flMgr) return res.status(403).json({ error: 'Managers and HR only' });
       const flTeam = flMgmt ? null : await getVisibleUserIds(cu);
       const flRows = await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'");
-      const flEmp = {};
-      for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee'")) { const d = JSON.parse(r.data); flEmp[r.user_id] = { name: d.display_name || 'Employee', code: d.employee_code || '', department: d.department || '' }; }
+      const flEmp = await getEligibleFieldEmployees();      // only employees enabled for Field Duty Tracking are ever shown
       const flNow = Date.now();
-      const people = flRows.filter(r => flMgmt || flTeam.includes(r.user_id)).map(r => {
+      const flCfg = await getFieldTrackingConfig();
+      const people = flRows.filter(r => flEmp[r.user_id] && (flMgmt || flTeam.includes(r.user_id))).map(r => {
         const d = JSON.parse(r.data); const pos = d.last_pos || (d.points || []).slice(-1)[0] || null;
         const ageMin = pos ? Math.max(0, Math.round((flNow - new Date(pos.t).getTime()) / 60000)) : null;
         return {
           trip_id: d.id, user_id: r.user_id, employee: flEmp[r.user_id] || {}, vehicle_type: d.vehicle_type, purpose: d.purpose || '',
           start_time: d.start_time, distance_km: d.distance_km || 0, source: d.source || '',
-          position: pos ? { lat: pos.lat, lng: pos.lng, acc: pos.acc || 0, t: pos.t } : null, age_minutes: ageMin, stale: ageMin == null || ageMin > 10,
+          position: pos ? { lat: pos.lat, lng: pos.lng, acc: pos.acc || 0, t: pos.t } : null, age_minutes: ageMin, stale: ageMin == null || ageMin > flCfg.live_stale_minutes,
         };
       }).sort((a, b) => String(a.employee.name).localeCompare(String(b.employee.name)));
       return res.json({ success: true, people, server_time: new Date().toISOString() });
@@ -5462,7 +5488,60 @@ router.post('/:name', async (req, res) => {
       const ttOk = ttRow.user_id === cu.id || await hasRole(cu, MGR_ROLES) || (await hasRole(cu, ['manager']) && (await getVisibleUserIds(cu)).includes(ttRow.user_id));
       if (!ttOk) return res.status(403).json({ error: 'Access denied' });
       const tt = JSON.parse(ttRow.data);
-      return res.json({ success: true, trip: { id: tt.id, date: tt.date, status: tt.status, start_time: tt.start_time, end_time: tt.end_time || null, distance_km: tt.distance_km || 0, purpose: tt.purpose || '', vehicle_type: tt.vehicle_type }, points: (tt.points || []).map(x => ({ lat: x.lat, lng: x.lng, t: x.t, g: x.g ? 1 : undefined })), last_pos: tt.last_pos || null, quality: (await import('../utils/fieldTrip.js')).tripQuality(tt), stats: tt.stats || null });
+      return res.json({ success: true, trip: { id: tt.id, date: tt.date, status: tt.status, start_time: tt.start_time, end_time: tt.end_time || null, distance_km: tt.distance_km || 0, purpose: tt.purpose || '', vehicle_type: tt.vehicle_type }, points: (tt.points || []).map(x => ({ lat: x.lat, lng: x.lng, t: x.t, g: x.g ? 1 : undefined })), last_pos: tt.last_pos || null, quality: (await import('../utils/fieldTrip.js')).tripQuality(tt), stats: tt.stats || null,
+        gaps: (await import('../utils/fieldTracking.js')).buildRoute([tt], Date.now(), await getFieldTrackingConfig()).gaps });
+    }
+
+    // Field Duty tracking rules (thresholds): anyone signed in may read them, only HR may change them.
+    case 'getFieldTrackingConfig': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const { FT_DEFAULTS } = await import('../utils/fieldTracking.js');
+      return res.json({ success: true, config: await getFieldTrackingConfig(), defaults: FT_DEFAULTS });
+    }
+    case 'setFieldTrackingConfig': {
+      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+      const { normalizeConfig } = await import('../utils/fieldTracking.js');
+      const cfgNew = normalizeConfig(p.config || {});
+      await run("INSERT INTO settings(key,value,updated_at) VALUES('field_tracking_config',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [JSON.stringify(cfgNew)]);
+      return res.json({ success: true, config: cfgNew });
+    }
+
+    // The people a viewer may pick on the Field Duty map: eligible employees inside their visibility, with who is on duty now.
+    case 'getFieldEmployees': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const feV = await getFieldViewer(cu);
+      if (!feV.isMgmt && !feV.isManager) return res.status(403).json({ error: 'Managers and HR only' });
+      const feEmp = await getEligibleFieldEmployees();
+      const feActive = {};
+      for (const r of await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'")) feActive[r.user_id] = JSON.parse(r.data);
+      const feCfg = await getFieldTrackingConfig();
+      const feNow = Date.now();
+      const { liveStatus } = await import('../utils/fieldTracking.js');
+      const employees = Object.entries(feEmp).filter(([uid]) => feV.isMgmt || (feV.visibleIds || []).includes(uid)).map(([uid, e]) => {
+        const a = feActive[uid]; const pos = a ? (a.last_pos || (a.points || []).slice(-1)[0]) : null;
+        return { user_id: uid, ...e, on_duty: !!a, live: a ? liveStatus(pos?.t, feNow, feCfg) : null };
+      }).sort((x, y) => (y.on_duty - x.on_duty) || String(x.name).localeCompare(String(y.name)));
+      return res.json({ success: true, employees, config: feCfg, server_time: new Date(feNow).toISOString() });
+    }
+
+    // One employee, one day: every trip merged in time order — the real GPS path, distance, gaps, live position.
+    case 'getFieldRoute': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const frUser = p.user_id || cu.id;
+      const frDate = /^\d{4}-\d{2}-\d{2}$/.test(p.date || '') ? p.date : istDate();
+      const frRules = await import('../utils/fieldTracking.js');
+      const frV = await getFieldViewer(cu);
+      if (!frRules.canViewLocation({ viewerId: cu.id, subjectId: frUser, ...frV })) return res.status(403).json({ error: 'Access denied' });
+      const frEmp = await getFieldEmployee(frUser);
+      if (frUser !== cu.id && !(frEmp && frEmp.field_duty_tracking_eligible)) return res.json({ success: false, error: 'This employee is not enabled for Field Duty Tracking', code: 'NOT_ELIGIBLE' });
+      const frRows = await all("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'date'=$2", [frUser, frDate]);
+      const frCfg = await getFieldTrackingConfig();
+      const route = frRules.buildRoute(frRows.map(r => JSON.parse(r.data)), Date.now(), frCfg);
+      return res.json({
+        success: true, date: frDate, user_id: frUser,
+        employee: frEmp ? { name: frEmp.display_name || 'Employee', code: frEmp.employee_code || '', department: frEmp.department || '', designation: frEmp.designation || '' } : null,
+        route, config: { gap_minutes: frCfg.gap_minutes, live_stale_minutes: frCfg.live_stale_minutes }, server_time: new Date().toISOString(),
+      });
     }
 
     case 'setFieldRate': {
@@ -21871,6 +21950,35 @@ function buildPayslipHtml(payroll, emp, deptName) {
 }
 
 /* ── Field Duty: consolidated reimbursement form (Annexure 6 — Local Conveyance Expense Reimbursement) ── */
+
+// Field Duty Tracking rules (thresholds live in the settings table; strict defaults in utils/fieldTracking.js).
+async function getFieldTrackingConfig() {
+  const { normalizeConfig } = await import('../utils/fieldTracking.js');
+  const row = await one("SELECT value FROM settings WHERE key='field_tracking_config'");
+  let raw = null; try { raw = row ? JSON.parse(row.value) : null; } catch { raw = null; }
+  return normalizeConfig(raw);
+}
+const istDate = (ms = Date.now()) => new Date(ms + 5.5 * 3600000).toISOString().slice(0, 10);
+async function getFieldEmployee(userId) {
+  const r = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [userId]);
+  if (!r) return null; try { return JSON.parse(r.data); } catch { return null; }
+}
+// user_id -> { name, code, department } for every employee HR has enabled for Field Duty Tracking (only these are ever tracked or shown).
+async function getEligibleFieldEmployees() {
+  const out = {};
+  for (const r of await all("SELECT user_id,data FROM entities WHERE type='Employee' AND status='active'")) {
+    let d; try { d = JSON.parse(r.data); } catch { continue; }
+    if (d.field_duty_tracking_eligible && r.user_id) out[r.user_id] = { name: d.display_name || 'Employee', code: d.employee_code || '', department: d.department || '', designation: d.designation || '' };
+  }
+  return out;
+}
+// Who may view field-duty location: HR/admin/management everyone, a manager only their reporting hierarchy.
+async function getFieldViewer(cu) {
+  const isMgmt = await hasRole(cu, MGR_ROLES);
+  const isManager = !isMgmt && await hasRole(cu, ['manager']);
+  const visibleIds = isMgmt ? null : isManager ? await getVisibleUserIds(cu) : [];
+  return { isMgmt, isManager, visibleIds };
+}
 
 async function getFieldRates() {
   const [r2, r4, legacy] = await Promise.all([
