@@ -282,6 +282,7 @@ export function AreaEditorMap({ vertices, onChange, otherFences = [], excludeId,
 // tracking gaps (dashed red between the last fix before and the first fix after the silence).
 export function EmployeeRouteMap({ route, fences = [], height = 460 }) {
   const segs = useMemo(() => (route?.segments || []).map(s => ({ ...s, line: (s.points || []).filter(p => ok(p.lat) && ok(p.lng)).map(p => [Number(p.lat), Number(p.lng)]) })), [route]);
+  const snapped = (s) => (s.snapped && s.snapped.length ? [...s.snapped, ...(s.tail && s.tail.length > 1 ? [s.tail] : [])] : null);
   const gaps = route?.gaps || [];
   const live = route?.live;
   const fit = useMemo(() => {
@@ -298,7 +299,7 @@ export function EmployeeRouteMap({ route, fences = [], height = 460 }) {
         <Resize />
         <Fences fences={fences} />
         {fit.length > 0 && <FitTo points={fit} />}
-        {segs.map((s, i) => s.line.length > 1 && <Polyline key={s.trip_id} positions={s.line} pathOptions={{ color: COLORS[i % COLORS.length], weight: 4, opacity: 0.85 }} />)}
+        {segs.map((s, i) => { const sn = snapped(s); return (sn || s.line.length > 1) && <Polyline key={s.trip_id} positions={sn || s.line} pathOptions={{ color: COLORS[i % COLORS.length], weight: 5, opacity: 0.9, lineJoin: 'round' }} />; })}
         {gaps.filter(g => g.from_pos && g.to_pos).map((g, i) => (
           <Polyline key={'g' + i} positions={[[g.from_pos.lat, g.from_pos.lng], [g.to_pos.lat, g.to_pos.lng]]} pathOptions={{ color: '#dc2626', weight: 3, dashArray: '6 8', opacity: 0.9 }}>
             <Tooltip sticky>No tracking {fmtT(g.from)} → {fmtT(g.to)} ({g.minutes} min){g.moved_m ? ` · moved ~${(g.moved_m / 1000).toFixed(2)} km` : ''}</Tooltip>

@@ -23,6 +23,7 @@ export const FT_DEFAULTS = {
   gap_moved_m: 150,            // a gap during which the phone moved at least this far is also counted as estimated distance
   live_stale_minutes: 10,      // a "live" position older than this is shown as offline
   max_batch: 500,              // points accepted in one upload
+  snap_to_roads: true,         // draw routes along the road network (needs the OSRM service; display only, never changes distance)
 };
 
 const LIMITS = {
@@ -34,7 +35,7 @@ const LIMITS = {
 export function normalizeConfig(raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
   const cfg = { ...FT_DEFAULTS };
-  for (const k of ['require_duty_day', 'reject_mock']) if (typeof r[k] === 'boolean') cfg[k] = r[k];
+  for (const k of ['require_duty_day', 'reject_mock', 'snap_to_roads']) if (typeof r[k] === 'boolean') cfg[k] = r[k];
   for (const [k, [lo, hi]] of Object.entries(LIMITS)) {
     const v = Number(r[k]);
     if (r[k] != null && r[k] !== '' && Number.isFinite(v)) cfg[k] = Math.min(hi, Math.max(lo, v));

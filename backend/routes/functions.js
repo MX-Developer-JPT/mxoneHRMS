@@ -5536,7 +5536,21 @@ router.post('/:name', async (req, res) => {
       if (frUser !== cu.id && !(frEmp && frEmp.field_duty_tracking_eligible)) return res.json({ success: false, error: 'This employee is not enabled for Field Duty Tracking', code: 'NOT_ELIGIBLE' });
       const frRows = await all("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'date'=$2", [frUser, frDate]);
       const frCfg = await getFieldTrackingConfig();
-      const route = frRules.buildRoute(frRows.map(r => JSON.parse(r.data)), Date.now(), frCfg);
+      const frTrips = frRows.map(r => JSON.parse(r.data));
+      const route = frRules.buildRoute(frTrips, Date.now(), frCfg);
+      route.snap = { enabled: !!process.env.OSRM_URL && frCfg.snap_to_roads, matched_pct: null };
+      if (route.snap.enabled) {
+        let m = 0, t = 0;
+        for (const seg of route.segments) {
+          const tr = frTrips.find(x => x.id === seg.trip_id); if (!tr) continue;
+          const sn = await getTripSnap(tr);
+          if (!sn) continue;
+          seg.snapped = sn.pieces;
+          seg.tail = (tr.points || []).slice(Math.max(0, sn.n - 1)).map(x => [x.lat, x.lng]).slice(-300);   // fixes that arrived after the last snap
+          m += sn.matched; t += sn.total;
+        }
+        route.snap.matched_pct = t ? Math.round(m / t * 100) : null;
+      }
       return res.json({
         success: true, date: frDate, user_id: frUser,
         employee: frEmp ? { name: frEmp.display_name || 'Employee', code: frEmp.employee_code || '', department: frEmp.department || '', designation: frEmp.designation || '' } : null,
@@ -21972,6 +21986,31 @@ async function getEligibleFieldEmployees() {
   }
   return out;
 }
+// Road-snapped route for display (self-hosted OSRM at OSRM_URL; see /osrm). Cached in its own row so it can never race with
+// the point uploads that rewrite the trip. Returns null when matching is off/unavailable — the map then draws the raw GPS line.
+async function getTripSnap(tr) {
+  const base = process.env.OSRM_URL;
+  const pts = tr.points || [];
+  if (!base || pts.length < 2) return null;
+  const id = 'snap-' + tr.id;
+  const row = await one("SELECT data FROM entities WHERE id=$1 AND type='FieldTripSnap'", [id]);
+  let cached = null; try { cached = row ? JSON.parse(row.data) : null; } catch { cached = null; }
+  const fresh = cached && (cached.n === pts.length || (tr.status === 'active' && pts.length - cached.n < 15 && Date.now() - Date.parse(cached.at) < 60000));
+  if (fresh) return cached;
+  try {
+    const { snapTrip } = await import('../utils/mapMatch.js');
+    const fetchJson = async (url) => {
+      const ac = new AbortController(); const to = setTimeout(() => ac.abort(), 8000);
+      try { const r = await fetch(url, { signal: ac.signal }); return await r.json(); } finally { clearTimeout(to); }
+    };
+    const res = await snapTrip(pts, fetchJson, base);
+    const data = { id, trip_id: tr.id, n: pts.length, at: new Date().toISOString(), pieces: res.pieces, matched: res.matched, total: res.total };
+    await run("DELETE FROM entities WHERE id=$1 AND type='FieldTripSnap'", [id]);
+    await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'FieldTripSnap',$2,'ready',$3)", [id, tr.user_id || null, JSON.stringify(data)]);
+    return data;
+  } catch (e) { console.warn('[fieldSnap]', e.message); return cached; }
+}
+
 // Who may view field-duty location: HR/admin/management everyone, a manager only their reporting hierarchy.
 async function getFieldViewer(cu) {
   const isMgmt = await hasRole(cu, MGR_ROLES);

@@ -53,6 +53,7 @@ function RulesEditor({ onClose }) {
       </div>
       <div className="flex flex-wrap gap-6">
         <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.reject_mock} onCheckedChange={v => setCfg({ ...cfg, reject_mock: v })} /> Reject mock / fake-GPS locations</label>
+        <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.snap_to_roads} onCheckedChange={v => setCfg({ ...cfg, snap_to_roads: v })} /> Draw routes along roads (needs the road-matching service)</label>
         <label className="flex items-center gap-2 text-sm"><Switch checked={!!cfg.require_duty_day} onCheckedChange={v => setCfg({ ...cfg, require_duty_day: v })} /> Track only on an approved field-duty day (OD attendance or official gate pass)</label>
       </div>
       <div className="flex gap-2"><Button size="sm" className="bg-orange-600 hover:bg-orange-700 text-white" disabled={saving} onClick={save}>Save rules</Button><Button size="sm" variant="outline" onClick={onClose}>Cancel</Button></div>
@@ -91,7 +92,7 @@ export default function FieldTrackingPanel({ isHR }) {
       if (!dead) setLoading(false);
     };
     pull(true);
-    const t = date === todayIST() ? setInterval(() => pull(false), 20000) : null;
+    const t = date === todayIST() ? setInterval(() => pull(false), 10000) : null;
     return () => { dead = true; if (t) clearInterval(t); };
   }, [mode, selected, date]);
 
@@ -99,7 +100,7 @@ export default function FieldTrackingPanel({ isHR }) {
     if (mode !== 'live') return undefined;
     let dead = false;
     const pull = async () => { try { const r = await base44.functions.invoke('getFieldLive', {}); const d = r.data || r; if (!dead && d.success) setLivePeople(d.people || []); } catch { /* keep */ } };
-    pull(); const t = setInterval(pull, 20000);
+    pull(); const t = setInterval(pull, 10000);
     return () => { dead = true; clearInterval(t); };
   }, [mode]);
 
@@ -178,6 +179,7 @@ export default function FieldTrackingPanel({ isHR }) {
                       {route.segments.length === 0
                         ? <p className="text-sm text-gray-400 text-center py-16 border rounded-lg">No field-duty tracking was recorded for this employee on {data.date}.</p>
                         : <EmployeeRouteMap route={route} fences={fences} />}
+                      {route.segments.length > 0 && <p className="text-[11px] text-gray-500">{route.snap?.enabled && route.snap.matched_pct != null ? `Drawn along roads (${route.snap.matched_pct}% of the path matched to the road network); the rest follows the raw GPS line. Distance always comes from the GPS points.` : 'Drawn from the raw GPS points (road matching is not active).'}{date === todayIST() ? ' Refreshes every 10 seconds.' : ''}</p>}
                       {route.gaps.length > 0 && (
                         <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-1">
                           <p className="text-sm font-medium text-red-800 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" />Tracking gaps (dashed red on the map)</p>
